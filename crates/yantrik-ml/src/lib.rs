@@ -39,6 +39,12 @@ pub mod provider;
 #[cfg(feature = "api-llm")]
 pub mod hardware;
 
+// Judges: typed answers with probabilities from System One models (Jev, Kev, ...)
+pub mod judge;
+
+// Private per-user scratch and state directories — the replacement for fixed names in /tmp
+pub mod private_dir;
+
 // Voice modules
 pub mod stt;
 pub mod tts;

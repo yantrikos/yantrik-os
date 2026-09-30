@@ -92,6 +92,9 @@ test_*.py
 !tests/app-lints/test_*.py
 # ...but not the unit tests that ship with a harness plugin.
 !harnesses/*/tests/test_*.py
+# ...nor the browser surface's live tests: they are what holds its refusals to what the security
+# reviews found (#477, #480), and the rule above kept all 36 of them out of the PR that needed them.
+!tests/browser-core/test_*.py
 # ...nor the suite shared by every attachable harness. It lives one level up, at
 # harnesses/tests, because it covers harnesses/lib as well as pi and deepseek, and the pattern
 # above misses it by exactly one directory — which would have left CI running a discover over

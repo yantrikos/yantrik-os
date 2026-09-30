@@ -41,14 +41,18 @@ export component WeatherApp inherits AppWindow {
     // stays this size even when the compositor maximises or fullscreens the window.
     preferred-width: 1000px;
     preferred-height: 720px;
-    min-width: 640px;
-    min-height: 400px;
+    // Small enough for every snap layout (#505): a third of a 1280 screen is 426px, a quarter
+    // of its height 364px. The dashboard lays itself out for these.
+    min-width: 400px;
+    min-height: 340px;
     background: Theme.bg-deep;
 
     // ── Current conditions ──
     in property <WeatherCurrent> current <=> dash.current;
     in property <[WeatherHourly]> hourly <=> dash.hourly;
     in property <[WeatherDaily]> daily <=> dash.daily;
+    // Whose local time the hourly strip reads in (#220).
+    in property <string> hourly-tz-label <=> dash.hourly-tz-label;
 
     // ── AI ──
     in property <bool> ai-is-working <=> dash.ai-is-working;

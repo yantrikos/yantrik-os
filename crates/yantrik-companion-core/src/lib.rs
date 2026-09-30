@@ -9,6 +9,7 @@ pub mod config;
 pub mod connectors;
 pub mod evolution;
 pub mod instincts;
+pub mod judge_config;
 pub mod permission;
 pub mod sanitize;
 pub mod taint;

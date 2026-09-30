@@ -8,7 +8,7 @@ Four levels, in order:
 | `safe` | reading; changes nothing | never asked — not even in `plan` mode |
 | `standard` | changing the program's own state, in a way that can be taken back | not asked in the default mode |
 | `sensitive` | overwriting, sending, spending, anything that leaves the machine, anything the person would want to see first | a card to Allow, in the default mode |
-| `dangerous` | destroying work, ending what someone else is running, running arbitrary code | refused outright under the ceiling this OS ships with; with the ceiling raised, a card in every mode short of `bypass` |
+| `dangerous` | destroying work, ending what someone else is running, running arbitrary code | refused outright under the ceiling this OS ships with; with the ceiling raised, a card in every mode short of `bypass` (and in `bypass` too, if its description says it cannot be undone) |
 
 An action declared without a grade is `standard`. The grade is published in `describe`, so a mind
 can see it before it calls, and the dispatch reads it again when the call arrives.
@@ -120,11 +120,22 @@ what to do instead:
 
 **Say it when it cannot be undone.** A description that says so — any of *not recoverable*,
 *cannot be undone*, *can't be undone*, *irreversible*, *permanently*, *permanent*, *no undo* —
-changes how the dispatch treats the action: it is asked about in every mode but `bypass`, whatever
+changes how the dispatch treats the action: it is asked about in every mode but full bypass (`bypass_all`), whatever
 its grade above `safe`, and no "Allow for this session" covers it. The calendar's `delete_event`
 says "It is not recoverable" for exactly that reason. Leaving the words out is a decision too:
 LibreOffice's `save` describes what it replaces without them, because a person who chose `auto`
 mode has said `sensitive` work may run unasked, and the words would take that away.
+
+**Say it when it runs whatever it is given.** An action that runs a command line, a script or
+keystrokes into a shell can do anything the person can, whatever its grade. Declare it —
+`Action::open_ended()` in Rust, `open_ended=True` in Python — and the SDK adds one sentence to the
+description: *What it runs can do anything you can.* That sentence is what the dispatch reads
+(`gate::open_ended`): above `safe` the action is asked about in `ask`, `auto` and `bypass`, even at
+`standard`; full bypass runs it and plan refuses it. Unlike "cannot be undone", a session rule
+covers it, so the card offers "Allow for this session" and a mind asks once per session rather than
+once per command. An action that says both is asked about every time, with no session rule. The
+Terminal's `run` and `send_input` and the shell's `agent_run` and `agent_input` are declared this
+way. Mark only what truly runs arbitrary input.
 
 **Grades can move while the program runs.** Studio's `generate` sends a prompt to a hosted service
 when it is configured to, and that is `sensitive`; to a model on the machine, `standard`. It
@@ -143,7 +154,8 @@ Whoever sends it — a mind's tools, `yos act`, the MCP bridge, a raw client on 
    to it without loss — so a person's Allow is never used up on a call that was never going to run;
 4. **the ceiling**, on the grade;
 5. **the grant**, if the call carries one, spent now — against the arguments as they were sent;
-6. **the mode**, the session rules, and the description's "cannot be undone";
+6. **the mode**, the session rules, and the description's "cannot be undone" and "runs
+   anything";
 7. `expect_revision`, if given (`STALE:`);
 8. your handler.
 
@@ -165,23 +177,32 @@ person raises it in Settings.
 Chosen from a chip in the status bar, written by the shell to `mind-mode.json`, and read by the
 dispatch on every call. Each mode runs actions unasked up to a grade: `plan` nothing above `safe`
 (a mind says what it would do instead), `ask` up to `standard`, `auto` up to `sensitive`,
-`bypass` everything under the ceiling (for a while — a bypass expires). Above that, the call is
+`bypass` and `bypass_all` everything under the ceiling (for a while — a bypass expires), and
+the two differ only in what the description declares: `bypass` still asks about what cannot be
+undone and, once per session, about what runs whatever it is given; `bypass_all` ("Full bypass")
+asks about neither. Above that, the call is
 refused with `GRANT:`, and the refusal says how to get the person's Allow; `yos act` and the MCP
-bridge do that for a mind, putting a card on the screen and acting again with the grant. On the
-ceiling this OS ships with, for an action whose description does and does not say it cannot be
-undone:
+bridge do that for a mind, putting a card on the screen and acting again with the grant. The mode
+and the session rules beside it end with the shell that set them: the file names that shell — its
+pid, the start time the kernel gave it, and the machine's boot — and a dispatch that cannot find
+that shell alive, in that boot, reads `ask`. On the ceiling this OS ships with, for an action whose
+description says nothing, says it cannot be undone, or says it runs whatever it is given:
 
 <!-- output: grade-table -->
 ```text
-sensitive ceiling                    plan             ask              auto             bypass
-safe                                 runs             runs             runs             runs
-standard                             runs             runs             runs             runs
-sensitive                            refused: plan    asks             runs             runs
-dangerous                            refused: ceiling refused: ceiling refused: ceiling refused: ceiling
-safe, says it cannot be undone       runs             runs             runs             runs
-standard, says it cannot be undone   refused: plan    asks             asks             runs
-sensitive, says it cannot be undone  refused: plan    asks             asks             runs
-dangerous, says it cannot be undone  refused: ceiling refused: ceiling refused: ceiling refused: ceiling
+sensitive ceiling                    plan             ask              auto             bypass           bypass_all
+safe                                 runs             runs             runs             runs             runs
+standard                             runs             runs             runs             runs             runs
+sensitive                            refused: plan    asks             runs             runs             runs
+dangerous                            refused: ceiling refused: ceiling refused: ceiling refused: ceiling refused: ceiling
+safe, says it cannot be undone       runs             runs             runs             runs             runs
+standard, says it cannot be undone   refused: plan    asks             asks             asks             runs
+sensitive, says it cannot be undone  refused: plan    asks             asks             asks             runs
+dangerous, says it cannot be undone  refused: ceiling refused: ceiling refused: ceiling refused: ceiling refused: ceiling
+safe, runs anything it is given      runs             runs             runs             runs             runs
+standard, runs anything it is given  refused: plan    asks             asks             asks             runs
+sensitive, runs anything it is given refused: plan    asks             asks             asks             runs
+dangerous, runs anything it is given refused: ceiling refused: ceiling refused: ceiling refused: ceiling refused: ceiling
 ```
 
 (Generated from the SDK's `gate.decide` by `samples/test_guide.py`. `standard` runs in `plan` on a
@@ -189,7 +210,9 @@ socket because the desktop's own processes make `standard` calls; the doors that
 shell and the MCP bridge — refuse it in `plan` and tell the mind to say what it would do.)
 
 A **session rule** — the card's "Allow for this session" — runs one action unasked for the rest of
-the session, except one that says it cannot be undone, and never in `plan`.
+the session, except one that says it cannot be undone, and never in `plan`. It does cover one that
+runs whatever it is given: every "asks" in those rows becomes "runs" once the person has allowed it
+for the session.
 
 ### A grant
 

@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use yantrik_os::{SystemEvent, SystemSnapshot};
 
@@ -53,6 +53,9 @@ pub struct ActivityBucket {
     pub user_active_secs: u64,
     pub user_idle_secs: u64,
     last_active_instant: Option<Instant>,
+    /// When the current absence began: `UserIdle` arrives once per threshold (30 s, 1 min, …)
+    /// while the person stays away, each counting from the same moment (#412).
+    idle_began: Option<Instant>,
 
     // Notifications
     pub notification_count: u32,
@@ -84,6 +87,7 @@ impl Default for ActivityBucket {
             user_active_secs: 0,
             user_idle_secs: 0,
             last_active_instant: Some(Instant::now()),
+            idle_began: None,
             notification_count: 0,
             critical_notifications: 0,
             file_creates: 0,
@@ -199,14 +203,19 @@ impl ActivityAccumulator {
                 }
             }
             SystemEvent::UserIdle { idle_seconds } => {
-                if let Some(last) = self.current.last_active_instant {
-                    let active = now.duration_since(last).as_secs();
-                    self.current.user_active_secs += active;
+                // The first report of an absence ends the active stretch where the absence
+                // began; later ones (a longer threshold, same absence) change nothing.
+                if let Some(last) = self.current.last_active_instant.take() {
+                    let away = Duration::from_secs(*idle_seconds);
+                    let began = now.checked_sub(away).unwrap_or(now).max(last);
+                    self.current.user_active_secs += began.duration_since(last).as_secs();
+                    self.current.idle_began = Some(began);
                 }
-                self.current.last_active_instant = None;
-                self.current.user_idle_secs += *idle_seconds;
             }
             SystemEvent::UserResumed => {
+                if let Some(began) = self.current.idle_began.take() {
+                    self.current.user_idle_secs += now.duration_since(began).as_secs();
+                }
                 self.current.last_active_instant = Some(now);
             }
             SystemEvent::NotificationReceived { urgency, .. } => {

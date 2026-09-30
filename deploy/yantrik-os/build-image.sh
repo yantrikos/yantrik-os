@@ -123,12 +123,16 @@ echo "   verified: no cloud kernel left in /boot"
 say "Packages"
 # One layer, one apt run: the desktop, the eyes, the ears, and what yos needs to talk CDP.
 # mpv: Files opens sound and video in mpv's own window (#255); the image shipped no player.
+# swaybg: the wallpaper, and the label Mind View shows while it is empty (#239).
 # nano, htop: the person's editor (yantrik-session exports EDITOR=nano) and process viewer;
 # the image shipped neither (#210). iproute2, iputils-ping: `ip`, `ss` and `ping`, named by
 # the mind's network tools — installed here as well so all three provisioning paths lay
-# down the same base system rather than drifting from each other (#210).
+# down the same base system rather than drifting from each other (#210). git, bash-completion,
+# and rootless podman with uidmap, passt and fuse-overlayfs: the developer's baseline, and the
+# runtime the Container Manager app runs (#401).
+# Manager installs Flathub apps with it, per-user and without root (#399).
 virt-customize -a "$IMAGE" \
-  --install labwc,seatd,mesa-utils,foot,chromium,pipewire-pulse,wireplumber,pulseaudio-utils,python3-websocket,qemu-guest-agent,curl,ca-certificates,fontconfig,grim,wlrctl,wlr-randr,mpv,nano,htop,iproute2,iputils-ping \
+  --install labwc,seatd,mesa-utils,foot,chromium,pipewire-pulse,wireplumber,pulseaudio-utils,python3-websocket,qemu-guest-agent,curl,ca-certificates,fontconfig,grim,wlrctl,wlr-randr,swaybg,mpv,nano,htop,iproute2,iputils-ping,git,bash-completion,podman,uidmap,passt,fuse-overlayfs,flatpak,nftables \
 
 echo "   desktop, browser, audio, agent surface deps"
 
@@ -182,6 +186,8 @@ CHROME=/opt/yantrik/share
 if [ -d "$CHROME/labwc" ]; then
   mkdir -p "$HOME/.config/labwc" "$HOME/.local/share/themes/Yantrik/labwc"
   cp -f "$CHROME/labwc/rc.xml" "$HOME/.config/labwc/rc.xml"
+  # The window menu (its Snap layouts); labwc falls back to its own when there is none.
+  [ -f "$CHROME/labwc/menu.xml" ] && cp -f "$CHROME/labwc/menu.xml" "$HOME/.config/labwc/menu.xml"
   cp -f "$CHROME/labwc/themerc" "$HOME/.local/share/themes/Yantrik/labwc/themerc"
 fi
 if [ -d "$CHROME/fonts" ]; then

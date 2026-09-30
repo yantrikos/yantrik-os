@@ -7,6 +7,10 @@ publisher = "Yantrik OS"
 roles = ["service"]
 icon = "bell"
 
+[[permissions]]
+capability = "filesystem.user_data"
+reason = "Reads calendar event files to run the reminder timer, and keeps its own store file"
+
 [service]
 binary = "notifications-service"
 methods = [

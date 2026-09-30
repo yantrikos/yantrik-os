@@ -175,6 +175,7 @@ An **action**:
 | `settles` | `"on return"` — the work is done when the act answers — or `"later"` — the act only starts it. |
 | `parameters` | A JSON Schema object: `type` `"object"`, `properties` (each `{type, description}` and, when declared, `enum`, `items` and `default`; `description` MAY be empty), `required` (names, in declaration order). |
 | `expected_seconds` | Optional integer: how long a call usually takes to answer, when the app knows it is more than a moment (a render, an export). A client SHOULD size its timeout by it; absent, the client keeps its own. |
+| `explains` | Optional boolean, present and `true` only when the action can say what ONE call of it does, with that call's own arguments. The sentence itself comes from `app.explain` (below), because it depends on arguments `describe` never sees; absent, the action says nothing per call. |
 
 **Parameter types.** `type` is one of `string`, `number`, `integer`, `boolean`, `array`,
 `object`, and the dispatch checks it (§5, step 7): an argument of another type is refused before
@@ -223,6 +224,31 @@ Type checking and conversion are additions to version 1 (see Changes): a client 
 them already handles the refusal, which is `-32602` like every other in §5.
 
 `describe` is never gated: reading a surface needs no grade, no mode and no grant.
+
+### `app.explain` (optional)
+
+The sentence about ONE call (#137): what this action does with THESE arguments, in the app's own
+words, for an approval card to draw under the argument box — after the published purpose, the same
+for every call of the action, and the arguments themselves.
+
+`params`:
+
+| key | |
+| --- | --- |
+| `action` | Required, non-empty: an action's `name`. |
+| `args` | The arguments of the call being explained, shaped as `app.act` takes them. Absent means none. |
+
+The result is `{app, action, explanation}`. `explanation` is one bounded sentence, or empty when
+the app has nothing to say about these particular arguments — an honest absence, not an error.
+
+Reading, not acting: no grade, no mode, no grant, no reach — it changes nothing and spends
+nothing, so like `describe` it is never gated. An action that declared no explainer is refused
+with `-32602` and a sentence saying so, which is an answer, and what tells the asker to draw no
+line; a surface that has not implemented the method at all answers `-32601` like any method it
+does not serve. A client MUST treat any error, and any slowness, as "nothing to show", and MUST
+NOT make the thing it was about to draw — the card — depend on this answer: a missing line is
+never a missing card. The `explains` flag on `describe` exists so a client need not ask a surface
+that cannot answer.
 
 ## 5. `app.act`
 
@@ -350,10 +376,19 @@ with its outcome and the exact sentence. Every implementation replays the file i
   such line; quotes trimmed; a missing file or a value off the ladder is `sensitive`). Read per
   call.
 - The person's **mode**, from `mind-mode.json` beside the settings file, which the shell writes:
-  `{"mode": "plan|ask|auto|bypass", "previous": …, "bypass_expires_unix": <n>|null,
-  "session_rules": [{"app": …, "action": …}]}`. A missing or unreadable file, or a mode it does not
-  name, is `ask`. A `bypass` whose `bypass_expires_unix` has passed is its `previous` mode (or
-  `ask`). Read per call.
+  `{"mode": "plan|ask|auto|bypass|bypass_all", "previous": …, "bypass_expires_unix": <n>|null,
+  "session_rules": [{"app": …, "action": …}], "shell_pid": <n>, "shell_start_ticks": <n>,
+  "boot_id": "<uuid>"}`. A missing or unreadable file, or a mode it does not name, is `ask`. A
+  `bypass` or `bypass_all` whose `bypass_expires_unix` has passed is its `previous` mode (or
+  `ask`, when that is missing or itself a bypass). The last
+  three fields name the shell that wrote the file and the boot it wrote in — its pid, that
+  pid's start time (field 22 of `/proc/<pid>/stat`, ticks since boot), and
+  `/proc/sys/kernel/random/boot_id`, which the kernel picks fresh on every boot — and a file
+  whose shell cannot be found (pid gone; alive under a different start time: reused; exited
+  but unreaped: a zombie, state `Z`/`X`; or recorded under a boot that has ended) is `ask`,
+  rules and all, so a shell that died in bypass does not leave it in force (#154, #333). Less
+  than the whole identity — any of the three missing — fails closed the same way. A file that
+  names no shell at all is read as before. Read per call.
 - Whether the call carries a **grant** the shell spent (§8).
 
 **The rule**, in order:
@@ -364,10 +399,11 @@ with its outcome and the exact sentence. Every implementation replays the file i
    ``CEILING: <app>.<action> is graded `<grade>`, above this machine's `<ceiling>` ceiling (`tool_permission` in ~/.config/yantrik/settings.yaml), so it was not run. An action at that grade needs a person to authorise it directly — raise the ceiling in Settings if that is the intent.``
 3. A spent grant runs it.
 4. Each mode runs unasked up to a grade — `plan` `safe`, `ask` `standard`, `auto` `sensitive`,
-   `bypass` `dangerous` — but never less than **`standard`** on a socket (the *socket floor*: the
-   desktop's own processes call `standard` actions to work, and cannot yet be told from a mind,
-   #43). In every mode but `bypass`, an action that **cannot be undone** is asked about whatever
-   its grade above `safe`. Anything else runs.
+   `bypass` and `bypass_all` `dangerous` — but never less than **`standard`** on a socket (the
+   *socket floor*: the desktop's own processes call `standard` actions to work, and cannot yet be
+   told from a mind, #43). In every mode but `bypass_all` ("Full bypass"), an action that
+   **cannot be undone** is asked about whatever its grade above `safe` — `bypass` included, which
+   is the whole of the difference between the two. Anything else runs.
 5. A **session rule** for exactly this `app.action` runs it — unless it cannot be undone, and never
    in `plan` mode, which raises no card and so has no standing answers.
 6. Otherwise it is refused with `GRANT:`, in one of four sentences:
@@ -420,7 +456,7 @@ MCP bridge and the companion's `app_action` do these three steps on a caller's b
 | --- | --- | --- |
 | `-32700` | not a request | the line is not JSON, not an object, or lacks `jsonrpc`, `method` or `id`. `"Parse error: …"`, `id` null. |
 | `-32601` | unknown method | `` unknown method `<m>`; this app serves app.describe, app.act `` |
-| `-32602` | the act was refused | every refusal in §5 and §7, and a handler's own. |
+| `-32602` | the act was refused | every refusal in §4's `app.explain`, §5 and §7, and a handler's own. |
 | `-32000` | the surface did not answer | `app did not answer within 3s` (a window's turn did not come in time); `this app published no control surface`; `app is not accepting requests: …`. |
 
 A client SHOULD treat `-32602` as an answer (the app is healthy and said no) and `-32000` as the app
@@ -497,3 +533,12 @@ protocol:
   else is refused in step 7's sentence, as before. Handlers keep the strictness; callers — a model
   sending `which: 1` — are not bounced. The Rust dispatch and the Python SDK convert identically,
   held by `deploy/yantrik-os/dispatch-vectors.json`.
+- **1, extended: the sentence about one call** (#137): an action MAY declare that it can say what
+  ONE call of it does, with that call's own arguments — `"explains": true` on `describe`, and the
+  sentence from a second method, `app.explain` (§4), because it depends on arguments `describe`
+  never sees. An approval card draws it under the argument box, after the published purpose and
+  the arguments. A
+  surface that has not implemented the method answers `-32601`, an action that declared no
+  explainer refuses with `-32602`, and in every case — error, refusal, slowness — the card is
+  exactly what it was: the flag lets a client skip the question, and nothing that was about to be
+  drawn depends on the answer. Studio's `set_backend` is the first to use it.

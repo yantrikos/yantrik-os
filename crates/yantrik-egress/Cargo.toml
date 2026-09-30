@@ -1,0 +1,18 @@
+[package]
+name = "yantrik-egress"
+version = "0.1.0"
+edition = "2021"
+description = "The one way out for the mind account: a CONNECT proxy that serves only yantrik-mind, by the person's policy (design/mind-egress-2026-09-29.md)"
+
+[[bin]]
+name = "yantrik-egress"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true, features = ["net", "io-util", "time", "sync", "macros"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+libc = { workspace = true }

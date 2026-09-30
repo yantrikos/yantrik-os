@@ -190,7 +190,7 @@ running the tests lends it neither. From the template's tests:
 ```rust
 /// The machine this OS ships: a `sensitive` ceiling, in `mode`.
 fn under(mode: &str) -> Authority {
-    Authority { ceiling: "sensitive".into(), mode: Mode::named(mode), granted: false }
+    Authority { ceiling: "sensitive".into(), mode: Mode::named(mode), granted: false, asks_above: None }
 }
 ```
 
@@ -208,8 +208,11 @@ fn remove_waits_for_the_person_in_ask_and_in_auto() {
     assert!(refused.contains("its own description says it cannot be undone"), "{refused}");
     assert_eq!(lock_items(&tasks).len(), 1, "nothing was removed");
 
-    // Bypass runs everything under the ceiling.
-    let reply = act(&surface, "bypass", "remove", json!({ "index": 0 })).unwrap();
+    // Bypass still asks before what cannot be undone; full bypass runs everything under the
+    // ceiling.
+    let refused = act(&surface, "bypass", "remove", json!({ "index": 0 })).unwrap_err();
+    assert!(refused.contains("its own description says it cannot be undone"), "{refused}");
+    let reply = act(&surface, "bypass_all", "remove", json!({ "index": 0 })).unwrap();
     assert_eq!(reply["result"], json!({ "removed": "Water the plants", "left": 0 }));
 }
 ```

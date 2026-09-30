@@ -1,0 +1,95 @@
+# Yantrik Mind, running as its own account (#411).
+#
+# It used to be a user unit, so the mind ran as the person: anything it or a plugin was talked into
+# could read the person's files and keys, drive their screen, and rewrite the desktop's policy. As
+# `yantrik-mind` it cannot open the person's home or runtime directory, and it reaches the desktop
+# only at the mind door (/run/yantrik-minds), where every act is held to the shell's grades and
+# approvals and must carry the token its harness was given.
+#
+# Installed by yantrik-update (hash-checked, root's). Enabled by `yantrik-update migrate-minds`,
+# once the mind's memory has moved out of the person's home and been counted twice.
+[Unit]
+Description=Yantrik Mind, attached to the desktop as its own account
+After=network-online.target yantrik-egress.service
+Wants=network-online.target yantrik-egress.service
+# One owner of the memory file at a time. See yantrik-memory.service.
+Conflicts=yantrik-memory.service
+# Not in the installer's live session.
+ConditionKernelCommandLine=!yantrik.install=true
+# A start that keeps failing (the memory not moved yet) stops being retried after five in a minute.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=yantrik-mind
+Group=yantrik-minds
+WorkingDirectory=/var/lib/yantrik-mind
+Environment=HOME=/var/lib/yantrik-mind
+Environment=YM_DB=/var/lib/yantrik-mind/mind.db
+Environment=YM_ENV_PATH=/var/lib/yantrik-mind/.config/yantrik-mind.env
+Environment=YM_MCP_CONFIG=/var/lib/yantrik-mind/.config/yantrik-mind/mcp.json
+Environment=YM_CODER_DIR=/var/lib/yantrik-mind/coder
+Environment=YM_STATE_DIR=/var/lib/yantrik-mind
+Environment=YM_MEMORY_SERVER=127.0.0.1:7440
+Environment=YM_WEB=off
+# The Mind's browser chat, off. Its pairing code lives in this account's home, and every mind runs
+# as this account: any of them could read it, pair a browser over loopback, and talk to the Mind as
+# its person. The launcher lets the unit's keys win, so a settings file cannot turn it back on.
+Environment=YM_WEBUI=off
+# Its control endpoint (127.0.0.1:8077: the `ym` command set, settings and plugins included, and a
+# chat API that speaks as the person), off for the same reason: its token lives in this account's
+# home. The desktop reaches the Mind through the harness; nothing on this OS needs the endpoint.
+Environment=YM_CTL=off
+Environment=YANTRIK_MIND_RUN=/run/yantrik-minds
+# Out through the egress proxy (design/mind-egress-2026-09-29.md): where the mind connects is
+# counted and, once the person turns it to enforce, held to their policy. Both spellings, because
+# curl reads only the lowercase http one. Loopback goes direct: the memory server is there.
+Environment=HTTPS_PROXY=http://127.0.0.1:7450 https_proxy=http://127.0.0.1:7450
+Environment=HTTP_PROXY=http://127.0.0.1:7450 http_proxy=http://127.0.0.1:7450
+Environment=ALL_PROXY=http://127.0.0.1:7450 all_proxy=http://127.0.0.1:7450
+Environment=NO_PROXY=127.0.0.1,localhost,::1 no_proxy=127.0.0.1,localhost,::1
+# No EnvironmentFile: systemd would read it as root, before dropping to the account, and follow a
+# link the mind put in its own home to any root-readable file. yantrik-mind-launch reads the
+# settings at YM_ENV_PATH as the mind itself, and starts the Mind with them.
+# Never on an empty memory while the old one is still in a person's home: that would be a mind
+# that silently forgot everything. Run as root (+), the only one that can look there.
+ExecStartPre=+/bin/sh -c 'for d in /home/*/.local/share/yantrik-mind/mind.db; do if [ -e "$$d" ] && [ ! -e /var/lib/yantrik-mind/mind.db ]; then echo "Yantrik Mind: its memory is still at $$d. Run: sudo yantrik-update migrate-minds" >&2; exit 1; fi; done; exit 0'
+# The Mind's settings are read by the mind itself, not by systemd as root (see the launcher).
+ExecStart=/opt/yantrik/bin/yantrik-mind-launch
+# stdin is not a terminal, which is how the mind knows to run headless.
+StandardInput=null
+Restart=always
+RestartSec=3
+
+# What a mind, or a plugin it loaded, can touch if it is talked into something: its own home and
+# the door. Nothing of the person's, nothing of the system's to write.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/yantrik-mind
+ProtectHome=yes
+# The desktop's own log, memory and settings are the person's, not the mind's: the log holds what
+# they type to the built-in companion, data/ its memories, config.yaml their provider keys. Out of
+# this unit's sight even should a file in them come out readable (security review, 29 Sep 2026).
+InaccessiblePaths=-/opt/yantrik/logs -/opt/yantrik/data -/opt/yantrik/config.yaml
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+UMask=0077
+# The person's processes, and their command lines, are not the mind's to see.
+ProtectProc=invisible
+ProcSubset=pid
+PrivateIPC=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

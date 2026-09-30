@@ -13,8 +13,9 @@
 //
 // A formation (section 6) is a recipe whose steps are catalog agents: an Agent stage is called by
 // its role and the mind it runs on ("Chair · deepseek"), waits while its agent works, and is
-// ticked when the answer is in. A formation's built-in definition opens with a box for its input
-// and Start: the person's own press, which is their leave for its agents.
+// ticked when the answer is in. A formation's built-in definition opens with its seats — each one
+// a catalog role the person can re-seat before starting (#194) — a box for its input, and Start:
+// the person's own press, which is their leave for its agents.
 
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "components/icon.slint";
@@ -50,6 +51,21 @@ export struct RecipeStepData {
     detail: string,        // its whole definition, a line per field
 }
 
+// One seat of a formation's definition, offered for the person to fill (#194): its name as the
+// recipe knows it, and the role sitting in it now. The roles to choose from are RecipesState.roles.
+export struct RecipeSeatData {
+    name: string,          // the seat's input name: "seat_1", "chair", "author"
+    label: string,         // the seat as a person reads it: "Seat 1", "Chair", "Author"
+    role: string,          // the role in it now, as a person reads it: "Researcher"
+    role-id: string,       // that role's catalog id, so the chooser can light it: "researcher"
+}
+
+// A role the person can seat: its catalog id (what a start sends) and its name (what shows).
+export struct RecipeRoleData {
+    id: string,
+    name: string,
+}
+
 export struct RecipeRowData {
     id: string,
     name: string,
@@ -71,6 +87,7 @@ export struct RecipeRowData {
     formation: bool,       // its steps hand work to agents from the catalog
     can-start: bool,       // a formation's built-in definition, startable here with its one input
     start-hint: string,    // what that input is: "The question the council is to answer"
+    seats: [RecipeSeatData], // its seats, each with the role in it now — empty unless can-start
     needs-you: bool,       // its agents need the person: a card to answer, a place to free
 }
 
@@ -81,6 +98,8 @@ export global RecipesState {
     // The recipe opened below its row, and its steps.
     in-out property <string> selected: "";
     in-out property <[RecipeStepData]> steps: [];
+    // The catalog's roles, offered as the choices for a formation's seats (#194).
+    in-out property <[RecipeRoleData]> roles: [];
     // Whether the companion has published its recipes yet.
     in-out property <bool> loaded: false;
     in-out property <string> empty: "";
@@ -100,6 +119,9 @@ export global RecipesState {
     callback cancel(string);
     // Start a run of a built-in formation with its one input: the person's leave for its agents.
     callback start(string, string);
+    // Fill one of a formation's seats with a chosen role before starting it (#194): the recipe's
+    // id, the seat's name, and the role's catalog id.
+    callback choose-seat(string, string, string);
     callback dismiss-notice();
 }
 
@@ -302,6 +324,49 @@ component QuestionBox inherits Rectangle {
                 clicked => {
                     RecipesState.answer(root.recipe.id, answer.value);
                     answer.value = "";
+                }
+            }
+        }
+    }
+}
+
+// One seat of a startable formation (#194): the role sitting in it, and — opened — the catalog's
+// roles to seat instead. It opens inside its own row, never as a menu laid over the ones below:
+// a card drawn later would cover it, since the z-order is the document order.
+component SeatRow inherits Rectangle {
+    in property <RecipeSeatData> seat;
+    in property <string> recipe-id;
+    property <bool> open: false;
+    VerticalLayout {
+        spacing: 6px;
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            Text {
+                text: root.seat.label;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-caption;
+                vertical-alignment: center;
+            }
+            YButton {
+                label: root.seat.role;
+                icon-path: root.open ? Icons.chevron-down : Icons.chevron-right;
+                icon-trailing: true;
+                variant: 1;
+                size: 0;
+                clicked => { root.open = !root.open; }
+            }
+        }
+        if root.open : HorizontalLayout {
+            spacing: 6px;
+            alignment: start;
+            for role in RecipesState.roles : YButton {
+                label: role.name;
+                variant: role.id == root.seat.role-id ? 0 : 2;
+                size: 0;
+                clicked => {
+                    RecipesState.choose-seat(root.recipe-id, root.seat.name, role.id);
+                    root.open = false;
                 }
             }
         }
@@ -519,29 +584,37 @@ component RecipeCard inherits Rectangle {
             spacing: 4px;
             Rectangle { height: 1px; background: Theme.separator; }
             for step in RecipesState.steps : StepLine { step: step; }
-            // A formation's definition: its one input, and Start — the person's own press.
-            if root.recipe.can-start : HorizontalLayout {
-                spacing: 8px;
+            // A formation's definition: its seats, each a catalog role the person can re-seat
+            // (#194), its one input, and Start — the person's own press.
+            if root.recipe.can-start : VerticalLayout {
+                spacing: 6px;
                 padding-top: 4px;
-                start-input := YInput {
-                    horizontal-stretch: 1;
-                    placeholder: root.recipe.start-hint;
-                    accepted(text) => {
-                        if (text != "") {
-                            RecipesState.start(root.recipe.id, text);
-                            self.value = "";
+                for seat in root.recipe.seats : SeatRow {
+                    seat: seat;
+                    recipe-id: root.recipe.id;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    start-input := YInput {
+                        horizontal-stretch: 1;
+                        placeholder: root.recipe.start-hint;
+                        accepted(text) => {
+                            if (text != "") {
+                                RecipesState.start(root.recipe.id, text);
+                                self.value = "";
+                            }
                         }
                     }
-                }
-                YButton {
-                    label: "Start";
-                    icon-path: Icons.play;
-                    variant: 0;
-                    size: 0;
-                    disabled: start-input.value == "";
-                    clicked => {
-                        RecipesState.start(root.recipe.id, start-input.value);
-                        start-input.value = "";
+                    YButton {
+                        label: "Start";
+                        icon-path: Icons.play;
+                        variant: 0;
+                        size: 0;
+                        disabled: start-input.value == "";
+                        clicked => {
+                            RecipesState.start(root.recipe.id, start-input.value);
+                            start-input.value = "";
+                        }
                     }
                 }
             }

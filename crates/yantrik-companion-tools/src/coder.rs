@@ -562,6 +562,16 @@ fn build_bwrap_args(
     args
 }
 
+/// A script's private stand-in HOME for one unsandboxed run, removed with everything in it when
+/// the run is over (the guard is dropped as `execute_script` returns, after the child is reaped).
+struct RunHome(PathBuf);
+
+impl Drop for RunHome {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Execute a file with real timeout (kill on deadline).
 /// Scripts run inside a bubblewrap sandbox by default.
 fn execute_script(
@@ -662,7 +672,39 @@ fn execute_script(
     // Environment: inherit + custom + output dir hint
     cmd.env("YANTRIK_OUTPUT_DIR", out_dir.to_str().unwrap_or("/tmp"));
     cmd.env("YANTRIK_SCRIPTS_DIR", scripts.to_str().unwrap_or("/tmp"));
-    cmd.env("HOME", "/tmp"); // prevent writes to real home
+    // A stand-in HOME, so a script's dotfiles and caches never land in the real one. Inside bwrap
+    // /tmp is the sandbox's own tmpfs, so it serves. Outside, /tmp is the shared one — where
+    // another account could have made ~/.config or ~/.bashrc-alikes first for the script to pick
+    // up, and could read whatever it left — so each run gets a private directory of its own
+    // under scratch, removed when the run is over.
+    let _run_home = if use_bwrap {
+        cmd.env("HOME", "/tmp");
+        None
+    } else {
+        let name = format!(
+            "coder-home-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()
+        );
+        match yantrik_ml::private_dir::scratch_subdir(&name) {
+            Ok(home) => {
+                cmd.env("HOME", &home);
+                Some(RunHome(home))
+            }
+            Err(e) => {
+                return ExecutionResult {
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: format!("No private directory to run the script in: {e}"),
+                    duration_secs: 0.0,
+                    timed_out: false,
+                    generated_files: vec![],
+                    error_analysis: None,
+                    sandboxed: false,
+                };
+            }
+        }
+    };
     for (k, v) in env_vars {
         cmd.env(k, v);
     }

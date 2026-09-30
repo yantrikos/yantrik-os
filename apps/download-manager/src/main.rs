@@ -626,7 +626,11 @@ fn publish_control(app: &DownloadManagerApp, engine: Engine) {
             // file. Not `dangerous` — nothing a person made is lost, only bytes that can be
             // fetched again. Defers for the same reason `pause` does: a running transfer stops at
             // its next chunk, and the file goes with it then.
-            Action::new("cancel", "Stop a download and delete the partial file")
+            Action::new(
+                "cancel",
+                "Stop a download and delete the partial file. Deleting it cannot be undone; the \
+                 download can only be started again from the beginning.",
+            )
                 .risk("sensitive")
                 .defers()
                 .arg(Param::integer("id")),

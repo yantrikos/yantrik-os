@@ -107,6 +107,29 @@ pub(crate) fn caller() -> Result<Caller, String> {
     }
 }
 
+/// The caller of a call that hands work to another agent, or starts or steers a recipe: refused
+/// while that caller is answering a turn from a phone, whose hold would not bind the agents that
+/// work goes to (security reviews, 29 Sep).
+pub(crate) fn delegating_caller() -> Result<Caller, String> {
+    let caller = caller()?;
+    refuse_from_phone(&caller)?;
+    Ok(caller)
+}
+
+/// Refused while `caller` is answering a turn from the person's phone.
+pub(crate) fn refuse_from_phone(caller: &Caller) -> Result<(), String> {
+    if let Caller::Agent(me) = caller {
+        if reaches::is_held_remote(me) {
+            return Err(format!(
+                "`{me}` is answering a turn asked from the person's phone, and hands no work to another \
+                 agent and starts or steers no recipe until it is done: what a phone may ask is held \
+                 on this agent alone."
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn host() -> Result<&'static Host, String> {
     crate::wire::harness::host().ok_or_else(|| "the harness host is not running yet".to_string())
 }
@@ -234,10 +257,16 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
     // registry, in-process, as it spends grants in-process; and nothing an earlier run published
     // is held any more — those tokens are gone.
     yantrik_ipc_transport::reach::read_reach_with(reaches::lookup);
+    // And whether a token is a live agent's, for a mind account's call (#411).
+    // In the shell the token is also checked against the caller's descent from the harness that
+    // holds it, as grants are, so a live token alone is not standing.
+    yantrik_ipc_transport::reach::read_standing_with(|token, pid| {
+        crate::control_agent_terminal::agent_for(token, pid).is_ok()
+    });
     reaches::reset();
     surface
-        .action(new, |args| new_agent(host()?, &caller()?, &text(args, "mind"), &text(args, "task")))
-        .action(send, |args| send_to_agent(host()?, &caller()?, &agent_arg(args)?, &text(args, "text")))
+        .action(new, |args| new_agent(host()?, &delegating_caller()?, &text(args, "mind"), &text(args, "task")))
+        .action(send, |args| send_to_agent(host()?, &delegating_caller()?, &agent_arg(args)?, &text(args, "text")))
         .action(stop, |args| stop_agent(host()?, &caller()?, &agent_arg(args)?))
         .action(read, |args| read_agent(&caller()?, &agent_arg(args)?, args.get("last")))
         .action(show, move |args| {
@@ -255,7 +284,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             let wait = wait_arg(args)?;
             let handed = hand_off(
                 host()?,
-                &caller()?,
+                &delegating_caller()?,
                 &Catalog::load(),
                 &text(args, "role"),
                 &text(args, "task"),
@@ -513,6 +542,10 @@ pub fn hand_off_as(
     task: &str,
     context: &str,
 ) -> Result<Handed, String> {
+    // Not for an agent answering a turn from the person's phone: the role it hands to is not held.
+    if let Some(parent) = parent {
+        refuse_from_phone(&Caller::Agent(parent.clone()))?;
+    }
     if role.trim().is_empty() {
         return Err(format!("`role` is empty: a role from the catalog — {}.", catalog.listing()));
     }
@@ -712,6 +745,11 @@ pub fn start_for_recipe(host: &Host, catalog: &Catalog, call: &AgentCall<'_>, as
     })
 }
 
+/// The start of an [`AgentRefusal::Ask`] that names a card on screen — the reason the durable
+/// wait holds, across a restart. A card this process raised itself keeps its request id in
+/// [`Asks`], so a wait naming one this process never raised is a card lost with the desktop.
+const CARD_WAITING: &str = "your Allow on the card:";
+
 /// A run nobody started at the desk asks the person before a role above `safe`: a card naming the
 /// recipe and the role — its reach, its minds — bound to the role's definition, so an Allow for
 /// one definition starts no other. `Ok` once the Allow is spent; [`AgentRefusal::Ask`] while the
@@ -721,7 +759,7 @@ fn allowed_on_card(origin: &RecipeOrigin, call: &AgentCall<'_>, role: &catalog::
     let key = (origin.id.clone(), call.step);
     let task: String = call.task.chars().take(200).collect();
     let args = json!({ "role": role.id, "recipe": origin.id, "task": task, "definition": digest });
-    let waiting = format!("your Allow on the card: {} → {} (it may touch {})", origin.label(), role.name, role.reach.text());
+    let waiting = format!("{CARD_WAITING} {} → {} (it may touch {})", origin.label(), role.name, role.reach.text());
     if let Some(id) = asks.get(&key).cloned() {
         return match approvals::outcome(&id) {
             None => Err(AgentRefusal::Ask(waiting)),
@@ -742,6 +780,12 @@ fn allowed_on_card(origin: &RecipeOrigin, call: &AgentCall<'_>, role: &catalog::
             }
         };
     }
+    // A card the durable wait names but this process never raised went down with the desktop:
+    // the card raised now says it asks again because of the restart (#194). A deferral inside
+    // one process — the cards on screen were full — raised no card either, but is no restart,
+    // and its own reason says so ("already waiting", appended below).
+    let asks_again_after_a_restart =
+        call.put_off.is_some_and(|why| why.starts_with(CARD_WAITING) && !why.contains("already waiting"));
     let verified = approvals::Verified {
         line: format!(
             "the shell's recipe executor, for the {} ({}), which started with nobody at the desk",
@@ -753,19 +797,35 @@ fn allowed_on_card(origin: &RecipeOrigin, call: &AgentCall<'_>, role: &catalog::
     let purpose = format!(
         "Hand work to the {} from the agent catalog, for the {} — which started with nobody at the \
          desk (a trigger or a timer), so nobody has agreed to this yet. The {} may touch {}, for up to \
-         {} minutes, on {}.",
+         {} minutes, on {}.{}",
         role.name,
         origin.label(),
         role.name,
         role.reach.text(),
         role.budget.minutes,
-        role.mind.join(" or ")
+        role.mind.join(" or "),
+        if asks_again_after_a_restart {
+            " It asks again: the desktop restarted while the earlier card for this was waiting, and \
+             that card went down with it — nothing was allowed or denied."
+        } else {
+            ""
+        }
     );
     // No naming line: the shell publishes no id→name index, and `hand_off`'s arguments name
-    // themselves — the recipe a person is being asked to start is in the `purpose` above.
-    match approvals::request(
-        &origin.label(), verified, "shell", "hand_off", args, "sensitive", &purpose, "",
-    ) {
+    // themselves — the recipe a person is being asked to start is in the `purpose` above. For
+    // the same reason there is no per-call sentence (#137): the purpose above already differs
+    // by the one argument this call carries.
+    // The shell's own `hand_off` publishes this purpose itself, so it is the app's sentence too.
+    let asked = approvals::Asked {
+        app: "shell",
+        action: "hand_off",
+        grade: "sensitive",
+        purpose: &purpose,
+        published: &purpose,
+        target: "",
+        explained: "",
+    };
+    match approvals::request(&origin.label(), verified, asked, args) {
         Ok(asked) => {
             asks.insert(key, asked.id);
             Err(AgentRefusal::Ask(waiting))
@@ -1022,6 +1082,12 @@ mod tests {
         AgentId(s.to_string())
     }
 
+    /// A call on a session from this process, which stands in for the harness that attached it:
+    /// a session answers only the process that attached it and the ones it started.
+    fn as_harness(host: &Host, method: &str, params: &Value) -> Result<Value, String> {
+        host.handle_from(method, params, Some(std::process::id()), None)
+    }
+
     /// Nothing that shows or keeps arguments — `describe shell`, a card, an audit line — is handed a
     /// token by these actions: none takes one, and none takes the caller's own agent either. The
     /// one `agent` argument some of them take is the agent acted ON.
@@ -1046,7 +1112,7 @@ mod tests {
 
     fn attach(host: &Host, id: &str, conversations: bool) -> String {
         let attach = json!({ "id": id, "name": id, "conversations": conversations });
-        host.handle_from(protocol::ATTACH, &attach, Some(std::process::id())).unwrap()["session"]
+        host.handle_from(protocol::ATTACH, &attach, Some(std::process::id()), None).unwrap()["session"]
             .as_str()
             .unwrap()
             .to_string()
@@ -1060,7 +1126,7 @@ mod tests {
     fn handed_out(host: &Host, session: &str) -> std::collections::HashMap<String, Value> {
         let mut out = std::collections::HashMap::new();
         for _ in 0..16 {
-            let turn = host.handle(protocol::POLL, &json!({ "session": session })).unwrap();
+            let turn = as_harness(&host, protocol::POLL, &json!({ "session": session })).unwrap();
             let Some(conversation) = turn["conversation"].as_str() else { break };
             out.insert(conversation.to_string(), turn.clone());
         }
@@ -1082,6 +1148,45 @@ mod tests {
     /// — and the role's reach held before that first turn, on the shell's registry and in the file
     /// a door in another process reads, which never holds the token. Then in reach, off its
     /// surfaces and above its ceiling, as every door decides them; and a stop lets it go.
+    /// A turn asked from a phone holds the agent answering it to `standard` on every door, and
+    /// the turn's end puts it back as it was (design/channels-2026-09-29.md).
+    #[test]
+    fn a_turn_from_a_phone_holds_the_agent_to_standard_until_it_ends() {
+        let host = Host::new(vec![]);
+        let _pi = attach(&host, "pi-remote", true);
+        let agent = agents::model::AgentId::new("pi-remote", agents::model::AgentId::MAIN);
+        let _answer = host.send_to(&agent, yantrik_harness::Turn::new("hello")).unwrap();
+        let token = host.with_agent_token(&agent, |t| t.to_string()).unwrap();
+        assert!(reaches::lookup(&token).is_none(), "at the desk, no role, not held");
+
+        let first = reaches::hold_remote(&host, &agent).unwrap();
+        assert!(first.holds(&token));
+        let held = reaches::lookup(&token).expect("held while the phone's turn runs");
+        assert_eq!((held.ceiling.as_str(), held.surfaces.clone()), ("sensitive", vec!["*".to_string()]));
+        assert_eq!(held.asks_above.as_deref(), Some("safe"), "above a read, every act asks the person");
+        assert_eq!(reaches::read_as_a_door(&token).unwrap(), Some(held.clone()), "on every door");
+        let json = serde_json::json!({});
+        assert!(yantrik_ipc_transport::reach::within(&held, "files", "move", "sensitive", &json).is_ok(), "the gate asks; the reach lets it be asked");
+        assert!(yantrik_ipc_transport::reach::within(&held, "files", "delete", "dangerous", &json).is_err(), "nothing above sensitive from a phone");
+        let mut authority = yantrik_ipc_transport::gate::Authority {
+            ceiling: "dangerous".into(),
+            mode: yantrik_ipc_transport::gate::Mode::named("bypass_all"),
+            granted: false,
+            asks_above: None,
+        };
+        authority.held_by(Some(&held));
+        assert!(yantrik_ipc_transport::gate::decide(&authority, "files", "list", "safe", "List").is_ok());
+        let asked = yantrik_ipc_transport::gate::decide(&authority, "files", "move", "standard", "Move a file").unwrap_err();
+        assert!(asked.starts_with("GRANT:"), "even in full bypass, a phone's act asks: {asked}");
+        assert!(reaches::is_held_remote(&agent));
+
+        let second = reaches::hold_remote(&host, &agent).unwrap();
+        drop(first);
+        assert!(reaches::lookup(&token).is_some(), "two turns from the phone: the first ending does not free the second");
+        drop(second);
+        assert!(reaches::lookup(&token).is_none() && !reaches::is_held_remote(&agent), "and let go when the last ends");
+    }
+
     #[test]
     fn hand_off_starts_the_role_on_its_first_attached_mind_held_to_its_reach() {
         let host = Host::new(vec![]);
@@ -1090,13 +1195,13 @@ mod tests {
         let handed = hand_off(&host, &Caller::NoAgent, &shipped(), "Reviewer", "review the change in ~/src/app", "diff --git a/x b/x").unwrap();
         assert_eq!((handed.mind.as_str(), handed.agent.harness()), ("deepseek", "deepseek"), "the Reviewer runs on deepseek first");
 
-        let first = host.handle(protocol::POLL, &json!({ "session": deepseek })).unwrap();
+        let first = as_harness(&host, protocol::POLL, &json!({ "session": deepseek })).unwrap();
         let text = first["text"].as_str().unwrap();
         for says in ["You are the Reviewer", "Find what is wrong with a change", "The task:\nreview the change in ~/src/app", "Read this first:\ndiff --git a/x b/x"] {
             assert!(text.contains(says), "{says:?} missing:\n{text}");
         }
         let token = first["agent_token"].as_str().unwrap().to_string();
-        assert!(host.handle(protocol::POLL, &json!({ "session": pi })).unwrap()["turn_id"].is_null(), "nothing went to pi");
+        assert!(as_harness(&host, protocol::POLL, &json!({ "session": pi })).unwrap()["turn_id"].is_null(), "nothing went to pi");
 
         let (title, role) = agents::store().read(|s| s.agent(&handed.agent).map(|a| (a.meta.title.clone(), a.meta.role.clone()))).unwrap();
         assert_eq!(title, "review the change in ~/src/app", "its row is named for the task, not the brief");
@@ -1105,6 +1210,10 @@ mod tests {
         let held = reaches::lookup(&token).expect("the shell's own dispatch holds it");
         assert_eq!(held.agent, handed.agent.0);
         assert_eq!(reaches::read_as_a_door(&token).unwrap(), Some(held.clone()), "and so does every other door");
+        // What every other door is told when it asks the shell (#189), by the token's digest.
+        let digest = yantrik_ipc_transport::reach::token_digest(&token);
+        assert_eq!(reaches::lookup_digest(&digest), Some(held.clone()), "the shell's answer to a door");
+        assert_eq!(reaches::lookup_digest(&digest.to_uppercase()), Some(held.clone()), "whatever the hex case");
         assert!(!std::fs::read_to_string(reaches::path()).unwrap().contains(&token), "the file keeps a digest, never the token");
 
         use yantrik_ipc_transport::reach::within;
@@ -1135,6 +1244,7 @@ mod tests {
         stop_agent(&host, &Caller::NoAgent, &handed.agent).unwrap();
         assert_eq!(reaches::lookup(&token), None, "stopped, it is let go");
         assert_eq!(reaches::read_as_a_door(&token).unwrap(), None);
+        assert_eq!(reaches::lookup_digest(&digest), None, "and doors are told it holds nothing now");
     }
 
     /// Down its list to the first mind attached that can give it a conversation of its own; a
@@ -1216,10 +1326,10 @@ mod tests {
         let harness = {
             let (host, session) = (host.clone(), session.clone());
             std::thread::spawn(move || {
-                let turn = host.handle(protocol::POLL, &json!({ "session": session })).unwrap();
+                let turn = as_harness(&host, protocol::POLL, &json!({ "session": session })).unwrap();
                 let id = turn["turn_id"].clone();
-                host.handle(protocol::CHUNK, &json!({ "session": session, "turn_id": id, "delta": "Verdict — ship on Friday." })).unwrap();
-                host.handle(protocol::COMPLETE, &json!({ "session": session, "turn_id": id })).unwrap();
+                as_harness(&host, protocol::CHUNK, &json!({ "session": session, "turn_id": id, "delta": "Verdict — ship on Friday." })).unwrap();
+                as_harness(&host, protocol::COMPLETE, &json!({ "session": session, "turn_id": id })).unwrap();
             })
         };
         let answered = wait_for_answer(&handed.agent, Duration::from_secs(10));
@@ -1233,8 +1343,8 @@ mod tests {
         // The Chair has two turns: a second is sent, a third is refused.
         assert!(settled(&handed.agent));
         send_to_agent(&host, &Caller::NoAgent, &handed.agent, "and C says never").unwrap();
-        let turn = host.handle(protocol::POLL, &json!({ "session": session })).unwrap();
-        host.handle(protocol::COMPLETE, &json!({ "session": session, "turn_id": turn["turn_id"] })).unwrap();
+        let turn = as_harness(&host, protocol::POLL, &json!({ "session": session })).unwrap();
+        as_harness(&host, protocol::COMPLETE, &json!({ "session": session, "turn_id": turn["turn_id"] })).unwrap();
         assert!(settled(&handed.agent));
         let err = send_to_agent(&host, &Caller::NoAgent, &handed.agent, "one more").unwrap_err();
         assert!(err.contains("is the Chair, whose budget is 2 turns, and it has had them all"), "{err}");
@@ -1305,13 +1415,13 @@ mod tests {
     fn new_agent_starts_a_child_with_nothing_of_its_parents_and_meets_every_cap() {
         let host = Host::new(vec![]);
         let attach = json!({ "id": "glue", "name": "Glue", "conversations": true });
-        let session = host.handle_from(protocol::ATTACH, &attach, Some(std::process::id())).unwrap()["session"]
+        let session = host.handle_from(protocol::ATTACH, &attach, Some(std::process::id()), None).unwrap()["session"]
             .as_str()
             .unwrap()
             .to_string();
-        let poll = || host.handle(protocol::POLL, &json!({ "session": session })).unwrap();
+        let poll = || as_harness(&host, protocol::POLL, &json!({ "session": session })).unwrap();
         let finish = |handed: &Value| {
-            host.handle(protocol::COMPLETE, &json!({ "session": session, "turn_id": handed["turn_id"] })).unwrap();
+            as_harness(&host, protocol::COMPLETE, &json!({ "session": session, "turn_id": handed["turn_id"] })).unwrap();
         };
 
         // The parent: an agent of its own, holding a token, with a note waiting for its next turn
@@ -1420,15 +1530,16 @@ mod tests {
             role,
             task,
             context: "",
+            put_off: None,
         }
     }
 
     /// Finish an agent's open turn the way its harness would: what it said, and done.
     fn answer_as_harness(host: &Host, session: &str, said: &str) {
-        let turn = host.handle(protocol::POLL, &json!({ "session": session })).unwrap();
+        let turn = as_harness(&host, protocol::POLL, &json!({ "session": session })).unwrap();
         let id = turn["turn_id"].clone();
-        host.handle(protocol::CHUNK, &json!({ "session": session, "turn_id": id, "delta": said })).unwrap();
-        host.handle(protocol::COMPLETE, &json!({ "session": session, "turn_id": id })).unwrap();
+        as_harness(&host, protocol::CHUNK, &json!({ "session": session, "turn_id": id, "delta": said })).unwrap();
+        as_harness(&host, protocol::COMPLETE, &json!({ "session": session, "turn_id": id })).unwrap();
     }
 
     fn answered_poll(host: &Host, recipe: &str, agent: &AgentId) -> AgentPoll {
@@ -1633,6 +1744,7 @@ mod tests {
             role,
             task: "tidy the build cache",
             context: "",
+            put_off: None,
         };
         let mut asks = Asks::default();
         let before = host.agents().len();
@@ -1689,6 +1801,70 @@ mod tests {
         for agent in [started.agent, chair.agent] {
             let _ = stop_agent(&host, &Caller::NoAgent, &AgentId(agent));
         }
+    }
+
+    /// A step re-asked after a desktop restart — the card it waited on went down with the
+    /// desktop, and only the durable wait's reason survives — raises a card that says it asks
+    /// again because of the restart (#194). A first ask, and a deferral because the cards on
+    /// screen were full, claim no restart.
+    #[test]
+    fn a_card_raised_after_a_restart_says_the_desktop_restarted() {
+        use crate::approvals;
+        let host = Host::new(vec![]);
+        attach(&host, "pi", true);
+        // Each case its own task: a denied card's exact arguments are not put in front of the
+        // person again for a while, and the cases deny their cards.
+        fn call_at<'a>(step: usize, task: &'a str, put_off: Option<&'a str>) -> AgentCall<'a> {
+            AgentCall {
+                recipe_id: "rcp_restart",
+                recipe_name: "Nightly",
+                step,
+                attended: false,
+                consented: None,
+                asked_by: None,
+                role: "coder",
+                task,
+                context: "",
+                put_off,
+            }
+        }
+        /// Raise the step's card — waiting out a moment with the cards on screen full, as other
+        /// tests ask too — and give back its request id.
+        fn raised(host: &Host, asks: &mut Asks, call: &AgentCall<'_>, key: &(String, usize)) -> String {
+            for _ in 0..50 {
+                match start_for_recipe(host, &shipped(), call, asks) {
+                    Err(AgentRefusal::Ask(_)) if asks.contains_key(key) => return asks[key].clone(),
+                    Err(AgentRefusal::Ask(_)) => std::thread::sleep(Duration::from_millis(100)),
+                    other => panic!("an above-safe role must be asked for: {other:?}"),
+                }
+            }
+            panic!("no card was raised")
+        }
+        let waiting = "your Allow on the card: Nightly recipe → Coder (it may touch the shell's acts)";
+
+        // The desktop restarted: the durable wait names a card this process never raised.
+        let mut asks = Asks::default();
+        let id = raised(&host, &mut asks, &call_at(1, "tidy the build cache", Some(waiting)), &("rcp_restart".to_string(), 1));
+        let card = approvals::card(&id).expect("the card");
+        assert!(card.purpose.contains("the desktop restarted"), "{}", card.purpose);
+        assert!(card.purpose.contains("Hand work to the Coder"), "and it still says what it asks for: {}", card.purpose);
+        approvals::deny(&id).unwrap();
+
+        // A first ask: nothing behind it, so no restart is claimed.
+        let mut asks = Asks::default();
+        let id = raised(&host, &mut asks, &call_at(2, "clear the font cache", None), &("rcp_restart".to_string(), 2));
+        let card = approvals::card(&id).expect("the card");
+        assert!(!card.purpose.contains("restarted"), "a first ask claims no restart: {}", card.purpose);
+        approvals::deny(&id).unwrap();
+
+        // A deferral inside one process — the cards on screen were full — raised no card either,
+        // but its reason says so: it is another ask, not one a restart lost.
+        let mut asks = Asks::default();
+        let deferred = format!("{waiting} — already waiting: three other cards are on screen");
+        let id = raised(&host, &mut asks, &call_at(3, "prune the thumbnail cache", Some(&deferred)), &("rcp_restart".to_string(), 3));
+        let card = approvals::card(&id).expect("the card");
+        assert!(!card.purpose.contains("restarted"), "a deferral is not a restart: {}", card.purpose);
+        approvals::deny(&id).unwrap();
     }
 
     /// An agent waiting on the person in its own pane makes its recipe need the person; a card of

@@ -96,7 +96,7 @@ impl ToolRegistry {
                 // The second gate, and a different question from the first. Permission asks
                 // whether this tool may ever run; this asks whether it may run *now*, given what
                 // has already entered the conversation. See `crate::taint`.
-                if let Err(refusal) = crate::taint::check(name, tool.category()) {
+                if let Err(refusal) = crate::taint::check_call(name, tool.category(), args) {
                     tracing::warn!("{}", refusal);
                     audit_log(ctx.db, name, tool.category(), args, &refusal);
                     return refusal;
@@ -105,7 +105,7 @@ impl ToolRegistry {
                 let result = tool.execute(ctx, args);
                 // Recorded after the fact, because what a tool returns is what taints the turn —
                 // and a tool that failed returned nothing to be tainted by.
-                crate::taint::note(name, tool.category());
+                crate::taint::note_call(name, tool.category(), args);
                 audit_log(ctx.db, name, tool.category(), args, &result);
                 return result;
             }
@@ -382,11 +382,24 @@ pub fn expand_home(path: &str) -> String {
     path.to_string()
 }
 
-/// Paths the AI must never touch.
+/// Paths the AI must never touch, matched anywhere in the path as text.
+///
+/// The first part is every place in `yantrik_ipc_contracts::home_paths::PROTECTED`, written out
+/// again because a const cannot be built from another's entries; a test holds the two together.
+/// `validate_path` also asks the shared list itself, a whole component at a time, after links
+/// are followed. What follows is this list's own: places outside the home, and the work
+/// directory.
 pub const BLOCKED_SEGMENTS: &[&str] = &[
     ".ssh", ".gnupg", ".config/labwc", ".config/yantrik",
     "memory.db", ".bashrc", ".profile", ".bash_history",
+    ".bash_profile", ".bash_login", ".bash_logout", ".zshrc", ".zshenv", ".zprofile", ".zlogin",
+    ".pam_environment", ".config/autostart", ".config/environment.d", ".config/systemd",
+    ".local/share/applications", ".config/mimeapps.list",
     "/etc/shadow", "/etc/passwd",
+    // The work directory, where other programs (whisper, ffmpeg, edge-tts) write while following
+    // links. Its runtime spelling is outside every root anyway; its home fallback is under $HOME,
+    // so both are named here, from the same constants `private_dir` makes them with.
+    yantrik_ml::private_dir::WORK_NAME, yantrik_ml::private_dir::WORK_HOME_REL,
 ];
 
 /// Validate a path is safe for the AI to access.
@@ -395,7 +408,7 @@ pub const BLOCKED_SEGMENTS: &[&str] = &[
 /// Defense layers:
 /// 1. Block `..` traversal
 /// 2. Block known sensitive path segments
-/// 3. Restrict to $HOME or /tmp
+/// 3. Restrict to $HOME or this account's private scratch directory
 /// 4. Resolve symlinks and re-validate the canonical path
 pub fn validate_path(path: &str) -> Result<String, String> {
     let expanded = expand_home(path);
@@ -412,57 +425,148 @@ pub fn validate_path(path: &str) -> Result<String, String> {
         }
     }
 
-    // Must be under $HOME or /tmp
-    let home = std::env::var("HOME").unwrap_or_default();
-    if !expanded.starts_with(&home) && !expanded.starts_with("/tmp") {
-        return Err("Path must be under your home directory or /tmp".to_string());
+    let roots = allowed_roots();
+    if roots.is_empty() {
+        return Err(NO_HOME.to_string());
+    }
+    if !under_any(&expanded, &roots) {
+        return Err("Path must be under your home directory".to_string());
     }
 
-    // Resolve symlinks: if the path exists, canonicalize and re-validate.
-    let canon_path = std::path::Path::new(&expanded);
-    if canon_path.exists() {
-        match canon_path.canonicalize() {
+    resolves_within(std::path::Path::new(&expanded), &roots)?;
+    Ok(expanded)
+}
+
+/// [`validate_path`] for a tool that writes: also nowhere hidden in the home, where programs read
+/// their settings and startup (`home_paths::where_programs_look`). The protected list can never
+/// name all of those - ~/.gitconfig, ~/.vimrc, ~/.local/bin - so a write goes into none of the
+/// home's dot folders and dotfiles, nor ~/bin, wherever a link would take it. Reading keeps
+/// `validate_path` alone.
+///
+/// The tools' own scratch directory is exempt, where its home fallback (~/.cache/yantrik/tmp)
+/// would otherwise be refused: the model writes a diagram or a screenshot there to open it
+/// again. Only when the path is inside it both as written and where it resolves, so a link left
+/// in the scratch directory does not carry a write out of it.
+pub fn validate_write_path(path: &str) -> Result<String, String> {
+    let expanded = validate_path(path)?;
+    let at = std::path::Path::new(&expanded);
+    if in_scratch(at) {
+        return Ok(expanded);
+    }
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).filter(|h| h.is_absolute());
+    if home.is_some_and(|home| yantrik_ipc_contracts::home_paths::where_programs_look(at, &home)) {
+        return Err(format!("Access denied: {}", yantrik_ipc_contracts::home_paths::HIDDEN_RULE));
+    }
+    Ok(expanded)
+}
+
+/// Whether `path` is inside the tools' scratch directory, as written and as resolved.
+fn in_scratch(path: &std::path::Path) -> bool {
+    let Ok(scratch) = yantrik_ml::private_dir::scratch_dir() else { return false };
+    let roots = with_canonical(vec![scratch]);
+    let resolved = yantrik_ipc_contracts::home_paths::resolve(path);
+    under_any(&path.to_string_lossy(), &roots)
+        && resolved.is_some_and(|real| under_any(&real.to_string_lossy(), &roots))
+}
+
+/// Where `path` really goes, links followed, must be inside `roots` and outside the protected
+/// places. The deepest part of the path that resolves decides: looking only at the path and its
+/// parent let a link two levels up (~/l -> /etc, asked as ~/l/X/y.txt) go unchecked whenever X
+/// did not exist, and a write would then create X under /etc (#443). A link on the way that leads
+/// nowhere is refused, since whatever is written through it lands where it points.
+///
+/// The part below the deepest that resolves does not exist yet, and is checked too, joined to
+/// where the rest really is: through a link `~/x/c -> ~/.config`, `~/x/c/labwc/autostart`
+/// resolves only as far as ~/.config, which is allowed, and a write would then create
+/// ~/.config/labwc/autostart. Neither half names a protected place; the two together do.
+fn resolves_within(path: &std::path::Path, roots: &[std::path::PathBuf]) -> Result<(), String> {
+    if roots.is_empty() {
+        return Err(NO_HOME.to_string());
+    }
+    let mut probe = path.to_path_buf();
+    loop {
+        match probe.canonicalize() {
             Ok(resolved) => {
-                let resolved_str = resolved.to_string_lossy().to_string();
+                let tail = path.strip_prefix(&probe).unwrap_or(std::path::Path::new(""));
+                let whole = resolved.join(tail);
+                let resolved_str = whole.to_string_lossy().to_string();
                 for blocked in BLOCKED_SEGMENTS {
                     if resolved_str.contains(blocked) {
-                        return Err(format!(
-                            "Access denied: path resolves to protected location ({})",
-                            blocked
-                        ));
+                        return Err(format!("Access denied: path resolves to protected location ({blocked})"));
                     }
                 }
-                if !resolved_str.starts_with(&home) && !resolved_str.starts_with("/tmp") {
-                    return Err(
-                        "Access denied: path resolves outside your home directory".to_string()
-                    );
+                if yantrik_ipc_contracts::home_paths::is_protected(&whole) {
+                    return Err("Access denied: path resolves to a protected location".to_string());
                 }
+                if !under_any(&resolved.to_string_lossy(), roots) {
+                    return Err("Access denied: path resolves outside your home directory".to_string());
+                }
+                return Ok(());
             }
-            Err(_) => {}
-        }
-    } else if let Some(parent) = canon_path.parent() {
-        if parent.exists() {
-            if let Ok(resolved_parent) = parent.canonicalize() {
-                let rp = resolved_parent.to_string_lossy().to_string();
-                for blocked in BLOCKED_SEGMENTS {
-                    if rp.contains(blocked) {
-                        return Err(format!(
-                            "Access denied: parent directory resolves to protected location ({})",
-                            blocked
-                        ));
-                    }
+            Err(_) => {
+                if probe.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) {
+                    return Err("Access denied: the path goes through a link that leads nowhere".to_string());
                 }
-                if !rp.starts_with(&home) && !rp.starts_with("/tmp") {
-                    return Err(
-                        "Access denied: parent directory resolves outside your home directory"
-                            .to_string(),
-                    );
+                match probe.parent() {
+                    Some(parent) => probe = parent.to_path_buf(),
+                    None => return Err("Access denied: no part of the path exists".to_string()),
                 }
             }
         }
     }
+}
 
-    Ok(expanded)
+/// The refusal when there is no root at all: "must be under your home directory" sent the model
+/// looking for a mistake in a path that had none, when the account running it has no usable HOME.
+const NO_HOME: &str = "Access denied: there is no home directory to work in";
+
+/// Where the file tools may reach: the home directory, and the private scratch directory the
+/// tools write their own outputs to (a diagram, a screenshot) so the model can open them again.
+///
+/// Not the shared /tmp: anything another account left there, at a name it chose, is text the
+/// model would read as the person's. And not an empty or relative HOME, which as a string prefix
+/// matched every path there is.
+///
+/// Each root is listed as written and as resolved. The path as the model wrote it is checked
+/// before resolution and the canonical path after, and each must meet its own kind: a HOME that
+/// is a link (/home/ann -> /data/ann) would otherwise refuse every file really inside it, because
+/// its canonical paths start /data/ann.
+fn allowed_roots() -> Vec<std::path::PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(home) = std::env::var("HOME") {
+        let home = std::path::PathBuf::from(home);
+        if home.is_absolute() && home != std::path::Path::new("/") {
+            roots.push(home);
+        }
+    }
+    if let Ok(scratch) = yantrik_ml::private_dir::scratch_dir() {
+        roots.push(scratch);
+    }
+    with_canonical(roots)
+}
+
+/// `roots` plus the canonical form of each that resolves somewhere else. A root that resolves
+/// to `/` is dropped in both spellings: it would admit every path there is.
+fn with_canonical(roots: Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for root in roots {
+        let canon = root.canonicalize().ok();
+        if canon.as_deref() == Some(std::path::Path::new("/")) {
+            continue;
+        }
+        if let Some(canon) = canon.filter(|c| *c != root) {
+            out.push(canon);
+        }
+        out.push(root);
+    }
+    out
+}
+
+/// Whether `path` is one of `roots` or inside one, compared a component at a time, so
+/// /home/ann does not admit /home/anne.
+fn under_any(path: &str, roots: &[std::path::PathBuf]) -> bool {
+    let path = std::path::Path::new(path);
+    roots.iter().any(|root| path.starts_with(root))
 }
 
 /// Simple glob matching (supports `*`, `*.ext`, `prefix*`).
@@ -749,5 +853,151 @@ mod audit_tests {
         // to keep the first two hundred characters of whatever came back.
         assert!(crate::taint::returns_secret("vault_get", "vault"));
         assert!(!crate::taint::returns_secret("browse", "browser"));
+    }
+}
+
+#[cfg(test)]
+mod path_root_tests {
+    use super::{under_any, validate_path, with_canonical};
+    use std::path::PathBuf;
+
+    #[test]
+    fn the_work_dir_is_out_of_reach_in_both_spellings() {
+        // Other programs write there while following links; the model must not be able to plant
+        // anything in it, even through the home fallback that sits under $HOME.
+        let work_in_home = format!("~/{}/voice-0123/voice.wav", yantrik_ml::private_dir::WORK_HOME_REL);
+        let err = validate_path(&work_in_home).unwrap_err();
+        assert!(err.contains("not allowed"), "{err}");
+        let work_in_runtime = format!("/run/user/1000/{}/voice-0123/voice.wav", yantrik_ml::private_dir::WORK_NAME);
+        assert!(validate_path(&work_in_runtime).is_err());
+        if let Ok(work) = yantrik_ml::private_dir::work_dir() {
+            assert!(validate_path(work.join("x.txt").to_str().unwrap()).is_err());
+        }
+    }
+
+    #[test]
+    fn a_link_deep_in_the_path_is_followed_to_where_it_leads() {
+        use super::resolves_within;
+        let root = std::env::temp_dir().join(format!("yantrik-resolves-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        let root = root.canonicalize().unwrap();
+        std::os::unix::fs::symlink("/etc", root.join("escape")).unwrap();
+        std::os::unix::fs::symlink("/etc/yantrik-no-such-thing", root.join("dangling")).unwrap();
+        let roots = [root.clone()];
+        let at = |p: &str| resolves_within(&root.join(p), &roots);
+
+        assert!(at("notes/new.txt").is_ok(), "a new file in a real folder");
+        assert!(at("notes/new/deeper/file.txt").is_ok(), "new folders under a real one");
+        for out in ["escape/passwd", "escape/new.txt", "escape/no-such-dir/new.txt", "escape/a/b/c/d.txt"] {
+            assert!(at(out).is_err(), "{out} leads out through the link");
+        }
+        for nowhere in ["dangling", "dangling/new.txt"] {
+            assert!(at(nowhere).is_err(), "{nowhere} goes through a link that leads nowhere");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_protected_name_split_across_a_link_is_refused() {
+        use super::resolves_within;
+        let root = std::env::temp_dir().join(format!("yantrik-resolves-split-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".config")).unwrap();
+        std::fs::create_dir_all(root.join(".ssh")).unwrap();
+        std::fs::create_dir_all(root.join("x")).unwrap();
+        let root = root.canonicalize().unwrap();
+        std::os::unix::fs::symlink(root.join(".config"), root.join("x/c")).unwrap();
+        std::os::unix::fs::symlink(root.join(".ssh"), root.join("keys")).unwrap();
+        let roots = [root.clone()];
+        let at = |p: &str| resolves_within(&root.join(p), &roots);
+
+        for refused in ["x/c/labwc/autostart", "x/c/yantrik/config.yaml", "x/c/autostart/a.desktop", "keys/authorized_keys", "keys/new/deeper"] {
+            let err = at(refused).unwrap_err();
+            assert!(err.contains("protected location"), "{refused}: {err}");
+        }
+        assert!(at("x/c/gtk-3.0/settings.ini").is_ok(), "an ordinary folder under the link");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn with_no_root_at_all_the_refusal_says_there_is_no_home() {
+        let err = super::resolves_within(std::path::Path::new("/home/ann/notes.txt"), &[]).unwrap_err();
+        assert!(err.ends_with("there is no home directory to work in"), "{err}");
+    }
+
+    #[test]
+    fn a_write_goes_nowhere_hidden_in_the_home_but_a_read_may() {
+        for hidden in ["~/.vimrc", "~/.gitconfig", "~/.config/nvim/init.lua", "~/.local/bin/x", "~/bin/x", "~/.cargo/config.toml"] {
+            let err = super::validate_write_path(hidden).unwrap_err();
+            assert!(err.contains("hidden folders or dotfiles"), "{hidden}: {err}");
+        }
+        assert!(super::validate_path("~/.gitconfig").is_ok(), "reading a dotfile that is not protected");
+        assert!(super::validate_write_path("~/yantrik-write-rule-test.txt").is_ok());
+        if let Ok(scratch) = yantrik_ml::private_dir::scratch_dir() {
+            let own = scratch.join("diagram.svg");
+            assert!(super::validate_write_path(own.to_str().unwrap()).is_ok(), "the tools' own scratch");
+        }
+    }
+
+    #[test]
+    fn every_place_every_side_protects_is_blocked_here_too() {
+        for place in yantrik_ipc_contracts::home_paths::PROTECTED {
+            assert!(super::BLOCKED_SEGMENTS.contains(place), "BLOCKED_SEGMENTS is missing {place}");
+        }
+    }
+
+    #[test]
+    fn a_root_admits_itself_and_what_is_inside_it_only() {
+        let roots = [PathBuf::from("/home/ann"), PathBuf::from("/run/user/1000/yantrik-scratch")];
+        assert!(under_any("/home/ann", &roots));
+        assert!(under_any("/home/ann/notes.txt", &roots));
+        assert!(under_any("/run/user/1000/yantrik-scratch/diagram.png", &roots));
+        assert!(!under_any("/run/user/1000/yantrik/companion.sock", &roots), "the socket dir is not scratch");
+        assert!(!under_any("/home/anne/notes.txt", &roots), "a name that starts the same is not inside");
+        assert!(!under_any("/tmp/planted.txt", &roots), "the shared /tmp is not ours");
+        assert!(!under_any("/etc/shadow", &roots));
+    }
+
+    #[test]
+    fn no_roots_admit_nothing() {
+        // An unset or empty HOME used to be the empty prefix, which every path starts with.
+        assert!(!under_any("/etc/shadow", &[]));
+        assert!(!under_any("/", &[]));
+    }
+
+    #[cfg(unix)]
+    fn scratch_base(tag: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!("yantrik-roots-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_root_that_is_a_link_admits_what_is_really_inside_it() {
+        let base = scratch_base("link");
+        let real = base.join("data-ann");
+        std::fs::create_dir(&real).unwrap();
+        let home = base.join("home-ann");
+        std::os::unix::fs::symlink(&real, &home).unwrap();
+        let roots = with_canonical(vec![home.clone()]);
+        // The resolved path, as validate_path checks it after canonicalizing.
+        let resolved = real.canonicalize().unwrap().join("notes.txt");
+        assert!(under_any(resolved.to_str().unwrap(), &roots));
+        // And the path as written, as it is checked before.
+        assert!(under_any(home.join("notes.txt").to_str().unwrap(), &roots));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_root_that_resolves_to_slash_is_dropped() {
+        let base = scratch_base("slash");
+        let home = base.join("home");
+        std::os::unix::fs::symlink("/", &home).unwrap();
+        assert!(with_canonical(vec![home]).is_empty());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

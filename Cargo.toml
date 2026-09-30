@@ -22,6 +22,9 @@ members = [
     "crates/yantrikdb-server",
     "crates/yantrik",
     "crates/yantrik-ui",
+    "crates/yantrik-term",
+    # Text on a screen capture, for windows with no accessibility tree (#257).
+    "crates/yantrik-ocr",
     "crates/yantrik-ml",
     "crates/yantrik-os",
     "crates/yantrik-brain",
@@ -36,6 +39,11 @@ members = [
     "services/perception-journal",
     "services/a11y-service",
     "crates/yantrik-app-runtime",
+    # The lock screen as a Wayland session lock (#313).
+    "crates/yantrik-lock",
+    "crates/yantrik-mind-view-title",
+    # The one way out for the mind account: a CONNECT proxy by the person's policy.
+    "crates/yantrik-egress",
     # The folder watch and the move decisions shared by yDoc and the Text Editor, so a file
     # moved in Files does not strand the editor holding it open (#75, #86).
     "crates/yantrik-file-follow",

@@ -806,7 +806,7 @@ mod tests {
     use super::*;
 
     fn at(ceiling: &str, mode: &str) -> Authority {
-        Authority { ceiling: ceiling.into(), mode: gate::Mode::named(mode), granted: false }
+        Authority { ceiling: ceiling.into(), mode: gate::Mode::named(mode), granted: false, asks_above: None }
     }
 
     fn pin(grant: Option<&str>) -> serde_json::Value {
@@ -828,7 +828,11 @@ mod tests {
     fn spend_through_a_stand_in_shell() {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
-            gate::spend_grants_with(|id, _app, _action, args| {
+            // The stand-in shell answers what a token may reach, as the shell does (#189):
+            // no role for any token here, so a token-carrying call is held by nothing but
+            // the grade, the mode and the grant these tests are about.
+            yantrik_service_sdk::reach::read_reach_with(|_| None);
+            gate::spend_grants_with(|id, _app, _action, args, _caller| {
                 if !id.starts_with("ok-") {
                     return Err(format!("no approval request `{id}`."));
                 }

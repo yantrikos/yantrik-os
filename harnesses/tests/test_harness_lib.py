@@ -62,6 +62,22 @@ class Waiting(Handler):
         self.cancelled_from.append(turn.turn_id)
 
 
+class Asking(Handler):
+    """Asks the person one question, then says what came back."""
+
+    def __init__(self, options=("Allow", "Deny"), timeout=None):
+        self.options = list(options)
+        self.timeout = timeout
+        self.asked = threading.Event()
+        self.got = []
+
+    def answer(self, turn):
+        self.asked.set()
+        got = turn.ask("Delete 3 old installers?", self.options, request_id="del", timeout=self.timeout)
+        self.got.append(got)
+        turn.emit("answer: %s" % got)
+
+
 class Resettable(Handler):
     def __init__(self):
         self.resets = 0
@@ -471,6 +487,56 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(handler.mind("c-aaaaaa").resets, 1)
         self.assertEqual(handler.mind("c-bbbbbb").resets, 0)
 
+    # ── questions (#25) ─────────────────────────────────────────────────
+
+    def test_a_question_waits_for_the_persons_answer_and_gets_it_once(self):
+        handler = Asking()
+        self.start(handler)
+        turn = self.desktop.ask("clean up Downloads")
+        self.assertTrue(wait_for(lambda: (turn, "del") in self.desktop.questions), "the question was not asked")
+        asked = self.desktop.questions[(turn, "del")]
+        self.assertEqual((asked["prompt"], asked["options"]), ("Delete 3 old installers?", ["Allow", "Deny"]))
+        time.sleep(0.3)
+        self.assertEqual(handler.got, [], "it answered before the person did")
+        self.assertTrue(self.desktop.answer(turn, "del", "Allow"))
+        self.assertFalse(self.desktop.answer(turn, "del", "Deny"), "a second answer is refused")
+        self.desktop.wait_closed(turn)
+        self.assertEqual(handler.got, ["Allow"])
+        self.assertEqual(self.desktop.text(turn), "answer: Allow")
+
+    def test_a_desktop_that_cannot_take_a_question_gets_none_at_once(self):
+        self.desktop.keeps_runs = False
+        handler = Asking()
+        self.start(handler)
+        turn = self.desktop.ask("clean up Downloads")
+        self.desktop.wait_closed(turn)
+        self.assertEqual(handler.got, [None])
+
+    def test_a_desktop_from_before_events_gets_none_at_once(self):
+        old = FakeDesktop(events=False)
+        self.addCleanup(old.stop)
+        handler = Asking()
+        self.start(handler, desktop=old)
+        turn = old.ask("clean up Downloads")
+        old.wait_closed(turn)
+        self.assertEqual(handler.got, [None])
+
+    def test_stopping_the_turn_ends_the_wait(self):
+        handler = Asking()
+        self.start(handler)
+        turn = self.desktop.ask("clean up Downloads")
+        self.assertTrue(wait_for(lambda: (turn, "del") in self.desktop.questions))
+        self.desktop.stop_agent(turn_id=turn)
+        self.desktop.wait_closed(turn)
+        self.assertEqual(handler.got, [None])
+
+    def test_a_question_left_unanswered_gives_up_at_its_timeout(self):
+        handler = Asking(timeout=0.5)
+        self.start(handler)
+        turn = self.desktop.ask("clean up Downloads")
+        self.desktop.wait_closed(turn)
+        self.assertEqual(handler.got, [None])
+
     def test_a_cancelled_turn_is_stopped_and_still_closed_once(self):
         handler = Waiting()
         self.start(handler)
@@ -501,6 +567,31 @@ class ConversationTests(unittest.TestCase):
         self.desktop.wait_closed(self.desktop.ask("hi", conversation="main", agent_token="b" * 32))
         self.assertEqual(minds.made, [("main", "a" * 32), ("main", "b" * 32)])
         self.assertTrue(wait_for(lambda: minds.closed == ["main"]))
+
+    def test_a_turn_open_across_a_shell_restart_is_finished_on_the_desktop_that_came_back(self):
+        # #246: the shell restarted mid-answer. The mind kept working; what it said while there
+        # was no desktop is held, the harness attaches again saying what it still holds, and
+        # the rest of the answer lands on the turn the new desktop gave back. The mind is not
+        # stopped and not made again: the same conversation goes on under the same token.
+        minds = Minds()
+        handler = yantrik_harness.PerConversation(minds.make)
+        self.start(handler)
+        turn = self.desktop.ask("slow", conversation="main", agent_token="a" * 32)
+        self.assertTrue(wait_for(lambda: handler.mind("main") is not None
+                                 and handler.mind("main").running.is_set()))
+        self.desktop.restart()
+        handler.mind("main").release.set()
+        self.assertTrue(wait_for(lambda: turn in self.desktop.resumed, timeout=5),
+                        self.desktop.attachments[-1])
+        again = self.desktop.resumed[turn]
+        self.assertEqual(self.desktop.attachments[-1]["resume"],
+                         [{"conversation": "main", "agent_token": "a" * 32,
+                           "turn_id": turn, "prompt": "slow"}])
+        closed = self.desktop.wait_closed(again)
+        self.assertEqual(closed[1], "complete", closed)
+        self.assertEqual(self.desktop.text(again), "main heard slow")
+        self.assertEqual(minds.made, [("main", "a" * 32)], "the same mind, not a new one")
+        self.assertEqual(minds.closed, [], "and not stopped")
 
     def test_attaching_again_ends_the_conversations_of_the_session_before(self):
         minds = Minds()

@@ -561,7 +561,7 @@ fn publish_control(app: &ContainerManagerApp, health: &Health) {
         )
         .action(
             // No undo, and the container's writable layer goes with it.
-            Action::new("remove", "Delete a container")
+            Action::new("remove", "Delete a container and its writable layer. It cannot be undone.")
                 .arg(Param::text("container"))
                 .risk("dangerous"),
             move |args| {
@@ -655,7 +655,7 @@ fn wire(app: &ContainerManagerApp, health: &Health) {
         let health = health.clone();
         app.on_ct_run(move |image| {
             let Some(ui) = weak.upgrade() else { return };
-            let _ = command(&ui, &health, &["run", "-d", image.as_str()]);
+            let _ = command(&ui, &health, &["run", "-d", "--", image.as_str()]);
         });
     }
     {
@@ -663,7 +663,7 @@ fn wire(app: &ContainerManagerApp, health: &Health) {
         let health = health.clone();
         app.on_ct_pull(move |image| {
             let Some(ui) = weak.upgrade() else { return };
-            let _ = command(&ui, &health, &["pull", image.as_str()]);
+            let _ = command(&ui, &health, &["pull", "--", image.as_str()]);
         });
     }
     {

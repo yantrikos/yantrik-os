@@ -67,7 +67,15 @@ fail() { printf '\033[31mFAIL: %s\033[0m\n' "$*" >&2; exit 1; }
 # for the image name — gets the identical string in the tarball, the BUILD marker and the
 # binaries. A step that recomputed it could land on a different answer than the step before it:
 # a tag pushed between the two is enough.
-VERSION="${YANTRIK_VERSION:-$(git -C "$PROJECT_ROOT" describe --tags --always --dirty 2>/dev/null)}"
+# `set -e` ends the script on a failed command substitution in an assignment, and with the error
+# sent to /dev/null it ended with nothing said and status 0: a publish that reported success and
+# did nothing. That is what a git worktree made on Windows looks like from WSL (its .git file
+# names a C:/ path this git cannot follow). Say so instead.
+if [ -z "${YANTRIK_VERSION:-}" ]; then
+  VERSION="$(git -C "$PROJECT_ROOT" describe --tags --always --dirty 2>&1)"     || fail "git cannot read $PROJECT_ROOT to name this build: $VERSION. A worktree made by another OS's git cannot be read here; clone it natively, or set YANTRIK_VERSION."
+else
+  VERSION="$YANTRIK_VERSION"
+fi
 [ -n "$VERSION" ] || fail "cannot determine a version — refusing to build an unidentifiable release"
 STAMP="$(date -u +%Y%m%d)"
 GITREV="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
@@ -134,6 +142,9 @@ mapfile -t BINS < <(
     -printf '%f\n' | sort | grep -vxF "$(printf '%s\n' $SHELVED_BINS)"
 )
 [ "${#BINS[@]}" -gt 0 ] || fail "no binaries found in $TARGET_DIR"
+# Mind View's title library (#239): preloaded into its nested labwc only, installed beside the
+# shell. Not a binary, so the list above leaves it out.
+[ -f "$TARGET_DIR/libyantrik_mind_view_title.so" ] || fail "no libyantrik_mind_view_title.so in $TARGET_DIR - Mind View would be titled labwc - WL-1"
 for b in $SHELVED_BINS; do
   if [ -f "$TARGET_DIR/$b" ]; then echo "   (shelved, not shipped: $b)"; fi
 done
@@ -147,22 +158,29 @@ mkdir -p "$ROOT/bin" "$ROOT/config" "$ROOT/models"
 
 say "Staging"
 for b in "${BINS[@]}"; do cp "$TARGET_DIR/$b" "$ROOT/bin/$b"; done
+cp "$TARGET_DIR/libyantrik_mind_view_title.so" "$ROOT/bin/libyantrik_mind_view_title.so"
 
 # The agent surface is not compiled, so binary discovery cannot find it. Without these the
 # machine boots a desktop that no agent can see or drive — the exact failure the old ISO had.
-for f in yos yos-mcp release-check; do
+for f in yos yos-mcp release-check yantrik-mind-launch; do
   [ -f "$SCRIPT_DIR/$f" ] || fail "missing $SCRIPT_DIR/$f — the agent surface is not optional"
   cp "$SCRIPT_DIR/$f" "$ROOT/bin/$f"
   chmod +x "$ROOT/bin/$f"
 done
 echo "   + yos, yos-mcp, release-check"
 
-# The page reader `yos web` evaluates in the browser. It sits beside yos because yos looks for
-# it there. It was referenced from the day `yos web` was written and never committed, so every
-# published build answered web_read and web_find with "scan.js is missing next to yos".
-[ -f "$SCRIPT_DIR/scan.js" ] || fail "missing $SCRIPT_DIR/scan.js — yos web cannot read a page without it"
-cp "$SCRIPT_DIR/scan.js" "$ROOT/bin/scan.js"
-echo "   + scan.js"
+# The browser as an app (#477): yantrik-browser holds the one DevTools connection and serves
+# app-browser, which `yos web` and every mind's web tools are clients of. A Python program, like
+# the Blender addon, with the surface SDK vendored beside it in share/browser so it always runs
+# with the SDK it was released with. The desktop's service manager starts it (main.rs).
+[ -f "$PROJECT_ROOT/apps/browser/yantrik-browser" ] || fail "apps/browser/yantrik-browser missing — nothing could drive the browser"
+install -m 0755 "$PROJECT_ROOT/apps/browser/yantrik-browser" "$ROOT/bin/yantrik-browser"
+mkdir -p "$ROOT/share/browser"
+cp -r "$PROJECT_ROOT/apps/browser/yantrik_browser" "$ROOT/share/browser/"   || fail "apps/browser/yantrik_browser missing — the browser service would import nothing"
+cp -r "$PROJECT_ROOT/sdk/python/yantrik_surface" "$ROOT/share/browser/"   || fail "sdk/python/yantrik_surface missing — the browser service would have no surface to serve"
+find "$ROOT/share/browser" -name __pycache__ -type d -prune -exec rm -rf {} +
+[ -f "$ROOT/share/browser/yantrik_browser/page.js" ] || fail "the browser service's page reader (page.js) did not ship"
+echo "   + yantrik-browser (the browser's surface, with yantrik_surface vendored in share/browser)"
 
 # The updater ships in the image so a machine can update itself. It is a script, not a
 # compiled binary, so binary discovery does not find it either — and a machine that cannot
@@ -219,6 +237,8 @@ fi
 # not a release of this OS.
 mkdir -p "$ROOT/share/labwc" "$ROOT/share/fonts"
 cp "$PROJECT_ROOT/config/labwc/rc.xml" "$ROOT/share/labwc/rc.xml"
+# The window menu, with its Snap layouts (the regions rc.xml defines).
+cp "$PROJECT_ROOT/config/labwc/menu.xml" "$ROOT/share/labwc/menu.xml"
 cp "$PROJECT_ROOT/config/labwc/themerc" "$ROOT/share/labwc/themerc"
 # The titlebar buttons, which labwc loads from the theme directory in place of its built-in
 # six-by-six bitmaps. Rendered by scripts/render-window-buttons.py. Not optional decoration: the
@@ -231,8 +251,63 @@ cp "$PROJECT_ROOT/config/labwc/"*.png "$ROOT/share/labwc/" 2>/dev/null \
 cp "$PROJECT_ROOT/config/labwc/autostart" "$ROOT/share/labwc/autostart"
 # Mind View's own compositor (#239): the nested labwc a mind's apps are drawn in. yantrik-ui runs
 # it with -C on this directory; without it, a mind's apps open on the person's desktop as before.
+# polkit rules the desktop needs (#397): installed into /etc/polkit-1/rules.d by the image and by
+# `yantrik-update reconcile` on machines already installed.
+mkdir -p "$ROOT/share/polkit"
+cp "$PROJECT_ROOT/config/polkit/"*.rules "$ROOT/share/polkit/"
+# Kernel settings the desktop relies on (#414): Yama ptrace_scope 1, so nothing a mind starts can
+# attach to the shell. Installed into /etc/sysctl.d by the image and by `yantrik-update reconcile`.
+mkdir -p "$ROOT/share/sysctl"
+cp "$PROJECT_ROOT/config/sysctl/"*.conf "$ROOT/share/sysctl/"
+# Where a short container image name resolves (#401): Docker Hub, as with docker, so the Container
+# Manager's Pull of "nginx" works on podman. Installed into /etc/containers/registries.conf.d by
+# the image and by `yantrik-update reconcile`.
+mkdir -p "$ROOT/share/containers"
+cp "$PROJECT_ROOT/config/containers/"*.conf "$ROOT/share/containers/"
+# The interactive shell's defaults (#401): completion, a git-aware prompt, mise. Sourced from the
+# ~/.bashrc the image's /etc/skel gives each new account, as that account; never installed as root.
+mkdir -p "$ROOT/share/shell"
+cp "$PROJECT_ROOT/config/shell/bashrc" "$ROOT/share/shell/bashrc"
+# Root helpers (#397): installed root-owned into /usr/lib/yantrik by the image and by
+# `yantrik-update reconcile` — never run from /opt/yantrik, which its user can write.
+mkdir -p "$ROOT/share/root-helpers"
+install -m 0755 "$SCRIPT_DIR/yantrik-pkg" "$ROOT/share/root-helpers/yantrik-pkg"
+install -m 0755 "$SCRIPT_DIR/yantrik-mind-log" "$ROOT/share/root-helpers/yantrik-mind-log"
+# The system units minds run under, as their own account (#411): installed root's, hash-checked,
+# into /etc/systemd/system by `yantrik-update`; enabled by `yantrik-update migrate-minds`.
+mkdir -p "$ROOT/share/systemd"
+cp "$PROJECT_ROOT/config/systemd/"*.service "$ROOT/share/systemd/"
+# What the updater installs as root, by content: every file under share/ it copies into /usr/lib,
+# /etc/polkit-1, /etc/sysctl.d, /etc/containers or /etc/systemd/system, with its sha256. It rides in bin/, which the
+# updater installs with plain cp as root, so it is root's on the machine whoever could write
+# share/; the updater installs nothing as root whose hash is not in it (#419).
+(cd "$ROOT/share" && sha256sum root-helpers/* polkit/* sysctl/* containers/* systemd/*) > "$ROOT/bin/yantrik-root-files.sha256"
+[ "$(wc -l < "$ROOT/bin/yantrik-root-files.sha256")" -ge 4 ] || fail "the root-files list is short: $(cat "$ROOT/bin/yantrik-root-files.sha256")"
 mkdir -p "$ROOT/share/labwc-mind"
 cp "$PROJECT_ROOT/config/labwc-mind/rc.xml" "$ROOT/share/labwc-mind/rc.xml"
+cp "$PROJECT_ROOT/config/labwc-mind/empty.png" "$ROOT/share/labwc-mind/empty.png"
+
+# The models yantrik-ocr reads a display's text with (#257), in share/ocr where it looks. Fetched
+# once into a cache and pinned by hash: a model is code the shell runs on the person's screen, and
+# one that changed under the same name must stop the build, not ship.
+OCR_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/yantrik-release/ocr"
+mkdir -p "$OCR_CACHE" "$ROOT/share/ocr"
+for pinned in   "text-detection.rten f15cfb56bd02c4bf478a20343986504a1f01e1665c2b3a0ad66340f054b1b5ca"   "text-recognition.rten e484866d4cce403175bd8d00b128feb08ab42e208de30e42cd9889d8f1735a6e"; do
+  read -r model want <<< "$pinned"
+  if ! printf '%s  %s
+' "$want" "$OCR_CACHE/$model" | sha256sum -c --quiet >/dev/null 2>&1; then
+    curl -fsSL --retry 3 -o "$OCR_CACHE/$model.part" "https://ocrs-models.s3-accelerate.amazonaws.com/$model"       || fail "could not fetch the OCR model $model"
+    printf '%s  %s
+' "$want" "$OCR_CACHE/$model.part" | sha256sum -c --quiet >/dev/null 2>&1       || fail "the OCR model $model does not match its pinned sha256; not shipping it"
+    mv "$OCR_CACHE/$model.part" "$OCR_CACHE/$model"
+  fi
+  cp "$OCR_CACHE/$model" "$ROOT/share/ocr/$model"
+  # The copy that ships is the one checked, not the cache it came from.
+  printf '%s  %s\n' "$want" "$ROOT/share/ocr/$model" | sha256sum -c --quiet >/dev/null 2>&1 \
+    || fail "the staged OCR model $model does not match its pinned sha256"
+done
+[ -f "$ROOT/bin/yantrik-ocr" ] || fail "no yantrik-ocr in the build — a window with no tree could not be read"
+echo "   + share/ocr (the text reader's models)"
 # Barlow is embedded in each app binary, which the compositor cannot read a font out of, so the
 # same files also ship loose for fontconfig.
 cp "$PROJECT_ROOT/crates/yantrik-design-tokens/slint/fonts/"*.ttf "$ROOT/share/fonts/"
@@ -539,8 +614,11 @@ PYEOF" || fail "manifest update failed"
   # So the URL comes from the channel, and cloud-init is used for what it can actually
   # settle — the host — with a warning rather than a failure if it points somewhere else.
   CI_URL="$(grep -o 'http[^"]*yantrik-os-latest[^"]*' "$SCRIPT_DIR/cloud-init/user-data.yaml" 2>/dev/null | head -1)"
-  HOST_URL="$(printf '%s' "$CI_URL" | sed -n 's#^\(https\?://[^/]*\)/.*#\1#p')"
-  URL="${HOST_URL:-http://releases.yantrikos.com}/$PUBLISH_CHANNEL/yantrik-os-latest-linux-amd64.$EXT"
+  # And from the machine this run uploaded to, not from whatever the release name resolves to.
+  # releases.yantrikos.com moved to the public host, while this script publishes to the LAN box
+  # at $RELEASES_IP (the test stage): every LAN publish on 2026-09-27 "failed" verification
+  # against the public server's bytes while the LAN box served exactly the right ones.
+  URL="http://$RELEASES_IP/$PUBLISH_CHANNEL/yantrik-os-latest-linux-amd64.$EXT"
 
   CI_CHANNEL="$(printf '%s' "$CI_URL" | sed -n 's#.*/\([^/]*\)/yantrik-os-latest.*#\1#p')"
   if [ -n "$CI_CHANNEL" ] && [ "$CI_CHANNEL" != "$PUBLISH_CHANNEL" ]; then

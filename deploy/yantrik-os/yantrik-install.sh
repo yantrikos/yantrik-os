@@ -158,6 +158,15 @@ if [ "$USERNAME" != "yantrik" ]; then
     chroot "$M" userdel -r yantrik 2>/dev/null || true
 fi
 chroot "$M" useradd -m -s /bin/bash -c "$FULLNAME" -G sudo,video,audio,input "$USERNAME" 2>/dev/null || true
+# Subordinate ids for rootless podman (#401). useradd gives the account a range from the image's
+# /etc/subuid; this checks, and adds one past every range already handed out when it did not.
+for kind in uid gid; do
+    [ -e "$M/etc/sub$kind" ] || install -m 0644 /dev/null "$M/etc/sub$kind"
+    grep -q "^$USERNAME:" "$M/etc/sub$kind" && continue
+    start=$(awk -F: -v t=100000 '$2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $2 + $3 > t { t = $2 + $3 } END { printf "%.0f\n", t }' "$M/etc/sub$kind")
+    chroot "$M" usermod "--add-sub${kind}s" "$start-$((start + 65535))" "$USERNAME" \
+        || echo "  could not give $USERNAME subordinate ${kind}s; podman will pull few images until the first update adds them"
+done
 HASH=$(openssl passwd -6 "$PASSWORD")
 chroot "$M" usermod -p "$HASH" "$USERNAME"
 echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" > "$M/etc/sudoers.d/$USERNAME"

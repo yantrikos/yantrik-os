@@ -28,7 +28,7 @@ use crate::agents::{self, feed, launch, AgentId, Store};
 use crate::app_context::AppContext;
 use crate::{
     AccentPreset, AgentDetailsData, AgentHeaderData, AgentItemData, AgentMindData, AgentRoleData, AgentRowData,
-    AgentRunData, AgentTabData, AgentWindow, AgentsState, App, ApprovalRequest, OverviewEdge, OverviewNode, ThemeMode,
+    AgentRunData, AgentTabData, AgentWindow, AgentsState, App, ApprovalRequest, RouteStopData, ThemeMode,
     ThemeOverrides, ToolCallData,
 };
 
@@ -52,6 +52,10 @@ const TEXT_BYTES: usize = 32 * 1024;
 /// What one surface shows: the screen, or one popped-out window.
 struct Surface {
     agent: Option<AgentId>,
+    /// The one run shown, when the row picked is a run (`agent#n`); None: the whole session.
+    run: Option<u64>,
+    /// The run drawn last, so a change of run redraws.
+    drawn_run: Option<u64>,
     /// Cards and thinking the person opened, by key.
     expanded: HashSet<String>,
     items: Rc<VecModel<AgentItemData>>,
@@ -65,6 +69,8 @@ impl Surface {
     fn new() -> Self {
         Surface {
             agent: None,
+            run: None,
+            drawn_run: None,
             expanded: HashSet::new(),
             items: Rc::new(VecModel::default()),
             keys: Vec::new(),
@@ -96,14 +102,14 @@ struct Popped {
 struct Screen {
     tab: Tab,
     selected: Option<AgentId>,
+    /// The run picked, when the selected row is one run of a chat (`agent#n`).
+    run: Option<u64>,
     /// The rows as drawn, so they can be held still while the pointer is over them.
-    order: Vec<AgentId>,
+    order: Vec<agents::RowKey>,
     main: Surface,
     windows: BTreeMap<AgentId, Popped>,
     /// When New agent last read the catalog, while it is open.
     roles_read: Option<std::time::Instant>,
-    /// The Overview's map, as big as it last said it was: what it is laid out for (#226).
-    overview_size: (f32, f32),
 }
 
 type Shared = Rc<RefCell<Screen>>;
@@ -112,11 +118,11 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
     let state: Shared = Rc::new(RefCell::new(Screen {
         tab: Tab::Active,
         selected: None,
+        run: None,
         order: Vec::new(),
         main: Surface::new(),
         windows: BTreeMap::new(),
         roles_read: None,
-        overview_size: (0.0, 0.0),
     }));
     let g = ui.global::<AgentsState>();
     g.set_items(ModelRc::from(state.borrow().main.items.clone()));
@@ -137,21 +143,26 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
             st.tab = Tab::from_key(&key);
             st.order.clear();
             st.selected = None;
+            st.run = None;
         }
         ui.global::<AgentsState>().set_tab(key.into());
         refresh(ui, state, true);
     }));
     g.on_select(on(|ui, state, id| {
-        state.borrow_mut().selected = Some(AgentId(id));
+        let key = agents::RowKey::parse(&id);
+        let mut st = state.borrow_mut();
+        st.selected = Some(key.agent);
+        st.run = key.run;
+        drop(st);
         refresh(ui, state, true);
     }));
-    g.on_pop_out(on(|ui, state, id| pop_out(ui, state, AgentId(id))));
+    g.on_pop_out(on(|ui, state, id| pop_out(ui, state, agent_of_row(&id))));
     g.on_stop(on(|ui, state, id| {
-        notice(&ui.global::<AgentsState>(), launch::stop(&AgentId(id)));
+        notice(&ui.global::<AgentsState>(), launch::stop(&agent_of_row(&id)));
         refresh(ui, state, true);
     }));
-    g.on_close(on(|ui, state, id| close(ui, state, AgentId(id), false)));
-    g.on_close_confirmed(on(|ui, state, id| close(ui, state, AgentId(id), true)));
+    g.on_close(on(|ui, state, id| close(ui, state, agent_of_row(&id), false)));
+    g.on_close_confirmed(on(|ui, state, id| close(ui, state, agent_of_row(&id), true)));
     g.on_close_cancelled({
         let weak = weak.clone();
         move || {
@@ -187,14 +198,6 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
     // are shown; Start hands the task to it as the person (`control_agents::hand_off`), held to
     // the role's reach like any hand-off.
     g.on_pick_role(on(|ui, _state, role| pick_role(&ui.global::<AgentsState>(), &role)));
-    g.on_overview_resized({
-        let (weak, state) = (weak.clone(), state.clone());
-        move |width, height| {
-            let Some(ui) = weak.upgrade() else { return };
-            state.borrow_mut().overview_size = (width, height);
-            refresh(&ui, &state, false);
-        }
-    });
     g.on_start_role({
         let (weak, state) = (weak.clone(), state.clone());
         move |role, task| {
@@ -207,7 +210,7 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
         let (weak, state) = (weak.clone(), state.clone());
         move |agent, text| {
             let Some(ui) = weak.upgrade() else { return };
-            notice(&ui.global::<AgentsState>(), launch::send(&AgentId(agent.to_string()), &text));
+            notice(&ui.global::<AgentsState>(), launch::tell(&AgentId(agent.to_string()), &text));
             refresh(&ui, &state, true);
         }
     });
@@ -264,6 +267,8 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
     });
 
     let watch = RefCell::new(Watch::default());
+    // The Lens's pumps for answers picked back up after a restart (#246), kept alive here.
+    let resumed_streams = crate::streaming::Streams::new();
     let timer = Timer::default();
     {
         let (weak, state) = (weak.clone(), state.clone());
@@ -271,7 +276,13 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
             agents::store().save_if_due();
             let seen = Seen::now();
             sync_with_host(&seen);
+            // A terminal job sitting at its prompt waits on the person exactly like an approval
+            // card does (#182): its row goes to WaitingForYou, and the Active list sorts it top.
+            let waiting_jobs = waiting_input_jobs();
+            let waiting: Vec<AgentId> = waiting_jobs.iter().map(|(agent, _)| agent.clone()).collect();
+            agents::store().jobs_waiting(&waiting);
             let Some(ui) = weak.upgrade() else { return };
+            pick_up_resumed(&ui, &resumed_streams);
             // The Lens offers "open in Agents" while its conversation is an attached mind's.
             let lens_agent = crate::wire::harness::host()
                 .map(|h| h.active_id())
@@ -279,15 +290,31 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
             if ui.get_lens_can_open_in_agents() != lens_agent {
                 ui.set_lens_can_open_in_agents(lens_agent);
             }
+            publish_lens_questions(&ui);
             if ui.get_current_screen() == SCREEN {
                 refresh(&ui, &state, false);
             }
             refresh_windows(&ui, &state);
-            tell_the_person(&ui, &state, &mut watch.borrow_mut());
+            tell_the_person(&ui, &state, &mut watch.borrow_mut(), &waiting_jobs);
         });
     }
     // The timer lives as long as the shell, the idiom every wire module uses.
     std::mem::forget(timer);
+}
+
+/// Turns a re-attaching harness picked back up after the shell restarted (#246): back in their
+/// agents, and, for the Lens's own conversation, back in the Lens, where the person was
+/// waiting for the answer.
+fn pick_up_resumed(ui: &App, streams: &crate::streaming::Streams) {
+    let Some(host) = crate::wire::harness::host() else { return };
+    for r in host.take_resumed() {
+        let lens = feed::main_agent(&host.active_id()) == r.agent;
+        tracing::info!(agent = %r.agent, lens, "A harness picked a turn back up after the restart");
+        let mind = feed::meta_for(&r.agent).mind;
+        if let Some(answer) = feed::resumed(r.agent, &r.prompt, r.answer, lens) {
+            crate::wire::chat::resume_in_lens(&ui.as_weak(), &mind, &r.prompt, answer, streams);
+        }
+    }
 }
 
 /// New agent's Start, either way: the new agent selected on Active, or why it did not start.
@@ -305,6 +332,7 @@ fn started(ui: &App, state: &Shared, outcome: Result<AgentId, String>) {
                 }
                 st.order.clear();
                 st.selected = Some(agent);
+                st.run = None;
             }
             refresh(ui, state, true);
         }
@@ -479,41 +507,61 @@ fn refresh(ui: &App, state: &Shared, force: bool) {
     let mut st = state.borrow_mut();
     let st = &mut *st;
     agents::store().read(|s| {
+        let tasks = s.tasks(TASKS_SHOWN);
         let tabs: Vec<AgentTabData> = Tab::EVERY
             .iter()
             .zip(s.counts())
+            .chain(std::iter::once((&Tab::Tasks, tasks.len())))
             .map(|(tab, count)| AgentTabData { id: tab.key().into(), label: tab.label().into(), count: count as i32 })
             .collect();
         if let Some(model) = crate::models::changed(g.get_tabs(), tabs) {
             g.set_tabs(model);
         }
 
-        let empty = empty_note(st.tab, s.counts());
+        let empty = if st.tab == Tab::Tasks {
+            if tasks.is_empty() { "No tasks yet. Everything asked of a mind, in the Lens or from New agent, is listed here, newest first.".to_string() } else { String::new() }
+        } else {
+            empty_note(st.tab, s.counts())
+        };
         if g.get_empty_note() != empty.as_str() {
             g.set_empty_note(empty.into());
         }
 
-        let hold = (hovering && !st.order.is_empty()).then_some(st.order.as_slice());
-        let order = s.list(st.tab, hold);
-        let rows: Vec<AgentRowData> = order.iter().filter_map(|id| s.agent(id)).map(row_of).collect();
+        let (order, rows): (Vec<agents::RowKey>, Vec<AgentRowData>) = if st.tab == Tab::Tasks {
+            // One row per request (#234), keyed `agent#turn`; picking one opens that run.
+            let keys: Vec<agents::RowKey> = tasks.iter().map(|(id, n)| agents::RowKey::run(id, *n)).collect();
+            let rows = keys.iter().filter_map(|k| row_for(s, k)).collect();
+            (keys, rows)
+        } else {
+            let hold = (hovering && !st.order.is_empty()).then_some(st.order.as_slice());
+            let order = s.rows(st.tab, hold);
+            let rows = order.iter().filter_map(|k| row_for(s, k)).collect();
+            (order, rows)
+        };
         st.order = order;
         if let Some(model) = crate::models::changed(g.get_rows(), rows) {
             g.set_rows(model);
         }
 
         if st.selected.as_ref().is_none_or(|id| s.agent(id).is_none()) {
-            st.selected = st.order.first().cloned();
+            let first = st.order.first().cloned();
+            st.selected = first.as_ref().map(|k| k.agent.clone());
+            st.run = first.and_then(|k| k.run);
         }
-        let selected = st.selected.clone().map(|id| id.0).unwrap_or_default();
+        let selected = st
+            .selected
+            .clone()
+            .map(|agent| agents::RowKey { agent, run: st.run }.id())
+            .unwrap_or_default();
         if g.get_selected() != selected.as_str() {
             g.set_selected(selected.into());
         }
         let selected = st.selected.clone();
+        st.main.run = st.run;
         draw(&g, &mut st.main, s, selected.as_ref(), &seen, force);
 
-        if g.get_view() == "overview" {
-            overview(&g, s, &seen, st.overview_size);
-        }
+        // Published whatever the view, so choosing Overview finds the route already there.
+        publish_route(&g, s, selected.as_ref(), st.run);
     });
 
     if g.get_new_open() {
@@ -546,77 +594,53 @@ fn refresh(ui: &App, state: &Shared, force: bool) {
     }
 }
 
-/// The Overview's map (#226): every agent whatever the tab, under the minds attached now, laid out
-/// for the size the map last reported. Set only where it changed, so a map in which nothing moves
-/// asks for no redraw.
-fn overview(g: &AgentsState, s: &Store, seen: &Seen, (width, height): (f32, f32)) {
-    use crate::agents_overview as map;
-    let minds: Vec<map::Mind> = seen
-        .minds
-        .iter()
-        .map(|(id, name, detail)| map::Mind { id: id.clone(), name: name.clone(), detail: detail.clone() })
-        .collect();
-    let agents: Vec<map::Agent> = s
-        .list(Tab::All, None)
-        .iter()
-        .filter_map(|id| s.agent(id))
-        .map(|a| {
-            let row = row_of(a);
-            map::Agent {
-                id: row.id.into(),
-                mind: row.mind.into(),
-                title: row.title.into(),
-                state: row.state.into(),
-                label: row.label.into(),
-                since: row.since.into(),
-                parent: row.parent.into(),
-                role: row.role.into(),
-                origin: row.origin.into(),
-            }
+/// The Overview (Pranab, 27 September): the selected run as a route, not every agent at once.
+/// Set only where it changed, so a route in which nothing moves asks for no redraw.
+fn publish_route(g: &AgentsState, s: &Store, agent: Option<&AgentId>, run: Option<u64>) {
+    let a = agent.and_then(|id| s.agent(id));
+    let children: Vec<&Agent> = match a {
+        Some(a) => s.agents().iter().filter(|c| c.meta.parent.as_ref() == Some(&a.meta.id)).collect(),
+        None => Vec::new(),
+    };
+    let route = a.and_then(|a| agents::route::route(a, run, &children, now()));
+    let note = match a {
+        None => "Pick a run in the list to see its route.",
+        Some(_) => "It has not run anything yet.",
+    };
+    let (title, summary, live, stops) = match route {
+        Some(r) => (r.title, r.summary, r.live, r.stops),
+        None => (String::new(), String::new(), false, Vec::new()),
+    };
+    let stops: Vec<RouteStopData> = stops
+        .into_iter()
+        .map(|st| RouteStopData {
+            key: st.key.into(),
+            kind: st.kind.into(),
+            state: st.state.into(),
+            title: st.title.into(),
+            sub: st.sub.into(),
+            track_in: st.track_in.into(),
+            track_out: st.track_out.into(),
+            train_in: st.train_in,
+            train_out: st.train_out,
+            train_span: st.train_span,
         })
         .collect();
-    let laid = map::layout(host_name(), &minds, &agents, width, height);
-    let nodes: Vec<OverviewNode> = laid
-        .nodes
-        .iter()
-        .map(|n| OverviewNode {
-            id: n.id.as_str().into(),
-            kind: n.kind.into(),
-            x: n.x,
-            y: n.y,
-            size: n.size,
-            state: n.state.as_str().into(),
-            title: n.title.as_str().into(),
-            sub: n.sub.as_str().into(),
-            label_x: n.label.x,
-            label_y: n.label.y,
-            label_w: n.label.w,
-            label_h: n.label.h,
-        })
-        .collect();
-    let edges: Vec<OverviewEdge> = laid
-        .edges
-        .iter()
-        .map(|e| OverviewEdge { d: e.d.as_str().into(), state: e.state.as_str().into(), hot: e.hot, leader: e.leader })
-        .collect();
-    if let Some(model) = crate::models::changed(g.get_overview_nodes(), nodes) {
-        g.set_overview_nodes(model);
+    if let Some(model) = crate::models::changed(g.get_route_stops(), stops) {
+        g.set_route_stops(model);
     }
-    if let Some(model) = crate::models::changed(g.get_overview_edges(), edges) {
-        g.set_overview_edges(model);
+    if g.get_route_title() != title.as_str() {
+        g.set_route_title(title.into());
     }
-    if g.get_overview_summary() != laid.summary.as_str() {
-        g.set_overview_summary(laid.summary.into());
+    if g.get_route_summary() != summary.as_str() {
+        g.set_route_summary(summary.into());
     }
-}
-
-/// This machine's name, for the middle of the map. Read once: it does not change under a running
-/// shell, and the map is laid out again every time an agent does.
-fn host_name() -> &'static str {
-    static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    HOST.get_or_init(|| {
-        std::fs::read_to_string("/proc/sys/kernel/hostname").map(|h| h.trim().to_string()).unwrap_or_default()
-    })
+    if g.get_route_live() != live {
+        g.set_route_live(live);
+    }
+    if g.get_route_note() != note {
+        g.set_route_note(note.into());
+    }
 }
 
 /// How often New agent reads the catalog again while it is open.
@@ -656,7 +680,11 @@ fn draw(g: &AgentsState, surface: &mut Surface, s: &Store, agent: Option<&AgentI
     if !g.get_has_agent() {
         g.set_has_agent(true);
     }
-    let header = header_of(a, seen);
+    let mut header = header_of(a, seen);
+    if let Some(t) = surface.run.and_then(|n| a.turns.iter().find(|t| t.n == n)) {
+        // One run of a chat: named by what it was asked.
+        header.title = one_line(&t.prompt, TITLE_CHARS).into();
+    }
     if g.get_header() != header {
         g.set_header(header);
     }
@@ -665,9 +693,10 @@ fn draw(g: &AgentsState, surface: &mut Surface, s: &Store, agent: Option<&AgentI
         g.set_details(details);
     }
 
-    let fresh = surface.agent.as_ref() != Some(&a.meta.id);
+    let fresh = surface.agent.as_ref() != Some(&a.meta.id) || surface.drawn_run != surface.run;
     if fresh {
         surface.agent = Some(a.meta.id.clone());
+        surface.drawn_run = surface.run;
         surface.expanded.clear();
         surface.drawn = None;
     }
@@ -678,7 +707,7 @@ fn draw(g: &AgentsState, surface: &mut Surface, s: &Store, agent: Option<&AgentI
         return;
     }
     surface.drawn = Some(stamp);
-    publish_items(g, surface, items_of(a, &surface.expanded, &seen.approvals), fresh);
+    publish_items(g, surface, items_of(a, &surface.expanded, &seen.approvals, surface.run), fresh);
 }
 
 /// Put a session's items in the model: in place when only the end changed, so the view keeps its
@@ -707,17 +736,79 @@ fn publish_items(g: &AgentsState, surface: &mut Surface, items: Vec<AgentItemDat
 // ── From the store to what the screen draws ────────────────────────
 
 fn row_of(a: &Agent) -> AgentRowData {
+    let (progress, stuck) = row_progress(a, crate::agents::model::now());
     AgentRowData {
         id: a.meta.id.0.as_str().into(),
         mind: a.meta.mind.as_str().into(),
-        title: latest_request(&a.turns, &a.meta.title).into(),
+        title: one_line(latest_request(&a.turns, &a.meta.title), TITLE_CHARS).into(),
         state: a.state.key().into(),
         label: a.state.label().into(),
         since: since(a).into(),
         parent: a.meta.parent.as_ref().map(|p| p.0.clone()).unwrap_or_default().into(),
         role: a.meta.role.as_ref().map(|r| r.name.clone()).unwrap_or_default().into(),
         origin: a.meta.recipe.as_ref().map(|r| r.label()).unwrap_or_default().into(),
+        progress: progress.into(),
+        stuck: stuck.into(),
     }
+}
+
+/// How many requests the Tasks tab lists, newest first.
+const TASKS_SHOWN: usize = 60;
+
+/// One row of the list: an agent as before, or one run of a chat, marked where it came from.
+fn row_for(s: &Store, key: &agents::RowKey) -> Option<AgentRowData> {
+    let a = s.agent(&key.agent)?;
+    let Some(n) = key.run else { return Some(row_of(a)) };
+    let mut row = task_row(a, n, now())?;
+    let from_chat = a.is_plain_main() && a.turns.iter().find(|t| t.n == n).is_some_and(|t| t.origin != crate::agents::model::TurnOrigin::Agent);
+    if from_chat {
+        row.origin = "Chat".into();
+    }
+    Some(row)
+}
+
+/// The agent a row is about: a Tasks row's id is `agent#turn`.
+fn agent_of_row(id: &str) -> AgentId {
+    AgentId(id.split_once('#').map_or(id, |(agent, _)| agent).to_string())
+}
+
+/// One request, as a Tasks row (#234): what was asked, which mind, how it stands, and, while it
+/// runs, the shell's own count of its calls and whether it looks stuck.
+fn task_row(a: &Agent, n: u64, now: u64) -> Option<AgentRowData> {
+    let turn = a.turns.iter().find(|t| t.n == n)?;
+    let mut row = row_of(a);
+    row.id = format!("{}#{}", a.meta.id.0, n).into();
+    row.title = crate::agents::progress::brief(&turn.prompt, 120).into();
+    if turn.open() {
+        row.since = duration(now.saturating_sub(turn.started)).into();
+    } else {
+        // A task the desktop's stopping cut off is lost, not failed: the mind never gave up on it.
+        let (state, label) = if turn.lost {
+            ("lost", "lost when the desktop stopped")
+        } else if turn.ok == Some(false) {
+            ("failed", "could not finish")
+        } else {
+            ("done", "done")
+        };
+        row.state = state.into();
+        row.label = label.into();
+        row.since = clock(turn.ended.unwrap_or(turn.started)).into();
+        row.progress = format!("{} call{}", turn.cards().count(), if turn.cards().count() == 1 { "" } else { "s" }).into();
+        row.stuck = "".into();
+    }
+    Some(row)
+}
+
+/// A working agent's row line from the shell's own record (#234): its calls counted and when it
+/// was last heard from, and why it looks stuck when it does. Empty for an agent at rest.
+fn row_progress(a: &Agent, now: u64) -> (String, String) {
+    let Some(p) = crate::agents::progress::of(a, now) else { return (String::new(), String::new()) };
+    let mut line = format!("{} call{}", p.calls, if p.calls == 1 { "" } else { "s" });
+    if p.failed > 0 {
+        line.push_str(&format!(" · {} failed", p.failed));
+    }
+    line.push_str(&format!(" · heard {} ago", crate::agents::progress::span(p.quiet_secs)));
+    (line, p.stuck.unwrap_or_default())
 }
 
 /// What an agent was last asked, which is what its row is about now.
@@ -726,6 +817,10 @@ fn row_of(a: &Agent) -> AgentRowData {
 /// mind is one long-lived agent, so every request a person made there sat under whatever they
 /// asked first, hours before: on VM 520, "Release check: reply with exactly one word, READY."
 /// over a town model, a daily briefing and a game (#234, #246).
+/// The longest a row's or a header's title is kept: they are one line and elide at the edge, so
+/// this only bounds the work of a prompt pasted in whole.
+const TITLE_CHARS: usize = 200;
+
 fn latest_request<'a>(turns: &'a [Turn], first: &'a str) -> &'a str {
     turns.iter().rev().map(|t| t.prompt.trim()).find(|p| !p.is_empty()).unwrap_or(first)
 }
@@ -766,6 +861,13 @@ fn header_of(a: &Agent, seen: &Seen) -> AgentHeaderData {
     let reachable = launch::reachable(&a.meta.id, &seen.live(), &seen.attached());
     let turn_open = a.open_turn().is_some();
     let gone = a.state == State::HarnessGone;
+    // A stuck task can be told something (#234): the box opens, and says what sending does.
+    let stuck = crate::agents::progress::of(a, now()).and_then(|p| p.stuck);
+    let tell_hint = stuck
+        .as_deref()
+        .filter(|_| reachable && !gone)
+        .map(|why| format!("Stuck: {why}. Tell {} what to do differently (this interrupts the stuck step)…", a.meta.mind))
+        .unwrap_or_default();
     let send_hint = if gone {
         "its harness is gone".to_string()
     } else if !attached {
@@ -785,14 +887,15 @@ fn header_of(a: &Agent, seen: &Seen) -> AgentHeaderData {
     AgentHeaderData {
         id: a.meta.id.0.as_str().into(),
         mind: a.meta.mind.as_str().into(),
-        title: latest_request(&a.turns, &a.meta.title).into(),
+        title: one_line(latest_request(&a.turns, &a.meta.title), TITLE_CHARS).into(),
         state: a.state.key().into(),
         label: a.state.label().into(),
         since: since(a).into(),
         status: a.status.as_str().into(),
         note: note.into(),
-        can_send: reachable && !turn_open && !gone,
+        can_send: reachable && !gone && (!turn_open || !tell_hint.is_empty()),
         send_hint: send_hint.into(),
+        tell_hint: tell_hint.into(),
         can_stop: attached && !builtin && a.busy(),
     }
 }
@@ -885,8 +988,14 @@ fn one_line(text: &str, max: usize) -> String {
 
 /// A session as the screen draws it, newest last. `pending` is the shell's approval store's
 /// waiting requests: an approval item is drawn from there, never from the session.
-fn items_of(a: &Agent, expanded: &HashSet<String>, pending: &[crate::approvals::Card]) -> Vec<AgentItemData> {
+fn items_of(a: &Agent, expanded: &HashSet<String>, pending: &[crate::approvals::Card], run: Option<u64>) -> Vec<AgentItemData> {
     let mut out = Vec::new();
+    // One run of a chat: that turn alone. The rest of the conversation is the chat's, not this run's.
+    if let Some(n) = run {
+        if let Some(i) = a.turns.iter().position(|t| t.n == n) {
+            return items_of_turns(a, &a.turns[i..=i], expanded, pending, out);
+        }
+    }
     let from = a.turns.len().saturating_sub(SHOWN_TURNS);
     if from > 0 {
         out.push(AgentItemData {
@@ -896,12 +1005,26 @@ fn items_of(a: &Agent, expanded: &HashSet<String>, pending: &[crate::approvals::
             ..Default::default()
         });
     }
-    for turn in &a.turns[from..] {
+    items_of_turns(a, &a.turns[from..], expanded, pending, out)
+}
+
+/// The items of `turns`, appended to `out`.
+fn items_of_turns(
+    a: &Agent,
+    turns: &[Turn],
+    expanded: &HashSet<String>,
+    pending: &[crate::approvals::Card],
+    mut out: Vec<AgentItemData>,
+) -> Vec<AgentItemData> {
+    for turn in turns {
         if !turn.prompt.is_empty() {
             out.push(AgentItemData {
                 kind: "prompt".into(),
                 key: format!("t{}", turn.n).into(),
                 text: turn.prompt.as_str().into(),
+                // The first prompt says who sent it (#194) — the row's own attribution. The
+                // store keeps no sender per turn, so later prompts stay "you", as before.
+                sent_by: if turn.n == 1 { first_sender(&a.meta) } else { String::new() }.into(),
                 ..Default::default()
             });
         }
@@ -933,10 +1056,21 @@ fn items_of(a: &Agent, expanded: &HashSet<String>, pending: &[crate::approvals::
                 }
                 Item::Card(card) => out.push(card_of(card, key, open)),
                 Item::Approval(approval) => out.push(approval_of(a, approval, key, pending)),
+                Item::Question(q) => out.push(question_of(q, key)),
             }
         }
     }
     out
+}
+
+/// Whose voice a pane's first prompt speaks with — the same attribution its row shows: the
+/// recipe that sent it ("Council recipe"), else the agent that started this one (its id). "" for
+/// one the person typed, which the pane draws as "you".
+fn first_sender(meta: &agents::AgentMeta) -> String {
+    if let Some(recipe) = &meta.recipe {
+        return recipe.label();
+    }
+    meta.parent.as_ref().map(|p| p.0.clone()).unwrap_or_default()
 }
 
 /// One block of the mind's text as the pane draws it, one item per block: a paragraph or a list
@@ -989,6 +1123,8 @@ fn empty_note(tab: Tab, counts: [usize; 4]) -> String {
         Tab::Complete => format!("Nothing has finished yet. {going}."),
         // All holds every agent, so it is empty only when there are none, above.
         Tab::All => format!("{going}, {done}."),
+        // Tasks says its own sentence in `refresh`: it counts requests, not agents.
+        Tab::Tasks => String::new(),
     }
 }
 
@@ -1000,6 +1136,133 @@ fn empty_note(tab: Tab, counts: [usize; 4]) -> String {
 /// (`approval_asked`, never an event or the agent's text), the shell's store says the request is
 /// still waiting, and that request was asked for THIS agent — its token's, not its words'. Anything
 /// else draws a line with no buttons.
+/// The most answers a question card offers as buttons, and the longest a button's label or the
+/// question itself is drawn: the agent chooses them, and must not be able to push the pane apart.
+const QUESTION_OPTIONS: usize = 6;
+const QUESTION_OPTION_CHARS: usize = 40;
+const QUESTION_CHARS: usize = 2000;
+
+/// The questions the Lens's mind is waiting on, for the Lens to draw where approvals sit. Only
+/// the active mind's own conversation: another agent's question is answered in Agents.
+fn publish_lens_questions(ui: &App) {
+    let Some(host) = super::harness::host() else { return };
+    let agent = feed::main_agent(&host.active_id());
+    let questions: Vec<crate::QuestionRequest> = agents::store().read(|s| {
+        let Some(a) = s.agent(&agent) else { return Vec::new() };
+        a.turns
+            .iter()
+            .flat_map(|t| t.items.iter())
+            .filter_map(|i| match i {
+                Item::Question(q) if q.waiting() => Some(lens_question(&a.meta.id.0, &a.meta.mind, q)),
+                _ => None,
+            })
+            .collect()
+    });
+    if let Some(model) = crate::models::changed(ui.get_lens_questions(), questions) {
+        ui.set_lens_questions(model);
+    }
+}
+
+/// Every question an agent is waiting on a person to answer, for `describe shell`: beside
+/// `pending_approvals`, so a second mind or a test can tell "waiting for someone to answer" from
+/// "hung". The same limits as the cards; answering stays with the card (`answer_question` is the
+/// person's), so this only says what is being asked.
+pub fn questions_for_describe() -> serde_json::Value {
+    let waiting: Vec<serde_json::Value> = agents::store().read(|s| {
+        s.agents()
+            .iter()
+            .flat_map(|a| {
+                a.turns.iter().flat_map(|t| t.items.iter()).filter_map(move |i| match i {
+                    Item::Question(q) if q.waiting() => Some(serde_json::json!({
+                        "agent": a.meta.id.0,
+                        "mind": a.meta.mind,
+                        "request": q.request,
+                        "prompt": clip(&q.prompt, QUESTION_CHARS),
+                        "options": q.options.iter().take(QUESTION_OPTIONS)
+                            .map(|o| clip(o, QUESTION_OPTION_CHARS)).collect::<Vec<_>>(),
+                    })),
+                    _ => None,
+                })
+            })
+            .collect()
+    });
+    serde_json::Value::Array(waiting)
+}
+
+/// One waiting question as the Lens's card draws it, held to the same limits as in Agents.
+fn lens_question(agent: &str, mind: &str, q: &crate::agents::model::Question) -> crate::QuestionRequest {
+    crate::QuestionRequest {
+        agent: agent.into(),
+        mind: mind.into(),
+        request: q.request.as_str().into(),
+        prompt: clip(&q.prompt, QUESTION_CHARS).into(),
+        options: slint::ModelRc::new(slint::VecModel::from(
+            q.options
+                .iter()
+                .take(QUESTION_OPTIONS)
+                .map(|o| slint::SharedString::from(clip(o, QUESTION_OPTION_CHARS)))
+                .collect::<Vec<_>>(),
+        )),
+    }
+}
+
+/// `s` drawn in at most `n` characters.
+fn clip(s: &str, n: usize) -> String {
+    if s.chars().count() <= n { s.to_string() } else { s.chars().take(n - 1).chain(['…']).collect() }
+}
+
+/// A question the agent asked, as its card draws it: waiting with its answers, or the line it
+/// leaves once answered or closed.
+fn question_of(q: &crate::agents::model::Question, key: String) -> AgentItemData {
+    AgentItemData {
+        kind: "question".into(),
+        key: key.into(),
+        text: clip(&q.prompt, QUESTION_CHARS).into(),
+        request: q.request.as_str().into(),
+        // A clipped label is answered with the agent's full option (`answer_question`); the
+        // label is only how it is drawn.
+        options: slint::ModelRc::new(slint::VecModel::from(
+            q.options
+                .iter()
+                .take(QUESTION_OPTIONS)
+                .map(|o| slint::SharedString::from(clip(o, QUESTION_OPTION_CHARS)))
+                .collect::<Vec<_>>(),
+        )),
+        answer: q.answer.as_str().into(),
+        explain: q.closed.as_str().into(),
+        ..Default::default()
+    }
+}
+
+/// The person answered the agent's question through its card. The host takes it first — it
+/// alone knows the run and refuses a second answer — and only then does the card settle; if the
+/// host could not deliver it, the card closes with why instead of claiming an answer that never
+/// arrived.
+pub fn answer_question(agent: &str, request: &str, answer: &str) {
+    let answer = answer.trim();
+    if answer.is_empty() {
+        return;
+    }
+    let id = AgentId(agent.to_string());
+    // A button stands for the agent's own option, whatever its clipped label says.
+    let full = agents::store().read(|s| {
+        s.agent(&id)?.turns.iter().flat_map(|t| t.items.iter()).find_map(|i| match i {
+            Item::Question(q) if q.request == request => {
+                q.options.iter().find(|o| clip(o, QUESTION_OPTION_CHARS) == answer).cloned()
+            }
+            _ => None,
+        })
+    });
+    let answer = full.as_deref().unwrap_or(answer);
+    let Some(host) = super::harness::host() else { return };
+    match host.answer_for(&id, request, &serde_json::Value::String(answer.to_string())) {
+        Ok(()) => {
+            agents::store().question_answered(&id, request, answer);
+        }
+        Err(why) => agents::store().question_closed(&id, request, &why),
+    }
+}
+
 fn approval_of(a: &Agent, approval: &Approval, key: String, pending: &[crate::approvals::Card]) -> AgentItemData {
     let live = (approval.outcome == ApprovalOutcome::Pending)
         .then(|| {
@@ -1122,6 +1385,7 @@ fn card_of(c: &Card, key: String, open: bool) -> AgentItemData {
         kind: "card".into(),
         key: key.into(),
         text: Default::default(),
+        sent_by: Default::default(),
         call: ToolCallData {
             name: call.name.as_str().into(),
             target: call.target.as_str().into(),
@@ -1146,6 +1410,9 @@ fn card_of(c: &Card, key: String, open: bool) -> AgentItemData {
         runs,
         rows,
         approval: Default::default(),
+        request: Default::default(),
+        options: Default::default(),
+        answer: Default::default(),
         block: Default::default(),
         styled: Default::default(),
     }
@@ -1176,6 +1443,7 @@ fn close(ui: &App, state: &Shared, agent: AgentId, confirmed: bool) {
         }
         if st.selected.as_ref() == Some(&agent) {
             st.selected = None;
+            st.run = None;
         }
     }
     refresh(ui, state, true);
@@ -1280,7 +1548,7 @@ fn wire_window(window: &AgentWindow, state: &Shared, agent: &AgentId, shell: &sl
         let weak = weak.clone();
         move |agent, text| {
             if let Some(window) = weak.upgrade() {
-                notice(&window.global::<AgentsState>(), launch::send(&AgentId(agent.to_string()), &text));
+                notice(&window.global::<AgentsState>(), launch::tell(&AgentId(agent.to_string()), &text));
             }
         }
     });
@@ -1330,6 +1598,9 @@ fn forward_approvals(g: &AgentsState, shell: &slint::Weak<App>) {
             }
         }
     });
+    // Only the person's click on a question card comes here; no control-surface action and no
+    // harness call answers a run's question (#25).
+    g.on_answer_question(|agent, request, answer| answer_question(&agent, &request, &answer));
 }
 
 /// Put one agent on the Agents screen: selected, under a tab that lists it, the screen shown.
@@ -1348,7 +1619,10 @@ fn show_agent(ui: &App, state: &Shared, agent: AgentId) {
             g.set_tab(Tab::All.key().into());
         }
         st.order.clear();
-        st.selected = Some(agent);
+        // `show_agent` may name one run of a chat (`agent#n`): the chat's link to it opens that run.
+        let key = agents::RowKey::parse(&agent.0);
+        st.selected = Some(key.agent);
+        st.run = key.run;
     }
     ui.set_current_screen(SCREEN);
     ui.invoke_navigate(SCREEN);
@@ -1364,12 +1638,14 @@ enum Notice {
     Finished { agent: AgentId, mind: String, title: String, ok: bool },
     /// A card of its waits on the person: an approval, or a command at a prompt.
     NeedsYou { agent: AgentId, mind: String, what: String },
+    /// Its turn is going round, or has gone quiet (#234): the shell's own reading, once a turn.
+    Stuck { agent: AgentId, mind: String, title: String, why: crate::agents::progress::Stuck },
 }
 
 impl Notice {
     fn agent(&self) -> &AgentId {
         match self {
-            Notice::Finished { agent, .. } | Notice::NeedsYou { agent, .. } => agent,
+            Notice::Finished { agent, .. } | Notice::NeedsYou { agent, .. } | Notice::Stuck { agent, .. } => agent,
         }
     }
 
@@ -1388,14 +1664,30 @@ impl Notice {
                 "Its turn ended without finishing. Open it to see where it stopped.".to_string(),
             ),
             Notice::NeedsYou { mind, what, .. } => (format!("{mind} needs you"), what.clone()),
+            Notice::Stuck { mind, title, why, .. } => (
+                format!("{mind} looks stuck: \u{201c}{}\u{201d}", one_line(title, 60)),
+                format!("{} Open it to see where, give it a hint, or stop it.", why.plain()),
+            ),
         };
-        Notification::new("Yantrik", title)
+        let n = Notification::new("Yantrik", title)
             .body(body)
             // News, not a question with a deadline: Do Not Disturb holds it, like any other.
             .urgency(Level::Normal)
             // The shell presses `show_agent` on its own surface for this, as Download Manager's
             // "Open folder" is pressed on its.
-            .action_with("show_agent", "Open", serde_json::json!({ "agent": self.agent().0 }))
+            .action_with("show_agent", self.open_label(), serde_json::json!({ "agent": self.agent().0 }));
+        // A stuck task can also be stopped from where the person is (#234). The press is the
+        // person's, through the shell's own `stop_agent`, graded as it always is.
+        if matches!(self, Notice::Stuck { .. }) {
+            n.action_with("stop_agent", "Stop", serde_json::json!({ "agent": self.agent().0 }))
+        } else {
+            n
+        }
+    }
+
+    /// "Tell it" for a stuck task, whose pane opens ready for a hint; "Open" for the rest.
+    fn open_label(&self) -> &'static str {
+        if matches!(self, Notice::Stuck { .. }) { "Tell it" } else { "Open" }
     }
 }
 
@@ -1411,11 +1703,13 @@ struct Watch {
     ended: HashMap<AgentId, (u64, u64)>,
     /// What each agent was already known to be waiting on: request ids and job ids.
     waiting: HashMap<AgentId, BTreeSet<String>>,
+    /// The turn each agent was last said to be stuck in: once a turn, not once a tick.
+    stuck: HashMap<AgentId, u64>,
 }
 
 impl Watch {
     /// `waiting_jobs` is the agent terminal's commands sitting at a prompt: `(agent, job)`.
-    fn changes(&mut self, s: &Store, waiting_jobs: &[(AgentId, String)]) -> Vec<Notice> {
+    fn changes(&mut self, s: &Store, waiting_jobs: &[(AgentId, String)], at: u64) -> Vec<Notice> {
         let mut out = Vec::new();
         for a in s.agents() {
             let id = &a.meta.id;
@@ -1428,7 +1722,11 @@ impl Watch {
                         out.push(Notice::Finished {
                             agent: id.clone(),
                             mind: a.meta.mind.clone(),
-                            title: a.meta.title.clone(),
+                            // The turn that ended, not the agent's title. A mind that holds one
+                            // conversation across every chat keeps the title of its first prompt
+                            // for good, and "Yantrik Mind finished: “Release check: reply with
+                            // exactly one word…”" was the toast for a Blender scene (VM 520).
+                            title: turn.prompt.clone(),
                             ok: turn.ok != Some(false),
                         });
                     }
@@ -1455,6 +1753,19 @@ impl Watch {
                 };
                 out.push(Notice::NeedsYou { agent: id.clone(), mind: a.meta.mind.clone(), what });
             }
+            if let (Some(turn), Some(p)) = (a.open_turn(), crate::agents::progress::of(a, at)) {
+                if let Some(why) = p.stuck_kind {
+                    if self.stuck.get(id) != Some(&turn.n) {
+                        self.stuck.insert(id.clone(), turn.n);
+                        out.push(Notice::Stuck {
+                            agent: id.clone(),
+                            mind: a.meta.mind.clone(),
+                            title: turn.prompt.clone(),
+                            why,
+                        });
+                    }
+                }
+            }
         }
         self.primed = true;
         out
@@ -1468,17 +1779,22 @@ fn stopped(turn: &crate::agents::model::Turn) -> bool {
     })
 }
 
+/// The agent terminal's jobs sitting at a prompt: `(agent, job)`.
+fn waiting_input_jobs() -> Vec<(AgentId, String)> {
+    crate::control_agent_terminal::running_jobs()
+        .into_iter()
+        .filter(|(_, job)| job["waiting_for_input"] == true)
+        .map(|(agent, job)| (agent, job["job"].as_str().unwrap_or_default().to_string()))
+        .collect()
+}
+
 /// Send what the person should hear, except about what they are already looking at: the agent
 /// selected on the Agents screen, one in a window of its own, or — with the Lens open — the
 /// Lens's own mind, whose answer and cards are in front of them there. A "needs you" is also held
 /// while the Lens is open at all: its approval card is in the Lens, and a toast would land on it.
-fn tell_the_person(ui: &App, state: &Shared, watch: &mut Watch) {
-    let waiting_jobs: Vec<(AgentId, String)> = crate::control_agent_terminal::running_jobs()
-        .into_iter()
-        .filter(|(_, job)| job["waiting_for_input"] == true)
-        .map(|(agent, job)| (agent, job["job"].as_str().unwrap_or_default().to_string()))
-        .collect();
-    let notices = agents::store().read(|s| watch.changes(s, &waiting_jobs));
+fn tell_the_person(ui: &App, state: &Shared, watch: &mut Watch, waiting_jobs: &[(AgentId, String)]) {
+    let now = crate::agents::model::now();
+    let notices = agents::store().read(|s| watch.changes(s, waiting_jobs, now));
     if notices.is_empty() {
         return;
     }
@@ -1563,6 +1879,31 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    /// `describe shell` says what an agent is waiting on the person to answer, and stops saying it
+    /// once it is answered: a test or a second mind can tell "asked, waiting" from "hung".
+    #[test]
+    fn a_waiting_question_is_in_describe_until_it_is_answered() {
+        let agent = AgentId::new("pi", "c-describe-question");
+        agents::store().open_turn(&agent, "tidy Downloads");
+        let ask = yantrik_harness::event::Event::Request {
+            request_id: "q-describe-1".into(),
+            prompt: "Delete the 3 old installers?".into(),
+            options: vec!["Yes".into(), "No".into()],
+        };
+        agents::store().event(&agent, &ask, agents::model::Provenance::Reported);
+        let mine = |v: serde_json::Value| -> Vec<serde_json::Value> {
+            v.as_array().unwrap().iter().filter(|q| q["agent"] == agent.0.as_str()).cloned().collect()
+        };
+        let waiting = mine(questions_for_describe());
+        assert_eq!(waiting.len(), 1, "{waiting:?}");
+        assert_eq!(waiting[0]["request"], "q-describe-1");
+        assert_eq!(waiting[0]["prompt"], "Delete the 3 old installers?");
+        assert_eq!(waiting[0]["options"], serde_json::json!(["Yes", "No"]));
+
+        agents::store().question_answered(&agent, "q-describe-1", "No");
+        assert!(mine(questions_for_describe()).is_empty(), "an answered question is not waiting");
+    }
+
     fn read(relative: &str) -> String {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
@@ -1588,7 +1929,12 @@ mod tests {
         assert_eq!(crate::control::screen_name(SCREEN), "agents");
         let control = read("src/control.rs");
         let control = control.split("#[cfg(test)]").next().unwrap();
-        assert!(control.contains(".with(\"agents\", crate::agents::for_describe())"), "describe shell lists the agents");
+        // Listed for the person whole, and for an agent without the person's fields.
+        assert!(
+            control.contains("\"agents\",") && control.contains("crate::agents::for_describe()")
+                && control.contains("crate::agents::for_describe_by_an_agent()"),
+            "describe shell lists the agents"
+        );
         assert!(control.contains("problems, agents"), "show_screen's description offers agents");
 
         // `open_app agents`, the listing a caller reads, and what it is for.
@@ -1658,7 +2004,10 @@ mod tests {
             summary: crate::approvals::summary_of(purpose),
             args: vec!["command: rm -rf build".into()],
             target: String::new(),
+            explained: String::new(),
             warning: String::new(),
+            said: String::new(),
+            caller_says: String::new(),
             can_session: true,
             status: crate::approvals::Status::Pending,
             record: String::new(),
@@ -1667,7 +2016,7 @@ mod tests {
     }
 
     fn approvals_drawn(store: &Store, agent: &AgentId, pending: &[crate::approvals::Card]) -> Vec<AgentItemData> {
-        items_of(store.agent(agent).unwrap(), &HashSet::new(), pending).into_iter().filter(|i| i.kind == "approval").collect()
+        items_of(store.agent(agent).unwrap(), &HashSet::new(), pending, None).into_iter().filter(|i| i.kind == "approval").collect()
     }
 
     /// Design decision 4: the card in the pane is the shell's, with Allow and Deny bound to the one
@@ -1716,7 +2065,7 @@ mod tests {
         };
         s.event(&pi, &event, Provenance::Reported);
         s.event(&pi, &crate::agents::Event::Status { text: "waiting for approval appr-7".into() }, Provenance::Reported);
-        let items = items_of(s.agent(&pi).unwrap(), &HashSet::new(), &[pending_card("appr-7", "pi:c-7f3a91")]);
+        let items = items_of(s.agent(&pi).unwrap(), &HashSet::new(), &[pending_card("appr-7", "pi:c-7f3a91")], None);
         assert!(items.iter().all(|i| i.kind != "approval"), "{:?}", items.iter().map(|i| i.kind.to_string()).collect::<Vec<_>>());
         assert!(s.agent(&pi).unwrap().pending_approvals.is_empty());
     }
@@ -1753,6 +2102,21 @@ mod tests {
         assert!(this.contains("ui.on_lens_open_in_agents(") && this.contains("feed::main_agent(&host.active_id())"));
     }
 
+    /// The session row says what its rule actually covers (#182). The rule is an (app, action)
+    /// pair in the mode file; every door reads that file for every mind, and none asks which
+    /// agent the rule was minted for — so "for this session" on its own reads as "for this
+    /// agent's session", and it is not. Until the rule itself is scoped to the asking agent,
+    /// the card must say plainly that the person is arming the whole desktop.
+    #[test]
+    fn the_session_row_says_its_rule_covers_every_mind() {
+        let lens = read("../yantrik-ui-slint/ui/components/intent_lens.slint");
+        let row = lens.split("if root.data.can-session :").nth(1).expect("the session row is drawn");
+        assert!(
+            row.lines().take(45).any(|l| l.contains("covers every mind and caller, until restart or the mode is lowered")),
+            "the session row says whose sessions the rule covers, and until when, inside the row that mints it"
+        );
+    }
+
     #[test]
     fn a_turn_ending_or_a_card_waiting_is_said_once_and_history_is_not_news() {
         let mut s = Store::new();
@@ -1762,28 +2126,90 @@ mod tests {
         s.open_turn(&ds, "release notes");
         s.close_turn(&ds, true);
         let mut watch = Watch::default();
-        assert!(watch.changes(&s, &[]).is_empty(), "a session loaded from disk is not news");
+        assert!(watch.changes(&s, &[], 0).is_empty(), "a session loaded from disk is not news");
 
         s.open_turn(&pi, "tidy the photos folder");
-        assert!(watch.changes(&s, &[]).is_empty());
+        assert!(watch.changes(&s, &[], 0).is_empty());
         s.approval_asked(&pi, "appr-3", "files.move");
-        let told = watch.changes(&s, &[]);
+        let told = watch.changes(&s, &[], 0);
         assert!(matches!(&told[..], [Notice::NeedsYou { what, .. }] if what.contains("files.move")), "{told:?}");
-        assert!(watch.changes(&s, &[]).is_empty(), "said once");
+        assert!(watch.changes(&s, &[], 0).is_empty(), "said once");
         let waiting = [(pi.clone(), "job-9".to_string())];
-        let told = watch.changes(&s, &waiting);
+        let told = watch.changes(&s, &waiting, 0);
         assert!(matches!(&told[..], [Notice::NeedsYou { what, .. }] if what.contains("waiting for input")), "{told:?}");
 
         s.approval_answered(&pi, "appr-3", true);
         s.close_turn(&pi, true);
-        let told = watch.changes(&s, &waiting);
+        let told = watch.changes(&s, &waiting, 0);
         assert_eq!(told, vec![Notice::Finished { agent: pi.clone(), mind: "pi".into(), title: "tidy the photos folder".into(), ok: true }]);
+
+        // A later turn in the same conversation is told by its own prompt, not the first one's.
+        s.open_turn(&pi, "now rename them by date");
+        s.close_turn(&pi, true);
+        let told = watch.changes(&s, &waiting, 0);
+        assert!(
+            matches!(&told[..], [Notice::Finished { title, .. }] if title == "now rename them by date"),
+            "{told:?}"
+        );
 
         // A turn the person stopped needs no telling.
         s.open_turn(&pi, "and the videos");
         s.note(&pi, "Stop asked.");
         s.close_turn(&pi, false);
-        assert!(watch.changes(&s, &waiting).is_empty());
+        assert!(watch.changes(&s, &waiting, 0).is_empty());
+    }
+
+    /// A task that goes quiet is said once a turn, in the desktop's words: not every tick, and
+    /// not quoting anything the mind wrote (#234, #139).
+    #[test]
+    fn a_stuck_turn_is_said_once_in_the_desktops_words() {
+        use crate::agents::progress::{Stuck, STUCK_QUIET_SECS};
+        let mut s = Store::new();
+        let hermes = AgentId("hermes:main".into());
+        let mut watch = Watch::default();
+        assert!(watch.changes(&s, &[], 0).is_empty());
+
+        s.open_turn(&hermes, "build a small game");
+        let later = crate::agents::model::now() + STUCK_QUIET_SECS + 30;
+        let told = watch.changes(&s, &[], later);
+        let [Notice::Stuck { why: Stuck::Quiet { .. }, title, .. }] = &told[..] else {
+            panic!("one stuck notice: {told:?}")
+        };
+        assert_eq!(title, "build a small game");
+        let words = told[0].notification();
+        assert!(format!("{words:?}").contains("Nothing has been heard from it for 2 min"), "{words:?}");
+        // What the person can do about it from the notification: tell it something (its pane opens
+        // ready for a hint), or stop it (#234).
+        let actions = format!("{words:?}");
+        assert!(actions.contains("show_agent") && actions.contains("Tell it"), "{actions}");
+        assert!(actions.contains("stop_agent") && actions.contains("Stop"), "{actions}");
+        let finished = Notice::Finished { agent: hermes.clone(), mind: "hermes".into(), title: "x".into(), ok: true };
+        let plain = format!("{:?}", finished.notification());
+        assert!(plain.contains("Open") && !plain.contains("stop_agent"), "only a stuck task offers Stop: {plain}");
+        assert!(watch.changes(&s, &[], later + 60).is_empty(), "once a turn, not once a tick");
+
+        // The next task is news of its own.
+        s.close_turn(&hermes, false);
+        watch.changes(&s, &[], later);
+        s.open_turn(&hermes, "then the town model");
+        assert!(matches!(&watch.changes(&s, &[], later + 300)[..], [Notice::Stuck { .. }]));
+    }
+
+    /// Only the person interrupts a task (#234): `launch::tell` is called from the pane's own send,
+    /// and nothing a mind can call (the control surface) reaches it or `Host::interrupt`. A mind's
+    /// `send_to_agent` still waits for the turn in flight.
+    #[test]
+    fn only_the_person_can_interrupt_a_task() {
+        for file in ["src/control_agents.rs", "src/control.rs", "src/control_agent_terminal.rs"] {
+            let text = read(file);
+            let code = text.split("#[cfg(test)]").next().unwrap();
+            assert!(!code.contains("launch::tell(") && !code.contains(".interrupt("), "{file} can interrupt a task");
+        }
+        let wiring = read("src/wire/agents.rs");
+        let wiring = wiring.split("#[cfg(test)]").next().unwrap();
+        assert_eq!(wiring.matches("launch::tell(").count(), 2, "the pane's send and the pop-out's");
+        let send = read("src/control_agents.rs");
+        assert!(send.contains("launch::send_on(host, target, text)"), "send_to_agent keeps the ordinary send");
     }
 
     /// Said as the desktop, with nothing the agent wrote in it, and a button that opens the agent.
@@ -1804,6 +2230,24 @@ mod tests {
         // The screen's own route for the button: the shell publishes `show_agent`.
         let actions = read("src/control_agents.rs");
         assert!(actions.contains("\"show_agent\""));
+    }
+
+    /// #368: a role agent's first prompt is its whole brief, many lines long. A row and the pane's
+    /// header are one line each, and an embedded newline breaks a Text however it elides, so the
+    /// brief drew over the rows below it.
+    #[test]
+    fn a_multi_line_request_is_one_line_in_its_row_and_its_header() {
+        let mut s = Store::new();
+        let id = AgentId("deepseek:c-brief1".into());
+        s.open_turn(&id, "You are the Researcher on this desktop.\n\nFind out what is true\nand say how you know.");
+        let a = s.agent(&id).unwrap();
+        let row = row_of(a);
+        assert_eq!(row.title.as_str(), "You are the Researcher on this desktop. Find out what is true and say how you know.");
+        let seen = Seen { minds: Vec::new(), agents: Vec::new(), approvals: Vec::new() };
+        assert!(!header_of(a, &seen).title.contains('\n'));
+        s.open_turn(&id, &format!("{}\nend", "x".repeat(500)));
+        let long = row_of(s.agent(&id).unwrap());
+        assert!(!long.title.contains('\n') && long.title.chars().count() <= TITLE_CHARS);
     }
 
     /// Agents catalog: a role's agent is named by its role in the list, and its details say what
@@ -1873,7 +2317,7 @@ mod tests {
         let red = AgentId("deepseek:c-red001".into());
         s.open_turn(&red, "attack this plan");
         s.text(&red, "## Strongest point\n\n**How:** it *fails* when `sync` runs twice.\n\n- one **bold**\n- two\n\n```\nsync && sync\n```\n");
-        let items = items_of(s.agent(&red).unwrap(), &HashSet::new(), &[]);
+        let items = items_of(s.agent(&red).unwrap(), &HashSet::new(), &[], None);
         let prompt = items.iter().find(|i| i.kind == "prompt").expect("the prompt").key.to_string();
         let prose: Vec<&AgentItemData> = items.iter().filter(|i| i.kind == "text").collect();
         let drawn: Vec<(String, &str, &str)> =
@@ -1906,12 +2350,12 @@ mod tests {
         let red = AgentId("deepseek:c-red002".into());
         s.open_turn(&red, "attack this plan");
         s.text(&red, "## Verdict\n\nIt is **very");
-        let first = items_of(s.agent(&red).unwrap(), &HashSet::new(), &[]);
+        let first = items_of(s.agent(&red).unwrap(), &HashSet::new(), &[], None);
         let open = first.last().unwrap();
         assert_eq!((open.block.as_str(), open.text.as_str()), ("text", "It is **very"));
         assert_eq!(open.styled, slint::StyledText::from_plain_text("It is **very"), "an open marker is its characters");
         s.text(&red, " weak** here.\n\n- and a list");
-        let next = items_of(s.agent(&red).unwrap(), &HashSet::new(), &[]);
+        let next = items_of(s.agent(&red).unwrap(), &HashSet::new(), &[], None);
         let keys = |items: &[AgentItemData]| items.iter().map(|i| i.key.to_string()).collect::<Vec<_>>();
         assert!(keys(&next).starts_with(&keys(&first)), "{:?} then {:?}", keys(&first), keys(&next));
         let closed = &next[first.len() - 1];
@@ -1939,6 +2383,39 @@ mod tests {
         assert!(!slint.contains("No agents yet"), "and has no sentence of its own that could disagree");
     }
 
+    /// #234: "I am not able to see the task list in the Agents section." Every request is its own
+    /// row, newest first, whichever conversation it was in, and says how it stood when it ended.
+    /// A row's buttons act on its agent.
+    #[test]
+    fn every_request_is_a_task_row_newest_first() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc;
+        let clock = Arc::new(AtomicU64::new(1_000));
+        let at = clock.clone();
+        let mut s = Store::with_clock(Box::new(move || at.load(Ordering::SeqCst)));
+        let hermes = AgentId("hermes:main".into());
+        s.open_turn(&hermes, "a note for the market meeting");
+        s.close_turn(&hermes, true);
+        clock.store(2_000, Ordering::SeqCst);
+        s.open_turn(&hermes, "build a small game");
+        s.close_turn(&hermes, false);
+        clock.store(3_000, Ordering::SeqCst);
+        s.open_turn(&hermes, "build the town model");
+
+        let tasks = s.tasks(10);
+        let titles: Vec<String> = tasks
+            .iter()
+            .map(|(id, n)| task_row(s.agent(id).unwrap(), *n, 3_100).unwrap().title.to_string())
+            .collect();
+        assert_eq!(titles, ["build the town model", "build a small game", "a note for the market meeting"]);
+        let game = task_row(s.agent(&hermes).unwrap(), tasks[1].1, 3_100).unwrap();
+        assert_eq!((game.state.as_str(), game.label.as_str()), ("failed", "could not finish"));
+        let town = task_row(s.agent(&hermes).unwrap(), tasks[0].1, 3_100).unwrap();
+        assert_eq!(town.since.as_str(), "1m", "the working one says how long it has run");
+        assert_eq!(agent_of_row(&town.id), hermes, "its buttons act on its agent");
+        assert_eq!(agent_of_row("hermes:main"), hermes, "an agent row's id is the agent");
+    }
+
     #[test]
     fn keys_name_a_turn_and_an_item() {
         assert_eq!(parse_key("t12.3"), Some((12, 3)));
@@ -1963,7 +2440,7 @@ mod latest_request_tests {
     use super::*;
 
     fn asked(n: u64, prompt: &str) -> Turn {
-        Turn { n, prompt: prompt.into(), started: n, ended: Some(n + 1), ok: Some(true), items: vec![], events: false, trail_seq: 0 }
+        Turn { n, prompt: prompt.into(), started: n, ended: Some(n + 1), ok: Some(true), lost: false, origin: Default::default(), items: vec![], events: false, trail_seq: 0 }
     }
 
     #[test]
@@ -2081,5 +2558,121 @@ mod rough_edges_tests {
             slint.matches("AgentsState.new-note-reach = \"\";").count() >= 2,
             "the chips clear the patterns with the note"
         );
+    }
+}
+
+/// A pane's first prompt said "you" even when a recipe or another agent sent it (#194). It now
+/// carries the row's own attribution, and "you" stays what one the person typed draws as.
+#[cfg(test)]
+mod first_prompt_attribution_tests {
+    use super::*;
+    use std::path::Path;
+
+    fn read(relative: &str) -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+    }
+
+    fn first_prompt(s: &Store, id: &AgentId) -> AgentItemData {
+        let items = items_of(s.agent(id).unwrap(), &HashSet::new(), &[], None);
+        items.into_iter().find(|i| i.kind == "prompt").expect("the prompt")
+    }
+
+    #[test]
+    fn a_first_prompt_says_who_sent_it_and_only_the_persons_says_you() {
+        let mut s = Store::new();
+
+        // A council seat: the recipe sent its first prompt, so the label is the recipe's — the
+        // same "Council recipe" its row shows.
+        let seat = AgentId("deepseek:c-council1".into());
+        let mut meta = agents::AgentMeta::new(seat.clone(), "deepseek");
+        meta.recipe = Some(agents::RecipeOrigin { id: "rcp_council1".into(), name: "Council".into() });
+        s.upsert_agent(meta);
+        s.open_turn(&seat, "Should the desktop ship on Friday?");
+        assert_eq!(first_prompt(&s, &seat).sent_by.as_str(), "Council recipe");
+
+        // An agent another agent started: the starting agent's id, as the row's "started by".
+        let child = AgentId("deepseek:c-child01".into());
+        let mut meta = agents::AgentMeta::new(child.clone(), "deepseek");
+        meta.parent = Some(AgentId("pi:c-parent01".into()));
+        s.upsert_agent(meta);
+        s.open_turn(&child, "attack this plan");
+        assert_eq!(first_prompt(&s, &child).sent_by.as_str(), "pi:c-parent01");
+
+        // One the person typed: "" — which the pane draws as "you", as it always did.
+        let mine = AgentId("pi:c-mine001".into());
+        s.open_turn(&mine, "tidy the photos folder");
+        assert_eq!(first_prompt(&s, &mine).sent_by.as_str(), "");
+
+        // And the pane draws the sender it is given, falling back to "you" for the person's.
+        let slint = read("../yantrik-ui-slint/ui/agents.slint");
+        assert!(slint.contains("root.item.sent-by == \"\" ? \"you\" : root.item.sent-by"), "the pane draws the sender");
+        assert!(!slint.contains("text: \"you\";"), "and no longer hardcodes it for every prompt");
+    }
+
+    #[test]
+    fn the_lens_draws_its_minds_questions_held_to_the_same_limits_and_answers_them_the_one_way() {
+        let q = crate::agents::model::Question {
+            request: "r1".into(),
+            prompt: "?".repeat(5_000),
+            options: (0..20).map(|i| format!("{i}{}", "y".repeat(100))).collect(),
+            answer: String::new(),
+            closed: String::new(),
+            asked: 0,
+        };
+        let card = lens_question("hermes:main", "Hermes", &q);
+        assert_eq!((card.agent.as_str(), card.mind.as_str(), card.request.as_str()), ("hermes:main", "Hermes", "r1"));
+        assert_eq!(card.options.row_count(), QUESTION_OPTIONS);
+        assert_eq!(card.prompt.chars().count(), QUESTION_CHARS);
+
+        // The Lens's card answers through the Agents view's own callback, the one path to
+        // `answer_for`; it has no answering of its own.
+        let app = read("../yantrik-ui-slint/ui/app.slint");
+        assert!(app.contains("question-answer(agent, request, answer) => { AgentsState.answer-question(agent, request, answer); }"));
+        let desktop = read("../yantrik-ui-slint/ui/desktop.slint");
+        assert!(desktop.contains("questions: root.questions;"), "the desktop screen hands the Lens its questions");
+        let lens = read("../yantrik-ui-slint/ui/components/intent_lens.slint");
+        assert!(lens.contains("for q in root.questions : QuestionCard"), "the Lens draws them");
+    }
+
+    #[test]
+    fn a_question_card_offers_its_answers_while_it_waits_and_settles_after() {
+        let mut q = crate::agents::model::Question {
+            request: "r1".into(),
+            prompt: "Delete 3 installers?".into(),
+            options: vec!["Yes".into(), "No".into()],
+            answer: String::new(),
+            closed: String::new(),
+            asked: 0,
+        };
+        let card = question_of(&q, "t1.0".into());
+        assert_eq!((card.kind.as_str(), card.request.as_str(), card.text.as_str()), ("question", "r1", "Delete 3 installers?"));
+        assert_eq!(card.options.row_count(), 2);
+        q.answer = "Yes".into();
+        assert_eq!(question_of(&q, "t1.0".into()).answer.as_str(), "Yes");
+
+        // The agent picks the answers; it cannot push the pane apart with them.
+        q.options = (0..50).map(|i| format!("option {i} {}", "x".repeat(200))).collect();
+        q.prompt = "?".repeat(10_000);
+        let card = question_of(&q, "t1.0".into());
+        assert_eq!(card.options.row_count(), QUESTION_OPTIONS);
+        assert_eq!(card.options.row_data(0).unwrap().chars().count(), QUESTION_OPTION_CHARS);
+        assert_eq!(card.text.chars().count(), QUESTION_CHARS);
+    }
+
+    /// Only the person answers a run's question: the card's callback is the one caller of
+    /// `answer_for`. No control-surface action (which a mind can call) and nothing in the
+    /// harness protocol reaches it, so an agent cannot answer its own question.
+    #[test]
+    fn nothing_a_mind_can_call_answers_a_question() {
+        for file in ["src/control_agents.rs", "src/control.rs", "src/control_agent_terminal.rs", "src/control_approvals.rs"] {
+            let text = read(file);
+            let code = text.split("#[cfg(test)]").next().unwrap();
+            assert!(!code.contains(".answer_for(") && !code.contains("answer_question("), "{file} can answer a run's question");
+        }
+        let wiring = read("src/wire/agents.rs");
+        let wiring = wiring.split("#[cfg(test)]").next().unwrap();
+        assert_eq!(wiring.matches("answer_for(").count(), 1, "one caller: the card's answer");
+        assert!(wiring.contains("g.on_answer_question("));
     }
 }

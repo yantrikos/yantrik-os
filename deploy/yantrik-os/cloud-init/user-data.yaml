@@ -48,6 +48,8 @@ packages:
   # told nothing is.
   - wlrctl
   - wlr-randr
+  # The wallpaper, and the label Mind View shows while it is empty. Without it both are black.
+  - swaybg
   - mesa-utils
   - foot
   # The eyes. Chromium is driven over CDP rather than by screenshotting.
@@ -97,9 +99,12 @@ packages:
   - libnotify-bin
   # Portals: the file picker, the screenshot and the screen-share a sandboxed or foreign
   # application asks the desktop for. Chromium's "Upload file" dialog goes through this.
-  # The wlr backend is the one that speaks to a wlroots compositor such as labwc.
+  # The wlr backend is the one that speaks to a wlroots compositor such as labwc; it has no file
+  # picker, so the gtk backend supplies FileChooser (#33). labwc's own labwc-portals.conf
+  # (default=wlr;*) routes to it with no configuration of ours.
   - xdg-desktop-portal
   - xdg-desktop-portal-wlr
+  - xdg-desktop-portal-gtk
   # Something to answer polkit. The daemon is already running and had no agent, so every
   # action needing authorisation failed with no prompt and no explanation.
   - lxpolkit
@@ -132,6 +137,20 @@ packages:
   # and a process view beside the System Monitor app. The image shipped neither (#210).
   - nano
   - htop
+  # A developer's baseline (#401): git, completion in the terminal, and rootless podman for the
+  # Container Manager app, with what rootless needs beside it (uidmap, passt, fuse-overlayfs).
+  # yantrik-update reconciles the same list on every machine.
+  - git
+  - bash-completion
+  - podman
+  - uidmap
+  - passt
+  - fuse-overlayfs
+  # Flatpak, so the Package Manager can install apps from Flathub — VS Code, Spotify, Discord,
+  # Steam — that Debian's archive does not carry (#399). Installed per-user by the desktop's own
+  # account, so it needs no root and no sudo rule; the Flathub remote is added the first time
+  # the Package Manager needs it.
+  - flatpak
 
 write_files:
   - path: /etc/yantrik/install.env

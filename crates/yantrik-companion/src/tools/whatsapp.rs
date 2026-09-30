@@ -64,6 +64,7 @@ impl Tool for WhatsAppSendTool {
             phone_number_id: Some(self.phone_number_id.clone()),
             access_token: Some(self.access_token.clone()),
             recipient: Some(to.to_string()),
+            verify_token: None,
         };
 
         match crate::whatsapp::send_message(&config, to, text) {

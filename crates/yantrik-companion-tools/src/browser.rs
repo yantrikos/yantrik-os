@@ -22,6 +22,28 @@ const MAX_ELEMENTS: usize = 250;
 /// Global CDP message counter for unique IDs.
 static MSG_ID: AtomicU32 = AtomicU32::new(1);
 
+/// Where a browser window the companion opens is drawn, as the environment to start it with.
+///
+/// The shell sets this once at startup (`yantrik-ui`'s `mind_view::display_for_mind`), so a
+/// window a mind opens lands in Mind View (#239) rather than over the person's work. It used to be
+/// `WAYLAND_DISPLAY=wayland-0` written into the launch, which is the person's own display: the
+/// companion's Chromium opened on their desktop while Mind View sat beside it, empty and black.
+/// Without a shell to ask (tests, a companion run on its own), it is still that.
+static DISPLAY_FOR_MIND: std::sync::OnceLock<fn() -> Vec<(&'static str, String)>> =
+    std::sync::OnceLock::new();
+
+/// Tell the browser tools where a mind's windows go. The first call wins.
+pub fn set_display_for_mind(display: fn() -> Vec<(&'static str, String)>) {
+    let _ = DISPLAY_FOR_MIND.set(display);
+}
+
+fn display_for_mind() -> Vec<(&'static str, String)> {
+    match DISPLAY_FOR_MIND.get() {
+        Some(display) => display(),
+        None => vec![("WAYLAND_DISPLAY", "wayland-0".to_string())],
+    }
+}
+
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(LaunchBrowserTool));
     reg.register(Box::new(BrowseTool));
@@ -80,9 +102,32 @@ fn get_tabs() -> Result<Vec<CdpTab>, String> {
         .collect())
 }
 
+/// The one Origin a browser launched here lets open its DevTools socket, and the one this client
+/// presents: its own debugging address. `--remote-allow-origins=*` let any web page's script open
+/// that socket once it learned a target id, and drive the browser it was running in.
+fn devtools_origin(port: u16) -> String {
+    format!("http://{CDP_HOST}:{port}")
+}
+
+/// The port in a DevTools websocket address, `ws://127.0.0.1:9223/devtools/page/…`.
+fn port_of(ws_url: &str) -> Option<u16> {
+    let rest = ws_url.strip_prefix("ws://")?;
+    let authority = rest.split('/').next()?;
+    authority.rsplit_once(':')?.1.parse().ok()
+}
+
 /// Connect to a tab's WebSocket and return a client.
 fn connect_tab(ws_url: &str) -> Result<WebSocket<MaybeTlsStream<TcpStream>>, String> {
-    let (socket, _response) = tungstenite::connect(ws_url)
+    use tungstenite::client::IntoClientRequest;
+    let mut request = ws_url
+        .into_client_request()
+        .map_err(|e| format!("WS connect failed: {e}"))?;
+    let origin = devtools_origin(port_of(ws_url).unwrap_or(CDP_PORT));
+    request.headers_mut().insert(
+        "Origin",
+        origin.parse().map_err(|e| format!("WS connect failed: {e}"))?,
+    );
+    let (socket, _response) = tungstenite::connect(request)
         .map_err(|e| format!("WS connect failed: {e}"))?;
     Ok(socket)
 }
@@ -467,6 +512,7 @@ fn ensure_headless_browser() -> Result<(), String> {
             "--ozone-platform=wayland",
             "--remote-debugging-address=127.0.0.1",
             "--remote-debugging-port=9222",
+            "--remote-allow-origins=http://127.0.0.1:9222",
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-gpu",
@@ -586,9 +632,9 @@ impl Tool for LaunchBrowserTool {
             "--ozone-platform=wayland".into(),
             "--remote-debugging-address=127.0.0.1".into(),
             format!("--remote-debugging-port={port}"),
-            // Chrome 2026 refuses a DevTools websocket whose Origin it does not know, which is
-            // every connection we make. Without this every CDP call fails the handshake with 403.
-            "--remote-allow-origins=*".into(),
+            // Chrome 2026 refuses a DevTools websocket whose Origin it does not know. Only ours:
+            // `connect_tab` presents exactly this one, and a web page's script cannot.
+            format!("--remote-allow-origins={}", devtools_origin(port)),
             format!("--user-data-dir={}", profile.display()),
             "--no-first-run".into(),
             "--no-default-browser-check".into(),
@@ -617,8 +663,14 @@ impl Tool for LaunchBrowserTool {
 
         let result = std::process::Command::new(&binary)
             .args(&chrome_args)
-            .env("WAYLAND_DISPLAY", "wayland-0")
             .env("XDG_RUNTIME_DIR", "/run/user/1000")
+            // A headed window goes where a mind's windows go. Headless draws nowhere, so it
+            // keeps the display it always had rather than starting Mind View for nothing.
+            .envs(if headless {
+                vec![("WAYLAND_DISPLAY", "wayland-0".to_string())]
+            } else {
+                display_for_mind()
+            })
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -998,7 +1050,8 @@ impl Tool for BrowserScreenshotTool {
             None => return "Error: no screenshot data returned".to_string(),
         };
 
-        // Decode base64 and save to /tmp
+        // Decode base64 and save to our private scratch dir — a page screenshot can show anything
+        // the person had open, so it does not belong in a /tmp every account can read.
         let bytes = match base64_decode(b64_data) {
             Ok(b) => b,
             Err(e) => return format!("Error decoding screenshot: {e}"),
@@ -1008,10 +1061,8 @@ impl Tool for BrowserScreenshotTool {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let path = format!("/tmp/yantrik-screenshot-{ts}.png");
-
-        match std::fs::write(&path, &bytes) {
-            Ok(_) => format!(
+        match crate::write_scratch(&format!("yantrik-screenshot-{ts}.png"), &bytes) {
+            Ok(path) => format!(
                 "Screenshot saved: {path} ({} bytes)\nPage: {} — {}",
                 bytes.len(),
                 tab.title,
@@ -1981,9 +2032,8 @@ impl Tool for BrowserSeeTool {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let img_path = format!("/tmp/yantrik-see-{ts}.png");
         if let Ok(bytes) = base64_decode(b64_data) {
-            let _ = std::fs::write(&img_path, &bytes);
+            let _ = crate::write_scratch(&format!("yantrik-see-{ts}.png"), &bytes);
         }
 
         // Append viewport size so coordinates are grounded
@@ -2002,30 +2052,12 @@ impl Tool for BrowserSeeTool {
             "stream": false
         });
 
-        let payload_path = "/tmp/yantrik-see-payload.json";
-        if let Err(e) = std::fs::write(payload_path, payload.to_string()) {
-            return format!("Error writing payload: {e}");
-        }
-
+        // The body goes to curl on its stdin: no file for anyone to swap or read.
         let url = format!("{}/api/chat", self.ollama_base);
-        let output = match std::process::Command::new("curl")
-            .args([
-                "-fsSL",
-                "--max-time", "120",
-                "-H", "Content-Type: application/json",
-                "-d", &format!("@{payload_path}"),
-                &url,
-            ])
-            .output()
-        {
+        let output = match crate::pipe::post_json(&url, 120, payload.to_string().into_bytes()) {
             Ok(o) => o,
-            Err(e) => {
-                let _ = std::fs::remove_file(payload_path);
-                return format!("Vision request failed: {e}");
-            }
+            Err(e) => return format!("Vision request failed: {e}"),
         };
-
-        let _ = std::fs::remove_file(payload_path);
 
         if !output.status.success() {
             return format!("Vision model error: {}", String::from_utf8_lossy(&output.stderr));
@@ -2288,6 +2320,16 @@ impl Tool for BrowserTypeXYTool {
 #[cfg(test)]
 mod identity_tests {
     use super::*;
+
+    #[test]
+    fn the_devtools_origin_is_the_browsers_own_address_and_nothing_wider() {
+        assert_eq!(port_of("ws://127.0.0.1:9230/devtools/page/AB12"), Some(9230));
+        assert_eq!(port_of("ws://127.0.0.1/devtools/page/AB12"), None);
+        assert_eq!(devtools_origin(port_for("default")), "http://127.0.0.1:9222");
+        let port = port_for("research");
+        assert_eq!(devtools_origin(port), format!("http://127.0.0.1:{port}"));
+        assert!(!devtools_origin(port).contains('*'));
+    }
 
     #[test]
     fn an_identity_cannot_wander_out_of_its_directory() {

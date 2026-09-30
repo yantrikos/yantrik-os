@@ -35,8 +35,8 @@ DESCRIBE_TIMEOUT = 10.0
 DEFAULT_TIMEOUT = 30.0
 
 
-def _action(name, purpose, permission, params, timeout=DEFAULT_TIMEOUT):
-    return Action(name, purpose, permission, params, timeout=timeout)
+def _action(name, purpose, permission, params, timeout=DEFAULT_TIMEOUT, open_ended=False):
+    return Action(name, purpose, permission, params, timeout=timeout, open_ended=open_ended)
 
 
 ACTIONS = [
@@ -138,7 +138,10 @@ ACTIONS = [
             "recoverable.",
             "dangerous", [
                 Param("code", description="the Python to run"),
-            ], timeout=300.0),
+            ], timeout=300.0,
+            # It runs whatever it is given. It also says it is not recoverable, and that wins at
+            # the gate: it asks every time, and no session rule covers it.
+            open_ended=True),
     _action("screenshot",
             "Save what the 3D viewport shows as a PNG. Needs a window with a viewport "
             "open; a background Blender draws nothing, and `render` is the honest answer "

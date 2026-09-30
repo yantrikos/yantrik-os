@@ -1,0 +1,21 @@
+[package]
+name = "yantrik-lock"
+version = "0.1.0"
+edition = "2021"
+description = "Yantrik OS lock screen as a Wayland session lock (ext-session-lock-v1, #313)"
+
+[[bin]]
+name = "yantrik-lock"
+path = "src/main.rs"
+
+[dependencies]
+slint = { workspace = true }
+chrono = { workspace = true }
+smithay-client-toolkit = { version = "0.20", default-features = false, features = ["calloop", "xkbcommon"] }
+wayland-client = "0.31"
+libc = "0.2"
+# So build.rs can resolve the shared theme's include path via `links`.
+yantrik-design-tokens = { workspace = true }
+
+[build-dependencies]
+slint-build = "1.17"

@@ -12,12 +12,15 @@ import { Taskbar } from "components/taskbar.slint";
 import { StatusBar } from "components/status_bar.slint";
 import { BootScreen, BootStage } from "boot.slint";
 import { OnboardingScreen } from "onboarding.slint";
+import { InstallerScreen, InstallerDisk, KeyboardChoice } from "installer.slint";
+export { InstallerDisk, KeyboardChoice }
+export { DecisionPreset, DecisionUse } from "settings.slint";
 import { DesktopScreen } from "desktop.slint";
 import { BondScreen, BondData } from "bond.slint";
 import { PersonalityScreen, OpinionData, SharedRefData } from "personality.slint";
 import { LockScreen } from "lock.slint";
 import { LoginScreen } from "login.slint";
-import { SettingsScreen, SettingsCategoryItem, AIProviderData, AIModelData, AIStatusData, HarnessData, HarnessRowData } from "settings.slint";
+import { SettingsScreen, SettingsCategoryItem, AIProviderData, AIModelData, AIStatusData, HarnessData, HarnessRowData, DecisionPreset, DecisionUse } from "settings.slint";
 import { SkillData } from "skill_store.slint";
 import { MemoryBrowser, MemoryItem } from "memory_browser.slint";
 import { FileBrowser, FileEntry, BreadcrumbSegment, FileDetailData, FileTabData, FileOpItem, FilePlaceData, FileRecentData, OpenWithItem } from "file_browser.slint";
@@ -34,7 +37,7 @@ import { ProblemReportScreen, ProblemRow } from "problem_report.slint";
 // are exported so the shell can create a window per agent and fill each one.
 import { AgentsScreen, AgentsState } from "agents.slint";
 export { AgentWindow, AgentsState, AgentTabData, AgentRowData, AgentRunData, AgentItemData, AgentHeaderData, AgentDetailsData, AgentMindData, AgentRoleData } from "agents.slint";
-export { OverviewNode, OverviewEdge } from "agents_overview.slint";
+export { RouteStopData } from "agents_route.slint";
 // Recipes (screen 35): every recipe as its stages. The global is exported so the shell can fill it.
 import { RecipesScreen, RecipesState } from "recipes.slint";
 export { RecipesState, RecipeTabData, RecipeRowData, RecipeStageData, RecipeStepData } from "recipes.slint";
@@ -43,7 +46,10 @@ import { ContentBlock, MessageData } from "components/message_bubble.slint";
 import { ToolCallData } from "components/tool_call.slint";
 import { UrgeCardData } from "components/glance_card.slint";
 import { LensResult, ApprovalRequest, ApprovalCard, VaultUnlockRequest, VaultUnlockCard } from "components/intent_lens.slint";
+import { QuestionRequest } from "components/question_card.slint";
 import { MindModeMenu, MindRule, MindAuditEntry } from "components/mind_mode_menu.slint";
+import { MindsPanel, ProviderGroup, AccountRow, AccountMeter, AddChoice } from "components/minds_panel.slint";
+export { ProviderGroup, AccountRow, AccountMeter, AddChoice }
 import { WhisperCardItem } from "components/whisper_card.slint";
 import { BriefSection } from "components/morning_brief.slint";
 import { ClipboardEntryData } from "components/clipboard_panel.slint";
@@ -61,7 +67,7 @@ import { YMenuAction, YContextMenu } from "components/y_context_menu.slint";
 import { Icons } from "components/icon.slint";
 import { Tr } from "translations.slint";
 
-export { HarnessData, HarnessRowData, Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, ToolCallData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, ApprovalRequest, MindRule, MindAuditEntry, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, NotifActionData, ProcessData, ClipboardEntryData, AppGridItem, CategoryItem, ServiceItem, WindowItem, DockItem, ToastData, ToastActionData, PackageData, PendingAction, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction, ProblemRow }
+export { HarnessData, HarnessRowData, Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, ToolCallData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, ApprovalRequest, QuestionRequest, MindRule, MindAuditEntry, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, NotifActionData, ProcessData, ClipboardEntryData, AppGridItem, CategoryItem, ServiceItem, WindowItem, DockItem, ToastData, ToastActionData, PackageData, PendingAction, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction, ProblemRow }
 
 export component App inherits Window {
     default-font-family: Theme.font-ui;
@@ -99,6 +105,13 @@ export component App inherits Window {
     // written a body for and the machine sat at 100% with four ticks and no desktop.
     callback boot-complete();
     boot-complete => {
+        // A desktop that starts locked (#415) is on the lock screen by the time boot finishes:
+        // leave it there. Switching away would end the shell's locked state behind the
+        // compositor's lock, and the control surface refuses by that state. The unlock goes
+        // where boot would have (wire/callbacks.rs, screen_after_unlock).
+        if root.current-screen == 3 || root.current-screen == 32 {
+            return;
+        }
         if root.onboarding-step > 0 {
             root.current-screen = 2;
             root.navigate(2);
@@ -119,6 +132,8 @@ export component App inherits Window {
     // one persistent status-bar line that clicks straight into Settings → AI. Rust sets
     // it from `assistant_offline_notice` and clears it when a model answers again.
     in property <string> assistant-offline-notice: "";
+    /// Set while another process holds the harness socket, so no mind can attach here (#367).
+    in property <string> minds-notice: "";
 
     // Chat state
     in property <[MessageData]> messages: [];
@@ -137,6 +152,8 @@ export component App inherits Window {
     /// time because Slint has no way to skip a row inside a `for`, and a stack of zero-height
     /// rows would leave the card floating below a gap the size of the session's history.
     in property <[ApprovalRequest]> pending-approvals: [];
+    /// Questions the Lens's mind is waiting on (#25): `wire::agents` fills it every tick.
+    in property <[QuestionRequest]> lens-questions: [];
     /// How many further requests are queued behind it. See `approvals-waiting` in intent_lens.
     in property <int> approvals-waiting: 0;
     /// Pressed Allow. This callback, and the one below it, are the only way a grant comes into
@@ -152,6 +169,7 @@ export component App inherits Window {
     in property <bool> lens-can-open-in-agents: false;
     callback lens-open-in-agents();
     callback lens-open-history();
+    callback lens-new-chat();
 
     // ── The vault, and the one way a passphrase gets into this machine ──
     //
@@ -184,8 +202,23 @@ export component App inherits Window {
     /// Whether the apps a mind opens go into Mind View (#239) rather than onto this desktop.
     in property <bool> mind-view-on: true;
     in property <[MindRule]> mind-session-rules: [];
+    /// The mode menu's line about rules the last lowering of the mode cleared, or empty.
+    in property <string> mind-rules-cleared: "";
     in property <[MindAuditEntry]> mind-audit: [];
     in-out property <bool> mind-menu-open: false;
+    /// The Minds panel, under the mind chip: the person's accounts, what each has left, and
+    /// "make something". Filled by wire/minds_panel.rs while it is open.
+    in-out property <bool> minds-panel-open: false;
+    in-out property <bool> minds-panel-adding: false;
+    in property <[ProviderGroup]> minds-groups: [];
+    in property <[AddChoice]> minds-choices: [];
+    in property <string> minds-today: "";
+    in property <string> minds-status: "";
+    callback minds-panel-opened();
+    callback minds-use-account(string);
+    callback minds-sign-in(string);
+    callback minds-add(string);
+    callback minds-make(string);
     /// The menu's two sub-panels, held here rather than inside it because the chip that opens
     /// the menu has to be able to reset them, and the menu lives behind an `if`.
     in-out property <bool> mind-menu-confirming: false;
@@ -196,6 +229,7 @@ export component App inherits Window {
     /// `close_mind_menu` is the socket's way to put it away without moving.
     changed current-screen => {
         root.mind-menu-open = false;
+        root.minds-panel-open = false;
         root.mind-menu-confirming = false;
         root.mind-menu-audit-open = false;
         // The taskbar entry's menu belongs to the screen it was opened over for the same
@@ -206,10 +240,17 @@ export component App inherits Window {
     /// These three are the only way this desktop becomes MORE permissive. They are callbacks,
     /// reached by a pointer; nothing on the control surface can raise the mode or make a rule.
     callback mind-mode-chosen(string);
-    callback mind-bypass-chosen(string);
+    /// Which bypass (`bypass` | `bypass_all`) and for how long (`15m` | `1h` | `restart`), from
+    /// the menu's red confirmation and nowhere else.
+    callback mind-bypass-chosen(string, string);
     callback mind-rule-revoked(string, string);
     /// Where a mind's apps open. A person's choice, reached by a pointer like the three above.
     callback mind-view-chosen(bool);
+    /// Private mode: the Mind off and nothing recorded, until the person turns it off
+    /// (`crate::private_mode`). Set by the shell; changed only by a pointer, from the mode menu or
+    /// the Lens's offer to leave it.
+    in property <bool> private-mode: false;
+    callback mind-private-chosen(bool);
 
     // ── The mind panel: where it is drawn, how open, and the room it takes ──
     //
@@ -471,6 +512,8 @@ export component App inherits Window {
     in property <string> lock-error: "";
     in property <string> lock-date-text: "";
     in property <string> lock-greeting: "";
+    // What the lock asks for: the login password, or the PIN on an account without one (#414).
+    in property <string> lock-prompt: "Enter your password to unlock";
     callback try-unlock(string);
     callback lock-screen();
 
@@ -489,6 +532,7 @@ export component App inherits Window {
     in property <int> settings-max-tokens: 512;
     in property <string> settings-tool-permission: "sensitive";
     in property <int> settings-auto-lock-secs: 300;
+    in property <bool> settings-auto-lock-available: true;
     in property <string> settings-version: "";
     in property <string> settings-ip-address: "";
     in property <string> settings-display-resolution: "";
@@ -504,6 +548,21 @@ export component App inherits Window {
     in property <[AIProviderData]> settings-ai-providers: [];
     in property <[AIModelData]> settings-available-models: [];
     in property <string> settings-provider-test-result: "";
+    // Decision model
+    in property <[DecisionPreset]> settings-decision-presets: [];
+    in property <string> settings-decision-provider: "";
+    in property <string> settings-decision-endpoint: "";
+    in property <string> settings-decision-model: "";
+    in property <string> settings-decision-key-env: "";
+    in property <[DecisionUse]> settings-decision-uses: [];
+    in property <string> settings-decision-where: "";
+    in property <bool> settings-decision-leaves-machine: false;
+    in property <string> settings-decision-status: "";
+    in property <bool> settings-decision-status-good: false;
+    callback decision-choose(string);
+    callback decision-save(string, string, string);
+    callback decision-test();
+    callback decision-toggle-use(string);
     in property <[SettingsCategoryItem]> settings-categories;
     // Which Settings section is open, so anything can deep-link to one.
     in-out property <int> settings-category: 0;
@@ -811,6 +870,8 @@ export component App inherits Window {
     in property <bool> pkg-is-applying: false;
     in property <float> pkg-apply-progress: 0.0;
     in property <string> pkg-error-text: "";
+    in property <string> pkg-detail-id: "";
+    in property <string> pkg-detail-source: "";
     in property <string> pkg-detail-name: "";
     in property <string> pkg-detail-version: "";
     in property <string> pkg-detail-description: "";
@@ -1012,20 +1073,32 @@ export component App inherits Window {
     callback onboarding-set-profile(/* interests */ string, /* home_location */ string,
                                      /* notif_pref */ string);
 
-    // Installer mode (disk install from live ISO)
+    // Installer mode (disk install from live ISO): screen 2 is the installer (installer.slint)
+    // instead of the onboarding.
     in property <bool> onboard-installer-mode: false;
+    // An installed machine's first boot, set up by the installer: the onboarding opens on its
+    // optional-setup welcome instead of asking for a name again.
+    in property <bool> onboard-after-install: false;
     in-out property <int> onboard-install-progress: 0;
     in-out property <string> onboard-install-status: "";
-    in property <string> onboard-disk-1-name: "";
-    in property <string> onboard-disk-1-size: "";
-    in property <string> onboard-disk-1-model: "";
-    in property <string> onboard-disk-2-name: "";
-    in property <string> onboard-disk-2-size: "";
-    in property <string> onboard-disk-2-model: "";
-    in property <string> onboard-disk-3-name: "";
-    in property <string> onboard-disk-3-size: "";
-    in property <string> onboard-disk-3-model: "";
+    in property <[InstallerDisk]> onboard-disks: [];
+    in property <bool> onboard-disks-scanned: false;
     in-out property <string> onboard-selected-disk: "";
+    in property <[KeyboardChoice]> onboard-keyboards: [];
+    in-out property <string> onboard-keyboard: "us";
+    in-out property <string> onboard-timezone: "";
+    in-out property <bool> onboard-username-touched: false;
+    in-out property <bool> onboard-hostname-touched: false;
+    callback onboard-keyboard-chosen(string);
+    // The installer's rules (installer_rules.rs), asked by its screens. Each check answers ""
+    // when the value is acceptable.
+    pure callback installer-derive-username(string) -> string;
+    pure callback installer-hostname-for(string) -> string;
+    pure callback installer-check-full-name(string) -> string;
+    pure callback installer-check-username(string) -> string;
+    pure callback installer-check-hostname(string) -> string;
+    pure callback installer-check-password(string, string) -> string;
+    pure callback installer-check-timezone(string) -> string;
 
     // The onboarding form, mirrored up to the window so the control surface can read and fill
     // it. `OnboardingScreen` lives inside a conditional element, so Rust cannot reach into it;
@@ -1044,7 +1117,10 @@ export component App inherits Window {
 
     callback onboard-install-to-disk(/* username */ string, /* password */ string,
                                      /* full_name */ string, /* hostname */ string,
-                                     /* companion_name */ string, /* target_disk */ string);
+                                     /* keyboard */ string, /* timezone */ string,
+                                     /* target_disk */ string, /* encrypt */ bool);
+    // The installer's "Encrypt with my password" (#400 step b), on by default.
+    in-out property <bool> onboard-encrypt: true;
     callback onboard-install-reboot();
 
     // AI onboarding setup (V59)
@@ -1206,11 +1282,11 @@ export component App inherits Window {
         }
 
         // Onboarding (first boot only)
-        if current-screen == 2 : OnboardingScreen {
+        if current-screen == 2 && !root.onboard-installer-mode : OnboardingScreen {
             width: 100%; height: 100%;
             ambient-interval-ms: root.ambient-interval-ms;
             companion-name: root.settings-companion-name;
-            installer-mode: root.onboard-installer-mode;
+            after-install: root.onboard-after-install;
             // AI hardware scan properties
             ai-hw-cpu-ok: root.onboard-ai-hw-cpu-ok;
             ai-hw-ram-ok: root.onboard-ai-hw-ram-ok;
@@ -1245,32 +1321,10 @@ export component App inherits Window {
             ai-api-key-submitted(provider, key) => { root.onboard-ai-api-key-submitted(provider, key); }
             ai-test-connection => { root.onboard-ai-test-connection(); }
             ai-skip-setup => { root.onboard-ai-skip-setup(); }
-            disk-1-name: root.onboard-disk-1-name;
-            disk-1-size: root.onboard-disk-1-size;
-            disk-1-model: root.onboard-disk-1-model;
-            disk-2-name: root.onboard-disk-2-name;
-            disk-2-size: root.onboard-disk-2-size;
-            disk-2-model: root.onboard-disk-2-model;
-            disk-3-name: root.onboard-disk-3-name;
-            disk-3-size: root.onboard-disk-3-size;
-            disk-3-model: root.onboard-disk-3-model;
-            selected-disk <=> root.onboard-selected-disk;
-            install-to-disk(username, password, full-name, hostname, comp-name, target-disk) => {
-                root.onboard-install-to-disk(username, password, full-name, hostname, comp-name, target-disk);
-            }
-            install-progress <=> root.onboard-install-progress;
-            install-status <=> root.onboard-install-status;
             phase <=> root.onboard-phase;
             input-user-name <=> root.onboard-input-full-name;
             input-companion-name <=> root.onboard-input-companion;
             input-home-location <=> root.onboard-input-location;
-            input-username <=> root.onboard-input-username;
-            input-password <=> root.onboard-input-password;
-            input-password-confirm <=> root.onboard-input-password-confirm;
-            input-hostname <=> root.onboard-input-hostname;
-            install-error <=> root.onboard-install-error;
-            installing <=> root.onboard-installing;
-            install-reboot => { root.onboard-install-reboot(); }
             ready => {
                 root.current-screen = 1;
                 root.navigate(1);
@@ -1281,6 +1335,48 @@ export component App inherits Window {
                 root.navigate(1);
                 root.onboarding-skip();
             }
+        }
+
+        // The installer (live ISO booted to install): four screens, then the install (#400).
+        if current-screen == 2 && root.onboard-installer-mode : InstallerScreen {
+            width: 100%; height: 100%;
+            step <=> root.onboard-phase;
+            keyboards: root.onboard-keyboards;
+            keyboard <=> root.onboard-keyboard;
+            keyboard-chosen(layout) => { root.onboard-keyboard-chosen(layout); }
+            // To the live desktop, and nothing written: this is a session on the stick, and
+            // the person came to try it, not to finish a setup.
+            try-first => {
+                root.current-screen = 1;
+                root.navigate(1);
+            }
+            full-name <=> root.onboard-input-full-name;
+            username <=> root.onboard-input-username;
+            password <=> root.onboard-input-password;
+            password-confirm <=> root.onboard-input-password-confirm;
+            hostname <=> root.onboard-input-hostname;
+            username-touched <=> root.onboard-username-touched;
+            hostname-touched <=> root.onboard-hostname-touched;
+            disks: root.onboard-disks;
+            disks-scanned: root.onboard-disks-scanned;
+            selected-disk <=> root.onboard-selected-disk;
+            encrypt <=> root.onboard-encrypt;
+            timezone <=> root.onboard-timezone;
+            installing <=> root.onboard-installing;
+            install-progress <=> root.onboard-install-progress;
+            install-status <=> root.onboard-install-status;
+            install-error <=> root.onboard-install-error;
+            install-to-disk(username, password, full-name, hostname, keyboard, timezone, disk, encrypt) => {
+                root.onboard-install-to-disk(username, password, full-name, hostname, keyboard, timezone, disk, encrypt);
+            }
+            reboot => { root.onboard-install-reboot(); }
+            derive-username(name) => { return root.installer-derive-username(name); }
+            hostname-for(username) => { return root.installer-hostname-for(username); }
+            check-full-name(name) => { return root.installer-check-full-name(name); }
+            check-username(username) => { return root.installer-check-username(username); }
+            check-hostname(hostname) => { return root.installer-check-hostname(hostname); }
+            check-password(password, confirm) => { return root.installer-check-password(password, confirm); }
+            check-timezone(timezone) => { return root.installer-check-timezone(timezone); }
         }
 
         // Lock screen
@@ -1294,6 +1390,7 @@ export component App inherits Window {
             date-text: root.lock-date-text;
             greeting-text: root.lock-greeting;
             error-text: root.lock-error;
+            prompt-text: root.lock-prompt;
             try-unlock(pin) => { root.try-unlock(pin); }
         }
 
@@ -1340,11 +1437,12 @@ export component App inherits Window {
             ai-privacy-clicked => { root.ai-quick-switcher-open = !root.ai-quick-switcher-open; }
             active-harness-id: root.active-harness-id;
             active-harness-name: root.active-harness-name;
-            // Straight to the section, not to the front door of Settings.
+            // The Minds panel, under the chip; Settings → Minds is its gear.
             active-mind-clicked => {
-                root.settings-category = 8;
-                root.current-screen = 7;
-                root.navigate(7);
+                root.minds-panel-open = !root.minds-panel-open;
+                root.minds-panel-adding = false;
+                root.mind-menu-open = false;
+                if root.minds-panel-open { root.minds-panel-opened(); }
             }
             // Companion
             is-thinking: root.is-thinking;
@@ -1375,9 +1473,22 @@ export component App inherits Window {
             approval-allow(id) => { root.approval-allow(id); }
             approval-allow-session(id) => { root.approval-allow-session(id); }
             approval-deny(id) => { root.approval-deny(id); }
+            // The mind's own questions (#25), answered through the same one path as in Agents.
+            questions: root.lens-questions;
+            question-answer(agent, request, answer) => { AgentsState.answer-question(agent, request, answer); }
+            // A chat reply's link to its run: the Agents pane of that one run. Or the desktop's
+            // offer, while private, to leave Private mode (`private_mode::LEAVE_LINK`).
+            open-run(run) => {
+                if run == "private:leave" {
+                    root.mind-private-chosen(false);
+                } else {
+                    AgentsState.show-agent(run);
+                }
+            }
             lens-can-open-in-agents: root.lens-can-open-in-agents;
             lens-open-in-agents => { root.lens-open-in-agents(); }
             lens-open-history => { root.lens-open-history(); }
+            lens-new-chat => { root.lens-new-chat(); }
             // Urges
             urges: root.urges;
             // Whisper Cards
@@ -1640,6 +1751,7 @@ export component App inherits Window {
                 max-tokens: root.settings-max-tokens;
                 tool-permission: root.settings-tool-permission;
                 auto-lock-secs: root.settings-auto-lock-secs;
+                auto-lock-available: root.settings-auto-lock-available;
                 network-online: root.network-online;
                 network-label: root.network-label;
                 network-detail: root.network-detail;
@@ -1691,6 +1803,20 @@ export component App inherits Window {
                 ai-providers: root.settings-ai-providers;
                 available-models: root.settings-available-models;
                 provider-test-result: root.settings-provider-test-result;
+                decision-presets: root.settings-decision-presets;
+                decision-provider: root.settings-decision-provider;
+                decision-endpoint: root.settings-decision-endpoint;
+                decision-model: root.settings-decision-model;
+                decision-key-env: root.settings-decision-key-env;
+                decision-uses: root.settings-decision-uses;
+                decision-where: root.settings-decision-where;
+                decision-leaves-machine: root.settings-decision-leaves-machine;
+                decision-status: root.settings-decision-status;
+                decision-status-good: root.settings-decision-status-good;
+                decision-choose(a0) => { root.decision-choose(a0); }
+                decision-save(a0, a1, a2) => { root.decision-save(a0, a1, a2); }
+                decision-test => { root.decision-test(); }
+                decision-toggle-use(id) => { root.decision-toggle-use(id); }
                 categories: root.settings-categories;
                 active-category <=> root.settings-category;
                 search-query <=> root.settings-query;
@@ -2125,6 +2251,8 @@ export component App inherits Window {
                 is-applying: root.pkg-is-applying;
                 apply-progress: root.pkg-apply-progress;
                 error-text: root.pkg-error-text;
+                detail-id: root.pkg-detail-id;
+                detail-source: root.pkg-detail-source;
                 detail-name: root.pkg-detail-name;
                 detail-version: root.pkg-detail-version;
                 detail-description: root.pkg-detail-description;
@@ -2426,6 +2554,7 @@ export component App inherits Window {
             companion-status: root.companion-status;
             companion-online: root.companion-online;
             assistant-offline-notice: root.assistant-offline-notice;
+            minds-notice: root.minds-notice;
             battery-available: root.battery-available;
             battery-level: root.battery-level;
             battery-charging: root.battery-charging;
@@ -2447,10 +2576,12 @@ export component App inherits Window {
             harness-driving: root.harness-driving;
             mind-mode: root.mind-mode;
             mind-mode-label: root.mind-mode-label;
+            private-mode: root.private-mode;
             // Closing it also drops the two sub-panels, so it never reopens mid-confirmation on
             // a question the person walked away from.
             mind-mode-clicked => {
                 root.mind-menu-open = !root.mind-menu-open;
+                root.minds-panel-open = false;
                 root.mind-menu-confirming = false;
                 root.mind-menu-audit-open = false;
             }
@@ -2464,8 +2595,15 @@ export component App inherits Window {
             // declared on DesktopScreen, and forwarding to a root callback of the same name was
             // inventing two that do not exist.
             ai-privacy-clicked => { root.ai-quick-switcher-open = !root.ai-quick-switcher-open; }
-            // Straight to the section, not to the front door of Settings.
+            // The Minds panel, under the chip; Settings → Minds is its gear.
             active-mind-clicked => {
+                root.minds-panel-open = !root.minds-panel-open;
+                root.minds-panel-adding = false;
+                root.mind-menu-open = false;
+                if root.minds-panel-open { root.minds-panel-opened(); }
+            }
+            // The "minds can't reach" notice goes to Minds, which lists what is attached (#367).
+            minds-notice-clicked => {
                 root.settings-category = 8;
                 root.current-screen = 7;
                 root.navigate(7);
@@ -2617,6 +2755,7 @@ export component App inherits Window {
             }
             open-mode => {
                 root.mind-menu-open = !root.mind-menu-open;
+                root.minds-panel-open = false;
                 root.mind-menu-confirming = false;
                 root.mind-menu-audit-open = false;
             }
@@ -2949,14 +3088,55 @@ export component App inherits Window {
                 mode-label: root.mind-mode-label;
                 ceiling: root.mind-ceiling;
                 rules: root.mind-session-rules;
+                rules-cleared: root.mind-rules-cleared;
                 audit: root.mind-audit;
                 confirming-bypass <=> root.mind-menu-confirming;
                 showing-audit <=> root.mind-menu-audit-open;
                 mode-chosen(m) => { root.mind-mode-chosen(m); root.mind-menu-open = false; }
-                bypass-chosen(d) => { root.mind-bypass-chosen(d); root.mind-menu-open = false; }
+                bypass-chosen(kind, d) => { root.mind-bypass-chosen(kind, d); root.mind-menu-open = false; }
                 rule-revoked(app, action) => { root.mind-rule-revoked(app, action); }
                 mind-view-on: root.mind-view-on;
+                private: root.private-mode;
+                private-chosen(on) => { root.mind-private-chosen(on); root.mind-menu-open = false; }
                 mind-view-chosen(on) => { root.mind-view-chosen(on); }
+            }
+        }
+
+        // The Minds panel, under the mind chip. The same screens as the mode menu: an account
+        // switched or signed in from a locked screen would be acting on a machine nobody has
+        // unlocked. Anchored 12px in from the right edge for the same reason the menu is.
+        if root.minds-panel-open
+            && root.current-screen != 0 && root.current-screen != 2
+            && root.current-screen != 3 && root.current-screen != 32
+            : Rectangle {
+            width: 100%;
+            height: 100%;
+            background: transparent;
+
+            TouchArea {
+                width: 100%;
+                height: 100%;
+                clicked => { root.minds-panel-open = false; }
+            }
+
+            MindsPanel {
+                x: parent.width - 372px;
+                y: Theme.status-bar-height + Theme.sp-1;
+                groups: root.minds-groups;
+                choices: root.minds-choices;
+                today: root.minds-today;
+                status: root.minds-status;
+                adding <=> root.minds-panel-adding;
+                use-account(id) => { root.minds-use-account(id); }
+                sign-in(id) => { root.minds-sign-in(id); }
+                add(v) => { root.minds-add(v); }
+                make(kind) => { root.minds-make(kind); root.minds-panel-open = false; }
+                manage => {
+                    root.minds-panel-open = false;
+                    root.settings-category = 8;
+                    root.current-screen = 7;
+                    root.navigate(7);
+                }
             }
         }
 

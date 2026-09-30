@@ -1,8 +1,7 @@
-// Lock Screen — atmospheric lock with premium typography, clock, date, PIN.
-// Shown on idle timeout or manual lock (Super+L). Validates the screen PIN to unlock: lock.rs
-// compares against ~/.yantrik/lock_pin and a wrong entry says "Wrong PIN", so the screen asks
-// for the PIN and not for a password (#215) — the vault passphrase is a different secret with
-// a different prompt, and a person who typed what this label used to say got "Wrong PIN".
+// Lock Screen — atmospheric lock with premium typography, clock, date, and the unlock field.
+// Shown on idle timeout or manual lock (Super+L). It asks for what lock.rs checks — the login
+// password, or the PIN on an account without one (#414) — and says so in `prompt-text`, set by
+// the shell: a label fixed in markup once asked for one secret while another was checked (#215).
 
 import { Theme } from "theme.slint";
 
@@ -13,6 +12,7 @@ export component LockScreen inherits Rectangle {
     in property <string> date-text: "";
     in property <string> greeting-text: "";
     in property <string> error-text: "";
+    in property <string> prompt-text: "";
 
     // Internal state
     property <bool> show-password: false;
@@ -169,7 +169,7 @@ export component LockScreen inherits Rectangle {
 
         // "Enter PIN" label
         Text {
-            text: "Enter PIN to unlock";
+            text: root.prompt-text;
             color: Theme.text-dim;
             font-size: Theme.fs-caption;
             horizontal-alignment: center;

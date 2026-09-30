@@ -109,42 +109,42 @@ pub fn detail(name: &str, installed: bool, upgradable: bool) -> Detail {
     d
 }
 
+/// The Package Manager's privileged half (#397): the only way this account runs apt without a
+/// password. It takes package NAMES only (no local .deb, no apt options) and sets the
+/// noninteractive frontend itself, since apt would otherwise stop on a configuration prompt and
+/// wait for a terminal that does not exist. Root-owned, outside /opt/yantrik, which its user can
+/// write. See deploy/yantrik-os/yantrik-pkg.
+pub const PKG_HELPER: &str = "/usr/lib/yantrik/yantrik-pkg";
+
+fn helper(verb: &str, pkg: Option<&str>) -> Vec<String> {
+    let mut v: Vec<String> = vec!["sudo".into(), "-n".into(), PKG_HELPER.into(), verb.into()];
+    v.extend(pkg.map(str::to_string));
+    v
+}
+
 /// The command that refreshes the package index.
 pub fn update_command() -> Vec<String> {
-    vec!["sudo".into(), "apt-get".into(), "update".into()]
+    helper("update", None)
 }
 
 /// The command that installs `pkg`.
-///
-/// `DEBIAN_FRONTEND=noninteractive` is not optional: apt will otherwise stop on a configuration
-/// prompt and wait for a terminal that does not exist, and the install hangs with no sign of why.
 pub fn install_command(pkg: &str) -> Vec<String> {
-    noninteractive(&["install", "-y", pkg])
+    helper("install", Some(pkg))
 }
 
 /// The command that removes `pkg`.
 pub fn remove_command(pkg: &str) -> Vec<String> {
-    noninteractive(&["remove", "-y", pkg])
+    helper("remove", Some(pkg))
 }
 
 /// The command that upgrades one package without pulling in a full distribution upgrade.
 pub fn upgrade_one_command(pkg: &str) -> Vec<String> {
-    noninteractive(&["install", "-y", "--only-upgrade", pkg])
+    helper("upgrade-one", Some(pkg))
 }
 
 /// The command that upgrades everything already installed.
 pub fn upgrade_all_command() -> Vec<String> {
-    noninteractive(&["upgrade", "-y"])
-}
-
-fn noninteractive(args: &[&str]) -> Vec<String> {
-    let mut v: Vec<String> = vec![
-        "sudo".into(),
-        "DEBIAN_FRONTEND=noninteractive".into(),
-        "apt-get".into(),
-    ];
-    v.extend(args.iter().map(|a| a.to_string()));
-    v
+    helper("upgrade", None)
 }
 
 // ── Parsing ─────────────────────────────────────────────────────────────────────────────
@@ -372,17 +372,16 @@ mod tests {
     }
 
     #[test]
-    fn mutations_are_noninteractive_and_go_through_sudo() {
-        // apt stopping on a configuration prompt, waiting for a terminal that does not exist,
-        // is an install that hangs forever with nothing on screen to say why.
+    fn mutations_go_through_the_package_helper_and_never_apt_directly() {
+        // Passwordless `apt-get install <anything>` was root for anything that reached it (#397):
+        // every mutation is the helper, by its root-owned path, with sudo that never prompts.
         let cmd = install_command("ripgrep");
-        assert_eq!(cmd[0], "sudo");
-        assert!(cmd.contains(&"DEBIAN_FRONTEND=noninteractive".to_string()));
-        assert!(cmd.contains(&"-y".to_string()));
-        assert_eq!(cmd.last().unwrap(), "ripgrep");
-
-        assert!(upgrade_one_command("vim").contains(&"--only-upgrade".to_string()));
-        assert_eq!(remove_command("vim").last().unwrap(), "vim");
+        assert_eq!(cmd, ["sudo", "-n", PKG_HELPER, "install", "ripgrep"]);
+        assert_eq!(update_command(), ["sudo", "-n", PKG_HELPER, "update"]);
+        assert_eq!(upgrade_all_command(), ["sudo", "-n", PKG_HELPER, "upgrade"]);
+        assert_eq!(upgrade_one_command("vim"), ["sudo", "-n", PKG_HELPER, "upgrade-one", "vim"]);
+        assert_eq!(remove_command("vim"), ["sudo", "-n", PKG_HELPER, "remove", "vim"]);
+        assert!(!PKG_HELPER.starts_with("/opt/yantrik"), "never where its user can write");
     }
 
     #[test]

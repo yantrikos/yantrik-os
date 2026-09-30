@@ -11,6 +11,9 @@ tracing = { workspace = true }
 # Conversation ids and agent tokens come from the OS's own random source. Already in the tree
 # (0.2.x, through half the workspace), so this adds an edge to the lock and nothing to download.
 getrandom = "0.2"
+# Runs outlive the chat (#25): state and a sequenced event log, in the SQLite the workspace
+# already links (bundled, one copy through yantrikdb).
+rusqlite = { workspace = true }
 
 [dev-dependencies]
 # Only the examples need a socket; the host itself is deliberately transport-free so it can be

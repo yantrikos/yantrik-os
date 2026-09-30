@@ -780,12 +780,32 @@ fn appeared(before: &str, after: &str) -> String {
 /// session's revision to move, which is the shell echoing or printing, and then the answer can
 /// carry what came back. It is deliberately *not* waiting for the command to finish: `sleep 30`
 /// takes thirty seconds and the runtime gives the whole call three.
-fn responded(session: &Session, before: u64) -> bool {
+///
+/// Given the screen as it was (`shown`), the wait goes on — inside the same bound — until the
+/// text on it has changed, not merely the revision. The first thing a shell sends back after a
+/// line is often a cursor move or a mode switch: the revision moved, `run` answered at once, and
+/// its `output` said nothing had appeared while the echo was a few milliseconds behind (a CI run
+/// on main caught exactly that). `send_input` passes no screen: a key sent to a program may
+/// rightly change no text at all.
+fn responded(session: &Session, before: u64, shown: Option<&str>) -> bool {
     let deadline = std::time::Instant::now() + Duration::from_millis(900);
-    while session.revision() == before && std::time::Instant::now() < deadline {
+    let mut seen = before;
+    loop {
+        let now = session.revision();
+        if now != seen {
+            seen = now;
+            match shown {
+                // Snapshots only when something moved: the screen is read under the parser's
+                // lock, which the reader thread needs too.
+                Some(shown) if session.snapshot().text == shown => {}
+                _ => return true,
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return seen != before;
+        }
         std::thread::sleep(Duration::from_millis(5));
     }
-    session.revision() != before
 }
 
 /// What the active shell now is, read back off the PTY rather than assumed.
@@ -910,7 +930,9 @@ fn surface(ui: &TerminalApp, state: &State) -> Vec<(Action, Handler)> {
         // `dangerous` grade would put it above the shipped `sensitive` ceiling and leave the app
         // publishing nothing a mind could use. What the command itself may destroy is the
         // machine's ceiling to decide — `tool_permission` in settings.yaml — not this app's, and
-        // the person can see and interrupt every line that arrives.
+        // the person can see and interrupt every line that arrives. Open-ended: the line is
+        // whatever it is given, so it asks once in ask, auto and bypass, and a session rule
+        // answers the rest (29 September 2026).
         act(
             "run",
             "Type a command line into the active shell and press Return. It does not wait for \
@@ -920,6 +942,7 @@ fn surface(ui: &TerminalApp, state: &State) -> Vec<(Action, Handler)> {
         )
         .risk("sensitive")
         .defers()
+        .open_ended()
         .arg(arg(
             "command",
             "One command line, exactly as it would be typed; a newline is added. It is \
@@ -950,7 +973,7 @@ fn surface(ui: &TerminalApp, state: &State) -> Vec<(Action, Handler)> {
             let screen = session.snapshot().text;
             session.set_scrollback(0);
             session.write(format!("{command}\r").as_bytes()).map_err(|e| refuse(ui, e))?;
-            let answered = responded(session, before);
+            let answered = responded(session, before, Some(&screen));
             let mut out = shell_now(ui, &s);
             out["sent"] = serde_json::json!(command);
             out["shell_answered"] = serde_json::json!(answered);
@@ -965,7 +988,9 @@ fn surface(ui: &TerminalApp, state: &State) -> Vec<(Action, Handler)> {
 
     add(
         // Sensitive for the same reason as `run`: whatever is waiting on the other end of the
-        // PTY reads these bytes, and a program at a prompt cannot tell them from typing.
+        // PTY reads these bytes, and a program at a prompt cannot tell them from typing — which
+        // makes it open-ended as `run` is: a line ending in \n at the shell's prompt is a command.
+        // `new_tab` and `open_directory` are not: they start a shell and run nothing they are given.
         act(
             "send_input",
             "Send raw bytes to the active shell without pressing Return — for answering a \
@@ -974,6 +999,7 @@ fn surface(ui: &TerminalApp, state: &State) -> Vec<(Action, Handler)> {
         )
         .risk("sensitive")
         .defers()
+        .open_ended()
         .arg(arg(
             "text",
             "The exact characters to send, with no newline added: end it with \\n to submit a \
@@ -998,7 +1024,7 @@ fn surface(ui: &TerminalApp, state: &State) -> Vec<(Action, Handler)> {
             let was_running = running(session.pid());
             let before = session.revision();
             session.write(text.as_bytes()).map_err(|e| refuse(ui, e))?;
-            let answered = responded(session, before);
+            let answered = responded(session, before, None);
             let mut out = shell_now(ui, &s);
             out["sent_bytes"] = serde_json::json!(text.len());
             out["shell_answered"] = serde_json::json!(answered);

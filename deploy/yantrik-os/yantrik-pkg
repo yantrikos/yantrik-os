@@ -1,0 +1,64 @@
+#!/bin/sh
+# yantrik-pkg — the Package Manager's privileged half (#397).
+#
+# The Package Manager ran `sudo apt-get install <whatever it was given>` under passwordless sudo
+# for everything. Without a password, `apt-get install ./x.deb` installs a local file and runs its
+# maintainer scripts as root, and `-o ...` rewrites apt's configuration: root for anything that can
+# reach that call, a mind included. This does the five things the Package Manager needs and
+# nothing else, and takes only package NAMES from the configured, signed repositories.
+#
+#   yantrik-pkg update                 refresh the package index
+#   yantrik-pkg upgrade                upgrade everything installed
+#   yantrik-pkg install NAME...        install from the repositories
+#   yantrik-pkg upgrade-one NAME       upgrade one installed package
+#   yantrik-pkg remove NAME...         remove
+#   yantrik-pkg selftest               check the name rule (no apt, no root)
+#
+# Installed root-owned in /usr/lib/yantrik (never in /opt/yantrik, which its user can write), and
+# the only way the desktop's account runs apt without a password.
+set -eu
+
+# Debian's package-name grammar (Policy 5.6.1): lowercase letters, digits, '+', '-', '.', at least
+# two characters, starting with a letter or digit. No '/', so never a path; no leading '-', so
+# never an option.
+name_ok() {
+  case "$1" in
+    '' | -* | *[!a-z0-9+.-]*) return 1 ;;
+  esac
+  case "$1" in
+    [a-z0-9]?*) return 0 ;;
+  esac
+  return 1
+}
+
+names_ok() {
+  [ "$#" -gt 0 ] || { echo "yantrik-pkg: name at least one package" >&2; return 2; }
+  for n in "$@"; do
+    name_ok "$n" || { echo "yantrik-pkg: \`$n\` is not a package name from the repositories" >&2; return 2; }
+  done
+}
+
+selftest() {
+  fails=0
+  for good in bash libc6 g++ python3.13 libstdc++6 zstd 0ad; do
+    name_ok "$good" || { echo "FAIL refused a real name: $good"; fails=$((fails + 1)); }
+  done
+  for bad in ./evil.deb /tmp/x.deb -oAPT::Update::Pre-Invoke::=sh --reinstall Bash a "" "x y" "x;id" 'x$(id)' ../x; do
+    name_ok "$bad" && { echo "FAIL accepted: [$bad]"; fails=$((fails + 1)); }
+  done
+  [ "$fails" = 0 ] && echo "yantrik-pkg selftest: ok" && return 0
+  echo "yantrik-pkg selftest: $fails failed"; return 1
+}
+
+[ "$#" -gt 0 ] || { sed -n '12,18p' "$0" >&2; exit 2; }
+verb="$1"; shift
+export DEBIAN_FRONTEND=noninteractive
+case "$verb" in
+  update)      [ "$#" = 0 ] || exit 2; exec apt-get update ;;
+  upgrade)     [ "$#" = 0 ] || exit 2; exec apt-get upgrade -y ;;
+  install)     names_ok "$@" || exit 2; exec apt-get install -y -- "$@" ;;
+  upgrade-one) [ "$#" = 1 ] || exit 2; names_ok "$@" || exit 2; exec apt-get install -y --only-upgrade -- "$1" ;;
+  remove)      names_ok "$@" || exit 2; exec apt-get remove -y -- "$@" ;;
+  selftest)    selftest; exit $? ;;
+  *)           echo "yantrik-pkg: no verb \`$verb\`" >&2; exit 2 ;;
+esac

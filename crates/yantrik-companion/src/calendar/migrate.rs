@@ -138,6 +138,9 @@ pub fn run(conn: &rusqlite::Connection, backend: &dyn CalendarBackend) -> Migrat
             // Migrated out of the companion's old private cache: whoever made these is not
             // on record, and a migration is not a surface caller anybody verified (#201).
             creator: None,
+            // The old rows kept no reminder, so none is invented: the store's default applies,
+            // which is the ten minutes every event has always had.
+            reminder_minutes: None,
         };
 
         match backend.create(&params) {

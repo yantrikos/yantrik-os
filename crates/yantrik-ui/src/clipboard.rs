@@ -133,15 +133,27 @@ pub fn start_watcher() -> SharedHistory {
 fn run_watcher(history: SharedHistory) {
     tracing::info!("Clipboard watcher started");
     let mut last_content = String::new();
+    // Private mode records nothing: the clipboard is not read while it is on, and what was copied
+    // during it is taken as already seen when it ends, so it is never captured afterwards.
+    let mut was_private = false;
 
     loop {
+        let private = crate::private_mode::is_on();
+        if private {
+            was_private = true;
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            continue;
+        }
+        let just_left_private = std::mem::take(&mut was_private);
         match std::process::Command::new("wl-paste")
             .arg("--no-newline")
             .output()
         {
             Ok(output) if output.status.success() => {
                 let content = String::from_utf8_lossy(&output.stdout).to_string();
-                if !content.is_empty()
+                if just_left_private {
+                    last_content = content;
+                } else if !content.is_empty()
                     && content != last_content
                     && content.len() <= MAX_ENTRY_BYTES
                 {

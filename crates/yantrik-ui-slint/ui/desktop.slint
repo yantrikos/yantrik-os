@@ -29,6 +29,7 @@ import { Icon, Icons } from "components/icon.slint";
 import { AppColor } from "components/app_color.slint";
 import { AppTile } from "app_tile.slint";
 import { IntentLens, LensResult, ApprovalRequest } from "components/intent_lens.slint";
+import { QuestionRequest } from "components/question_card.slint";
 import { MessageData } from "components/message_bubble.slint";
 import { UrgeCardData, GlanceCard } from "components/glance_card.slint";
 import { WhisperCardStack, WhisperCardItem } from "components/whisper_card.slint";
@@ -111,6 +112,10 @@ export component DesktopScreen inherits Rectangle {
     // draws the same list over whatever screen is up when the Lens is not showing it.
     in property <[ApprovalRequest]> approvals: [];
     in property <int> approvals-waiting: 0;
+    /// The Lens's mind's own questions (#25).
+    in property <[QuestionRequest]> questions: [];
+    callback question-answer(string, string, string);
+    callback open-run(string);
     callback approval-allow(string);
     /// The same grant plus a standing rule for that (app, action) — see mind_mode.rs.
     callback approval-allow-session(string);
@@ -120,6 +125,7 @@ export component DesktopScreen inherits Rectangle {
     in property <bool> lens-can-open-in-agents: false;
     callback lens-open-in-agents();
     callback lens-open-history();
+    callback lens-new-chat();
 
     // Urges (for quiet queue)
     in property <[UrgeCardData]> urges: [];
@@ -938,6 +944,7 @@ export component DesktopScreen inherits Rectangle {
         category-selected(id) => { root.grid-category-selected(id); }
         launch-app(app-id) => { root.grid-launch-app(app-id); }
         toggle-pin(app-id) => { root.grid-toggle-pin(app-id); }
+        power-action(action) => { root.power-action(action); }
         close => { root.app-grid-open = false; }
         search-changed(query) => { root.grid-search-apps(query); }
     }
@@ -1026,6 +1033,7 @@ export component DesktopScreen inherits Rectangle {
         can-open-in-agents: root.lens-can-open-in-agents;
         open-in-agents => { root.lens-open-in-agents(); }
         open-history => { root.lens-open-history(); }
+        new-chat => { root.lens-new-chat(); }
         messages: root.messages;
         is-generating: root.is-generating;
         suggestions: root.lens-suggestions;
@@ -1036,6 +1044,9 @@ export component DesktopScreen inherits Rectangle {
         approval-allow(id) => { root.approval-allow(id); }
         approval-allow-session(id) => { root.approval-allow-session(id); }
         approval-deny(id) => { root.approval-deny(id); }
+        questions: root.questions;
+        question-answer(agent, request, answer) => { root.question-answer(agent, request, answer); }
+        open-run(run) => { root.open-run(run); }
         query-changed(text) => { root.lens-query(text); }
         submit-query(text) => { root.lens-submit(text); }
         result-selected(id) => { root.lens-result-selected(id); }

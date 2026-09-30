@@ -425,8 +425,17 @@ fn real_editor_keyboard_tabs_search_save_close_and_recovery() {
     let published = surface(&ui, &s);
     every_action_says_what_it_does(&published);
     the_editor_answers_with_what_it_wrote(&ui, &s, &published, &dir);
+    an_agent_names_only_files_in_the_home(&ui, &s, &published, &dir);
     a_missing_required_argument_is_refused_by_name(&ui, &s, &published);
     append_adds_to_the_end_and_takes_nothing_away(&s, &published);
+    a_document_too_big_to_draw_is_windowed_read_only_and_kept_whole(
+        &ui,
+        &s,
+        &queue,
+        &window,
+        &published,
+        &dir,
+    );
 
     let mut b = s.borrow_mut();
     b.recovery_timer.stop();
@@ -736,4 +745,221 @@ fn append_adds_to_the_end_and_takes_nothing_away(s: &State, published: &[(Action
     assert_eq!(fresh["modified"], true, "and it is unsaved until save_as: {fresh}");
     assert_eq!(fresh["path"], serde_json::Value::Null, "answer: {fresh}");
     assert_eq!(s.borrow().docs.len(), tabs + 1, "in a tab of its own");
+}
+
+/// #328: the crash at `euclid-0.22.13/src/vector.rs:688`. Slint's software renderer keeps
+/// every physical coordinate in an `i16` and casts glyph origins before clipping, so a
+/// document of ~2000 lines or a ~3900-character line — well inside the editor's own 1 MiB /
+/// 20,000-line input bounds — aborted the window mid-draw, and because tabs are restored at
+/// launch, every restart died the same way. The editor now draws a read-only leading window
+/// of such a document and keeps every byte: each `tick` below rendered, and before the fix
+/// the first one on an oversized document panicked.
+fn a_document_too_big_to_draw_is_windowed_read_only_and_kept_whole(
+    ui: &TextEditorApp,
+    s: &State,
+    queue: &Queue,
+    window: &MinimalSoftwareWindow,
+    published: &[(Action, Handler)],
+    dir: &Path,
+) {
+    let text = || s.borrow().docs[s.borrow().active].text.clone();
+    // Room for the three documents below: the checks above may have left eight tabs open.
+    while s.borrow().docs.len() > 5 {
+        let i = s.borrow().active as i32;
+        ui.invoke_close_tab(i);
+        if ui.get_dialog() == 3 {
+            act_on(published, "discard", serde_json::json!({})).ok();
+        }
+        tick(queue, window);
+    }
+
+    // The document from the report — the file Hermes wrote on the VM — draws whole, unrestricted
+    // and editable.
+    let repro = include_str!("../repro-328-content.py").to_string();
+    act_on(published, "new", serde_json::json!({ "text": repro.clone() }))
+        .expect("the repro document opens");
+    tick(queue, window);
+    tick(queue, window);
+    assert!(!ui.get_view_limited(), "the repro document fits in full");
+    assert_eq!(ui.get_content().as_str(), repro);
+    ui.invoke_focus_editor();
+    key(window, "#");
+    tick(queue, window);
+    assert!(text().starts_with('#'), "the repro document stays editable");
+    act_on(published, "undo", serde_json::json!({})).expect("undo the keystroke");
+    assert_eq!(text(), repro);
+
+    // One line longer than the renderer's i16 horizontal space: this panicked at vector.rs:688.
+    let long = "x".repeat(5_000);
+    act_on(published, "new", serde_json::json!({ "text": long.clone() }))
+        .expect("the wide document opens");
+    tick(queue, window);
+    tick(queue, window);
+    assert!(ui.get_view_limited(), "the wide document is windowed");
+    assert!(
+        ui.get_content().len() < long.len(),
+        "the view is shorter than the document"
+    );
+    assert_eq!(text(), long, "the document keeps every character");
+    assert!(
+        !ui.get_view_status().is_empty(),
+        "and the status bar says part is withheld"
+    );
+
+    // The windowed view is read-only: a keystroke cannot truncate the document to the view.
+    ui.invoke_focus_editor();
+    key(window, "y");
+    tick(queue, window);
+    assert_eq!(text(), long, "the read-only view takes no keystroke");
+
+    // Saving writes the whole document, not the window.
+    let path = dir.join("whole.txt");
+    act_on(
+        published,
+        "save_as",
+        serde_json::json!({ "path": path.display().to_string() }),
+    )
+    .expect("the wide document saves");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        long,
+        "the file on disk is the whole document"
+    );
+
+    // A document taller than the renderer's i16 vertical space.
+    let tall = format!("{}MARKER\n", "let value = 1;\n".repeat(19_000));
+    act_on(published, "new", serde_json::json!({ "text": tall.clone() }))
+        .expect("the tall document opens");
+    tick(queue, window);
+    tick(queue, window);
+    assert!(ui.get_view_limited(), "the tall document is windowed");
+    assert_eq!(text(), tall, "the document keeps all 19,001 lines");
+    assert!(
+        ui.get_content().lines().count() < 1_000,
+        "the view is a small window: {} lines",
+        ui.get_content().lines().count()
+    );
+
+    // A match beyond the window is still counted from the whole document, and selecting it is
+    // skipped rather than pointing the TextInput at an offset it does not hold.
+    let found = act_on(published, "find", serde_json::json!({ "text": "MARKER" }))
+        .expect("find in the tall document");
+    assert_eq!(found["matches"], 1, "the match is in the document: {found}");
+    tick(queue, window);
+
+    // A bigger font fits fewer lines inside the limit; the window follows without a restart.
+    ui.set_font_pixels(22);
+    tick(queue, window);
+    tick(queue, window);
+    let big = ui.get_content().lines().count();
+    assert!(big > 0 && big < 400, "22px window is {big} lines");
+    ui.set_font_pixels(14);
+    tick(queue, window);
+    assert!(
+        ui.get_content().lines().count() > big,
+        "14px window grows back: {} lines",
+        ui.get_content().lines().count()
+    );
+
+    // What a mind reads is the whole document, and says the person sees a window of it.
+    let summary = view(ui, s).summary;
+    let tall_lines = tall.bytes().filter(|b| *b == b'\n').count() + 1;
+    assert!(
+        summary.contains(&format!("{tall_lines} lines")),
+        "the summary counts the whole document: {summary:?}"
+    );
+    assert!(
+        summary.contains("Showing the first"),
+        "and says what the window withholds: {summary:?}"
+    );
+}
+
+/// An agent names only files in the person's home, outside its protected places (#443).
+///
+/// `open ~/.ssh/id_ed25519` then `describe` read a key back, and `save_as ~/.bashrc` with
+/// `overwrite` ran code as the person at their next login. The fixtures live in the temp
+/// directory, outside the home, which is exactly what an agent is refused and the person is not.
+fn an_agent_names_only_files_in_the_home(ui: &TextEditorApp, s: &State, published: &[(Action, Handler)], dir: &Path) {
+    use yantrik_app_runtime::control::AgentTokenScope;
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    if dir.starts_with(&home) {
+        return; // A temp directory inside the home would be allowed, and prove nothing here.
+    }
+    let tab = s.borrow().docs[s.borrow().active].path.clone().expect("the tab saved above");
+    let shown = view(ui, s).state;
+    assert!(!shown["content"].as_str().unwrap_or_default().is_empty(), "the person sees the text: {shown}");
+    assert!(shown["content_hidden"].is_null(), "{shown}");
+
+    let text_before = s.borrow().docs[s.borrow().active].text.clone();
+    ui.set_query("omega".into());
+    search(ui, s, false);
+    assert!(ui.get_match_count() > 0, "the person's find matches");
+
+    let agent = AgentTokenScope::enter(Some("tok-editor-test".into()));
+    let refused = |name: &str, args: serde_json::Value, why: &str| {
+        let err = act_on(published, name, args.clone()).expect_err(&format!("{name} {args}"));
+        assert!(err.ends_with(why), "{name} {args}: {err}");
+    };
+    refused("open", serde_json::json!({ "path": "~/.ssh/id_ed25519" }), " is protected");
+    refused("open", serde_json::json!({ "path": "/etc/hostname" }), " is outside");
+    refused("open", serde_json::json!({ "path": tab.display().to_string() }), " is outside");
+    refused("save", serde_json::json!({}), " is outside");
+
+    // The tab in front is the person's, from outside the home: nothing reads or changes its
+    // text for an agent. `save_as` would copy it somewhere an agent may read; `find` would
+    // answer "does it contain X?" by its count.
+    let hidden = "its text is left alone; `select_tab` another or `new` one.";
+    refused("save_as", serde_json::json!({ "path": "~/Documents/copied-out.txt" }), hidden);
+    for (name, args) in [
+        ("find", serde_json::json!({ "text": "omega" })),
+        ("find-next", serde_json::json!({})),
+        ("find-prev", serde_json::json!({})),
+        ("replace_text", serde_json::json!({ "text": "x" })),
+        ("replace", serde_json::json!({})),
+        ("replace-all", serde_json::json!({})),
+        ("set_content", serde_json::json!({ "text": "x" })),
+        ("append", serde_json::json!({ "text": "x" })),
+        ("undo", serde_json::json!({})),
+        ("redo", serde_json::json!({})),
+    ] {
+        refused(name, args, hidden);
+    }
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    assert!(!home.join("Documents/copied-out.txt").exists(), "nothing was copied out");
+    assert_eq!(s.borrow().docs[s.borrow().active].text, text_before, "the tab is untouched");
+    assert_eq!(s.borrow().docs[s.borrow().active].path.as_ref(), Some(&tab), "the tab stays where it was");
+
+    // Nor is it read back through `describe`: not its text, its name, its path or a match count.
+    let seen = view(ui, s);
+    assert_eq!(seen.state["content"], "", "{}", seen.state);
+    assert!(seen.state["content_hidden"].is_string(), "{}", seen.state);
+    assert_eq!(seen.state["find_count"], 0, "{}", seen.state);
+    assert_eq!(seen.state["find_query"], "", "{}", seen.state);
+    for size in ["lines", "characters", "bytes"] {
+        assert!(seen.state[size].is_null(), "{size}: {}", seen.state);
+    }
+    assert!(seen.summary.contains("not shown to an agent"), "{}", seen.summary);
+    assert!(!seen.summary.contains(" line"), "no length in the summary either: {}", seen.summary);
+    let listed = seen.state.to_string();
+    assert!(!listed.contains("surface.txt") && !listed.contains(&dir.display().to_string()), "{listed}");
+    assert!(seen.state["tabs"].as_array().unwrap().iter().any(|t| t["path"] == "(hidden)"), "{listed}");
+
+    // In a tab of its own, the write rule alone decides.
+    act_on(published, "new", serde_json::json!({ "text": "echo pwned\n" })).expect("a new tab");
+    refused("save_as", serde_json::json!({ "path": "~/.bashrc", "overwrite": true }), " is protected");
+    refused("save_as", serde_json::json!({ "path": "~/.config/autostart/x.desktop" }), " is protected");
+    // Nor anywhere else programs read their settings and startup: the list can never be whole.
+    for hidden_place in ["~/.gitconfig", "~/.local/bin/x", "~/bin/x", "~/.tmux.conf"] {
+        refused("save_as", serde_json::json!({ "path": hidden_place }), " is hidden_place");
+    }
+    refused("save_as", serde_json::json!({ "path": dir.join("agent.txt").display().to_string() }), " is outside");
+    assert!(!dir.join("agent.txt").exists(), "nothing was written");
+    drop(agent);
+    act_on(published, "set_content", serde_json::json!({ "text": "" })).expect("empty the scratch tab");
+    act_on(published, "close", serde_json::json!({})).expect("close the scratch tab");
+    if ui.get_dialog() == 3 {
+        act_on(published, "discard", serde_json::json!({})).expect("discard the scratch tab");
+    }
+    ui.set_query("".into());
+    search(ui, s, false);
 }

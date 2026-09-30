@@ -713,6 +713,26 @@ fn run_job(job: Job, cancel: Arc<AtomicBool>, sink: Sink) {
     sink.send(Event::Done(message, created, undo, moved, remaining));
 }
 
+thread_local! {
+    /// The browser `wire` made, for the control surface to read on the same (UI) thread.
+    static BROWSER: RefCell<std::rc::Weak<RefCell<Browser>>> = RefCell::new(std::rc::Weak::new());
+}
+
+/// What a paste would copy or move right now: the Files clipboard's paths, and whether they are
+/// cut. The person's clipboard, not the caller's: a mind pasting has to be checked against what
+/// the person put there, which may be anything they could select (#443). `Ok(None)` when
+/// nothing is on it; `Err` when it cannot be read - no browser, or one mid-callback - which a
+/// check must refuse on rather than read as "nothing to paste".
+pub fn clipboard_now() -> Result<Option<(Vec<PathBuf>, bool)>, String> {
+    let browser = BROWSER
+        .with(|b| b.borrow().upgrade())
+        .ok_or_else(|| "the Files clipboard cannot be read: Files is not running".to_string())?;
+    let browser = browser
+        .try_borrow()
+        .map_err(|_| "the Files clipboard cannot be read right now; try again".to_string())?;
+    Ok(browser.clipboard.as_ref().map(|c| (c.paths.clone(), c.cut)))
+}
+
 pub fn wire(ui: &App, ctx: &AppContext) {
     let (sender, receiver) = mpsc::channel();
     let sink = Sink {
@@ -747,6 +767,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         job_cancel: None,
         sink,
     }));
+    BROWSER.with(|b| *b.borrow_mut() = Rc::downgrade(&state));
     macro_rules! bind {($callback:ident, |$u:ident,$s:ident $(,$arg:ident)*| $body:block)=>{{let weak=ui.as_weak();let state=state.clone();ui.$callback(move|$($arg),*|{if let Some($u)=weak.upgrade(){let mut $s=state.borrow_mut();$body}});}};}
     bind!(on_file_worker_event, |u, s| {
         while let Ok(event) = receiver.try_recv() {

@@ -755,6 +755,18 @@ fn apply_weather_data(ui: &WeatherApp, data: WeatherData) {
         None if ui.get_notice().starts_with(DEGRADED_NOTICE) => ui.set_notice(SharedString::new()),
         None => {}
     }
+    // The hourly strip reads in the FORECAST LOCATION's timezone (Open-Meteo returns local
+    // times), which is not the machine's when the two differ. Name whose time it is so a
+    // "19:00" beside a 12:14 clock is not a mystery. The location name is what both fetch
+    // paths always know; the service contract carries no timezone, so we name the place rather
+    // than invent an offset. Set only when a reading arrived: a failed refresh leaves the old
+    // hourly strip on screen, so it must leave the label that describes it too.
+    if let Some(c) = data.current.as_ref() {
+        let location = c.location.trim();
+        ui.set_hourly_tz_label(
+            if location.is_empty() { SharedString::new() } else { format!("{location} time").into() },
+        );
+    }
     if let Some(current) = data.current { ui.set_current(current); }
     if let Some(hourly) = data.hourly { ui.set_hourly(ModelRc::new(VecModel::from(hourly))); }
     if let Some(daily) = data.daily { ui.set_daily(ModelRc::new(VecModel::from(daily))); }

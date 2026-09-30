@@ -1,7 +1,40 @@
 //! Calendar service contract — event CRUD, sync, scheduling.
 
+use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use crate::email::ServiceError;
+
+/// How far ahead an event is announced when the event does not say. The old reminders timer had
+/// exactly one lead, hard-coded to this, so events stored before `reminder_minutes` existed and
+/// callers that do not send it keep the behaviour they have always had.
+pub const DEFAULT_REMINDER_MINUTES: u32 = 10;
+
+/// The farthest ahead a reminder may be set. One week: past that, "remind me about this" is a
+/// different feature (a recurring nudge, a task list), and an absurd value a caller fat-fingers
+/// should be refused at the door rather than stored into somebody's calendar.
+pub const MAX_REMINDER_MINUTES: u32 = 7 * 24 * 60;
+
+fn default_reminder_minutes() -> u32 {
+    DEFAULT_REMINDER_MINUTES
+}
+
+/// Parse a stored event stamp: `2026-03-18T10:00:00`, or bare `2026-03-18` as the start of that
+/// day. Local and naive — no timezone, no offset — which is how the calendar store writes them.
+///
+/// Here rather than in the calendar service because the event files now have two readers that
+/// must agree on the format: the service that owns them, and the notifications service's
+/// reminder timer, which reads them directly so reminders survive the calendar service not
+/// running. Two copies of this parser in two crates is exactly the drift this crate exists to
+/// prevent.
+pub fn parse_stamp(s: &str) -> Option<NaiveDateTime> {
+    if let Ok(dt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+        return Some(dt);
+    }
+    if let Ok(d) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        return d.and_hms_opt(0, 0, 0);
+    }
+    None
+}
 
 /// The names of the calendar service's JSON-RPC methods.
 ///
@@ -116,6 +149,14 @@ pub struct CreateEventParams {
     /// decided by the surface that reads it back, not here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creator: Option<String>,
+    /// How many minutes before the start to announce this event. `None` means the caller did
+    /// not say, and the store applies [`DEFAULT_REMINDER_MINUTES`]. All-day events are never
+    /// announced: there is no time of day to announce them at.
+    ///
+    /// Optional and skipped when unset so a caller built against the old contract — one that
+    /// never heard of reminders per event — sends the same bytes it always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reminder_minutes: Option<u32>,
 }
 
 /// Parameters for [`method::UPDATE_EVENT`]. Every field but `id` is optional; those left out
@@ -143,6 +184,10 @@ pub struct UpdateEventParams {
     /// the event it already has rather than storing a second copy beside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_id: Option<String>,
+    /// Move the event's reminder. `None` leaves whatever it has alone, like every other field
+    /// here. See [`CreateEventParams::reminder_minutes`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reminder_minutes: Option<u32>,
 }
 
 /// Parameters for [`method::UPSERT_REMOTE`] — one event from a remote calendar, keyed by the id
@@ -198,6 +243,15 @@ pub struct CalendarEvent {
     /// an event nobody is on record as having made.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creator: Option<String>,
+    /// How many minutes before the start this event is announced.
+    ///
+    /// Defaults on read, so an event file written before the field existed reads back with the
+    /// same ten-minute lead the one fixed timer always used. The value is stored rather than
+    /// left to the reader because the reader — the notifications service's reminder timer — is
+    /// a different program from the writer, and a person who asked for a different lead asked
+    /// for it once, not on every machine that happens to read the file.
+    #[serde(default = "default_reminder_minutes")]
+    pub reminder_minutes: u32,
 }
 
 /// An event attendee.

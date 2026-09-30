@@ -106,7 +106,8 @@ impl Tool for TimerTool {
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(secs));
             let _ = std::process::Command::new("notify-send")
-                .args(["-u", "normal", "Timer Complete", &label_owned])
+                // `--`: the label is the model's, and one beginning with `-` is not an option.
+                .args(["-u", "normal", "--", "Timer Complete", &label_owned])
                 .spawn();
         });
 

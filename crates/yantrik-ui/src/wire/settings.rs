@@ -68,7 +68,7 @@ pub struct UserSettings {
     pub preferred_mind: String,
     /// What a mind on the socket may do without being asked: `plan`, `ask` or `auto`.
     ///
-    /// Deliberately not `bypass`. Bypass is the fourth mode and it is never written here — a
+    /// Deliberately never a bypass. `bypass` and `bypass_all` are never written here — a
     /// machine that booted into "do not ask me about anything" would be in a mode nobody had
     /// chosen in that sitting, and the only thing that makes bypass acceptable is that somebody
     /// picked it, just now, off a confirmation that said what it meant. A bypass persists the
@@ -257,7 +257,7 @@ pub fn mind_mode() -> String {
     }
 }
 
-/// Record the mode. Never called with `bypass` — see the field's comment and `mind_mode::persist`.
+/// Record the mode. Never called with a bypass — see the field's comment and `mind_mode::persist`.
 pub fn set_mind_mode(mode: &str) {
     if let Some(shared) = LIVE.get() {
         if let Ok(mut settings) = shared.lock() {
@@ -304,6 +304,27 @@ type SharedSettings = Arc<Mutex<UserSettings>>;
 fn settings_path() -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
     format!("{}/.config/yantrik/settings.yaml", home)
+}
+
+/// The auto-lock choices Settings cycles through, 0 meaning never. Each is a threshold the idle
+/// watch reports (`yantrik_os` idle, #412), so each locks on time.
+pub const AUTO_LOCK_CHOICES: &[i32] = &[30, 60, 120, 300, 600, 0];
+
+/// A persisted auto-lock value as one of the choices. The file is anybody's to edit: a negative
+/// value read as "never" while Settings said "30 seconds", and 7200 was shown but never reached.
+/// Anything not offered is the default, five minutes.
+pub fn auto_lock_choice(secs: i32) -> i32 {
+    if AUTO_LOCK_CHOICES.contains(&secs) {
+        secs
+    } else {
+        300
+    }
+}
+
+/// The choice after `current` in the Settings cycle, back to the first after "never".
+pub fn next_auto_lock(current: i32) -> i32 {
+    let at = AUTO_LOCK_CHOICES.iter().position(|&c| c == current);
+    at.map_or(AUTO_LOCK_CHOICES[0], |i| AUTO_LOCK_CHOICES[(i + 1) % AUTO_LOCK_CHOICES.len()])
 }
 
 /// Load persisted settings (or defaults if missing/corrupt).
@@ -557,14 +578,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     ui.on_cycle_auto_lock(move || {
         let Some(ui) = ui_weak.upgrade() else { return };
         let current = ui.get_settings_auto_lock_secs();
-        let next = match current {
-            30 => 60,
-            60 => 120,
-            120 => 300,
-            300 => 600,
-            600 => 0,
-            _ => 30,
-        };
+        let next = next_auto_lock(current);
         ui.set_settings_auto_lock_secs(next);
         if let Ok(mut st) = s.lock() {
             st.auto_lock_secs = next;
@@ -1572,6 +1586,21 @@ fn format_param_count(size_bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_auto_lock_value_nobody_offered_is_the_default_and_every_offer_cycles() {
+        for offered in AUTO_LOCK_CHOICES {
+            assert_eq!(auto_lock_choice(*offered), *offered);
+        }
+        for edited in [-1, 1, 45, 7200, i32::MAX] {
+            assert_eq!(auto_lock_choice(edited), 300, "{edited} read from the file");
+        }
+        assert_eq!(
+            [30, 60, 120, 300, 600, 0].map(next_auto_lock),
+            [60, 120, 300, 600, 0, 30],
+            "30 s, 1, 2, 5, 10 min, never, and round"
+        );
+    }
     use std::path::{Path, PathBuf};
 
     /// A settings file of our own, in a directory of its own, so the preference store's

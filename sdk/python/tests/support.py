@@ -212,11 +212,12 @@ class ShellStandIn:
 
 
 class MachineCase(unittest.TestCase):
-    """A test on a machine of its own: the ceiling open, the mode `bypass`, unless a test pins
-    them — the tests about everything except the gate do what the runtime's tests do."""
+    """A test on a machine of its own: the ceiling open, the mode `bypass_all` (full bypass,
+    which asks about nothing, not even what cannot be undone), unless a test pins them — the
+    tests about everything except the gate do what the runtime's tests do."""
 
     ceiling = "dangerous"
-    mode = "bypass"
+    mode = "bypass_all"
 
     def setUp(self):
         self.machine = Machine(self.ceiling, self.mode)

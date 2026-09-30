@@ -1,7 +1,7 @@
 //! Network tools — download_file, http_fetch, web_fetch.
 
 use std::io::Read as _;
-use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path};
+use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_write_path};
 
 /// Register network tools. `ollama_base` and `model` are optional —
 /// when provided, `web_fetch` uses LLM extraction for smart content processing.
@@ -54,9 +54,13 @@ impl Tool for DownloadFileTool {
             return "Error: URL must start with https:// (or http://localhost)".to_string();
         }
 
-        if let Err(e) = validate_path(path) {
-            return format!("Error: {e}");
-        }
+        // A download is a write: never into a dotfile or hidden folder in the home, where
+        // programs read their settings (a downloaded ~/.gitconfig runs code as the person).
+        let path = match validate_write_path(path) {
+            Ok(p) => p,
+            Err(e) => return format!("Error: {e}"),
+        };
+        let path = path.as_str();
 
         match std::process::Command::new("curl")
             .args(["-fsSL", "--max-time", "60", "--max-filesize", "10485760", "-o", path, url])

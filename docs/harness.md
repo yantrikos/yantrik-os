@@ -14,8 +14,9 @@ Seven methods on the `harness` socket, all spoken by the harness:
 
 ```text
 harness.attach   {id, name, detail?, tools?, memory?, conversations?}  → {session}
-harness.poll     {session}              → {turn_id, text, context, conversation, agent_token} | {}
-                                          … either may also carry cancelled: [turn_id], ended: [conversation]
+harness.poll     {session}              → {turn_id, text, context, conversation, agent_token, origin?} | {}
+                                          … either may also carry cancelled: [turn_id], ended: [conversation],
+                                            answers: [{turn_id, request_id, answer}]
 harness.chunk    {session, turn_id, delta}             → {}
 harness.event    {session, turn_id, event}             → {}      (optional — see below)
 harness.complete {session, turn_id}                    → {}
@@ -26,8 +27,17 @@ harness.detach   {session}                             → {}
 Attach, then loop: ask for a turn, stream the answer back in pieces, say you are done.
 `crates/yantrik-harness/examples/echo_harness.rs` is a working one end to end, and the only part
 a real harness replaces is the function that produces the answer. `harness.event`,
-`conversations`, `conversation`, `agent_token`, `cancelled` and `ended` are all optional to use:
-a harness that knows none of them works exactly as it always did.
+`conversations`, `conversation`, `agent_token`, `cancelled`, `ended`, `answers` and `origin` are all
+optional to use: a harness that knows none of them works exactly as it always did.
+
+A turn may carry `origin`, where the person asked it from (design/channels-2026-09-29.md):
+`{"channel": "lens"|"telegram"|"signal"|…, "remote": bool, "person", "carries": ["text","voice","photo"],
+"trust": "local"|"e2e"|"provider-readable"}`. Absent when the desktop does not say. Use it for register
+(terse on a phone) and for what to send back. While a turn is `remote`, the agent answering it is
+held on every door, whatever the mode, both bypasses included: reads run; anything up to `sensitive`
+asks the person (a `GRANT:` refusal, answered by a card the person may answer on the phone);
+nothing above runs; and it hands no work to another agent. Only a mind running as its own
+account is sent a remote turn; one running as the person is not, since nothing could hold it.
 
 ## Why the harness dials in
 
@@ -274,6 +284,24 @@ process and history). Both are advisory. Whatever the harness still sends for a 
 answered `{"dropped": true}`, and closing it is accepted. A harness that attaches again — it
 restarted, or the desktop did — gets new agents; the old conversations and their tokens are gone.
 
+**Runs and questions (#25).** Every turn a harness takes is kept as a *run*: its state and a
+sequenced log of what it streamed, written before the call that sent it is answered, in
+`$XDG_DATA_HOME/yantrik/runs.db`. A run ends `done`, `failed` (with why), `cancelled` (the person
+stopped it) or `orphaned` (its harness detached, went quiet or restarted, or the desktop did);
+an orphaned run stays readable and is never resumed. Run ids are turn ids, and never repeat.
+
+To ask the person something and wait, send a `request` event with your own `request_id` (unique
+within the run). The answer arrives once, on a later poll, as
+`answers: [{"turn_id", "request_id", "answer"}]`, and only to the connection answering that run
+(one replaced by a re-attach gets nothing). The desktop refuses, with the reason, a second answer
+to the same request, an answer to a question the run never asked, and one after the run ended —
+so an answer meant for one question can never release the next. Only this answer counts: the
+person saying "yes" in the chat is conversation, not an answer. In `harnesses/lib`,
+`turn.ask(prompt, options, timeout=…)` does all of this and returns the answer, or `None` when
+there is none to wait for (the desktop did not take it, the turn was stopped, it timed out).
+A desktop that keeps no runs
+refuses a `request` rather than leave it unanswerable.
+
 **Events.** Text still travels as `harness.chunk`. Beside it, `harness.event` says what the agent
 is *doing*, and the Agents view draws each tool call as a card:
 
@@ -285,6 +313,7 @@ is *doing*, and the Agents view draws each tool call as a card:
 | `thinking` | `delta` | a folded "thinking" line |
 | `status` | `text` | the agent's state line |
 | `usage` | `model`, `input_tokens?`, `output_tokens?`, `cost_usd?` | the details panel; they add up |
+| `request` | `request_id`, `prompt`, `options?` | the agent waits for you, asking `prompt` |
 
 `call` is your own id for the call (pi's `toolCallId`, an OpenAI `tool_call.id`), unique within
 the turn. The types are `crates/yantrik-harness/src/event.rs`. The desktop enforces a lifecycle,

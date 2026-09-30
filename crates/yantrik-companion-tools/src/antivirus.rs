@@ -10,6 +10,17 @@ pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(AntivirusQuarantineTool));
 }
 
+/// Where infected files are moved to: `$XDG_STATE_HOME/yantrik/quarantine` (or
+/// `~/.local/state/yantrik/quarantine`), 0700 and checked to be ours.
+///
+/// It was `/tmp/quarantine` — the worst place for it. Any account could read the malware we had
+/// just taken out of someone's Downloads, or create the directory first and have us move files
+/// into a place they own; and a reboot emptied it, so there was nothing left to inspect or
+/// restore. State, not scratch, so it lasts. Scan, status and listing all ask here.
+fn quarantine_dir() -> Result<std::path::PathBuf, String> {
+    yantrik_ml::private_dir::state_dir("quarantine").map_err(|e| format!("no private quarantine directory: {e}"))
+}
+
 /// Check if ClamAV daemon is running (faster scans).
 fn has_clamd() -> bool {
     std::process::Command::new("clamdscan")
@@ -64,8 +75,10 @@ impl Tool for AntivirusScanTool {
         }
 
         // Ensure quarantine dir exists
-        let quarantine_dir = "/tmp/quarantine";
-        let _ = std::fs::create_dir_all(quarantine_dir);
+        let quarantine_dir = match quarantine_dir() {
+            Ok(dir) => dir,
+            Err(e) => return format!("Error: {e}"),
+        };
 
         // Prefer clamdscan (daemon, faster) over clamscan
         let scanner = if has_clamd() { "clamdscan" } else { "clamscan" };
@@ -76,7 +89,7 @@ impl Tool for AntivirusScanTool {
 
         if scanner == "clamscan" {
             // Move infected files to quarantine
-            cmd.arg("--move").arg(quarantine_dir);
+            cmd.arg("--move").arg(&quarantine_dir);
         }
 
         if recursive {
@@ -107,7 +120,8 @@ impl Tool for AntivirusScanTool {
                             threats.join("\n")
                         };
                         format!(
-                            "⚠ THREATS FOUND: {count} infected file(s) in {path}\n{details}\nInfected files moved to {quarantine_dir}/"
+                            "⚠ THREATS FOUND: {count} infected file(s) in {path}\n{details}\nInfected files moved to {}/",
+                            quarantine_dir.display(),
                         )
                     }
                     Some(2) => {
@@ -204,10 +218,12 @@ impl Tool for AntivirusStatusTool {
         }
 
         // Check quarantine
-        if let Ok(entries) = std::fs::read_dir("/tmp/quarantine") {
-            let count = entries.count();
-            if count > 0 {
-                info.push(format!("Quarantine: {count} file(s) in /tmp/quarantine/"));
+        if let Ok(dir) = quarantine_dir() {
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                let count = entries.count();
+                if count > 0 {
+                    info.push(format!("Quarantine: {count} file(s) in {}/", dir.display()));
+                }
             }
         }
 
@@ -283,9 +299,12 @@ impl Tool for AntivirusQuarantineTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> String {
-        let quarantine_dir = "/tmp/quarantine";
+        let quarantine_dir = match quarantine_dir() {
+            Ok(dir) => dir,
+            Err(e) => return format!("Error: {e}"),
+        };
 
-        match std::fs::read_dir(quarantine_dir) {
+        match std::fs::read_dir(&quarantine_dir) {
             Ok(entries) => {
                 let mut files = Vec::new();
                 for entry in entries.flatten() {

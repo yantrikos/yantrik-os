@@ -15,16 +15,26 @@ export struct ContentBlock {
 }
 
 export struct MessageData {
-    role: string,       // "user" or "assistant"
+    // "user", "assistant", or "desktop": words the desktop itself says, from its own record,
+    // labelled as such so they are never read as the mind's.
+    role: string,
     content: string,
     is-streaming: bool,
     blocks: [ContentBlock],
+    // The run this reply was, when the turn did work (`mind:main#n`): chat and agent work are
+    // different things, and a reply that did work links to its run in Agents. "" for talk.
+    // `private:leave` is the desktop's offer, while private, to leave Private mode.
+    run: string,
 }
 
 export component MessageBubble inherits Rectangle {
     in property <MessageData> data;
 
+    // "Open the run": the pane of the one run this reply was.
+    callback open-run(string);
+
     property <bool> is-user: data.role == "user";
+    property <bool> is-desktop: data.role == "desktop";
     property <bool> has-blocks: data.blocks.length > 0 && !data.is-streaming;
 
     height: self.preferred-height;
@@ -41,21 +51,28 @@ export component MessageBubble inherits Rectangle {
             spacing: 10px;
             alignment: start;
 
-            // Glowing cyan dot (companion indicator)
+            // Glowing dot: cyan for the mind, amber for the desktop speaking for itself.
             Rectangle {
                 width: 8px;
                 height: 8px;
                 y: 7px;
                 border-radius: 4px;
-                background: Theme.cyan;
+                background: is-desktop ? Theme.amber : Theme.cyan;
                 drop-shadow-blur: 8px;
-                drop-shadow-color: Theme.cyan-glow;
+                drop-shadow-color: is-desktop ? transparent : Theme.cyan-glow;
             }
 
             // Content area — plain text during streaming, rich blocks after
             VerticalLayout {
                 horizontal-stretch: 1;
                 spacing: 4px;
+
+                if is-desktop : Text {
+                    text: "From the desktop";
+                    color: Theme.amber-light;
+                    font-size: Theme.font-small;
+                    font-weight: 600;
+                }
 
                 // Plain text fallback (streaming or no parsed blocks)
                 if !has-blocks : Text {
@@ -113,6 +130,21 @@ export component MessageBubble inherits Rectangle {
                                 wrap: word-wrap;
                             }
                         }
+                    }
+                }
+
+                // A reply that did work links to its run (Pranab, 27 September): the chat is the
+                // conversation, and the run, step by step, is in Agents.
+                if data.run != "" && !data.is-streaming : TouchArea {
+                    height: run-link.preferred-height + 4px;
+                    mouse-cursor: pointer;
+                    clicked => { root.open-run(data.run); }
+                    run-link := Text {
+                        y: 4px;
+                        text: data.run == "private:leave" ? "Leave Private mode →" : "Open the run →";
+                        color: Theme.cyan-light;
+                        font-size: Theme.font-small;
+                        font-weight: 600;
                     }
                 }
             }

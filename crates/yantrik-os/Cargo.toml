@@ -21,3 +21,8 @@ notify = "7"
 
 # Event log persistence (append-only, WAL mode) — version must match yantrik-companion
 rusqlite = { workspace = true }
+
+# Whether the person is at the seat (#412): the compositor's ext-idle-notify-v1.
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }

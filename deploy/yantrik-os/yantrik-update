@@ -23,6 +23,7 @@
 #   yantrik-update status      [--porcelain]                 channel, host, build, backups
 #   yantrik-update set-channel nightly|beta|stable           change the channel, once, here
 #   yantrik-update reconcile                                 base packages the image ships and this machine lacks
+#   yantrik-update migrate-minds                             move Yantrik Mind into its own account (#411), memory counted twice
 #   yantrik-update selftest                                  offline checks of the two above
 #
 # It reads its defaults from /opt/yantrik/update.conf (CHANNEL=, HOST=, SCHEME=) when present.
@@ -46,6 +47,13 @@
 
 set -uo pipefail
 
+# As root, nothing is looked up relative to where the caller stood. `sudo` keeps the working
+# directory, and Python puts it first on its import path: a `json.py` beside the person, then
+# `sudo yantrik-update check`, ran their code as root through the password-free rule. Every
+# interpreter below is also started isolated (`python3 -I`: no working directory, no PYTHON*
+# variables, no user site).
+[ "$(id -u)" = 0 ] && cd /
+
 # ── Where things live ───────────────────────────────────────────────────────────────────
 PREFIX="${YANTRIK_PREFIX:-/opt/yantrik}"
 BIN_DIR="$PREFIX/bin"
@@ -60,6 +68,9 @@ CONF="$PREFIX/update.conf"
 SESSION_UNIT="${YANTRIK_SESSION_UNIT:-yantrik-session.service}"
 LOG_DIR="$PREFIX/logs"
 LOG_FILE="$LOG_DIR/yantrik-os.log"
+# What the desktop's account may run as root without a password (#397): this updater, the
+# Package Manager's helper and setting the timezone. Nothing else.
+SUDO_RULE="${YANTRIK_SUDO_RULE:-/etc/sudoers.d/yantrik-os}"
 
 # Read a KEY from the installed BUILD marker, or empty if absent.
 #
@@ -198,7 +209,7 @@ has_porcelain() {
 # Prints KEY=value lines, `status=` first, and exits 0 ok / 11 not published / 12 unreachable.
 channel_probe() {
   YANTRIK_UPDATE_HOST="$HOST" YANTRIK_UPDATE_SCHEME="$SCHEME" \
-  python3 - "$1" <<'PY'
+  python3 -I - "$1" <<'PY'
 import sys, os, json, urllib.request
 channel = sys.argv[1]
 host = os.environ.get("YANTRIK_UPDATE_HOST", "releases.yantrikos.com")
@@ -513,7 +524,160 @@ cmd_check() {
 #   give_back_to_owner     when this IS root, hand what it made back to whoever owns $PREFIX.
 prefix_owner() { stat -c %U "$PREFIX" 2>/dev/null || id -un; }
 
+# ── Root-owned (#397) ───────────────────────────────────────────────────────────────────
+#
+# The tree above belonged to the desktop's user, and everything the OS runs was in it: the
+# shell, this updater, every binary. So anything running as that user — a mind with a terminal
+# included — could replace the OS's own code without asking anyone. It is root's now. The user
+# keeps logs/ and data/, and config.yaml for now; this updater runs as root, through a sudo rule
+# for this one file, and so does its rollback.
+
+# Is the tree root's yet? bin/ is the tell: it is what was replaced first and matters most.
+tree_is_roots() { [ "$(stat -c %u "$BIN_DIR" 2>/dev/null)" = 0 ]; }
+
+# Who the desktop belongs to, for the parts that stay theirs: whoever owns logs/ (the session
+# writes it at every login), else the prefix, else the user a sudo came from.
+desktop_owner() {
+  local o
+  o="$(stat -c %U "$LOG_DIR" 2>/dev/null)"
+  [ -n "$o" ] && [ "$o" != root ] || o="$(stat -c %U "$PREFIX" 2>/dev/null)"
+  [ -n "$o" ] && [ "$o" != root ] || o="${SUDO_USER:-}"
+  printf '%s' "$o"
+}
+
+# A command that writes the tree, run as the user once the tree is root's: run this same,
+# root-owned file again through its own sudo rule. The shell, the About screen and a mind over
+# `yos` all call it as the user, and none of them has to know.
+elevate() {
+  [ "$(id -u)" = 0 ] && return 0
+  tree_is_roots || return 0
+  local self="$BIN_DIR/yantrik-update"
+  [ "$(stat -c %u "$self" 2>/dev/null)" = 0 ] \
+    || fail "$self is not root's while the rest of $BIN_DIR is; refusing to run it as root. Reinstall with: sudo $self apply --force"
+  if ! sudo -n -l "$self" >/dev/null 2>&1; then
+    fail "the updater runs as root on this machine, and this account may not run it without a password. Run: sudo yantrik-update $CMD${*:+ $*}"
+  fi
+  exec sudo -n "$self" "$CMD" "$@"
+}
+
+# The rule itself. `%sudo` is the desktop's user on every install. Paths only root can change:
+# a NOPASSWD rule on a file its user can write would be root for that user.
+#
+# The Mind's journal goes through a root helper that takes no arguments (`""` allows none):
+# sudo matches a command's arguments as one string joined by spaces, so a rule on journalctl
+# with its options written out would also allow every other way of splitting that string.
+sudo_rule_text() {
+  printf '%s\n' \
+    "# Yantrik OS (#397): what the desktop's account may run as root without a password." \
+    "# Everything else asks for the password. Written by yantrik-update; do not edit." \
+    "%sudo ALL=(root) NOPASSWD: $BIN_DIR/yantrik-update, /usr/lib/yantrik/yantrik-pkg, /usr/bin/timedatectl set-timezone *, /usr/bin/systemctl restart yantrik-mind.service, /usr/lib/yantrik/yantrik-mind-log \"\""
+}
+
+# Hand the tree to root, keep what is the desktop's, and put the narrow rule in place. Root
+# only; run once, at the start of this updater's own `apply` or `reconcile`, before anything is
+# installed, so a rollback of the same run already runs as root. Never as the last step of an
+# apply an older updater is driving: its rollback would run as the user into a root tree.
+cmd_migrate_ownership() {
+  [ "$(id -u)" = 0 ] || fail "migrate-ownership runs as root"
+  local owner d
+  owner="$(desktop_owner)"
+  [ -n "$owner" ] || fail "cannot tell whose desktop this is (no owner on $LOG_DIR or $PREFIX); nothing changed"
+  say "Making $PREFIX root's; $owner keeps logs/ and data/"
+  chown root:root "$PREFIX" && chmod 0755 "$PREFIX"
+  for d in "$BIN_DIR" "$SHARE_DIR" "$UPDATES_DIR" "$BACKUP_DIR" "$PREFIX/models" "$PREFIX/skills" \
+           "$PREFIX/i18n" "$PREFIX/ui-deployments"; do
+    [ -e "$d" ] || continue
+    chown -R root:root "$d"
+    chmod -R go-w "$d"
+  done
+  for f in "$BUILD_FILE" "$PREFIX/.version" "$CONF"; do
+    [ -e "$f" ] && chown root:root "$f" && chmod 0644 "$f"
+  done
+  # The directories first, then what other accounts left in them goes, and only then is the rest
+  # adopted: `chown -R` changes a link itself, so a link planted while logs/ was 0777 would
+  # become the owner's and pass for one of their own files from then on.
+  for d in "$LOG_DIR" "$PREFIX/data"; do
+    mkdir -p "$d"
+    chown -h "$owner" "$d"
+  done
+  reconcile_private_dirs
+  for d in "$LOG_DIR" "$PREFIX/data"; do
+    chown -R "$owner" "$d"
+  done
+  # config.yaml stays the user's until it is split (#397 step c): Settings, OAuth refresh and
+  # onboarding write it as the user.
+  [ -e "$PREFIX/config.yaml" ] && chown "$owner" "$PREFIX/config.yaml"
+  private_config
+  local rc=0
+  install_sudo_rule && remove_blanket_sudo || rc=$?
+  reconcile_minds
+  reconcile_devtools_guard
+  return "$rc"
+}
+
+install_sudo_rule() {
+  local tmp
+  tmp="$(mktemp)"
+  sudo_rule_text > "$tmp"
+  if command -v visudo >/dev/null 2>&1 && ! visudo -cf "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"
+    warn "the sudo rule did not pass visudo; not installed"
+    return 1
+  fi
+  install -m 0440 -o root -g root "$tmp" "$SUDO_RULE" && rm -f "$tmp"
+  info "sudo rule in place: $SUDO_RULE"
+}
+
+# The narrow rule, rewritten when this build's text differs from what is installed: it was only
+# ever written by migrate-ownership, once, so a line added later (the Mind's restart, #411) never
+# reached a machine already migrated.
+reconcile_sudo_rule() {
+  [ "$(id -u)" = 0 ] || return 0
+  tree_is_roots || return 0
+  [ "$(sudo_rule_text)" = "$(cat "$SUDO_RULE" 2>/dev/null)" ] && return 0
+  install_sudo_rule
+}
+
+# The blanket rule the OS itself wrote — `<user> ALL=(ALL) NOPASSWD: ALL`, by the image
+# (/etc/sudoers.d/yantrik) and the installer (/etc/sudoers.d/<user>) — taken away once the
+# narrow rule is in place (#397). With it, anything running as the desktop's account was root
+# without asking; the narrow rule is everything the desktop needs. Only a file whose one
+# non-comment line is exactly that rule is removed: a file a person wrote themselves is theirs.
+remove_blanket_sudo() {
+  [ "$(id -u)" = 0 ] || return 0
+  [ -f "$SUDO_RULE" ] || return 0
+  if command -v visudo >/dev/null 2>&1 && ! visudo -cf "$SUDO_RULE" >/dev/null 2>&1; then
+    return 0
+  fi
+  local owner f body
+  owner="$(desktop_owner)"
+  for f in /etc/sudoers.d/yantrik ${owner:+"/etc/sudoers.d/$owner"}; do
+    [ -f "$f" ] || continue
+    body="$(grep -v '^[[:space:]]*#' "$f" | grep -v '^[[:space:]]*$')"
+    [ "$(printf '%s\n' "$body" | wc -l)" = 1 ] || continue
+    if printf '%s\n' "$body" | grep -qxE '[a-z_][a-z0-9_-]* ALL=\(ALL(:ALL)?\) ?NOPASSWD: ?ALL'; then
+      rm -f "$f" && info "removed the blanket sudo rule $f; the desktop keeps only $SUDO_RULE"
+    fi
+  done
+}
+
+# Run by this updater's own `apply` and `reconcile`, first thing: a machine whose tree is still
+# the user's is moved over while the old blanket rule still lets it be, then the command goes on
+# as root.
+migrate_if_needed() {
+  tree_is_roots && [ -f "$SUDO_RULE" ] && return 0
+  [ "$PREFIX" = /opt/yantrik ] || return 0   # a scratch prefix (the selftest) is never migrated
+  if [ "$(id -u)" = 0 ]; then
+    cmd_migrate_ownership || warn "could not make $PREFIX root's; carrying on as before"
+  elif sudo -n true 2>/dev/null; then
+    sudo -n "$BIN_DIR/yantrik-update" migrate-ownership \
+      || warn "could not make $PREFIX root's; carrying on as before"
+  fi
+}
+
 ensure_writable_tree() {
+  [ "$(id -u)" = 0 ] && return 0
+  tree_is_roots && fail "$PREFIX is root's and this is running as $(id -un); run: sudo yantrik-update $CMD"
   local d bad=""
   for d in "$PREFIX" "$BIN_DIR" "$SHARE_DIR" "$UPDATES_DIR" "$BACKUP_DIR"; do
     [ -e "$d" ] || continue
@@ -533,6 +697,8 @@ ensure_writable_tree() {
 
 give_back_to_owner() {
   [ "$(id -u)" = 0 ] || return 0
+  # Once the tree is root's, what this made stays root's (#397).
+  tree_is_roots && return 0
   local owner; owner="$(prefix_owner)"
   [ -n "$owner" ] && [ "$owner" != root ] || return 0
   chown -R "$owner" "$UPDATES_DIR" "$BACKUP_DIR" "$BIN_DIR" "$SHARE_DIR" "$BUILD_FILE" \
@@ -540,6 +706,8 @@ give_back_to_owner() {
 }
 
 cmd_apply() {
+  migrate_if_needed
+  elevate "$@"
   trap give_back_to_owner EXIT
   need python3; need curl; need sha256sum; need tar
   parse_channel "$@"
@@ -579,7 +747,19 @@ from it. Change it with: yantrik-update set-channel nightly" ;;
     # "Nothing to do" is about the binaries. The base system is the half an up-to-date
     # machine can still be missing — a 520 has every current Yantrik file and no `ip` —
     # so a run that found no new build is exactly the moment to look (#210).
+    seal_share || true
     reconcile_packages || true
+    reconcile_subids || true
+    reconcile_polkit || true
+    reconcile_helpers || true
+    reconcile_sysctl || true
+    reconcile_registries || true
+    reconcile_podman_socket || true
+    reconcile_sudo_rule || true
+    reconcile_minds || true
+    reconcile_mind_units || true
+    reconcile_private_dirs || true
+    private_config || true
     return 0
   fi
 
@@ -632,8 +812,10 @@ done by accident — to do it on purpose: yantrik-update apply --allow-downgrade
   say "Unpacking"
   local stage="$UPDATES_DIR/staging"
   rm -rf "$stage"; mkdir -p "$stage"
-  tar --use-compress-program='zstd -d' -xf "$dl" -C "$stage" 2>/dev/null \
-    || tar -xf "$dl" -C "$stage" \
+  # --no-same-owner: as root, tar keeps the archive's owners by default, and the builder's uid is
+  # the desktop's account on most machines (1000). Everything unpacked here is root's.
+  tar --no-same-owner --no-same-permissions --use-compress-program='zstd -d' -xf "$dl" -C "$stage" 2>/dev/null \
+    || tar --no-same-owner --no-same-permissions -xf "$dl" -C "$stage" \
     || fail "could not unpack the bundle (need zstd for .tar.zst)"
   # The bundle holds one top directory <NAME>/ with bin/ under it.
   local root; root="$(find "$stage" -maxdepth 1 -mindepth 1 -type d | head -1)"
@@ -676,16 +858,26 @@ safely. Old backups live in $BACKUP_DIR."
   local backup="$BACKUP_DIR/$ts"
   say "Backing up current build to $backup"
   mkdir -p "$backup"
-  cp -a "$BIN_DIR" "$backup/bin"
-  [ -d "$SHARE_DIR" ] && cp -a "$SHARE_DIR" "$backup/share"
-  [ -f "$BUILD_FILE" ] && cp -a "$BUILD_FILE" "$backup/BUILD"
+  cp -a --no-preserve=ownership "$BIN_DIR" "$backup/bin"
+  [ -d "$SHARE_DIR" ] && cp -a --no-preserve=ownership "$SHARE_DIR" "$backup/share"
+  [ -f "$BUILD_FILE" ] && cp -a --no-preserve=ownership "$BUILD_FILE" "$backup/BUILD"
+  [ "$(id -u)" = 0 ] && chmod -R go-w "$backup"
   echo "$backup" > "$UPDATES_DIR/last-backup"
 
   # ── Swap: install each new binary over the old, atomically per file ──
   say "Installing"
   local installed=0
+  # The updater itself only moves forward (#419): a bundle without the root-files list is from
+  # before content was checked, and its yantrik-update would install anything share/ held as
+  # root. Such a bundle's other binaries install; this updater and its list stay.
+  local keep_updater=0
+  [ -f "$root/bin/yantrik-root-files.sha256" ] || {
+    keep_updater=1
+    warn "this build predates the root-files list; keeping the current yantrik-update"
+  }
   while IFS= read -r f; do
     local base; base="$(basename "$f")"
+    if [ "$keep_updater" = 1 ] && is_updater_file "$base"; then continue; fi
     local tmp="$BIN_DIR/.$base.new"
     if cp "$f" "$tmp" 2>/dev/null \
        && [ "$(stat -c%s "$tmp" 2>/dev/null || echo 0)" = "$(stat -c%s "$f")" ] \
@@ -731,11 +923,12 @@ safely. Old backups live in $BACKUP_DIR."
   if [ -d "$root/share" ]; then
     mkdir -p "$SHARE_DIR"
     if command -v rsync >/dev/null 2>&1; then
-      rsync -a --delete "$root/share/" "$SHARE_DIR/" || fail "could not install share/"
+      rsync -a --checksum --no-owner --no-group --delete "$root/share/" "$SHARE_DIR/" || fail "could not install share/"
     else
       rm -rf "$SHARE_DIR" && mkdir -p "$SHARE_DIR"
-      cp -a "$root/share/." "$SHARE_DIR/" || fail "could not install share/"
+      cp -a --no-preserve=ownership "$root/share/." "$SHARE_DIR/" || fail "could not install share/"
     fi
+    seal_share
     info "installed $(find "$SHARE_DIR" -type f | wc -l) shared files"
 
     # ── The app icon ──
@@ -772,7 +965,18 @@ EOF
   say "Installed $remote_ver ($remote_git)"
   # The binaries are current; the base system may not be. Never fails the update over it —
   # reconcile_packages says in words what it could not do and how to finish it.
-  reconcile_packages || true
+  #
+  # With the NEW build's list: this process is still the updater that was installed before, and
+  # its REQUIRED_PACKAGES is the old one. VM 520 went a08a47f → 0f3e733 and was told "base system
+  # reconciled" without swaybg, which only the new list names, so a package a build adds reached
+  # machines one update late. The installed file is the new build's by now, whatever path this
+  # process was started from, so it reconciles, as a process of its own; this one's list stands
+  # in only when that file cannot run.
+  if [ -x "$BIN_DIR/yantrik-update" ]; then
+    YANTRIK_PREFIX="$PREFIX" "$BIN_DIR/yantrik-update" reconcile || true
+  else
+    reconcile_packages || true
+  fi
 
   if [ "$reboot" = 1 ]; then
     say "Rebooting"
@@ -817,21 +1021,55 @@ capture_shell_env() {
 # healthy build with a message about a timeout. Worse: the rollback ran the same redirect, so
 # it could not restart the OLD shell either -- one absent directory took a machine dark and
 # reported it as "the previous build is running again".
+# The desktop session a running shell belongs to (#374), as "<runtime dir> <supervised> <uid>".
+#
+# The runtime dir is its owner's, whoever runs this: under sudo the caller's own is root's, where
+# no desktop lives, and asking it said "no Yantrik session" and left the new build waiting for
+# the next login. Supervised is 1 when the shell's parent is the `yantrik-shell` supervisor,
+# which starts the new build itself once the old one exits; starting another here as well left
+# two shells, one without its sockets (#367). YANTRIK_PROC is for the selftest's fake tree.
+shell_session() {
+  local proc="${YANTRIK_PROC:-/proc}" pid="$1" uid ppid supervised=0
+  [ -d "$proc/$pid" ] || return 1
+  uid="$(stat -c %u "$proc/$pid" 2>/dev/null)" || return 1
+  ppid="$(awk '/^PPid:/ {print $2}' "$proc/$pid/status" 2>/dev/null)"
+  if [ -n "$ppid" ] && tr '\0' ' ' < "$proc/$ppid/cmdline" 2>/dev/null | grep -q 'yantrik-shell'; then
+    supervised=1
+  fi
+  printf '/run/user/%s %s %s\n' "$uid" "$supervised" "$uid"
+}
+
 start_shell() {
-  local runtime="$1"
-  mkdir -p "$PREFIX/logs" 2>/dev/null || true
+  local runtime="$1" owner="${2:-}"
+  # Started for the session's owner, never as root: under sudo this process is root, and a shell
+  # started from it would be root's (#374).
+  local as=()
+  if [ "$(id -u)" = 0 ] && [ -n "$owner" ] && [ "$owner" != 0 ]; then
+    as=(runuser -u "$(id -nu "$owner")" --)
+  fi
+  # logs/ made, if missing, as the owner's: made root's, the session could no longer write its
+  # log. Root may make it (its parent is root's); it is handed over as it is made.
+  if [ ! -d "$PREFIX/logs" ]; then
+    if [ "${#as[@]}" -gt 0 ]; then
+      install -d -o "$owner" -m 0700 "$PREFIX/logs" 2>/dev/null || true
+    else
+      mkdir -p "$PREFIX/logs" 2>/dev/null || true
+    fi
+  fi
 
   if [ "${#SHELL_ENV[@]}" -gt 0 ]; then
     # The session's own environment, verbatim.
-    setsid env "${SHELL_ENV[@]}" \
-      "$BIN_DIR/yantrik-ui" "$PREFIX/config.yaml" >> "$LOG_FILE" 2>&1 &
+    # The log is opened by the shell's own user (sh -c below), never by root: logs/ is theirs,
+    # and a root `>>` would follow a symlink they put there to any file on the machine.
+    setsid "${as[@]}" sh -c 'exec "$@" >> "$0" 2>&1' "$LOG_FILE" env "${SHELL_ENV[@]}" \
+      "$BIN_DIR/yantrik-ui" "$PREFIX/config.yaml" &
   else
     # Nothing was running to copy from. SLINT_FULLSCREEN is named here on purpose: a shell
     # without it is a window, and a window is the one thing this is not.
-    setsid env \
+    setsid "${as[@]}" sh -c 'exec "$@" >> "$0" 2>&1' "$LOG_FILE" env \
       XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}" \
       SLINT_BACKEND="${SLINT_BACKEND:-winit}" SLINT_FULLSCREEN="${SLINT_FULLSCREEN:-1}" \
-      "$BIN_DIR/yantrik-ui" "$PREFIX/config.yaml" >> "$LOG_FILE" 2>&1 &
+      "$BIN_DIR/yantrik-ui" "$PREFIX/config.yaml" &
   fi
 }
 
@@ -955,10 +1193,16 @@ sudo systemctl restart $SESSION_UNIT"
     warn "could not restart $SESSION_UNIT without a password; starting the shell directly"
   fi
 
-  # No session unit, or no privilege to restart it: a development machine where somebody
-  # started the shell by hand. NOW the caller's own runtime dir is the right question, because
-  # the shell they started is a child of their session.
-  runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  # No session unit, or no privilege to restart it. The session to restart is the one the
+  # running shell belongs to (#374), not the caller's: under sudo the caller is root. Only with
+  # no shell running at all is the caller's own runtime dir the question.
+  local shell_pid session supervised=0 owner=""
+  shell_pid="$(pgrep -x yantrik-ui 2>/dev/null | head -1)"
+  if [ -n "$shell_pid" ] && session="$(shell_session "$shell_pid")"; then
+    read -r runtime supervised owner <<< "$session"
+  else
+    runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  fi
   if [ ! -S "$runtime/yantrik/app-shell.sock" ] && [ ! -d "$runtime/yantrik" ]; then
     warn "no session unit, and no Yantrik session on this runtime dir ($runtime)."
     info "the new build will take effect the next time the desktop session starts."
@@ -972,12 +1216,16 @@ sudo systemctl restart $SESSION_UNIT"
   sleep 3
   pkill -9 -x yantrik-ui 2>/dev/null
   sleep 1
-  start_shell "$runtime"
+  if [ "$supervised" = 1 ]; then
+    info "the session's shell supervisor starts the new build"
+  else
+    start_shell "$runtime" "$owner"
+  fi
 
   say "Waiting for the shell to answer"
   local sock="$runtime/yantrik/app-shell.sock"
   for _ in $(seq 1 20); do
-    if [ -S "$sock" ] && "$BIN_DIR/yos" describe shell >/dev/null 2>&1; then
+    if [ -S "$sock" ] && XDG_RUNTIME_DIR="$runtime" "$BIN_DIR/yos" describe shell >/dev/null 2>&1; then
       printf '%shealthy — update complete%s\n' "$c_grn" "$c_off"
       report_stale
       return 0
@@ -990,7 +1238,13 @@ sudo systemctl restart $SESSION_UNIT"
   # into an afternoon, and the log is the only witness the new shell leaves behind.
   if [ -s "$LOG_FILE" ]; then
     warn "last lines from $LOG_FILE:"
-    tail -n 15 "$LOG_FILE" | sed 's/^/    /'
+    # Read as the log's owner: as root, tail would print whatever file a symlink there named.
+    local reader=()
+    if [ "$(id -u)" = 0 ]; then
+      local lo; lo="$(desktop_owner)"
+      [ -n "$lo" ] && [ "$lo" != root ] && reader=(runuser -u "$lo" --)
+    fi
+    "${reader[@]}" tail -n 15 "$LOG_FILE" 2>/dev/null | sed 's/^/    /'
   else
     warn "$LOG_FILE is empty — the new shell wrote nothing before it stopped"
   fi
@@ -998,14 +1252,14 @@ sudo systemctl restart $SESSION_UNIT"
   restore_backup "$backup"
   pkill -9 -x yantrik-ui 2>/dev/null
   sleep 1
-  start_shell "$runtime"
+  [ "$supervised" = 1 ] || start_shell "$runtime" "$owner"
 
   # Verify the ROLLBACK, rather than announcing one that did not happen. The restore used to
   # print "the previous build is running again" without ever checking, and on the day the log
   # directory was missing it said exactly that while the machine sat dark.
   local sock_rb="$runtime/yantrik/app-shell.sock"
   for _ in $(seq 1 20); do
-    if [ -S "$sock_rb" ] && "$BIN_DIR/yos" describe shell >/dev/null 2>&1; then
+    if [ -S "$sock_rb" ] && XDG_RUNTIME_DIR="$runtime" "$BIN_DIR/yos" describe shell >/dev/null 2>&1; then
       fail "update rolled back — the previous build is running again"
     fi
     sleep 1
@@ -1018,13 +1272,24 @@ no shell running. Start one with: $BIN_DIR/yantrik-ui $PREFIX/config.yaml"
 restore_backup() {
   local backup="$1"
   [ -d "$backup/bin" ] || { warn "backup $backup has no bin/ — cannot restore"; return 1; }
+  # Binaries go back only from a backup nobody but root could have written: `sudo yantrik-update
+  # rollback` needs no password, so a backup the desktop's account could edit (every backup taken
+  # before the tree was root's) would be a way to put its own yantrik-update into bin/ and have
+  # sudo run it. share/ is checked by content instead, where it matters (reconcile).
+  if tree_is_roots && [ -n "$(find "$backup" "$backup/bin" -maxdepth 0 \( ! -user root -o -perm /022 \) 2>/dev/null)$(find "$backup/bin" "$backup/BUILD" \( ! -user root -o \( ! -type l -perm /022 \) \) -print -quit 2>/dev/null)" ]; then
+    warn "backup $backup is not root's alone to write; refusing to restore binaries from it"
+    return 1
+  fi
   while IFS= read -r f; do
     local base; base="$(basename "$f")"
+    # Never back: an older updater would undo what this one checks (#419).
+    is_updater_file "$base" && continue
     cp "$f" "$BIN_DIR/.$base.rb" 2>/dev/null && chmod 755 "$BIN_DIR/.$base.rb" && mv -f "$BIN_DIR/.$base.rb" "$BIN_DIR/$base"
   done < <(find "$backup/bin" -maxdepth 1 -type f)
   if [ -d "$backup/share" ]; then
     rm -rf "$SHARE_DIR"
     cp -a "$backup/share" "$SHARE_DIR"
+    seal_share
   fi
   [ -f "$backup/BUILD" ] && cp -a "$backup/BUILD" "$BUILD_FILE"
   # A rollback moves the version backwards, so the one-line copy has to move with it.
@@ -1034,6 +1299,7 @@ restore_backup() {
 
 # ── rollback ────────────────────────────────────────────────────────────────────────────
 cmd_rollback() {
+  elevate "$@"
   local backup
   backup="$(cat "$UPDATES_DIR/last-backup" 2>/dev/null)"
   [ -n "$backup" ] && [ -d "$backup" ] || {
@@ -1056,6 +1322,11 @@ cmd_status() {
   if [ -f "$CONF" ]; then
     [ -w "$CONF" ] && can_write="yes"
   elif [ -w "$(dirname "$CONF")" ]; then
+    can_write="yes"
+  fi
+  # On a root-owned tree, set-channel runs as root through the updater's own rule (#397): the
+  # file is settable from this account although this account cannot write it.
+  if [ "$can_write" = no ] && tree_is_roots && sudo -n -l "$BIN_DIR/yantrik-update" >/dev/null 2>&1; then
     can_write="yes"
   fi
 
@@ -1127,6 +1398,7 @@ conf_body() {
 }
 
 cmd_set_channel() {
+  elevate "$@"
   local new="${1:-}"
   case "$new" in
     nightly|beta|stable) ;;
@@ -1177,8 +1449,17 @@ and this is running as $(id -un). Run: sudo yantrik-update set-channel $new"
 # without a nightly turning red.
 
 # Package names, not command names: `ip` and `ss` are both in iproute2, `ping` is in
-# iputils-ping. A package the image's own lists all install.
-REQUIRED_PACKAGES="iproute2 iputils-ping grim curl python3 nano htop"
+# iputils-ping. A package the image's own lists all install. xdg-desktop-portal-gtk has no
+# command: it is the file picker behind every Save and Upload the browser offers (#33), and a
+# machine installed before the image gained it could not save a page or attach a file.
+# The developer's baseline (#401): git, bash-completion (Debian's ~/.bashrc loads it once it is
+# there), and rootless podman for the Container Manager with what rootless needs beside it —
+# uidmap, passt, fuse-overlayfs — named here because this installs without Recommends. Debian
+# package names only: root runs this list through apt. mise is not here: Debian does not package
+# it, and this updater downloads nothing but its own bundle, so it comes with the image.
+# flatpak: the Package Manager installs Flathub apps with it, per-user and without root (#399);
+# a machine installed before the image carried it could search Flathub for nothing.
+REQUIRED_PACKAGES="iproute2 iputils-ping grim curl python3 nano htop swaybg xdg-desktop-portal-gtk flatpak git bash-completion podman uidmap passt fuse-overlayfs nftables"
 
 # Is this package installed, per dpkg? Prints dpkg's own status word, or nothing.
 pkg_installed() {
@@ -1224,10 +1505,823 @@ reconcile_packages() {
   return 1
 }
 
+# Subordinate ids for rootless podman (#401). podman maps a container's users onto ids the
+# account owns in /etc/subuid and /etc/subgid; with none it can run only images that use one
+# user, and most pulls fail with "potentially insufficient UIDs or GIDs". Debian's useradd hands a
+# range out only when /etc/subuid already exists, and nothing made it exist on images before
+# #401, so an account made then has none. A range is added, never changed or taken away.
+SUBID_COUNT=65536
+SUBID_FLOOR=100000
+
+# How many subordinate ids the file $1 gives the account named $2, whose uid is $3. An entry may
+# name the account either way.
+subids_owned() { # <file> <name> <uid>
+  [ -f "$1" ] || { echo 0; return 0; }
+  awk -F: -v n="$2" -v u="$3" '($1 == n || $1 == u) && $3 ~ /^[0-9]+$/ { s += $3 }
+    END { printf "%.0f\n", s }' "$1"
+}
+
+# Where a new range can start in the file $1: past the end of every range already handed out,
+# and never below $SUBID_FLOOR, which is above every uid Debian gives an account. Two accounts
+# sharing ids could reach into each other's containers.
+next_subid_start() { # <file>
+  if [ ! -f "$1" ]; then
+    echo "$SUBID_FLOOR"
+    return 0
+  fi
+  awk -F: -v t="$SUBID_FLOOR" '$2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $2 + $3 > t { t = $2 + $3 }
+    END { printf "%.0f\n", t }' "$1"
+}
+
+reconcile_subids() {
+  [ "$(id -u)" = 0 ] || return 0
+  command -v usermod >/dev/null 2>&1 || return 0
+  local owner uid kind file start last
+  owner="$(desktop_owner)"
+  [ -n "$owner" ] && [ "$owner" != root ] && uid="$(id -u "$owner" 2>/dev/null)" || return 0
+  for kind in uid gid; do
+    file="/etc/sub$kind"
+    [ "$(subids_owned "$file" "$owner" "$uid")" -ge "$SUBID_COUNT" ] && continue
+    # usermod will not add a range to a file that does not exist.
+    [ -e "$file" ] || install -m 0644 -o root -g root /dev/null "$file"
+    start="$(next_subid_start "$file")"
+    last=$((start + SUBID_COUNT - 1))
+    if usermod "--add-sub${kind}s" "$start-$last" "$owner"; then
+      info "gave $owner subordinate ${kind}s $start-$last, for rootless containers"
+    else
+      warn "could not give $owner subordinate ${kind}s; podman as $owner will pull few images"
+    fi
+  done
+}
+
+# The polkit rules the bundle ships (share/polkit/*.rules), put where polkit reads them. The power
+# menu calls systemctl without sudo and needs the one that lets the desktop's user suspend,
+# restart and power off from any of their sessions (#397). Copied only when different, so an
+# unchanged rule costs nothing.
+# share/ is root's and nobody else may write it, once the tree is root's (#397). It holds what
+# this updater installs as root (the polkit rules, the root helpers sudo trusts, the kernel
+# settings), so a share/ the desktop's account can write is root for anything running as it:
+# write share/root-helpers/yantrik-pkg, run `sudo yantrik-update reconcile`, and the helper sudo
+# allows is yours. Every apply left it that way (tar and rsync -a kept the archive's owners, the
+# builder's uid 1000). Run after every install and restore of share/, and before each reconcile.
+seal_share() {
+  tree_is_roots || return 0
+  [ "$(id -u)" = 0 ] || return 0
+  [ -d "$SHARE_DIR" ] || return 0
+  chown -R root:root "$SHARE_DIR" && chmod -R go-w "$SHARE_DIR"
+}
+
+# Whether a file this updater is about to install as root came from where only root can write:
+# root's, not writable by group or others, in a directory (and a share/ and prefix) the same.
+source_is_roots() {
+  local f="$1" d
+  d="$(dirname "$f")"
+  for p in "$f" "$d" "$SHARE_DIR" "$PREFIX"; do
+    [ "$(stat -c %u "$p" 2>/dev/null)" = 0 ] || return 1
+  done
+  [ -z "$(find "$f" "$d" "$SHARE_DIR" "$PREFIX" -maxdepth 0 ! -type l -perm /022 2>/dev/null)" ]
+}
+
+# The updater and the list it trusts, which roll forward only: neither a rollback nor an older
+# bundle puts back an updater from before content was checked (#419).
+is_updater_file() {
+  [ "$1" = yantrik-update ] || [ "$1" = yantrik-root-files.sha256 ]
+}
+
+# The hashes of everything this updater installs as root, shipped in bin/ (#419). Ownership says
+# who can write a file now, not who wrote it: share/ was the desktop account's after every update
+# until #419, and sealing it made whatever was there root's. So a file is installed as root only
+# when its content is what the build shipped.
+ROOT_FILES="$BIN_DIR/yantrik-root-files.sha256"
+
+# The shipped sha256 of share/<rel>, or nothing.
+shipped_hash() {
+  [ -f "$ROOT_FILES" ] || return 0
+  awk -v p="$1" '$2 == p || $2 == "*" p { print $1; exit }' "$ROOT_FILES"
+}
+
+# Whether $2 (a file under share/, named $1 relative to it) may be installed as root.
+root_file_ok() {
+  local want
+  want="$(shipped_hash "$1")"
+  [ -n "$want" ] && source_is_roots "$2" && [ "$(sha256sum "$2" | cut -d' ' -f1)" = "$want" ]
+}
+
+# An installed root file ($2, installed from share/<rel> $1) that is not what any build shipped
+# is removed: it was put there from a share/ the desktop could write (#419), and keeping it would
+# keep whatever it grants. Nothing is removed when there is no list to judge by.
+drop_unshipped() {
+  local want
+  [ -f "$ROOT_FILES" ] && [ -f "$2" ] || return 0
+  want="$(shipped_hash "$1")"
+  if [ "$(sha256sum "$2" | cut -d' ' -f1)" != "$want" ]; then
+    rm -f -- "$2" && warn "removed $2: it is not what this build ships"
+  fi
+}
+
+reconcile_polkit() {
+  local dir="$PREFIX/share/polkit" rules="/etc/polkit-1/rules.d" f dest
+  [ -d "$dir" ] || return 0
+  [ -d "$rules" ] || { info "no $rules on this machine; polkit rules not installed"; return 0; }
+  for f in "$dir"/*.rules; do
+    [ -f "$f" ] || continue
+    dest="$rules/$(basename "$f")"
+    if ! root_file_ok "polkit/$(basename "$f")" "$f"; then
+      warn "refusing $f: not root's alone, or not what this build ships"
+      drop_unshipped "polkit/$(basename "$f")" "$dest"
+      continue
+    fi
+    if cmp -s "$f" "$dest" 2>/dev/null; then continue; fi
+    if sudo -n install -m 0644 -o root -g root "$f" "$dest" 2>/dev/null; then
+      info "polkit rule in place: $dest"
+    else
+      warn "could not install $dest (no sudo here); the power menu may ask for an administrator"
+    fi
+  done
+}
+
+# The root helpers the bundle ships (share/root-helpers), installed root-owned into /usr/lib/yantrik
+# (#397): the Package Manager's yantrik-pkg is the only way the desktop's account runs apt without
+# a password. Never run from /opt/yantrik, which its user can write: a helper sudo trusts has to
+# live where only root can change it. Copied only when different.
+reconcile_helpers() {
+  local dir="$PREFIX/share/root-helpers" dest_dir="/usr/lib/yantrik" f dest
+  [ -d "$dir" ] || return 0
+  sudo -n install -d -m 0755 -o root -g root "$dest_dir" 2>/dev/null     || { warn "could not create $dest_dir (no sudo here); the Package Manager cannot install yet"; return 0; }
+  for f in "$dir"/*; do
+    [ -f "$f" ] || continue
+    dest="$dest_dir/$(basename "$f")"
+    if ! root_file_ok "root-helpers/$(basename "$f")" "$f"; then
+      warn "refusing $f: not root's alone, or not what this build ships"
+      drop_unshipped "root-helpers/$(basename "$f")" "$dest"
+      continue
+    fi
+    if cmp -s "$f" "$dest" 2>/dev/null; then continue; fi
+    if sudo -n install -m 0755 -o root -g root "$f" "$dest" 2>/dev/null; then
+      info "root helper in place: $dest"
+    else
+      warn "could not install $dest (no sudo here)"
+    fi
+  done
+  # /usr/lib/yantrik is this updater's alone: anything in it the build does not list was put there
+  # from a share/ the desktop could write (before #419), and sudo may run it. It goes.
+  if [ -f "$ROOT_FILES" ] && [ "$(id -u)" = 0 ]; then
+    # Top-level files and links only: a directory here (adapters/, say) is someone else's layout,
+    # and a file a package owns is that package's.
+    for dest in "$dest_dir"/* "$dest_dir"/.[!.]*; do
+      [ -f "$dest" ] || [ -L "$dest" ] || continue
+      [ -n "$(shipped_hash "root-helpers/$(basename "$dest")")" ] && continue
+      command -v dpkg >/dev/null 2>&1 && dpkg -S "$dest" >/dev/null 2>&1 && continue
+      rm -f -- "$dest" && warn "removed $dest: no build and no package ships it"
+    done
+  fi
+}
+
+# Files in a root-read config directory ($1, matching $2) that neither a package owns nor the
+# build lists under share/<$3>/: before #419 the old reconcile installed whatever share/ held, and
+# share/ was the desktop's to write. Named, not removed: anything else there may be the
+# administrator's own, and only a person can tell.
+audit_unowned() {
+  local dir="$1" pattern="$2" rel="$3" f
+  [ -d "$dir" ] && [ -f "$ROOT_FILES" ] || return 0
+  command -v dpkg >/dev/null 2>&1 || return 0
+  for f in "$dir"/$pattern; do
+    [ -f "$f" ] || continue
+    [ -n "$(shipped_hash "$rel/$(basename "$f")")" ] && continue
+    dpkg -S "$f" >/dev/null 2>&1 && continue
+    warn "$f is not from any package or this build; if you did not put it there, remove it (it runs as root)"
+  done
+}
+
+# Kernel settings the bundle ships (share/sysctl) into /etc/sysctl.d, applied now as well as at
+# boot (#414): Yama ptrace_scope 1, so nothing a mind starts can attach to the shell and read the
+# vault's key or the unlock password out of it. Copied only when different; applied every time,
+# because a value set by hand since would otherwise stand until the next boot.
+#
+# A sysctl file is as good as root (kernel.core_pattern=|… runs a program as root), so it is taken
+# only from a tree root owns, and only when every line is one this updater knows: a comment, a
+# blank, or the ptrace scope. A line added to the bundle has to be added here, past a reader.
+sysctl_file_ok() {
+  ! grep -vqE '^[[:space:]]*(#.*)?$|^kernel\.yama\.ptrace_scope[[:space:]]*=[[:space:]]*[1-3][[:space:]]*$' "$1"
+}
+
+reconcile_sysctl() {
+  local dir="$PREFIX/share/sysctl" dest_dir="/etc/sysctl.d" f dest
+  [ -d "$dir" ] || return 0
+  [ -d "$dest_dir" ] || { info "no $dest_dir on this machine; kernel settings not installed"; return 0; }
+  if [ "$(stat -c %u "$dir" 2>/dev/null)" != 0 ]; then
+    warn "$dir is not root's; kernel settings not installed until the tree is (yantrik-update migrate-ownership)"
+    return 0
+  fi
+  for f in "$dir"/*.conf; do
+    [ -f "$f" ] || continue
+    if ! root_file_ok "sysctl/$(basename "$f")" "$f" || ! sysctl_file_ok "$f"; then
+      warn "refusing $f: not root's, or it sets something other than kernel.yama.ptrace_scope"
+      drop_unshipped "sysctl/$(basename "$f")" "$dest_dir/$(basename "$f")"
+      continue
+    fi
+    dest="$dest_dir/$(basename "$f")"
+    if ! cmp -s "$f" "$dest" 2>/dev/null; then
+      if sudo -n install -m 0644 -o root -g root "$f" "$dest" 2>/dev/null; then
+        info "kernel settings in place: $dest"
+      else
+        warn "could not install $dest (no sudo here)"
+        continue
+      fi
+    fi
+    sudo -n sysctl -q -p "$dest" >/dev/null 2>&1 || warn "could not apply $dest now; it applies at the next boot"
+  done
+}
+
+# Where podman resolves a short image name (#401), from share/containers into
+# /etc/containers/registries.conf.d: Docker Hub, so the Container Manager's Pull of "nginx" works
+# as it does with docker. A registries file decides where every image anyone on the machine pulls
+# comes from, root's included, so it is taken the way the kernel settings are: from a tree root
+# owns, as the build shipped it, and only when every line is a comment, a blank, or that one
+# search list. A line added to the bundle has to be added here, past a reader.
+registries_file_ok() {
+  ! grep -vqE '^[[:space:]]*(#.*)?$|^unqualified-search-registries[[:space:]]*=[[:space:]]*\["docker\.io"\][[:space:]]*$' "$1"
+}
+
+# podman's API socket off on a machine that got podman from reconcile_packages, as the image has
+# it: the Container Manager drives the podman command, and nothing on this desktop listens.
+reconcile_podman_socket() {
+  [ "$(id -u)" = 0 ] || return 0
+  command -v podman >/dev/null 2>&1 || return 0
+  systemctl disable --now podman.socket >/dev/null 2>&1 || true
+  systemctl --global disable podman.socket >/dev/null 2>&1 || true
+}
+
+reconcile_registries() {
+  local dir="$PREFIX/share/containers" dest_dir="/etc/containers/registries.conf.d" f dest
+  [ -d "$dir" ] || return 0
+  # No /etc/containers means no podman yet; reconcile_packages runs first and installs it.
+  [ -d /etc/containers ] || { info "no /etc/containers on this machine; registry search not installed"; return 0; }
+  for f in "$dir"/*.conf; do
+    [ -f "$f" ] || continue
+    dest="$dest_dir/$(basename "$f")"
+    if ! root_file_ok "containers/$(basename "$f")" "$f" || ! registries_file_ok "$f"; then
+      warn "refusing $f: not root's, not what this build ships, or it sets more than the search registry"
+      drop_unshipped "containers/$(basename "$f")" "$dest"
+      continue
+    fi
+    if cmp -s "$f" "$dest" 2>/dev/null; then continue; fi
+    if sudo -n install -d -m 0755 -o root -g root "$dest_dir" 2>/dev/null \
+       && sudo -n install -m 0644 -o root -g root "$f" "$dest" 2>/dev/null; then
+      info "container registry search in place: $dest"
+    else
+      warn "could not install $dest (no sudo here); podman pulls only fully named images"
+    fi
+  done
+}
+
+# The mind account and its door (#411). Minds run as `yantrik-mind` (group `yantrik-minds`), not
+# as the person: they cannot open the person's runtime directory, files, compositor or processes.
+# They reach the desktop at /run/yantrik-minds, made at every boot by the tmpfiles entry below:
+# the person's (the desktop's services bind there), the minds' group may only enter it (2750,
+# setgid so the sockets are the group's), nobody else sees in. The services serve that door only
+# to the mind account's uid (crates/yantrik-ipc-transport/src/mind_door.rs). Written by this
+# updater's own code, not from a file in the bundle.
+reconcile_minds() {
+  [ "$(id -u)" = 0 ] || return 0
+  tree_is_roots || return 0
+  local owner conf want
+  owner="$(desktop_owner)"
+  case "$owner" in
+    ''|root|*[!a-z0-9_-]*) warn "cannot tell whose desktop this is; the mind door is not set up"; return 0 ;;
+  esac
+  getent group yantrik-minds >/dev/null 2>&1 || groupadd --system yantrik-minds     || { warn "could not create the group yantrik-minds; the mind door is not set up"; return 0; }
+  if ! getent passwd yantrik-mind >/dev/null 2>&1; then
+    useradd --system --gid yantrik-minds --home-dir /var/lib/yantrik-mind --no-create-home       --shell /usr/sbin/nologin --comment "Yantrik minds" yantrik-mind       || { warn "could not create the account yantrik-mind; the mind door is not set up"; return 0; }
+    info "created the mind account yantrik-mind"
+  fi
+  install -d -o yantrik-mind -g yantrik-minds -m 0750 /var/lib/yantrik-mind
+  conf=/etc/tmpfiles.d/yantrik-minds.conf
+  want="# Yantrik OS (#411): the mind door, where minds (yantrik-mind) reach the desktop of $owner.
+d /run/yantrik-minds 2750 $owner yantrik-minds -"
+  if [ "$(cat "$conf" 2>/dev/null)" != "$want" ]; then
+    printf '%s
+' "$want" > "$conf" && chmod 0644 "$conf" && info "mind door in place: /run/yantrik-minds for $owner"
+  fi
+  systemd-tmpfiles --create "$conf" >/dev/null 2>&1 || warn "could not make /run/yantrik-minds now; it is made at the next boot"
+}
+
+# The browsers' DevTools ports. The desktop's Browser listens on 127.0.0.1:9222 and the
+# companion's on 9223-9322. Loopback TCP has no owner: until this, every account on the machine —
+# a system service, a container runtime, the mind account — could open those ports and drive the
+# person's logged-in browser, read its cookies and submit its forms, without meeting any gate.
+# Now only root and the person connect. Minds reach the browser the way they reach every other
+# app: through its surface at the mind door (app-browser, apps/browser, #477), which the person's
+# own session serves and which holds the one DevTools connection. Everyone else is reset.
+#
+# And the other direction: while a browser is closed its port is free, and any account could
+# listen there and be taken for it — by `browser_login`, which types a vault password into
+# whatever answers, and by every page read a mind is handed. Only root and the person run
+# browsers, so a DevTools port answering from any other account has its data dropped: the
+# handshake may complete, but not one byte of a reply reaches the client. Written by this
+# updater's own code, not from a file in the bundle; the uids go in as numbers.
+DEVTOOLS_GUARD=/etc/yantrik/devtools-guard.nft
+DEVTOOLS_UNIT=/etc/systemd/system/yantrik-devtools-guard.service
+
+devtools_guard_text() {
+  cat <<EOF
+# Yantrik OS: the browsers' DevTools ports (9222-9322 on loopback) and the VNC ports (5900-5909,
+# wayvnc's, which ask no password on loopback) are opened and answered by root and $1 only: either
+# is the whole desktop to whoever reaches it, past the mind door, the cards and Private mode.
+# Minds use the browser's surface at the mind door. Made by yantrik-update; edits here are put
+# back at the next update.
+table inet yantrik_devtools
+delete table inet yantrik_devtools
+table inet yantrik_devtools {
+	chain output {
+		type filter hook output priority filter; policy accept;
+		oifname "lo" tcp dport { 5900-5909, 9222-9322 } meta skuid != { $2 } reject with tcp reset
+		oifname "lo" tcp sport { 5900-5909, 9222-9322 } meta skuid != { $3 } drop
+	}
+}
+EOF
+}
+
+devtools_unit_text() {
+  cat <<EOF
+[Unit]
+Description=Yantrik OS: the browsers' DevTools ports answer the person only
+DefaultDependencies=no
+After=nftables.service
+Before=systemd-user-sessions.service
+PartOf=nftables.service
+ReloadPropagatedFrom=nftables.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$1 -f $DEVTOOLS_GUARD
+ExecReload=$1 -f $DEVTOOLS_GUARD
+
+[Install]
+WantedBy=multi-user.target
+WantedBy=nftables.service
+EOF
+}
+
+reconcile_devtools_guard() {
+  [ "$(id -u)" = 0 ] || return 0
+  tree_is_roots || { warn "the tree is not root's yet; the browsers' DevTools ports are not guarded (yantrik-update migrate-ownership)"; return 0; }
+  local nft owner owner_uid allowed answering changed=0
+  nft="$(command -v nft 2>/dev/null)"
+  if [ -z "$nft" ]; then
+    warn "no nft on this machine; the browsers' DevTools ports stay open to every local account"
+    return 0
+  fi
+  owner="$(desktop_owner)"
+  case "$owner" in
+    ''|root|*[!a-z0-9_-]*) warn "cannot tell whose desktop this is; the DevTools ports are not guarded"; return 0 ;;
+  esac
+  owner_uid="$(id -u "$owner" 2>/dev/null)"
+  case "$owner_uid" in ''|*[!0-9]*) return 0 ;; esac
+  allowed="0, $owner_uid"
+  answering="0, $owner_uid"
+
+  install -d -o root -g root -m 0755 /etc/yantrik
+  if [ "$(cat "$DEVTOOLS_GUARD" 2>/dev/null)" != "$(devtools_guard_text "$owner" "$allowed" "$answering")" ]; then
+    devtools_guard_text "$owner" "$allowed" "$answering" > "$DEVTOOLS_GUARD" && chmod 0644 "$DEVTOOLS_GUARD" && changed=1
+  fi
+  if command -v systemctl >/dev/null 2>&1 && [ -d /etc/systemd/system ]; then
+    if [ "$(cat "$DEVTOOLS_UNIT" 2>/dev/null)" != "$(devtools_unit_text "$nft")" ]; then
+      devtools_unit_text "$nft" > "$DEVTOOLS_UNIT" && chmod 0644 "$DEVTOOLS_UNIT" && changed=1
+      systemctl daemon-reload >/dev/null 2>&1
+    fi
+    systemctl enable yantrik-devtools-guard.service >/dev/null 2>&1 \
+      || warn "could not enable yantrik-devtools-guard.service; the DevTools guard is not kept across boots"
+  fi
+  # Loaded on every run, not only when the file changed: a `flush ruleset` (nftables.conf's first
+  # line, on a reload or by hand) takes the table away while the unit still reads active, and the
+  # load is one atomic transaction that costs nothing when nothing changed.
+  if "$nft" -f "$DEVTOOLS_GUARD" 2>/dev/null; then
+    [ "$changed" = 1 ] && info "the browsers' DevTools ports answer root and $owner only; minds use the browser's surface"
+  else
+    warn "could not load $DEVTOOLS_GUARD; the DevTools ports stay open to every local account"
+  fi
+}
+
+# logs/ and data/ are the desktop's alone. The installer made logs/ 0777, so any other account on
+# the machine could plant a name there: the session rotates yantrik-os.log and appends to that
+# name, and a symlink to ~/.bashrc put there first would have the shell's output (which carries
+# text a mind chose) written into the person's startup file. The mind's own unit cannot reach it
+# (ProtectSystem=strict); every other account and anything unsandboxed could.
+# Write for the owner only, then what other accounts own in it goes: files and links removed,
+# directories (which the owner cannot empty) renamed aside. All as the owner, because root never
+# works inside a directory another account controls.
+# config.yaml holds the person's provider keys and tokens: read by its owner alone (security
+# review, 29 Sep 2026). Changed as the owner, and only a regular file of theirs.
+private_config() {
+  [ "$(id -u)" = 0 ] || return 0
+  command -v runuser >/dev/null 2>&1 || return 0
+  local owner f="$PREFIX/config.yaml"
+  owner="$(desktop_owner)"
+  case "$owner" in
+    ''|root|*[!a-z0-9_-]*) return 0 ;;
+  esac
+  [ -f "$f" ] && [ ! -L "$f" ] && [ "$(stat -c %U "$f")" = "$owner" ] || return 0
+  if [ -n "$(find "$f" -maxdepth 0 -perm /077 2>/dev/null)" ]; then
+    runuser -u "$owner" -- chmod go-rwx "$f" && info "$f is $owner's alone now"
+  fi
+}
+
+# The egress proxy (design/mind-egress-2026-09-29.md): its own account, a drop-in naming the
+# desktop's owner (who may use its control socket beside root), and the unit on. It starts by
+# watching, so turning it on changes nothing the mind can do; it only counts where it goes. The
+# unit itself is shipped and installed with the mind's (reconcile_mind_units).
+EGRESS_UNIT=/etc/systemd/system/yantrik-egress.service
+reconcile_egress() {
+  [ "$(id -u)" = 0 ] || return 0
+  tree_is_roots || return 0
+  [ -f "$EGRESS_UNIT" ] && [ -x "$PREFIX/bin/yantrik-egress" ] || return 0
+  local owner owner_uid="" dropin want changed=0
+  # The account and the unit come first, whatever else is known: the mind's unit wants this one
+  # and points its proxy variables here, so a proxy that is not running is a mind with no network.
+  if ! getent passwd yantrik-egress >/dev/null 2>&1; then
+    useradd --system --user-group --home-dir /nonexistent --no-create-home \
+      --shell /usr/sbin/nologin --comment "Yantrik egress" yantrik-egress \
+      || { warn "could not create the account yantrik-egress; the egress proxy is not set up"; return 0; }
+    info "created the egress account yantrik-egress"
+  fi
+  # The owner may use the control socket beside root. Not known: root only, until it is.
+  owner="$(desktop_owner)"
+  case "$owner" in
+    ''|root|*[!a-z0-9_-]*) warn "cannot tell whose desktop this is; only root can change where the mind may connect" ;;
+    *) owner_uid="$(id -u "$owner" 2>/dev/null)" ;;
+  esac
+  case "$owner_uid" in *[!0-9]*) owner_uid="" ;; esac
+  dropin="$EGRESS_UNIT.d/owner.conf"
+  if [ -n "$owner_uid" ]; then
+    want="# Made by yantrik-update: the desktop's owner, who may use the control socket beside root.
+[Service]
+Environment=EGRESS_OWNER_UID=$owner_uid"
+    if [ "$(cat "$dropin" 2>/dev/null)" != "$want" ]; then
+      install -d -m 0755 -o root -g root "$EGRESS_UNIT.d"
+      printf '%s\n' "$want" > "$dropin" && chmod 0644 "$dropin" && changed=1
+    fi
+  elif [ -e "$dropin" ]; then
+    rm -f "$dropin" && changed=1
+  fi
+  [ "$changed" = 1 ] && systemctl daemon-reload >/dev/null 2>&1
+  systemctl enable yantrik-egress.service >/dev/null 2>&1 || warn "could not enable yantrik-egress.service"
+  if [ "$changed" = 1 ]; then
+    systemctl restart yantrik-egress.service >/dev/null 2>&1 || warn "yantrik-egress.service did not start"
+  else
+    systemctl start yantrik-egress.service >/dev/null 2>&1 || warn "yantrik-egress.service did not start"
+  fi
+  return 0
+}
+
+reconcile_private_dirs() {
+  [ "$(id -u)" = 0 ] || return 0
+  tree_is_roots || return 0
+  command -v runuser >/dev/null 2>&1 || return 0
+  local owner d left
+  owner="$(desktop_owner)"
+  case "$owner" in
+    ''|root|*[!a-z0-9_-]*) return 0 ;;
+  esac
+  for d in "$LOG_DIR" "$PREFIX/data"; do
+    [ -d "$d" ] && [ ! -L "$d" ] || continue
+    [ "$(stat -c %U "$d")" = "$owner" ] || continue
+    # Read by the owner alone, not only written: the log holds what the person types to the
+    # built-in companion and data/ its memories, and every other account on the machine — the
+    # mind's included — could list and read both (security review, 29 Sep 2026).
+    if [ -n "$(find "$d" -maxdepth 0 -perm /077 2>/dev/null)" ]; then
+      runuser -u "$owner" -- chmod go-rwx "$d" && info "$d is $owner's alone now"
+    fi
+    runuser -u "$owner" -- find "$d" -mindepth 1 -maxdepth 1 ! -user "$owner" ! -type d \
+      -exec rm -f -- {} + 2>/dev/null || true
+    # A directory under a name the session writes (yantrik-os.log) would stop the desktop
+    # starting. Renaming within the owner's directory needs no write on the one moved.
+    runuser -u "$owner" -- find "$d" -mindepth 1 -maxdepth 1 ! -user "$owner" -type d \
+      -exec sh -c 'for p; do mv -T -- "$p" "${p%/*}/.foreign-$(stat -c %i -- "$p")"; done' sh {} + \
+      2>/dev/null || true
+    # Names another account chose, so nothing in them reaches a terminal but printable text.
+    left="$(find "$d" -mindepth 1 -maxdepth 1 ! -user "$owner" -printf '%f\n' 2>/dev/null \
+      | head -5 | LC_ALL=C tr -c '[:print:]\n' '?' | tr '\n' ' ')"
+    [ -z "$left" ] || warn "not $owner's, in $d (moved aside, look before deleting): $left"
+  done
+}
+
+# The system units the bundle ships for minds (share/systemd), into /etc/systemd/system, by
+# content like every other root file (#419). Installed, not enabled: a mind's unit is enabled by
+# `migrate-minds`, once what it remembers has moved out of the person's home.
+reconcile_mind_units() {
+  local dir="$PREFIX/share/systemd" f dest changed=0
+  [ -d "$dir" ] || return 0
+  [ "$(id -u)" = 0 ] || return 0
+  for f in "$dir"/*.service; do
+    [ -f "$f" ] || continue
+    dest="/etc/systemd/system/$(basename "$f")"
+    if ! root_file_ok "systemd/$(basename "$f")" "$f"; then
+      warn "refusing $f: not root's alone, or not what this build ships"
+      [ -e "$dest" ] && drop_unshipped "systemd/$(basename "$f")" "$dest" && [ ! -e "$dest" ] && changed=1
+      continue
+    fi
+    cmp -s "$f" "$dest" 2>/dev/null && continue
+    install -m 0644 -o root -g root "$f" "$dest" && changed=1 && info "mind unit in place: $dest"
+  done
+  # The browser chat is off (the unit's YM_WEBUI), so a pairing code it minted is only a secret
+  # every mind can read. Removed as the mind itself, in its own home.
+  if [ -e /var/lib/yantrik-mind/web-pairing.code ] && getent passwd yantrik-mind >/dev/null 2>&1; then
+    runuser -u yantrik-mind -- rm -f /var/lib/yantrik-mind/web-pairing.code \
+      && info "removed the Mind's browser pairing code; its browser chat is off"
+  fi
+  if [ "$changed" = 1 ]; then
+    systemctl daemon-reload >/dev/null 2>&1
+    # A running unit keeps the sandbox it started with until it restarts: the proxy first, so
+    # the mind comes back to a way out with the new rules (found on VM 520: an egress unit that
+    # gained AF_NETLINK went on running without it until restarted by hand).
+    systemctl try-restart yantrik-egress.service >/dev/null 2>&1 || true
+    systemctl try-restart yantrik-mind.service >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
+# What migrate-minds moves: paths under the person's home, and where each goes under the mind's.
+# Only these names; nothing is ever moved by a pattern.
+MIND_FILES="
+.local/share/yantrik-mind/mind.db:mind.db
+.local/share/yantrik-mind/mind.db-wal:mind.db-wal
+.local/share/yantrik-mind/mind.db-shm:mind.db-shm
+.local/share/yantrik-mind/mind.db.decisions.jsonl:mind.db.decisions.jsonl
+.local/share/yantrik-mind/mind.db.read_receipts.jsonl:mind.db.read_receipts.jsonl
+.local/share/yantrik-mind/egress.key:egress.key
+.local/share/yantrik-mind/egress_receipts.jsonl:egress_receipts.jsonl
+.local/share/yantrik-mind/console.token:console.token
+.local/share/yantrik-mind/devices.json:devices.json
+.local/share/yantrik-mind/yantrik-memory.token:yantrik-memory.token
+.config/yantrik-mind.env:.config/yantrik-mind.env
+.config/yantrik-mind/mcp.json:.config/yantrik-mind/mcp.json
+"
+
+# Run as the person: count the memory's tables (read-only), then stream every listed file that
+# exists as `<source> <size>\n<bytes>` records. Every path is opened from the home directory one
+# component at a time, never following a link, and a file is taken only when it is a plain
+# file of this account with one link: a mind that ran as the person could have left anything in
+# that home. Exit 2, with the reason on stderr, on anything else.
+PY_READ_AS_PERSON='
+import os, sys, stat, sqlite3
+home, pairs = sys.argv[1], [l.split(":", 1) for l in sys.argv[2].split() if l]
+uid, out = os.getuid(), sys.stdout.buffer
+def opened(rel):
+    fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        parts = rel.split("/")
+        for part in parts[:-1]:
+            nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd); fd = nxt
+        return os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+    finally:
+        os.close(fd)
+def plain(f, rel):
+    st = os.fstat(f)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != uid or st.st_nlink != 1:
+        sys.stderr.write("refused %s: not a plain file of this account with one link\n" % rel); sys.exit(2)
+    return st.st_size
+if sys.argv[3] == "count":
+    try:
+        f = opened(pairs[0][0])
+    except FileNotFoundError:
+        sys.exit(0)
+    except OSError as e:
+        sys.stderr.write("refused %s: %s\n" % (pairs[0][0], e)); sys.exit(2)
+    plain(f, pairs[0][0])
+    os.close(f)
+    # By path, as this account: SQLite finds the WAL and SHM beside the file by name, and this
+    # reads nothing the person could not read anyway.
+    c = sqlite3.connect("file:%s?mode=ro" % os.path.join(home, pairs[0][0]), uri=True)
+    print("integrity", c.execute("pragma integrity_check").fetchone()[0])
+    for (t,) in c.execute("select name from sqlite_master where type=\"table\" order by name"):
+        print(t, c.execute("select count(*) from \"%s\"" % t.replace("\"", "\"\"")).fetchone()[0])
+    sys.exit(0)
+for src, _ in pairs:
+    try:
+        f = opened(src)
+    except FileNotFoundError:
+        continue
+    except OSError as e:
+        sys.stderr.write("refused %s: %s\n" % (src, e)); sys.exit(2)
+    size = plain(f, src)
+    out.write(("%s %d\n" % (src, size)).encode())
+    left = size
+    while left:
+        chunk = os.read(f, min(left, 1 << 20))
+        if not chunk:
+            sys.stderr.write("%s shrank while it was read\n" % src); sys.exit(2)
+        out.write(chunk); left -= len(chunk)
+    os.close(f)
+'
+
+# Run as root: read those records into a staging directory only root can write. A record whose
+# name is not one of the listed sources is refused; each file is created new (O_EXCL, no link).
+PY_STAGE_AS_ROOT='
+import os, sys
+stage, pairs = sys.argv[1], dict(l.split(":", 1) for l in sys.argv[2].split() if l)
+inp = sys.stdin.buffer
+budget = 4 << 30  # far above any mind memory; a stream past it is not one
+while True:
+    head = inp.readline()
+    if not head:
+        break
+    src, size = head.decode().rstrip("\n").rsplit(" ", 1)
+    if src not in pairs:
+        sys.stderr.write("refused a record for %r\n" % src); sys.exit(2)
+    name = pairs[src].replace("/", "__")
+    fd = os.open(os.path.join(stage, name), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640)
+    left = int(size)
+    budget -= left
+    if left < 0 or budget < 0:
+        sys.stderr.write("refused %s: more than a mind\x27s memory could be\n" % src); sys.exit(2)
+    while left:
+        chunk = inp.read(min(left, 1 << 20))
+        if not chunk:
+            sys.stderr.write("the stream ended inside %s\n" % src); sys.exit(2)
+        os.write(fd, chunk); left -= len(chunk)
+    os.close(fd)
+'
+
+# Run as the mind account: place the staged files into its own home, never over an existing one,
+# never through a link, and check each against its staged copy byte for byte.
+PY_PLACE_AS_MIND='
+import os, sys, filecmp
+stage, dst, pairs = sys.argv[1], sys.argv[2], [l.split(":", 1) for l in sys.argv[3].split() if l]
+os.umask(0o077)
+# The memory is three files that are one thing: none placed if any is already there, or the mind
+# would start on a database without the writes its WAL holds.
+if os.path.exists(os.path.join(stage, "mind.db")):
+    for part in ("mind.db", "mind.db-wal", "mind.db-shm"):
+        if os.path.lexists(os.path.join(dst, part)):
+            sys.stderr.write("%s is already there; nothing was placed\n" % os.path.join(dst, part)); sys.exit(2)
+placed = []
+for _, rel in pairs:
+    staged = os.path.join(stage, rel.replace("/", "__"))
+    if not os.path.exists(staged):
+        continue
+    target = os.path.join(dst, rel)
+    os.makedirs(os.path.dirname(target), mode=0o700, exist_ok=True)
+    if os.path.lexists(target):
+        continue
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    if rel == ".config/yantrik-mind.env":
+        # Written when the Mind lived in the person home: paths into that home, and a debug dump
+        # into the shared /tmp, are dropped; the unit names where things are now.
+        kept, dropped = [], []
+        for line in open(staged, "r", encoding="utf-8", errors="replace").read().splitlines():
+            key = line.strip().removeprefix("export ").split("=", 1)[0].strip()
+            if key in ("YM_MCP_CONFIG", "YM_DUMP_TOOLS") or "/home/" in line:
+                dropped.append(key)
+            else:
+                kept.append(line)
+        os.write(fd, ("\n".join(kept) + "\n").encode())
+        os.close(fd)
+        if dropped:
+            sys.stderr.write("from the mind settings, dropped as they pointed at the person home or /tmp: %s\n" % ", ".join(dropped))
+        placed.append(rel)
+        continue
+    with open(staged, "rb") as src:
+        while True:
+            chunk = src.read(1 << 20)
+            if not chunk:
+                break
+            os.write(fd, chunk)
+    os.close(fd)
+    if not filecmp.cmp(staged, target, shallow=False):
+        sys.stderr.write("%s differs from what was staged\n" % target); sys.exit(2)
+    placed.append(rel)
+print(" ".join(placed))
+'
+
+# Run as the person, last: remove what was moved, walking from the home without following links.
+PY_REMOVE_AS_PERSON='
+import os, sys
+home, pairs = sys.argv[1], [l.split(":", 1) for l in sys.argv[2].split() if l]
+placed = set(sys.argv[3].split())
+for src, rel in pairs:
+    if rel not in placed:
+        continue
+    parts = src.split("/")
+    try:
+        fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        for part in parts[:-1]:
+            nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd); fd = nxt
+        os.unlink(parts[-1], dir_fd=fd)
+        os.close(fd)
+    except FileNotFoundError:
+        pass
+'
+
+# Table counts of a staged memory, as root, on files nobody else can write.
+staged_counts() {
+  python3 -I -c '
+import sqlite3, sys
+c = sqlite3.connect("file:%s?mode=ro" % sys.argv[1], uri=True)
+print("integrity", c.execute("pragma integrity_check").fetchone()[0])
+for (t,) in c.execute("select name from sqlite_master where type=\"table\" order by name"):
+    print(t, c.execute("select count(*) from \"%s\"" % t.replace("\"", "\"\"")).fetchone()[0])
+' "$1"
+}
+
+# Move the Yantrik Mind out of the person's account into its own (#411): its memory (the db with
+# its WAL and SHM, which hold the latest writes), the files beside it, its settings and its MCP
+# config. Root never works on a path someone else controls: the person's files are read as the
+# person, staged where only root writes, counted there, and placed by the mind account into its
+# own home; only then are the sources removed, as the person. Then the person's unit off and the
+# mind's system unit on. Safe to run again.
+cmd_migrate_minds() {
+  migrate_if_needed
+  elevate "$@"
+  reconcile_minds
+  reconcile_devtools_guard
+  reconcile_mind_units
+  reconcile_egress
+  # Before the mind runs as an account of its own: from then on a directory anyone can write is
+  # one the mind can write.
+  reconcile_private_dirs
+  private_config
+  getent passwd yantrik-mind >/dev/null 2>&1 || fail "there is no mind account; nothing was moved"
+  local owner home dst stage pairs placed before="" after=""
+  owner="$(desktop_owner)"
+  case "$owner" in ''|root|*[!a-z0-9_-]*) fail "cannot tell whose desktop this is; nothing was moved" ;; esac
+  home="$(getent passwd "$owner" | cut -d: -f6)"
+  [ -n "$home" ] && [ -d "$home" ] || fail "no home for $owner; nothing was moved"
+  dst=/var/lib/yantrik-mind
+  [ -d "$dst" ] && [ ! -L "$dst" ] || fail "$dst is not the mind's home directory; nothing was moved"
+  pairs="$(printf '%s\n' "$MIND_FILES" | sed '/^$/d')"
+  say "Moving Yantrik Mind from $owner's account into its own"
+  systemctl --user -M "$owner@" stop yantrik-mind.service >/dev/null 2>&1 || true
+  systemctl stop yantrik-mind.service >/dev/null 2>&1 || true
+
+  before="$(runuser -u "$owner" -- python3 -I -c "$PY_READ_AS_PERSON" "$home" "$pairs" count)" \
+    || fail "could not read the mind's memory in $owner's home; nothing was moved"
+  if [ -n "$before" ]; then
+    case "$before" in "integrity ok"*) ;; *) fail "the memory in $owner's home fails its integrity check; nothing was moved" ;; esac
+    runuser -u yantrik-mind -- test -e "$dst/mind.db" \
+      && fail "a memory is already at $dst/mind.db and another in $owner's home; nothing was moved. Say which is the mind's."
+  fi
+
+  stage="$(mktemp -d /var/lib/.yantrik-mind-move.XXXXXX)" || fail "no staging directory; nothing was moved"
+  # shellcheck disable=SC2064  # the path is fixed now, on purpose
+  trap "rm -rf '$stage'" EXIT
+  chmod 0700 "$stage"
+  runuser -u "$owner" -- python3 -I -c "$PY_READ_AS_PERSON" "$home" "$pairs" stream \
+    | python3 -I -c "$PY_STAGE_AS_ROOT" "$stage" "$pairs" \
+    || fail "could not stage the mind's files; nothing was moved"
+  if [ -e "$stage/mind.db" ]; then
+    after="$(staged_counts "$stage/mind.db")" || fail "could not read the staged memory; nothing was moved"
+    [ "$before" = "$after" ] || fail "the memory's counts changed while it was read; nothing was moved. Before: $(printf '%s' "$before" | tr '\n' ' ') After: $(printf '%s' "$after" | tr '\n' ' ')"
+  fi
+  # The mind account places its own files: open the staging directory to its group, read-only.
+  chgrp -R yantrik-minds "$stage" && chmod 0750 "$stage"
+  placed="$(runuser -u yantrik-mind -- python3 -I -c "$PY_PLACE_AS_MIND" "$stage" "$dst" "$pairs")" \
+    || fail "the mind account could not place its files; the originals are untouched in $owner's home"
+  runuser -u yantrik-mind -- sh -c 'umask 077; mkdir -p "$1/coder"' sh "$dst"
+  runuser -u "$owner" -- python3 -I -c "$PY_REMOVE_AS_PERSON" "$home" "$pairs" "$placed" \
+    || warn "the mind's files are in $dst, but some copies in $owner's home could not be removed"
+  [ -n "$after" ] && info "memory moved and counted: $(printf '%s\n' "$after" | sed -n '2,$p' | wc -l) tables, identical before and after"
+
+  # The person's unit off, for the person and for everyone the global enable reached; the mind's
+  # own on, if the mind is installed.
+  systemctl --user -M "$owner@" disable yantrik-mind.service >/dev/null 2>&1 || true
+  systemctl --global disable yantrik-mind.service >/dev/null 2>&1 || true
+  if [ -x /opt/yantrik-mind/bin/yantrik-mind ] && [ -f /etc/systemd/system/yantrik-mind.service ]; then
+    systemctl enable --now yantrik-mind.service >/dev/null 2>&1 \
+      && info "Yantrik Mind runs as yantrik-mind now" \
+      || warn "the mind's unit did not start; see: sudo -n /usr/lib/yantrik/yantrik-mind-log"
+  else
+    info "Yantrik Mind is not installed here; its memory (if any) waits in $dst"
+  fi
+}
+
 cmd_reconcile() {
+  migrate_if_needed
+  elevate
+  remove_blanket_sudo
+  seal_share
   say "Reconciling the base system against what the image ships"
   info "required: $REQUIRED_PACKAGES"
   reconcile_packages
+  reconcile_subids
+  reconcile_polkit
+  reconcile_helpers
+  reconcile_sysctl
+  reconcile_sudo_rule
+  reconcile_minds
+  reconcile_devtools_guard
+  reconcile_mind_units
+  reconcile_egress
+  reconcile_private_dirs
+  private_config
+  reconcile_registries
+  reconcile_podman_socket
+  audit_unowned /etc/polkit-1/rules.d '*.rules' polkit
+  audit_unowned /etc/sysctl.d '*.conf' sysctl
+  audit_unowned /etc/containers/registries.conf.d '*.conf' containers
 }
 
 # ── selftest ────────────────────────────────────────────────────────────────────────────
@@ -1255,8 +2349,30 @@ cmd_selftest() {
       fails=$((fails + 1))
     fi
   }
+  is() { # is <name> <expected> <actual>: the whole answer, where a substring would pass a wrong one
+    if [ "$3" = "$2" ]; then
+      printf '  %sok%s   %s\n' "$c_grn" "$c_off" "$1"
+    else
+      printf '  %sFAIL%s %s\n       wanted: %s\n       got:    %s\n' "$c_red" "$c_off" "$1" "$2" "$3"
+      fails=$((fails + 1))
+    fi
+  }
 
   say "yantrik-update selftest"
+
+  # 0. Which session a running shell belongs to (#374), from a fake process tree: a shell under
+  #    the supervisor, one started by hand, and none at all.
+  local fp="$root/proc" me; me="$(id -u)"
+  mkdir -p "$fp/100" "$fp/200" "$fp/300"
+  printf '/bin/sh\0/opt/yantrik/bin/yantrik-shell\0/opt/yantrik/config.yaml\0' > "$fp/100/cmdline"
+  printf 'Name:\tyantrik-ui\nPPid:\t100\n' > "$fp/200/status"
+  printf 'bash\0' > "$fp/1/cmdline" 2>/dev/null || { mkdir -p "$fp/1"; printf 'bash\0' > "$fp/1/cmdline"; }
+  printf 'Name:\tyantrik-ui\nPPid:\t1\n' > "$fp/300/status"
+  t "a supervised shell: its owner's runtime dir, and the supervisor restarts it" \
+    "/run/user/$me 1 $me" "$(YANTRIK_PROC="$fp" shell_session 200)"
+  t "a shell started by hand: restarted here, for its owner" \
+    "/run/user/$me 0 $me" "$(YANTRIK_PROC="$fp" shell_session 300)"
+  t "no such shell: no session" "none" "$(YANTRIK_PROC="$fp" shell_session 999 || echo none)"
 
   # 1. Nothing at all: the hard default, and it says so.
   local p1="$root/empty"; mkdir -p "$p1"
@@ -1387,16 +2503,93 @@ cmd_selftest() {
   #    decision under test is which packages a given machine lacks — that one is pure, and a
   #    fake status command stands in for dpkg. The apt run itself is only a caller of it and
   #    needs a Debian machine, so nothing here touches apt.
-  local old; old="$root/dpkg-520"
+  local old want; old="$root/dpkg-520"
   printf '#!/bin/sh\ncase "$1" in iproute2|curl|python3|grim) echo installed ;; esac\n' > "$old"
   chmod +x "$old"
   out="$(missing_packages "$old")"
-  if [ "$out" = "iputils-ping nano htop" ]; then
+  want="iputils-ping nano htop swaybg xdg-desktop-portal-gtk flatpak git bash-completion podman uidmap passt fuse-overlayfs nftables"
+  if [ "$out" = "$want" ]; then
     printf '  %sok%s   a 520-style machine is named package by package\n' "$c_grn" "$c_off"
   else
     printf '  %sFAIL%s a 520-style machine: wanted %s, got %s\n' \
-      "$c_red" "$c_off" "iputils-ping nano htop" "${out:-nothing}"
+      "$c_red" "$c_off" "$want" "${out:-nothing}"
     fails=$((fails + 1))
+  fi
+
+  # A machine that was current until #401: every package the list named before it, and none of
+  # the developer's baseline. It is told exactly those, and nothing it already has.
+  local pre401; pre401="$root/dpkg-pre401"
+  printf '#!/bin/sh\ncase "$1" in iproute2|iputils-ping|grim|curl|python3|nano|htop|swaybg|xdg-desktop-portal-gtk|flatpak) echo installed ;; esac\n' > "$pre401"
+  chmod +x "$pre401"
+  out="$(missing_packages "$pre401")"
+  want="git bash-completion podman uidmap passt fuse-overlayfs nftables"
+  if [ "$out" = "$want" ]; then
+    printf '  %sok%s   a machine from before #401 is given git, completion and rootless podman\n' "$c_grn" "$c_off"
+  else
+    printf '  %sFAIL%s a machine from before #401: wanted %s, got %s\n' \
+      "$c_red" "$c_off" "$want" "${out:-nothing}"
+    fails=$((fails + 1))
+  fi
+
+  # The list is apt's, run as root: package names, never a URL or a path (#401).
+  # shellcheck disable=SC2086  # a package list, split on purpose
+  out="$(printf '%s\n' $REQUIRED_PACKAGES | grep -vE '^[a-z0-9][a-z0-9+.-]+$' || true)"
+  if [ -z "$out" ]; then
+    printf '  %sok%s   every required package is a plain Debian package name\n' "$c_grn" "$c_off"
+  else
+    printf '  %sFAIL%s REQUIRED_PACKAGES holds what is not a package name: %s\n' \
+      "$c_red" "$c_off" "$(printf '%s' "$out" | tr '\n' ' ')"
+    fails=$((fails + 1))
+  fi
+
+  # 9. Subordinate ids for rootless podman (#401). Where a new range starts, and whether an
+  #    account already has one, decide whether two accounts end up sharing ids; both are pure
+  #    reads of a file, so they are held against files here and never against /etc.
+  local subids="$root/subuid"
+  is "no file: a range starts at the floor" "100000" "$(next_subid_start "$root/absent")"
+  printf '' > "$subids"
+  is "an empty file: a range starts at the floor" "100000" "$(next_subid_start "$subids")"
+  printf 'yantrik:100000:65536\n' > "$subids"
+  is "after the image's range, the next starts where it ends" "165536" "$(next_subid_start "$subids")"
+  is "the image's account owns a full range" "65536" "$(subids_owned "$subids" yantrik 1000)"
+  is "an account with no line owns none" "0" "$(subids_owned "$subids" pranab 1001)"
+  printf 'yantrik:100000:65536\n# a note\n1001:300000:65536\nbuild:2147483648:65536\n' > "$subids"
+  is "a line naming the account by uid counts" "65536" "$(subids_owned "$subids" pranab 1001)"
+  is "the next range starts past the highest one, however high" "2147549184" \
+    "$(next_subid_start "$subids")"
+  printf 'yantrik:100000:1000\nyantrik:5000:1000\n' > "$subids"
+  out="$(subids_owned "$subids" yantrik 1000)"
+  if [ "$out" = 2000 ] && [ "$out" -lt "$SUBID_COUNT" ]; then
+    printf '  %sok%s   two short ranges are not a full one, so a full one is added\n' "$c_grn" "$c_off"
+  else
+    printf '  %sFAIL%s two short ranges summed to %s\n' "$c_red" "$c_off" "${out:-nothing}"
+    fails=$((fails + 1))
+  fi
+
+  # 10. The registry search file (#401) is taken only when it sets nothing but the search list.
+  local reg="$root/50-yantrik-search.conf"
+  printf '# a comment\n\nunqualified-search-registries = ["docker.io"]\n' > "$reg"
+  if registries_file_ok "$reg"; then
+    printf '  %sok%s   the shipped registry search file is accepted\n' "$c_grn" "$c_off"
+  else
+    printf '  %sFAIL%s the shipped registry search file was refused\n' "$c_red" "$c_off"
+    fails=$((fails + 1))
+  fi
+  printf 'unqualified-search-registries = ["docker.io"]\n[[registry]]\nprefix = "docker.io"\nlocation = "evil.example"\n' > "$reg"
+  if registries_file_ok "$reg"; then
+    printf '  %sFAIL%s a registries file that redirects docker.io was accepted\n' "$c_red" "$c_off"
+    fails=$((fails + 1))
+  else
+    printf '  %sok%s   a registries file that redirects docker.io is refused\n' "$c_grn" "$c_off"
+  fi
+  local shipped; shipped="$(dirname "$0")/../../config/containers/50-yantrik-search.conf"
+  if [ -f "$shipped" ]; then
+    if registries_file_ok "$shipped"; then
+      printf '  %sok%s   config/containers/50-yantrik-search.conf passes the check it is installed by\n' "$c_grn" "$c_off"
+    else
+      printf '  %sFAIL%s config/containers/50-yantrik-search.conf would be refused by reconcile\n' "$c_red" "$c_off"
+      fails=$((fails + 1))
+    fi
   fi
 
   local whole; whole="$root/dpkg-whole"
@@ -1445,6 +2638,8 @@ case "$CMD" in
   # person at a terminal types the hyphen.
   set-channel|set_channel) cmd_set_channel "$@" ;;
   reconcile) cmd_reconcile ;;
+  migrate-minds) cmd_migrate_minds "$@" ;;
+  migrate-ownership) cmd_migrate_ownership ;;
   selftest) cmd_selftest ;;
   # Printed from a function rather than `sed -n '20,30p' "$0"`, which quietly printed whatever
   # happened to be on those lines after anyone edited the header.

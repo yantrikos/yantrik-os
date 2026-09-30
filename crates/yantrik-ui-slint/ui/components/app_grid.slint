@@ -11,6 +11,25 @@ import { Theme } from "theme.slint";
 import { Icon, Icons } from "icon.slint";
 import { AppTile } from "app_tile.slint";
 
+// One power button in the launcher's footer; the footer names it on hover.
+component PowerButton inherits TouchArea {
+    in property <string> icon;
+    in property <string> label;
+    width: 32px;
+    height: 28px;
+    Rectangle {
+        border-radius: 8px;
+        background: root.has-hover ? Theme.hover-fill : transparent;
+        Icon {
+            commands: root.icon;
+            size: 16px;
+            tint: root.has-hover ? Theme.text-primary : Theme.text-secondary;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+        }
+    }
+}
+
 export struct AppGridItem {
     app-id: string,
     name: string,
@@ -44,6 +63,8 @@ export component AppGrid inherits Rectangle {
     callback search-changed(string);
     callback category-selected(string);
     callback toggle-pin(string);
+    // Lock, sleep, restart, shut down: where every other desktop keeps them, in the launcher.
+    callback power-action(string);
 
     width: 100%;
     height: 100%;
@@ -357,9 +378,38 @@ export component AppGrid inherits Rectangle {
                 height: 34px;
                 background: Theme.glass-panel;
                 HorizontalLayout {
-                    padding-left: 20px; padding-right: 20px;
-                    Text { text: root.apps.length + " applications"; font-size: Theme.fs-caption; color: Theme.text-secondary; vertical-alignment: center; horizontal-stretch: 1; }
+                    padding-left: 20px; padding-right: 12px;
+                    spacing: 4px;
+                    footer-text := Text {
+                        property <string> power-hint: lock-btn.has-hover ? "Lock the screen" : sleep-btn.has-hover ? "Sleep" : restart-btn.has-hover ? "Restart" : shutdown-btn.has-hover ? "Shut down" : "";
+                        text: self.power-hint != "" ? self.power-hint : root.apps.length + " applications";
+                        font-size: Theme.fs-caption;
+                        color: self.power-hint != "" ? Theme.text-primary : Theme.text-secondary;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
                     Text { text: "Tab / ↑ ↓  Select     Enter  Open     Esc  Close"; font-size: Theme.fs-caption; color: Theme.text-secondary; vertical-alignment: center; }
+                    Rectangle { width: 14px; }
+                    lock-btn := PowerButton {
+                        icon: Icons.lock; label: "Lock";
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.power-action("lock"); root.is-open = false; root.close(); }
+                    }
+                    sleep-btn := PowerButton {
+                        icon: Icons.moon; label: "Sleep";
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.power-action("suspend"); root.is-open = false; root.close(); }
+                    }
+                    restart-btn := PowerButton {
+                        icon: Icons.refresh; label: "Restart";
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.power-action("restart"); root.is-open = false; root.close(); }
+                    }
+                    shutdown-btn := PowerButton {
+                        icon: Icons.power; label: "Shut down";
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.power-action("shutdown"); root.is-open = false; root.close(); }
+                    }
                 }
             }
         }

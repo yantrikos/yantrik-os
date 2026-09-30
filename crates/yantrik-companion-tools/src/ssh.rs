@@ -18,6 +18,11 @@ fn validate_host(host: &str) -> Result<(), String> {
     if host.is_empty() {
         return Err("host is required".to_string());
     }
+    // The host goes to ssh as an argument before the command, so one beginning with `-` would be
+    // an ssh option — `-L8080:localhost:80` passes the character check below.
+    if host.starts_with('-') {
+        return Err(format!("Invalid host '{host}': a host cannot begin with '-'"));
+    }
     if host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == ':') {
         Ok(())
     } else {
@@ -319,5 +324,18 @@ impl Tool for SshRunTool {
             }
             Err(e) => format!("Error running ssh: {e}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_host;
+
+    #[test]
+    fn a_host_is_never_read_as_an_ssh_option() {
+        // Passes the character check, and would have been a port forward.
+        assert!(validate_host("-L8080:localhost:80").is_err());
+        assert!(validate_host("-v").is_err());
+        assert!(validate_host("build-box.lan").is_ok());
     }
 }

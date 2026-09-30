@@ -176,8 +176,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             all_urges.extend(registry.borrow_mut().tick(&ctx));
         }
 
-        // 2b. Feed events into activity accumulator + detect issues
-        {
+        // 2b. Feed events into activity accumulator + detect issues. Not in Private mode: what
+        // the person runs and where they connect is not recorded while it is on.
+        if !crate::private_mode::is_on() {
             let mut acc = accumulator.borrow_mut();
             let snap = snapshot.borrow();
             for event in &events {
@@ -292,17 +293,19 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 ui.set_bar_disk_text(format!("{} / {}", format_bytes(used), format_bytes(snap.disk_total_bytes)).into());
             }
 
-            // Auto-lock on idle (only from desktop screen, 0 = disabled)
-            let lock_timeout = ui.get_settings_auto_lock_secs() as u64;
+            // Auto-lock when the person has left the seat (0 = never). Idle is the compositor's
+            // count of keyboard and mouse (#412), so an agent working does not hold it off.
+            // From any screen but boot, first run and the lock itself: it was the desktop only,
+            // so a machine left on Settings or Memory stayed open.
+            ui.set_settings_auto_lock_available(yantrik_os::idle_watch_active());
+            let lock_timeout = ui.get_settings_auto_lock_secs().max(0) as u64;
             if lock_timeout > 0
                 && snap.user_idle
                 && snap.idle_seconds >= lock_timeout
-                && ui.get_current_screen() == 1
+                && may_auto_lock(ui.get_current_screen())
             {
-                ui.set_current_screen(3);
-                ui.set_lock_error("".into());
-                ui.set_lock_date_text(app_context::current_date_text().into());
-                ui.set_lock_greeting(ui.get_greeting_text());
+                // The one lock path: the shell's screen and the compositor's session lock (#313).
+                ui.invoke_lock_screen();
                 tracing::info!(idle_secs = snap.idle_seconds, "Auto-locked due to idle");
             }
         }
@@ -355,15 +358,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 super::pins::publish(&ui, &catalogue.get());
 
                 // Update window list for switcher (with contextual subtitles)
-                let win_items: Vec<WindowItem> = wins
-                    .iter()
-                    .map(|w| WindowItem {
-                        title: w.title.clone().into(),
-                        app_id: w.app_id.clone().into(),
-                        icon_char: w.icon_char.clone().into(),
-                        subtitle: w.subtitle.clone().into(),
-                    })
-                    .collect();
+                let win_items = window_items(ui.get_current_screen(), &wins, windows::shell_in_front());
                 if let Some(model) = crate::models::changed(ui.get_window_list(), win_items) {
         ui.set_window_list(model);
     }
@@ -459,10 +454,8 @@ fn handle_keybind(ui: &App, action: &str) {
             }
         }
         "lock-screen" => {
-            ui.set_current_screen(3);
-            ui.set_lock_error("".into());
-            ui.set_lock_date_text(app_context::current_date_text().into());
-            ui.set_lock_greeting(ui.get_greeting_text());
+            // The one lock path: the shell's screen and the compositor's session lock (#313).
+            ui.invoke_lock_screen();
             tracing::info!("Screen locked via hotkey");
         }
         "open-terminal" => {
@@ -530,15 +523,7 @@ fn handle_keybind(ui: &App, action: &str) {
             if ui.get_current_screen() == 1 {
                 // Refresh window list immediately before showing
                 let wins = windows::list_windows();
-                let items: Vec<WindowItem> = wins
-                    .iter()
-                    .map(|w| WindowItem {
-                        title: w.title.clone().into(),
-                        app_id: w.app_id.clone().into(),
-                        icon_char: w.icon_char.clone().into(),
-                        subtitle: w.subtitle.clone().into(),
-                    })
-                    .collect();
+                let items = window_items(ui.get_current_screen(), &wins, windows::shell_in_front());
                 ui.set_window_list(ModelRc::new(VecModel::from(items)));
                 ui.set_window_switcher_open(!ui.get_window_switcher_open());
             }
@@ -550,6 +535,36 @@ fn handle_keybind(ui: &App, action: &str) {
 }
 
 /// Format a byte count as a human-readable string (KB / MB / GB).
+/// The taskbar's entries: the screen the shell is on, when it is one a person reads as a window
+/// (`control::screen_entry` — Files, Settings, Agents …), among every window.
+///
+/// The taskbar lights its first entry as the active one, so the screen goes first only when the
+/// shell is what the person is looking at (`shell_front`, from the compositor), or when that cannot
+/// be known. With an app window in front of it — Weather over Files — the app stays first and the
+/// screen comes second, behind it, where it is.
+fn window_items(screen: i32, wins: &[windows::WindowEntry], shell_front: Option<bool>) -> Vec<WindowItem> {
+    let mut items: Vec<WindowItem> = wins
+        .iter()
+        .map(|w| WindowItem {
+            title: w.title.clone().into(),
+            app_id: w.app_id.clone().into(),
+            icon_char: w.icon_char.clone().into(),
+            subtitle: w.subtitle.clone().into(),
+        })
+        .collect();
+    if let Some((name, title)) = crate::control::screen_entry(screen) {
+        let entry = WindowItem {
+            title: title.into(),
+            app_id: format!("{}{name}", crate::control::SCREEN_ENTRY_PREFIX).into(),
+            icon_char: windows::icon_for_app(name).into(),
+            subtitle: "".into(),
+        };
+        let at = if shell_front == Some(false) && !items.is_empty() { 1 } else { 0 };
+        items.insert(at, entry);
+    }
+    items
+}
+
 fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = 1024 * 1024;
@@ -787,9 +802,58 @@ fn publish_network(ui: &App, r: &NetworkReadout) {
     }
 }
 
+/// Screens the auto-lock may lock from: all but boot (0), first run (2) — no PIN to unlock with
+/// yet — and the two locked screens. Never from login (32): the PIN screen unlocks to the
+/// desktop, so locking there would trade the login password for the PIN (as `lock` refuses to).
+fn may_auto_lock(screen: i32) -> bool {
+    !matches!(screen, 0 | 2) && !crate::control::locked_screen(screen)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn weather() -> windows::WindowEntry {
+        windows::WindowEntry {
+            title: "Weather".into(),
+            app_id: "weather".into(),
+            wayland_app_id: String::new(),
+            icon_char: windows::icon_for_app("weather").into(),
+            subtitle: String::new(),
+        }
+    }
+
+    /// Files is the shell's own screen, drawn as a window; it is on the taskbar while it is up,
+    /// first, and the desktop adds nothing.
+    #[test]
+    fn the_screen_the_shell_is_on_is_a_taskbar_entry() {
+        let titles = |items: &[WindowItem]| items.iter().map(|w| w.title.to_string()).collect::<Vec<_>>();
+        // The shell in front: its screen is the active entry, first.
+        let items = window_items(8, &[weather()], Some(true));
+        assert_eq!(titles(&items), ["Files", "Weather"]);
+        assert_eq!(items[0].app_id.as_str(), "shell:files");
+        assert_eq!(items[1].app_id.as_str(), "weather");
+        // Weather in front of Files: Weather stays first, and Files is behind it.
+        assert_eq!(titles(&window_items(8, &[weather()], Some(false))), ["Weather", "Files"]);
+        // Not knowable: first, as before.
+        assert_eq!(titles(&window_items(8, &[weather()], None)), ["Files", "Weather"]);
+        // Nothing else open: the screen is the only entry, whatever is said to be in front.
+        assert_eq!(titles(&window_items(8, &[], Some(false))), ["Files"]);
+
+        let on_desktop = window_items(1, &[weather()], Some(true));
+        assert_eq!(on_desktop.len(), 1);
+        assert_eq!(on_desktop[0].title.as_str(), "Weather");
+    }
+
+    #[test]
+    fn the_auto_lock_locks_from_any_screen_the_person_could_leave_open() {
+        for screen in [1, 6, 7, 8, 10, 17, 23] {
+            assert!(may_auto_lock(screen), "screen {screen} left open would stay unlocked");
+        }
+        for screen in [0, 2, 3, 32] {
+            assert!(!may_auto_lock(screen), "screen {screen}");
+        }
+    }
 
     /// The live machine's answer, captured from `yos describe network`:
     /// online via ethernet at 192.168.4.44, ssid null, no wireless adapter.

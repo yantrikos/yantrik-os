@@ -30,6 +30,7 @@ fn turn(blocks: Vec<ContentBlock>) -> MessageData {
         content: "".into(),
         is_streaming: false,
         blocks: ModelRc::new(VecModel::from(blocks)),
+        run: "".into(),
     }
 }
 
@@ -165,6 +166,7 @@ pub fn run_lens(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn s
         content: "Save a note called Groceries, tell me what is on my calendar, and the top story on Hacker News".into(),
         is_streaming: false,
         blocks: ModelRc::new(VecModel::from(Vec::<ContentBlock>::new())),
+        run: "".into(),
     };
     ui.set_messages(ModelRc::new(VecModel::from(vec![question, turn(blocks)])));
     render(w, width, height);

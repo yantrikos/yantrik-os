@@ -87,6 +87,11 @@ impl ServiceHandler for CompanionRpc {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
+        // Private mode: the companion is asked nothing, recalls nothing and runs no tool for
+        // anyone on this socket — the agents that run as the person reach it here.
+        if crate::private_mode::is_on() {
+            return Err(ServiceError { code: -32602, message: yantrik_ipc_transport::privacy::REFUSAL.to_string() });
+        }
         match method {
             "companion.ask" => {
                 let prompt = params

@@ -33,6 +33,8 @@ pub struct ProviderManager {
     event_tx: Sender<(String, InboundEvent)>,
     /// Optional channel for router events (health changes).
     router_event_tx: Option<Sender<RouterEvent>>,
+    /// Where each started provider is recorded for the router to reach (`router::Channels`).
+    channels: Option<crate::router::Channels>,
 }
 
 impl ProviderManager {
@@ -45,7 +47,15 @@ impl ProviderManager {
             statuses: Arc::new(Mutex::new(HashMap::new())),
             event_tx,
             router_event_tx,
+            channels: None,
         }
+    }
+
+    /// Record each provider this starts where the router reaches it: without this, nothing it
+    /// says can be answered.
+    pub fn with_channels(mut self, channels: crate::router::Channels) -> Self {
+        self.channels = Some(channels);
+        self
     }
 
     /// Start a provider in its own thread.
@@ -66,6 +76,17 @@ impl ProviderManager {
                 error_count: 0,
                 events_received: 0,
             });
+        }
+
+        // Before the provider moves to its thread: how to send to it, and what it can carry.
+        if let Some(channels) = &self.channels {
+            let outbound = provider.outbound();
+            if outbound.is_none() {
+                tracing::warn!(provider = %id, "this channel cannot send yet: messages on it are read and not answered");
+            }
+            if let Ok(mut map) = channels.lock() {
+                map.insert(id.clone(), crate::router::Channel { capabilities: provider.capabilities(), outbound });
+            }
         }
 
         let handle = thread::Builder::new()

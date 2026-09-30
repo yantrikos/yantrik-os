@@ -1,0 +1,269 @@
+// The Agents Overview: the selected run as a route (Pranab, 27 September), not every agent at once.
+//
+// One line, top to bottom, like a transit line: the station it started at (what it was asked),
+// a station for each call, question and approval on the way, the agents it started branching off
+// where they started, and the end — how it ended, or the reply still ahead. The stretch it has
+// travelled is solid, the stretch ahead is thin, and while the run is live a train runs down the
+// stretch into the station it is at, which pulses. Amber, as everywhere, is what waits on the person.
+//
+// The stations and every stretch of line are worked out by the shell, in
+// crates/yantrik-ui/src/agents/route.rs; this component only draws them. Only a live run moves:
+// a finished route asks for no redraw (#68).
+
+import { Theme } from "theme.slint";
+
+export struct RouteStopData {
+    key: string,           // what pressing it opens: a session item (`t3.2`) or a branch's agent id
+    kind: string,          // start | call | question | approval | branch | now | end | more
+    state: string,         // passed | here | waiting | failed | lost | ahead
+    title: string,
+    sub: string,
+    track-in: string,      // the line into this row: "" | done | live | ahead
+    track-out: string,     // and out of it
+    train-in: float,       // where the one train's run crosses this row's half in, or -1
+    train-out: float,      // and its half out
+    train-span: float,     // the share of the run one half-row takes
+}
+
+global RouteColour {
+    public pure function of(state: string) -> color {
+        return state == "waiting" ? Theme.amber
+            : state == "failed" ? Theme.color-danger
+            : state == "lost" || state == "ahead" ? Theme.text-dim
+            : state == "here" ? Theme.accent-light
+            : Theme.accent;
+    }
+}
+
+component Stretch inherits Rectangle {
+    in property <string> track;
+    width: root.track == "ahead" ? 2px : 4px;
+    border-radius: self.width / 2;
+    background: root.track == "ahead" ? Theme.border-default
+        : root.track == "live" ? Theme.accent.with-alpha(0.45)
+        : Theme.accent;
+}
+
+component Station inherits Rectangle {
+    in property <RouteStopData> stop;
+    in property <bool> live;
+    // Where the train is on the live stretch, 0..1. The stretch can cross several rows; each
+    // half-row knows its share of the run (train-in / train-out), so one train crosses them in turn.
+    in property <float> beat;
+    callback pressed();
+
+    property <length> line-x: 30px;
+    property <length> cy: self.height / 2;
+    property <bool> branch: root.stop.kind == "branch";
+    property <bool> terminus: root.stop.kind == "start" || root.stop.kind == "end";
+    property <bool> at: root.live && (root.stop.state == "here" || root.stop.state == "waiting");
+    property <bool> hollow: root.terminus || root.stop.state == "ahead" || root.stop.state == "lost";
+    property <color> tint: RouteColour.of(root.stop.state);
+    property <length> dot: root.terminus ? 20px : root.branch ? 12px : root.stop.kind == "more" ? 10px : 14px;
+    property <length> dot-x: root.branch ? root.line-x + 28px : root.line-x;
+    property <length> text-x: 76px;
+
+    height: 56px;
+    border-radius: 8px;
+    background: ta.has-hover && root.stop.key != "" ? Theme.hover-fill : transparent;
+
+    if root.stop.track-in != "" : Stretch {
+        track: root.stop.track-in;
+        x: root.line-x - self.width / 2;
+        y: 0;
+        height: root.cy;
+    }
+    if root.stop.track-out != "" : Stretch {
+        track: root.stop.track-out;
+        x: root.line-x - self.width / 2;
+        y: root.cy;
+        height: root.height - root.cy;
+    }
+    // A branch: the agent this run started, off the line.
+    if root.branch : Rectangle {
+        x: root.line-x;
+        y: root.cy - 1.5px;
+        width: root.dot-x - root.line-x;
+        height: 3px;
+        background: root.tint.with-alpha(0.6);
+    }
+
+    // The train, on the live stretch.
+    if root.live && root.stop.train-out >= 0 && root.beat >= root.stop.train-out
+            && root.beat < root.stop.train-out + root.stop.train-span : Rectangle {
+        width: 8px;
+        height: 8px;
+        border-radius: 4px;
+        x: root.line-x - 4px;
+        y: root.cy + (root.beat - root.stop.train-out) / root.stop.train-span * (root.height - root.cy) - 4px;
+        background: Theme.text-primary;
+        drop-shadow-blur: 6px;
+        drop-shadow-color: Theme.accent-glow-strong;
+    }
+    if root.live && root.stop.train-in >= 0 && root.beat >= root.stop.train-in
+            && root.beat < root.stop.train-in + root.stop.train-span : Rectangle {
+        width: 8px;
+        height: 8px;
+        border-radius: 4px;
+        x: root.line-x - 4px;
+        y: (root.beat - root.stop.train-in) / root.stop.train-span * root.cy - 4px;
+        background: Theme.text-primary;
+        drop-shadow-blur: 6px;
+        drop-shadow-color: Theme.accent-glow-strong;
+    }
+
+    // Where the run is now: a ring that swells and fades, once a beat.
+    if root.at : Rectangle {
+        width: root.dot + 22px * root.beat;
+        height: self.width;
+        x: root.dot-x - self.width / 2;
+        y: root.cy - self.height / 2;
+        border-radius: self.width / 2;
+        background: root.tint.with-alpha(0.4 * (1 - root.beat));
+    }
+
+    Rectangle {
+        width: root.dot;
+        height: root.dot;
+        x: root.dot-x - root.dot / 2;
+        y: root.cy - root.dot / 2;
+        border-radius: root.dot / 2;
+        background: root.hollow ? Theme.bg-card : root.tint;
+        border-width: root.terminus ? 4px : root.hollow ? 2px : 0px;
+        border-color: root.tint;
+        drop-shadow-blur: root.at ? 8px : 0px;
+        drop-shadow-color: root.stop.state == "waiting" ? Theme.amber-glow-strong : Theme.accent-glow-strong;
+        animate background, border-color { duration: 300ms; }
+    }
+
+    VerticalLayout {
+        x: root.text-x;
+        width: root.width - root.text-x - 12px;
+        height: root.height;
+        alignment: center;
+        spacing: 2px;
+
+        Text {
+            text: root.stop.title;
+            color: root.stop.state == "ahead" ? Theme.text-secondary : Theme.text-primary;
+            font-size: Theme.fs-body;
+            font-weight: root.terminus || root.at ? 600 : 400;
+            overflow: elide;
+        }
+        if root.stop.sub != "" : Text {
+            text: root.stop.sub;
+            color: root.stop.state == "waiting" ? Theme.amber-light
+                : root.stop.state == "failed" ? Theme.color-danger
+                : Theme.text-dim;
+            font-size: Theme.fs-caption;
+            overflow: elide;
+        }
+    }
+
+    ta := TouchArea {
+        mouse-cursor: root.stop.key != "" ? MouseCursor.pointer : MouseCursor.default;
+        clicked => {
+            if (root.stop.key != "") {
+                root.pressed();
+            }
+        }
+    }
+}
+
+export component AgentsRoute inherits Rectangle {
+    in property <[RouteStopData]> stops;
+    in property <string> title;
+    in property <string> summary;
+    in property <bool> live;
+    // What is said when there is no route to draw.
+    in property <string> note;
+    // A station was pressed: its key and kind.
+    callback pick(string, string);
+
+    // One beat of the line, read from the clock only while the run is live: a finished route
+    // does not read it, so it asks for no redraw.
+    property <float> beat: root.live ? Math.mod(animation-tick() / 1ms, 1600) / 1600 : 0;
+
+    background: Theme.bg-card;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+    clip: true;
+    // Takes the pointer, so nothing under the route (the session it covers) reacts to it.
+    TouchArea { }
+
+    VerticalLayout {
+        padding: Theme.sp-3;
+        spacing: Theme.sp-2;
+
+        HorizontalLayout {
+            spacing: Theme.sp-2;
+            if root.live : Rectangle {
+                width: live-label.preferred-width + 22px;
+                height: 20px;
+                border-radius: 10px;
+                background: Theme.accent-glow;
+                Rectangle {
+                    x: 8px;
+                    width: 6px;
+                    height: 6px;
+                    border-radius: 3px;
+                    background: Theme.accent-light.with-alpha(1 - 0.7 * root.beat);
+                }
+                live-label := Text {
+                    x: 18px;
+                    text: "LIVE";
+                    color: Theme.accent-light;
+                    font-size: Theme.fs-micro;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+            }
+            Text {
+                horizontal-stretch: 1;
+                text: root.title;
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+                font-weight: 600;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+        }
+        if root.summary != "" : Text {
+            text: root.summary;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            overflow: elide;
+        }
+        if root.stops.length == 0 : Text {
+            text: root.note;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            wrap: word-wrap;
+        }
+
+        flick := Flickable {
+            vertical-stretch: 1;
+            viewport-height: line.preferred-height;
+            // While it runs, the newest station stays in sight.
+            property <int> count: root.stops.length;
+            changed count => {
+                if (root.live) {
+                    self.viewport-y = Math.min(0px, self.height - line.preferred-height);
+                }
+            }
+            Rectangle {
+                width: flick.width;
+                height: line.preferred-height;
+                line := VerticalLayout {
+                    for stop in root.stops : Station {
+                        stop: stop;
+                        live: root.live;
+                        beat: root.beat;
+                        pressed => { root.pick(stop.key, stop.kind); }
+                    }
+                }
+            }
+        }
+    }
+}

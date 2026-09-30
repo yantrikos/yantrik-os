@@ -46,11 +46,11 @@ def mode_file(mode):
     return tmp.name
 
 
-def make_surface(ceiling=None, bridge=None, mode="bypass", spend_grant=None):
+def make_surface(ceiling=None, bridge=None, mode="bypass_all", spend_grant=None):
     """A Surface over a fake bpy. `ceiling` writes a settings file; None means no file at
     all, which is a machine that has never opened Settings — the default, `sensitive`.
 
-    `mode` defaults to bypass, which asks about nothing under the ceiling, for the tests that
+    `mode` defaults to full bypass, which asks about nothing under the ceiling, for the tests that
     are about everything EXCEPT the mode — the runtime's tests do the same with `open()`. The
     mode has its own tests below, with the mode pinned per case."""
     fake = fake_bpy.make_bpy()
@@ -400,13 +400,13 @@ class TestModeAndGrant(unittest.TestCase):
         self.assertTrue(refusal(self, lambda: self.save(surface)).startswith("GRANT:"))
 
     def test_a_sensitive_act_runs_in_auto_and_bypass(self):
-        for mode in ("auto", "bypass"):
+        for mode in ("auto", "bypass", "bypass_all"):
             surface, fake = self.surface(mode)
             self.assertTrue(self.save(surface)["accepted"], mode)
             self.assertEqual(fake.data.filepath, self.blend, mode)
 
     def test_a_grant_lets_a_sensitive_act_run_in_any_mode(self):
-        for n, mode in enumerate(("plan", "ask", "auto", "bypass")):
+        for n, mode in enumerate(("plan", "ask", "auto", "bypass", "bypass_all")):
             surface, fake = self.surface(mode)
             self.assertTrue(self.save(surface, grant="fresh-%d" % n)["accepted"], mode)
             self.assertEqual(fake.data.filepath, self.blend, mode)
@@ -427,7 +427,8 @@ class TestModeAndGrant(unittest.TestCase):
         self.assertEqual(fake.data.filepath, "", "nothing ran on a grant that did not hold")
 
     def test_the_ceiling_refuses_whatever_the_grant_or_mode(self):
-        for mode, grant in (("bypass", None), ("ask", "fresh-9"), ("bypass", "fresh-10")):
+        for mode, grant in (("bypass", None), ("ask", "fresh-9"), ("bypass", "fresh-10"),
+                            ("bypass_all", None)):
             surface, fake = self.surface(mode, ceiling="standard")
             message = refusal(self, lambda s=surface, g=grant: self.save(s, grant=g))
             self.assertTrue(message.startswith("CEILING:"), (mode, grant, message))
@@ -452,7 +453,7 @@ class TestModeAndGrant(unittest.TestCase):
     def test_a_standard_act_runs_unasked_in_every_mode_plan_included(self):
         # The desktop's own processes call `standard` actions on these sockets; see the
         # runtime's SOCKET_FLOOR. Plan's refusal of `standard` is the bridge's.
-        for mode in ("plan", "ask", "auto", "bypass"):
+        for mode in ("plan", "ask", "auto", "bypass", "bypass_all"):
             surface, _ = self.surface(mode)
             out = surface.act({"action": "add_primitive", "args": {"kind": "cube"}})
             self.assertTrue(out["accepted"], mode)
@@ -493,6 +494,9 @@ class TestModeAndGrant(unittest.TestCase):
         self.assertEqual(mode_from(odd, now)[0], "ask")
         until_restart = json.dumps({"mode": "bypass", "bypass_expires_unix": None})
         self.assertEqual(mode_from(until_restart, now + 86_400)[0], "bypass")
+        full = json.dumps({"mode": "bypass_all", "previous": "auto", "bypass_expires_unix": now + 60})
+        self.assertEqual(mode_from(full, now)[0], "bypass_all")
+        self.assertEqual(mode_from(full, now + 60)[0], "auto")
         self.assertEqual(grant_refusal("blender", "save", "sensitive", "ask"), self.ASK_SENTENCE)
 
 

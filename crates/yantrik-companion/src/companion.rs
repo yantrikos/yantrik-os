@@ -592,6 +592,16 @@ pub struct CompanionService {
     // Whether to use native OpenAI tool calling format (API backend with --jinja).
     use_native_tools: bool,
 
+    // A System One model (Jev, Kev, ...) that picks the tool a request needs, when configured.
+    judge: Option<std::sync::Arc<dyn yantrik_ml::judge::Judge>>,
+    // The same model, its uses and incognito, published for callers on other threads.
+    decisions: crate::decisions::Decisions,
+
+    // A ceiling on this turn's tools below the configured one: `Safe` while the person is
+    // asking from a phone (design/channels-2026-09-29.md). Set by every message the worker
+    // takes, so what runs after a remote turn keeps it until the next message.
+    turn_ceiling: Option<PermissionLevel>,
+
     // Model family for family-aware chat templates (tool format, tool results).
     model_family: ModelFamily,
 
@@ -804,6 +814,14 @@ impl CompanionService {
         // Full tool set discoverable via discover_tools meta-tool.
         let max_perm = parse_permission(&config.tools.max_permission);
         let use_native_tools = llm.backend_name() == "api" && capability_profile.uses_native_tools();
+        let judge = crate::judge_route::build_judge(&config.judge, &llm, crate::judge_route::chat_locality(&config.llm));
+        let decisions = crate::decisions::Decisions::default();
+        decisions.publish(judge.clone(), &config.judge, false, crate::judge_route::chat_locality(&config.llm));
+        if let Some(j) = &judge {
+            let info = j.info();
+            tracing::info!(adapter = info.adapter, provider = %info.provider, model = %info.model,
+                           locality = info.locality.as_str(), "decision model");
+        }
 
         // Native tools: only ALWAYS_TOOLS (6 tools) — rest added dynamically per query
         tracing::debug!(always_on = ALWAYS_TOOLS.len(), "Dynamic tool selection initialized");
@@ -925,6 +943,9 @@ impl CompanionService {
             native_core_tools,
             skill_extra_tools: Vec::new(),
             use_native_tools,
+            judge,
+            decisions,
+            turn_ceiling: None,
             model_family: capability_profile.family,
             task_manager: std::sync::Mutex::new(task_mgr),
             recent_events: Vec::new(),
@@ -1162,6 +1183,7 @@ impl CompanionService {
     /// Toggle incognito mode (no data persistence).
     pub fn set_incognito(&mut self, enabled: bool) {
         self.incognito = enabled;
+        self.publish_decisions();
         tracing::info!(enabled, "Incognito mode toggled");
     }
 
@@ -1177,7 +1199,65 @@ impl CompanionService {
         self.capability_profile = yantrik_ml::ModelCapabilityProfile::from_model_name(&model_id);
         self.model_family = self.capability_profile.family;
         self.llm = new_llm;
+        // A decision model that is the chat model follows it.
+        if self.config.judge.kind() == yantrik_companion_core::judge_config::JudgeKind::ChatModel {
+            self.judge = crate::judge_route::build_judge(&self.config.judge, &self.llm, crate::judge_route::chat_locality(&self.config.llm));
+            self.publish_decisions();
+        }
         tracing::info!(model = %model_id, "LLM backend swapped");
+    }
+
+    /// Switch the decision model at runtime, from Settings. `None` of a judge is Off: every
+    /// caller decides as it would without one.
+    pub fn set_judge_config(&mut self, config: yantrik_companion_core::judge_config::JudgeConfig) {
+        self.judge = crate::judge_route::build_judge(&config, &self.llm, crate::judge_route::chat_locality(&self.config.llm));
+        self.config.judge = config;
+        self.publish_decisions();
+        match &self.judge {
+            Some(j) => {
+                let info = j.info();
+                tracing::info!(adapter = info.adapter, provider = %info.provider, model = %info.model,
+                               locality = info.locality.as_str(), "decision model switched");
+            }
+            None => tracing::info!("decision model off"),
+        }
+    }
+
+    /// Who answers decisions now, for describe and Settings: `None` when it is off.
+    pub fn judge_info(&self) -> Option<yantrik_ml::judge::JudgeInfo> {
+        self.judge.as_ref().map(|j| j.info())
+    }
+
+    /// Hold the next turns' tools to `ceiling` (`None`: the configured one alone).
+    pub fn set_turn_ceiling(&mut self, ceiling: Option<PermissionLevel>) {
+        self.turn_ceiling = ceiling;
+    }
+
+    /// The highest tool permission this turn may use: the configured one, or the turn's own
+    /// ceiling where that is lower.
+    fn max_permission_now(&self) -> PermissionLevel {
+        let configured = parse_permission(&self.config.tools.max_permission);
+        match self.turn_ceiling {
+            Some(ceiling) if ceiling < configured => ceiling,
+            _ => configured,
+        }
+    }
+
+    /// The decision model, its uses and incognito, for callers on other threads: they ask there,
+    /// never waiting behind a chat turn here.
+    pub fn decisions(&self) -> crate::decisions::Decisions {
+        self.decisions.clone()
+    }
+
+    /// Publish decisions to `desk` from now on: the bridge's, made before this companion was
+    /// built on its worker thread, so it could hand the desk out already.
+    pub fn share_decisions(&mut self, desk: crate::decisions::Decisions) {
+        self.decisions = desk;
+        self.publish_decisions();
+    }
+
+    fn publish_decisions(&self) {
+        self.decisions.publish(self.judge.clone(), &self.config.judge, self.incognito, crate::judge_route::chat_locality(&self.config.llm));
     }
 
     /// Persist the current config to disk (config.yaml).
@@ -1237,7 +1317,7 @@ impl CompanionService {
         let metadata = self.registry.list_metadata(PermissionLevel::Dangerous);
         let ctx = ToolContext {
             db: &self.db,
-            max_permission: parse_permission(&self.config.tools.max_permission),
+            max_permission: self.max_permission_now(),
             registry_metadata: Some(&metadata),
             task_manager: Some(&self.task_manager),
             incognito: self.incognito,
@@ -1251,7 +1331,7 @@ impl CompanionService {
     /// Names and one-line descriptions only — the full JSON schemas are what the model needs, and
     /// a caller that already knows which tool it wants does not need to read 178 of them.
     pub fn tool_catalog(&self) -> serde_json::Value {
-        let max_perm = parse_permission(&self.config.tools.max_permission);
+        let max_perm = self.max_permission_now();
         let tools: Vec<serde_json::Value> = self
             .registry
             .list_metadata(max_perm)
@@ -1532,7 +1612,7 @@ impl CompanionService {
                     } else {
                         let tool_ctx = ToolContext {
                             db: &self.db,
-                            max_permission: parse_permission(&self.config.tools.max_permission),
+                            max_permission: self.max_permission_now(),
                             registry_metadata: None,
                             task_manager: Some(&self.task_manager),
                             agent_spawner: None,
@@ -1704,6 +1784,15 @@ impl CompanionService {
             } else {
                 None
             };
+            // What the other minds on this machine know about this, from the shared memory
+            // (#31). Not in incognito: nothing the person says then may leave the turn.
+            let shared_text = if self.incognito {
+                None
+            } else {
+                let hits = crate::shared_memory::SharedMemory::machine().recall(user_text, 5);
+                let known: Vec<String> = memories.iter().map(|m| m.text.clone()).collect();
+                crate::shared_memory::prompt_section(&hits, &known)
+            };
             let signals = ContextSignals {
                 self_memories: &self_memories,
                 narrative: &narrative_text,
@@ -1714,6 +1803,7 @@ impl CompanionService {
                 recall_confidence,
                 recall_hint: recall_hint.as_deref(),
                 ck5_awareness: ck5_text,
+                shared_memory: shared_text,
             };
             context::build_messages(
                 user_text, &self.config, &state, &memories, &urges,
@@ -1726,7 +1816,7 @@ impl CompanionService {
         // [0] system: context (+ text-injected tools for non-API backends)
         // [1..N-1] conversation history
         // [N] user query
-        let max_perm = parse_permission(&self.config.tools.max_permission);
+        let max_perm = self.max_permission_now();
         let mut messages = Vec::with_capacity(context_messages.len() + 1);
 
         // Dynamic tool selection — adaptive based on model capability profile
@@ -1888,7 +1978,12 @@ impl CompanionService {
         let mut selected_tool_names: Vec<&str> = if degraded {
             FALLBACK_TOOLS.to_vec()
         } else if needs_tools {
-            select_tools_adaptive(user_text, &self.db, &active_profile)
+            crate::judge_route::select_tools(
+                // Incognito: the conversation goes to no judge, which may be a cloud service.
+                if self.incognito { None } else { self.judge.as_deref() },
+                &self.config.judge, user_text,
+                &self.conversation_history, &self.db, &active_profile,
+            )
         } else {
             ALWAYS_TOOLS.to_vec()
         };
@@ -2425,7 +2520,7 @@ impl CompanionService {
                     } else {
                         let tool_ctx = ToolContext {
                             db: &self.db,
-                            max_permission: parse_permission(&self.config.tools.max_permission),
+                            max_permission: self.max_permission_now(),
                             registry_metadata: None,
                             task_manager: Some(&self.task_manager),
                             agent_spawner: None,
@@ -2548,6 +2643,15 @@ impl CompanionService {
             } else {
                 None
             };
+            // What the other minds on this machine know about this, from the shared memory
+            // (#31). Not in incognito: nothing the person says then may leave the turn.
+            let shared_text = if self.incognito {
+                None
+            } else {
+                let hits = crate::shared_memory::SharedMemory::machine().recall(user_text, 5);
+                let known: Vec<String> = memories.iter().map(|m| m.text.clone()).collect();
+                crate::shared_memory::prompt_section(&hits, &known)
+            };
             let signals = ContextSignals {
                 self_memories: &self_memories,
                 narrative: &narrative_text,
@@ -2558,6 +2662,7 @@ impl CompanionService {
                 recall_confidence,
                 recall_hint: recall_hint.as_deref(),
                 ck5_awareness: ck5_text,
+                shared_memory: shared_text,
             };
             context::build_messages(
                 user_text, &self.config, &state, &memories, &urges,
@@ -2567,7 +2672,7 @@ impl CompanionService {
         };
 
         // Build message array — single system message (Qwen3.5 requires it):
-        let max_perm = parse_permission(&self.config.tools.max_permission);
+        let max_perm = self.max_permission_now();
         let mut messages = Vec::with_capacity(context_messages.len() + 1);
 
         // Dynamic tool selection — adaptive based on model capability profile
@@ -2701,7 +2806,12 @@ impl CompanionService {
         let selected_tool_names: Vec<&str> = if degraded {
             FALLBACK_TOOLS.to_vec()
         } else if needs_tools {
-            select_tools_adaptive(user_text, &self.db, &active_profile)
+            crate::judge_route::select_tools(
+                // Incognito: the conversation goes to no judge, which may be a cloud service.
+                if self.incognito { None } else { self.judge.as_deref() },
+                &self.config.judge, user_text,
+                &self.conversation_history, &self.db, &active_profile,
+            )
         } else {
             ALWAYS_TOOLS.to_vec()
         };
@@ -3652,6 +3762,14 @@ impl CompanionService {
     /// Get conversation history.
     pub fn history(&self) -> &[ChatMessage] {
         &self.conversation_history
+    }
+
+    /// Start a new conversation: the person pressed New chat (#246). What was said so far stops
+    /// being the context of the next turn, exactly as the idle timeout does it; nothing learned
+    /// from it is forgotten, since memory is not the conversation.
+    pub fn new_conversation(&mut self) {
+        self.conversation_history.clear();
+        self.session_turn_count = 0;
     }
 
     /// Compress conversation history when it exceeds the configured limit.

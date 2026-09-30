@@ -293,7 +293,7 @@ export component SettingsProbe inherits Window {
 import { AgentsScreen } from "agents.slint";
 export { AgentsState, AgentWindow, AgentTabData, AgentRowData, AgentRunData, AgentItemData, AgentHeaderData, AgentDetailsData, AgentMindData, AgentRoleData } from "agents.slint";
 export { ToolCallData } from "components/tool_call.slint";
-export { OverviewNode, OverviewEdge } from "agents_overview.slint";
+export { RouteStopData } from "agents_route.slint";
 export { ApprovalRequest } from "components/intent_lens.slint";
 import { IntentLens, ApprovalRequest } from "components/intent_lens.slint";
 
@@ -507,12 +507,16 @@ export component WeatherProbe inherits Window {
     in property <[WeatherHourly]> hourly;
     in property <[WeatherDaily]> daily;
     in property <[AgentContextItem]> agent-context;
+    in property <string> hourly-tz-label;
     // The hero geometry, mirrored out of the dashboard for the same reason.
     out property <length> hero-row-width: dash.hero-row-width;
     out property <length> hero-tiles-x: dash.hero-tiles-x;
     out property <length> hero-tiles-width: dash.hero-tiles-width;
     out property <length> hero-tiles-abs-right: dash.hero-tiles-abs-right;
     out property <length> content-space-right: dash.content-space-right;
+    out property <length> hourly-tz-width: dash.hourly-tz-width;
+    out property <length> hero-tile-width: dash.hero-tile-width;
+    out property <bool> rail-shown: dash.rail-shown;
     dash := WeatherDashboard {
         width: 100%;
         height: 100%;
@@ -521,6 +525,175 @@ export component WeatherProbe inherits Window {
         hourly: root.hourly;
         daily: root.daily;
         agent-context: root.agent-context;
+        hourly-tz-label: root.hourly-tz-label;
         weather-last-updated: "Updated 4 min ago";
+    }
+}
+
+// ── Text Editor (#328) ──────────────────────────────────────────────────────
+
+import { TextEditorApp } from "../../apps/text-editor/ui/app.slint";
+
+// The production editor window with the very document from the crash report on it: the
+// software renderer casts every glyph coordinate to i16, and this file — plus the bigger
+// ones the VM had open beside it — used to abort the window mid-draw. It must render, not
+// panic. The runner fills `content`, `numbers` and `line-count` from the repro fixture.
+export component EditorProbe inherits TextEditorApp {
+    title: "build_briefing.py — Editor";
+    tabs: [{ title: "build_briefing.py", active: true, modified: false }];
+    document-title: "build_briefing.py";
+    path-label: "/tmp/build_briefing.py";
+    language: "Python";
+    // Declared here, not inherited: the Rust API of a derived component exposes the properties
+    // it declares itself, so the runner fills these and they feed the editor's own inputs.
+    in property <string> repro-content;
+    in property <string> repro-numbers;
+    in property <int> repro-lines;
+    content: root.repro-content;
+    numbers: root.repro-numbers;
+    line-count: root.repro-lines;
+}
+
+// ── Installer (#400) ────────────────────────────────────────────────────────
+
+import { InstallerScreen, InstallerDisk, KeyboardChoice } from "installer.slint";
+
+// The production installer screens with fixture disks and layouts. The rules behind every
+// field are the production ones: the runner wires these callbacks to installer_rules.rs,
+// included by path. What the screens hand the shell is recorded instead of installing.
+export component InstallerProbe inherits Window {
+    in property <length> canvas-width: 1280px;
+    in property <length> canvas-height: 800px;
+    width: root.canvas-width; height: root.canvas-height;
+    default-font-family: Theme.font-ui;
+    background: Theme.bg-deep;
+
+    in-out property <int> step: 0;
+    in property <[KeyboardChoice]> keyboards;
+    in-out property <string> keyboard: "us";
+    in-out property <bool> keyboard-open: false;
+    in-out property <string> full-name;
+    in-out property <string> username;
+    in-out property <string> password;
+    in-out property <string> password-confirm;
+    in-out property <string> hostname: "yantrik";
+    in-out property <bool> username-touched;
+    in-out property <bool> hostname-touched;
+    in property <[InstallerDisk]> disks;
+    in property <bool> disks-scanned: true;
+    in-out property <string> selected-disk;
+    in-out property <string> timezone;
+    in-out property <bool> installing;
+    in-out property <int> install-progress;
+    in-out property <string> install-status;
+    in-out property <string> install-error;
+    out property <bool> you-ok: screen.you-ok;
+    out property <bool> can-install: screen.can-install;
+
+    // What the screens asked of the shell.
+    in-out property <string> chosen-layout;
+    in-out property <bool> tried;
+    in-out property <string> installed-with;
+    in-out property <int> reboots;
+
+    pure callback derive-username(string) -> string;
+    pure callback hostname-for(string) -> string;
+    pure callback check-full-name(string) -> string;
+    pure callback check-username(string) -> string;
+    pure callback check-hostname(string) -> string;
+    pure callback check-password(string, string) -> string;
+    pure callback check-timezone(string) -> string;
+
+    screen := InstallerScreen {
+        width: 100%; height: 100%;
+        step <=> root.step;
+        keyboards: root.keyboards;
+        keyboard <=> root.keyboard;
+        keyboard-open <=> root.keyboard-open;
+        keyboard-chosen(code) => { root.chosen-layout = code; }
+        try-first => { root.tried = true; }
+        full-name <=> root.full-name;
+        username <=> root.username;
+        password <=> root.password;
+        password-confirm <=> root.password-confirm;
+        hostname <=> root.hostname;
+        username-touched <=> root.username-touched;
+        hostname-touched <=> root.hostname-touched;
+        disks: root.disks;
+        disks-scanned: root.disks-scanned;
+        selected-disk <=> root.selected-disk;
+        timezone <=> root.timezone;
+        installing <=> root.installing;
+        install-progress <=> root.install-progress;
+        install-status <=> root.install-status;
+        install-error <=> root.install-error;
+        install-to-disk(u, p, f, h, k, t, d) => {
+            root.installed-with = u + "|" + f + "|" + h + "|" + k + "|" + t + "|" + d;
+        }
+        reboot => { root.reboots += 1; }
+        derive-username(n) => { return root.derive-username(n); }
+        hostname-for(u) => { return root.hostname-for(u); }
+        check-full-name(n) => { return root.check-full-name(n); }
+        check-username(u) => { return root.check-username(u); }
+        check-hostname(h) => { return root.check-hostname(h); }
+        check-password(p, c) => { return root.check-password(p, c); }
+        check-timezone(t) => { return root.check-timezone(t); }
+    }
+}
+
+// Settings → Decision model (components/decision_model.slint), filled with fixture data by
+// src/decision_tests.rs. Callbacks are recorded there, never acted on.
+import { DecisionModelCard, DecisionPreset, DecisionUse } from "components/decision_model.slint";
+export component DecisionProbe inherits Window {
+    in property <length> canvas-width: 720px;
+    in property <length> canvas-height: 780px;
+    width: root.canvas-width; height: root.canvas-height; background: Theme.bg-deep;
+    in property <[DecisionPreset]> presets;
+    in property <[DecisionUse]> uses;
+    in-out property <string> provider: "kev";
+    in property <string> endpoint: "http://192.168.4.20:8009";
+    in property <string> model: "kev-latest";
+    in property <string> status;
+    in property <bool> status-good;
+    in property <string> where-note;
+    in property <bool> leaves;
+    in-out property <string> action;
+    VerticalLayout {
+        padding: 24px;
+        alignment: start;
+        DecisionModelCard {
+            presets: root.presets; provider: root.provider; endpoint: root.endpoint; model: root.model;
+            key-env: ""; uses: root.uses;
+            where-note: root.where-note; leaves-machine: root.leaves;
+            status: root.status; status-good: root.status-good;
+            choose(id) => { root.action = "choose:" + id; }
+            save(e, m, k) => { root.action = "save:" + e; }
+            test => { root.action = "test"; }
+            toggle-use(id) => { root.action = "use:" + id; }
+        }
+    }
+}
+
+import { MindsPanel, ProviderGroup, AccountRow, AccountMeter, AddChoice } from "components/minds_panel.slint";
+export { ProviderGroup, AccountRow, AccountMeter, AddChoice }
+// The Minds panel alone, at the status bar's anchor, for verify-minds.
+export component MindsProbe inherits Window {
+    width: 1280px; height: 800px; background: Theme.bg-deep;
+    in property <[ProviderGroup]> groups;
+    in property <[AddChoice]> choices;
+    in property <string> today;
+    in-out property <bool> adding;
+    in-out property <string> action;
+    out property <length> panel-height: panel.height;
+    panel := MindsPanel {
+        x: parent.width - 372px;
+        y: 44px;
+        groups: root.groups; choices: root.choices; today: root.today; status: "";
+        adding <=> root.adding;
+        use-account(id) => { root.action = "use:" + id; }
+        sign-in(id) => { root.action = "signin:" + id; }
+        add(v) => { root.action = "add:" + v; }
+        make(k) => { root.action = "make:" + k; }
+        manage => { root.action = "manage"; }
     }
 }

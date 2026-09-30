@@ -220,6 +220,8 @@ CHROME=/opt/yantrik/share
 if [ -d "$CHROME/labwc" ]; then
   mkdir -p "$HOME/.config/labwc" "$HOME/.local/share/themes/Yantrik/labwc"
   cp -f "$CHROME/labwc/rc.xml" "$HOME/.config/labwc/rc.xml"
+  # The window menu (its Snap layouts); labwc falls back to its own when there is none.
+  [ -f "$CHROME/labwc/menu.xml" ] && cp -f "$CHROME/labwc/menu.xml" "$HOME/.config/labwc/menu.xml"
   cp -f "$CHROME/labwc/themerc" "$HOME/.local/share/themes/Yantrik/labwc/themerc"
 fi
 if [ -d "$CHROME/fonts" ]; then

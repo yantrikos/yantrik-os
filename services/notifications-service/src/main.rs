@@ -21,8 +21,9 @@
 //! ```text
 //!   notify-send / Chromium / any app  ──org.freedesktop.Notifications──┐
 //!   yos notify                        ──notifications.add─────────────┤
-//!   download-manager, calendar        ──yantrik_app_runtime::notify───┤──► store (one file)
-//!   the shell (updates, the mind)     ──notifications.add─────────────┘        │
+//!   download-manager                  ──yantrik_app_runtime::notify───┤──► store (one file)
+//!   the shell (updates, the mind)     ──notifications.add─────────────┤        │
+//!   calendar reminders                ──the timer in this process─────┘        │
 //!                                                                              │
 //!   the shell's toasts + screen 9     ◄──notifications.since(revision)─────────┘
 //! ```
@@ -50,6 +51,7 @@
 //! shell draws them in the card's words. Nothing in the request can set any of it.
 
 mod freedesktop;
+mod reminders;
 mod store;
 
 use std::sync::Arc;
@@ -97,6 +99,12 @@ fn main() {
             .spawn(move || freedesktop::serve(store, link))
             .expect("failed to spawn the freedesktop notification thread");
     }
+
+    // The calendar's reminder timer, on a plain std thread for the same reason as the door
+    // above — and in this process at all because this service is up for the whole session while
+    // the calendar service is started on demand: a reminder for tomorrow morning has to fire
+    // whether or not anything opens the calendar tonight (#78). See `reminders`.
+    reminders::spawn(store.clone(), reminders::calendar_dir());
 
     ServiceBuilder::new("notifications")
         .handler(NotificationsHandler::new(store, link))
@@ -909,7 +917,7 @@ mod tests {
     }
 
     fn at(ceiling: &str, mode: &str) -> Authority {
-        Authority { ceiling: ceiling.into(), mode: gate::Mode::named(mode), granted: false }
+        Authority { ceiling: ceiling.into(), mode: gate::Mode::named(mode), granted: false, asks_above: None }
     }
 
     fn notify(grant: Option<&str>) -> serde_json::Value {
@@ -928,7 +936,11 @@ mod tests {
     fn spend_through_a_stand_in_shell() {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
-            gate::spend_grants_with(|id, _app, _action, args| {
+            // The stand-in shell answers what a token may reach, as the shell does (#189):
+            // no role for any token here, so a token-carrying call is held by nothing but
+            // the grade, the mode and the grant these tests are about.
+            yantrik_service_sdk::reach::read_reach_with(|_| None);
+            gate::spend_grants_with(|id, _app, _action, args, _caller| {
                 if !id.starts_with("ok-") {
                     return Err(format!("no approval request `{id}`."));
                 }

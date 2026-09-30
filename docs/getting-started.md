@@ -210,8 +210,13 @@ Also in the status bar, to the left of the mind chip, is the **mode**:
 |---|---|
 | `plan` | read only — every change is refused and it has to tell you what it *would* do |
 | `ask` | routine things run; sensitive ones put a card in front of you (the default) |
-| `auto` | sensitive things run; you are still asked about destructive ones |
-| `bypass` | nothing is asked. Time-boxed, and never written to disk, so no machine boots into it |
+| `auto` | sensitive things run; you are still asked about destructive ones, and once per session before it runs commands |
+| `bypass` | nothing is asked except before anything an app marks as impossible to undo, such as a purchase or a calendar delete — that still puts a card up — and once per session before running commands. Time-boxed, and never written to disk, so no machine boots into it |
+| `bypass_all` | "Full bypass": nothing is asked at all, those included. Time-boxed and never written to disk, like `bypass`; chosen on the same confirmation |
+
+A command — the Terminal's `run`, an agent's own terminal — can do anything you can, so it asks
+before it runs in `ask`, `auto` and `bypass`. Press **Allow for this session** on that card and
+the mind's commands after it run without asking until the shell restarts.
 
 Everything that ran without you being asked is written down in
 `~/.local/share/yantrik/mind-audit.jsonl` and readable from the mode menu.

@@ -181,6 +181,18 @@ is measured while no source feeds it, and drops that line the moment a model nam
 cargo run --manifest-path tests/ui-preview/Cargo.toml --profile fast -- verify-monitor
 ```
 
+## Text Editor
+
+`verify-editor` draws the production text editor (`apps/text-editor/ui/app.slint`) holding the
+very document from issue #328 — the file whose rendering crashed the VM's window in euclid's
+i16 coordinate cast — and asserts it renders instead of panicking (#328). Oversized documents
+of the shapes that crashed are windowed by the editor's own logic and checked in
+`cargo test -p yantrik-text-editor`.
+
+```sh
+cargo run --manifest-path tests/ui-preview/Cargo.toml --profile fast -- target/editor.png 1100 760 verify-editor
+```
+
 ## Weather
 
 `verify-weather` draws the production Weather dashboard from fixture data with the context rail
@@ -191,4 +203,21 @@ at 1400 wide the grid must return to its 499px design width.
 
 ```sh
 cargo run --manifest-path tests/ui-preview/Cargo.toml --profile fast -- verify-weather
+```
+
+## Installer
+
+`verify-installer` draws the production installer (`installer.slint`, #400) — Welcome, You, Disk,
+Review, Installing, Installed — from fixture disks and layouts, with the production rules
+(`crates/yantrik-ui/src/installer_rules.rs`, included by path) behind every field, at 1280×800
+and at 800×600. It sends real key and pointer events: the layout list opens and a row picks a
+layout the shell is told about, the name field takes typing on arrival and the username and
+computer name follow it, a password mismatch keeps Next disabled and a pointer on Next does
+nothing, a written username is not overwritten, a disk is chosen by pointing, a timezone the
+zone database lacks blocks Install, Install hands the shell exactly what was chosen, 100%
+becomes Installed, and Restart now reaches the shell. It writes each screen beside the output
+path.
+
+```sh
+cargo run --manifest-path tests/ui-preview/Cargo.toml --profile fast -- target/installer.png 1280 800 verify-installer
 ```

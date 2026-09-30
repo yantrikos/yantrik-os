@@ -85,6 +85,10 @@ pub use yantrik_companion::tools::vault::LOCKED_ANSWER;
 pub enum Op {
     /// Protect the vault with this passphrase, or open it with it.
     Adopt(String),
+    /// Open a protected vault with this passphrase, and nothing else: an unprotected vault stays
+    /// as it is. What the screen lock offers, because what unlocks a screen is not necessarily a
+    /// secret anything should be wrapped under.
+    Open(String),
     /// Re-wrap: the old passphrase has to open it before the new one replaces the wrapping.
     Rewrap { old: String, new: String },
     /// Read the state and refresh the cache. Carries no secret.
@@ -104,6 +108,7 @@ pub struct Reply {
 pub fn run(conn: &Connection, op: Op) -> Reply {
     let outcome = match op {
         Op::Adopt(passphrase) => Some(adopt(conn, &passphrase)),
+        Op::Open(passphrase) => Some(open_only(conn, &passphrase)),
         Op::Rewrap { old, new } => Some(rewrap(conn, &old, &new)),
         Op::Read => None,
     };
@@ -236,6 +241,16 @@ pub fn adopt(conn: &Connection, passphrase: &str) -> Outcome {
         remember_protection(true);
     }
     outcome
+}
+
+/// Open a protected vault with `passphrase`; never protect an unprotected one.
+pub fn open_only(conn: &Connection, passphrase: &str) -> Outcome {
+    let protected = vault::is_protected(conn);
+    remember_protection(protected);
+    if !protected {
+        return Outcome::Unusable("the vault is not protected; there is nothing to open".into());
+    }
+    adopt(conn, passphrase)
 }
 
 /// Re-wrap the vault under a new passphrase, when the old one still opens it.

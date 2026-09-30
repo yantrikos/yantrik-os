@@ -31,6 +31,7 @@ from .gate import (
     DEFAULT_MODE,
     LADDER,
     MODES,
+    OPEN_ENDED,
     SOCKET_FLOOR,
     Authority,
     GrantRefused,
@@ -38,6 +39,7 @@ from .gate import (
     decide,
     grant_refusal,
     mode_from,
+    open_ended,
     unrecoverable,
 )
 from .surface import (
@@ -66,6 +68,7 @@ __all__ = [
     "MODES",
     "Mode",
     "NotAnswered",
+    "OPEN_ENDED",
     "PROTOCOL",
     "Param",
     "PeerCred",
@@ -81,6 +84,7 @@ __all__ = [
     "decide",
     "grant_refusal",
     "mode_from",
+    "open_ended",
     "revision",
     "socket_dir",
     "unrecoverable",

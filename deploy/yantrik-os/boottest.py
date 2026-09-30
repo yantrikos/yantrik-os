@@ -187,7 +187,7 @@ check("the shell and every autostart service answer on a socket",
 # The desktop, asked the way everything else asks it: every app opens and answers, every screen
 # shows, the permission gate refuses on every door, the ceiling holds on a service, nothing
 # crashes, and the shell is idle when idle. docs/releasing.md: this is the nightly's gate.
-rc = ask("XDG_RUNTIME_DIR=/run/user/1000 timeout 900 /opt/yantrik/bin/release-check --tier ci "
+rc = ask("XDG_RUNTIME_DIR=/run/user/1000 timeout 900 /opt/yantrik/bin/release-check --tier ci --may-lock "
          "--json /tmp/release-check.json > /tmp/release-check.txt 2>&1; echo exit=$?; "
          "grep -E '^(PASS|FAIL|SKIP)' /tmp/release-check.txt; grep -A1 '^FAIL' /tmp/release-check.txt",
          timeout=960)
@@ -202,13 +202,14 @@ essentials = ask("for b in yantrik-ui yantrik yos yantrik-update yantrik-session
 check("the binaries a desktop cannot do without are there",
       "MISSING" not in essentials and "checked" in essentials, essentials)
 
-# What a mind needs to read a web page. `yos web` evaluates scan.js in the browser and imports
-# `websocket` to reach it; the first was never shipped and the second is only there for the
-# system interpreter, which is why yos names /usr/bin/python3 rather than whatever is on PATH.
-web = ask("[ -s /opt/yantrik/bin/scan.js ] || echo MISSING:scan.js; "
-          "head -1 /opt/yantrik/bin/yos | grep -qx '#!/usr/bin/python3' || echo BAD:shebang; "
+# What a mind needs to read a web page: the browser's surface (#477), its page reader and the SDK
+# vendored beside it, and `websocket` for the system interpreter both yos and the service name.
+web = ask("[ -x /opt/yantrik/bin/yantrik-browser ] || echo MISSING:yantrik-browser; "
+          "[ -s /opt/yantrik/share/browser/yantrik_browser/page.js ] || echo MISSING:page.js; "
+          "[ -d /opt/yantrik/share/browser/yantrik_surface ] || echo MISSING:yantrik_surface; "
+          "for f in yos yantrik-browser; do head -1 /opt/yantrik/bin/$f | grep -qx '#!/usr/bin/python3' || echo BAD:shebang:$f; done; "
           "/usr/bin/python3 -c 'import websocket' 2>/dev/null || echo MISSING:python3-websocket; echo checked")
-check("the pieces `yos web` reads a page with are all there",
+check("the pieces the browser is driven with are all there",
       "MISSING" not in web and "BAD" not in web and "checked" in web, web)
 
 ssh_state = ask("systemctl is-enabled ssh 2>&1 | head -1")

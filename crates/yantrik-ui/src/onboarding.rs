@@ -18,6 +18,18 @@ pub fn marker_path() -> PathBuf {
     PathBuf::from(home).join(".yantrik").join(".onboarding_complete")
 }
 
+/// Where the installer leaves word that it created this account, relative to the home
+/// directory (#400). The installer asks only what installing needs; the first boot then offers
+/// the rest — interests, how to be reached, the AI — as optional setup, opening on a welcome
+/// with Skip instead of asking for the person's name again.
+pub const AFTER_INSTALL_MARKER: &str = ".yantrik/.setup_after_install";
+
+/// The installer's marker for this account.
+pub fn after_install_marker_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    PathBuf::from(home).join(AFTER_INSTALL_MARKER)
+}
+
 /// Write the onboarding completion marker.
 pub fn write_marker() {
     let path = marker_path();
@@ -25,6 +37,8 @@ pub fn write_marker() {
         let _ = std::fs::create_dir_all(parent);
     }
     let _ = std::fs::write(&path, "done");
+    // Its job is done: the setup it asked for was finished or skipped.
+    let _ = std::fs::remove_file(after_install_marker_path());
 }
 
 /// Generate the guided Lens result for the current onboarding step.

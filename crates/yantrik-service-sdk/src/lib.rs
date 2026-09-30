@@ -70,6 +70,14 @@ pub use yantrik_surface::{
 };
 pub use yantrik_ipc_transport::server::PeerCred;
 
+/// A service's raw method that changes something answers only the desktop's own programs (#161):
+/// the check `yantrik_ipc_transport::owner::desktop_programs_only` makes, as the refusal a
+/// service returns. `-32001`, the code #332 gave the same refusal on the calendar and network.
+pub fn desktop_programs_only(peer: Option<PeerCred>, method: &str) -> Result<(), ServiceError> {
+    yantrik_ipc_transport::owner::desktop_programs_only(peer, method)
+        .map_err(|message| ServiceError { code: -32001, message })
+}
+
 /// Commonly-needed imports for service authors.
 ///
 /// The surface types are deliberately not in it: a dozen services glob-import this beside their

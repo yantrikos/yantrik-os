@@ -138,10 +138,12 @@ def outcome(grade, mode, description, ceiling="sensitive"):
 
 def grade_table():
     """What the dispatch does with an act, by grade and mode, on the ceiling this OS ships."""
-    modes = ("plan", "ask", "auto", "bypass")
+    modes = ("plan", "ask", "auto", "bypass", "bypass_all")
     rows = [("%-36s %s" % ("sensitive ceiling", "".join("%-17s" % m for m in modes))).rstrip()]
-    for label, description in (("", "Do the thing"), (", says it cannot be undone",
-                                                      "Do the thing. It cannot be undone")):
+    for label, description in (("", "Do the thing"),
+                               (", says it cannot be undone", "Do the thing. It cannot be undone"),
+                               (", runs anything it is given",
+                                "Do the thing. What it runs can do anything you can.")):
         for grade in ("safe", "standard", "sensitive", "dangerous"):
             cells = "".join("%-17s" % outcome(grade, m, description) for m in modes)
             rows.append(("%-36s %s" % (grade + label, cells)).rstrip())

@@ -1,0 +1,76 @@
+// A question an agent asked the person (#25), wherever it is drawn: the Agents view and the Lens.
+//
+// Its words and its answers are the agent's, so it is drawn as the agent speaking ("pi asks"),
+// plainly, and never as the approval card, which only the shell makes: an agent cannot dress a
+// question up as the desktop's permission. The answer goes to the run that asked, once.
+
+import { Theme } from "theme.slint";
+import { YButton } from "y_button.slint";
+import { YInput } from "y_input.slint";
+
+/// One question waiting on the person, for the Lens: which agent asked, and what.
+export struct QuestionRequest {
+    agent: string,     // the agent id the answer goes back through
+    mind: string,      // who asks, as the card names it
+    request: string,   // the agent's own id for the question
+    prompt: string,
+    options: [string], // the answers offered as buttons; none: a free answer
+}
+
+export component QuestionCard inherits Rectangle {
+    in property <string> mind;
+    in property <string> prompt;
+    in property <[string]> options;
+    /// What the person answered; "" while it waits.
+    in property <string> answer;
+    /// Why it can no longer be answered; "" while it can.
+    in property <string> closed;
+    callback answered(string);
+
+    background: Theme.bg-card;
+    border-radius: Theme.radius-card;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+
+    VerticalLayout {
+        padding: Theme.sp-3;
+        spacing: Theme.sp-2;
+        Text {
+            text: root.mind + " asks";
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+        }
+        Text {
+            text: root.prompt;
+            color: Theme.text-primary;
+            wrap: word-wrap;
+        }
+        if root.answer == "" && root.closed == "" && root.options.length > 0 : HorizontalLayout {
+            spacing: Theme.sp-2;
+            alignment: start;
+            for option in root.options : YButton {
+                label: option;
+                variant: 1;
+                size: 0;
+                clicked => { root.answered(option); }
+            }
+        }
+        if root.answer == "" && root.closed == "" && root.options.length == 0 : YInput {
+            placeholder: "answer " + root.mind + "…";
+            accepted(text) => { root.answered(text); }
+        }
+        if root.answer != "" : Text {
+            text: "You answered: " + root.answer;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            wrap: word-wrap;
+        }
+        if root.closed != "" : Text {
+            text: "Not answered: " + root.closed;
+            color: Theme.text-dim;
+            font-size: Theme.fs-caption;
+            font-italic: true;
+            wrap: word-wrap;
+        }
+    }
+}

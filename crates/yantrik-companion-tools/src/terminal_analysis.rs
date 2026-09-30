@@ -3,23 +3,13 @@
 //! Tools: detect_terminal_errors, search_terminal_history, explain_last_error.
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, expand_home};
+// The same dump `read_terminal_buffer` reads, from the same private place.
+use super::terminal::read_scrollback;
 
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(DetectTerminalErrorsTool));
     reg.register(Box::new(SearchTerminalHistoryTool));
     reg.register(Box::new(ExplainLastErrorTool));
-}
-
-/// Read the scrollback file if it exists and is fresh (< max_age seconds).
-fn read_scrollback(max_age_secs: u64) -> Option<String> {
-    let path = "/tmp/yantrik-scrollback.txt";
-    let metadata = std::fs::metadata(path).ok()?;
-    let modified = metadata.modified().ok()?;
-    let age = modified.elapsed().unwrap_or_default();
-    if age.as_secs() >= max_age_secs {
-        return None;
-    }
-    std::fs::read_to_string(path).ok()
 }
 
 /// Error patterns to scan for (all lowercase).

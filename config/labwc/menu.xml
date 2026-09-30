@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Yantrik — the compositor's menus.
+
+  The one that matters is the window menu: the titlebar's menu button, or a right-click on the
+  titlebar. It is labwc's own, with every item it has by default, and one more — "Snap", the
+  layouts rc.xml defines, for a person who reaches for the mouse rather than Super+Alt. Each row
+  says its key in brackets, so the menu teaches the shortcut.
+
+  This file replaces labwc's built-in menus whole, which is why the stock items are all here. The
+  root menu (a right-click on the bare desktop) never shows: the shell is the desktop, and draws
+  its own. It is kept minimal rather than left to labwc's default, which offers a terminal and
+  "Exit" — logging out from under the shell.
+
+  A test in yantrik-ui (snap_layouts) fails if a row here names a region rc.xml does not define.
+-->
+<openbox_menu>
+  <menu id="client-menu">
+    <menu id="snap-menu" label="Snap">
+      <item label="Left half  (Super+Alt+←)">
+        <action name="SnapToRegion" region="left-half" />
+      </item>
+      <item label="Right half  (Super+Alt+→)">
+        <action name="SnapToRegion" region="right-half" />
+      </item>
+      <item label="Top half  (Super+Alt+↑)">
+        <action name="SnapToRegion" region="top-half" />
+      </item>
+      <item label="Bottom half  (Super+Alt+↓)">
+        <action name="SnapToRegion" region="bottom-half" />
+      </item>
+      <separator />
+      <item label="Top left  (Super+Alt+U)">
+        <action name="SnapToRegion" region="top-left" />
+      </item>
+      <item label="Top right  (Super+Alt+I)">
+        <action name="SnapToRegion" region="top-right" />
+      </item>
+      <item label="Bottom left  (Super+Alt+J)">
+        <action name="SnapToRegion" region="bottom-left" />
+      </item>
+      <item label="Bottom right  (Super+Alt+K)">
+        <action name="SnapToRegion" region="bottom-right" />
+      </item>
+      <separator />
+      <item label="Left third  (Super+Alt+D)">
+        <action name="SnapToRegion" region="left-third" />
+      </item>
+      <item label="Middle third  (Super+Alt+F)">
+        <action name="SnapToRegion" region="center-third" />
+      </item>
+      <item label="Right third  (Super+Alt+G)">
+        <action name="SnapToRegion" region="right-third" />
+      </item>
+      <item label="Left two thirds  (Super+Alt+E)">
+        <action name="SnapToRegion" region="left-two-thirds" />
+      </item>
+      <item label="Right two thirds  (Super+Alt+T)">
+        <action name="SnapToRegion" region="right-two-thirds" />
+      </item>
+      <separator />
+      <item label="Centre  (Super+Alt+C)">
+        <action name="SnapToRegion" region="center" />
+      </item>
+      <item label="Fill screen  (Super+Alt+Enter)">
+        <action name="ToggleMaximize" />
+      </item>
+    </menu>
+    <separator />
+    <item label="Minimise">
+      <action name="Iconify" />
+    </item>
+    <item label="Maximise">
+      <action name="ToggleMaximize" />
+    </item>
+    <item label="Full screen">
+      <action name="ToggleFullscreen" />
+    </item>
+    <item label="Roll up or down">
+      <action name="ToggleShade" />
+    </item>
+    <item label="Always on top">
+      <action name="ToggleAlwaysOnTop" />
+    </item>
+    <menu id="client-send-to-menu" label="Move to workspace" />
+    <separator />
+    <item label="Close">
+      <action name="Close" />
+    </item>
+  </menu>
+
+  <menu id="root-menu">
+    <item label="Reconfigure">
+      <action name="Reconfigure" />
+    </item>
+  </menu>
+</openbox_menu>

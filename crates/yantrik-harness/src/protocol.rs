@@ -24,13 +24,20 @@
 //! ```text
 //! attach  {id, name, conversations?}    → {session}
 //! loop:
-//!   poll  {session}                     → {turn_id, text, context, conversation, agent_token} | {}
+//!   poll  {session}                     → {turn_id, text, context, conversation, agent_token,
+//!                                          memory_credential?} | {}
 //!                                         (+ cancelled: [turn_id], ended: [conversation])
 //!   …if no turn_id: wait POLL_INTERVAL_MS and poll again
 //!   chunk {session, turn_id, delta}     → {}          … as many as you like
 //!   event {session, turn_id, event}     → {}          … optional: what the agent is doing
 //!   complete {session, turn_id}         → {}
 //! ```
+//!
+//! The session is opaque (`s<n>-<random>` today; parse nothing out of it) and answers only whoever
+//! attached it: over a socket where the kernel names the caller, every call on it must come from
+//! the same account, and from the process that attached or one it started. A harness that polls
+//! from a worker is fine; one that hands its session to an unrelated process is refused, and told
+//! to attach again.
 //!
 //! # Conversations
 //!
@@ -151,16 +158,78 @@ pub struct Attach {
     /// turn is in the one conversation, `main`, and the desktop says so rather than pretending.
     #[serde(default)]
     pub conversations: bool,
+    /// Reads the conversation handed over from another mind (#245) out of the turn's context, as
+    /// `context.handover` = `{from, text}`, and wants the person's own words alone in `text`.
+    /// Without it the hand-over is put in front of the person's words, as it always was, which a
+    /// mind has to tell apart from what the person said: the Mind took one for the person's answer
+    /// to its own question and filed it in their profile (yantrik-mind F28, 2026-09-27).
+    #[serde(default)]
+    pub handover_context: bool,
+    /// What this harness was doing for a desktop it lost (#246): each conversation it still
+    /// holds, with the agent token the desktop gave it, and the turn it is still answering in
+    /// it, if any. A shell that restarted mid-answer used to fail every one of them, so the
+    /// answer had nowhere to go, the harness dropped the turn, and a library harness stopped
+    /// its mind. Given this, the desktop takes the conversations back under the same tokens and
+    /// re-opens the turns, and the harness carries on under the ids the reply maps them to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resume: Vec<Resume>,
+}
+
+/// One conversation a re-attaching harness still holds. See [`Attach::resume`].
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Resume {
+    /// `main`, or an id the desktop issued (`c-7f3a91`).
+    pub conversation: String,
+    /// The token the desktop gave this conversation's agent. It is taken back only when it is
+    /// one the desktop could have minted and no live agent holds it.
+    pub agent_token: String,
+    /// The turn this harness is still answering in it, under the id the lost desktop gave it.
+    #[serde(default)]
+    pub turn_id: Option<u64>,
+    /// What that turn asked, so the desktop can say what is being picked up.
+    #[serde(default)]
+    pub prompt: String,
+}
+
+/// Where a turn came from (design/channels-2026-09-29.md). A mind reads it for register — terse
+/// on a phone — and for what to send back; a harness that ignores it is unaffected.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Origin {
+    /// `lens` for the desk, else the channel: `telegram`, `signal`, `slack`, `discord`, `matrix`,
+    /// `irc`, `whatsapp`, `native`.
+    pub channel: String,
+    /// Asked from away from the machine. While it is, the desktop holds the agent answering it to
+    /// `standard`: what a stolen phone could ask for is less than what the person at the keyboard
+    /// can.
+    pub remote: bool,
+    /// Who asked, as the person is named on that channel.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub person: String,
+    /// What an answer may carry there: `text`, `voice`, `photo`, `buttons`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub carries: Vec<String>,
+    /// Who else can read the channel: `local` (the desk), `e2e` (end-to-end to this box), or
+    /// `provider-readable` (the channel's operator can read it, as Telegram can a bot's chats).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub trust: String,
+}
+
+impl Origin {
+    /// The Lens, at the desk.
+    pub fn desk() -> Origin {
+        Origin { channel: "lens".into(), remote: false, person: String::new(), carries: vec!["text".into()], trust: "local".into() }
+    }
 }
 
 /// One turn handed to a harness.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Assignment {
     pub turn_id: u64,
     pub text: String,
     /// What the desktop knows about where the turn came from, as a JSON object in a string:
-    /// `{"machine": {"place": {"city", "region", "country"}, "timezone"}}`, each part present only
-    /// when known. Facts about the machine, never configuration for the harness. Optional, and
+    /// `{"machine": {"place": {"city", "region", "country"}, "timezone", "home"}}`, each part
+    /// present only when known. `home` is the person's home directory, what `~` means in what they
+    /// say; a harness running as an account of its own has a different one and may not see it. Facts about the machine, never configuration for the harness. Optional, and
     /// safe to ignore.
     ///
     /// It may also carry `"notes": ["…"]`: what the desktop has to tell this agent since its last
@@ -179,6 +248,58 @@ pub struct Assignment {
     /// the model and never written to a log.
     #[serde(default)]
     pub agent_token: String,
+    /// The agent's credential for the person's memory (#447): `mem-` and 256 random bits, the same
+    /// for every turn while the agent lives, present only when the person has granted this mind
+    /// some use of their memory. What the harness presents to the memory server, which asks the
+    /// desktop what it may do; like the token, never shown to the model and never logged.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub memory_credential: String,
+    /// Where to present `memory_credential` (#447): the person's memory server, as
+    /// `unix:/run/yantrik-mind/<uid>/memory.sock` (HTTP path `/mcp`), sent as
+    /// `Authorization: Bearer <credential>`. Only beside a credential, and absent while the
+    /// desktop knows of no server to dial. Not a secret, but never shown to the model either.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub memory_url: String,
+    /// Where the turn came from, when the desktop says ([`Origin`]). Absent otherwise, so the wire
+    /// is unchanged for a turn that does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
+}
+
+/// What stands in for a secret when a struct holding one is printed: whether there is one, never
+/// what it is. A `{:?}` in a log line or a failed assertion is where a token leaks from.
+fn redacted(secret: &str) -> &'static str {
+    if secret.is_empty() {
+        ""
+    } else {
+        "<redacted>"
+    }
+}
+
+impl std::fmt::Debug for Resume {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Resume")
+            .field("conversation", &self.conversation)
+            .field("agent_token", &redacted(&self.agent_token))
+            .field("turn_id", &self.turn_id)
+            .field("prompt", &self.prompt)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for Assignment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Assignment")
+            .field("turn_id", &self.turn_id)
+            .field("text", &self.text)
+            .field("context", &self.context)
+            .field("conversation", &self.conversation)
+            .field("agent_token", &redacted(&self.agent_token))
+            .field("memory_credential", &redacted(&self.memory_credential))
+            .field("memory_url", &self.memory_url)
+            .field("origin", &self.origin)
+            .finish()
+    }
 }
 
 #[cfg(test)]
@@ -207,6 +328,8 @@ mod tests {
             tools: true,
             memory: true,
             conversations: true,
+            handover_context: true,
+            resume: Vec::new(),
         })
         .unwrap();
         let keys: Vec<&str> = json.as_object().unwrap().keys().map(|k| k.as_str()).collect();
@@ -223,6 +346,68 @@ mod tests {
         assert_eq!(a.context, None);
         // An assignment from an older desktop has no conversation; it is the one conversation.
         assert_eq!(a.conversation, "");
+    }
+
+    #[test]
+    fn a_turn_that_says_no_origin_is_the_wire_it_was_and_one_that_does_carries_it() {
+        let mut turn = Assignment {
+            turn_id: 1,
+            text: "hi".into(),
+            context: None,
+            conversation: "main".into(),
+            agent_token: String::new(),
+            memory_credential: String::new(),
+            memory_url: String::new(),
+            origin: None,
+        };
+        let wire = serde_json::to_value(&turn).unwrap();
+        assert!(wire.get("origin").is_none(), "{wire}");
+        turn.origin = Some(Origin {
+            channel: "signal".into(),
+            remote: true,
+            person: "Pranab".into(),
+            carries: vec!["text".into(), "voice".into()],
+            trust: "e2e".into(),
+        });
+        let wire = serde_json::to_value(&turn).unwrap();
+        assert_eq!(wire["origin"]["channel"], "signal");
+        assert_eq!(wire["origin"]["remote"], true);
+        let back: Assignment = serde_json::from_value(wire).unwrap();
+        assert_eq!(back.origin, turn.origin);
+        let old: Assignment = serde_json::from_str(r#"{"turn_id":2,"text":"x"}"#).unwrap();
+        assert!(old.origin.is_none(), "a turn from an older desktop reads as saying nothing");
+        assert!(!Origin::desk().remote);
+    }
+
+    #[test]
+    fn printing_a_turn_or_a_resume_never_prints_its_secrets() {
+        let token = "0123456789abcdef0123456789abcdef";
+        let credential = format!("mem-{}", "a".repeat(64));
+        let turn = Assignment {
+            turn_id: 7,
+            text: "hello".into(),
+            context: None,
+            conversation: "main".into(),
+            agent_token: token.into(),
+            memory_credential: credential.clone(),
+            memory_url: "unix:/run/yantrik-mind/1000/memory.sock".into(),
+            origin: None,
+        };
+        let resume = Resume { conversation: "main".into(), agent_token: token.into(), turn_id: Some(7), prompt: "hi".into() };
+        for printed in [format!("{turn:?}"), format!("{resume:?}"), format!("{:#?}", Attach {
+            id: "pi".into(),
+            name: "Pi".into(),
+            detail: None,
+            tools: false,
+            memory: false,
+            conversations: true,
+            handover_context: false,
+            resume: vec![resume.clone()],
+        })] {
+            assert!(!printed.contains(token) && !printed.contains(&credential), "{printed}");
+            assert!(printed.contains("<redacted>"), "it says one is there: {printed}");
+        }
+        assert!(format!("{turn:?}").contains("hello"), "the rest is printed as it was");
     }
 
     #[test]

@@ -15,7 +15,8 @@ import { YButton } from "components/y_button.slint";
 import { YInput } from "components/y_input.slint";
 import { ToolCallData, ToolCallCard } from "components/tool_call.slint";
 import { ApprovalRequest, ApprovalCard } from "components/intent_lens.slint";
-import { OverviewNode, OverviewEdge, AgentsOverview } from "agents_overview.slint";
+import { QuestionCard } from "components/question_card.slint";
+import { RouteStopData, AgentsRoute } from "agents_route.slint";
 
 export struct AgentTabData {
     id: string,        // active | needs_you | complete | all
@@ -33,6 +34,8 @@ export struct AgentRowData {
     parent: string,    // the agent that started this one, if any
     role: string,      // the catalog role it was started as ("Reviewer"), if any
     origin: string,    // the recipe that handed it the work ("Council recipe"), if any
+    progress: string,  // while it works, the shell's own count: "14 calls · 3 failed · heard 20 s ago"
+    stuck: string,     // why the shell thinks it is stuck, when it does (#234)
 }
 
 // One run of same-looking cells in a command's terminal.
@@ -49,9 +52,12 @@ export struct AgentRunData {
 // One thing in a session: a prompt, the mind's text, its thinking, a note from the shell, a card,
 // or an approval the shell asked the person for on this agent's behalf.
 export struct AgentItemData {
-    kind: string,          // prompt | text | thinking | note | card | approval
+    kind: string,          // prompt | text | thinking | note | card | approval | question
     key: string,           // stable across redraws; what `toggle` names
     text: string,
+    // For a prompt: who sent it — "Council recipe" or the starting agent's id (`deepseek:c-…`),
+    // the row's own attribution. "" for one the person typed, which draws as "you".
+    sent-by: string,
     call: ToolCallData,    // a card's call, as ToolCallCard draws it
     badge: string,         // "verified · exit 0" / "reported"
     explain: string,       // shown open: how it ended, or why the shell made the card itself
@@ -72,6 +78,11 @@ export struct AgentItemData {
     // and links, which one StyledText draws and a Text cannot.
     block: string,
     styled: styled-text,
+    // For a question the agent asked (#25): its request id, the answers it offers (none: a free
+    // answer) and what the person answered, "" while it waits. `explain` says why it closed.
+    request: string,
+    options: [string],
+    answer: string,
 }
 
 export struct AgentHeaderData {
@@ -85,6 +96,7 @@ export struct AgentHeaderData {
     note: string,          // "pi holds one conversation at a time — the one the Lens talks to."
     can-send: bool,
     send-hint: string,     // why the prompt box is closed, when it is
+    tell-hint: string,     // a stuck task: why, and that sending interrupts the stuck step (#234)
     can-stop: bool,
 }
 
@@ -166,12 +178,15 @@ export global AgentsState {
     in-out property <string> notice: "";
     // Close, while work is running: the agent waiting for a yes.
     in-out property <string> confirm-close: "";
-    // List, or Overview: every mind and agent on this machine as one map (#226). The map is laid
+    // List, or Overview: the selected run as a route (Pranab, 27 September), drawn from what the
+    // shell works out in agents/route.rs.
     // out by the shell for the size the map reports, from every agent, whatever the tab.
     in-out property <string> view: "list";
-    in-out property <[OverviewNode]> overview-nodes: [];
-    in-out property <[OverviewEdge]> overview-edges: [];
-    in-out property <string> overview-summary: "";
+    in-out property <[RouteStopData]> route-stops: [];
+    in-out property <string> route-title: "";
+    in-out property <string> route-summary: "";
+    in-out property <bool> route-live: false;
+    in-out property <string> route-note: "";
 
     callback select-tab(string);
     callback select(string);
@@ -194,11 +209,11 @@ export global AgentsState {
     callback approval-allow(string);
     callback approval-allow-session(string);
     callback approval-deny(string);
+    // The person answered a question the agent asked (#25): agent id, request id, answer.
+    callback answer-question(string, string, string);
     // Show one agent on the Agents screen — the Lens's "open in Agents", a notification's Open,
     // `show_agent`.
     callback show-agent(string);
-    // The map's size, whenever it changes.
-    callback overview-resized(length, length);
 }
 
 // List | Overview, beside New agent.
@@ -320,8 +335,12 @@ component AgentRow inherits Rectangle {
                 overflow: elide;
             }
             Text {
-                text: root.data.since == "" ? root.data.label : root.data.label + " · " + root.data.since;
-                color: root.data.state == "waiting_for_you" ? Theme.amber : Theme.text-dim;
+                // Stuck says why, in place of the state: the one line a person scanning the list
+                // needs. Otherwise the state, how long, and the shell's own count of its calls.
+                text: root.data.stuck != "" ? "Stuck: " + root.data.stuck
+                    : (root.data.since == "" ? root.data.label : root.data.label + " · " + root.data.since)
+                      + (root.data.progress == "" ? "" : " · " + root.data.progress);
+                color: root.data.stuck != "" || root.data.state == "waiting_for_you" ? Theme.amber : Theme.text-dim;
                 font-size: Theme.fs-micro;
                 overflow: elide;
             }
@@ -385,8 +404,12 @@ component ItemView inherits Rectangle {
                 padding-left: 12px;
                 spacing: 10px;
                 Text {
-                    text: "you";
-                    width: 30px;
+                    // Who sent this prompt (#194): a recipe's or a starting agent's name, or
+                    // "you" for one the person typed. A long id elides; the row says it in full.
+                    text: root.item.sent-by == "" ? "you" : root.item.sent-by;
+                    min-width: 30px;
+                    max-width: 150px;
+                    overflow: elide;
                     color: Theme.text-dim;
                     font-size: Theme.fs-caption;
                 }
@@ -495,6 +518,16 @@ component ItemView inherits Rectangle {
             allow => { AgentsState.approval-allow(root.item.approval.id); }
             allow-session => { AgentsState.approval-allow-session(root.item.approval.id); }
             deny => { AgentsState.approval-deny(root.item.approval.id); }
+        }
+
+        // A question the agent itself asked (#25): the shared card, drawn as the agent speaking.
+        if root.item.kind == "question" : QuestionCard {
+            mind: AgentsState.header.mind;
+            prompt: root.item.text;
+            options: root.item.options;
+            answer: root.item.answer;
+            closed: root.item.explain;
+            answered(a) => { AgentsState.answer-question(AgentsState.header.id, root.item.request, a); }
         }
 
         // A call: the one card every view of a mind's calls shares (#125), with the call's own
@@ -651,7 +684,8 @@ export component AgentSession inherits Rectangle {
             composer := YInput {
                 horizontal-stretch: 1;
                 disabled: !AgentsState.header.can-send;
-                placeholder: AgentsState.header.can-send ? "type to " + AgentsState.header.mind + "…" : AgentsState.header.send-hint;
+                placeholder: AgentsState.header.tell-hint != "" ? AgentsState.header.tell-hint
+                    : AgentsState.header.can-send ? "type to " + AgentsState.header.mind + "…" : AgentsState.header.send-hint;
                 accepted(text) => {
                     AgentsState.send(AgentsState.header.id, text);
                     self.value = "";
@@ -684,7 +718,7 @@ export component AgentSession inherits Rectangle {
                 horizontal-alignment: center;
             }
             Text {
-                text: "Start one with New agent, or ask a mind something in the Lens — each mind's conversation shows up here, with every call it makes as a card.";
+                text: "Start one with New agent. A request you make in the Lens shows up here as a run once it does work, with every call it makes as a card; plain conversation stays in the chat.";
                 color: Theme.text-secondary;
                 font-size: Theme.fs-caption;
                 wrap: word-wrap;
@@ -1020,8 +1054,8 @@ export component AgentsScreen inherits Rectangle {
 
         if AgentsState.notice != "" : NoticeBar { }
 
-        // The list and one session, with the Overview's map laid over them when it is chosen. Over,
-        // not instead of: the list keeps its place and its scroll, so going back finds it as left.
+        // The list and one session, with the Overview's route laid over the session when it is
+        // chosen. Over, not instead of: the session keeps its scroll, so going back finds it as left.
         Rectangle {
             vertical-stretch: 1;
 
@@ -1076,25 +1110,30 @@ export component AgentsScreen inherits Rectangle {
                 }
             }
 
-            if AgentsState.view == "overview" : AgentsOverview {
-                nodes: AgentsState.overview-nodes;
-                edges: AgentsState.overview-edges;
-                summary: AgentsState.overview-summary;
-                selected: AgentsState.selected;
-                resized(w, h) => { AgentsState.overview-resized(w, h); }
-                // An agent opens in the list with its session, whatever tab it is under; the fold of
-                // finished agents opens the Complete tab. A mind or the machine is only a place.
-                pick(id, kind) => {
-                    if (kind == "agent") {
+            // Over the session only: the list stays beside it, so another run is one press away,
+            // and the details stay too.
+            if AgentsState.view == "overview" : AgentsRoute {
+                x: 270px + Theme.sp-3;
+                width: parent.width - 270px - 250px - 2 * Theme.sp-3;
+                height: parent.height;
+                stops: AgentsState.route-stops;
+                title: AgentsState.route-title;
+                summary: AgentsState.route-summary;
+                live: AgentsState.route-live;
+                note: AgentsState.route-note;
+                // A branch is an agent of its own: its route, whatever tab it is under. Any other
+                // station opens its step in the session, unfolded.
+                pick(key, kind) => {
+                    if (kind == "branch") {
                         AgentsState.select-tab("all");
-                        AgentsState.select(id);
+                        AgentsState.select(key);
+                    } else {
                         AgentsState.view = "list";
-                    } else if (kind == "more") {
-                        AgentsState.select-tab("complete");
-                        AgentsState.view = "list";
+                        if (kind != "start") {
+                            AgentsState.toggle(key, true);
+                        }
                     }
                 }
-                open(id) => { AgentsState.pop-out(id); }
             }
         }
     }

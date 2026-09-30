@@ -162,10 +162,11 @@ pub fn package_explain_prompt(name: &str, info: &str) -> String {
 /// Build an intent-to-package prompt for the package manager.
 pub fn intent_to_package_prompt(intent: &str) -> String {
     format!(
-        "The user needs a tool/package on Alpine Linux (apk). Their request: \"{}\"\n\n\
-         Suggest 1-3 specific Alpine Linux packages that match this need. \
-         For each: package name, one-line description, and install command.\n\
-         Format as a short list. Only suggest real packages from the Alpine repository.",
+        "The user needs a tool/app on Debian 13. Their request: \"{}\"\n\n\
+         Suggest 1-3 specific packages that match this need, from Debian's archive or, for \
+         desktop apps Debian does not carry, from Flathub (by its app id, e.g. com.spotify.Client). \
+         For each: the name, which of the two it comes from, and a one-line description.\n\
+         Format as a short list. Only suggest packages that really exist there.",
         intent
     )
 }

@@ -1,0 +1,402 @@
+// The Minds panel — the accounts that can think for you on this desktop, what each one has left,
+// and a way to make something with them. Opened from the mind chip in the status bar.
+//
+// One glance, in the order a person asks the questions: which accounts are here (Claude, Codex,
+// Gemini, a Qwen or xAI key), which one each vendor answers with, how much of each plan is left
+// before it resets, and then "make me something". Every account is the person's own, signed in
+// through the vendor's own program in a terminal they watch; the panel shows and switches, and
+// never holds a secret. Filled by crates/yantrik-ui/src/wire/minds_panel.rs from
+// crates/yantrik-ui/src/accounts.
+//
+// ── Rules this file follows, as the mode menu does ──
+//
+// 1. Fixed-height rows, so a script driving it with a pointer has coordinates to write down.
+// 2. Nothing takes keyboard focus: every control is a TouchArea, and Enter reaches nothing.
+
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
+
+// One meter of one account: a plan window (`Session`, `Weekly`) or a count (`Today`).
+export struct AccountMeter {
+    name: string,       // "Session", "Weekly", "Today"
+    used: float,        // 0..1 of the window, when `known`
+    known: bool,        // the vendor reports it; false: a count, drawn without a bar
+    value: string,      // the right-hand side: "4h 42m", "1.2M tokens"
+}
+
+// One account of one vendor.
+export struct AccountRow {
+    id: string,         // "claude:account-2", for the callbacks
+    label: string,      // "Main", "Account 2"
+    plan: string,       // "Max 20x", "Pro"; empty when the vendor does not say
+    state: string,      // "active" | "ready" | "signin" | "missing"
+    note: string,       // one line under it when there is something to say
+    meters: [AccountMeter],
+}
+
+// One vendor, and its accounts.
+export struct ProviderGroup {
+    id: string,         // "claude", "codex", "qwen", "gemini", "xai"
+    name: string,
+    accounts: [AccountRow],
+}
+
+// What the "+" can bring here.
+export struct AddChoice {
+    vendor: string,     // a vendor id
+    name: string,       // "Claude"
+    what: string,       // "Sign in", "Add account", "Install", "Set up a key"
+}
+
+// An icon centred in a fixed cell, so it can sit in a layout.
+component Glyph inherits Rectangle {
+    in property <string> commands;
+    in property <length> size: 14px;
+    in property <color> tint: Theme.amber;
+    width: root.size + 4px;
+    height: root.size + 4px;
+    Icon {
+        commands: root.commands;
+        size: root.size;
+        tint: root.tint;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+}
+
+component VendorGlyph inherits Glyph {
+    in property <string> vendor;
+    commands: root.vendor == "claude" ? Icons.spark
+        : root.vendor == "codex" ? Icons.code
+        : root.vendor == "qwen" ? Icons.cloud
+        : root.vendor == "gemini" ? Icons.star
+        : root.vendor == "xai" ? Icons.bolt
+        : Icons.chip;
+}
+
+component MeterRow inherits Rectangle {
+    in property <AccountMeter> meter;
+    height: 20px;
+    HorizontalLayout {
+        spacing: Theme.sp-2;
+        Text {
+            width: 58px;
+            text: root.meter.name;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            vertical-alignment: center;
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            if root.meter.known : Rectangle {
+                y: (parent.height - 4px) / 2;
+                height: 4px;
+                border-radius: 2px;
+                background: Theme.border-subtle;
+            }
+            if root.meter.known : Rectangle {
+                x: 0;
+                y: (parent.height - 4px) / 2;
+                height: 4px;
+                width: parent.width * max(0.0, min(1.0, root.meter.used));
+                border-radius: 2px;
+                background: root.meter.used >= 0.9 ? Theme.color-danger
+                    : root.meter.used >= 0.7 ? Theme.amber : Theme.accent;
+            }
+        }
+        Text {
+            width: 88px;
+            text: root.meter.value;
+            color: root.meter.known && root.meter.used >= 0.9 ? Theme.color-danger : Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+component AccountBlock inherits Rectangle {
+    in property <AccountRow> account;
+    callback use-account(string);
+    callback sign-in(string);
+
+    height: 24px + root.account.meters.length * 22px + (root.account.note != "" ? 18px : 0px);
+    VerticalLayout {
+        spacing: 2px;
+        HorizontalLayout {
+            height: 24px;
+            spacing: Theme.sp-2;
+            Text {
+                text: root.account.label;
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+                font-weight: root.account.state == "active" ? 600 : 500;
+                vertical-alignment: center;
+            }
+            Text {
+                text: root.account.plan != "" ? "· " + root.account.plan : "";
+                color: Theme.text-dim;
+                font-size: Theme.fs-caption;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            // The right-hand word says what the account is, and pressing it does the next thing.
+            Rectangle {
+                width: action-text.preferred-width + 12px;
+                border-radius: Theme.r-sm;
+                background: action-ta.has-hover && root.account.state != "active" ? Theme.hover-fill : transparent;
+                action-ta := TouchArea {
+                    mouse-cursor: root.account.state == "active" ? default : pointer;
+                    clicked => {
+                        if root.account.state == "signin" || root.account.state == "missing" {
+                            root.sign-in(root.account.id);
+                        } else if root.account.state == "ready" {
+                            root.use-account(root.account.id);
+                        }
+                    }
+                }
+                action-text := Text {
+                    x: 6px;
+                    height: parent.height;
+                    text: root.account.state == "active" ? "ACTIVE"
+                        : root.account.state == "signin" ? "Sign in"
+                        : root.account.state == "missing" ? "Install" : "Use";
+                    color: root.account.state == "active" ? Theme.accent
+                        : root.account.state == "signin" ? Theme.color-danger
+                        : Theme.text-secondary;
+                    font-size: Theme.fs-caption;
+                    font-weight: root.account.state == "active" ? 700 : 500;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        for m in root.account.meters : MeterRow { meter: m; }
+        if root.account.note != "" : Text {
+            height: 16px;
+            text: root.account.note;
+            color: Theme.text-dim;
+            font-size: Theme.fs-micro;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+// A square button with one icon: the header's gear and "+".
+component HeadButton inherits Rectangle {
+    in property <string> commands;
+    in property <bool> on: false;
+    callback clicked();
+    width: 32px;
+    height: 32px;
+    border-radius: Theme.r-md;
+    background: root.on ? Theme.tint-accent : ta.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    Glyph {
+        commands: root.commands;
+        tint: Theme.accent;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+}
+
+export component MindsPanel inherits Rectangle {
+    in property <[ProviderGroup]> groups;
+    in property <[AddChoice]> choices;
+    in property <string> today;             // "2.4M tokens today", or "" when nothing is counted
+    in property <string> status;            // one line after an action: "Opened a terminal to sign in"
+    in-out property <bool> adding: false;   // the "+" list is showing
+    callback use-account(string);           // an account id
+    callback sign-in(string);               // an account id: signs in, or installs its program
+    callback add(string);                   // a vendor id, from the "+" list
+    callback make(string);                  // "app" | "theme" | "recipe"
+    callback manage();                      // Settings → Minds
+
+    width: 360px;
+    height: body.preferred-height;
+    border-radius: Theme.r-lg;
+    background: Theme.bg-card;
+    border-width: 1px;
+    border-color: Theme.glass-border-strong;
+    drop-shadow-blur: 18px;
+    drop-shadow-color: Theme.overlay-shadow;
+
+    // Swallow presses on the card itself, so one between two rows does not close it.
+    TouchArea { }
+
+    body := VerticalLayout {
+        padding: Theme.sp-3;
+        spacing: Theme.sp-2;
+
+        // ── Header ──
+        HorizontalLayout {
+            height: 40px;
+            spacing: Theme.sp-2;
+            VerticalLayout {
+                alignment: center;
+                Glyph { commands: Icons.companion; size: 20px; tint: Theme.accent; }
+            }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                Text {
+                    text: "Minds";
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-headline;
+                    font-weight: 600;
+                }
+                if root.today != "" : Text {
+                    text: root.today;
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-micro;
+                    letter-spacing: 0.5px;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                HeadButton { commands: Icons.settings; clicked => { root.manage(); } }
+            }
+            VerticalLayout {
+                alignment: center;
+                HeadButton {
+                    commands: Icons.plus;
+                    on: root.adding;
+                    clicked => { root.adding = !root.adding; }
+                }
+            }
+        }
+
+        // ── What the "+" can bring here ──
+        if root.adding : VerticalLayout {
+            spacing: 2px;
+            for c in root.choices : Rectangle {
+                height: 30px;
+                border-radius: Theme.r-sm;
+                background: choice-ta.has-hover ? Theme.hover-fill : transparent;
+                choice-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.add(c.vendor); root.adding = false; }
+                }
+                HorizontalLayout {
+                    padding-left: Theme.sp-1;
+                    padding-right: Theme.sp-2;
+                    spacing: Theme.sp-2;
+                    VerticalLayout { alignment: center; VendorGlyph { vendor: c.vendor; } }
+                    Text {
+                        text: c.name;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-body;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: c.what;
+                        color: Theme.accent;
+                        font-size: Theme.fs-caption;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            if root.choices.length == 0 : Text {
+                height: 24px;
+                text: "Every vendor this desktop knows is here.";
+                color: Theme.text-dim;
+                font-size: Theme.fs-caption;
+                vertical-alignment: center;
+            }
+        }
+        Rectangle { height: 1px; background: Theme.border-subtle; }
+
+        // ── The vendors and their accounts ──
+        for g in root.groups : VerticalLayout {
+            spacing: 2px;
+            HorizontalLayout {
+                height: 26px;
+                spacing: Theme.sp-2;
+                VerticalLayout { alignment: center; VendorGlyph { vendor: g.id; } }
+                Text {
+                    text: g.name;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-body-strong;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+            }
+            for a in g.accounts : AccountBlock {
+                account: a;
+                use-account(id) => { root.use-account(id); }
+                sign-in(id) => { root.sign-in(id); }
+            }
+            Rectangle { height: 6px; }
+        }
+        if root.groups.length == 0 : Text {
+            height: 36px;
+            text: "No accounts yet. Press + to sign in to Claude, Codex or Gemini, or to add a Qwen or xAI key.";
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            wrap: word-wrap;
+        }
+        if root.status != "" : Text {
+            height: 18px;
+            text: root.status;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-micro;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        // ── Make something ──
+        Rectangle { height: 1px; background: Theme.border-subtle; }
+        Text {
+            height: 18px;
+            text: "MAKE SOMETHING";
+            color: Theme.text-dim;
+            font-size: Theme.fs-micro;
+            font-weight: 600;
+            letter-spacing: 0.8px;
+            vertical-alignment: center;
+        }
+        HorizontalLayout {
+            height: 72px;
+            spacing: Theme.sp-2;
+            for tile in [
+                { kind: "app", label: "App" },
+                { kind: "theme", label: "Theme" },
+                { kind: "recipe", label: "Recipe" },
+            ] : Rectangle {
+                horizontal-stretch: 1;
+                border-radius: Theme.r-md;
+                background: tile-ta.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated;
+                tile-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.make(tile.kind); }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 6px;
+                    HorizontalLayout {
+                        alignment: center;
+                        Glyph {
+                            commands: tile.kind == "app" ? Icons.grid : tile.kind == "theme" ? Icons.sun : Icons.template;
+                            size: 20px;
+                        }
+                    }
+                    Text {
+                        text: tile.label;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-caption;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}

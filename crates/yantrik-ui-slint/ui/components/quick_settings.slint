@@ -45,12 +45,9 @@ export component QuickSettings inherits Rectangle {
         border-bottom-right-radius: 20px;
         clip: true;
 
-        // Glass background
-        background: @linear-gradient(180deg,
-            Theme.bg-deep.transparentize(12%) 0%,
-            Theme.bg-deep.transparentize(19%) 50%,
-            Theme.bg-deep.transparentize(25%) 100%
-        );
+        // Glass background. Slint's software renderer (GPU-less machines, VM 520) paints a gradient
+        // fill as a square inside the rounded border (#172), so a rounded panel's fill is solid.
+        background: Theme.bg-deep.transparentize(19%);
 
         // Glass border
         border-width: 1px;
@@ -92,9 +89,9 @@ export component QuickSettings inherits Rectangle {
                         width: 100%;
                         height: 100%;
                         border-radius: 14px;
-                        background: root.wifi-connected
-                            ? @linear-gradient(135deg, Theme.tint-cyan 0%, Theme.cyan.transparentize(97%) 100%)
-                            : @linear-gradient(135deg, Theme.bg-deep 0%, Theme.bg-deep 100%);
+                        // Solid: a gradient fill on a rounded tile draws square corners under
+                        // the software renderer (#172).
+                        background: root.wifi-connected ? Theme.tint-cyan : Theme.bg-deep;
                         border-width: 1px;
                         border-color: root.wifi-connected ? Theme.cyan-dim : Theme.separator;
                         drop-shadow-blur: root.wifi-connected ? 8px : 0;
@@ -216,7 +213,9 @@ export component QuickSettings inherits Rectangle {
                             width: max(0px, parent.width * root.brightness-level / 100);
                             height: 100%;
                             border-radius: 3px;
-                            background: @linear-gradient(90deg, Theme.amber-dim 0%, Theme.amber 100%);
+                            // Solid: a gradient fill on a rounded bar draws square ends under the
+                            // software renderer (#172).
+                            background: Theme.amber;
                             drop-shadow-blur: 4px;
                             drop-shadow-color: Theme.amber-glow;
                         }
@@ -285,7 +284,9 @@ export component QuickSettings inherits Rectangle {
                             width: max(0px, parent.width * root.volume-level / 100);
                             height: 100%;
                             border-radius: 3px;
-                            background: @linear-gradient(90deg, Theme.cyan-dim 0%, Theme.cyan 100%);
+                            // Solid: a gradient fill on a rounded bar draws square ends under the
+                            // software renderer (#172).
+                            background: Theme.cyan;
                             drop-shadow-blur: 4px;
                             drop-shadow-color: Theme.cyan-glow;
                         }

@@ -30,6 +30,7 @@ use crate::calendar::{stamps, sync};
 use crate::config::EmailAccountConfig;
 use yantrik_ipc_contracts::calendar::{
     Attendee, AttendeeStatus, CalendarEvent, CreateEventParams, EventsParams, UpdateEventParams,
+    MAX_REMINDER_MINUTES,
 };
 
 /// Register all calendar tools.
@@ -154,7 +155,8 @@ fn first_line(description: &str) -> Option<String> {
 ///
 /// A tool that quietly drops what it was given is the fabrication this whole file was rewritten
 /// over, one size smaller: `reminders: [...]` accepted and forgotten reads as a reminder that was
-/// set. The calendar store has no home for reminders or recurrence, so the answer says so.
+/// set. The calendar store has no home for a list of reminders or for recurrence, so the answer
+/// says so. The one reminder lead an event carries is `reminder_minutes`, stored since #78.
 fn unread_arguments(args: &serde_json::Value, read: &[&str]) -> Vec<String> {
     let Some(map) = args.as_object() else { return Vec::new() };
     map.keys()
@@ -201,6 +203,29 @@ fn attendees_from(args: &serde_json::Value) -> Vec<Attendee> {
         })
         .filter(|a| !a.email.is_empty())
         .collect()
+}
+
+/// The `reminder_minutes` argument, as both writing tools read it.
+///
+/// Absent is "did not say" and the store applies its default. Anything present must be a number
+/// of minutes inside the contract's cap: a reminder is a promise the machine will keep tomorrow,
+/// so a lead that cannot be stored is refused here, by name, rather than dropped into the
+/// NOT STORED line — or worse, stored as something else.
+fn reminder_from(args: &serde_json::Value) -> Result<Option<u32>, String> {
+    match args.get("reminder_minutes") {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(v) => {
+            let m = v
+                .as_u64()
+                .ok_or("`reminder_minutes` must be a number of minutes")?;
+            if m > u64::from(MAX_REMINDER_MINUTES) {
+                return Err(format!(
+                    "`reminder_minutes` cannot be longer than {MAX_REMINDER_MINUTES}, and was {m}"
+                ));
+            }
+            Ok(Some(m as u32))
+        }
+    }
 }
 
 /// The range a listing asks the service for, as whole days.
@@ -489,6 +514,7 @@ impl CalendarCreateEventTool {
             // An event a mind makes through its own tools keeps needing `delete_event`,
             // which asks, until a tool call learns to establish its agent the same way.
             creator: None,
+            reminder_minutes: reminder_from(args)?,
         })
     }
 }
@@ -535,6 +561,10 @@ impl Tool for CalendarCreateEventTool {
                             "type": "array",
                             "items": { "type": "string" },
                             "description": "Email addresses of the people invited."
+                        },
+                        "reminder_minutes": {
+                            "type": "integer",
+                            "description": "Minutes before the start to announce the event (default 10). It fires even with the Calendar app closed. All-day events are never announced."
                         }
                     },
                     "required": ["summary", "start", "end"]
@@ -571,6 +601,12 @@ impl CalendarCreateEventTool {
         if !stored.attendees.is_empty() {
             out.push_str(&format!("With: {}\n", stored.attendees.iter().map(|a| a.email.as_str()).collect::<Vec<_>>().join(", ")));
         }
+        // The lead the store recorded, read back off the stored event. Not reported for an
+        // all-day event: it is never announced, and a number here would describe a reminder
+        // that will not happen.
+        if !stored.is_all_day {
+            out.push_str(&format!("Reminder: {} minutes before it starts\n", stored.reminder_minutes));
+        }
 
         if self.cal.google() {
             out.push_str(&self.push_to_google(&stored));
@@ -579,7 +615,16 @@ impl CalendarCreateEventTool {
         note_unstored(
             &mut out,
             args,
-            &["summary", "start", "end", "description", "location", "all_day", "attendees"],
+            &[
+                "summary",
+                "start",
+                "end",
+                "description",
+                "location",
+                "all_day",
+                "attendees",
+                "reminder_minutes",
+            ],
         );
         out
     }
@@ -759,6 +804,10 @@ impl Tool for CalendarUpdateEventTool {
                             "type": "array",
                             "items": { "type": "string" },
                             "description": "The full list of attendee email addresses, replacing whatever is there."
+                        },
+                        "reminder_minutes": {
+                            "type": "integer",
+                            "description": "Minutes before the start to announce the event; unchanged when not given."
                         }
                     },
                     "required": ["event_id"]
@@ -779,6 +828,10 @@ impl CalendarUpdateEventTool {
             None => return "Missing required parameter: event_id".to_string(),
         };
 
+        let reminder_minutes = match reminder_from(args) {
+            Ok(m) => m,
+            Err(e) => return e,
+        };
         let text = |key: &str| args.get(key).and_then(|v| v.as_str()).map(str::to_string);
         let mut params = UpdateEventParams {
             id: event_id.to_string(),
@@ -787,6 +840,7 @@ impl CalendarUpdateEventTool {
             location: text("location"),
             is_all_day: args.get("all_day").and_then(|v| v.as_bool()),
             attendees: args.get("attendees").map(|_| attendees_from(args)),
+            reminder_minutes,
             ..Default::default()
         };
         for (key, slot) in [("start", &mut params.start), ("end", &mut params.end)] {
@@ -807,6 +861,11 @@ impl CalendarUpdateEventTool {
         out.push_str(&format!("When: {} - {}\n", updated.start, updated.end));
         if let Some(loc) = updated.location.as_deref().filter(|l| !l.is_empty()) {
             out.push_str(&format!("Where: {loc}\n"));
+        }
+        // The lead the event carries now, as in the create answer — and for the same reason
+        // only on a timed event.
+        if !updated.is_all_day {
+            out.push_str(&format!("Reminder: {} minutes before it starts\n", updated.reminder_minutes));
         }
 
         if let Some(remote_id) = updated.remote_id.as_deref() {
@@ -844,7 +903,17 @@ impl CalendarUpdateEventTool {
         note_unstored(
             &mut out,
             args,
-            &["event_id", "summary", "start", "end", "description", "location", "all_day", "attendees"],
+            &[
+                "event_id",
+                "summary",
+                "start",
+                "end",
+                "description",
+                "location",
+                "all_day",
+                "attendees",
+                "reminder_minutes",
+            ],
         );
         out
     }
@@ -855,7 +924,7 @@ impl CalendarUpdateEventTool {
 mod tests {
     use super::*;
     use std::sync::Mutex;
-    use yantrik_ipc_contracts::calendar::UpsertRemoteEventParams;
+    use yantrik_ipc_contracts::calendar::{UpsertRemoteEventParams, DEFAULT_REMINDER_MINUTES};
 
     /// A calendar that lives in memory and can be told to refuse.
     ///
@@ -915,6 +984,8 @@ mod tests {
                 calendar_id: "default".into(),
                 remote_id: None,
                 creator: params.creator.clone(),
+                // The same rule the real store applies: not said is the default.
+                reminder_minutes: params.reminder_minutes.unwrap_or(DEFAULT_REMINDER_MINUTES),
             };
             events.push(event.clone());
             Ok(event)
@@ -937,6 +1008,9 @@ mod tests {
             }
             if let Some(v) = &params.remote_id {
                 event.remote_id = Some(v.clone());
+            }
+            if let Some(v) = params.reminder_minutes {
+                event.reminder_minutes = v;
             }
             Ok(event.clone())
         }
@@ -972,6 +1046,7 @@ mod tests {
                 calendar_id: "default".into(),
                 remote_id: Some(params.remote_id.clone()),
                 creator: None,
+                reminder_minutes: DEFAULT_REMINDER_MINUTES,
             };
             events.push(event.clone());
             Ok(event)
@@ -1046,6 +1121,75 @@ mod tests {
         // Google's exclusive end date becomes the last day this calendar draws it on.
         assert_eq!(stored.start, "2026-09-22T00:00:00");
         assert_eq!(stored.end, "2026-09-22T23:59:59");
+    }
+
+    #[test]
+    fn a_reminder_asked_for_is_stored_and_said_back() {
+        // #78: "remind me 45 minutes before the flight" had nowhere to go. The argument used to
+        // land in the NOT STORED line at best, and the event was announced ten minutes before —
+        // if the calendar service happened to be running at all.
+        let backend = Arc::new(FakeCalendar::default());
+        let tool = CalendarCreateEventTool { cal: calendars(backend.clone()) };
+        let mut args = create_args();
+        args["reminder_minutes"] = serde_json::json!(45);
+        let answer = tool.run(&args);
+        assert!(!answer.contains("NOT STORED"), "{answer}");
+        assert!(answer.contains("Reminder: 45 minutes"), "{answer}");
+        assert_eq!(backend.events.lock().unwrap()[0].reminder_minutes, 45);
+    }
+
+    #[test]
+    fn a_create_that_says_nothing_about_a_reminder_stores_the_default() {
+        let backend = Arc::new(FakeCalendar::default());
+        let tool = CalendarCreateEventTool { cal: calendars(backend.clone()) };
+        let answer = tool.run(&create_args());
+        assert!(!answer.contains("NOT STORED"), "{answer}");
+        assert_eq!(
+            backend.events.lock().unwrap()[0].reminder_minutes,
+            DEFAULT_REMINDER_MINUTES
+        );
+    }
+
+    #[test]
+    fn an_update_can_move_the_reminder_and_leaves_it_alone_when_it_does_not() {
+        let backend = Arc::new(FakeCalendar::default());
+        let cal = calendars(backend.clone());
+        CalendarCreateEventTool { cal: cal.clone() }.run(&create_args());
+
+        let moved = CalendarUpdateEventTool { cal: cal.clone() }
+            .run(&serde_json::json!({ "event_id": "stored-1", "reminder_minutes": 30 }));
+        assert!(!moved.contains("NOT STORED"), "{moved}");
+        assert!(moved.contains("Reminder: 30 minutes"), "{moved}");
+        assert_eq!(backend.events.lock().unwrap()[0].reminder_minutes, 30);
+
+        let renamed = CalendarUpdateEventTool { cal }
+            .run(&serde_json::json!({ "event_id": "stored-1", "summary": "Launch review v2" }));
+        assert!(!renamed.contains("NOT STORED"), "{renamed}");
+        assert_eq!(
+            backend.events.lock().unwrap()[0].reminder_minutes,
+            30,
+            "an update that said nothing about the reminder kept it"
+        );
+    }
+
+    #[test]
+    fn a_reminder_that_is_not_a_storable_lead_is_refused_by_name_and_stores_nothing() {
+        let backend = Arc::new(FakeCalendar::default());
+        let tool = CalendarCreateEventTool { cal: calendars(backend.clone()) };
+        for (bad, fragment) in [
+            (serde_json::json!("soon"), "must be a number of minutes"),
+            (serde_json::json!(-5), "must be a number of minutes"),
+            (
+                serde_json::json!(MAX_REMINDER_MINUTES as i64 + 1),
+                "cannot be longer than",
+            ),
+        ] {
+            let mut args = create_args();
+            args["reminder_minutes"] = bad;
+            let answer = tool.run(&args);
+            assert!(answer.contains(fragment), "{answer}");
+            assert_eq!(backend.count(), 0, "a refused reminder created no event");
+        }
     }
 
     #[test]

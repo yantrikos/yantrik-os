@@ -103,10 +103,15 @@ pub enum Tab {
     NeedsYou,
     Complete,
     All,
+    /// Every request a person made, one row each, whichever conversation it was in (#234).
+    Tasks,
 }
 
 impl Tab {
+    /// The views over agents, which `Store::counts` counts.
     pub const EVERY: [Tab; 4] = [Tab::Active, Tab::NeedsYou, Tab::Complete, Tab::All];
+    /// Every tab the screen shows: the agent views, then Tasks.
+    pub const SHOWN: [Tab; 5] = [Tab::Active, Tab::NeedsYou, Tab::Complete, Tab::All, Tab::Tasks];
 
     pub fn key(self) -> &'static str {
         match self {
@@ -114,6 +119,7 @@ impl Tab {
             Tab::NeedsYou => "needs_you",
             Tab::Complete => "complete",
             Tab::All => "all",
+            Tab::Tasks => "tasks",
         }
     }
 
@@ -123,11 +129,12 @@ impl Tab {
             Tab::NeedsYou => "Needs you",
             Tab::Complete => "Complete",
             Tab::All => "All",
+            Tab::Tasks => "Tasks",
         }
     }
 
     pub fn from_key(key: &str) -> Tab {
-        Tab::EVERY.into_iter().find(|t| t.key() == key).unwrap_or(Tab::Active)
+        Tab::SHOWN.into_iter().find(|t| t.key() == key).unwrap_or(Tab::Active)
     }
 
     /// Whether an agent in this state is listed under this tab.
@@ -141,7 +148,7 @@ impl Tab {
             Tab::Active => state.live(),
             Tab::NeedsYou => state == State::WaitingForYou,
             Tab::Complete => !state.live(),
-            Tab::All => true,
+            Tab::All | Tab::Tasks => true,
         }
     }
 }
@@ -929,6 +936,42 @@ pub struct Approval {
     pub settled: Option<u64>,
 }
 
+/// A question the agent asked the person (#25). Answered only through its card, once; the answer
+/// goes to the run that asked, through the host, which refuses a second one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Question {
+    /// The harness's own id for it, unique within its run.
+    pub request: String,
+    pub prompt: String,
+    /// The answers offered as buttons; empty for a free answer.
+    pub options: Vec<String>,
+    /// What the person answered; empty while it waits.
+    pub answer: String,
+    /// Why it can no longer be answered, when that happened; empty while it can.
+    pub closed: String,
+    pub asked: u64,
+}
+
+impl Question {
+    /// Still waiting for the person.
+    pub fn waiting(&self) -> bool {
+        self.answer.is_empty() && self.closed.is_empty()
+    }
+}
+
+/// Where a turn came from: the person's chat with a mind (the Lens), or agent work (an agent
+/// started as one, a recipe's step, a hand-off, a word in its pane). The Agents screen lists
+/// agent work and the chat's requests that did work; plain conversation stays with the chat.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnOrigin {
+    /// Saved before turns said where they came from.
+    #[default]
+    Unknown,
+    Chat,
+    Agent,
+}
+
 /// One thing in a turn, in the order it happened.
 #[derive(Debug)]
 pub enum Item {
@@ -940,6 +983,8 @@ pub enum Item {
     Note(String),
     /// An approval the shell asked the person for, on this agent's behalf.
     Approval(Approval),
+    /// A question the agent itself asked the person.
+    Question(Question),
 }
 
 /// One prompt and everything that came of it.
@@ -951,6 +996,11 @@ pub struct Turn {
     pub started: u64,
     pub ended: Option<u64>,
     pub ok: Option<bool>,
+    /// Ended by the desktop stopping, not by the mind (#234): its task is lost, which is not the
+    /// same as failed. A harness that comes back may pick the work up again as a new turn.
+    pub lost: bool,
+    /// Where it came from: the chat, or agent work.
+    pub origin: TurnOrigin,
     pub items: Vec<Item>,
     /// Whether any structured `harness.event` arrived in this turn. Once one has, trail lines in
     /// the text are the same calls told twice and are not made into cards.
@@ -960,6 +1010,11 @@ pub struct Turn {
 }
 
 impl Turn {
+    /// Whether it did work: a call, a question to the person, or an approval asked for.
+    pub fn did_work(&self) -> bool {
+        self.items.iter().any(|i| matches!(i, Item::Card(_) | Item::Question(_) | Item::Approval(_)))
+    }
+
     pub fn open(&self) -> bool {
         self.ended.is_none()
     }
@@ -1012,6 +1067,10 @@ pub struct Agent {
     pub approvals_answered: u32,
     /// Approval requests asked and not yet answered, by request id.
     pub pending_approvals: Vec<String>,
+    /// Whether any of its terminal's jobs sits at a prompt waiting for the person (#182).
+    /// While one does, the row stays `WaitingForYou` even when a settled card would
+    /// otherwise send it back to work.
+    pub job_waits: bool,
     /// Creation order, to break ties between agents started in the same second.
     pub seq: u64,
     /// Last time anything happened to it.
@@ -1029,6 +1088,23 @@ impl Agent {
     }
 
     /// Whether anything of it is still running: its turn, or a command the shell owns.
+    /// A mind's main conversation with no role, recipe or parent: the person's chat with it (the
+    /// Lens). Its turns are listed as runs, not the conversation as one agent.
+    pub fn is_plain_main(&self) -> bool {
+        self.meta.id.conversation() == AgentId::MAIN && self.meta.role.is_none() && self.meta.recipe.is_none() && self.meta.parent.is_none()
+    }
+
+    /// Whether turn `t` of this agent is a run the Agents screen lists: agent work always; a chat
+    /// request only if it did work. A turn saved before turns said where they came from counts as
+    /// chat on a plain main conversation, and as agent work anywhere else.
+    pub fn is_run(&self, t: &Turn) -> bool {
+        match t.origin {
+            TurnOrigin::Agent => true,
+            TurnOrigin::Chat => t.did_work(),
+            TurnOrigin::Unknown => !self.is_plain_main() || t.did_work(),
+        }
+    }
+
     pub fn busy(&self) -> bool {
         self.state.working() || self.open_turn().is_some() || self.cards().any(|c| c.running())
     }

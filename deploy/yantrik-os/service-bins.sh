@@ -183,8 +183,14 @@ cmd_selftest() {
     printf '%s%s selftest check(s) failed%s\n' "$c_red" "$fails" "$c_off"
     return 1
   }
-  local registered reg missing=""
+  local registered reg missing="" scripted
   registered="$(sed -n 's/.*mgr\.register([^,]*,[[:space:]]*"\([^"]*\)".*/\1/p' "$MAIN_RS")"
+  # A service that is a program rather than a crate — yantrik-browser, Python on the surface SDK
+  # — is not built by cargo; the release installs it from apps/ itself. Those installs are read
+  # out of build-release.sh, the script that ships them, so this still writes no name down.
+  scripted="$(sed -n 's|.*install -m 0755 "$PROJECT_ROOT/apps/[^"]*" "$ROOT/bin/\([^"]*\)".*|\1|p' \
+    "$SCRIPT_DIR/build-release.sh" 2>/dev/null | paste -sd' ' -)"
+  flat="$flat $scripted"
   if [ -z "$registered" ]; then
     t_fail "read no mgr.register(…) lines from $MAIN_RS — start_services changed shape"
   fi

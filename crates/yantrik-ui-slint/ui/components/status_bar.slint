@@ -26,6 +26,9 @@ export component StatusBar inherits Rectangle {
     // the backend is unreachable; the chip's click goes to Settings → AI. Set from Rust
     // (`assistant_offline_notice` in bridge.rs), cleared when a model answers again.
     in property <string> assistant-offline-notice: "";
+    // Set while another process holds the harness socket (#367): no mind can attach here.
+    in property <string> minds-notice: "";
+    callback minds-notice-clicked();
     in property <bool> battery-available: false;
     in property <int> battery-level: 100;
     in property <bool> battery-charging: false;
@@ -69,10 +72,15 @@ export component StatusBar inherits Rectangle {
     in property <string> active-harness-name: "";
     callback active-mind-clicked();
 
-    // What that mind may do without being asked: plan | ask | auto | bypass. The label carries
-    // the countdown during a bypass ("Bypass 43m"). See components/mind_mode_menu.slint.
+    // What that mind may do without being asked: plan | ask | auto | bypass | bypass_all. The
+    // label carries the countdown during either bypass ("Bypass 43m", "Full bypass 43m"). See
+    // components/mind_mode_menu.slint.
     in property <string> mind-mode: "ask";
     in property <string> mind-mode-label: "Ask";
+    // Either bypass: both are red on the chip, because both are "it is not asking you".
+    property <bool> in-bypass: root.mind-mode == "bypass" || root.mind-mode == "bypass_all";
+    // Private mode: the Mind is off whatever the mode says, and the chip says that instead.
+    in property <bool> private-mode: false;
     callback mind-mode-clicked();
 
     height: Theme.status-bar-height;
@@ -218,6 +226,50 @@ export component StatusBar inherits Rectangle {
                 }
             }
 
+            // ── Minds can't reach this desktop ──
+            //
+            // #367: another process held the harness socket for two days and the only trace was
+            // a log line. The same persistent chip as "no model", naming the process that holds
+            // it; it hides itself the moment this shell takes the socket.
+            if root.minds-notice != "" : TouchArea {
+                width: min(minds-row.preferred-width + Theme.sp-3, 340px);
+                height: Theme.status-bar-height;
+                mouse-cursor: pointer;
+                clicked => { root.minds-notice-clicked(); }
+
+                Rectangle {
+                    width: parent.width;
+                    height: 20px;
+                    y: (parent.height - 20px) / 2;
+                    border-radius: Theme.r-sm;
+                    background: Theme.color-danger-dim;
+                    border-width: 1px;
+                    border-color: Theme.color-danger;
+
+                    minds-row := HorizontalLayout {
+                        padding-left: 7px;
+                        padding-right: 7px;
+                        spacing: 5px;
+                        alignment: center;
+
+                        Icon {
+                            commands: Icons.warning;
+                            size: 12px;
+                            tint: Theme.color-danger;
+                            y: (parent.height - self.height) / 2;
+                        }
+                        Text {
+                            text: root.minds-notice;
+                            max-width: 300px; overflow: elide;
+                            color: Theme.color-danger;
+                            font-size: Theme.fs-micro;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
             // Project indicator
             if root.active-project != "" && root.width >= 1000px : Rectangle {
                 width: proj-text.preferred-width + Theme.sp-3;
@@ -303,7 +355,7 @@ export component StatusBar inherits Rectangle {
             // Always on the bar, unlike the mind chip beside it, and that is the point: the mode
             // is a fact about what this machine will let happen to it, and a person must never be
             // surprised by it. In `plan` they would otherwise only find out when the mind said it
-            // could not do anything; in `bypass` they are owed a permanent, unmissable reminder
+            // could not do anything; in either bypass they are owed a permanent, unmissable reminder
             // and a countdown, which is why the label carries the time left and this chip goes
             // red rather than accent-tinted.
             //
@@ -320,11 +372,12 @@ export component StatusBar inherits Rectangle {
                     height: 20px;
                     y: (parent.height - 20px) / 2;
                     border-radius: Theme.r-sm;
-                    background: root.mind-mode == "bypass" ? Theme.color-danger-dim
+                    background: root.private-mode ? Theme.tint-accent
+                        : root.in-bypass ? Theme.color-danger-dim
                         : root.mind-mode == "plan" ? Theme.tint-amber
                         : Theme.hover-fill;
-                    border-width: root.mind-mode == "bypass" ? 1px : 0px;
-                    border-color: Theme.color-danger;
+                    border-width: root.private-mode || root.in-bypass ? 1px : 0px;
+                    border-color: root.private-mode ? Theme.accent : Theme.color-danger;
 
                     mode-row := HorizontalLayout {
                         padding-left: 7px;
@@ -333,21 +386,23 @@ export component StatusBar inherits Rectangle {
                         alignment: center;
 
                         Icon {
-                            commands: root.mind-mode == "plan" ? Icons.eye : Icons.shield;
+                            commands: root.mind-mode == "plan" && !root.private-mode ? Icons.eye : Icons.shield;
                             size: 12px;
-                            tint: root.mind-mode == "bypass" ? Theme.color-danger
+                            tint: root.private-mode ? Theme.accent
+                                : root.in-bypass ? Theme.color-danger
                                 : root.mind-mode == "plan" ? Theme.amber
                                 : Theme.text-secondary;
                             y: (parent.height - self.height) / 2;
                         }
                         Text {
-                            text: root.mind-mode-label;
+                            text: root.private-mode ? "Private" : root.mind-mode-label;
                             max-width: 120px; overflow: elide;
-                            color: root.mind-mode == "bypass" ? Theme.color-danger
+                            color: root.private-mode ? Theme.accent
+                                : root.in-bypass ? Theme.color-danger
                                 : root.mind-mode == "plan" ? Theme.amber
                                 : Theme.text-secondary;
                             font-size: Theme.fs-micro;
-                            font-weight: root.mind-mode == "bypass" ? 700 : 500;
+                            font-weight: root.private-mode || root.in-bypass ? 700 : 500;
                             vertical-alignment: center;
                         }
                     }

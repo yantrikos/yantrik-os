@@ -10,8 +10,11 @@ pub mod protocol;
 pub mod server;
 pub mod client;
 pub mod gate;
+pub mod mind_door;
 pub mod owner;
 pub mod peer_identity;
+/// Private mode: while it is on, no agent sees or does anything on this desktop.
+pub mod privacy;
 // An agent's reach: what a role from the agent catalog may touch (design/desk-and-mind, section 5).
 pub mod reach;
 pub mod service;

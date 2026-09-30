@@ -35,6 +35,18 @@ pub fn agent_identity(agent: &str) -> String {
 /// somebody: an event stored with an empty record and a caller the machine could not name
 /// must not fall into each other's arms, which is what an `==` on the raw strings would do.
 pub fn may_delete_unasked(creator: Option<&str>, caller: Option<&str>) -> bool {
+    may_change_unasked(creator, caller)
+}
+
+/// May this caller change this event without a person being asked?
+///
+/// The same rule as the delete, because it is the same question (#332): `update_event` could
+/// rewrite any event on the calendar — the person's own, a Google-synced one — as easily as
+/// one the caller made, so editing anybody else's is `sensitive` and shows the person a card,
+/// while `update_own_event` stays `standard` for the events this very caller created. One
+/// comparison, written once, and both verbs key off it: a maker that may take its event off
+/// unasked may also move it.
+pub fn may_change_unasked(creator: Option<&str>, caller: Option<&str>) -> bool {
     match (creator, caller) {
         (Some(creator), Some(caller)) => !creator.trim().is_empty() && creator == caller,
         _ => false,

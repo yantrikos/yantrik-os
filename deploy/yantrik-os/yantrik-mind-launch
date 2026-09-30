@@ -1,0 +1,65 @@
+#!/usr/bin/python3 -I
+"""Start Yantrik Mind with its settings, read by the mind itself (#411).
+
+The Mind takes its model settings (YM_PRIMARY_BRAIN, the provider keys, ...) from its process
+environment, and they live in its own settings file. A systemd EnvironmentFile= would read that
+file as root, before the unit drops to yantrik-mind, and follow any link the mind put in its own
+home to any file root can read. So the unit runs this instead, as yantrik-mind: it reads the file
+at $YM_ENV_PATH itself, never through a link, and a link could only have given it what the mind
+can read anyway. Then it becomes the Mind.
+
+The file is read the way systemd reads an EnvironmentFile: KEY=VALUE lines, an optional
+`export `, a value in single or double quotes taken literally (backslash-quote and backslash-backslash unescaped inside double quotes),
+comments and blank lines skipped. A key the unit already sets is the unit's: HOME, the paths
+(YM_DB, YM_ENV_PATH, YM_MCP_CONFIG, YM_CODER_DIR, YM_STATE_DIR), YM_MEMORY_SERVER, YM_WEB and
+YANTRIK_MIND_RUN come from the unit, so a settings file written when the Mind lived in the
+person's home cannot point it back there, where it can no longer look.
+"""
+import os
+import re
+import sys
+
+MIND = "/opt/yantrik-mind/bin/yantrik-mind"
+KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def parse(text):
+    settings = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line[0] in "#;":
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        key, sep, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if not sep or not KEY.match(key):
+            continue
+        if len(value) >= 2 and value[0] == value[-1] == "'":
+            value = value[1:-1]
+        elif len(value) >= 2 and value[0] == value[-1] == '"':
+            value = re.sub(r'\\(["\\])', r"\1", value[1:-1])
+        settings[key] = value
+    return settings
+
+
+def main():
+    if os.getuid() == 0:
+        sys.exit("yantrik-mind-launch runs as the mind's own account, never as root")
+    path = os.environ.get("YM_ENV_PATH", "")
+    if path:
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            fd = None
+        except OSError as e:
+            sys.exit("cannot read the mind's settings at %s: %s" % (path, e))
+        if fd is not None:
+            with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as f:
+                for key, value in parse(f.read(1 << 20)).items():
+                    os.environ.setdefault(key, value)
+    os.execv(MIND, [MIND] + sys.argv[1:])
+
+
+if __name__ == "__main__":
+    main()

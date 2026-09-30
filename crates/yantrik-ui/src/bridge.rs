@@ -65,6 +65,10 @@ pub enum CompanionCommand {
         /// Only [`CompanionHandle::ask`] passes one. The chat UI shows the offline notice from
         /// its own wiring, and a submitted job's subscriber is the board.
         model: Option<Sender<bool>>,
+        /// Asked from away from the machine (a channel): the turn's tools are held to `Safe` —
+        /// it reads, it changes nothing — and so is what the worker runs after it, until the
+        /// person next speaks at the desk.
+        remote: bool,
     },
     /// Count a conversation turn — one that began with the person's words and was answered.
     ///
@@ -150,6 +154,10 @@ pub enum CompanionCommand {
     SetIncognitoMode {
         enabled: bool,
     },
+    /// Switch the decision model (Settings → Decision model).
+    SetJudge {
+        config: yantrik_companion::config::JudgeConfig,
+    },
     /// Run a background think cycle.
     Think {
         /// Current interruptibility from FocusFlow (0.0 = deep work, 1.0 = normal).
@@ -169,6 +177,8 @@ pub enum CompanionCommand {
     /// Read the recipes again and publish them to `crate::recipes`, which the Recipes screen,
     /// `describe shell` and the mind panel read without waiting on this thread.
     RefreshRecipes,
+    /// The person pressed New chat (#246): the built-in's next turn starts a new conversation.
+    NewConversation,
     /// A person's answer, pause, resume or cancel for one recipe. The outcome is published to
     /// `crate::recipes` with the recipes themselves.
     Recipe {
@@ -294,6 +304,14 @@ pub struct CompanionBridge {
     ambient: AmbientState,
     /// Cognitive event bus — shared with the entire system.
     event_bus: yantrik_os::EventBus,
+    /// The decision model the companion is set to, as Settings shows it: kept here so the UI
+    /// thread reads it without a round trip to the worker. The worker's copy is the one used.
+    judge: Arc<std::sync::Mutex<yantrik_companion::config::JudgeConfig>>,
+    /// The decision model in use, asked on the caller's thread (`yantrik_companion::decisions`).
+    decisions: yantrik_companion::decisions::Decisions,
+    /// The Settings incognito switch, and Private mode: the companion is incognito while either is on.
+    incognito_setting: AtomicBool,
+    private: AtomicBool,
 }
 
 /// A companion you can use from another thread.
@@ -306,9 +324,16 @@ pub struct CompanionHandle {
     cmd_tx: Sender<CompanionCommand>,
     online: Arc<AtomicBool>,
     board: crate::jobs::Board,
+    decisions: yantrik_companion::decisions::Decisions,
 }
 
 impl CompanionHandle {
+    /// The decision model in use, asked on the caller's thread: a decision never waits behind a
+    /// chat turn on the companion's.
+    pub fn decisions(&self) -> &yantrik_companion::decisions::Decisions {
+        &self.decisions
+    }
+
     /// Ask the companion something and wait for the finished answer.
     ///
     /// The worker streams tokens for the chat UI; a caller over RPC wants one reply, so the
@@ -330,6 +355,7 @@ impl CompanionHandle {
                 token_tx,
                 job: None,
                 model: Some(model_tx),
+                remote: false,
             })
             .map_err(|_| AskError::Failed("companion worker is not running".to_string()))?;
 
@@ -435,6 +461,7 @@ impl CompanionHandle {
                 token_tx,
                 job: Some(receipt.ticket.clone()),
                 model: None,
+                remote: false,
             })
             .map_err(|_| "companion worker is not running".to_string())?;
         Ok(receipt)
@@ -457,6 +484,13 @@ impl CompanionHandle {
             })
             .map_err(|_| "companion worker is not running".to_string())?;
         Ok(receipt)
+    }
+
+    /// Start the built-in's next turn in a new conversation (#246). Returns at once.
+    pub fn new_conversation(&self) -> Result<(), String> {
+        self.cmd_tx
+            .send(CompanionCommand::NewConversation)
+            .map_err(|_| "companion worker is not running".to_string())
     }
 
     /// Ask the worker to publish the recipes again. Returns at once; see `crate::recipes`.
@@ -555,6 +589,7 @@ impl CompanionBridge {
             cmd_tx: self.cmd_tx.clone(),
             online: self.online.clone(),
             board: self.board.clone(),
+            decisions: self.decisions.clone(),
         }
     }
 
@@ -574,10 +609,19 @@ impl CompanionBridge {
         let ambient_w = ambient.clone();
         let bus_w = event_bus.clone();
 
+        let judge = Arc::new(std::sync::Mutex::new(config.judge.clone()));
+        // Private mode is read before the worker exists (`private_mode::load` in main), so the
+        // first command the worker takes is incognito, ahead of anything it could record.
+        let private = crate::private_mode::is_on();
+        if private {
+            let _ = cmd_tx.send(CompanionCommand::SetIncognitoMode { enabled: true });
+        }
+        let decisions = yantrik_companion::decisions::Decisions::default();
+        let decisions_w = decisions.clone();
         let self_tx = cmd_tx.clone();
         let board_w = board.clone();
         let worker_handle = std::thread::spawn(move || {
-            worker_loop(config, cmd_rx, self_tx, ui_weak, online_w, bond_w, ambient_w, bus_w, board_w);
+            worker_loop(config, cmd_rx, self_tx, ui_weak, online_w, bond_w, ambient_w, bus_w, board_w, decisions_w);
         });
 
         Self {
@@ -588,6 +632,10 @@ impl CompanionBridge {
             cached_bond_level,
             ambient,
             event_bus,
+            judge,
+            decisions,
+            incognito_setting: AtomicBool::new(false),
+            private: AtomicBool::new(private),
         }
     }
 
@@ -608,6 +656,12 @@ impl CompanionBridge {
 
     /// Send a message and get a channel to receive streaming tokens.
     pub fn send_message(&self, text: String) -> Receiver<String> {
+        self.send_message_from(text, false)
+    }
+
+    /// `send_message`, saying whether the person asked it from away from the machine: a remote
+    /// turn's tools are held to `Safe`.
+    pub fn send_message_from(&self, text: String, remote: bool) -> Receiver<String> {
         let (token_tx, token_rx) = crossbeam_channel::unbounded();
         if self
             .cmd_tx
@@ -616,6 +670,7 @@ impl CompanionBridge {
                 token_tx: token_tx.clone(),
                 job: None,
                 model: None,
+                remote,
             })
             .is_err()
         {
@@ -702,8 +757,47 @@ impl CompanionBridge {
         });
     }
 
-    /// Toggle incognito mode (no data persistence while active).
+    /// The decision model in use, its uses and where the chat model runs, as last published.
+    pub fn decisions(&self) -> &yantrik_companion::decisions::Decisions {
+        &self.decisions
+    }
+
+    /// The decision model the companion is set to.
+    pub fn judge_config(&self) -> yantrik_companion::config::JudgeConfig {
+        self.judge.lock().map(|j| j.clone()).unwrap_or_default()
+    }
+
+    /// Switch the decision model, from Settings: the companion rebuilds its judge and saves the
+    /// choice to its config, so it is the one used after a restart too.
+    pub fn set_judge(&self, config: yantrik_companion::config::JudgeConfig) {
+        if let Ok(mut j) = self.judge.lock() {
+            *j = config.clone();
+        }
+        let _ = self.cmd_tx.send(CompanionCommand::SetJudge { config });
+    }
+
+    /// Test the decision model in use with one known question, on the calling thread (never the
+    /// UI's: it waits for the model).
+    pub fn test_judge(&self) -> Result<yantrik_ml::judge::Verdict, String> {
+        self.decisions.test()
+    }
+
+    /// Toggle incognito mode (no data persistence while active): the person's Settings switch.
+    /// The companion is incognito while this or Private mode is on.
     pub fn set_incognito(&self, enabled: bool) {
+        self.incognito_setting.store(enabled, Ordering::SeqCst);
+        self.send_incognito();
+    }
+
+    /// Private mode came on or went off (`crate::private_mode`): the companion is incognito for
+    /// as long as it is on, and back to the Settings switch after.
+    pub fn set_private(&self, on: bool) {
+        self.private.store(on, Ordering::SeqCst);
+        self.send_incognito();
+    }
+
+    fn send_incognito(&self) {
+        let enabled = self.incognito_setting.load(Ordering::SeqCst) || self.private.load(Ordering::SeqCst);
         let _ = self.cmd_tx.send(CompanionCommand::SetIncognitoMode { enabled });
     }
 
@@ -817,6 +911,42 @@ fn signal_recipe(cmd_tx: &Sender<CompanionCommand>, queued: &mut std::collection
     }
 }
 
+/// Whether the worker drops `cmd` while the person is in Private mode, answering whoever waits on
+/// it that nothing was done. Everything the person does not ask for directly, and every question
+/// to the companion, is dropped; the switches (incognito, the decision model, the provider) and
+/// the reads the shell's own screens need are not.
+fn paused_while_private(cmd: &CompanionCommand, recipe_signals: &mut std::collections::HashSet<String>) -> bool {
+    const SAID: &str = "Private mode is on: the companion is off until you turn it off.";
+    match cmd {
+        CompanionCommand::ProcessRecipeStep { recipe_id } => {
+            recipe_signals.remove(recipe_id);
+            true
+        }
+        CompanionCommand::Think { .. }
+        | CompanionCommand::ProcessNextTask
+        | CompanionCommand::SetSystemContext { .. }
+        | CompanionCommand::RecordSystemEvent { .. }
+        | CompanionCommand::RecordSnapshot { .. }
+        | CompanionCommand::RecordIssue { .. }
+        | CompanionCommand::ScoreConversationTurn { .. } => true,
+        CompanionCommand::StartRecipe { reply_tx, .. } => {
+            if let Some(tx) = reply_tx {
+                let _ = tx.send(Err(SAID.to_string()));
+            }
+            true
+        }
+        CompanionCommand::SendMessage { token_tx, model, .. } => {
+            let _ = token_tx.send(format!("__REPLACE__{SAID}"));
+            if let Some(tx) = model {
+                let _ = tx.send(false);
+            }
+            let _ = token_tx.send("__DONE__".to_string());
+            true
+        }
+        _ => false,
+    }
+}
+
 /// The worker thread's main loop.
 fn worker_loop(
     config: CompanionConfig,
@@ -828,6 +958,7 @@ fn worker_loop(
     ambient: AmbientState,
     event_bus: yantrik_os::EventBus,
     board: crate::jobs::Board,
+    decisions: yantrik_companion::decisions::Decisions,
 ) {
     // Save config services before moving config into build_companion
     let config_services = config.enabled_services.clone();
@@ -840,7 +971,10 @@ fn worker_loop(
     // the difference between an OS that tells you the embedder is absent and one that looks
     // broken in sixteen places at once.
     let mut companion = match build_companion(config) {
-        Ok(c) => c,
+        Ok(mut c) => {
+            c.share_decisions(decisions);
+            c
+        }
         Err(why) => {
             tracing::error!(reason = %why, "Companion unavailable — answering every request with this");
             online.store(false, Ordering::Relaxed);
@@ -980,7 +1114,7 @@ fn worker_loop(
         }
         // The mind panel: the worker has reached its loop, so the memory count it pushes is a count.
         crate::mind_panel::worker_up();
-        if recipe_clock.elapsed() >= recipe_tick {
+        if recipe_clock.elapsed() >= recipe_tick && !crate::private_mode::is_on() {
             recipe_clock = std::time::Instant::now();
             let due = yantrik_companion::recipe_executor::due(&companion.db.conn());
             for rid in due {
@@ -991,8 +1125,19 @@ fn worker_loop(
         if matches!(received, Err(crossbeam_channel::RecvTimeoutError::Timeout)) {
             continue;
         }
+        // Private mode: the companion does nothing of its own accord and hears nothing about the
+        // person. It does not think, look at the focused window, run recipes, record what the
+        // system saw, or answer anyone; what was dropped is not done later.
+        if crate::private_mode::is_on() {
+            if let Ok(cmd) = &received {
+                if paused_while_private(cmd, &mut recipe_signals) {
+                    continue;
+                }
+            }
+        }
         match received {
             Ok(CompanionCommand::RefreshRecipes) => recipes_dirty = true,
+            Ok(CompanionCommand::NewConversation) => companion.new_conversation(),
             Ok(CompanionCommand::StartRecipe { recipe, variables, leave, reply_tx }) => {
                 let outcome = start_recipe_run(&companion.db.conn(), &recipe, &variables, leave.as_ref());
                 match &outcome {
@@ -1034,7 +1179,9 @@ fn worker_loop(
                 crate::recipes::record(&recipe_id, outcome.map(|a| a.message));
                 recipes_dirty = true;
             }
-            Ok(CompanionCommand::SendMessage { text, token_tx, job, model }) => {
+            Ok(CompanionCommand::SendMessage { text, token_tx, job, model, remote }) => {
+                // From a phone, the turn reads and changes nothing (channels, P1).
+                companion.set_turn_ceiling(remote.then_some(yantrik_companion::tools::PermissionLevel::Safe));
                 // A turn can create, run or change a recipe through its tools.
                 recipes_dirty = true;
                 // Work that arrived without a ticket gets one here, and that is not bookkeeping:
@@ -1384,6 +1531,10 @@ fn worker_loop(
                 companion.set_incognito(enabled);
                 tracing::info!(incognito = enabled, "Incognito mode toggled");
             }
+            Ok(CompanionCommand::SetJudge { config }) => {
+                companion.set_judge_config(config);
+                companion.save_config();
+            }
             Ok(CompanionCommand::ScoreConversationTurn { text }) => {
                 companion.score_conversation_turn(&text);
                 cached_bond.store(companion.bond_level().as_u8(), Ordering::Relaxed);
@@ -1394,12 +1545,13 @@ fn worker_loop(
                 let new_llm: std::sync::Arc<dyn yantrik_ml::LLMBackend> = std::sync::Arc::new(
                     yantrik_ml::ApiLLM::new(base_url.clone(), api_key.clone(), &model)
                 );
-                companion.swap_llm(new_llm);
-                // Update config in memory so it persists for next restart
+                // Update config in memory so it persists for next restart. First: swap_llm
+                // rebuilds a chat-model decision model, whose locality is read from it.
                 companion.config.llm.backend = "api".into();
                 companion.config.llm.api_base_url = Some(base_url);
                 companion.config.llm.api_model = Some(model);
                 companion.config.llm.api_key = api_key;
+                companion.swap_llm(new_llm);
                 // Save config to disk
                 companion.save_config();
                 online.store(true, Ordering::Relaxed);
@@ -1493,6 +1645,7 @@ fn worker_loop(
                                     .downcast_ref::<VecModel<crate::MessageData>>()
                                     .unwrap();
                                 model.push(crate::MessageData {
+                                    run: Default::default(),
                                     role: SharedString::from("assistant"),
                                     content: SharedString::from(&text),
                                     is_streaming: false,
@@ -2286,6 +2439,7 @@ fn worker_loop(
                                             .downcast_ref::<VecModel<crate::MessageData>>()
                                             .unwrap();
                                         model.push(crate::MessageData {
+                                            run: Default::default(),
                                             role: SharedString::from("assistant"),
                                             content: SharedString::from(&text),
                                             is_streaming: false,
@@ -3142,6 +3296,7 @@ mod ask_tests {
             cmd_tx,
             online: Arc::new(AtomicBool::new(true)),
             board: crate::jobs::Board::new(),
+            decisions: yantrik_companion::decisions::Decisions::default(),
         }
     }
 

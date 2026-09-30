@@ -38,6 +38,11 @@ const SIZE_DIRS: &[&str] = &[
     "48x48/apps",
     "32x32/apps",
     "24x24/apps",
+    // Flathub apps export these and often nothing smaller: an app's icon is required at
+    // 128px and above there, and a larger image scaled down beats a category glyph.
+    "128x128/apps",
+    "256x256/apps",
+    "512x512/apps",
     "scalable/mimetypes",
     "48x48/mimetypes",
     "scalable/places",
@@ -50,6 +55,22 @@ const SIZE_DIRS: &[&str] = &[
 ];
 
 const ICON_ROOTS: &[&str] = &["/usr/share/icons", "/usr/local/share/icons"];
+
+/// Where Flatpak exports its apps' icons: the person's own installation (under `$HOME`), which
+/// the Package Manager installs into (#399), then the system's. A Flatpak's entry names its icon
+/// by app id, and the icon is only ever here.
+const FLATPAK_USER_ICONS: &str = ".local/share/flatpak/exports/share/icons";
+const FLATPAK_SYSTEM_ICONS: &str = "/var/lib/flatpak/exports/share/icons";
+
+/// Every icon root, in the order they are searched.
+fn icon_roots() -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = ICON_ROOTS.iter().map(PathBuf::from).collect();
+    if let Ok(home) = std::env::var("HOME") {
+        roots.push(Path::new(&home).join(FLATPAK_USER_ICONS));
+    }
+    roots.push(PathBuf::from(FLATPAK_SYSTEM_ICONS));
+    roots
+}
 const PIXMAP_DIRS: &[&str] = &["/usr/share/pixmaps"];
 
 /// Extensions the image decoder can actually read, in preference order.
@@ -88,11 +109,15 @@ fn locate(name: &str) -> Option<PathBuf> {
         .filter(|_| p.extension().is_some_and(|e| EXTS.iter().any(|x| e == *x)))
         .unwrap_or(name);
 
-    for root in ICON_ROOTS {
+    for root in icon_roots() {
         for theme in THEMES {
+            // A theme a root does not have costs one look, not one per size and format.
+            if !root.join(theme).is_dir() {
+                continue;
+            }
             for dir in SIZE_DIRS {
                 for ext in EXTS {
-                    let candidate = Path::new(root)
+                    let candidate = root
                         .join(theme)
                         .join(dir)
                         .join(format!("{stem}.{ext}"));

@@ -24,19 +24,40 @@ impl Drop for InstanceGuard {
     }
 }
 
+/// The session's socket directory, where the pid files sit beside the sockets.
+///
+/// It must not vary per process, or every launch would get its own pid file and the guard would
+/// never see the previous instance. This used to fall back to `/tmp/yantrik-$USER` when there was
+/// no runtime dir, made with a plain `create_dir_all` and never checked: any account could make
+/// that directory first and own every pid file in it. `socket_dir` is the directory the sockets
+/// already trust, and it refuses a candidate that is a link or someone else's.
+#[cfg(unix)]
 fn runtime_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
-        let p = PathBuf::from(dir).join("yantrik");
-        if fs::create_dir_all(&p).is_ok() {
-            return p;
-        }
-    }
-    // No runtime dir: fall back to a per-USER temp dir. It must not vary per process, or every
-    // launch would get its own pid file and the guard would never see the previous instance.
-    let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
+    yantrik_ipc_transport::server::socket_dir()
+}
+
+/// Windows dev builds: the profile's temp dir is per user already.
+#[cfg(not(unix))]
+fn runtime_dir() -> PathBuf {
+    let user = std::env::var("USERNAME").unwrap_or_else(|_| "user".into());
     let p = std::env::temp_dir().join(format!("yantrik-{user}"));
     let _ = fs::create_dir_all(&p);
     p
+}
+
+/// Whether `dir` is a real directory owned by us that no one else can write: what `socket_dir`
+/// makes of every candidate it accepts.
+#[cfg(unix)]
+fn private_to_us(dir: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: geteuid cannot fail and touches no memory.
+    let me = unsafe { libc::geteuid() };
+    fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir() && m.uid() == me && m.mode() & 0o022 == 0)
+}
+
+#[cfg(not(unix))]
+fn private_to_us(_dir: &std::path::Path) -> bool {
+    true
 }
 
 fn pid_alive(pid: u32) -> bool {
@@ -60,7 +81,15 @@ fn pid_alive(pid: u32) -> bool {
 ///
 /// Returns `None` when another live instance holds it — the caller should exit quietly.
 pub fn claim(app_name: &str) -> Option<InstanceGuard> {
-    let path = runtime_dir().join(format!("{app_name}.pid"));
+    let dir = runtime_dir();
+    if !private_to_us(&dir) {
+        // `socket_dir` hands back its last candidate unchecked when it could prepare none, and a
+        // directory that may be someone else's is no place to keep a file whose contents decide
+        // whether we run. Running unguarded risks a second window; trusting it risks worse.
+        tracing::warn!(app = app_name, dir = %dir.display(), "Pid directory is not private to us; running unguarded");
+        return Some(InstanceGuard { path: PathBuf::new() });
+    }
+    let path = dir.join(format!("{app_name}.pid"));
 
     if let Ok(existing) = fs::read_to_string(&path) {
         if let Ok(pid) = existing.trim().parse::<u32>() {
@@ -72,7 +101,12 @@ pub fn claim(app_name: &str) -> Option<InstanceGuard> {
         // Stale: the recorded pid is gone. Fall through and take over.
     }
 
-    match fs::File::create(&path).and_then(|mut f| write!(f, "{}", std::process::id())) {
+    // Unlink, then create only if absent: a plain create follows a link left at the name, and a
+    // `notes.pid` pointing at ~/.ssh/authorized_keys would have been emptied by the next launch.
+    // `create_new` (O_EXCL) never follows one. If another launch wins the gap, we run unguarded.
+    let _ = fs::remove_file(&path);
+    let created = fs::OpenOptions::new().write(true).create_new(true).open(&path);
+    match created.and_then(|mut f| write!(f, "{}", std::process::id())) {
         Ok(()) => Some(InstanceGuard { path }),
         Err(e) => {
             // Not being able to write the pid file is not a reason to refuse to run.

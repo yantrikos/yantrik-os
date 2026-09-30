@@ -1,0 +1,1017 @@
+// The installer — four screens, then the install (#400).
+//
+// Welcome (keyboard) → You (name, username, password) → Disk → Review & install.
+//
+// It used to be the first-run onboarding run in "installer mode": a four-second orb animation,
+// then twelve phases that asked for interests, a notification style, a hardware scan and an AI
+// provider before it would touch a disk. None of that is needed to install an OS, and all of it
+// is still offered — on the installed machine's first boot, where it is optional (see
+// onboarding.slint, `after-install`). What is left here is only what installing needs.
+//
+// Steps, as `step` holds them and as the control surface names them (control_installer.rs):
+//   0 welcome · 1 you · 2 disk · 3 review · 4 installing · 5 installed
+//
+// Every rule a field is held to comes from Rust (installer_rules.rs) through the pure callbacks
+// below, so the message under a field, the Next button that stays disabled, and the refusal an
+// agent gets from `installer_install` are one rule, not three copies of it.
+
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "components/icon.slint";
+import { PillButton, OnboardField } from "components/onboard_kit.slint";
+
+export struct InstallerDisk {
+    name: string,       // kernel name, e.g. "sda" — what the installer is handed
+    size: string,       // lsblk's human size, e.g. "80G"
+    model: string,
+    contents: string,   // what is on it now, in words: "Empty", "3 partitions (ext4, ntfs)"
+    has-data: bool,     // anything at all is on it, so erasing it loses something
+}
+
+export struct KeyboardChoice {
+    code: string,       // XKB layout, e.g. "de"
+    label: string,
+}
+
+// ── Pieces ────────────────────────────────────────────────────────
+
+// One of the four marks across the top: a numbered circle, ticked once passed.
+component StepMark inherits HorizontalLayout {
+    in property <int> number;
+    in property <string> label;
+    in property <int> current;
+    spacing: 6px;
+
+    VerticalLayout {
+        alignment: center;
+        Rectangle {
+            width: 22px;
+            height: 22px;
+            border-radius: 11px;
+            border-width: 1px;
+            border-color: root.current >= root.number ? Theme.cyan : Theme.border-strong;
+            background: root.current > root.number ? Theme.cyan-glow : transparent;
+
+            if root.current > root.number : Icon {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                commands: Icons.check;
+                size: 12px;
+                tint: Theme.cyan;
+            }
+            if root.current <= root.number : Text {
+                text: root.number + 1;
+                color: root.current == root.number ? Theme.cyan : Theme.text-dim;
+                font-size: Theme.fs-micro;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+    Text {
+        text: root.label;
+        color: root.current == root.number ? Theme.text-primary : Theme.text-dim;
+        font-size: Theme.fs-caption;
+        vertical-alignment: center;
+    }
+}
+
+// The label of the chosen layout. Slint has no lookup over a model, so every choice is laid
+// over the others and only the matching one draws its text.
+component LayoutName inherits Rectangle {
+    in property <[KeyboardChoice]> choices;
+    in property <string> code;
+    in property <color> tint: Theme.text-primary;
+    in property <TextHorizontalAlignment> align: left;
+    min-height: 20px;
+    for choice in root.choices : Rectangle {
+        if choice.code == root.code : Text {
+            width: 100%;
+            height: 100%;
+            text: choice.label;
+            color: root.tint;
+            font-size: Theme.fs-body;
+            vertical-alignment: center;
+            horizontal-alignment: root.align;
+            overflow: elide;
+        }
+    }
+}
+
+// One row of the summary card.
+component SummaryRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    spacing: Theme.sp-3;
+    Text {
+        text: root.label;
+        width: 130px;
+        color: Theme.text-dim;
+        font-size: Theme.fs-body;
+        vertical-alignment: center;
+    }
+    Text {
+        text: root.value;
+        horizontal-stretch: 1;
+        color: Theme.text-primary;
+        font-size: Theme.fs-body;
+        font-weight: 500;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+// A small clickable word: Show password, More, Change.
+component LinkText inherits Rectangle {
+    in property <string> text;
+    in property <bool> active: false;
+    in property <bool> strong: false;
+    callback clicked();
+    width: label.preferred-width;
+    height: label.preferred-height;
+    label := Text {
+        text: root.text;
+        color: root.strong || root.active || touch.has-hover ? Theme.cyan : Theme.text-secondary;
+        font-size: Theme.fs-caption;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// One stage of the install, ticked when the progress has passed it.
+component StageRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <int> from;     // the stage has started at this percentage
+    in property <int> until;    // and is done at this one
+    in property <int> progress;
+    property <bool> done: root.progress >= root.until;
+    property <bool> active: !root.done && root.progress >= root.from;
+    spacing: Theme.sp-3;
+
+    VerticalLayout {
+        alignment: center;
+        Icon {
+            commands: root.done ? Icons.check : Icons.clock;
+            size: 14px;
+            tint: root.done ? Theme.color-success : root.active ? Theme.cyan : Theme.text-dim;
+        }
+    }
+    Text {
+        text: root.label;
+        color: root.done || root.active ? Theme.text-primary : Theme.text-dim;
+        font-size: Theme.fs-body;
+        font-weight: root.active ? 600 : 400;
+    }
+}
+
+// ── The screen ────────────────────────────────────────────────────
+
+export component InstallerScreen inherits Rectangle {
+    // See the header for what each number is. `in-out` because the shell publishes the
+    // installer on its control surface and an agent moves it the way a person would.
+    in-out property <int> step: 0;
+
+    // ── Welcome ──
+    in property <[KeyboardChoice]> keyboards;
+    in-out property <string> keyboard: "us";
+    // The person picked a layout: the shell applies it to the live session at once, so the
+    // password they are about to type is typed on the keyboard it will be asked on.
+    callback keyboard-chosen(string);
+    // The layout list under the picker is showing.
+    in-out property <bool> keyboard-open: false;
+    // Leave the installer for the live desktop.
+    callback try-first();
+
+    // ── You ──
+    in-out property <string> full-name;
+    in-out property <string> username;
+    in-out property <string> password;
+    in-out property <string> password-confirm;
+    in-out property <string> hostname;
+    // Set once the person (or an agent) writes a username or hostname of their own. Until
+    // then each is derived from the field above it, as it is typed.
+    in-out property <bool> username-touched: false;
+    in-out property <bool> hostname-touched: false;
+    property <bool> show-password: false;
+    property <bool> more-open: false;
+
+    // ── Disk ──
+    in property <[InstallerDisk]> disks;
+    // False until the disk scan has answered, so "no disks" is not said while still looking.
+    in property <bool> disks-scanned: false;
+    in-out property <string> selected-disk;
+    // LUKS2 on the root with the password as its passphrase (#400 step b). On unless unticked.
+    in-out property <bool> encrypt: true;
+
+    // ── Review ──
+    // Detected from the network when the installer starts, "UTC" when that fails; editable.
+    in-out property <string> timezone;
+    property <bool> timezone-editing: false;
+
+    // ── Install ──
+    in-out property <bool> installing: false;
+    in-out property <int> install-progress: 0;
+    in-out property <string> install-status;
+    in-out property <string> install-error;
+    callback install-to-disk(/* username */ string, /* password */ string,
+                             /* full_name */ string, /* hostname */ string,
+                             /* keyboard */ string, /* timezone */ string,
+                             /* target_disk */ string, /* encrypt */ bool);
+    callback reboot();
+
+    // ── The rules (installer_rules.rs); each check answers "" when the value is fine ──
+    pure callback derive-username(string) -> string;
+    pure callback hostname-for(string) -> string;
+    pure callback check-full-name(string) -> string;
+    pure callback check-username(string) -> string;
+    pure callback check-hostname(string) -> string;
+    pure callback check-password(string, string) -> string;
+    pure callback check-timezone(string) -> string;
+
+    property <string> full-name-error: root.check-full-name(root.full-name);
+    property <string> username-error: root.check-username(root.username);
+    property <string> hostname-error: root.check-hostname(root.hostname);
+    property <string> password-error: root.check-password(root.password, root.password-confirm);
+    property <string> timezone-error: root.check-timezone(root.timezone);
+    // Published (`out`) so the headless UI checks can assert on the same verdicts the buttons use.
+    out property <bool> you-ok: root.full-name-error == "" && root.username-error == ""
+        && root.hostname-error == "" && root.password-error == "";
+    out property <bool> can-install: root.you-ok && root.selected-disk != ""
+        && root.timezone-error == "" && !root.installing;
+
+    // Seconds since Install was pressed, and until the automatic restart.
+    property <int> elapsed-s: 0;
+    property <int> restart-in: 10;
+    property <bool> restart-held: false;
+
+    // A username follows the name until the person writes their own, and the computer's name
+    // follows the username the same way. Written as change handlers rather than bindings so
+    // that typing into either field simply takes over, and so an agent filling `full_name`
+    // gets the same derived username a person would.
+    changed full-name => {
+        if !root.username-touched {
+            root.username = root.derive-username(root.full-name);
+        }
+    }
+    changed username => {
+        if !root.hostname-touched {
+            root.hostname = root.hostname-for(root.username);
+        }
+    }
+
+    background: Theme.bg-deep;
+    clip: true;
+
+    // One clock for the install: the elapsed time, the step to "installed" when the installer
+    // reports 100, and the countdown to the restart. It ticks once a second and only while
+    // there is something to count; the old wizard redrew a particle field sixty times a second
+    // on machines that were, as often as not, rendering in software.
+    Timer {
+        interval: 1s;
+        running: root.step == 4 || (root.step == 5 && !root.restart-held && root.restart-in > 0);
+        triggered => {
+            if root.step == 4 {
+                root.elapsed-s += 1;
+                if root.install-progress >= 100 {
+                    root.restart-in = 10;
+                    root.step = 5;
+                }
+            } else if root.step == 5 {
+                root.restart-in -= 1;
+                if root.restart-in <= 0 {
+                    root.reboot();
+                }
+            }
+        }
+    }
+
+    // A still glow rather than the onboarding's particle field, for the same reason.
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: @radial-gradient(circle, Theme.cyan.transparentize(93%) 0%, Theme.bg-deep.transparentize(100%) 55%);
+    }
+
+    flick := Flickable {
+        width: 100%;
+        height: 100%;
+        viewport-height: max(self.height, body.preferred-height);
+
+        body := VerticalLayout {
+            width: flick.width;
+            height: flick.viewport-height;
+            alignment: center;
+            padding: Theme.sp-6;
+            spacing: Theme.sp-5;
+
+            // ── Where the person is ──
+            if root.step >= 1 && root.step <= 3 : HorizontalLayout {
+                alignment: center;
+                spacing: Theme.sp-5;
+                StepMark { number: 0; label: "Welcome"; current: root.step; }
+                StepMark { number: 1; label: "You"; current: root.step; }
+                StepMark { number: 2; label: "Disk"; current: root.step; }
+                StepMark { number: 3; label: "Install"; current: root.step; }
+            }
+
+            Text {
+                text: root.step == 0 ? "Yantrik OS"
+                    : root.step == 1 ? "About you"
+                    : root.step == 2 ? "Where to install"
+                    : root.step == 3 ? "Ready to install"
+                    : root.step == 4 ? "Installing Yantrik OS"
+                    : "Yantrik OS is installed";
+                color: Theme.cyan;
+                font-size: root.step == 0 ? 32px : 24px;
+                font-weight: 300;
+                letter-spacing: 2px;
+                horizontal-alignment: center;
+            }
+
+            // ── 0 · Welcome ──────────────────────────────────────
+            if root.step == 0 : HorizontalLayout {
+                alignment: center;
+                VerticalLayout {
+                    width: 420px;
+                    spacing: Theme.sp-4;
+
+                    Text {
+                        text: "Installs in about five minutes.";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-body;
+                        horizontal-alignment: center;
+                    }
+
+                    Rectangle { height: Theme.sp-2; }
+
+                    Text {
+                        text: "Keyboard layout";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-caption;
+                        letter-spacing: 0.5px;
+                    }
+
+                    // The picker: the chosen layout, and the list under it when opened. Drawn
+                    // inline rather than as a popup so it stays inside the layout at 800×600
+                    // and a keyboard-less agent reads it from `installer.keyboards` instead.
+                    kb-box := Rectangle {
+                        height: 44px;
+                        border-radius: Theme.r-xl;
+                        background: Theme.bg-input;
+                        border-width: 1px;
+                        border-color: root.keyboard-open || kb-touch.has-hover ? Theme.cyan : Theme.border-default;
+
+                        kb-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.keyboard-open = !root.keyboard-open; }
+                        }
+                        HorizontalLayout {
+                            padding-left: 16px;
+                            padding-right: 14px;
+                            spacing: Theme.sp-3;
+                            VerticalLayout {
+                                alignment: center;
+                                Icon { commands: Icons.keyboard; size: 16px; tint: Theme.text-secondary; }
+                            }
+                            LayoutName {
+                                horizontal-stretch: 1;
+                                choices: root.keyboards;
+                                code: root.keyboard;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Icon { commands: root.keyboard-open ? Icons.chevron-up : Icons.chevron-down; size: 14px; tint: Theme.text-dim; }
+                            }
+                        }
+                    }
+
+                    if root.keyboard-open : Rectangle {
+                        height: min(root.keyboards.length * 38px + 8px, 236px);
+                        border-radius: Theme.r-lg;
+                        background: Theme.bg-card;
+                        border-width: 1px;
+                        border-color: Theme.border-default;
+                        clip: true;
+
+                        Flickable {
+                            viewport-height: kb-list.preferred-height;
+                            kb-list := VerticalLayout {
+                                padding: 4px;
+                                for choice in root.keyboards : Rectangle {
+                                    height: 38px;
+                                    border-radius: Theme.r-md;
+                                    background: choice.code == root.keyboard ? Theme.cyan-glow
+                                        : row-touch.has-hover ? Theme.hover-fill : transparent;
+                                    row-touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.keyboard = choice.code;
+                                            root.keyboard-open = false;
+                                            root.keyboard-chosen(choice.code);
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 12px;
+                                        spacing: Theme.sp-3;
+                                        Text {
+                                            text: choice.label;
+                                            horizontal-stretch: 1;
+                                            color: choice.code == root.keyboard ? Theme.cyan : Theme.text-primary;
+                                            font-size: Theme.fs-body;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+                                        Text {
+                                            text: choice.code;
+                                            color: Theme.text-dim;
+                                            font-size: Theme.fs-caption;
+                                            font-family: Theme.font-mono;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Somewhere to try the layout before a password is typed on it.
+                    OnboardField {
+                        width: 420px;
+                        placeholder: "Type here to try the layout";
+                    }
+
+                    Rectangle { height: Theme.sp-2; }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: Theme.sp-3;
+                        PillButton {
+                            label: "Try it first";
+                            quiet: true;
+                            clicked => { root.try-first(); }
+                        }
+                        PillButton {
+                            label: "Install";
+                            clicked => { root.step = 1; }
+                        }
+                    }
+                }
+            }
+
+            // ── 1 · You ──────────────────────────────────────────
+            if root.step == 1 : HorizontalLayout {
+                alignment: center;
+                VerticalLayout {
+                    width: 420px;
+                    spacing: Theme.sp-3;
+
+                    OnboardField {
+                        width: 420px;
+                        label: "Your name";
+                        value <=> root.full-name;
+                        placeholder: "e.g. Ada Lovelace";
+                        error: root.full-name-error;
+                        // Straight into the first field: the person arrives here from a click
+                        // and the next thing they do is type.
+                        init => { self.focus-field(); }
+                    }
+
+                    OnboardField {
+                        width: 420px;
+                        label: "Username";
+                        value <=> root.username;
+                        placeholder: "e.g. ada";
+                        // Complained about only once there is something to complain about; an
+                        // empty field on arrival is not a mistake yet.
+                        error: root.username != "" ? root.username-error : "";
+                        hint: "What you log in with. Lowercase letters, digits, - and _.";
+                        edited => { root.username-touched = true; }
+                    }
+
+                    OnboardField {
+                        width: 420px;
+                        label: "Password";
+                        value <=> root.password;
+                        placeholder: "Choose a password";
+                        is-password: true;
+                        reveal: root.show-password;
+                    }
+
+                    OnboardField {
+                        width: 420px;
+                        label: "Confirm password";
+                        value <=> root.password-confirm;
+                        placeholder: "Type it again";
+                        is-password: true;
+                        reveal: root.show-password;
+                        // The mismatch is said as it happens, not after Install.
+                        error: root.password-confirm != "" ? root.password-error : "";
+                        accepted => { if root.you-ok { root.step = 2; } }
+                    }
+
+                    HorizontalLayout {
+                        spacing: Theme.sp-5;
+                        // Show the password, and "More" for the computer's name. Both small, both
+                        // off the main path.
+                        HorizontalLayout {
+                            spacing: 6px;
+                            VerticalLayout {
+                                alignment: center;
+                                Icon { commands: Icons.eye; size: 14px; tint: root.show-password ? Theme.cyan : Theme.text-dim; }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                LinkText {
+                                    text: root.show-password ? "Hide password" : "Show password";
+                                    active: root.show-password;
+                                    clicked => { root.show-password = !root.show-password; }
+                                }
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            VerticalLayout {
+                                alignment: center;
+                                LinkText {
+                                    text: "More";
+                                    active: root.more-open;
+                                    clicked => { root.more-open = !root.more-open; }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Icon { commands: root.more-open ? Icons.chevron-up : Icons.chevron-down; size: 12px; tint: Theme.text-dim; }
+                            }
+                        }
+                    }
+
+                    // The hostname is derived; a bad one (only possible by editing it) opens
+                    // this by itself, so a disabled Next is never unexplained.
+                    if root.more-open || root.hostname-error != "" : OnboardField {
+                        width: 420px;
+                        label: "Computer name";
+                        value <=> root.hostname;
+                        placeholder: "e.g. ada-yantrik";
+                        error: root.hostname-error;
+                        hint: "How this computer shows up on your network.";
+                        edited => { root.hostname-touched = true; }
+                    }
+
+                    Rectangle { height: Theme.sp-2; }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: Theme.sp-3;
+                        PillButton {
+                            label: "Back";
+                            quiet: true;
+                            clicked => { root.step = 0; }
+                        }
+                        PillButton {
+                            label: "Next";
+                            enabled: root.you-ok;
+                            clicked => { root.step = 2; }
+                        }
+                    }
+                }
+            }
+
+            // ── 2 · Disk ─────────────────────────────────────────
+            if root.step == 2 : HorizontalLayout {
+                alignment: center;
+                VerticalLayout {
+                    width: 460px;
+                    spacing: Theme.sp-3;
+
+                    if !root.disks-scanned : Text {
+                        text: "Looking for disks…";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-body;
+                        horizontal-alignment: center;
+                    }
+                    if root.disks-scanned && root.disks.length == 0 : Text {
+                        text: "No disk to install to was found. Attach one, then restart the installer.";
+                        color: Theme.amber;
+                        font-size: Theme.fs-body;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+
+                    for disk in root.disks : Rectangle {
+                        property <bool> chosen: root.selected-disk == disk.name;
+                        height: 68px;
+                        border-radius: Theme.r-lg;
+                        background: self.chosen ? Theme.cyan-glow : disk-touch.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                        border-width: self.chosen ? 2px : 1px;
+                        border-color: self.chosen ? Theme.cyan : Theme.border-default;
+                        animate background, border-color { duration: Theme.dur-normal; }
+
+                        disk-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.selected-disk = disk.name; }
+                        }
+
+                        HorizontalLayout {
+                            padding: 12px;
+                            spacing: 12px;
+
+                            VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 18px; height: 18px; border-radius: 9px;
+                                    border-width: 2px;
+                                    border-color: root.selected-disk == disk.name ? Theme.cyan : Theme.border-strong;
+                                    Rectangle {
+                                        x: 4px; y: 4px; width: 10px; height: 10px;
+                                        border-radius: 5px;
+                                        background: root.selected-disk == disk.name ? Theme.cyan : transparent;
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Icon { commands: Icons.disk; size: 20px; tint: Theme.text-secondary; }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 2px;
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: disk.model + " · " + disk.size;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-body;
+                                    font-weight: 500;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    text: "/dev/" + disk.name + " · " + disk.contents;
+                                    color: disk.has-data ? Theme.amber : Theme.text-dim;
+                                    font-size: Theme.fs-caption;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                    }
+
+                    // What Install will do to it, said before anyone is asked to agree to it.
+                    Rectangle {
+                        height: warn-row.preferred-height;
+                        border-radius: Theme.r-md;
+                        background: Theme.amber.transparentize(92%);
+                        border-width: 1px;
+                        border-color: Theme.amber.transparentize(70%);
+                        warn-row := HorizontalLayout {
+                            padding: Theme.sp-3;
+                            spacing: Theme.sp-3;
+                            VerticalLayout {
+                                alignment: center;
+                                Icon { commands: Icons.warning; size: 16px; tint: Theme.amber; }
+                            }
+                            Text {
+                                horizontal-stretch: 1;
+                                text: "Everything on the disk you choose will be erased.";
+                                color: Theme.amber;
+                                font-size: Theme.fs-body;
+                                wrap: word-wrap;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // On by default (#400 step b): the root is LUKS2 with the password as its
+                    // passphrase, asked for at every start. Off, a stolen disk is readable.
+                    encrypt-row := Rectangle {
+                        height: encrypt-layout.preferred-height;
+                        encrypt-layout := HorizontalLayout {
+                            spacing: Theme.sp-3;
+                            VerticalLayout {
+                                alignment: start;
+                                padding-top: 2px;
+                                Rectangle {
+                                    width: 16px; height: 16px;
+                                    border-radius: 4px;
+                                    border-width: 1.5px;
+                                    border-color: root.encrypt ? Theme.cyan : Theme.border-strong;
+                                    background: root.encrypt ? Theme.cyan.transparentize(80%) : transparent;
+                                    if root.encrypt : Icon {
+                                        commands: Icons.check;
+                                        size: 12px;
+                                        tint: Theme.cyan;
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: start;
+                                padding-top: 2px;
+                                Icon {
+                                    commands: Icons.lock;
+                                    size: 14px;
+                                    tint: root.encrypt ? Theme.cyan : Theme.text-dim;
+                                }
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 2px;
+                                Text {
+                                    text: "Encrypt with my password";
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-body;
+                                    font-weight: 500;
+                                }
+                                Text {
+                                    text: root.encrypt
+                                        ? "Asked for each time the computer starts. Without it, nobody can read the disk."
+                                        : "Anyone who takes the disk out can read everything on it.";
+                                    color: root.encrypt ? Theme.text-dim : Theme.amber;
+                                    font-size: Theme.fs-caption;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.encrypt = !root.encrypt; }
+                        }
+                    }
+
+                    Rectangle { height: Theme.sp-2; }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: Theme.sp-3;
+                        PillButton {
+                            label: "Back";
+                            quiet: true;
+                            clicked => { root.step = 1; }
+                        }
+                        PillButton {
+                            label: "Next";
+                            enabled: root.selected-disk != "";
+                            clicked => { root.step = 3; }
+                        }
+                    }
+                }
+            }
+
+            // ── 3 · Review & install ─────────────────────────────
+            if root.step == 3 : HorizontalLayout {
+                alignment: center;
+                VerticalLayout {
+                    width: 460px;
+                    spacing: Theme.sp-3;
+
+                    Rectangle {
+                        height: summary.preferred-height;
+                        border-radius: Theme.r-lg;
+                        background: Theme.hover-fill;
+                        border-width: 1px;
+                        border-color: Theme.border-default;
+
+                        summary := VerticalLayout {
+                            padding: Theme.sp-4;
+                            spacing: Theme.sp-3;
+
+                            SummaryRow { label: "Name"; value: root.full-name != "" ? root.full-name : "—"; }
+                            SummaryRow { label: "Username"; value: root.username; }
+                            SummaryRow { label: "Computer name"; value: root.hostname; }
+                            SummaryRow {
+                                label: "Encryption";
+                                value: root.encrypt ? "On — your password unlocks the disk at start" : "Off";
+                            }
+                            HorizontalLayout {
+                                spacing: Theme.sp-3;
+                                Text {
+                                    text: "Keyboard";
+                                    width: 130px;
+                                    color: Theme.text-dim;
+                                    font-size: Theme.fs-body;
+                                    vertical-alignment: center;
+                                }
+                                LayoutName {
+                                    horizontal-stretch: 1;
+                                    choices: root.keyboards;
+                                    code: root.keyboard;
+                                    align: right;
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: Theme.sp-3;
+                                Text {
+                                    text: "Timezone";
+                                    width: 130px;
+                                    color: Theme.text-dim;
+                                    font-size: Theme.fs-body;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: root.timezone != "" ? root.timezone : "Detecting…";
+                                    horizontal-stretch: 1;
+                                    color: root.timezone-error != "" && root.timezone != "" ? Theme.amber : Theme.text-primary;
+                                    font-size: Theme.fs-body;
+                                    font-weight: 500;
+                                    horizontal-alignment: right;
+                                    vertical-alignment: center;
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    LinkText {
+                                        text: root.timezone-editing ? "Done" : "Change";
+                                        strong: true;
+                                        clicked => { root.timezone-editing = !root.timezone-editing; }
+                                    }
+                                }
+                            }
+                            if root.timezone-editing || (root.timezone != "" && root.timezone-error != "") : OnboardField {
+                                width: 428px;
+                                value <=> root.timezone;
+                                placeholder: "Region/City, e.g. Europe/Berlin";
+                                error: root.timezone-error;
+                                accepted => { if root.timezone-error == "" { root.timezone-editing = false; } }
+                            }
+
+                            Rectangle { height: 1px; background: Theme.separator; }
+
+                            // Every disk is laid over the others and only the chosen one draws.
+                            Rectangle {
+                                min-height: 22px;
+                                for disk in root.disks : Rectangle {
+                                    if disk.name == root.selected-disk : HorizontalLayout {
+                                width: 100%;
+                                height: 100%;
+                                spacing: Theme.sp-3;
+                                Text {
+                                    text: "Erases";
+                                    width: 130px;
+                                    color: Theme.amber;
+                                    font-size: Theme.fs-body;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: disk.model + " · " + disk.size + " (/dev/" + disk.name + ")";
+                                    horizontal-stretch: 1;
+                                    color: Theme.amber;
+                                    font-size: Theme.fs-body;
+                                    font-weight: 600;
+                                    horizontal-alignment: right;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if root.install-error != "" : Text {
+                        text: root.install-error;
+                        color: Theme.amber;
+                        font-size: Theme.fs-caption;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+
+                    Rectangle { height: Theme.sp-2; }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: Theme.sp-3;
+                        PillButton {
+                            label: "Back";
+                            quiet: true;
+                            clicked => { root.step = 2; }
+                        }
+                        PillButton {
+                            label: "Erase disk and install";
+                            width: 220px;
+                            enabled: root.can-install;
+                            clicked => {
+                                root.install-error = "";
+                                root.installing = true;
+                                root.elapsed-s = 0;
+                                root.install-to-disk(
+                                    root.username, root.password,
+                                    root.full-name, root.hostname,
+                                    root.keyboard, root.timezone,
+                                    root.selected-disk, root.encrypt);
+                                root.step = 4;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── 4 · Installing ───────────────────────────────────
+            if root.step == 4 : HorizontalLayout {
+                alignment: center;
+                VerticalLayout {
+                    width: 400px;
+                    spacing: Theme.sp-4;
+
+                    Rectangle {
+                        height: 6px;
+                        border-radius: 3px;
+                        background: Theme.hover-fill-strong;
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * clamp(root.install-progress, 0, 100) / 100;
+                            height: parent.height;
+                            border-radius: 3px;
+                            background: Theme.cyan;
+                            animate width { duration: 300ms; }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        Text {
+                            text: root.install-progress + "%";
+                            color: Theme.cyan;
+                            font-size: Theme.fs-headline;
+                            font-weight: 600;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        Text {
+                            text: Math.floor(root.elapsed-s / 60) + ":" + (Math.mod(root.elapsed-s, 60) < 10 ? "0" : "") + Math.mod(root.elapsed-s, 60) + " elapsed · usually about 5 minutes";
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-caption;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    Text {
+                        text: root.install-status;
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-body;
+                        overflow: elide;
+                    }
+
+                    // The bands wire/installer.rs reports in: the disk is ready at 18, the
+                    // copy ends at 55, the account, keyboard and clock are set by 73, the
+                    // bootloader by 90, and 100 is done.
+                    VerticalLayout {
+                        spacing: Theme.sp-2;
+                        StageRow { label: "Preparing the disk"; from: 1; until: 18; progress: root.install-progress; }
+                        StageRow { label: "Copying the system"; from: 18; until: 55; progress: root.install-progress; }
+                        StageRow { label: "Setting up your account"; from: 55; until: 73; progress: root.install-progress; }
+                        StageRow { label: "Installing the bootloader"; from: 73; until: 90; progress: root.install-progress; }
+                        StageRow { label: "Finishing"; from: 90; until: 100; progress: root.install-progress; }
+                    }
+
+                    Text {
+                        text: "You can leave this running. The computer restarts by itself when it is done.";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-caption;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+
+            // ── 5 · Installed ────────────────────────────────────
+            if root.step == 5 : HorizontalLayout {
+                alignment: center;
+                VerticalLayout {
+                    width: 400px;
+                    spacing: Theme.sp-4;
+
+                    HorizontalLayout {
+                        alignment: center;
+                        Icon { commands: Icons.check; size: 28px; tint: Theme.color-success; }
+                    }
+
+                    Text {
+                        text: "Remove the installation media.";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-body;
+                        horizontal-alignment: center;
+                    }
+                    Text {
+                        text: root.restart-held ? "Restart when you are ready."
+                            : "Restarting in " + root.restart-in + " s…";
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-body;
+                        font-weight: 500;
+                        horizontal-alignment: center;
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: Theme.sp-3;
+                        if !root.restart-held : PillButton {
+                            label: "Wait";
+                            quiet: true;
+                            clicked => { root.restart-held = true; }
+                        }
+                        PillButton {
+                            label: "Restart now";
+                            clicked => { root.reboot(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

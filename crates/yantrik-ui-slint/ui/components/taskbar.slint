@@ -199,7 +199,10 @@ export component Taskbar inherits Rectangle {
                                 y: (parent.height - self.height) / 2;
                             }
                             Text {
-                                text: w.title;
+                                // Mind View's title is whatever its compositor wrote
+                                // ("labwc - WL-1"), kept because it is what the window is
+                                // found by; the strip shows what it is instead.
+                                text: w.app-id == "mind-view" ? w.subtitle : w.title;
                                 color: win.is-active ? Theme.text-primary : Theme.text-secondary;
                                 font-size: Theme.fs-caption;
                                 font-weight: win.is-active ? 500 : 400;

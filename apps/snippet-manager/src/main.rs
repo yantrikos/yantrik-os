@@ -1175,7 +1175,7 @@ fn publish_control(app: &SnippetManagerApp, state: State) {
             // Sensitive, not standard: this destroys something the person wrote and there is no
             // trash to take it out of. Container Manager grades `remove` the same way for the
             // same reason — the recoverable and the unrecoverable are not one grade.
-            Action::new("delete", "Throw a snippet away")
+            Action::new("delete", "Throw a snippet away. There is no trash to take it out of: it cannot be undone.")
                 .arg(Param::text("id").describe("Its id, or its title"))
                 .risk("sensitive"),
             move |args| {

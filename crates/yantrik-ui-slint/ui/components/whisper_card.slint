@@ -32,12 +32,9 @@ component WhisperCard inherits Rectangle {
     x: card.shown ? 0px : self.width + 20px;
     opacity: card.shown ? card.target-opacity : 0;
     border-radius: 16px;
-    // Glassmorphic background
-    background: @linear-gradient(135deg,
-        Theme.bg-deep.transparentize(12%) 0%,
-        Theme.bg-deep.transparentize(19%) 50%,
-        Theme.bg-deep.transparentize(25%) 100%
-    );
+    // Glassmorphic background. Slint's software renderer (GPU-less machines, VM 520) paints a gradient
+    // fill as a square inside the rounded border (#172), so a rounded panel's fill is solid.
+    background: Theme.bg-deep.transparentize(19%);
     border-width: 1px;
     border-color: hovered ? Theme.border-strong : Theme.border-default;
     clip: true;

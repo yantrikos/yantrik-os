@@ -161,6 +161,30 @@ pub(crate) fn screen_name(id: i32) -> &'static str {
     }
 }
 
+/// The taskbar entry for the screen the shell is on, as `(name, title)`, when that screen is one a
+/// person reads as a window of its own — Files, Settings, Agents — and `None` on the desktop and
+/// on the screens nobody switches away from (boot, lock, onboarding, login).
+///
+/// Those screens are drawn by the shell with a title bar and window buttons, and look exactly like
+/// the app windows beside them in the taskbar; but they are not toplevels, so the taskbar, which
+/// lists toplevels, never showed them. With Weather in front of Files there was no way back to
+/// Files but the launcher, and a person reasonably read that as Files having closed.
+pub(crate) fn screen_entry(id: i32) -> Option<(&'static str, String)> {
+    let name = SCREENS.iter().find(|(_, s)| *s == id).map(|(n, _)| *n)?;
+    if name == "desktop" {
+        return None;
+    }
+    let mut title = name.to_string();
+    if let Some(first) = title.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    Some((name, title))
+}
+
+/// The app id a screen's taskbar entry carries: no program has it, so the entry can never be
+/// taken for a window of one.
+pub(crate) const SCREEN_ENTRY_PREFIX: &str = "shell:";
+
 /// Which of the two things `open_app` can do a name does, when it is one of the desktop's own.
 ///
 /// `Some` for a name that is part of the shell rather than a program: the screen it lands on and,
@@ -235,13 +259,19 @@ pub(crate) const LOCKED_REFUSAL: &str = "LOCKED: the desktop is waiting for the 
 /// anything not named here is refused, which means an action added tomorrow is refused by
 /// default and its author has to come here — past a reader — to change that.
 ///
-/// The list is empty on purpose. Neither locked screen needs anything from this surface: both
-/// are driven by Slint callbacks (`wire/login.rs` and `on_try_unlock` in `wire/callbacks.rs`),
-/// and `describe` is not an action. `lock` is refused too — at the login screen it would trade
-/// the password gate for the weaker PIN one.
+/// It names one action. Neither locked screen needs anything from this surface: both are driven
+/// by Slint callbacks (`wire/login.rs` and `on_try_unlock` in `wire/callbacks.rs`), and
+/// `describe` is not an action. `lock` is refused too — at the login screen it would trade the
+/// password gate for the weaker PIN one.
+///
+/// `memory_validate` is the exception, and not a way past the lock: it moves nothing on the
+/// desktop and is answered to the person's memory server alone (#447). The lock guards the seat,
+/// not the person's memory; refusing it would take every mind's memory away whenever the screen
+/// locked, a scheduled job's included, and give the person at the seat nothing.
+pub(crate) const ALLOWED_WHILE_LOCKED: &[&str] = &["memory_validate"];
+
 pub(crate) fn allowed_while_locked(action: &str) -> bool {
-    const ALLOWED: &[&str] = &[];
-    ALLOWED.contains(&action)
+    ALLOWED_WHILE_LOCKED.contains(&action)
 }
 
 /// What the dispatch's state rule answers for `action` while `screen` is showing: the refusal
@@ -315,6 +345,34 @@ fn clip(text: &str, max: usize) -> String {
 }
 
 /// The tool calls in one message, each with its arguments, as the trail carried them.
+/// Refuse a caller the desktop takes for an agent: what it asked for is the person's own.
+pub(crate) fn persons_only(action: &str) -> Result<(), String> {
+    if yantrik_app_runtime::control::agent_is_calling() {
+        return Err(format!(
+            "{action} is the person's, and an agent is calling. An agent reads its own session with read_agent."
+        ));
+    }
+    Ok(())
+}
+
+/// `value` with `fields` taken out of every object in it, at any depth: what is the person's in a
+/// part of `describe` an agent may otherwise read (the questions other agents put to them, the
+/// arguments of what ran unasked, the command lines of every agent's jobs).
+fn without_fields(value: serde_json::Value, fields: &[&str]) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.into_iter()
+                .filter(|(k, _)| !fields.contains(&k.as_str()))
+                .map(|(k, v)| (k, without_fields(v, fields)))
+                .collect(),
+        ),
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.into_iter().map(|v| without_fields(v, fields)).collect())
+        }
+        other => other,
+    }
+}
+
 fn calls_of(text: &str) -> Vec<serde_json::Value> {
     crate::trail::calls_in(text)
         .into_iter()
@@ -382,7 +440,16 @@ pub fn publish(
     // The Allow and Deny buttons, before anything can be asked for. They are Slint callbacks
     // and nothing else: granting is a click, never an action on this surface. See
     // `control_approvals`.
-    crate::control_approvals::wire(ui);
+    crate::control_approvals::wire(ui, ctx.bridge.clone());
+
+    // Private mode, as `main` read it back before anything started: the chip says so from the
+    // first frame, and the desktop is made what it says — agents frozen, turns paused, nothing
+    // recorded. Agents are refused by the file itself (`yantrik_ipc_transport::privacy`) from
+    // boot. And the file is kept the shell's word from here on.
+    let private = crate::private_mode::is_on();
+    ui.set_private_mode(private);
+    crate::private_mode::enforce(private, &ctx.bridge);
+    crate::private_mode::watch();
 
     // The catalogue, not a copy of it. The control surface answers from the same live list
     // the launcher shows, so an app installed a moment ago is launchable by name without
@@ -545,6 +612,14 @@ pub fn publish(
             } else {
                 serde_json::Value::Null
             };
+            // A mind is not shown a folder it could not have opened: the person may have left
+            // Files in /etc or ~/.ssh, and the listing, the recent row and even the folder's
+            // name are what the file tools would never give it (#443). The places, the view and
+            // whether something is loading say nothing about the folder, and stay.
+            let files = match (screen == 8).then(|| crate::control_files_mind::hidden_here(&ui.get_file_browser_path())).flatten() {
+                Some(hidden) => crate::control_files_mind::hide_folder(files, hidden),
+                None => files,
+            };
 
             // The wizard, when the wizard is up. This is the screen an agent is most likely to
             // meet first and, until it published anything, the only one it could not read.
@@ -570,7 +645,7 @@ pub fn publish(
                 // On the file screen the directory IS the answer to "where am I".
                 format!(
                     "Yantrik — files at {}, {} items, {} windows open",
-                    ui.get_file_browser_path(),
+                    files["path"].as_str().unwrap_or("a folder hidden from a mind"),
                     files["total"].as_u64().unwrap_or(0),
                     open.len()
                 )
@@ -601,9 +676,17 @@ pub fn publish(
                 })
                 .collect();
 
+            // Whether the one reading this is an agent the desktop can tell apart from the person:
+            // the mind account, by the kernel's word (`describe` carries no token). The person's
+            // chat and what they asked each agent are theirs, not every mind's — a mind reading
+            // `describe` used to be handed the last six messages of the person's chat with another
+            // mind, and every agent's first prompt, commands and files (yantrik-mind-72's review).
+            // An agent reads its own session with `read_agent`.
+            let agent_reading = yantrik_app_runtime::control::agent_is_calling();
+
             // What was said. Roles and text, newest last, so a caller that asked a question can
-            // read the answer instead of photographing it.
-            let conversation: Vec<serde_json::Value> = {
+            // read the answer instead of photographing it. The person's, so not an agent's.
+            let conversation: Vec<serde_json::Value> = if agent_reading { Vec::new() } else {
                 use slint::Model;
                 let messages = ui.get_messages();
                 let total = messages.row_count();
@@ -642,6 +725,9 @@ pub fn publish(
             View::new(summary)
                 .with("screen", screen_name(screen))
                 .with("conversation", serde_json::Value::Array(conversation))
+                // True when the conversation above was withheld: the chat is the person's, and an
+                // agent reads its own session with `read_agent`.
+                .with("conversation_private", agent_reading)
                 .with("screen_id", screen)
                 // Which build is answering. The report this came from asked a machine three
                 // times what it was and got three answers, one of them months old; an agent
@@ -649,6 +735,12 @@ pub fn publish(
                 // it reads everything else off, rather than knowing which file to trust.
                 .with("version", yantrik_version::version())
                 .with("windows", serde_json::Value::Array(open))
+                // Which of them the person is looking at. The list's order is not that answer —
+                // the registry's launches come first. `desktop_in_front` is true for the desktop
+                // itself (or one of its screens), false for an app window, null when the
+                // compositor could not say; `in_front` is that app window's title from `windows`.
+                .with("desktop_in_front", crate::windows::shell_in_front())
+                .with("in_front", crate::windows::in_front())
                 .with("failed_launches", serde_json::Value::Array(failed))
                 // Where the apps a mind opens are drawn (#239): whether minds open them in Mind
                 // View, whether it is up and on which display, what is in it, and why not if it
@@ -658,12 +750,20 @@ pub fn publish(
                 // test, can tell "the machine is waiting for someone to press a button" from
                 // "the machine is hung" — the two look identical from outside otherwise.
                 .with("pending_approvals", crate::control_approvals::pending_for_describe())
+                // And what an agent has asked the person (#25), waiting for an answer on its card.
+                .with("pending_questions", {
+                    let q = crate::wire::agents::questions_for_describe();
+                    if agent_reading { without_fields(q, &["prompt", "options"]) } else { q }
+                })
                 // What went wrong on this machine, newest first: the local records a person
                 // or a mind can choose to send with `report_problem`. Reading them sends nothing.
                 .with("problems", crate::wire::problem_report::for_describe())
                 // Every agent, one conversation with one mind: its state, what it has run and
                 // what it is waiting on, with the counts the Agents screen's tabs show.
-                .with("agents", crate::agents::for_describe())
+                .with(
+                    "agents",
+                    if agent_reading { crate::agents::for_describe_by_an_agent() } else { crate::agents::for_describe() },
+                )
                 // The agent catalog: the roles `hand_off` can start, what each may touch, and
                 // whether a mind it runs on is attached now. See `agents::catalog`.
                 .with("catalog", crate::agents::catalog::for_describe())
@@ -683,7 +783,10 @@ pub fn publish(
                 // And what it has already done unasked. A mode that stops the asking has to
                 // replace the cards with something, or `auto` is only a quieter way of not
                 // knowing. See `mind_mode`'s audit section.
-                .with("mind_audit_recent", crate::control_approvals::mind_audit_for_describe())
+                .with("mind_audit_recent", {
+                    let audit = crate::control_approvals::mind_audit_for_describe();
+                    if agent_reading { without_fields(audit, &["args", "verified"]) } else { audit }
+                })
                 // The mind panel at the right edge: where it is, whether it is open, the choice
                 // each place keeps, and how much it is showing. `set_mind_panel` changes it.
                 .with("mind_panel", crate::mind_panel::for_describe(&ui))
@@ -739,7 +842,10 @@ pub fn publish(
                 .with("harnesses", crate::wire::harness::catalogue_for_describe())
                 // Agents' commands running now, per agent: the job, its command, how long, and
                 // whether it seems to be waiting for input. See `control_agent_terminal`.
-                .with("agent_jobs", crate::control_agent_terminal::for_describe())
+                .with("agent_jobs", {
+                    let jobs = crate::control_agent_terminal::for_describe();
+                    if agent_reading { without_fields(jobs, &["command"]) } else { jobs }
+                })
                 .with("files", files)
                 .with("installer", installer)
                 .with("services", serde_json::Value::Array(services))
@@ -811,7 +917,8 @@ pub fn publish(
                     "lens",
                     serde_json::json!({
                         "open": ui.get_lens_open(),
-                        "text": ui.get_lens_input_text().to_string(),
+                        // What the person is typing, before they have sent it: theirs alone.
+                        "text": if agent_reading { String::new() } else { ui.get_lens_input_text().to_string() },
                         "chat": ui.get_lens_chat_mode(),
                     }),
                 )
@@ -831,8 +938,11 @@ pub fn publish(
                         screen,
                     ),
                 )
-                .with("incognito", ui.get_settings_incognito_mode())
-                .with("settings", serde_json::json!({"category":ui.get_settings_category(),"query":ui.get_settings_query().to_string(),"dark":ui.get_settings_dark_mode(),"accent":ui.get_settings_accent_color().to_string(),"wallpaper":ui.get_wallpaper_path().to_string(),"save_error":ui.get_settings_save_error(),"save_status":ui.get_settings_save_status().to_string(),"auto_lock_secs":ui.get_settings_auto_lock_secs()}))
+                .with("incognito", ui.get_settings_incognito_mode() || crate::private_mode::is_on())
+                // Private mode: only the person ever reads this as true. While it is on, an agent
+                // is refused before describe runs (`yantrik_ipc_transport::privacy`).
+                .with("private", crate::private_mode::is_on())
+                .with("settings", serde_json::json!({"category":ui.get_settings_category(),"query":ui.get_settings_query().to_string(),"dark":ui.get_settings_dark_mode(),"accent":ui.get_settings_accent_color().to_string(),"wallpaper":ui.get_wallpaper_path().to_string(),"save_error":ui.get_settings_save_error(),"save_status":ui.get_settings_save_status().to_string(),"auto_lock_secs":ui.get_settings_auto_lock_secs(),"auto_lock_available":ui.get_settings_auto_lock_available()}))
         }
     };
 
@@ -861,7 +971,7 @@ pub fn publish(
         // picture over a signed-in session, and `yos act shell open_lens` walked the desktop
         // straight past it. The rule reads the screen the shell is showing — the state IS the
         // screen, so there is nothing to fall out of sync — and refuses every action the
-        // allow-list in `allowed_while_locked` does not name, which today names none. An
+        // allow-list in `allowed_while_locked` does not name (today only `memory_validate`). An
         // action added to this surface tomorrow is held to it without its author doing
         // anything; getting out from under it means editing the allow-list, past a reader.
         .state_rule(move |action| {
@@ -879,7 +989,8 @@ pub fn publish(
                  down, listed under `problems` in describe - to the project's report intake, with a \
                  note. Graded sensitive because the record leaves the machine. It carries no name, \
                  hostname or address; the bytes sent are exactly the record as the file holds it, \
-                 which is what the Report a problem screen shows. The answer says where it landed.",
+                 which is what the Report a problem screen shows. The answer says where it landed. \
+                 Once sent it cannot be undone.",
             )
             .risk("sensitive")
             .defers()
@@ -1069,12 +1180,20 @@ pub fn publish(
             // fail in silence in four different ways before a single byte reaches a harness.
             //
             // Deferred, because the answer streams: this returns when the question has been
-            // asked, not when it has been answered. The answer arrives in `describe` under
-            // `conversation`, where a caller can watch `streaming` go false.
-            Action::new("send_message", "Ask the desktop something, as if typed into the Lens")
+            // asked, not when it has been answered. The answer arrives in the person's `describe`
+            // under `conversation`, where they can watch `streaming` go false.
+            //
+            // The person's, and no agent's (#476): the chat is theirs, and a mind that could put
+            // words in it could have the answering mind repeat it back. An agent talks to another
+            // agent with `new_agent` / `send_to_agent`. Said plainly, because a harness that
+            // reaches this with a token has to know why, not see a question go unanswered.
+            Action::new("send_message", "Ask the desktop something, as if typed into the Lens (the person's; an agent talks to another agent with new_agent or send_to_agent)")
                 .arg(Param::text("text").describe("What to say"))
                 .defers(),
             move |args| {
+                if yantrik_app_runtime::control::agent_is_calling() {
+                    return Err("send_message puts words in the person's chat, and an agent is calling: refused, nothing was sent. An agent talks to another agent with new_agent or send_to_agent.".into());
+                }
                 let ui = ask_ui()?;
                 let text = args["text"].as_str().unwrap_or_default().trim().to_string();
                 if text.is_empty() {
@@ -1109,6 +1228,9 @@ pub fn publish(
             .risk("safe")
             .arg(Param::number("index").describe("The message's `index` from describe's `conversation`")),
             move |args| {
+                // The whole of any message, tool calls included: the person's chat, not a mind's
+                // to page through (the security review of #475).
+                persons_only("read_message")?;
                 let ui = read_ui()?;
                 let index = args["index"]
                     .as_u64()
@@ -1215,6 +1337,56 @@ pub fn publish(
             // choice is written to the shell's settings as the preferred mind: it decides who
             // answers from now on, stands after a restart, and belongs in front of the person
             // before it happens rather than after.
+            Action::new(
+                "reach_of",
+                "What an agent token may reach, asked by the token's SHA-256: the reach its role holds \
+                 it to, or null for a token with no role. What every door outside the shell asks \
+                 before it runs an act that carries an agent token (#189).",
+            )
+            .risk("safe")
+            .arg(Param::text("token_sha256").describe("The SHA-256 of the agent token, as lowercase hex")),
+            move |args| {
+                let digest = args["token_sha256"].as_str().unwrap_or_default();
+                if digest.len() != 64 || !digest.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Err("`token_sha256` is the token's SHA-256, 64 hex characters".into());
+                }
+                let known = crate::wire::harness::host().is_some_and(|h| {
+                    h.knows_token_digest(&digest.to_ascii_lowercase(), yantrik_ipc_transport::reach::token_digest)
+                });
+                Ok(serde_json::json!({ "reach": crate::agents::reaches::lookup_digest(digest), "known": known }))
+            },
+        )
+        .action(
+            // The memory server's question (#447): a mind has shown it a credential, and before
+            // anything is recalled or kept the server asks the desktop, the identity authority,
+            // whose it is and what it may do. Answered to the person's mind account alone (the
+            // account that serves the memory): asked by anyone else it would be a way to test
+            // whether a stolen credential is still good.
+            Action::new(
+                "memory_validate",
+                "Asked by the person's memory server: which mind a memory credential belongs to and \
+                 what it may do, or null for one the desktop does not know",
+            )
+            .risk("safe")
+            // The answer is about a credential, not about the desktop, and it is asked before
+            // every memory call: the shell's whole state beside it was 35 KB the server discards.
+            .stateless()
+            .arg(Param::text("memory_sha256").describe(
+                "The SHA-256 of what the mind presented, as lowercase hex: never the thing itself",
+            )),
+            // Asked with no agent token: the server is not an agent acting on the desktop, and
+            // the surface's standing rule names this action as the one that needs none. The
+            // check on the asker's account inside is what holds it instead.
+            move |args| {
+                crate::memory_grants::validate(
+                    args,
+                    crate::wire::harness::host(),
+                    yantrik_ipc_transport::mind_door::is_mind,
+                    crate::memory_grants::load,
+                )
+            },
+        )
+        .action(
             Action::new("use_harness", "Choose which mind answers when the shell is asked something")
                 .risk("sensitive")
                 .arg(Param::text("id").describe("Harness id, as `describe shell` lists under `minds`")),
@@ -1489,7 +1661,22 @@ pub fn publish(
             move |args| {
                 let want = args["title"].as_str().unwrap_or_default();
                 let open = crate::windows::addressable_titles();
-                let title = crate::windows::window_to_close(want, &open)?;
+                let title = match crate::windows::window_to_close(want, &open) {
+                    Ok(title) => title,
+                    // Not on the person's desktop, but an app a mind opened is drawn in Mind View:
+                    // close it there, as its × would.
+                    Err(why) => match crate::mind_view::app_named(want) {
+                        Some(app) => {
+                            let name = crate::mind_view::close_app(&app)?;
+                            return Ok(serde_json::json!({
+                                "closing": name,
+                                "where": "Mind View",
+                                "note": "the app was drawn in Mind View, where the apps a mind opens go,                                          and was asked to close there as pressing × does; one with                                          unsaved work may put up its own dialog and stay. Read                                          `mind_view` in `describe shell` to see whether it went.",
+                            }));
+                        }
+                        None => return Err(why),
+                    },
+                };
                 crate::windows::close(&title)?;
                 Ok(serde_json::json!({
                     "closing": title,
@@ -1654,6 +1841,8 @@ pub fn publish(
     let surface = crate::control_installer::actions(surface, ui);
     let surface = crate::control_update::actions(surface, ui);
     let surface = crate::control_files::actions(surface, ui);
+    // Reading a display's text from its pixels, for windows that publish nothing else (#257).
+    let surface = crate::control_screen::actions(surface);
     // Asking the person. Three actions, all `safe`, none of which decides anything — the
     // decision is a button in the Lens. See `control_approvals` for why that split is the
     // whole point.
@@ -1665,11 +1854,56 @@ pub fn publish(
     // A recipe's question answered, and a recipe paused, resumed or cancelled — answer_recipe,
     // pause_recipe, resume_recipe, cancel_recipe. See `control_recipes`.
     let surface = crate::control_recipes::actions(surface, ctx.bridge.handle());
+    // The decision model in use: the browser service's commitment check, and agents' own quick
+    // questions of a model in the house. See `control_decide`.
+    let surface = crate::control_decide::actions(surface, ctx.bridge.handle(), services.clone());
     // ── Agents glue: new_agent / send_to_agent / stop_agent / read_agent / show_agent / hand_off —
     // how a mind hands work to another agent, or to a role from the catalog. The caller's agent
     // comes from its token. See `control_agents` and design/agents-workspace-2026-09-23.md,
     // decision 1, and design/desk-and-mind-2026-09-23.md, section 5.
+    // The chat in one read, for a client that is not the Lens: the Yantrik terminal. See
+    // `control_chat`.
+    let surface = crate::control_chat::actions(surface, ui);
     crate::control_agents::actions(surface, ui).serve();
+}
+
+#[cfg(test)]
+mod screen_entry_tests {
+    use super::{screen_entry, SCREENS};
+
+    /// Every screen a person reads as a window gets a taskbar entry named as its title bar names
+    /// it; the desktop, and the screens nobody switches away from, get none.
+    #[test]
+    fn a_screen_that_looks_like_a_window_is_on_the_taskbar() {
+        assert_eq!(screen_entry(8), Some(("files", "Files".to_string())));
+        assert_eq!(screen_entry(7), Some(("settings", "Settings".to_string())));
+        assert_eq!(screen_entry(34), Some(("agents", "Agents".to_string())));
+        for none in [1, 0, 2, 3, 32, 999] {
+            assert_eq!(screen_entry(none), None, "screen {none}");
+        }
+        for (name, id) in SCREENS.iter().filter(|(n, _)| *n != "desktop") {
+            let (entry, title) = screen_entry(*id).expect(name);
+            assert_eq!(entry, *name);
+            assert!(title.chars().next().is_some_and(|c| c.is_ascii_uppercase()), "{title}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod persons_fields_tests {
+    use super::without_fields;
+    use serde_json::json;
+
+    /// What an agent reading `describe` loses, it loses at any depth, and nothing else goes with it.
+    #[test]
+    fn the_persons_fields_come_out_wherever_they_sit() {
+        let jobs = json!([{ "agent": "pi:main", "running": [{ "job": "j1", "command": "printf 'Lunch with Sam'", "elapsed_secs": 3 }] }]);
+        let told = without_fields(jobs, &["command"]);
+        assert_eq!(told, json!([{ "agent": "pi:main", "running": [{ "job": "j1", "elapsed_secs": 3 }] }]));
+        let audit = json!([{ "app": "email", "action": "send", "args": { "to": "mom" }, "verified": { "line": "yos act email send" }, "outcome": "ok" }]);
+        assert_eq!(without_fields(audit, &["args", "verified"]), json!([{ "app": "email", "action": "send", "outcome": "ok" }]));
+        assert_eq!(without_fields(json!("text"), &["args"]), json!("text"));
+    }
 }
 
 #[cfg(test)]
@@ -2644,13 +2878,18 @@ mod locked_state_tests {
             actions.len()
         );
         for screen in LOCKED_SCREENS {
-            for action in &actions {
+            for action in actions.iter().filter(|a| !super::ALLOWED_WHILE_LOCKED.contains(&a.as_str())) {
                 assert_eq!(
                     locked_refusal(*screen, action).as_deref(),
                     Some(LOCKED_REFUSAL),
                     "`{action}` is not on the allow-list, so screen {screen} must refuse it"
                 );
             }
+        }
+        // What the allow-list names, and nothing else: an addition is a decision for a reader.
+        assert_eq!(super::ALLOWED_WHILE_LOCKED, &["memory_validate"]);
+        for screen in LOCKED_SCREENS {
+            assert_eq!(locked_refusal(*screen, "memory_validate"), None, "the memory server is answered");
         }
     }
 

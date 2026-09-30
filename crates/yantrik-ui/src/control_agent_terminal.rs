@@ -313,6 +313,29 @@ pub fn calling_agent() -> Option<Result<AgentId, String>> {
     Some(call.agent())
 }
 
+/// As [`calling_agent`], but the token is checked against `pid` rather than the socket peer
+/// (#182): an app that spends a grant forwards the pid the kernel stamped on the call its token
+/// arrived in, because the peer of the forwarded call is the app itself and a token is believed
+/// only from the process tree it was issued into. Read in the same place, inside a dispatch.
+pub fn calling_agent_at(pid: Option<u32>) -> Option<Result<AgentId, String>> {
+    let call = Call::current();
+    call.token.as_ref()?;
+    Some(resolver().resolve(call.token.as_deref().unwrap_or_default(), pid))
+}
+
+/// What `token` names when it is checked against `pid`, outside any dispatch: the shell's own
+/// dispatch spends grants in-process, where the token and the kernel's pid for the call arrive
+/// on the spender's own arguments instead of in thread-locals (#182). Same resolver, same rule.
+pub fn agent_for(token: &str, pid: Option<u32>) -> Result<AgentId, String> {
+    resolver().resolve(token, pid)
+}
+
+/// The resolver is one global for the whole shell, and tests install tables into it: a test
+/// that drives token checks holds this for its length, so two tests' tables cannot replace
+/// each other mid-run.
+#[cfg(test)]
+pub(crate) static RESOLVER_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Hand the work to the socket's side; run it here only when called without a socket.
 fn later(work: impl FnOnce() -> Result<Value, String> + Send + 'static) -> Result<Value, String> {
     control::answer_later(work)
@@ -379,7 +402,9 @@ fn specs() -> [Action; 4] {
     [
         // Sensitive, like the Terminal's own `run`: whatever the command does, it does as the
         // person. Deferred because the answer may be `running: true` — the work outlives the call
-        // — and the caller has to read `running` rather than assume.
+        // — and the caller has to read `running` rather than assume. Open-ended: the command is
+        // whatever it is given, so it asks once in ask, auto and bypass and a session rule
+        // answers the rest (29 September 2026).
         Action::new(
             "agent_run",
             &format!(
@@ -393,6 +418,7 @@ fn specs() -> [Action; 4] {
         )
         .risk("sensitive")
         .defers()
+        .open_ended()
         .arg(Param::text("command").describe(
             "One command line, as it would be typed. Pipes, redirection, `&&` and `cd` work; it \
              runs under bash",
@@ -422,7 +448,8 @@ fn specs() -> [Action; 4] {
                 .describe("Seconds to wait for it to finish. Default 120, at most 600"),
         ),
         // Sensitive for the Terminal `send_input`'s reason: a program at a prompt cannot tell
-        // these bytes from typing, and the prompt may be `sudo`'s.
+        // these bytes from typing, and the prompt may be `sudo`'s. Open-ended for the same
+        // reason: typed into a shell, they are a command.
         Action::new(
             "agent_input",
             &format!(
@@ -432,6 +459,7 @@ fn specs() -> [Action; 4] {
             ),
         )
         .risk("sensitive")
+        .open_ended()
         .arg(Param::text("job").describe("The `job` id `agent_run` answered with"))
         .arg(Param::text("text").describe("The exact characters to send, up to 64 KiB")),
         Action::new(
@@ -580,6 +608,16 @@ mod tests {
         Call { pid: Some(std::process::id()), token: Some(token.to_string()) }
     }
 
+    /// A call on a session from this process, which stands in for the harness that attached it:
+    /// a session answers only the process that attached it and the ones it started.
+    fn as_harness(
+        host: &yantrik_harness::Host,
+        method: &str,
+        params: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        host.handle_from(method, params, Some(std::process::id()), None)
+    }
+
     /// One job's card in its agent's pane, once the store has its end: `(args, provenance, exit
     /// code, output)`. Asked again until the end is there — the terminal answers a waiting call
     /// before its finish listeners have run.
@@ -652,6 +690,9 @@ mod tests {
     /// before any are installed.
     #[test]
     fn the_actions_answer_for_the_agent_the_token_names_and_nobody_else() {
+        // The resolver is the shell's one global; hold it for the length of the test (see
+        // `RESOLVER_TESTS`).
+        let _held = RESOLVER_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let me = Some(std::process::id());
 
         // Before the host issues tokens, every call is inert — and says so.
@@ -727,12 +768,12 @@ mod tests {
         use yantrik_harness::{protocol, Host, Turn};
         let host = Host::new(vec![]);
         let attach = json!({ "id": "pi", "name": "Pi", "conversations": true });
-        let session = host.handle_from(protocol::ATTACH, &attach, me).unwrap()["session"].as_str().unwrap().to_string();
+        let session = host.handle_from(protocol::ATTACH, &attach, me, None).unwrap()["session"].as_str().unwrap().to_string();
         let agent = host.start_agent("pi").unwrap();
         let turn = |text: &str| {
             let _answer = host.send_to(&agent, Turn::new(text)).unwrap();
-            let handed = host.handle(protocol::POLL, &json!({ "session": session })).unwrap();
-            host.handle(protocol::COMPLETE, &json!({ "session": session, "turn_id": handed["turn_id"] })).unwrap();
+            let handed = as_harness(&host, protocol::POLL, &json!({ "session": session })).unwrap();
+            as_harness(&host, protocol::COMPLETE, &json!({ "session": session, "turn_id": handed["turn_id"] })).unwrap();
             handed
         };
         let token = turn("build it")["agent_token"].as_str().unwrap().to_string();

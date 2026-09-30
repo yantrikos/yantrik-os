@@ -34,7 +34,7 @@ import threading
 import types
 import typing
 
-from . import gate, wire
+from . import gate, mind_door, privacy, reach, wire
 
 PROTOCOL = 1
 SETTLES = ("on return", "later")
@@ -332,11 +332,14 @@ class Action:
     `settled: false`, and a caller watches for the result instead of mistaking the call for
     it); `expected_seconds` says how long it usually takes to settle, so a caller can size its
     wait. `timeout` is how long the app's thread gets before the caller hears it did not
-    answer; it is not published.
+    answer; it is not published. `open_ended=True` declares that the action runs whatever it is
+    given — a command line, a script, keystrokes into a shell — and says so at the end of the
+    description (`gate.OPEN_ENDED`, as the Rust `Action::open_ended()` does), which is what the
+    gate reads: asked about once per session, a session rule covering the rest.
     """
 
     def __init__(self, name, description, grade="standard", params=(), *, settles="on return",
-                 expected_seconds=None, timeout=None):
+                 expected_seconds=None, timeout=None, open_ended=False):
         if not isinstance(name, str) or not name.strip() or name != name.strip():
             raise ValueError("an action needs a name without surrounding spaces")
         if not isinstance(description, str):
@@ -363,7 +366,7 @@ class Action:
                 raise ValueError("`%s` declares `%s` twice" % (name, p.name))
             seen.add(p.name)
         self.name = name
-        self.description = description
+        self.description = gate.with_open_ended(description) if open_ended else description
         self.permission = grade
         self.params = params
         self.settles = settles
@@ -457,7 +460,8 @@ def _type_of(annotation, default, where):
 
 
 def action_from_function(fn, name=None, *, grade="standard", settles="on return",
-                         expected_seconds=None, description=None, params=None, timeout=None):
+                         expected_seconds=None, description=None, params=None, timeout=None,
+                         open_ended=False):
     """An `Action` read off a Python function: its parameters from the signature — types from
     the hints (str, int, float, bool, Literal[...] as an enum, list[...], dict; `Optional` is
     the type inside it), defaults published, `Annotated[T, "..."]` or `params={name: "..."}`
@@ -495,7 +499,7 @@ def action_from_function(fn, name=None, *, grade="standard", settles="on return"
         raise TypeError("`%s` describes %s, which it does not take"
                         % (name, ", ".join("`%s`" % n for n in sorted(notes))))
     return Action(name, description, grade, declared, settles=settles,
-                  expected_seconds=expected_seconds, timeout=timeout)
+                  expected_seconds=expected_seconds, timeout=timeout, open_ended=open_ended)
 
 
 # ── the surface ──────────────────────────────────────────────────────────────
@@ -527,7 +531,7 @@ class Surface:
     act_timeout = ACT_TIMEOUT
 
     def __init__(self, app_id, summary=None, *, aliases=(), settings_path=None, mode_path=None,
-                 spend_grant=None, socket_path=None):
+                 spend_grant=None, socket_path=None, ask_shell=None):
         if not isinstance(app_id, str) or not app_id or any(
                 c.isspace() or c in "/\0" for c in app_id):
             raise ValueError("an app id is one word of text with no slash, like `hello` or "
@@ -544,6 +548,8 @@ class Surface:
         self._settings_path = settings_path
         self._mode_path = mode_path
         self._spend_grant = spend_grant
+        # Stands in for the shell's `reach_of` in tests: (token, what) -> the reply object.
+        self._ask_shell = ask_shell
         self._socket_path = socket_path
         self._lock = threading.RLock()
         self._ids = itertools.count(1)
@@ -557,14 +563,14 @@ class Surface:
         return fn
 
     def action(self, name=None, *, grade="standard", settles="on return", expected_seconds=None,
-               description=None, params=None, timeout=None):
+               description=None, params=None, timeout=None, open_ended=False):
         """Decorator: publish a function as an action. Its arguments come from the signature;
         it is called with them by name, and what it returns is the answer's `result`."""
         def register(fn):
             spec = action_from_function(
                 fn, name if isinstance(name, str) else None, grade=grade, settles=settles,
                 expected_seconds=expected_seconds, description=description, params=params,
-                timeout=timeout)
+                timeout=timeout, open_ended=open_ended)
             self.add_action(spec, lambda args: fn(**args))
             return fn
         if callable(name):
@@ -622,6 +628,13 @@ class Surface:
     def _unknown(self, name):
         return "unknown action `%s`; this app offers: %s" % (
             name, ", ".join(a.name for a in self.actions))
+
+    def _within_reach(self, held, spec, args):
+        """The calling agent's reach held to this act, on the grade this surface publishes for it
+        now: the refusal, or None. `held` None — no token, or no reach for it — holds nothing."""
+        if held is None:
+            return None
+        return reach.within(held, self.app_id, spec.name, self._grade(spec), args)
 
     # ── the app's side, which an app may override ────────────────────────────
 
@@ -721,24 +734,44 @@ class Surface:
             args = dict(args)
         # Lifted off before anything reads `args` — the grant below is bound to them.
         token = gate.agent_token_of(params, args)
+        # Private mode first: while it is on, no agent acts at all — a token, or the mind account.
+        if (token or (peer is not None and mind_door.is_mind(peer.uid))) and privacy.is_private():
+            raise wire.RpcError(wire.RPC_INVALID_PARAMS, privacy.REFUSAL)
+        # A caller the kernel says is the mind account acts only as a live agent (#411), before
+        # anything else is decided about its call.
+        reach.require_standing(self.app_id, name, token, peer, self._ask_shell)
+        # The calling agent's reach, read here, where IO belongs, and held to below before any
+        # grant is spent and again before the handler runs. No token, or a token with no reach,
+        # is not held; a shell that cannot say refuses the call.
+        held = reach.read_reach(token, self._ask_shell)
         # A string, or no guard: what the transport reads with `as_str` (a client MUST send one).
         expect = params.get("expect_revision")
         expect = expect if isinstance(expect, str) else None
         grant = gate.grant_of(params)
         action_id = self._next_action_id()
         authority = gate.Authority(self.configured_ceiling(), self.configured_mode())
+        # An agent answering a turn from the person's phone asks above what its reach says.
+        authority.held_by(held)
 
         spec = self._find(name)
         if grant:
             # Spent only once everything that could still refuse the call without asking anybody
-            # has passed — the action exists, its arguments are right, and the ceiling allows its
-            # grade (#154) — or a person's Allow is used up on an act that never runs. Spent
-            # against the arguments as sent: what the card showed, not what the handler will read.
+            # has passed — the action exists, the agent's reach covers it, its arguments are
+            # right, and the ceiling allows its grade (#154) — or a person's Allow is used up on
+            # an act that never runs. Spent against the arguments as sent: what the card showed,
+            # not what the handler will read. And for the agent the call arrived as (#182): a
+            # grant one agent asked for is not another's to spend.
             if spec is None:
                 raise wire.RpcError(wire.RPC_INVALID_PARAMS, self._unknown(name))
-            refusal = check_arguments(spec, args)
+            refusal = (self._within_reach(held, spec, args) or check_arguments(spec, args))
             if refusal is not None:
                 raise wire.RpcError(wire.RPC_INVALID_PARAMS, refusal)
+            # Not forwarded as the calling agent (#182) — yet. The shell believes a forwarded
+            # `caller_pid` only from one of the desktop's own binaries (`spending_agent`), so from
+            # a Python app the token would be checked against the app's own pid, "not believed",
+            # and every agent's grant would fail to spend. Spent as no agent, as it always was,
+            # until the shell can tell a surface it launched from anything else on the socket
+            # (#466). `gate.spend_params` already carries the agent for when it can.
             refusal = authority.spend(grant, self.app_id, name, self._grade(spec), args,
                                       self._spend_grant)
             if refusal is not None:
@@ -746,6 +779,12 @@ class Surface:
 
         def turn():
             with _Scope(peer, token):
+                # The reach, on the grade this surface publishes now — the one the dispatch
+                # decides on. An action this surface does not have is answered as that, below.
+                found = self._find(name)
+                refusal = self._within_reach(held, found, args) if found is not None else None
+                if refusal is not None:
+                    raise Refusal(refusal)
                 return self._dispatch(name, args, expect, authority)
 
         timeout = (spec.timeout if spec is not None and spec.timeout else self.act_timeout)

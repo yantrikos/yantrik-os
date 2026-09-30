@@ -594,13 +594,24 @@ fn process_voice(acc: &VoiceAccumulator) -> Result<String, String> {
     // We write them to a temp file and use ffmpeg to decode to WAV,
     // then feed to Whisper.
 
-    let tmp_dir = std::env::temp_dir();
-    let opus_path = tmp_dir.join(format!("yantrik_voice_{}.opus", acc.id));
-    let wav_path = tmp_dir.join(format!("yantrik_voice_{}.wav", acc.id));
+    // These files used to sit in the shared temp dir under the client's id, taken as it came: a
+    // `/` or `..` in it walked the names anywhere, and any account could leave a transcript at
+    // the `.txt` name for us to read back as what the person said. Now the id is held to a plain
+    // token, and the files live in a directory made new for this message in our private work dir
+    // (random name, plain mkdir, removed when `work` drops) — ffmpeg and whisper write into it, a
+    // directory that did not exist a moment ago has nothing planted in it, and the work dir is out
+    // of the file tools' reach for the seconds whisper runs.
+    let stem = voice_stem(&acc.id)?;
+    use yantrik_ml::private_dir as scratch;
+    let scratch_err = |e: std::io::Error| format!("no private scratch directory: {e}");
+    let work = scratch::fresh_work_dir("voice").map_err(scratch_err)?;
+    let opus_path = work.file(&format!("{stem}.opus")).map_err(scratch_err)?;
+    let wav_path = work.file(&format!("{stem}.wav")).map_err(scratch_err)?;
+    let txt_path = work.file(&format!("{stem}.txt")).map_err(scratch_err)?;
 
     // Write raw opus data
     {
-        let mut f = std::fs::File::create(&opus_path)
+        let mut f = scratch::create_private_file(std::path::Path::new(&opus_path))
             .map_err(|e| format!("create temp: {e}"))?;
         for chunk in &acc.chunks {
             f.write_all(chunk).map_err(|e| format!("write chunk: {e}"))?;
@@ -610,9 +621,9 @@ fn process_voice(acc: &VoiceAccumulator) -> Result<String, String> {
     // Decode to WAV via ffmpeg
     let ffmpeg_result = std::process::Command::new("ffmpeg")
         .args([
-            "-y", "-i", opus_path.to_str().unwrap_or(""),
+            "-y", "-i", &opus_path,
             "-ar", "16000", "-ac", "1", "-f", "wav",
-            wav_path.to_str().unwrap_or(""),
+            &wav_path,
         ])
         .output();
 
@@ -635,11 +646,12 @@ fn process_voice(acc: &VoiceAccumulator) -> Result<String, String> {
     // Use whisper.cpp CLI or the API backend — for now, shell out to whisper
     let whisper_result = std::process::Command::new("whisper")
         .args([
-            wav_path.to_str().unwrap_or(""),
+            wav_path.as_str(),
             "--model", "base",
             "--output_format", "txt",
-            "--output_dir", tmp_dir.to_str().unwrap_or("/tmp"),
         ])
+        .arg("--output_dir")
+        .arg(work.path())
         .output();
 
     // Clean up WAV
@@ -647,10 +659,13 @@ fn process_voice(acc: &VoiceAccumulator) -> Result<String, String> {
 
     match whisper_result {
         Ok(output) if output.status.success() => {
-            // Whisper writes a .txt file next to the input
-            let txt_path = tmp_dir.join(format!("yantrik_voice_{}.txt", acc.id));
-            let text = std::fs::read_to_string(&txt_path)
-                .unwrap_or_else(|_| String::from_utf8_lossy(&output.stdout).to_string());
+            // Whisper writes a .txt file named after the input into --output_dir. Read back only
+            // if it is a plain file of ours, never through a link: it becomes "what the person said".
+            let from_file = scratch::open_private_file(std::path::Path::new(&txt_path)).and_then(|mut f| {
+                let mut text = String::new();
+                std::io::Read::read_to_string(&mut f, &mut text).map(|_| text)
+            });
+            let text = from_file.unwrap_or_else(|_| String::from_utf8_lossy(&output.stdout).to_string());
             let _ = std::fs::remove_file(&txt_path);
             let text = text.trim().to_string();
             if text.is_empty() {
@@ -666,6 +681,32 @@ fn process_voice(acc: &VoiceAccumulator) -> Result<String, String> {
         Err(_) => {
             // Whisper not available — try to return a fallback message
             Err("whisper STT not available".into())
+        }
+    }
+}
+
+/// The file-name stem for a voice message, from the id the client sent: 1 to 64 of
+/// `[A-Za-z0-9_-]`, or the message is refused. The id names files, so nothing that could read
+/// as a path — a `/`, a `..`, a NUL — gets through.
+fn voice_stem(id: &str) -> Result<String, String> {
+    let plain = !id.is_empty()
+        && id.len() <= 64
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+    if !plain {
+        return Err("voice message id is not a plain token".into());
+    }
+    Ok(format!("yantrik_voice_{id}"))
+}
+
+#[cfg(test)]
+mod voice_stem_tests {
+    use super::voice_stem;
+
+    #[test]
+    fn a_voice_id_is_a_plain_token_or_refused() {
+        assert_eq!(voice_stem("msg_123-abc").unwrap(), "yantrik_voice_msg_123-abc");
+        for bad in ["", "../../home/ann/.bashrc", "a/b", "a.b", "a\0b", " x", &"x".repeat(65)] {
+            assert!(voice_stem(bad).is_err(), "{bad:?}");
         }
     }
 }

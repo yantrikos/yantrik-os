@@ -1,7 +1,7 @@
 //! Terminal tools — read scrollback buffer from the active terminal.
 //!
 //! Strategies (tried in order):
-//! 1. Foot scrollback pipe file (`/tmp/yantrik-scrollback.txt`)
+//! 1. Foot scrollback pipe file (`yantrik-scrollback.txt` in the private scratch dir)
 //! 2. tmux capture-pane (if running inside tmux)
 //! 3. Recent shell history as fallback
 
@@ -9,6 +9,32 @@ use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(ReadTerminalBufferTool));
+}
+
+/// The scrollback dump, if there is one younger than `max_age_secs` (`u64::MAX` for any age) —
+/// read by this tool and by `terminal_analysis`, so both look in the same place.
+///
+/// The writers are the foot `pipe-scrollback` binding and the labwc Super+E binding that
+/// deploy-stack.sh installs; they resolve the same directory in shell
+/// (`$XDG_RUNTIME_DIR/yantrik-scratch` when the runtime dir exists, else `~/.cache/yantrik/tmp`),
+/// so change both together. It used to
+/// be a fixed name in `/tmp`, where anyone could have left a "fresh" dump for us to read as the
+/// person's terminal — and then act on the errors it claimed.
+///
+/// Read through `read_scratch`, not a plain open: the file tools can leave anything at this name
+/// (extracting an archive is enough), and `yantrik-scrollback.txt -> ~/.ssh/id_ed25519` would
+/// otherwise hand the key to the model as "the terminal". The age is taken from the descriptor
+/// that is read, so it is this file's age and not whatever the name pointed at a moment before.
+pub(crate) fn read_scrollback(max_age_secs: u64) -> Option<String> {
+    use std::io::Read;
+    let mut file = yantrik_ml::private_dir::read_scratch("yantrik-scrollback.txt").ok()?;
+    let modified = file.metadata().ok()?.modified().ok()?;
+    if modified.elapsed().unwrap_or_default().as_secs() >= max_age_secs {
+        return None;
+    }
+    let mut text = String::new();
+    file.read_to_string(&mut text).ok()?;
+    Some(text)
 }
 
 pub struct ReadTerminalBufferTool;
@@ -44,25 +70,17 @@ impl Tool for ReadTerminalBufferTool {
             .min(200) as usize;
 
         // Strategy 1: Foot terminal scrollback pipe file.
-        // Yantrik configures Foot with: pipe-scrollback=[/bin/sh -c "cat > /tmp/yantrik-scrollback.txt"]
-        // bound to a hotkey or triggered automatically.
-        let scrollback_path = "/tmp/yantrik-scrollback.txt";
-        if let Ok(metadata) = std::fs::metadata(scrollback_path) {
-            // Only use if file was modified in the last 60 seconds (fresh dump)
-            if let Ok(modified) = metadata.modified() {
-                let age = modified.elapsed().unwrap_or_default();
-                if age.as_secs() < 60 {
-                    if let Ok(content) = std::fs::read_to_string(scrollback_path) {
-                        let all_lines: Vec<&str> = content.lines().collect();
-                        let start = all_lines.len().saturating_sub(lines);
-                        let tail = &all_lines[start..];
-                        return format!(
-                            "Terminal scrollback (last {} of {} lines):\n{}",
-                            tail.len(), all_lines.len(), tail.join("\n")
-                        );
-                    }
-                }
-            }
+        // Yantrik configures Foot with a pipe-scrollback binding that writes the file
+        // `read_scrollback` reads, bound to a hotkey or triggered automatically.
+        // Only use if file was modified in the last 60 seconds (fresh dump)
+        if let Some(content) = read_scrollback(60) {
+            let all_lines: Vec<&str> = content.lines().collect();
+            let start = all_lines.len().saturating_sub(lines);
+            let tail = &all_lines[start..];
+            return format!(
+                "Terminal scrollback (last {} of {} lines):\n{}",
+                tail.len(), all_lines.len(), tail.join("\n")
+            );
         }
 
         // Strategy 2: tmux capture-pane (works if user is in a tmux session)
@@ -80,7 +98,7 @@ impl Tool for ReadTerminalBufferTool {
         }
 
         // Strategy 3: Read Foot scrollback regardless of age (stale is better than nothing)
-        if let Ok(content) = std::fs::read_to_string(scrollback_path) {
+        if let Some(content) = read_scrollback(u64::MAX) {
             if !content.is_empty() {
                 let all_lines: Vec<&str> = content.lines().collect();
                 let start = all_lines.len().saturating_sub(lines);

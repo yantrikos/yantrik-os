@@ -10,7 +10,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use yantrik_app_runtime::prelude::*;
 use yantrik_ipc_contracts::calendar::{
     method, CalendarRevision, CreateEventParams, DeleteEventParams, EventsParams, GetEventParams,
-    UpdateEventParams,
+    UpdateEventParams, MAX_REMINDER_MINUTES,
 };
 use yantrik_ipc_transport::{peer_identity, reach};
 
@@ -279,13 +279,18 @@ fn requester() -> Option<String> {
     if name.is_empty() { None } else { Some(name) }
 }
 
+/// Store a new event and answer with what the store kept: the id it gave the event and the
+/// reminder lead it recorded. `reminder_minutes` is `None` when the caller did not say, and the
+/// stored event is the one place the default that then applied can be read off rather than
+/// repeated from the contract at every answer.
 fn create_event_via_service(
     title: &str,
     start: &str,
     end: &str,
     notes: &str,
     is_all_day: bool,
-) -> Result<String, String> {
+    reminder_minutes: Option<u32>,
+) -> Result<(String, u32), String> {
     let client = service::client("calendar")?;
     let params = CreateEventParams {
         title: title.to_string(),
@@ -305,6 +310,7 @@ fn create_event_via_service(
         // and nothing is recorded, so an event a person typed into the form is nobody's
         // "own" but a person's.
         creator: requester(),
+        reminder_minutes,
     };
     let result = client
         .call(method::CREATE_EVENT, serde_json::to_value(params).map_err(|e| e.to_string())?)
@@ -312,7 +318,7 @@ fn create_event_via_service(
     // The stored event, with the id the store gave it — the proof it landed, not a hope.
     let event: yantrik_ipc_contracts::calendar::CalendarEvent =
         serde_json::from_value(result).map_err(|e| e.to_string())?;
-    Ok(event.id)
+    Ok((event.id, event.reminder_minutes))
 }
 
 fn delete_event_via_service(event_id: &str) -> Result<(), String> {
@@ -728,10 +734,18 @@ fn store_event(
     notes: &str,
     duration_min: Option<i32>,
     all_day: bool,
-) -> Result<String, String> {
+    reminder_minutes: Option<u32>,
+) -> Result<(String, u32), String> {
     let title = title.trim();
     if title.is_empty() {
         return Err("an event needs a title".into());
+    }
+    if let Some(m) = reminder_minutes {
+        if m > MAX_REMINDER_MINUTES {
+            return Err(format!(
+                "`reminder_minutes` cannot be longer than {MAX_REMINDER_MINUTES}, and was {m}"
+            ));
+        }
     }
     // How long it runs is the caller's if it said, and the state's otherwise: the form has no
     // duration field, and a template pressed a moment ago has already said 15 or 30 or 120. The
@@ -750,10 +764,29 @@ fn store_event(
             .ok_or_else(|| format!("`{date} {time}` is not a date and a time"))?
     };
 
-    let id = create_event_via_service(title, &start, &end, notes, all_day)?;
+    let stored = create_event_via_service(title, &start, &end, notes, all_day, reminder_minutes)?;
     state.borrow_mut().new_event_duration_min = DEFAULT_EVENT_MINUTES;
     reload(ui, state);
-    Ok(id)
+    Ok(stored)
+}
+
+/// The `reminder_minutes` argument as both surface actions read it: absent is "did not say",
+/// and anything present must be a number of minutes inside the contract's cap. Checked at the
+/// door rather than passed to the service to refuse, for the same reason `date` is checked
+/// here: the error a caller can act on names the range it should have stayed inside.
+fn reminder_arg(args: &serde_json::Value) -> Result<Option<u32>, String> {
+    match args.get("reminder_minutes") {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(v) => {
+            let m = v.as_i64().ok_or("`reminder_minutes` must be a number of minutes")?;
+            if !(0..=i64::from(MAX_REMINDER_MINUTES)).contains(&m) {
+                return Err(format!(
+                    "`reminder_minutes` must be between 0 and {MAX_REMINDER_MINUTES}, and was {m}"
+                ));
+            }
+            Ok(Some(m as u32))
+        }
+    }
 }
 
 /// Take something off the calendar, and show that it is gone — or say why it is not.
@@ -850,6 +883,134 @@ fn named_event(args: &serde_json::Value) -> Result<(String, String), String> {
     }
 }
 
+/// What both update doors take, parsed once.
+///
+/// The split of #332 changes who may call, not what a call carries: `update_event`
+/// (`sensitive`, any event) and `update_own_event` (`standard`, the caller's own) must read
+/// the same call the same way and differ only in the ownership rule that runs afterwards —
+/// the same arrangement `named_event` gives the two delete doors.
+struct UpdateAsk {
+    id: String,
+    title: Option<String>,
+    date: Option<String>,
+    time: Option<String>,
+    duration_min: Option<i32>,
+    notes: Option<String>,
+    reminder_minutes: Option<u32>,
+}
+
+fn update_ask(args: &serde_json::Value) -> Result<UpdateAsk, String> {
+    let given = |key: &str| {
+        args[key].as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+    };
+    let id = given("id").ok_or("`id` is empty")?;
+    let date = given("date");
+    let time = given("time");
+    if let Some(date) = &date {
+        if date.len() != 10 || date.matches('-').count() != 2 {
+            return Err(format!("`date` should look like 2026-09-06, not `{date}`"));
+        }
+    }
+    if let Some(time) = &time {
+        if !time.contains(':') {
+            return Err(format!("`time` should look like 14:30, not `{time}`"));
+        }
+    }
+    let duration_min = match args.get("duration_min") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => Some(
+            v.as_i64().ok_or("`duration_min` must be a number of minutes")? as i32,
+        ),
+    };
+    // `notes` is taken as given, empty string included: clearing the notes on an event is a
+    // thing a caller may mean, and `given` would read that as "not said".
+    let notes = args.get("notes").and_then(|v| v.as_str()).map(str::to_string);
+    let reminder_minutes = reminder_arg(args)?;
+    Ok(UpdateAsk { id, title: given("title"), date, time, duration_min, notes, reminder_minutes })
+}
+
+/// The arguments both update doors declare, written down once so the two cannot drift.
+fn update_door_args(
+    action: yantrik_app_runtime::control::Action,
+) -> yantrik_app_runtime::control::Action {
+    use yantrik_app_runtime::control::Param;
+    action
+        .arg(Param::text("id").describe("The id the store gave the event"))
+        .arg(Param::text("title").describe("A new title").optional())
+        .arg(Param::text("date").describe("Move it to this day, YYYY-MM-DD").optional())
+        .arg(Param::text("time").describe("Move it to this time, HH:MM").optional())
+        .arg(Param::integer("duration_min")
+            .describe("How long it runs, in minutes; unchanged when not given")
+            .optional())
+        .arg(Param::text("notes").optional())
+        .arg(Param::integer("reminder_minutes")
+            .describe("How many minutes before it starts to announce it; unchanged \
+                       when not given")
+            .optional())
+}
+
+/// The change both update doors make, and the answer they give: what the store holds after
+/// the write, read back — not the fields that were asked for.
+fn change_and_answer(
+    ui: &CalendarApp,
+    state: &Rc<RefCell<CalState>>,
+    ask: &UpdateAsk,
+) -> Result<serde_json::Value, String> {
+    match change_event(
+        ui,
+        state,
+        &ask.id,
+        ask.title.as_deref(),
+        ask.date.as_deref(),
+        ask.time.as_deref(),
+        ask.duration_min,
+        ask.notes.as_deref(),
+        ask.reminder_minutes,
+    ) {
+        Ok(event) => {
+            ui.set_notice(SharedString::new());
+            show_date(ui, state, &event.start);
+            Ok(serde_json::json!({
+                "id": event.id,
+                "title": event.title,
+                "start": event.start,
+                "end": event.end,
+                "all_day": event.is_all_day,
+                "reminder_minutes": event.reminder_minutes,
+            }))
+        }
+        Err(e) => {
+            ui.set_notice(format!("Could not change the event {}: {e}", ask.id).into());
+            Err(e)
+        }
+    }
+}
+
+/// The year, month and day a `YYYY-MM-DD…` string starts with (a date, or an event's start).
+fn ymd(date: &str) -> Option<(i32, u32, i32)> {
+    let mut parts = date.get(..10)?.split('-');
+    let year = parts.next()?.parse().ok()?;
+    let month: u32 = parts.next()?.parse().ok()?;
+    let day: i32 = parts.next()?.parse().ok()?;
+    ((1..=12).contains(&month) && (1..=31).contains(&day)).then_some((year, month, day))
+}
+
+/// Put the window on `date`: its month, that day picked. What an action just changed is then what
+/// the window shows, and what the answer's first line says. `add_event` used to leave the window
+/// on whatever day was picked, so a mind adding to the 30th read "3 things on day 25", saw no sign
+/// of its event, and added it again (yantrik-mind R2, T3 rep 3), and the duplicate became a false
+/// claim in the next task.
+fn show_date(ui: &CalendarApp, state: &Rc<RefCell<CalState>>, date: &str) {
+    let Some((year, month, day)) = ymd(date) else { return };
+    {
+        let mut s = state.borrow_mut();
+        s.year = year;
+        s.month = month;
+    }
+    ui.set_selected_day(day);
+    refresh(ui, state);
+}
+
 /// Change an appointment, and show what it became — or say why it did not.
 ///
 /// The one update path, on the same terms as the delete above: what comes back is read from the
@@ -864,8 +1025,10 @@ fn change_event(
     time: Option<&str>,
     duration_min: Option<i32>,
     notes: Option<&str>,
+    reminder_minutes: Option<u32>,
 ) -> Result<yantrik_ipc_contracts::calendar::CalendarEvent, String> {
-    let outcome = update_through_service(event_id, title, date, time, duration_min, notes);
+    let outcome =
+        update_through_service(event_id, title, date, time, duration_min, notes, reminder_minutes);
     reload(ui, state);
     outcome
 }
@@ -877,7 +1040,15 @@ fn update_through_service(
     time: Option<&str>,
     duration_min: Option<i32>,
     notes: Option<&str>,
+    reminder_minutes: Option<u32>,
 ) -> Result<yantrik_ipc_contracts::calendar::CalendarEvent, String> {
+    if let Some(m) = reminder_minutes {
+        if m > MAX_REMINDER_MINUTES {
+            return Err(format!(
+                "`reminder_minutes` cannot be longer than {MAX_REMINDER_MINUTES}, and was {m}"
+            ));
+        }
+    }
     // Read before written, because moving an event has to know how long it already runs. The
     // caller said "10:00", not "10:00 for an hour".
     let current = get_event_via_service(event_id)?;
@@ -896,9 +1067,10 @@ fn update_through_service(
             return Err("an event needs a title".into());
         }
     }
-    if title.is_none() && times.is_none() && notes.is_none() {
+    if title.is_none() && times.is_none() && notes.is_none() && reminder_minutes.is_none() {
         return Err(
-            "nothing to change: give a `title`, a `date`, a `time`, a `duration_min` or `notes`"
+            "nothing to change: give a `title`, a `date`, a `time`, a `duration_min`, `notes` \
+             or `reminder_minutes`"
                 .into(),
         );
     }
@@ -909,6 +1081,7 @@ fn update_through_service(
         start: times.as_ref().map(|(start, _)| start.clone()),
         end: times.as_ref().map(|(_, end)| end.clone()),
         description: notes.map(|n| n.to_string()),
+        reminder_minutes,
         ..Default::default()
     };
     update_event_via_service(&params)?;
@@ -929,6 +1102,14 @@ fn update_through_service(
                 "asked the calendar to call it “{}” and it kept “{}”",
                 t.trim(),
                 stored.title
+            ));
+        }
+    }
+    if let Some(m) = reminder_minutes {
+        if stored.reminder_minutes != m {
+            return Err(format!(
+                "asked the calendar to remind {m} minutes before it and it kept {}",
+                stored.reminder_minutes
             ));
         }
     }
@@ -1126,6 +1307,7 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
     let delete_state = state.clone();
     let own_delete_state = state.clone();
     let update_state = state.clone();
+    let own_update_state = state.clone();
     let day_ui = ui_for.clone();
     let move_ui = ui_for.clone();
     let today_ui = ui_for.clone();
@@ -1133,6 +1315,9 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
     let delete_ui = ui_for.clone();
     let own_delete_ui = ui_for.clone();
     let update_ui = ui_for.clone();
+    let own_update_ui = ui_for.clone();
+    let date_state = state.clone();
+    let date_ui = ui_for.clone();
     let view_ui = ui_for;
 
     App::new("calendar")
@@ -1153,6 +1338,31 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                     .map(|e| e.title.to_string())
                     .collect();
                 Ok(serde_json::json!({ "day": day, "events": titles }))
+            },
+        )
+        .action(
+            // Any day, in any month, in one call. The window could be moved a month at a time
+            // (`show_month`) or back to today, and `select_day` picks a day of the month shown, so
+            // "what is on 25 October" took counting months first (yantrik-mind, 2026-09-27).
+            Action::new("show_date", "Show what is on one day, in whatever month it is")
+                .arg(Param::text("date").describe("YYYY-MM-DD")),
+            move |args| {
+                let ui = date_ui()?;
+                let date = args["date"].as_str().unwrap_or_default().trim().to_string();
+                if ymd(&date).is_none() {
+                    return Err(format!("`date` should look like 2026-10-25, not `{date}`"));
+                }
+                show_date(&ui, &date_state, &date);
+                let model = ui.get_events_today();
+                let titles: Vec<String> = (0..model.row_count())
+                    .filter_map(|i| model.row_data(i))
+                    .map(|e| e.title.to_string())
+                    .collect();
+                Ok(serde_json::json!({
+                    "showing": ui.get_month_title().to_string(),
+                    "date": date,
+                    "events": titles,
+                }))
             },
         )
         .action(
@@ -1196,6 +1406,12 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                 .arg(Param::flag("all_day")
                     .describe("A whole day rather than a time; `time` and `duration_min` are \
                                not used with it")
+                    .optional())
+                // The reminder is a fact about the event, stored with it and announced by the
+                // notifications service whether or not this window is ever opened again (#78).
+                .arg(Param::integer("reminder_minutes")
+                    .describe("How many minutes before it starts to announce it; ten when not \
+                               given. All-day events are not announced")
                     .optional()),
             move |args| {
                 let ui = add_ui()?;
@@ -1225,25 +1441,40 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                                 drop `all_day`"
                         .into());
                 }
+                let reminder_minutes = reminder_arg(args)?;
+                if all_day && reminder_minutes.is_some() {
+                    return Err("an all-day event is never announced; drop `reminder_minutes` \
+                                or drop `all_day`"
+                        .into());
+                }
                 let notes = args["notes"].as_str().unwrap_or_default().to_string();
                 // Stored before answering, and the answer carries the id it was stored under,
                 // so "added" cannot be a guess about what the window did next. A failure is put
                 // on screen as well as returned: when a mind tries to put something on the
                 // calendar and cannot, the person watching the window is owed the reason too.
-                let id = match store_event(
+                let (id, reminder) = match store_event(
                     &ui, &add_state, &title, &date, &time, &notes, duration_min, all_day,
+                    reminder_minutes,
                 ) {
-                    Ok(id) => id,
+                    Ok(stored) => stored,
                     Err(e) => {
                         ui.set_notice(format!("Could not save “{title}”: {e}").into());
                         return Err(e);
                     }
                 };
                 ui.set_notice(SharedString::new());
+                show_date(&ui, &add_state, &date);
                 let on = if all_day { date.clone() } else { format!("{date} {time}") };
-                Ok(serde_json::json!({
+                let mut answer = serde_json::json!({
                     "added": title, "on": on, "id": id, "all_day": all_day,
-                }))
+                });
+                if !all_day {
+                    // The lead the store recorded — what the caller asked for, or the default
+                    // when it did not say. Not reported for an all-day event, which is never
+                    // announced: a number there would describe a reminder that will not happen.
+                    answer["reminder_minutes"] = serde_json::json!(reminder);
+                }
+                Ok(answer)
             },
         )
         .action(
@@ -1358,76 +1589,70 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
             },
         )
         .action(
-            // Graded `standard`, unlike the delete above, and the difference is what survives.
-            // Moving a meeting leaves the appointment on the calendar under the same id, where
-            // the person can see where it went and this same action can put it back; the previous
-            // time is the only thing lost, and the caller is told the new one. Nothing is
-            // destroyed, so this is the grade `add_event` carries — a change to an appointment
-            // the window is showing, which a person watching can see and undo.
-            Action::new("update_event", "Move or rename an event that is already on the calendar")
-                .arg(Param::text("id").describe("The id the store gave the event"))
-                .arg(Param::text("title").describe("A new title").optional())
-                .arg(Param::text("date").describe("Move it to this day, YYYY-MM-DD").optional())
-                .arg(Param::text("time").describe("Move it to this time, HH:MM").optional())
-                .arg(Param::integer("duration_min")
-                    .describe("How long it runs, in minutes; unchanged when not given")
-                    .optional())
-                .arg(Param::text("notes").optional()),
+            // Graded `sensitive` (#332), by `docs/sdk/grades.md`'s rule to grade an action by
+            // the worst its arguments allow: the `id` names any event in the store — the
+            // person's own, a Google-synced one, another caller's — so this door can rewrite
+            // an appointment that is not the caller's, and the person sees a card. Nothing is
+            // destroyed by a move — the event stays under the same id and the previous time is
+            // the only thing lost — so it sits below the delete's grade in kind, and editing
+            // an event the caller created itself stays `standard`, at `update_own_event`
+            // below: the #201 split the two delete doors already have.
+            update_door_args(Action::new(
+                "update_event",
+                "Move or rename any event that is already on the calendar",
+            ).risk("sensitive")),
             move |args| {
                 let ui = update_ui()?;
-                let given = |key: &str| {
-                    args[key].as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
-                };
-                let id = given("id").ok_or("`id` is empty")?;
-                let date = given("date");
-                let time = given("time");
-                if let Some(date) = &date {
-                    if date.len() != 10 || date.matches('-').count() != 2 {
-                        return Err(format!("`date` should look like 2026-09-06, not `{date}`"));
-                    }
+                let ask = update_ask(&args)?;
+                change_and_answer(&ui, &update_state, &ask)
+            },
+        )
+        .action(
+            // Graded `standard`, and the only events it can reach are the ones the store
+            // records as created by this very caller — the rule in `ownership`, the same
+            // comparison `delete_own_event` keys off, with both sides established by the
+            // machine and nothing the request says consulted (#332, on #201's door). An
+            // unattended harness can move the events it made without a person being asked;
+            // everything else is refused here in a sentence that points at `update_event`
+            // above, where the person sees the card.
+            update_door_args(Action::new(
+                "update_own_event",
+                "Move or rename an event this caller created itself. Anything else is \
+                 `update_event`, which asks a person first",
+            )),
+            move |args| {
+                let ui = own_update_ui()?;
+                let ask = update_ask(&args)?;
+                // The record the service kept at creation, read back from the event's own
+                // file — so the check survives this app restarting between the create and
+                // this change, as the delete's does (#201).
+                let event = get_event_via_service(&ask.id)?;
+                let me = requester();
+                if !ownership::may_change_unasked(event.creator.as_deref(), me.as_deref()) {
+                    let who =
+                        me.unwrap_or_else(|| "nobody this machine could identify".to_string());
+                    let why = match event.creator.as_deref() {
+                        Some(made_by) => format!(
+                            "{} was created by {made_by} and this call is {who}: only the \
+                             caller that created an event may change it without a person \
+                             being asked",
+                            ask.id
+                        ),
+                        None => format!(
+                            "{} has no creator on record — it is older than the record, a \
+                             person made it in the window, or a sync stored it — and this \
+                             call is {who}: only the caller that created an event may \
+                             change it without a person being asked",
+                            ask.id
+                        ),
+                    };
+                    let why = format!(
+                        "{why}. Any event changes through `update_event`, which asks first"
+                    );
+                    ui.set_notice(format!("Could not change {}: {why}", ask.id).into());
+                    return Err(why);
                 }
-                if let Some(time) = &time {
-                    if !time.contains(':') {
-                        return Err(format!("`time` should look like 14:30, not `{time}`"));
-                    }
-                }
-                let duration_min = match args.get("duration_min") {
-                    None | Some(serde_json::Value::Null) => None,
-                    Some(v) => Some(
-                        v.as_i64().ok_or("`duration_min` must be a number of minutes")? as i32,
-                    ),
-                };
-                // `notes` is taken as given, empty string included: clearing the notes on an
-                // event is a thing a caller may mean, and `given` would read that as "not said".
-                let notes = args.get("notes").and_then(|v| v.as_str()).map(str::to_string);
-
-                match change_event(
-                    &ui,
-                    &update_state,
-                    &id,
-                    given("title").as_deref(),
-                    date.as_deref(),
-                    time.as_deref(),
-                    duration_min,
-                    notes.as_deref(),
-                ) {
-                    Ok(event) => {
-                        ui.set_notice(SharedString::new());
-                        // What the store holds now, read back after the write — not the fields
-                        // that were asked for.
-                        Ok(serde_json::json!({
-                            "id": event.id,
-                            "title": event.title,
-                            "start": event.start,
-                            "end": event.end,
-                            "all_day": event.is_all_day,
-                        }))
-                    }
-                    Err(e) => {
-                        ui.set_notice(format!("Could not change the event {id}: {e}").into());
-                        Err(e)
-                    }
-                }
+                change_and_answer(&ui, &own_update_state, &ask)
             },
         )
         .action(
@@ -1614,10 +1839,11 @@ fn wire(app: &CalendarApp) -> slint::Timer {
         let st = state.clone();
         app.on_save_event(move |title, date, time, notes| {
             let Some(ui) = weak.upgrade() else { return };
-            // The form has no duration field and no all-day switch, so it says nothing about
-            // either: the duration comes from the state, where a template left it, and an event
-            // typed into this form is a timed one.
-            match store_event(&ui, &st, &title, &date, &time, &notes, None, false) {
+            // The form has no duration field, no all-day switch and no reminder field, so it
+            // says nothing about any of them: the duration comes from the state, where a
+            // template left it; an event typed into this form is a timed one; and its reminder
+            // is the default the store applies.
+            match store_event(&ui, &st, &title, &date, &time, &notes, None, false, None) {
                 Ok(_) => {
                     ui.set_notice(SharedString::new());
                     ui.set_show_event_form(false);
@@ -1845,4 +2071,19 @@ fn wire(app: &CalendarApp) -> slint::Timer {
         });
     }
     watch
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_date_or_an_events_start_names_the_day_to_show() {
+        assert_eq!(ymd("2026-09-30"), Some((2026, 9, 30)));
+        assert_eq!(ymd("2026-10-15T16:30:00-05:00"), Some((2026, 10, 15)), "an event's start");
+        assert_eq!(ymd("2026-13-01"), None, "no month 13");
+        assert_eq!(ymd("2026-09-32"), None);
+        assert_eq!(ymd("30 Sep"), None, "not a date: the window stays where it is");
+        assert_eq!(ymd(""), None);
+    }
 }

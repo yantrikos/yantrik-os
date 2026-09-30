@@ -1,8 +1,8 @@
 // What the mind may do without being asked — the chip's menu.
 //
 // One fixed policy was wrong at both ends of the day: forty cards for a long trusted job, and no
-// way at all to say "just look, don't touch". This is where a person picks between the four
-// modes, sees the rules they have granted for this session, and reads what the machine did while
+// way at all to say "just look, don't touch". This is where a person picks between the five
+// modes (two of them bypasses, chosen on one confirmation), sees the rules they have granted for this session, and reads what the machine did while
 // it was not asking. See `crates/yantrik-ui/src/mind_mode.rs` and
 // `design/mind-modes-2026-09-21.md`.
 //
@@ -17,7 +17,8 @@
 // 2. **Nothing here takes keyboard focus.** Every control is a `TouchArea`, for the same reason
 //    the approval card's buttons are: there is no default action and Enter cannot reach
 //    anything. Entering bypass in particular must cost two deliberate pointer movements — the
-//    mode row, then a duration on a confirmation that says what it means.
+//    mode row, then a duration on a confirmation that says what it means — and full bypass a
+//    third: its own row on that confirmation, which never starts out chosen.
 
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icon.slint";
@@ -31,13 +32,16 @@ export struct MindRule {
 
 // One thing that ran without the person being asked.
 //
-// Four fields, not the seven the log records. The grade and the mode it ran under are in
+// Five fields, not the seven the log records. The grade and the mode it ran under are in
 // `describe shell` and in ~/.local/share/yantrik/mind-audit.jsonl; here the question is "what did
-// it do and did it work", and a 316px row that tried to answer more than that would elide the
-// arguments — which are the part a person actually reads.
+// it do, WHO did it, and did it work". `actor` was added because a list of unattended actions
+// that named the action and its arguments but not the caller left a person unable to tell which
+// of several minds had done the thing (#220). A 316px row that tried to answer more than that
+// would elide the arguments, so the grade and mode stay in the file.
 export struct MindAuditEntry {
     at: string,         // local HH:MM
     what: string,       // "files.move"
+    actor: string,      // the verified mind or agent, or the caller's claim marked as a claim
     args: string,       // the arguments, bounded the way the card bounds them
     outcome: string,    // ok | failed | …
 }
@@ -137,15 +141,23 @@ export component MindModeMenu inherits Rectangle {
     in property <string> mode-label: "Ask";
     in property <string> ceiling: "sensitive";
     in property <[MindRule]> rules: [];
+    // One line about the rules the last lowering of the mode took away, or empty. A person who
+    // tightens the mode loses their "Allow for this session" answers with it (29 September
+    // 2026), and is told so here rather than finding out from the next card.
+    in property <string> rules-cleared: "";
     in property <[MindAuditEntry]> audit: [];
 
     // The confirmation is a second screen inside the same box rather than a dialog over it, so
     // the geometry stays one panel and a script driving it has one set of coordinates.
     in-out property <bool> confirming-bypass: false;
     in-out property <bool> showing-audit: false;
+    // Which bypass the confirmation is about: `bypass` (still asks before what cannot be undone)
+    // or `bypass_all` (asks nothing). Reset to the stricter one every time the confirmation
+    // opens, so full bypass is always a choice made on this screen, never one left over.
+    in-out property <string> bypass-kind: "bypass";
 
     callback mode-chosen(string);      // plan | ask | auto
-    callback bypass-chosen(string);    // 15m | 1h | restart
+    callback bypass-chosen(string, string);    // bypass | bypass_all, then 15m | 1h | restart
     callback rule-revoked(string, string);   // app, action
 
     // Where the apps a mind opens are drawn (#239): in Mind View, a desktop of the mind's own
@@ -153,6 +165,13 @@ export component MindModeMenu inherits Rectangle {
     // callback like the modes — nothing on the socket can set it.
     in property <bool> mind-view-on: true;
     callback mind-view-chosen(bool);
+    // Private mode: the Mind off and nothing recorded, until the person turns it off. A person's
+    // choice like the modes; nothing on the socket can set it.
+    in property <bool> private: false;
+    callback private-chosen(bool);
+
+    // A bypass of either kind: the red chip, the red edge, the selected Bypass row.
+    property <bool> in-bypass: root.mode == "bypass" || root.mode == "bypass_all";
 
     width: 340px;
     height: body.preferred-height;
@@ -161,11 +180,11 @@ export component MindModeMenu inherits Rectangle {
     // desktop's own text, and at 78% the greeting, "All apps" and the Super K hint read straight
     // through the four choices a person is trying to tell apart.
     //
-    // The whole panel goes red-edged in bypass. It is the one state where a person walking past
-    // the machine should be able to tell from across the room.
+    // The whole panel goes red-edged in either bypass. It is the one state where a person walking
+    // past the machine should be able to tell from across the room.
     background: Theme.bg-card;
     border-width: 1px;
-    border-color: root.mode == "bypass" ? Theme.color-danger : Theme.glass-border-strong;
+    border-color: root.in-bypass ? Theme.color-danger : Theme.glass-border-strong;
     drop-shadow-blur: 18px;
     drop-shadow-color: Theme.overlay-shadow;
 
@@ -175,29 +194,61 @@ export component MindModeMenu inherits Rectangle {
 
         // ── The confirmation, when one is up ──
         //
-        // Bypass does not arrive from a single click. This says what it means in the plainest
-        // words available, then offers the three durations — and the durations ARE the answer,
-        // so there is no separate "confirm" to press by reflex.
+        // Bypass does not arrive from a single click. This offers the two bypasses — plain
+        // bypass chosen, full bypass a press away — says what they mean in the plainest words
+        // available, then offers the three durations. The durations ARE the answer, so there is no
+        // separate "confirm" to press by reflex. Every row is a fixed height; the y of each is
+        // in design/mind-modes-2026-09-21.md.
         if root.confirming-bypass : VerticalLayout {
             spacing: Theme.sp-2;
 
             Text {
                 height: 18px;
-                text: "Stop asking me anything";
+                text: "Stop asking me, for a while";
                 color: Theme.color-danger;
                 font-size: Theme.fs-body-strong;
                 font-weight: 600;
                 vertical-alignment: center;
                 wrap: no-wrap;
             }
-            // 64px is four lines at fs-caption in a 316px column, which is what this wraps to
-            // with the longest ceiling word in it. Fixed rather than preferred, because every
-            // row below it has a written-down y in design/mind-modes-2026-09-21.md.
+
+            // The two bypasses first, as two rows of the same shape as the modes. Both are
+            // danger-red; the difference is one line each, and it is exactly what the gate
+            // enforces (`Mode::asks_before_what_cannot_be_undone`): an action whose own published
+            // description says it cannot be undone still raises a card in bypass, and nothing
+            // does in full bypass. Not "payments, sends and deletes" — only what an app marks.
+            // And an action that says it runs whatever it is given (`gate::open_ended`, a
+            // command) asks once, in bypass as in auto, a session rule answering the rest.
+            //
+            // First, and above the paragraph, for the pointer's sake: the menu's Bypass row is at
+            // y 216…260, and a double-click there must land on nothing that acts. Here that is
+            // the paragraph (178…274); every duration starts below it. See the y-table in
+            // design/mind-modes-2026-09-21.md.
+            ModeRow {
+                label: "Bypass";
+                means: "Asks before what can't be undone; commands once.";
+                selected: root.bypass-kind == "bypass";
+                danger: true;
+                chosen => { root.bypass-kind = "bypass"; }
+            }
+            ModeRow {
+                label: "Full bypass";
+                means: "Asks nothing, not even those.";
+                selected: root.bypass-kind == "bypass_all";
+                danger: true;
+                chosen => { root.bypass-kind = "bypass_all"; }
+            }
+
+            // 96px is six lines at fs-caption in a 316px column; this wraps to five with the
+            // longest ceiling word in it. Fixed rather than preferred, because every row below it
+            // has a written-down y — and because it is what a double-click on the menu's Bypass
+            // row lands on.
             Text {
-                height: 64px;
-                text: "Everything this machine allows, the mind will do, without a card and "
-                    + "without waiting for you. Your machine ceiling (" + root.ceiling
-                    + ") still holds. Pick how long.";
+                height: 96px;
+                text: "Bypass still asks before anything an app marks as impossible to undo, such "
+                    + "as a purchase or a calendar delete, and once per session before running "
+                    + "commands. Full bypass asks nothing. Your ceiling (" + root.ceiling
+                    + ") still holds.";
                 color: Theme.text-secondary;
                 font-size: Theme.fs-caption;
                 wrap: word-wrap;
@@ -206,17 +257,17 @@ export component MindModeMenu inherits Rectangle {
             MenuButton {
                 label: "15 minutes";
                 danger: true;
-                pressed => { root.confirming-bypass = false; root.bypass-chosen("15m"); }
+                pressed => { root.confirming-bypass = false; root.bypass-chosen(root.bypass-kind, "15m"); }
             }
             MenuButton {
                 label: "1 hour";
                 danger: true;
-                pressed => { root.confirming-bypass = false; root.bypass-chosen("1h"); }
+                pressed => { root.confirming-bypass = false; root.bypass-chosen(root.bypass-kind, "1h"); }
             }
             MenuButton {
                 label: "Until the shell restarts";
                 danger: true;
-                pressed => { root.confirming-bypass = false; root.bypass-chosen("restart"); }
+                pressed => { root.confirming-bypass = false; root.bypass-chosen(root.bypass-kind, "restart"); }
             }
             MenuButton {
                 label: "Cancel";
@@ -267,13 +318,17 @@ export component MindModeMenu inherits Rectangle {
                     selected: root.mode == "auto";
                     chosen => { root.mode-chosen("auto"); }
                 }
+                // One row for both bypasses: the confirmation it opens is where the two are told
+                // apart. While either runs, the row carries the chip's own words ("Full bypass
+                // 43m").
                 ModeRow {
-                    label: root.mode == "bypass" ? root.mode-label : "Bypass";
-                    means: "It does not ask. Time-boxed, and it says so.";
-                    selected: root.mode == "bypass";
+                    label: root.in-bypass ? root.mode-label : "Bypass";
+                    means: "It stops asking, for a while. Time-boxed, and it says so.";
+                    selected: root.in-bypass;
                     danger: true;
-                    // Straight into the confirmation, never into the mode.
-                    chosen => { root.confirming-bypass = true; }
+                    // Straight into the confirmation, never into the mode — and always on the
+                    // stricter of the two, so full bypass is a choice made there.
+                    chosen => { root.bypass-kind = "bypass"; root.confirming-bypass = true; }
                 }
             }
 
@@ -291,7 +346,11 @@ export component MindModeMenu inherits Rectangle {
             }
 
             // ── The standing yeses, each with a way out of it ──
-            if root.rules.length > 0 : VerticalLayout {
+            //
+            // Or, when a lowering has just cleared them, one fixed 24px line saying which went:
+            // with no rules listed it takes the place of one rule row, so the rows under it shift
+            // exactly as they do for one rule (design/mind-modes-2026-09-21.md).
+            if root.rules.length > 0 || root.rules-cleared != "" : VerticalLayout {
                 spacing: Theme.sp-1;
 
                 Rectangle { height: 1px; background: Theme.border-subtle; }
@@ -303,6 +362,15 @@ export component MindModeMenu inherits Rectangle {
                     font-weight: 600;
                     vertical-alignment: center;
                     wrap: no-wrap;
+                }
+                if root.rules.length == 0 : Text {
+                    height: 24px;
+                    text: root.rules-cleared;
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-micro;
+                    vertical-alignment: center;
+                    wrap: no-wrap;
+                    overflow: elide;
                 }
                 for rule in root.rules : Rectangle {
                     height: 24px;
@@ -400,6 +468,18 @@ export component MindModeMenu inherits Rectangle {
                             wrap: no-wrap;
                             overflow: elide;
                         }
+                        // Who ran it, so a list of unattended actions is not anonymous (#220).
+                        // Shares the slack with the arguments and elides rather than pushing the
+                        // row's fixed columns out of the 316px menu.
+                        Text {
+                            text: entry.actor;
+                            color: Theme.text-secondary;
+                            font-size: Theme.fs-micro;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            wrap: no-wrap;
+                            overflow: elide;
+                        }
                         Text {
                             text: entry.args;
                             color: Theme.text-dim;
@@ -464,6 +544,18 @@ export component MindModeMenu inherits Rectangle {
                         wrap: no-wrap;
                     }
                 }
+            }
+
+            // ── Private mode ──
+            // Last, so every row above keeps the y the design doc gives it. One press turns it on
+            // or off; while it is on, the Mind can see nothing and do nothing, whatever the mode.
+            Rectangle { height: 1px; background: Theme.border-subtle; }
+            ModeRow {
+                label: root.private ? "Private: on" : "Private";
+                means: root.private ? "The Mind is off and nothing is recorded. Press to end."
+                    : "Turn the Mind off and record nothing, until you end it.";
+                selected: root.private;
+                chosen => { root.private-chosen(!root.private); }
             }
         }
     }

@@ -60,6 +60,12 @@ impl ServiceHandler for SysMonHandler {
         if let Some(answer) = self.surface.answer(method, &params, peer) {
             return answer;
         }
+        // The raw kill signals any pid it is handed, beside a `kill_process` action graded
+        // dangerous. It answers the desktop's own programs, the System Monitor window's End button
+        // among them, and nothing else (#161).
+        if method == "sysmon.kill_process" {
+            yantrik_service_sdk::desktop_programs_only(peer, method)?;
+        }
         match method {
             "sysmon.snapshot" => {
                 let snap = build_snapshot()?;
@@ -941,13 +947,30 @@ mod through_the_handler {
 /// The same rule with the ceiling, the mode and the shell's grant store pinned per case.
 #[cfg(all(test, unix))]
 mod tests {
+    /// #161: the raw kill answers only the desktop's own programs. This test binary is none of
+    /// them, so its kill is refused and the process lives on.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_raw_kill_from_a_program_not_the_desktops_is_refused() {
+        use yantrik_service_sdk::ServiceHandler as _;
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().expect("a sleep of our own");
+        let peer = yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 };
+        let err = super::SysMonHandler::new()
+            .handle_from("sysmon.kill_process", serde_json::json!({ "pid": child.id() }), Some(peer))
+            .unwrap_err();
+        assert_eq!(err.code, -32001, "{}", err.message);
+        assert!(child.try_wait().unwrap().is_none(), "the process was not signalled");
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
     use super::*;
     use std::os::unix::process::ExitStatusExt;
     use std::process::{Child, Command};
     use std::time::Duration;
 
     fn at(ceiling: &str, mode: &str) -> Authority {
-        Authority { ceiling: ceiling.into(), mode: gate::Mode::named(mode), granted: false }
+        Authority { ceiling: ceiling.into(), mode: gate::Mode::named(mode), granted: false, asks_above: None }
     }
 
     fn kill(pid: u32, grant: Option<&str>) -> serde_json::Value {
@@ -978,8 +1001,12 @@ mod tests {
     fn spend_through_a_stand_in_shell() {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
+            // The stand-in shell answers what a token may reach, as the shell does (#189):
+            // no role for any token here, so a token-carrying call is held by nothing but
+            // the grade, the mode and the grant these tests are about.
+            yantrik_service_sdk::reach::read_reach_with(|_| None);
             let spent = std::sync::Mutex::new(std::collections::HashSet::<String>::new());
-            gate::spend_grants_with(move |id, app, action, args| {
+            gate::spend_grants_with(move |id, app, action, args, _caller| {
                 let Some(pid) = id.strip_prefix("ok-kill-").and_then(|p| p.parse::<u64>().ok()) else {
                     return Err(format!("no approval request `{id}`."));
                 };
@@ -1295,10 +1322,32 @@ mod process_readings {
         let dir = std::env::temp_dir().join(format!("sysmon-35-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a directory of our own");
         let program = dir.join("yos-monitor-current-cpu-check");
-        std::fs::copy("/usr/bin/yes", &program)
+        // A link, not a copy. A copy is a file this process holds open for writing, and a sibling
+        // test forking in that moment carries the write descriptor into its child until the child
+        // execs; running the copy inside that window fails with ETXTBSY, "Text file busy" (four CI
+        // runs on main did). A link is never open for writing, and exec through it still gives the
+        // child the long name as argv[0] and the truncated one as its `comm`.
+        let _ = std::fs::remove_file(&program);
+        std::os::unix::fs::symlink("/usr/bin/yes", &program)
             .expect("a `yes` that answers to a long name");
         let mut spinner = Command::new(&program);
-        (Ended::spawn(&mut spinner), program)
+        let child = Ended::spawn(&mut spinner);
+        published(child.pid());
+        (child, program)
+    }
+
+    /// Wait until the kernel has published `pid`'s arguments. `spawn` returns once the exec is
+    /// past closing the descriptors marked close-on-exec, which is before the new program's
+    /// argument pages are set. A list read inside that gap finds an empty `cmdline`, and names
+    /// the process by its fifteen-character `comm`. That is right for a kernel thread and wrong
+    /// here (a CI run on main read "yos-monitor-cur"). This waits for a state; it guesses no
+    /// time.
+    fn published(pid: u32) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while std::fs::read(format!("/proc/{pid}/cmdline")).map_or(true, |c| c.is_empty()) {
+            assert!(Instant::now() < deadline, "pid {pid} never published its arguments");
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     /// A process that keeps a spin going is named by its program, whole. The list used to

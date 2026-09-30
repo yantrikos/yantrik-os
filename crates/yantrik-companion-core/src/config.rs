@@ -3,6 +3,7 @@
 //! Mirrors the Python `CompanionConfig` Pydantic model.
 //! Supports YAML deserialization.
 
+pub use crate::judge_config::{judge_use, JudgeConfig, JudgeKind, JudgeUse, JUDGE_USES, PRESETS as JUDGE_PRESETS};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -1075,6 +1076,10 @@ pub struct WhatsAppConfig {
     /// Default recipient phone number in international format.
     #[serde(default)]
     pub recipient: Option<String>,
+    /// The token Meta echoes to verify the webhook. Unset, a fresh random one is made at start:
+    /// a fixed default is a token anyone who read the source knows.
+    #[serde(default)]
+    pub verify_token: Option<String>,
 }
 
 impl Default for WhatsAppConfig {
@@ -1084,6 +1089,7 @@ impl Default for WhatsAppConfig {
             phone_number_id: None,
             access_token: None,
             recipient: None,
+            verify_token: None,
         }
     }
 }
@@ -1107,12 +1113,30 @@ pub struct ChatConfig {
     pub slack: SlackConfig,
     #[serde(default)]
     pub signal: SignalConfig,
+    /// Who the person is on each channel. Only a direct message from one of these is ever
+    /// answered; everyone else, and every group, is not. Empty (and no Telegram `chat_id`) is a
+    /// desktop whose channels answer no one.
+    #[serde(default)]
+    pub people: Vec<ChannelPerson>,
+    /// Channels whose operator can read what is sent (Telegram, Slack, Discord, WhatsApp's Cloud
+    /// API) on which the person still answers approval cards from the phone. End-to-end channels
+    /// (Signal, the paired app) always may; these only when named.
+    #[serde(default)]
+    pub phone_approvals: Vec<String>,
     /// Webhook listen port for WhatsApp (Meta requires a public endpoint).
     #[serde(default = "default_webhook_port")]
     pub webhook_port: u16,
 }
 
 fn default_webhook_port() -> u16 { 9880 }
+
+/// The person, as one channel knows them: the provider (`telegram`, `signal`, `slack`,
+/// `discord`, `matrix`, `irc`, `whatsapp`) and their sender id there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelPerson {
+    pub provider: String,
+    pub id: String,
+}
 
 impl Default for ChatConfig {
     fn default() -> Self {
@@ -1123,6 +1147,8 @@ impl Default for ChatConfig {
             irc: IrcConfig::default(),
             slack: SlackConfig::default(),
             signal: SignalConfig::default(),
+            people: Vec::new(),
+            phone_approvals: Vec::new(),
             webhook_port: default_webhook_port(),
         }
     }
@@ -1629,6 +1655,10 @@ pub struct CompanionConfig {
     /// Multi-provider chat integration (Discord, Matrix, IRC, Slack, Signal).
     #[serde(default)]
     pub chat: ChatConfig,
+    /// A System One model (Jev, Kev, ...) that makes small decisions, such as which tool a
+    /// request needs, instead of the chat model. Off unless an endpoint is set.
+    #[serde(default)]
+    pub judge: JudgeConfig,
 }
 
 /// OAuth connector configuration for external services.
@@ -1761,6 +1791,7 @@ impl Default for CompanionConfig {
             enabled_services: default_enabled_services(),
             ck5: CK5Config::default(),
             chat: ChatConfig::default(),
+            judge: JudgeConfig::default(),
         }
     }
 }

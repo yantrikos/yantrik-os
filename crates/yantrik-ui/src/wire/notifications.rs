@@ -782,7 +782,7 @@ pub fn approval_waiting(requester: &str, app: &str, action: &str) {
     );
 }
 
-/// A bypass ran out on its own.
+/// A bypass of either kind ran out on its own.
 ///
 /// Only when it LAPSED. A person who pressed `Ask` themselves has just watched the chip change
 /// and needs telling nothing; the two people this is for are the one who chose "1 hour" and
@@ -809,6 +809,12 @@ pub fn bypass_ended(ended: crate::mind_mode::BypassEnded) {
         notification = notification.action("show_mind_audit", "See what it did");
     }
     notify::send(notification);
+}
+
+/// Private mode could not do what the person asked, or something other than the shell changed it.
+/// Said as a notification so it survives the menu closing and is seen whatever screen is up.
+pub fn private_mode_notice(title: &str, body: &str) {
+    notify::send(notify::Notification::new("Yantrik", title.to_string()).body(body.to_string()).urgency(Urgency::Critical));
 }
 
 /// The mind finished saying something while the Lens was closed.

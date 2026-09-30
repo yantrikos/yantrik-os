@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """release-check — what a Yantrik OS build must pass before it is tagged.
 
-    release-check [--tier ci|rc] [--interactive] [--json FILE] [--only WORD] [--skip WORD]
+    release-check [--tier ci|rc] [--interactive] [--json FILE] [--only WORD] [--skip WORD] [--may-lock]
 
 Runs ON the machine under test, as the person's user, inside their session, and talks to the
 desktop the way everything else does: through the control surfaces, via `yos`.
@@ -22,6 +22,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import pathlib
 import shutil
 import socket
 import subprocess
@@ -108,14 +109,14 @@ def mind_switch_gate():
 
     `use_harness` is sensitive (#48): it writes the preferred-mind setting, which stands
     after a restart. In plan mode the doors that raise cards refuse it outright, and in ask
-    mode it is a card a person has to answer — only auto and bypass run it unasked, the way
+    mode it is a card a person has to answer — only auto and the two bypasses run it unasked, the way
     every mode used to. Called at the top of a check, before its loop, so a Skipped lands as
     a SKIP verdict rather than being caught as one more dead mind.
     """
     mode = BASELINE.get("mode")
     if mode == "plan":
         raise Skipped("plan mode refuses use_harness, which is sensitive (#48)")
-    if mode not in ("auto", "bypass") and not ARGS.interactive:
+    if mode not in ("auto", "bypass", "bypass_all") and not ARGS.interactive:
         raise Skipped("mode %s makes switching minds a card a person answers; "
                       "run with --interactive" % mode)
 
@@ -132,7 +133,7 @@ def switch_mind(mid):
     so the run asks a person at most once.
     """
     mind_switch_gate()
-    if BASELINE.get("mode") not in ("auto", "bypass") and not _MIND_CARD_ANNOUNCED:
+    if BASELINE.get("mode") not in ("auto", "bypass", "bypass_all") and not _MIND_CARD_ANNOUNCED:
         _MIND_CARD_ANNOUNCED.append(mid)
         print("\n   >>> A card is going up for shell.use_harness — sensitive, because it writes the "
               "preferred-mind setting (#48). Press ALLOW FOR THIS SESSION on the VM and the "
@@ -147,6 +148,26 @@ def switch_mind(mid):
 BASELINE = {}
 
 
+def take_baseline():
+    """What the machine looked like before any check ran: its windows, its problem records, the
+    active mind and the mode. Taken once, at the start, whatever `--only` picks. The checks that
+    compare against it used to find it filled in by the first two checks, so `--only "nothing
+    crashed"` compared against nothing and called every record on file new (VM 520, 2026-09-27)."""
+    try:
+        st = shell().get("state", {})
+    except Exception:  # noqa: BLE001 -- the first check says what is wrong with the shell
+        return
+    BASELINE["windows"] = {w.get("title") for w in st.get("windows", [])}
+    BASELINE["problems"] = {p.get("id") or json.dumps(p) for p in st.get("problems", [])}
+    BASELINE["mind"] = next((m.get("id") for m in st.get("minds", []) if m.get("active")), None)
+    try:
+        doc = json.load(open(os.path.expanduser("~/.config/yantrik/mind-mode.json")))
+    except (OSError, ValueError):
+        return
+    if doc.get("mode") in ("plan", "ask", "auto", "bypass", "bypass_all"):
+        BASELINE["mode"] = doc["mode"]
+
+
 @check("the shell answers, and says which build it is")
 def _shell():
     d = shell()
@@ -159,9 +180,6 @@ def _shell():
         raise Failed("the shell says %s but this machine's BUILD says %s — the shell read it before the "
                      "last install and has not restarted, or the install did not record itself"
                      % (st.get("version"), recorded))
-    BASELINE["windows"] = {w.get("title") for w in st.get("windows", [])}
-    BASELINE["problems"] = {p.get("id") or json.dumps(p) for p in st.get("problems", [])}
-    BASELINE["mind"] = next((m.get("id") for m in st.get("minds", []) if m.get("active")), None)
     return "version %s, %d actions, screen %s" % (st.get("version"), len(d.get("actions", [])), st.get("screen"))
 
 
@@ -171,10 +189,33 @@ def _mode_file():
     if not os.path.exists(path):
         raise Failed("%s is missing: apps would all read Ask, whatever the person chose" % path)
     doc = json.load(open(path))
-    if doc.get("mode") not in ("plan", "ask", "auto", "bypass"):
+    if doc.get("mode") not in ("plan", "ask", "auto", "bypass", "bypass_all"):
         raise Failed("mode %r is not one this OS defines" % doc.get("mode"))
+    # The mode alone proves nothing: the apps trust the file only while the shell it names is
+    # running, in this boot, and read any other file as Ask whatever mode it says (#154,
+    # #333). So the name is checked against the shell that is actually running — a stale file
+    # here means every dispatch on this machine is enforcing Ask while the chip shows
+    # something else.
+    pid = shell_pid()
+    if pid is None:
+        raise Failed("no yantrik-ui process is running for the mode file to name")
+    stat = open("/proc/%d/stat" % pid).read().rsplit(")", 1)[1].split()
+    boot = open("/proc/sys/kernel/random/boot_id").read().strip()
+    problems = []
+    if doc.get("shell_pid") != pid:
+        problems.append("names shell_pid %r, and the shell running is pid %d"
+                        % (doc.get("shell_pid"), pid))
+    if doc.get("shell_start_ticks") != int(stat[19]):
+        problems.append("names shell_start_ticks %r, and the kernel gives pid %d %s"
+                        % (doc.get("shell_start_ticks"), pid, stat[19]))
+    if doc.get("boot_id") != boot:
+        problems.append("names boot_id %r, and this boot is %s" % (doc.get("boot_id"), boot))
+    if problems:
+        raise Failed("mind-mode.json does not name the running shell: %s — apps would all "
+                     "read Ask, whatever the person chose" % "; ".join(problems))
     BASELINE["mode"] = doc["mode"]
-    return "mode %s" % doc["mode"]
+    return "mode %s, and the file names the shell that is running (pid %d, this boot)" % (
+        doc["mode"], pid)
 
 
 # The commands the image is built to ship, and what each one is for on a Yantrik machine.
@@ -192,7 +233,47 @@ IMAGE_COMMANDS = {
     "python3": "yos itself is a python3 script",
     "nano": "EDITOR, exported by yantrik-session",
     "htop": "the process view beside the System Monitor app",
+    "swaybg": "the wallpaper, and the label Mind View shows while it is empty",
+    "git": "the developer's baseline: the image once removed it after building llama.cpp (#401)",
+    "podman": "the runtime the Container Manager app runs, rootless, as the person (#401)",
+    "newuidmap": "rootless podman's user mapping (uidmap)",
+    "pasta": "rootless podman's network (passt)",
+    "fuse-overlayfs": "rootless podman's storage where the kernel's overlay cannot be used",
+    "flatpak": "the Package Manager's Flathub apps, installed per-user (#399)",
 }
+
+
+def _subid_total(path, name, uid):
+    total = 0
+    try:
+        lines = pathlib.Path(path).read_text().splitlines()
+    except OSError:
+        return 0
+    for line in lines:
+        parts = line.strip().split(":")
+        if len(parts) >= 3 and parts[0] in (name, str(uid)) and parts[2].isdigit():
+            total += int(parts[2])
+    return total
+
+
+@check("this account can run rootless containers: subordinate ids and shell completion are in place")
+def _rootless_podman():
+    # #401: podman maps a container's users onto the account's ranges in /etc/subuid and
+    # /etc/subgid; with none, most pulls fail with "insufficient UIDs or GIDs". The image and the
+    # installers give each account one, and yantrik-update reconcile gives one to an account
+    # made before they did.
+    import pwd
+    uid = os.getuid()
+    name = pwd.getpwuid(uid).pw_name
+    short = ["%s has %d" % (p, n) for p, n in
+             (("/etc/subuid", _subid_total("/etc/subuid", name, uid)),
+              ("/etc/subgid", _subid_total("/etc/subgid", name, uid))) if n < 65536]
+    if short:
+        raise Failed("%s: fewer than 65536 subordinate ids (%s); yantrik-update reconcile adds a range"
+                     % (name, "; ".join(short)))
+    if not pathlib.Path("/usr/share/bash-completion/bash_completion").is_file():
+        raise Failed("bash-completion is not installed; yantrik-update reconcile installs it")
+    return "%s owns a full subuid and subgid range; bash-completion present" % name
 
 
 @check("every command the image ships is installed and answers on PATH")
@@ -203,6 +284,21 @@ def _image_commands():
                      "reconcile installs the packages behind them (%s)"
                      % (", ".join(missing), "; ".join(IMAGE_COMMANDS[m] for m in missing)))
     return "%d/%d present: %s" % (len(IMAGE_COMMANDS), len(IMAGE_COMMANDS), " ".join(sorted(IMAGE_COMMANDS)))
+
+
+@check("the browser can open Save and Upload dialogs: a FileChooser portal is installed")
+def _file_chooser():
+    # #33: the wlr portal backend has no file picker, and with nothing else installed Chromium's
+    # Save and Upload found no org.freedesktop.portal.FileChooser. The gtk backend supplies it,
+    # and labwc's labwc-portals.conf (default=wlr;*) routes to it. No command to look for on
+    # PATH, so the backend's own declaration is what is checked.
+    portals = pathlib.Path("/usr/share/xdg-desktop-portal/portals")
+    offering = [p.name for p in sorted(portals.glob("*.portal"))
+                if "org.freedesktop.impl.portal.FileChooser" in p.read_text(errors="replace")]
+    if not offering:
+        raise Failed("no portal backend offers FileChooser in %s, so Save and Upload open nothing; "
+                     "yantrik-update reconcile installs xdg-desktop-portal-gtk" % portals)
+    return "FileChooser from %s" % ", ".join(offering)
 
 
 @check("every action on every surface declares a grade")
@@ -363,7 +459,7 @@ def _screens():
 @check("a sensitive act without a grant is refused on every door")
 def _gate():
     mode = BASELINE.get("mode", "ask")
-    if mode in ("auto", "bypass"):
+    if mode in ("auto", "bypass", "bypass_all"):
         raise Skipped("the machine is in %s mode, where sensitive acts run unasked by design" % mode)
     act("shell", "open_app", name="studio")
     if not wait(lambda: rpc("studio", "app.describe", timeout=10), 30, 2):
@@ -632,7 +728,7 @@ def _browser():
 
 @check("a sensitive act through `yos` asks, and runs once a person allows it", tier="rc", interactive=True)
 def _allow():
-    if BASELINE.get("mode") in ("auto", "bypass"):
+    if BASELINE.get("mode") in ("auto", "bypass", "bypass_all"):
         raise Skipped("mode %s runs it unasked" % BASELINE.get("mode"))
     act("shell", "open_app", name="studio")
     wait(lambda: rpc("studio", "app.describe", timeout=10), 30, 2)
@@ -709,7 +805,11 @@ def _locked():
     # this is the check that it holds on a shipped machine. It runs last because it leaves the
     # machine locked and nothing on this socket can undo that — which is the fix. The boottest's
     # QEMU is thrown away afterwards; on a real machine a person unlocks at the keyboard, and the
-    # manual list already says so.
+    # manual list already says so. So it runs only when asked to (--may-lock): on a shared test
+    # machine a run left it locked twice, with the person away from the keyboard.
+    if not ARGS.may_lock:
+        raise Skipped("it leaves this machine locked until a person signs in; pass --may-lock "
+                      "on a machine that is thrown away afterwards, or with someone at the keyboard")
     if state().get("screen") not in ("lock", "login"):
         act("shell", "lock", timeout=15)
         if not wait(lambda: state().get("screen") == "lock", 15):
@@ -756,6 +856,7 @@ def main():
     started = time.time()
     tiers = ("ci",) if ARGS.tier == "ci" else ("ci", "rc")
     print("release-check — tier %s%s" % (ARGS.tier, ", interactive" if ARGS.interactive else ""), flush=True)
+    take_baseline()
     for c in CHECKS:
         if c["tier"] not in tiers or (c["interactive"] and not ARGS.interactive):
             continue
@@ -794,5 +895,7 @@ if __name__ == "__main__":
     ap.add_argument("--json")
     ap.add_argument("--only", action="append", default=[])
     ap.add_argument("--skip", action="append", default=[], help="skip apps whose id contains this")
+    ap.add_argument("--may-lock", action="store_true",
+                    help="run the check that locks the desktop, which only a person can undo")
     ARGS = ap.parse_args()
     main()

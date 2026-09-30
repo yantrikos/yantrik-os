@@ -152,7 +152,7 @@ takes its writable layer with it and is `dangerous`.
 
 **The description counts too.** Say in it when an action cannot be taken back — "It is not
 recoverable", "cannot be undone", "permanently" (the spec lists the seven phrases). The dispatch
-reads it: in every mode but bypass, such an action is asked about whatever its grade above `safe`,
+reads it: in every mode but full bypass (`bypass_all`) — plain bypass included — such an action is asked about whatever its grade above `safe`,
 and no session rule covers it. Calendar's `delete_event` is `sensitive` and says so; before this
 rule reached the dispatch, `yos act` ran it in auto with nobody asked while the MCP bridge and the
 shell would have asked.
@@ -210,9 +210,17 @@ The same token decides which agent's pane an approval card is drawn in (`request
 it on `Verified.agent`, and the card names it), and who is asking for `new_agent` (sensitive),
 `send_to_agent` and `stop_agent` (standard), and `read_agent` and `show_agent` (safe) —
 `control_agents.rs`. A call with no token is the person's; one whose token is not believed is
-refused. `consume_approval` refuses a grant asked for another agent when the caller carries a
-token. An app's own dispatch spends a grant without one (#116), so a grant is not yet bound to
-its agent on that path.
+refused. `consume_approval` binds a spend to the asking agent (#182): a caller that carries a
+token spends only the grants asked for it, whichever door the spend comes through. A Rust app
+forwarding a spend sends the pid the kernel stamped on the call its token arrived in as
+`caller_pid`, because the peer of the forwarded call is the app itself — and the shell honours
+that pid only when the forwarding process's executable, as `/proc` names it, is called like one
+of the desktop's own binaries (`yantrik-*` or `*-service`); a direct caller is judged by its own
+kernel pid, never by one it wrote. The check is a file name: it keeps one agent from spending
+another's grant, but code running as the person's own user can copy or exec a binary with such
+a name and forward a pid it chose — the same-user limit #154 describes. Python SDK spends
+(Blender, LibreOffice) do not forward the token and are unbound, as are spends that carry no
+token at all.
 
 `shell.run_recipe {recipe, inputs?}` starts a recipe — a formation among them, whose Agent steps
 hand work to catalog roles through `hand_off` (see [harness.md](harness.md), Formations). It is
@@ -301,8 +309,8 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | arcade | `new_character`, `new_game`, `update_game`, `update_character`, `build`, `play`, `verify`, `screenshot` | standard | editing and building library content, editable again |
 | arcade | `delete` | sensitive | destroys the one named game |
 | calendar | `select_day`, `show_month`, `go_to_today`, `set_view` | standard | moving around the calendar |
-| calendar | `add_event`, `update_event`, `delete_own_event` | standard | content, paired: what `add_event` writes, `delete_own_event` takes back |
-| calendar | `delete_event` | sensitive | no trash — the file the event lives in is removed, and its description says it is not recoverable |
+| calendar | `add_event`, `update_own_event`, `delete_own_event` | standard | content, paired: what `add_event` writes, `update_own_event` moves and `delete_own_event` takes back — the caller's own events, by the #201 record |
+| calendar | `update_event`, `delete_event` | sensitive | reach any stored event — the person's own, a Google-synced one, another caller's — so the person sees a card (#332); a delete has no trash, and its description says the event is not recoverable |
 | containers | `refresh`, `start`, `show_logs` | standard | reads, and starting what is stopped |
 | containers | `stop`, `restart` | sensitive | interrupts what the container was serving |
 | containers | `remove` | dangerous | the writable layer goes with it |
@@ -380,6 +388,25 @@ changes anything, and the graded `app.act` action that does the same thing where
 a row here has no method behind it, so a new method — mutating or not — cannot join a service
 until somebody has written down what it is beside the gate.
 
+Two services took an interim step in the meantime (#332): the calendar and network sockets answer
+their raw methods only to a process the kernel's peer credentials identify as one of the desktop's
+own binaries — `/proc/<pid>/exe` pointing at a `yantrik-*` program — and refuse anything else with
+a sentence pointing at `app.act`, which still answers any caller under the ceiling, the mode and
+the grant. That is a check of the executable, not of the person: code running as the same user can
+be the shell's own child and wear its name, so the #154 limits stand, and what each method is
+worth stays with #43. The table below lists every method all the same — a peer check is not a
+grade, and it records what stands beside both until the methods themselves can be gated.
+
+Three more took the same step for the methods that change something (#161): System Monitor's
+`sysmon.kill_process`, every Notes method that writes a note, and every Email method that sends,
+moves, deletes, marks or stores (`email.send_message` has no graded door at all, on purpose). They
+answer `yantrik` (the CLI), the shell and every app (`yantrik-*`) and the services (`*-service`),
+the check `yantrik_ipc_transport::owner::desktop_programs_only` makes, and refuse anything else
+with `-32001` and a sentence pointing at `app.act`. Their reading methods stay open to any caller:
+they change nothing, and probes and scripts read them. Notifications, a11y and the rest are
+unchanged for now: `yos notify` calls `notifications.add` itself, and `scripts/a11y-probe.sh`
+calls `a11y.act`.
+
 <!-- service-methods: kept honest by `python3 -m unittest discover -s tests/service-methods`, which reads every service's dispatch and holds the two lists together. `read` changes nothing that outlives the call; `change` does. -->
 | Service | Method | | Gated `app.act` beside it | What it is, and who calls it |
 | --- | --- | --- | --- | --- |
@@ -392,7 +419,7 @@ until somebody has written down what it is beside the gate.
 | network | `network.wifi_state` | read | — | |
 | network | `network.wifi_known` | read | — | |
 | network | `network.firewall` | read | — | |
-| network | `network.wifi_scan` | change | `wifi_scan` (app) — standard | asks the radio to rescan |
+| network | `network.wifi_scan` | change | `wifi_scan` (app) — standard | asks the radio to rescan; both doors share one gate of at most one rescan per ten seconds (#332) |
 | network | `network.wifi_radio` | change | `wifi_radio` (app) — dangerous | turns Wi-Fi off; on a machine reached over Wi-Fi, takes away the channel the undo would travel on |
 | network | `network.wifi_connect` | change | `wifi_connect` (app) — sensitive | joins a network, storing the credential |
 | network | `network.dns_set` | change | none | writes the machine's resolvers. The gated door is the companion's `network_dns_set` tool (sensitive), not an action |
@@ -402,7 +429,7 @@ until somebody has written down what it is beside the gate.
 | calendar | `calendar.get_event` | read | — | |
 | calendar | `calendar.revision` | read | — | |
 | calendar | `calendar.create_event` | change | `add_event` (app) — standard | writes an event file |
-| calendar | `calendar.update_event` | change | `update_event` (app) — standard | rewrites an event file |
+| calendar | `calendar.update_event` | change | `update_event` (app) — sensitive, `update_own_event` (app) — standard | rewrites an event file; the app's split of #332/#201 decides which of the two a caller gets |
 | calendar | `calendar.delete_event` | change | `delete_event` (app) — sensitive | removes the file the event lives in; no trash |
 | calendar | `calendar.upsert_remote` | change | none | stores what a CalDAV sync fetched; the companion's sync is the graded door in front of it |
 | notes | `notes.list` | read | — | the library, enumerated |

@@ -14,7 +14,7 @@ publishing a **surface**: a unix socket on which it answers two questions.
 
 Every call to `app.act` meets the same rule, whoever sent it: the action's grade (`safe` <
 `standard` < `sensitive` < `dangerous`) against the machine's **ceiling**, the person's **mode**
-(`plan`, `ask`, `auto`, `bypass`), and any **grant** — a person's Allow for exactly one call. You
+(`plan`, `ask`, `auto`, `bypass`, `bypass_all`), and any **grant** — a person's Allow for exactly one call. You
 do not write that rule. The SDK carries it, in Rust and in Python, word for word the same, and so
 does every door a mind comes through.
 

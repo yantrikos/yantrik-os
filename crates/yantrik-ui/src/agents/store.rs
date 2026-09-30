@@ -173,6 +173,7 @@ impl Store {
                     approvals_asked: 0,
                     approvals_answered: 0,
                     pending_approvals: Vec::new(),
+                    job_waits: false,
                     seq,
                     touched: now,
                     next_turn: 1,
@@ -192,6 +193,18 @@ impl Store {
         self.removed.insert(id.clone());
         self.revision += 1;
         true
+    }
+
+    /// The person said something to a mind in the chat (the Lens): a turn begins that is chat,
+    /// not agent work. It is listed in Agents as a run only if it goes on to do work.
+    pub fn open_chat_turn(&mut self, id: &AgentId, prompt: &str) {
+        self.open_turn(id, prompt);
+        if let Some(i) = self.index(id) {
+            if let Some(t) = self.agents[i].turns.last_mut() {
+                t.origin = TurnOrigin::Chat;
+            }
+            self.mark(i);
+        }
     }
 
     /// The person (or a parent agent) said something to this agent: a turn begins.
@@ -219,6 +232,8 @@ impl Store {
             started: now,
             ended: None,
             ok: None,
+            lost: false,
+            origin: TurnOrigin::Agent,
             items: Vec::new(),
             events: false,
             trail_seq: 0,
@@ -300,6 +315,46 @@ impl Store {
         }
         set_state(agent, state, now);
         self.mark(i);
+    }
+
+    /// Which agents have a terminal job sitting at its prompt, as the shell's tick sees it
+    /// (#182). A job waiting on the person's keyboard waits on the person exactly like an
+    /// approval card does, and the list sorts the two alike: an agent with any job waiting goes
+    /// to `WaitingForYou`, and comes back when none waits by the same rule a settled card uses.
+    /// A repeated unchanged report changes nothing — the tick runs four times a second, and a
+    /// job still waiting is not news, so it neither re-stamps `since` nor redraws the row.
+    pub fn jobs_waiting(&mut self, waiting: &[AgentId]) {
+        for id in waiting {
+            self.known(id);
+        }
+        let now = self.now();
+        for i in 0..self.agents.len() {
+            let waits = waiting.contains(&self.agents[i].meta.id);
+            let agent = &mut self.agents[i];
+            if waits {
+                if agent.job_waits && agent.state == State::WaitingForYou {
+                    continue;
+                }
+                agent.job_waits = true;
+                set_state(agent, State::WaitingForYou, now);
+            } else if agent.job_waits {
+                agent.job_waits = false;
+                // The card's own rule for coming back, with nothing left holding the row.
+                if agent.state == State::WaitingForYou && agent.pending_approvals.is_empty() {
+                    let next = if agent.cards().any(Card::running) {
+                        State::RunningTool
+                    } else if agent.open_turn().is_some() {
+                        State::Thinking
+                    } else {
+                        State::Idle
+                    };
+                    set_state(agent, next, now);
+                }
+            } else {
+                continue;
+            }
+            self.mark(i);
+        }
     }
 
     // ── Beyond the five: what the text path and the approval card add ──
@@ -511,24 +566,195 @@ impl Store {
             // belongs in the session.
             None => turn_for_verified(agent, now).items.push(Item::Note(line)),
         }
-        if agent.state == State::WaitingForYou && agent.pending_approvals.is_empty() {
-            let next = if agent.cards().any(Card::running) {
-                State::RunningTool
-            } else if agent.open_turn().is_some() {
-                State::Thinking
-            } else {
-                State::Idle
-            };
-            set_state(agent, next, now);
-        }
+        // Back to work only when nothing else holds the row: a terminal job still at its prompt
+        // keeps it waiting on the person (#182), and `jobs_waiting` brings it back instead.
+        back_to_work(agent, now);
         self.mark(i);
     }
 
+    /// The person answered the agent's question `request` through its card. `false` when there is
+    /// no such question still waiting (answered, closed, or never asked), so nothing changed.
+    pub fn question_answered(&mut self, id: &AgentId, request: &str, answer: &str) -> bool {
+        let Some(i) = self.index(id) else { return false };
+        let now = self.now();
+        let agent = &mut self.agents[i];
+        let Some(question) = agent
+            .turns
+            .iter_mut()
+            .rev()
+            .flat_map(|t| t.items.iter_mut().rev())
+            .find_map(|item| match item {
+                Item::Question(q) if q.request == request && q.waiting() => Some(q),
+                _ => None,
+            })
+        else {
+            return false;
+        };
+        question.answer = answer.to_string();
+        agent.status.clear();
+        back_to_work(agent, now);
+        self.mark(i);
+        true
+    }
+
+    /// The answer could not be delivered (the run ended, its harness left): the question stays in
+    /// the session, closed, with why.
+    pub fn question_closed(&mut self, id: &AgentId, request: &str, why: &str) {
+        let Some(i) = self.index(id) else { return };
+        let now = self.now();
+        let agent = &mut self.agents[i];
+        for item in agent.turns.iter_mut().flat_map(|t| t.items.iter_mut()) {
+            if let Item::Question(q) = item {
+                if q.request == request && q.waiting() {
+                    q.closed = why.to_string();
+                }
+            }
+        }
+        back_to_work(agent, now);
+        self.mark(i);
+    }
+}
+
+/// One row of the Agents list: an agent, or one run of a mind's chat (`agent#n`).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RowKey {
+    pub agent: AgentId,
+    pub run: Option<u64>,
+}
+
+impl RowKey {
+    pub fn agent(id: &AgentId) -> RowKey {
+        RowKey { agent: id.clone(), run: None }
+    }
+
+    pub fn run(id: &AgentId, n: u64) -> RowKey {
+        RowKey { agent: id.clone(), run: Some(n) }
+    }
+
+    /// The row's id on screen: the agent's id, or `agent#n` for a run.
+    pub fn id(&self) -> String {
+        match self.run {
+            Some(n) => format!("{}#{n}", self.agent.0),
+            None => self.agent.0.clone(),
+        }
+    }
+
+    /// A row id back into its key.
+    pub fn parse(id: &str) -> RowKey {
+        match id.rsplit_once('#').and_then(|(a, n)| n.parse().ok().map(|n| (a, n))) {
+            Some((agent, n)) => RowKey { agent: AgentId(agent.to_string()), run: Some(n) },
+            None => RowKey { agent: AgentId(id.to_string()), run: None },
+        }
+    }
+}
+
+/// Whether the person still owes this agent an answer: an approval, a job at its prompt (#182),
+/// or a question it asked.
+fn waits_on_person(agent: &Agent) -> bool {
+    !agent.pending_approvals.is_empty()
+        || agent.job_waits
+        || agent.turns.iter().flat_map(|t| t.items.iter()).any(|i| matches!(i, Item::Question(q) if q.waiting()))
+}
+
+/// Back to work once nothing holds the row on the person.
+fn back_to_work(agent: &mut Agent, now: u64) {
+    if agent.state == State::WaitingForYou && !waits_on_person(agent) {
+        let next = if agent.cards().any(Card::running) {
+            State::RunningTool
+        } else if agent.open_turn().is_some() {
+            State::Thinking
+        } else {
+            State::Idle
+        };
+        set_state(agent, next, now);
+    }
+}
+
+impl Store {
     // ── Reading ─────────────────────────────────────────────────────
 
     /// How many agents each tab lists, in [`Tab::EVERY`] order.
     pub fn counts(&self) -> [usize; 4] {
-        Tab::EVERY.map(|tab| self.agents.iter().filter(|a| tab.holds(a.state)).count())
+        Tab::EVERY.map(|tab| self.rows(tab, None).len())
+    }
+
+    /// The Agents list's rows under `tab`, in the order to draw them.
+    ///
+    /// Chat and agents are different things (Pranab, 27 September). A mind's main conversation
+    /// is the person's chat with it, so it is not one agent row: each of its requests that did
+    /// work (a call, a question, an approval) is its own run row, "from chat", and plain
+    /// conversation stays with the chat. An agent started as one (New agent, a recipe, a
+    /// hand-off) is a row as before. Each row is judged by its own state: a run that finished is
+    /// Complete even while its mind works on the next.
+    ///
+    /// Newest first; under Active, what needs the person first. While the pointer is over the list
+    /// `hold` is the order on screen, kept, with rows that left the tab taken out and new ones
+    /// added at the bottom (design decision 4).
+    pub fn rows(&self, tab: Tab, hold: Option<&[RowKey]>) -> Vec<RowKey> {
+        let mut all: Vec<(RowKey, u64, bool)> = Vec::new(); // (row, started, needs the person)
+        for a in &self.agents {
+            if a.is_plain_main() {
+                for t in a.turns.iter().filter(|t| a.is_run(t)) {
+                    let open = t.open();
+                    let needs = open && (a.state == State::WaitingForYou || self.stuck(a));
+                    let held = match tab {
+                        Tab::Active => open,
+                        Tab::NeedsYou => needs,
+                        Tab::Complete => !open,
+                        Tab::All | Tab::Tasks => true,
+                    };
+                    if held {
+                        all.push((RowKey::run(&a.meta.id, t.n), t.started, needs));
+                    }
+                }
+            } else if self.in_tab(tab, a) {
+                let needs = a.state == State::WaitingForYou || self.stuck(a);
+                all.push((RowKey::agent(&a.meta.id), a.meta.started, needs));
+            }
+        }
+        all.sort_by(|x, y| y.1.cmp(&x.1));
+        if tab == Tab::Active {
+            all.sort_by_key(|(_, _, needs)| !needs);
+        }
+        let wanted: Vec<RowKey> = all.into_iter().map(|(k, _, _)| k).collect();
+        match hold {
+            None => wanted,
+            Some(on_screen) => {
+                let mut kept: Vec<RowKey> = on_screen.iter().filter(|k| wanted.contains(k)).cloned().collect();
+                for k in wanted {
+                    if !kept.contains(&k) {
+                        kept.push(k);
+                    }
+                }
+                kept
+            }
+        }
+    }
+
+    /// Whether `a` is listed under `tab`. Needs you holds what waits on the person *and* what is
+    /// stuck (#234): a stuck task is still thinking or running a tool by its state, but it is the
+    /// person it now needs, and it was found nowhere they look for that.
+    fn in_tab(&self, tab: Tab, a: &Agent) -> bool {
+        tab.holds(a.state) || (tab == Tab::NeedsYou && self.stuck(a))
+    }
+
+    /// Whether the shell judges `a` stuck now (`progress::of`, on this store's clock).
+    fn stuck(&self, a: &Agent) -> bool {
+        super::progress::of(a, self.now()).is_some_and(|p| p.stuck.is_some())
+    }
+
+
+    /// The Tasks tab's rows (#234): every request a person or an agent made, newest first, as
+    /// `(agent, turn)`, at most `limit`. A turn with no prompt is the shell's own account of
+    /// something outside any request, and is not a task.
+    pub fn tasks(&self, limit: usize) -> Vec<(AgentId, u64)> {
+        let mut all: Vec<(&Agent, &Turn)> = self
+            .agents
+            .iter()
+            .flat_map(|a| a.turns.iter().filter(|t| !t.prompt.trim().is_empty() && a.is_run(t)).map(move |t| (a, t)))
+            .collect();
+        all.sort_by(|(a1, t1), (a2, t2)| t2.started.cmp(&t1.started).then(a2.seq.cmp(&a1.seq)).then(t2.n.cmp(&t1.n)));
+        all.into_iter().take(limit).map(|(a, t)| (a.meta.id.clone(), t.n)).collect()
     }
 
     /// The rows of one tab, in the order to draw them.
@@ -538,10 +764,11 @@ impl Store {
     /// left the tab taken out and new ones added at the bottom. A row must not move under a
     /// pointer that is about to click it (design decision 4).
     pub fn list(&self, tab: Tab, hold: Option<&[AgentId]>) -> Vec<AgentId> {
-        let mut rows: Vec<&Agent> = self.agents.iter().filter(|a| tab.holds(a.state)).collect();
+        let mut rows: Vec<&Agent> = self.agents.iter().filter(|a| self.in_tab(tab, a)).collect();
         rows.sort_by(|a, b| b.meta.started.cmp(&a.meta.started).then(b.seq.cmp(&a.seq)));
         if tab == Tab::Active {
-            rows.sort_by_key(|a| a.state != State::WaitingForYou);
+            // What needs the person first: waiting on them, or stuck.
+            rows.sort_by_key(|a| a.state != State::WaitingForYou && !self.stuck(a));
         }
         let wanted: Vec<AgentId> = rows.iter().map(|a| a.meta.id.clone()).collect();
         match hold {
@@ -651,6 +878,11 @@ impl Store {
                     // the agent said, and a reader asking for the session wants the session.
                     Item::Thinking(_) => {}
                     Item::Note(note) => out.push(format!("(the desktop: {note})")),
+                    Item::Question(q) => out.push(match (q.answer.as_str(), q.closed.as_str()) {
+                        ("", "") => format!("[asked the person] {} — waiting for an answer", q.prompt),
+                        ("", why) => format!("[asked the person] {} — not answered: {why}", q.prompt),
+                        (answer, _) => format!("[asked the person] {} — answered: {answer}", q.prompt),
+                    }),
                     Item::Approval(a) => out.push(match a.outcome {
                         ApprovalOutcome::Pending => format!("[asked the person] {} — waiting for an answer", a.what),
                         _ => format!("[asked the person] {} — {}", a.what, a.record),
@@ -865,6 +1097,8 @@ fn turn_for_verified(agent: &mut Agent, now: u64) -> &mut Turn {
             started: now,
             ended: Some(now),
             ok: None,
+            lost: false,
+            origin: TurnOrigin::Agent,
             items: Vec::new(),
             events: false,
             trail_seq: 0,
@@ -916,6 +1150,7 @@ fn what_event(event: &Event) -> String {
         Event::Thinking { .. } => "some thinking".to_string(),
         Event::Status { text } => format!("a status line ({})", clip_text(text, 40)),
         Event::Usage { .. } => "a usage report".to_string(),
+        Event::Request { prompt, .. } => format!("a question ({})", clip_text(prompt, 40)),
     }
 }
 
@@ -999,6 +1234,24 @@ fn apply(agent: &mut Agent, event: &Event, provenance: Provenance, now: u64) -> 
             append(&mut turn.items, cap(delta), true);
         }
         Event::Status { text } => agent.status = cap(text).to_string(),
+        // The agent asked the person something (#25): it waits, and says what it asked. The
+        // question itself is kept by the host's run store, which alone takes the answer.
+        Event::Request { request_id, prompt, options } => {
+            let turn = turn_for(agent, provenance, now);
+            let known = turn.items.iter().any(|i| matches!(i, Item::Question(q) if q.request == *request_id));
+            if !known {
+                turn.items.push(Item::Question(Question {
+                    request: request_id.clone(),
+                    prompt: prompt.clone(),
+                    options: options.clone(),
+                    answer: String::new(),
+                    closed: String::new(),
+                    asked: now,
+                }));
+            }
+            agent.status = cap(&format!("asks: {prompt}")).to_string();
+            set_state(agent, State::WaitingForYou, now);
+        }
         Event::Usage { model, input_tokens, output_tokens, cost_usd } => {
             let usage = &mut agent.usage;
             usage.reported = true;
@@ -1143,6 +1396,10 @@ struct TurnRecord {
     ok: Option<bool>,
     #[serde(default)]
     events: bool,
+    #[serde(default)]
+    lost: bool,
+    #[serde(default)]
+    origin: TurnOrigin,
     items: Vec<ItemRecord>,
 }
 
@@ -1154,6 +1411,20 @@ enum ItemRecord {
     Note(String),
     Card(CardRecord),
     Approval(ApprovalRecord),
+    Question(QuestionRecord),
+}
+
+#[derive(Serialize, Deserialize)]
+struct QuestionRecord {
+    request: String,
+    prompt: String,
+    #[serde(default)]
+    options: Vec<String>,
+    #[serde(default)]
+    answer: String,
+    #[serde(default)]
+    closed: String,
+    asked: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1236,6 +1507,14 @@ fn serialize(agent: &Agent) -> String {
                 Item::Text(t) => ItemRecord::Text(t.last(PERSIST_BYTES)),
                 Item::Thinking(t) => ItemRecord::Thinking(t.last(PERSIST_BYTES)),
                 Item::Note(n) => ItemRecord::Note(n.clone()),
+                Item::Question(q) => ItemRecord::Question(QuestionRecord {
+                    request: q.request.clone(),
+                    prompt: q.prompt.clone(),
+                    options: q.options.clone(),
+                    answer: q.answer.clone(),
+                    closed: q.closed.clone(),
+                    asked: q.asked,
+                }),
                 Item::Approval(a) => ItemRecord::Approval(ApprovalRecord {
                     request: a.request.clone(),
                     what: a.what.clone(),
@@ -1271,6 +1550,8 @@ fn serialize(agent: &Agent) -> String {
             started: turn.started,
             ended: turn.ended,
             ok: turn.ok,
+            lost: turn.lost,
+            origin: turn.origin,
             events: turn.events,
             items,
         });
@@ -1313,6 +1594,9 @@ fn parse(text: &str, now: u64) -> Option<Agent> {
         approvals_asked: record.approvals_asked,
         approvals_answered: record.approvals_answered,
         pending_approvals: Vec::new(),
+        // A job that waited before a restart is not waiting now: nothing survived to hold the
+        // prompt. The shell's next tick says otherwise if one somehow is.
+        job_waits: false,
         seq: 0,
         touched: record.touched,
         next_turn: record.next_turn,
@@ -1327,6 +1611,19 @@ fn parse(text: &str, now: u64) -> Option<Agent> {
                 ItemRecord::Text(t) => Item::Text(Capped::restore(TEXT_CAP, &t, t.len() as u64, 0)),
                 ItemRecord::Thinking(t) => Item::Thinking(Capped::restore(TEXT_CAP, &t, t.len() as u64, 0)),
                 ItemRecord::Note(n) => Item::Note(n),
+                // Its run was orphaned when the desktop stopped, so nobody can answer it now.
+                ItemRecord::Question(q) => Item::Question(Question {
+                    closed: if q.answer.is_empty() && q.closed.is_empty() {
+                        "the desktop restarted while it waited".to_string()
+                    } else {
+                        q.closed
+                    },
+                    request: q.request,
+                    prompt: q.prompt,
+                    options: q.options,
+                    answer: q.answer,
+                    asked: q.asked,
+                }),
                 // A request still waiting when the shell stopped is gone with the shell: requests
                 // are held in memory, so nobody can answer it now, and it is never drawn with
                 // buttons again.
@@ -1366,6 +1663,8 @@ fn parse(text: &str, now: u64) -> Option<Agent> {
             started: turn.started,
             ended: turn.ended,
             ok: turn.ok,
+            lost: turn.lost,
+            origin: turn.origin,
             items,
             events: turn.events,
             trail_seq: 0,
@@ -1385,6 +1684,7 @@ fn parse(text: &str, now: u64) -> Option<Agent> {
             turn.items.push(Item::Note("The shell stopped while this turn was running.".into()));
             turn.ended = Some(now);
             turn.ok = Some(false);
+            turn.lost = true;
         }
     }
     if was_working {
@@ -1448,6 +1748,19 @@ mod tests {
         s.open_turn(&pi, "and the videos");
         assert_eq!(s.agent(&pi).unwrap().meta.title, "tidy the photos folder, dupes into Trash");
         assert_eq!(s.agent(&pi).unwrap().turns.len(), 2);
+    }
+
+    #[test]
+    fn a_question_from_the_agent_makes_it_wait_and_says_what_it_asked() {
+        let (mut s, _) = store();
+        let pi = id("pi:main");
+        s.open_turn(&pi, "clean up Downloads");
+        let ask = Event::Request { request_id: "r1".into(), prompt: "Delete 3 old installers?".into(), options: vec!["Allow".into(), "Deny".into()] };
+        s.event(&pi, &ask, Provenance::Reported);
+        let agent = s.agent(&pi).unwrap();
+        assert_eq!(agent.state, State::WaitingForYou);
+        assert_eq!(agent.status, "asks: Delete 3 old installers?");
+        assert!(agent.pending_approvals.is_empty(), "a question is not an OS approval and never goes to the gate");
     }
 
     #[test]
@@ -1727,6 +2040,116 @@ mod tests {
 
     /// Design decision 4, in the store: the approval is an item of the session — the request id,
     /// what was asked, how it came out — settled once; an answer counts as answered and an expiry
+    /// #234: a task the desktop's stopping cut off is lost, not failed, and stays so across later
+    /// restarts; a task that ended on its own is not.
+    #[test]
+    fn a_turn_the_shell_stopped_during_is_lost_and_stays_lost() {
+        let dir = scratch_dir("lost");
+        let (mut s, _) = store();
+        let pi = id("pi:c-lost1");
+        s.open_turn(&pi, "finished before");
+        s.close_turn(&pi, false);
+        s.open_turn(&pi, "build the town model");
+        s.save(&dir).unwrap();
+
+        let back = Store::load(&dir, Box::new(|| 1_800_000_000));
+        let turns = &back.agent(&pi).unwrap().turns;
+        assert_eq!((turns[0].lost, turns[0].ok), (false, Some(false)), "a failure of its own is still a failure");
+        assert_eq!((turns[1].lost, turns[1].ok), (true, Some(false)), "cut off by the stop: lost");
+
+        let mut back = back;
+        back.save(&dir).unwrap();
+        let again = Store::load(&dir, Box::new(|| 1_800_000_100));
+        assert!(again.agent(&pi).unwrap().turns[1].lost, "still lost after the next restart");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #234: a stuck task is listed where the person looks for what needs them, counted there,
+    /// and first under Active; once it is heard from again it leaves Needs you.
+    #[test]
+    fn a_stuck_task_is_in_needs_you_and_first_in_active() {
+        let (mut s, clock) = store();
+        let calm = id("pi:c-calm");
+        let quiet = id("deepseek:c-quiet");
+        s.open_turn(&quiet, "build the game");
+        s.open_turn(&calm, "tidy Downloads");
+        assert_eq!(s.list(Tab::NeedsYou, None), Vec::<AgentId>::new());
+
+        clock.fetch_add(crate::agents::progress::STUCK_QUIET_SECS + 10, Ordering::SeqCst);
+        s.text(&calm, "still going");
+        assert_eq!(s.list(Tab::NeedsYou, None), vec![quiet.clone()], "quiet past the limit: stuck, and it needs you");
+        let at = Tab::EVERY.iter().position(|t| *t == Tab::NeedsYou).unwrap();
+        assert_eq!(s.counts()[at], 1);
+        assert_eq!(s.list(Tab::Active, None)[0], quiet, "what needs the person comes first");
+
+        s.text(&quiet, "found it, carrying on");
+        assert!(s.list(Tab::NeedsYou, None).is_empty(), "heard from again: no longer stuck");
+    }
+
+    fn questions(s: &Store, agent: &AgentId) -> Vec<Question> {
+        s.agent(agent).unwrap().turns.iter().flat_map(|t| t.items.iter()).filter_map(|i| match i {
+            Item::Question(q) => Some(q.clone()),
+            _ => None,
+        }).collect()
+    }
+
+    fn asks(request: &str, prompt: &str) -> Event {
+        Event::Request { request_id: request.into(), prompt: prompt.into(), options: vec!["Yes".into(), "No".into()] }
+    }
+
+    /// A question waits in the session as one card, is answered once, and an approval answered
+    /// meanwhile does not take the agent out of waiting while the question still is.
+    #[test]
+    fn a_question_is_one_card_answered_once_and_holds_the_agent_waiting() {
+        let (mut s, _) = store();
+        let pi = id("pi:c-q1");
+        s.open_turn(&pi, "tidy Downloads");
+        s.event(&pi, &asks("r1", "Delete 3 installers?"), Provenance::Reported);
+        s.event(&pi, &asks("r1", "Delete 3 installers?"), Provenance::Reported);
+        assert_eq!(questions(&s, &pi).len(), 1, "the same question twice is one card");
+
+        s.approval_asked(&pi, "appr-9", "files.move");
+        s.approval_answered(&pi, "appr-9", true);
+        assert_eq!(s.agent(&pi).unwrap().state, State::WaitingForYou, "the question still holds it");
+
+        assert!(s.question_answered(&pi, "r1", "Yes"));
+        assert!(!s.question_answered(&pi, "r1", "No"), "answered once");
+        assert_eq!(questions(&s, &pi)[0].answer, "Yes");
+        assert_eq!(s.agent(&pi).unwrap().state, State::Thinking, "back to work");
+        assert!(s.transcript(&pi, 5).unwrap().contains("[asked the person] Delete 3 installers? — answered: Yes"));
+    }
+
+    #[test]
+    fn a_question_whose_answer_could_not_be_delivered_closes_with_why() {
+        let (mut s, _) = store();
+        let pi = id("pi:c-q2");
+        s.open_turn(&pi, "tidy Downloads");
+        s.event(&pi, &asks("r1", "Delete them?"), Provenance::Reported);
+        s.question_closed(&pi, "r1", "run 4 has ended (orphaned)");
+        let q = &questions(&s, &pi)[0];
+        assert_eq!((q.answer.as_str(), q.closed.as_str()), ("", "run 4 has ended (orphaned)"));
+        assert!(!q.waiting());
+        assert_eq!(s.agent(&pi).unwrap().state, State::Thinking);
+    }
+
+    #[test]
+    fn a_question_still_waiting_when_the_shell_stops_comes_back_closed() {
+        let dir = scratch_dir("questions");
+        let (mut s, _) = store();
+        let pi = id("pi:c-q3");
+        s.open_turn(&pi, "tidy Downloads");
+        s.event(&pi, &asks("r1", "Delete them?"), Provenance::Reported);
+        s.event(&pi, &asks("r2", "And the videos?"), Provenance::Reported);
+        s.question_answered(&pi, "r2", "No");
+        s.save(&dir).unwrap();
+        let back = Store::load(&dir, Box::new(|| 1_800_000_000));
+        let kept = questions(&back, &pi);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0].closed, "the desktop restarted while it waited", "never drawn with buttons again");
+        assert_eq!((kept[1].answer.as_str(), kept[1].closed.as_str()), ("No", ""), "an answered one stays answered");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// does not; and one still waiting when the shell stops comes back withdrawn, never waiting.
     #[test]
     fn an_approval_waits_in_the_session_settles_once_and_a_restart_withdraws_it() {
@@ -1822,16 +2245,63 @@ mod tests {
     }
 
     #[test]
+    fn chat_talk_is_not_listed_chat_work_is_a_run_and_an_agent_is_one_row() {
+        let (mut s, clock) = store();
+        let hermes = id("hermes:main");
+        // Talk in the chat: never an agent, never a run.
+        s.open_chat_turn(&hermes, "thanks, that's all");
+        s.text(&hermes, "You're welcome.");
+        s.close_turn(&hermes, true);
+        clock.fetch_add(1, Ordering::SeqCst);
+        // Work asked in the chat: its own run, from chat.
+        s.open_chat_turn(&hermes, "build a small game");
+        s.event(&hermes, &Event::ToolStart { call: "c1".into(), name: "os_act".into(), target: "editor".into(), args: json!({}) }, Provenance::Reported);
+        s.close_turn(&hermes, true);
+        clock.fetch_add(1, Ordering::SeqCst);
+        s.open_chat_turn(&hermes, "and a town model");
+        s.event(&hermes, &Event::ToolStart { call: "c2".into(), name: "os_act".into(), target: "editor".into(), args: json!({}) }, Provenance::Reported);
+        // An agent started as one: one row, as before.
+        clock.fetch_add(1, Ordering::SeqCst);
+        let pi = id("pi:c-9a8b7c");
+        s.open_turn(&pi, "tidy Downloads");
+
+        let all: Vec<String> = s.rows(Tab::All, None).iter().map(RowKey::id).collect();
+        assert_eq!(all, ["pi:c-9a8b7c", "hermes:main#3", "hermes:main#2"], "no row for the chat, none for its talk");
+        let active: Vec<String> = s.rows(Tab::Active, None).iter().map(RowKey::id).collect();
+        assert_eq!(active, ["pi:c-9a8b7c", "hermes:main#3"], "each run by its own state: the finished one is not active");
+        assert_eq!(s.rows(Tab::Complete, None), vec![RowKey::run(&hermes, 2)]);
+        assert_eq!(s.tasks(10).len(), 3, "the Tasks tab lists work, not talk");
+        assert_eq!(RowKey::parse("hermes:main#3"), RowKey::run(&hermes, 3));
+        assert_eq!(RowKey::parse("pi:c-9a8b7c"), RowKey::agent(&pi));
+    }
+
+    #[test]
+    fn a_session_saved_before_turns_said_where_they_came_from_reads_as_chat_on_a_mind_and_work_on_an_agent() {
+        let (mut s, _) = store();
+        let hermes = id("hermes:main");
+        s.open_turn(&hermes, "hello");
+        s.close_turn(&hermes, true);
+        for t in &mut s.agents.iter_mut().find(|a| a.meta.id == hermes).unwrap().turns {
+            t.origin = TurnOrigin::Unknown;
+        }
+        let pi = id("pi:c-1");
+        s.open_turn(&pi, "old work");
+        s.close_turn(&pi, true);
+        let all: Vec<String> = s.rows(Tab::All, None).iter().map(RowKey::id).collect();
+        assert_eq!(all, ["pi:c-1"], "the old chat turn with no work is talk; the agent is still an agent");
+    }
+
+    #[test]
     fn the_tabs_count_and_filter_the_one_list() {
         let (mut s, clock) = store();
         for (name, state) in [
-            ("a:main", State::Thinking),
-            ("b:main", State::RunningTool),
-            ("c:main", State::WaitingForYou),
-            ("d:main", State::Idle),
-            ("e:main", State::Done),
-            ("f:main", State::Failed),
-            ("g:main", State::HarnessGone),
+            ("a:c-a", State::Thinking),
+            ("b:c-b", State::RunningTool),
+            ("c:c-c", State::WaitingForYou),
+            ("d:c-d", State::Idle),
+            ("e:c-e", State::Done),
+            ("f:c-f", State::Failed),
+            ("g:c-g", State::HarnessGone),
         ] {
             clock.fetch_add(1, Ordering::SeqCst);
             s.upsert_agent(AgentMeta::new(id(name), name));
@@ -1839,8 +2309,8 @@ mod tests {
         }
         assert_eq!(s.counts(), [4, 1, 3, 7], "Active, Needs you, Complete, All");
         let names = |tab| s.list(tab, None).into_iter().map(|i| i.0).collect::<Vec<_>>();
-        assert_eq!(names(Tab::NeedsYou), vec!["c:main"]);
-        assert_eq!(names(Tab::Complete), vec!["g:main", "f:main", "e:main"], "newest first");
+        assert_eq!(names(Tab::NeedsYou), vec!["c:c-c"]);
+        assert_eq!(names(Tab::Complete), vec!["g:c-g", "f:c-f", "e:c-e"], "newest first");
         assert_eq!(names(Tab::All).len(), 7);
     }
 
@@ -1969,5 +2439,51 @@ mod tests {
         let dir = Path::new("/data/agents");
         assert_eq!(file_for(dir, &id("pi:c3")), dir.join("pi:c3.jsonl"));
         assert_eq!(file_for(dir, &id("../../etc/passwd")), dir.join("_.._etc_passwd.jsonl"));
+    }
+
+    /// A terminal job at its prompt is the person's to answer (#182): the row goes to
+    /// WaitingForYou and the Active list sorts it top, exactly like an approval card's. While
+    /// the job waits, a settled card does not send the row back to work; when the job moves on,
+    /// it goes back by the card's own rule.
+    #[test]
+    fn a_terminal_job_at_its_prompt_waits_on_the_person_like_a_card() {
+        let (mut s, clock) = store();
+        let pi = id("pi:c-182");
+        let ds = id("deepseek:c-182");
+        s.open_turn(&pi, "deploy the notes service");
+        s.open_turn(&ds, "tidy the photos folder");
+        assert_eq!(s.list(Tab::Active, None)[0], ds, "newest first, until somebody waits");
+
+        s.jobs_waiting(&[pi.clone()]);
+        assert_eq!(s.agent(&pi).unwrap().state, State::WaitingForYou);
+        assert_eq!(s.list(Tab::Active, None)[0], pi, "the row waiting on the person sorts top");
+        assert!(s.list(Tab::NeedsYou, None).contains(&pi), "and Needs you holds it");
+
+        // The tick reports the same job four times a second: still waiting is not news.
+        let (rev, since) = (s.revision(), s.agent(&pi).unwrap().since);
+        clock.fetch_add(1, Ordering::SeqCst);
+        s.jobs_waiting(&[pi.clone()]);
+        assert_eq!((s.revision(), s.agent(&pi).unwrap().since), (rev, since), "unchanged, so nothing redraws");
+
+        // A card asked and settled while the job waits leaves the row where it is.
+        s.approval_asked(&pi, "appr-182", "files.move");
+        s.approval_settled(&pi, "appr-182", ApprovalOutcome::Allowed, "");
+        assert_eq!(s.agent(&pi).unwrap().state, State::WaitingForYou, "the job is still at its prompt");
+
+        // The job moves on: back to work by the card's own rule — its turn is still open.
+        s.jobs_waiting(&[]);
+        assert_eq!(s.agent(&pi).unwrap().state, State::Thinking);
+
+        // With no job waiting, a settled card sends the row back as it always has.
+        s.approval_asked(&pi, "appr-183", "files.move");
+        s.approval_settled(&pi, "appr-183", ApprovalOutcome::Denied, "");
+        assert_eq!(s.agent(&pi).unwrap().state, State::Thinking);
+
+        // A waiting job for an agent the store has not heard of makes it known.
+        let hermes = id("hermes:c-182");
+        s.jobs_waiting(&[hermes.clone()]);
+        assert_eq!(s.agent(&hermes).unwrap().state, State::WaitingForYou);
+        s.jobs_waiting(&[]);
+        assert_eq!(s.agent(&hermes).unwrap().state, State::Idle, "no turn, no card, nothing to go back to");
     }
 }

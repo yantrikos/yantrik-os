@@ -56,6 +56,8 @@ pub(crate) fn fill(g: &AgentsState, popped: bool) {
         parent: "".into(),
         role: "".into(),
         origin: "".into(),
+        progress: "".into(),
+        stuck: "".into(),
     };
     g.set_rows(ModelRc::new(VecModel::from(vec![
         row("deepseek:main", "DeepSeek", "release notes for 0.4", "waiting_for_you", "waiting for you", "40s"),
@@ -75,6 +77,7 @@ pub(crate) fn fill(g: &AgentsState, popped: bool) {
         note: "pi holds one conversation at a time — the same one the Lens talks to.".into(),
         can_send: false,
         send_hint: "pi is working — wait, or Stop it".into(),
+        tell_hint: "".into(),
         can_stop: true,
     });
     let item = |kind: &str, key: &str, text: &str| AgentItemData {
@@ -188,6 +191,7 @@ fn red_team(g: &AgentsState) {
         note: "".into(),
         can_send: true,
         send_hint: "".into(),
+        tell_hint: "".into(),
         can_stop: false,
     });
     let mut details = g.get_details();
@@ -342,10 +346,12 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         action: "move".into(),
         summary: "Move files or folders to another place, or into the recoverable Trash.".into(),
         purpose: "Move files or folders to another place, or into the recoverable Trash.".into(),
+        caller_says: "".into(),
         grade: "sensitive".into(),
         args: lines(&["from: ~/Pictures/copy of a.jpg", "to: ~/.local/share/Trash"]),
         // Files names no handle — both arguments are paths a person can read (#54).
         target: "".into(),
+        explained: "".into(),
         warning: "".into(),
         can_session: false,
         decision: "".into(),
@@ -490,6 +496,8 @@ pub fn run_catalog(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dy
         parent: "".into(),
         role: "Reviewer".into(),
         origin: "".into(),
+        progress: "".into(),
+        stuck: "".into(),
     };
     let mut rows: Vec<AgentRowData> = slint::Model::iter(&g.get_rows()).collect();
     rows.insert(0, row);

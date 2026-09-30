@@ -42,23 +42,44 @@
 mod firewall;
 mod nmcli;
 
-use yantrik_ipc_contracts::control_surface::{describe_json, Action, View};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
 use yantrik_ipc_contracts::network::{
     method, ConnectionType, DnsConfig, DnsSetParams, DnsSetResult, FirewallState, KnownNetwork,
     NetworkInterfaceInfo, NetworkStatus, RadioState, ScannedNetwork, WifiConnectParams,
     WifiForgetParams, WifiForgetResult, WifiRadioParams, WifiScanParams, WifiState,
 };
+#[cfg(test)]
+use yantrik_service_sdk::gate::{self, Authority};
 use yantrik_service_sdk::prelude::*;
+use yantrik_service_sdk::{Action, Param, PeerCred, Surface, View};
 
 use nmcli::Trouble;
 
+/// The id this surface publishes, and the app a grant for one of its actions is bound to.
+const APP: &str = "network";
+
 fn main() {
     ServiceBuilder::new("network")
-        .handler(NetworkHandler)
+        .handler(NetworkHandler::default())
         .run();
 }
 
-struct NetworkHandler;
+struct NetworkHandler {
+    /// `app.describe` and `app.act`, dispatched as an app window's are.
+    surface: Surface,
+    /// The minimum rescan interval, shared by the raw `network.wifi_scan` method and the
+    /// surface's `wifi_scan` action: one verb with two doors, one gate between them (#332).
+    rescans: Arc<RescanGate>,
+}
+
+impl Default for NetworkHandler {
+    fn default() -> Self {
+        let rescans = Arc::new(RescanGate::new(RESCAN_INTERVAL));
+        NetworkHandler { surface: network_surface(rescans.clone()), rescans }
+    }
+}
 
 /// Read the parameters of one method, naming the method when they do not fit.
 ///
@@ -84,6 +105,35 @@ impl ServiceHandler for NetworkHandler {
         method_name: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
+        self.handle_from(method_name, params, None)
+    }
+
+    fn handle_from(
+        &self,
+        method_name: &str,
+        params: serde_json::Value,
+        peer: Option<PeerCred>,
+    ) -> Result<serde_json::Value, ServiceError> {
+        // The agent-facing surface: connectivity in one line and a small state object, plus the
+        // two Wi-Fi reads that are this socket's to answer. The ceiling and the mode are read
+        // per call from the files the shell writes, as an app window's dispatch reads them.
+        if let Some(answer) = self.surface.answer(method_name, &params, peer) {
+            return answer;
+        }
+        // The raw methods are the desktop's own plumbing (#332): the Network Manager window
+        // calls them by name, and until #43 decides what each one is worth, nobody else gets
+        // them at all — `wifi_connect` from here takes a password and `dns_set` rewrites this
+        // machine's resolvers, with no grade, no card and no ceiling on any of it. The gate is
+        // the kernel's account of the calling process; the graded actions on `app.act` above
+        // answer any caller, under the ceiling, the mode and the grant, exactly as before. A
+        // method that is not one of this service's is left to the unknown-method answer below,
+        // whoever asks: the protocol's `-32601` for a name nobody serves is the checker's
+        // (`yos check`) and every caller's to get.
+        if method_name.starts_with("network.") {
+            if let Err(why) = own_process_only(peer) {
+                return Err(ServiceError { code: -32035, message: why });
+            }
+        }
         match method_name {
             method::INTERFACES => Ok(serde_json::to_value(read_interfaces()?).unwrap()),
             method::STATUS => Ok(serde_json::to_value(read_status()?).unwrap()),
@@ -98,7 +148,7 @@ impl ServiceHandler for NetworkHandler {
             }
             method::WIFI_SCAN => {
                 let p: WifiScanParams = params_for(method_name, params)?;
-                Ok(serde_json::to_value(wifi_scan(p.rescan)?).unwrap())
+                Ok(serde_json::to_value(wifi_scan(&self.rescans, p.rescan)?).unwrap())
             }
             method::WIFI_CONNECT => {
                 let p: WifiConnectParams = params_for(method_name, params)?;
@@ -114,12 +164,23 @@ impl ServiceHandler for NetworkHandler {
                 Ok(serde_json::to_value(wifi_forget(&p.ssid)?).unwrap())
             }
 
-            "app.describe" => Ok(describe_json("network", &describe_view()?, &network_actions())),
             _ => Err(ServiceError {
                 code: -1,
                 message: format!("Unknown method: {method_name}"),
             }),
         }
+    }
+}
+
+impl NetworkHandler {
+    /// `app.act` under a pinned authority, as the socket's dispatch would run it. The tests' door.
+    #[cfg(test)]
+    fn act(
+        &self,
+        params: &serde_json::Value,
+        authority: Authority,
+    ) -> Result<serde_json::Value, ServiceError> {
+        self.surface.act(params, None, authority)
     }
 }
 
@@ -332,7 +393,13 @@ fn require_adapter() -> Result<String, ServiceError> {
     wifi_adapter_name().ok_or_else(|| service_error(&Trouble::NoWifiAdapter))
 }
 
-fn wifi_scan(rescan: bool) -> Result<Vec<ScannedNetwork>, ServiceError> {
+fn wifi_scan(gate: &RescanGate, rescan: bool) -> Result<Vec<ScannedNetwork>, ServiceError> {
+    // The interval is taken before the adapter is even asked: what it counts is rescan attempts
+    // on this socket, and a loop that only ever reached a missing adapter would still be a loop
+    // (#332). `rescan=false` never touches the gate — the cached list costs the radio nothing.
+    if rescan {
+        gate.take()?;
+    }
     require_adapter()?;
     if rescan {
         // A rescan that fails is reported and the cached list is not returned in its place: a
@@ -344,6 +411,114 @@ fn wifi_scan(rescan: bool) -> Result<Vec<ScannedNetwork>, ServiceError> {
     // rows that need no password, and this is the one call that wants it.
     let saved = saved_ssids();
     read_scan_cached(&saved).map_err(|t| service_error(&t))
+}
+
+// ── The minimum rescan interval (#332) ───────────────────────────────
+//
+// A rescan puts the radio off the air while it sweeps the bands, so a loop of
+// `wifi_scan rescan=true` — on the raw method or on the surface's action — is a loop of
+// knocking Wi-Fi off: the person's call drops, their music stops, for as long as the caller
+// keeps asking. Ten seconds is the issue's example and the adapter's own sweep bound
+// (`SCAN_WAIT_SECS`), which is also what the Network Manager window's scan action defers for;
+// a person clicking as fast as they can stays inside it.
+
+/// The minimum time between two rescans this socket runs.
+const RESCAN_INTERVAL: Duration = Duration::from_secs(nmcli::SCAN_WAIT_SECS as u64);
+
+/// When the last rescan attempt went out, and how close together attempts may be.
+struct RescanGate {
+    interval: Duration,
+    last: Mutex<Option<Instant>>,
+}
+
+impl RescanGate {
+    fn new(interval: Duration) -> Self {
+        RescanGate { interval, last: Mutex::new(None) }
+    }
+
+    /// Take the rescan slot at `now`, or refuse with how long the caller has to wait and the
+    /// way around it (`rescan=false`, the cached list). Checked and recorded in one lock, so
+    /// two callers racing cannot both take the slot. The refusal is a `ServiceError` with its
+    /// own code because it leaves through two doors — the raw method answers it whole, and
+    /// the surface answers its sentence — and a caller may branch on either.
+    fn take_at(&self, now: Instant) -> Result<(), ServiceError> {
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(previous) = *last {
+            let elapsed = now.saturating_duration_since(previous);
+            if elapsed < self.interval {
+                let wait = (self.interval - elapsed).as_secs() + 1;
+                return Err(ServiceError {
+                    code: -32034,
+                    message: format!(
+                        "the radio was asked to rescan {ago} seconds ago and a rescan takes \
+                         Wi-Fi off the air while it sweeps: this socket runs one at most every \
+                         {interval} seconds. Wait {wait} seconds, or ask with `rescan=false` \
+                         and get NetworkManager's cached list now",
+                        ago = elapsed.as_secs(),
+                        interval = self.interval.as_secs(),
+                    ),
+                });
+            }
+        }
+        *last = Some(now);
+        Ok(())
+    }
+
+    fn take(&self) -> Result<(), ServiceError> {
+        self.take_at(Instant::now())
+    }
+}
+
+// ── The raw methods answer the desktop's own programs (#332) ────────
+
+/// Whether `/proc` says this executable is one of this OS's own binaries: `yantrik` itself —
+/// the CLI whose `ask` and `serve` run the companion, calendar and network tools included — and
+/// every `yantrik-*` program beside it. A binary replaced mid-run reads as
+/// `/path/yantrik-x (deleted)`, which still passes — right for a service restarted while a
+/// caller holds the socket. A path that is not absolute is not the kernel's answer and is
+/// refused like anything else.
+fn is_own_binary(exe: &str) -> bool {
+    let Some(base) = exe.strip_prefix('/').and_then(|path| path.rsplit('/').next()) else {
+        return false;
+    };
+    let base = base.strip_suffix(" (deleted)").unwrap_or(base);
+    base == "yantrik" || base.starts_with("yantrik-")
+}
+
+/// The peer check on the raw methods, and the refusals in sentences.
+///
+/// Same-uid limits stand (#154): this stops accidents and casual impersonation — a script,
+/// another user's process, a caller that never says who it is — not hostile code running as
+/// the same user, which can be the shell's own child and wear its name.
+fn own_process_only(peer: Option<PeerCred>) -> Result<(), String> {
+    let Some(peer) = peer else {
+        return Err(
+            "the kernel would not say which process is calling, and the raw network.* \
+             methods answer the desktop's own programs; the graded actions on app.act \
+             answer any caller"
+                .to_string(),
+        );
+    };
+    let exe = std::fs::read_link(format!("/proc/{}/exe", peer.pid))
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if is_own_binary(&exe) {
+        return Ok(());
+    }
+    Err(if exe.is_empty() {
+        format!(
+            "the process calling the raw network.* methods (pid {}) could not be identified \
+             from /proc, and those methods answer the desktop's own programs; the graded \
+             actions on app.act answer any caller",
+            peer.pid
+        )
+    } else {
+        format!(
+            "the raw network.* methods answer the desktop's own programs and the process \
+             calling is {exe} (pid {}); the graded actions on app.act answer any caller",
+            peer.pid
+        )
+    })
 }
 
 fn wifi_radio(enabled: bool) -> Result<WifiState, ServiceError> {
@@ -719,16 +894,82 @@ fn firewall_state() -> FirewallState {
 }
 
 // ══════════════════════════════════════════════════════════════════════
-// Control surface (app.describe)
+// Control surface (app.describe / app.act)
 // ══════════════════════════════════════════════════════════════════════
 
-/// Connectivity as data: "am I online, and how", plus interfaces, resolvers, Wi-Fi and firewall.
+/// The surface this socket answers `app.describe` and `app.act` with.
 ///
-/// Read-only, deliberately. The verbs live on the Network Manager app's own surface (`app-network`
-/// — `apps/network-manager/src/main.rs`), where they are graded, where a refusal reaches a person
-/// on screen as well as the caller, and where there is exactly one path behind each button. A
-/// service that published the same verbs unstated would be a second way into the same domain,
-/// which is the split this fleet has been closing everywhere else.
+/// The two Wi-Fi reads are published because this service already does them, exactly as the
+/// window's buttons do — a caller with no window open (`yos`, a mind) gets the same scan and the
+/// same saved list. The verbs that change the machine's network state stay on the Network
+/// Manager app's own surface (`app-network`), and not only for the reason that comment used to
+/// give (#179's defect was publishing a surface with nothing true on it): disconnecting and
+/// radio-off cannot be undone over the channel they close, so they are graded `dangerous` and
+/// belong where the person whose Wi-Fi goes off is looking at the card (`docs/sdk/grades.md`).
+fn network_surface(rescans: Arc<RescanGate>) -> Surface {
+    Surface::new(APP)
+        .socket_name("network")
+        .describe(|| {
+            describe_view().unwrap_or_else(|e| {
+                View::new(format!(
+                    "Network — could not read this machine's connectivity ({})",
+                    e.message
+                ))
+                .with("error", e.message)
+            })
+        })
+        .action(wifi_scan_action(), move |args| {
+            let rescan = args["rescan"].as_bool().unwrap_or(false);
+            wifi_scan(&rescans, rescan)
+                .map(|networks| serde_json::to_value(networks).unwrap())
+                .map_err(|e| e.message)
+        })
+        .action(wifi_known_action(), |_| {
+            wifi_known()
+                .map(|networks| serde_json::to_value(networks).unwrap())
+                .map_err(|e| e.message)
+        })
+}
+
+/// See the note on [`describe_view`] for why exactly these two and not the others.
+#[cfg(test)]
+fn network_actions() -> Vec<Action> {
+    vec![wifi_scan_action(), wifi_known_action()]
+}
+
+/// The grade this surface publishes for `action`, from the same table `describe` hands out, so
+/// the grade a caller is shown and the grade that is enforced cannot come apart.
+#[cfg(test)]
+fn published_grade(action: &str) -> Option<&'static str> {
+    network_actions().into_iter().find(|a| a.name == action).map(|a| a.permission)
+}
+
+/// The networks around this machine, optionally asking the radio for a fresh scan first.
+///
+/// `standard` — the floor for anything that reaches outside the process (nmcli, NetworkManager),
+/// and the same grade the Network Manager window publishes this verb at: a scan puts the radio
+/// off the air for a few seconds and changes nothing (`docs/sdk/grades.md`).
+fn wifi_scan_action() -> Action {
+    Action::new("wifi_scan", "List the Wi-Fi networks this machine can see")
+        .arg(
+            Param::flag("rescan")
+                .describe("Ask the radio for a fresh list first, instead of answering from \
+                           NetworkManager's cache. A rescan takes Wi-Fi off the air while it \
+                           sweeps, so this socket runs one at most every ten seconds and \
+                           refuses a sooner one; the cached list is always there (#332)")
+                .optional(),
+        )
+        .expected_seconds(10)
+}
+
+/// The networks saved on this machine — the ones joining needs no key for.
+///
+/// `safe`: one `nmcli connection show`, a local read that does not touch the radio at all.
+fn wifi_known_action() -> Action {
+    Action::new("wifi_known", "List the Wi-Fi networks saved on this machine").risk("safe")
+}
+
+/// Connectivity as data: "am I online, and how", plus interfaces, resolvers, Wi-Fi and firewall.
 fn describe_view() -> Result<View, ServiceError> {
     let status = read_status()?;
     let ifaces = read_interfaces().unwrap_or_default();
@@ -773,12 +1014,6 @@ fn describe_view() -> Result<View, ServiceError> {
             .with("search_domains", serde_json::json!(dns.search_domains));
     }
     Ok(view)
-}
-
-/// See the note on [`describe_view`]: an empty action list is the honest statement that this
-/// socket is for reading, and that the verbs are published by the app.
-fn network_actions() -> Vec<Action> {
-    Vec::new()
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1025,4 +1260,295 @@ fn read_status() -> Result<NetworkStatus, ServiceError> {
 
 fn read_dns() -> Result<DnsConfig, ServiceError> {
     platform::read_dns()
+}
+
+// The service only answers Wi-Fi on Linux (`platform` says so on Windows), so the surface tests
+// that would call a handler run only there; the gate mechanics they pin are the same everywhere.
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// A machine at `ceiling`, in `mode`, with no grant spent — the authority pinned per case
+    /// rather than inherited from whatever files the machine running the tests has.
+    fn at(ceiling: &str, mode: &str) -> Authority {
+        Authority { ceiling: ceiling.into(), mode: gate::Mode::named(mode), granted: false, asks_above: None }
+    }
+
+    /// `app.act` for `wifi_scan` with `args`, and a grant id beside it when the test says one was
+    /// spent for the call.
+    fn act_wifi_scan(args: serde_json::Value, grant: Option<&str>) -> serde_json::Value {
+        let mut params = serde_json::json!({ "action": "wifi_scan", "args": args });
+        if let Some(grant) = grant {
+            params["grant"] = grant.into();
+        }
+        params
+    }
+
+    /// Grants the stand-in shell spent. `ok-*` holds, anything else is refused in its words.
+    static SPENT: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    /// What each grant was spent against, as the shell would have been handed it.
+    static SPENT_AGAINST: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+    fn spend_through_a_stand_in_shell() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            // The stand-in shell answers what a token may reach, as the shell does (#189):
+            // no role for any token here, so a token-carrying call is held by nothing but
+            // the grade, the mode and the grant these tests are about.
+            yantrik_service_sdk::reach::read_reach_with(|_| None);
+            gate::spend_grants_with(|id, _app, _action, args, _caller| {
+                if !id.starts_with("ok-") {
+                    return Err(format!("no approval request `{id}`."));
+                }
+                SPENT.lock().unwrap_or_else(|e| e.into_inner()).push(id.to_string());
+                SPENT_AGAINST.lock().unwrap_or_else(|e| e.into_inner()).push((id.to_string(), args.to_string()));
+                Ok(())
+            });
+        });
+    }
+
+    /// `wifi_scan` is `standard`, and `standard` needs no grant in any mode, plan included: the
+    /// only mode-independent proof is that the gate lets it through, since what the handler
+    /// answers next is this machine's Wi-Fi, not a sentence the test can pin. `wifi_known` is
+    /// `safe` — under every ceiling there is — so the ceiling test uses `wifi_scan`.
+    #[test]
+    fn the_published_grades_are_what_describe_shows() {
+        assert_eq!(published_grade("wifi_scan"), Some("standard"));
+        assert_eq!(published_grade("wifi_known"), Some("safe"));
+
+        let described = NetworkHandler::default()
+            .handle("app.describe", serde_json::json!({}))
+            .expect("describe");
+        let actions = described["actions"].as_array().expect("actions");
+        assert_eq!(actions.len(), network_actions().len());
+        for a in actions {
+            let name = a["name"].as_str().unwrap();
+            assert_eq!(a["permission"].as_str(), published_grade(name), "{name}");
+        }
+    }
+
+    /// The ceiling binds this door as it binds every app's: a machine set to `safe` refuses
+    /// `wifi_scan` on the grade alone, grant or none — and a grant it refused was never offered
+    /// to the shell (#154). The handler is never reached, so no nmcli runs either way.
+    #[test]
+    fn a_ceiling_of_safe_refuses_wifi_scan_whatever_the_grant() {
+        spend_through_a_stand_in_shell();
+        for grant in [None, Some("ok-179-network")] {
+            let err = NetworkHandler::default()
+                .act(&act_wifi_scan(serde_json::json!({}), grant), at("safe", "bypass"))
+                .unwrap_err();
+            assert!(
+                err.message.starts_with("CEILING: network.wifi_scan is graded `standard`"),
+                "grant={grant:?}: {}",
+                err.message
+            );
+            assert_eq!(err.code, -32602);
+        }
+        let spent = SPENT.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(!spent.iter().any(|id| id == "ok-179-network"), "spent above the ceiling: {spent:?}");
+    }
+
+    /// As on a window: a grant that rides on a call is spent past the ceiling, and one the shell
+    /// refuses ends the call in the shell's words — before the handler, so no scan runs.
+    #[test]
+    fn a_grant_that_does_not_hold_ends_the_call() {
+        spend_through_a_stand_in_shell();
+        let err = NetworkHandler::default()
+            .act(&act_wifi_scan(serde_json::json!({}), Some("made-up")), at("sensitive", "ask"))
+            .unwrap_err();
+        assert!(
+            err.message.starts_with("GRANT: `made-up` does not authorise network.wifi_scan"),
+            "{}",
+            err.message
+        );
+    }
+
+    /// An agent token travels beside `args`, never among them: one a caller put among them is
+    /// taken out before the grant is spent, so the shell is handed the arguments alone. The stale
+    /// revision is here to stop the call at the guard, before any scan, whatever the machine has.
+    #[test]
+    fn an_agent_token_among_the_arguments_is_not_what_a_grant_is_bound_to() {
+        spend_through_a_stand_in_shell();
+        let params = serde_json::json!({
+            "action": "wifi_scan",
+            "args": { "agent_token": "smuggled" },
+            "agent_token": "tok-7f3a",
+            "grant": "ok-179-token",
+            "expect_revision": "0000000000000000",
+        });
+        let err = NetworkHandler::default().act(&params, at("sensitive", "ask")).unwrap_err();
+        assert!(err.message.starts_with("STALE: this app is at revision "), "{}", err.message);
+        let against = SPENT_AGAINST.lock().unwrap_or_else(|e| e.into_inner());
+        let (_, args) = against.iter().find(|(id, _)| id == "ok-179-token").expect("the grant was spent");
+        assert_eq!(args, "{}");
+    }
+
+    /// Every action `describe` offers reaches a handler past the gate, and an action it does not
+    /// offer is answered as that before any grant is looked at — as an app window answers it:
+    /// -32602, in the dispatch's words. What a handler then answers is the machine's (`nmcli`
+    /// missing, no adapter, a real list), so the test only pins that the gate let it through.
+    #[test]
+    fn every_published_action_reaches_a_handler() {
+        for spec in network_actions() {
+            let outcome = NetworkHandler::default().act(
+                &serde_json::json!({ "action": spec.name, "args": {} }),
+                at("dangerous", "bypass"),
+            );
+            if let Err(err) = outcome {
+                for prefix in ["CEILING:", "GRANT:", "STALE:", "unknown action"] {
+                    assert!(!err.message.starts_with(prefix), "{}: {}", spec.name, err.message);
+                }
+            }
+        }
+        let err = NetworkHandler::default()
+            .act(
+                &serde_json::json!({ "action": "wifi_connect", "args": {}, "grant": "made-up" }),
+                at("dangerous", "ask"),
+            )
+            .unwrap_err();
+        assert_eq!(err.code, -32602);
+        assert_eq!(err.message, "unknown action `wifi_connect`; this app offers: wifi_scan, wifi_known");
+    }
+
+    /// Arguments are checked on this door as on every app's — by name and by declared type, in
+    /// the dispatch's words, before the handler runs.
+    #[test]
+    fn the_arguments_are_checked_as_an_apps_are() {
+        let handler = NetworkHandler::default();
+
+        let err = handler
+            .act(&serde_json::json!({ "action": "wifi_known", "args": { "ssid": "x" } }), at("sensitive", "ask"))
+            .unwrap_err();
+        assert_eq!(err.code, -32602);
+        assert_eq!(err.message, "`wifi_known` takes no arguments, but `ssid` was given");
+
+        let err = handler
+            .act(&serde_json::json!({ "action": "wifi_scan", "args": { "city": "Dallas" } }), at("sensitive", "ask"))
+            .unwrap_err();
+        assert_eq!(err.message, "`wifi_scan` has no argument `city`; it takes: rescan");
+
+        let err = handler
+            .act(&act_wifi_scan(serde_json::json!({ "rescan": "yes" }), None), at("sensitive", "ask"))
+            .unwrap_err();
+        assert_eq!(err.message, "`wifi_scan` argument `rescan` must be a boolean, and a string arrived");
+    }
+
+    /// Stale is refused before the handler, as on a window — and in every mode, since the guard
+    /// sits behind the gate: this is also the proof that a call under the ceiling reaches the
+    /// guard unasked from plan to bypass. `wifi_known` is asked with nothing, so no nmcli runs and no
+    /// scan happens on the machine the tests build on, whichever answer the guard gives.
+    #[test]
+    fn an_act_decided_on_an_old_revision_scans_nothing() {
+        for mode in ["plan", "ask", "auto", "bypass"] {
+            let err = NetworkHandler::default()
+                .act(
+                    &serde_json::json!({
+                        "action": "wifi_known",
+                        "args": {},
+                        "expect_revision": "0000000000000000",
+                    }),
+                    at("dangerous", mode),
+                )
+                .unwrap_err();
+            assert!(err.message.starts_with("STALE: this app is at revision "), "{mode}: {}", err.message);
+        }
+    }
+
+    /// The surface declares nothing the dispatch cannot check.
+    #[test]
+    fn the_surface_is_declared_soundly() {
+        assert!(NetworkHandler::default().surface.registry().problems().is_empty());
+    }
+
+    /// The interval's own counting, on constructed instants: a second rescan inside the
+    /// interval is refused with its own code, a sentence naming the wait and the cached-list
+    /// way round, and once the interval has passed the slot opens again.
+    #[test]
+    fn the_rescan_gate_counts_its_interval() {
+        let gate = RescanGate::new(Duration::from_secs(10));
+        let t0 = Instant::now();
+        assert!(gate.take_at(t0).is_ok());
+        let err = gate.take_at(t0 + Duration::from_secs(3)).unwrap_err();
+        assert_eq!(err.code, -32034);
+        assert!(err.message.contains("at most every 10 seconds"), "{}", err.message);
+        assert!(err.message.contains("Wait 8 seconds"), "{}", err.message);
+        assert!(err.message.contains("`rescan=false`"), "{}", err.message);
+        assert!(gate.take_at(t0 + Duration::from_secs(10)).is_ok(), "the interval passed");
+    }
+
+    /// The loop item 4 of #332 named, on the door itself: two `wifi_scan rescan=true` acts back
+    /// to back, and the second is the gate's refusal whatever this machine's Wi-Fi is — the
+    /// slot is taken before the adapter is asked, so the refusal holds on a machine with no
+    /// adapter as firmly as on one with. The first act's answer is the machine's (a list, or
+    /// the trouble that stopped it) and is not pinned here. Through the surface the refusal
+    /// arrives as every handler sentence does (-32602, the envelope's one code); the gate's own
+    /// code, -32034, is what the raw method answers with, and the pure test above pins it.
+    #[test]
+    fn a_loop_of_rescans_cannot_keep_knocking_wifi_off() {
+        let handler = NetworkHandler::default();
+        let _first = handler.act(&act_wifi_scan(serde_json::json!({ "rescan": true }), None), at("sensitive", "ask"));
+        let err = handler
+            .act(&act_wifi_scan(serde_json::json!({ "rescan": true }), None), at("sensitive", "ask"))
+            .unwrap_err();
+        assert!(err.message.contains("at most every 10 seconds"), "{}", err.message);
+        assert!(err.message.contains("`rescan=false`"), "{}", err.message);
+
+        // The cached list is the way round, and it needs no slot: `rescan=false` is answered
+        // (here, on a machine whose Wi-Fi the test must not touch, by whatever the machine
+        // says — but never by the gate).
+        let cached = handler.act(&act_wifi_scan(serde_json::json!({}), None), at("sensitive", "ask"));
+        if let Err(err) = cached {
+            assert!(!err.message.contains("at most every"), "a cached read hit the rescan gate: {}", err.message);
+        }
+    }
+
+    /// The raw `network.*` methods are the desktop's own plumbing (#332): a caller the kernel
+    /// cannot place, or a process that is not a Yantrik binary, is refused before any method is
+    /// looked at — `wifi_connect` from here takes a password and `dns_set` rewrites this
+    /// machine's resolvers with no grade and no card on either. The graded doors are untouched
+    /// by the check: `app.describe` still answers any caller at all.
+    #[test]
+    fn the_raw_methods_answer_only_the_desktops_own_programs() {
+        let handler = NetworkHandler::default();
+        // No peer credentials at all: refused, and the sentence says where the open door is.
+        let err = handler.handle(method::STATUS, serde_json::json!({})).unwrap_err();
+        assert_eq!(err.code, -32035);
+        assert!(err.message.contains("would not say which process is calling"), "{}", err.message);
+        assert!(err.message.contains("app.act"), "{}", err.message);
+
+        // A real process that is not a Yantrik binary — this test runner itself.
+        let pid = std::process::id();
+        let peer = PeerCred { pid: pid as i32, uid: 0, gid: 0 };
+        let err = handler
+            .handle_from(method::WIFI_SCAN, serde_json::json!({ "rescan": false }), Some(peer))
+            .unwrap_err();
+        assert_eq!(err.code, -32035);
+        assert!(err.message.contains("the process calling is"), "{}", err.message);
+        assert!(err.message.contains(&format!("(pid {pid})")), "{}", err.message);
+
+        // The gate itself never sees the check: `app.describe` answers with no peer.
+        let described = handler.handle("app.describe", serde_json::json!({})).expect("describe answers any caller");
+        assert_eq!(described["app"], "network");
+
+        // And a name no service serves keeps the protocol's own answer for a caller the raw
+        // methods refuse: `yos check` probes with one and expects -32601, which the socket
+        // layer maps from this -1.
+        let err = handler.handle("app.yos_check_no_such_method", serde_json::json!({})).unwrap_err();
+        assert_eq!(err.code, -1);
+    }
+
+    /// What counts as one of this OS's own binaries: an absolute path whose last segment is a
+    /// `yantrik-` name — including a binary replaced mid-run, which the kernel reports with a
+    /// " (deleted)" suffix — and nothing else. A relative path is not the kernel's answer.
+    #[test]
+    fn a_yantrik_binary_passes_the_peer_check_and_anything_else_does_not() {
+        assert!(is_own_binary("/opt/yantrik/bin/yantrik-network-manager"));
+        assert!(is_own_binary("/opt/yantrik/bin/yantrik-ui (deleted)"), "a service restarted mid-call");
+        assert!(is_own_binary("/opt/yantrik/bin/yantrik"), "the CLI: `yantrik ask` runs the companion's tools");
+        assert!(is_own_binary("/opt/yantrik/bin/yantrik (deleted)"));
+        assert!(!is_own_binary("/opt/yantrik/bin/yantrikish"), "a name that only starts like ours");
+        assert!(!is_own_binary("/usr/bin/python3"));
+        assert!(!is_own_binary("yantrik-ui"), "not an absolute path");
+        assert!(!is_own_binary(""));
+    }
 }

@@ -19,9 +19,19 @@ use crate::{App, YMenuAction};
 /// The key is now given explicitly. `wlrctl` is also waited on rather than spawned and forgotten,
 /// so a failure can be reported instead of vanishing.
 pub fn wire(ui: &App, ctx: &AppContext) {
+    let shell = ui.as_weak();
     ui.on_switch_window(move |title| {
         let title = title.to_string();
         tracing::info!(title = %title, "Switching to window");
+
+        // The entry for one of the shell's own screens (Files, Settings …) is the shell itself:
+        // there is no toplevel by that title to focus, so bring the shell forward instead.
+        if shell.upgrade().is_some_and(|ui| is_screen_entry(&ui, &title)) {
+            if let Err(why) = crate::windows::raise_shell() {
+                tracing::warn!(title = %title, %why, "could not bring the shell forward for its screen's entry");
+            }
+            return;
+        }
 
         // wlrctl exits non-zero when nothing matched, which is the interesting case: the taskbar
         // is showing a window the compositor does not have under that name.
@@ -41,8 +51,12 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let catalogue = ctx.installed_apps.clone();
         ui.on_window_menu(move |title, app_id, x, y| {
             let Some(ui) = weak.upgrade() else { return };
-            let installed = catalogue.get();
             let id = app_id.as_str();
+            // A screen's entry is the shell, not a window: none of the window verbs would reach it.
+            if id.starts_with(crate::control::SCREEN_ENTRY_PREFIX) {
+                return;
+            }
+            let installed = catalogue.get();
             let pinned = if !id.is_empty() && pins::is_pinnable(id) {
                 let is = pins::is_pinned(id);
                 // Offered only where a pin could mean something: one already there, so it can
@@ -109,6 +123,14 @@ pub fn wire(ui: &App, ctx: &AppContext) {
 /// Every id is the name of a `shell` control action — `close_window`, `minimise_window`,
 /// `maximise_window`, `pin_app` — so what a pointer can choose and what a mind can ask for are
 /// the same verbs, graded the same way and ending in the same functions.
+/// Whether the taskbar entry titled `title` is one of the shell's own screens (`control::screen_entry`).
+fn is_screen_entry(ui: &App, title: &str) -> bool {
+    use slint::Model;
+    ui.get_window_list()
+        .iter()
+        .any(|w| w.title == title && w.app_id.starts_with(crate::control::SCREEN_ENTRY_PREFIX))
+}
+
 fn menu_rows(pinned: Option<bool>) -> Vec<YMenuAction> {
     let row = |id: &str, label: &str| YMenuAction {
         id: id.into(),

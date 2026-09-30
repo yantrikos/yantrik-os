@@ -3,7 +3,7 @@
 use std::sync::Mutex;
 
 use serde_json::Value;
-use yantrik_ipc_contracts::control_surface::{act_json, describe_json, Action, View};
+use yantrik_ipc_contracts::control_surface::{act_json, act_json_stateless, describe_json, Action, View};
 use yantrik_ipc_transport::gate::{self, decide, Authority, LADDER};
 use yantrik_ipc_transport::reach::{self, Reach};
 
@@ -159,6 +159,13 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
         self.grade_of(name).ok()
     }
 
+    /// The description this surface publishes for one of its own actions — the sentence the gate
+    /// reads for what cannot be undone and what runs whatever it is given — or `None` for an
+    /// action it does not have.
+    pub fn published_description(&self, name: &str) -> Option<String> {
+        self.actions.iter().find(|(a, _)| a.name == name).map(|(a, _)| a.description.clone())
+    }
+
     /// Re-declare the grade this surface publishes for one of its own actions, while it runs.
     ///
     /// A surface whose actions cost different amounts depending on how it is configured needs
@@ -229,6 +236,33 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
     fn unknown(&self, name: &str) -> String {
         let known: Vec<&str> = self.actions.iter().map(|(a, _)| a.name.as_str()).collect();
         format!("unknown action `{name}`; this app offers: {}", known.join(", "))
+    }
+
+    /// What this surface says about ONE call to `name`, with these arguments (#137) — the
+    /// sentence an approval card shows under the argument box, after the action's purpose (the
+    /// same for every call of it) and the arguments themselves.
+    ///
+    /// Display only, and deliberately so: this consults no ceiling, no mode and no grant, spends
+    /// nothing and binds nothing. A grant is bound to the arguments, and a sentence about them is
+    /// never one more thing approved beside them — the rule the `target` line (#54) established.
+    /// The arguments arrive raw, exactly as sent: the sentence is owed about the call a caller
+    /// means to make, not about one the dispatch would accept, and `act` refuses bad arguments
+    /// whatever this said about them.
+    ///
+    /// `Err` is the sentence for having nothing to say — an action this surface does not have, or
+    /// one that declared no [`Explainer`](yantrik_ipc_contracts::control_surface::Explainer),
+    /// which is every action that did not opt in — and is what tells an asker to draw no line.
+    /// `Ok("")` is the app's own honest "nothing about THIS call", and draws no line either.
+    pub fn explain(&self, name: &str, args: &Value) -> Result<String, String> {
+        let (spec, _) =
+            self.actions.iter().find(|(a, _)| a.name == name).ok_or_else(|| self.unknown(name))?;
+        match &spec.explainer {
+            Some(explainer) => Ok(explainer.sentence(args)),
+            None => Err(format!(
+                "`{name}` says nothing about one call of itself; its description is the same for \
+                 every call of it"
+            )),
+        }
     }
 }
 
@@ -311,8 +345,8 @@ where
 
         // The ceiling and then the mode. The grade read is the one `describe` is showing now (see
         // `regrade`), or the two disagree. With the action's own description beside it: an action
-        // this app says cannot be undone is asked about in every mode but bypass, as the shell
-        // and the bridge ask.
+        // this app says cannot be undone is asked about in every mode but full bypass, as the
+        // shell and the bridge ask.
         let published = self.effective_grade(name, spec.permission);
         decide(authority, &self.app_id, name, published, &spec.description)?;
 
@@ -334,6 +368,12 @@ where
         // The handler reads what it declared: every argument of its declared type, converted where
         // it arrived as something that converts without loss, and every default filled in.
         let result = run(&as_declared(spec, args))?;
+
+        // An answer about something other than this app carries nothing of it, and the app is not
+        // read again for a reply that would not use it.
+        if spec.stateless {
+            return Ok(act_json_stateless(&self.app_id, action_id, !spec.deferred, result));
+        }
 
         // Read back through the same path a `describe` would take, so a caller never has to make
         // a second round trip to find out what its own action did. `accepted` says the handler
@@ -360,19 +400,20 @@ mod tests {
     /// case rather than inherited from whatever files the machine running them happens to have.
     const OPEN: &str = "dangerous";
 
-    /// Authority that binds nothing: the ceiling and the mode both at the top of the ladder.
+    /// Authority that binds nothing: the ceiling and the mode both at the top of the ladder —
+    /// full bypass, which asks about nothing, not even what cannot be undone.
     fn open() -> Authority {
-        Authority { ceiling: OPEN.into(), mode: Mode::named("bypass"), granted: false }
+        Authority { ceiling: OPEN.into(), mode: Mode::named("bypass_all"), granted: false, asks_above: None }
     }
 
     /// A machine at `ceiling`, in a mode that asks about nothing under it: the ceiling tests.
     fn under(ceiling: &str) -> Authority {
-        Authority { ceiling: ceiling.into(), mode: Mode::named("bypass"), granted: false }
+        Authority { ceiling: ceiling.into(), mode: Mode::named("bypass_all"), granted: false, asks_above: None }
     }
 
     /// An open ceiling and the mode under test, with or without a grant spent for the call.
     fn in_mode(mode: &str, granted: bool) -> Authority {
-        Authority { ceiling: OPEN.into(), mode: Mode::named(mode), granted }
+        Authority { ceiling: OPEN.into(), mode: Mode::named(mode), granted, asks_above: None }
     }
 
     /// A registry built the way an app builds one.
@@ -613,6 +654,33 @@ mod tests {
         assert_eq!(action["parameters"]["properties"]["prompts"]["items"], json!({"type": "string"}));
         assert_eq!(action["parameters"]["required"], json!(["prompts"]));
         assert!(reg.problems().is_empty(), "{:?}", reg.problems());
+    }
+
+    // ── An answer about something else ──
+
+    #[test]
+    fn a_stateless_action_answers_with_its_result_and_nothing_of_the_app() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let reads = Arc::new(AtomicUsize::new(0));
+        let counted = reads.clone();
+        let reg = surface(
+            "shell",
+            Some(Box::new(move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+                View::new("a desktop").state(json!({ "conversation": ["the person's words"] }))
+            })),
+            vec![(
+                Action::new("validate", "a question about something else").stateless(),
+                Box::new(|_| Ok(json!({ "v": 1 }))),
+            )],
+        );
+        let before = reads.load(Ordering::SeqCst);
+        let answer = reg.act("validate", &json!({}), None, "shell#1", &open()).unwrap();
+        assert_eq!(answer, json!({
+            "app": "shell", "action_id": "shell#1", "accepted": true, "settled": true, "result": { "v": 1 }
+        }));
+        assert_eq!(reads.load(Ordering::SeqCst), before, "the app is not read again for a reply that would not use it");
     }
 
     // ── Accepted is not done ──
@@ -942,7 +1010,7 @@ mod tests {
 
     #[test]
     fn a_sensitive_act_runs_in_auto_mode() {
-        for mode in ["auto", "bypass"] {
+        for mode in ["auto", "bypass", "bypass_all"] {
             let ran = Rc::new(Cell::new(false));
             let answer = render_surface(ran.clone())
                 .act("render", &json!({"out": "x.png"}), None, "blender#1", &in_mode(mode, false))
@@ -954,7 +1022,7 @@ mod tests {
 
     #[test]
     fn a_grant_lets_a_sensitive_act_run_in_any_mode() {
-        for mode in ["plan", "ask", "auto", "bypass"] {
+        for mode in ["plan", "ask", "auto", "bypass", "bypass_all"] {
             let ran = Rc::new(Cell::new(false));
             let answer = render_surface(ran.clone())
                 .act("render", &json!({"out": "x.png"}), None, "blender#1", &in_mode(mode, true))
@@ -966,7 +1034,7 @@ mod tests {
 
     #[test]
     fn a_standard_act_needs_no_grant_in_any_mode() {
-        for mode in ["plan", "ask", "auto", "bypass"] {
+        for mode in ["plan", "ask", "auto", "bypass", "bypass_all"] {
             let answer = notes_at("Kernel asks")
                 .act("rename", &json!({ "to": "ok" }), None, "notes#1", &in_mode(mode, false))
                 .unwrap_or_else(|e| panic!("{mode}: {e}"));
@@ -990,7 +1058,7 @@ mod tests {
         let with_rule = |app: &str, action: &str| {
             let mut mode = Mode::named("ask");
             mode.session_rules.push((app.to_string(), action.to_string()));
-            Authority { ceiling: OPEN.into(), mode, granted: false }
+            Authority { ceiling: OPEN.into(), mode, granted: false, asks_above: None }
         };
         let args = json!({"out": "anything.png"});
 
@@ -1008,9 +1076,9 @@ mod tests {
 
     #[test]
     fn the_ceiling_still_refuses_dangerous_whatever_the_grant_or_mode() {
-        for (mode, granted) in [("bypass", false), ("ask", true), ("bypass", true)] {
+        for (mode, granted) in [("bypass", false), ("ask", true), ("bypass", true), ("bypass_all", false), ("bypass_all", true)] {
             let ran = Rc::new(Cell::new(false));
-            let authority = Authority { ceiling: "sensitive".into(), mode: Mode::named(mode), granted };
+            let authority = Authority { ceiling: "sensitive".into(), mode: Mode::named(mode), granted, asks_above: None };
             let err = delete_surface(ran.clone())
                 .act("files_delete", &json!({"name": "x"}), None, "shell#1", &authority)
                 .unwrap_err();
@@ -1068,7 +1136,7 @@ mod tests {
             if v["session_rule"] == true {
                 mode.session_rules.push((app.clone(), action.clone()));
             }
-            let authority = Authority { ceiling: text("ceiling"), mode, granted: v["grant"] == true };
+            let authority = Authority { ceiling: text("ceiling"), mode, granted: v["grant"] == true, asks_above: None };
 
             let answer = reg.act(&action, &json!({}), None, "vector#1", &authority);
             match v["outcome"].as_str() {
@@ -1137,6 +1205,7 @@ mod tests {
             name: "Planner".into(),
             surfaces: vec!["calendar".into(), "notes".into()],
             ceiling: "safe".into(),
+            asks_above: None,
         };
         assert_eq!(shell.published_grade("open_app"), Some("standard"), "the grade this reach is below");
 
@@ -1233,5 +1302,57 @@ mod tests {
             .act("rename", &json!({ "to": "ok" }), None, "notes#1", &open())
             .unwrap();
         assert_eq!(answer["accepted"], true);
+    }
+
+    /// #137: the sentence about ONE call, with the arguments it carries — and the ways there is
+    /// nothing to say: an action that declared no explainer, an action the surface does not
+    /// have, and an app whose honest sentence about THESE arguments is empty. All three are
+    /// answers, not failures of the lookup; only the first two are refusals.
+    #[test]
+    fn an_explainer_speaks_per_call_and_only_when_the_app_declared_one() {
+        let reg = surface(
+            "studio",
+            None,
+            vec![
+                (
+                    Action::new("set_backend", "Choose where pictures are made from now on")
+                        .arg(Param::text("kind"))
+                        .explain(|args| match args["kind"].as_str().unwrap_or_default() {
+                            "fake" => "After this, prompts stay on this machine.".to_string(),
+                            "openai-images" => {
+                                "After this, prompts go to api.openai.com and may cost money."
+                                    .to_string()
+                            }
+                            _ => String::new(),
+                        }),
+                    Box::new(|_| Ok(json!("never reached"))),
+                ),
+                (
+                    Action::new("refresh", "Fetch the gallery again"),
+                    Box::new(|_| Ok(json!("never reached"))),
+                ),
+            ],
+        );
+
+        assert_eq!(
+            reg.explain("set_backend", &json!({ "kind": "fake" })).unwrap(),
+            "After this, prompts stay on this machine."
+        );
+        assert_eq!(
+            reg.explain("set_backend", &json!({ "kind": "openai-images" })).unwrap(),
+            "After this, prompts go to api.openai.com and may cost money."
+        );
+        // A call the app has nothing honest to say about: an empty sentence, not a refusal.
+        assert_eq!(reg.explain("set_backend", &json!({ "kind": "comfyui" })).unwrap(), "");
+
+        // No explainer declared: a refusal that says so, which is what tells an asker to draw
+        // no line — and the same for an action this surface does not have, in `act`'s words.
+        assert!(reg.explain("refresh", &json!({})).unwrap_err().contains("`refresh` says nothing"));
+        assert!(reg.explain("nope", &json!({})).unwrap_err().starts_with("unknown action `nope`"));
+
+        // The arguments arrive as sent — no defaults filled in, no checks run — because the
+        // sentence is about the call the caller means to make, not one the dispatch accepted.
+        assert_eq!(reg.explain("set_backend", &json!({ "kind": "fake", "junk": 1 })).unwrap(),
+            "After this, prompts stay on this machine.");
     }
 }

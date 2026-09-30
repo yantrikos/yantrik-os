@@ -502,10 +502,15 @@ cat > "$LABWC_DIR/rc.xml" <<'RCXML'
       </action>
     </keybind>
 
-    <!-- ── Foot scrollback dump (for "fix this error") ── -->
+    <!-- ── Foot scrollback dump (for "fix this error") ──
+         Into the private dir the terminal tools read (yantrik_ml::private_dir::scratch_dir):
+         $XDG_RUNTIME_DIR/yantrik-scratch (not .../yantrik, the socket dir), else
+         ~/.cache/yantrik/tmp. Not /tmp, where anyone could leave a "fresh" dump for the agent to
+         act on. The old file is removed first so a link left at the name is not written through.
+         Keep in step with foot.ini below. -->
     <keybind key="W-e">
       <action name="Execute">
-        <command>sh -c 'footclient --print-scrollback > /tmp/yantrik-scrollback.txt 2>/dev/null || true'</command>
+        <command>sh -c 'd="$XDG_RUNTIME_DIR/yantrik-scratch"; test -d "$XDG_RUNTIME_DIR" || d="$HOME/.cache/yantrik/tmp"; mkdir -p "$d" &amp;&amp; chmod 700 "$d" &amp;&amp; rm -f "$d/yantrik-scrollback.txt" &amp;&amp; footclient --print-scrollback > "$d/yantrik-scrollback.txt" 2>/dev/null || true'</command>
       </action>
     </keybind>
   </keyboard>
@@ -566,8 +571,10 @@ bright6=80d8e8     # bright cyan
 bright7=e0e0e8     # bright white
 
 [key-bindings]
-# Super+Shift+S: dump scrollback to file (for "fix this error" tool)
-pipe-scrollback=[sh -c "cat > /tmp/yantrik-scrollback.txt"]  Control+Shift+s
+# Super+Shift+S: dump scrollback to file (for "fix this error" tool), in the same private dir as
+# the labwc W-e binding in rc.xml — the one the terminal tools read. `test`, not `[ ]`: a bracket
+# inside the command would end foot's [...] argv early.
+pipe-scrollback=[sh -c 'd="$XDG_RUNTIME_DIR/yantrik-scratch"; test -d "$XDG_RUNTIME_DIR" || d="$HOME/.cache/yantrik/tmp"; mkdir -p "$d" && chmod 700 "$d" && rm -f "$d/yantrik-scrollback.txt" && cat > "$d/yantrik-scrollback.txt"']  Control+Shift+s
 FOOTINI
 
 chown -R "$YANTRIK_USER:$YANTRIK_USER" "$FOOT_DIR"

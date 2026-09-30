@@ -140,6 +140,38 @@ pub fn send(agent: &AgentId, text: &str) -> Result<(), String> {
     send_on(host()?, agent, text)
 }
 
+/// The person's word to an agent, from its pane (#234). A stuck task is interrupted first: the
+/// stuck step's commands are killed and its cards withdrawn, and its turn is cancelled without
+/// ending the agent, so the word reaches the same mind, with its conversation, as its next turn.
+/// Anything else is an ordinary [`send`], which waits for the turn in flight.
+pub fn tell(agent: &AgentId, text: &str) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Ok(());
+    }
+    let host = host()?;
+    let now = super::model::now();
+    let stuck = super::store().read(|s| s.agent(agent).and_then(|a| super::progress::of(a, now)).and_then(|p| p.stuck));
+    let Some(why) = stuck else { return send_on(host, agent, text) };
+    let killed = crate::control_agent_terminal::jobs().kill_agent(agent);
+    let withdrawn = crate::approvals::withdraw_for_agent(&agent.0).len();
+    host.interrupt(agent);
+    let mut note = format!("Interrupted while stuck ({why}) so you could tell it something.");
+    if !killed.is_empty() || withdrawn > 0 {
+        note.push_str(&format!(" {} command(s) killed, {} card(s) withdrawn.", killed.len(), withdrawn));
+    }
+    super::store().note(agent, &note);
+    // The cancelled turn is closed in the session by its feed as soon as the host settles it,
+    // which it has; give that a moment before the next turn opens.
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while super::store().read(|s| s.agent(agent).is_some_and(|a| a.open_turn().is_some())) {
+        if std::time::Instant::now() >= until {
+            return Err("It was interrupted, but its last turn has not closed yet; send again in a moment.".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    send_on(host, agent, text)
+}
+
 /// Say something more to an agent, on `host`.
 pub fn send_on(host: &Host, agent: &AgentId, text: &str) -> Result<(), String> {
     let text = text.trim();

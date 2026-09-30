@@ -304,12 +304,12 @@ mod tests {
         // probe that vouches for the pid the harness claims instead of a faked `/proc`.
         let host = Host::new(vec![]).with_liveness(move |pid| Some(pid) == harness_pid);
         let attached = host
-            .handle_from(protocol::ATTACH, &json!({ "id": "pi", "name": "Pi", "conversations": true }), harness_pid)
+            .handle_from(protocol::ATTACH, &json!({ "id": "pi", "name": "Pi", "conversations": true }), harness_pid, None)
             .unwrap();
         let session = attached["session"].as_str().unwrap().to_string();
         let agent = host.start_agent("pi").unwrap();
         let _answer = host.send_to(&agent, Turn::new("tidy the photos")).unwrap();
-        let handed = host.handle(protocol::POLL, &json!({ "session": session })).unwrap();
+        let handed = host.handle_from(protocol::POLL, &json!({ "session": session }), harness_pid, None).unwrap();
         (host, agent, handed["agent_token"].as_str().unwrap().to_string())
     }
 

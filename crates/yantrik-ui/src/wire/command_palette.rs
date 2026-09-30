@@ -210,9 +210,11 @@ fn wire_selected(ui: &App, ctx: &AppContext) {
             ui.set_lens_open(true);
             ui.invoke_open_lens();
         } else if action == "system:screenshot" {
-            let _ = std::process::Command::new("grim")
-                .arg("/tmp/screenshot.png")
-                .spawn();
+            // The same capture the Print key does: a timestamped file in ~/Pictures/Screenshots
+            // and a notification naming it. This used to run grim straight at
+            // /tmp/screenshot.png — one fixed name, readable by every account, overwritten by the
+            // next one, and never mentioned to the person who asked for it.
+            crate::wire::screenshot::take_screenshot(ui.as_weak(), yantrik_os::screenshot::CaptureMode::FullScreen);
         } else if action == "system:toggle-theme" {
             let current = ui.global::<crate::ThemeMode>().get_dark();
             ui.global::<crate::ThemeMode>().set_dark(!current);

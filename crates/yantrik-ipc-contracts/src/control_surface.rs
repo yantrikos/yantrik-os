@@ -16,6 +16,8 @@
 //! a headless service must not pull in. `yantrik-surface` and `yantrik-app-runtime::control`
 //! re-export these types, so existing `control::View` / `control::Action` callers are unaffected.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 /// One app's account of itself.
@@ -205,6 +207,60 @@ impl Param {
     }
 }
 
+/// The sentence an app says about ONE call of one of its actions, with that call's own
+/// arguments (#137).
+///
+/// An approval card used to show the action's published purpose — the same paragraph for every
+/// call of it — and the arguments, with nothing in between: `studio.set_backend kind=openai-images`
+/// and `kind=fake` carried the same words although one sends every later prompt to a hosted
+/// service and the other keeps it on the machine. Only the app knows which is which, so the app
+/// says it, per call, and the shell asks when it builds the card (`app.explain`).
+///
+/// An `Arc` around the closure because [`Action`] is `Clone` (a registry clones its specs to
+/// publish a regrade) and must stay `Send + Sync` (a service shares one surface across its socket
+/// workers) — a bare `dyn Fn` is neither, and for the same reason `Debug` is written by hand.
+#[derive(Clone)]
+pub struct Explainer(Arc<dyn Fn(&serde_json::Value) -> String + Send + Sync>);
+
+impl Explainer {
+    /// What the app says about one call with these arguments. Empty when the app has nothing to
+    /// say about THIS call — an honest absence, not a failure, and the card draws no line.
+    pub fn sentence(&self, args: &serde_json::Value) -> String {
+        (self.0)(args)
+    }
+}
+
+impl std::fmt::Debug for Explainer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Explainer(..)")
+    }
+}
+
+/// The sentence that makes an action open-ended: what it runs is whatever it was given, so it
+/// can do anything the person can. [`Action::open_ended`] appends it to the description, and
+/// `yantrik_ipc_transport::gate::open_ended` looks for it, so the reader of the description is
+/// told exactly what the gate enforces — the shape `gate::unrecoverable` already reads, with one
+/// sentence instead of seven phrases, because this is a declaration and not a guess at prose.
+///
+/// What it means at the gate (Pranab's decision of 29 September 2026): above `safe` it asks in
+/// `ask`, `auto` and plain bypass, and a session rule DOES cover it — a mind asks once per
+/// session to run commands, not once per command. Full bypass runs it unasked; plan refuses it.
+pub const OPEN_ENDED: &str = "What it runs can do anything you can.";
+
+/// `description` with [`OPEN_ENDED`] said at its end, once. Pure, so the Python SDK's copy can
+/// be held to it sentence for sentence.
+pub fn with_open_ended(description: &str) -> String {
+    if description.contains(OPEN_ENDED) {
+        return description.to_string();
+    }
+    let said = description.trim_end();
+    if said.is_empty() {
+        return OPEN_ENDED.to_string();
+    }
+    let stop = if said.ends_with(['.', '!', '?']) { "" } else { "." };
+    format!("{said}{stop} {OPEN_ENDED}")
+}
+
 /// One thing an app can be asked to do.
 #[derive(Clone, Debug)]
 pub struct Action {
@@ -230,6 +286,17 @@ pub struct Action {
     /// number for every action on the machine. `None` — the default — says nothing, and a caller
     /// keeps its own.
     pub expected_seconds: Option<u32>,
+    /// Whether the answer is about something other than this app, so the reply carries the result
+    /// alone: no state, no summary, no revision, and the app is not read again after it. For a
+    /// question asked often by another program (the memory server's `memory_validate`, #447),
+    /// where the app's whole state beside a one-line answer was 35 KB of nothing it wanted.
+    pub stateless: bool,
+    /// The sentence about ONE call of this action, with that call's own arguments, when the app
+    /// can say one (#137). Published as `explains: true` — the fact, never the sentence, which
+    /// depends on arguments `describe` does not have; a client that saw the flag asks for it with
+    /// `app.explain` when it builds an approval card. `None` — the default — publishes exactly
+    /// what the action always did, and the card is exactly what it was.
+    pub explainer: Option<Explainer>,
 }
 
 impl Action {
@@ -244,13 +311,38 @@ impl Action {
             // are not have to say so.
             deferred: false,
             expected_seconds: None,
+            stateless: false,
+            explainer: None,
         }
+    }
+
+    /// Declare that this action answers a question about something other than this app: its
+    /// reply is the result alone, with no state beside it. See
+    /// [`Action::stateless`](Action#structfield.stateless).
+    pub fn stateless(mut self) -> Self {
+        self.stateless = true;
+        self
     }
 
     /// Declare how long a call to this usually takes to answer. See
     /// [`Action::expected_seconds`](Action#structfield.expected_seconds).
     pub fn expected_seconds(mut self, seconds: u32) -> Self {
         self.expected_seconds = Some(seconds);
+        self
+    }
+
+    /// Declare the sentence this action says about one call of itself, with the arguments that
+    /// call carries (#137). See [`Explainer`].
+    ///
+    /// The closure runs while an approval card is being built, on the app's own thread, so it
+    /// must be cheap and total: read the arguments, answer one sentence — empty for a call there
+    /// is nothing honest to say about. It decides nothing and must act on nothing: grades, gates
+    /// and grants never read it, and what a person allows stays bound to the arguments alone.
+    pub fn explain(
+        mut self,
+        f: impl Fn(&serde_json::Value) -> String + Send + Sync + 'static,
+    ) -> Self {
+        self.explainer = Some(Explainer(Arc::new(f)));
         self
     }
 
@@ -265,6 +357,16 @@ impl Action {
     /// killing a process, deleting a file, sending mail.
     pub fn risk(mut self, permission: &'static str) -> Self {
         self.permission = permission;
+        self
+    }
+
+    /// Declare that this action runs whatever it is given — a command line, a script, keystrokes
+    /// into a shell — so it can do anything the person can. It says so in the description
+    /// ([`OPEN_ENDED`]), which is what the gate reads: asked about once per session in `ask`,
+    /// `auto` and bypass, a session rule answering the rest. Mark only what truly runs arbitrary
+    /// input; the grade still says how much the action itself costs.
+    pub fn open_ended(mut self) -> Self {
+        self.description = with_open_ended(&self.description);
         self
     }
 
@@ -303,6 +405,11 @@ impl Action {
         if let Some(seconds) = self.expected_seconds {
             schema["expected_seconds"] = seconds.into();
         }
+        // Only when declared, and only the FACT: the sentence itself belongs to `app.explain`,
+        // because it depends on arguments `describe` never sees (#137).
+        if self.explainer.is_some() {
+            schema["explains"] = true.into();
+        }
         schema
     }
 }
@@ -340,6 +447,23 @@ pub fn describe_json(app_id: &str, view: &View, actions: &[Action]) -> serde_jso
 ///
 /// `never `ok`, never `done``: `accepted` says the handler ran, `settled` says whether the work
 /// finished. They are different questions and only the app can answer the second.
+/// The reply to an `app.act` of a [`stateless`](Action#structfield.stateless) action: the
+/// result, and nothing of the app's state.
+pub fn act_json_stateless(
+    app_id: &str,
+    action_id: &str,
+    settled: bool,
+    result: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "app": app_id,
+        "action_id": action_id,
+        "accepted": true,
+        "settled": settled,
+        "result": result,
+    })
+}
+
 pub fn act_json(
     app_id: &str,
     action_id: &str,
@@ -357,6 +481,22 @@ pub fn act_json(
         "summary": view.summary,
         "state": view.state,
     })
+}
+
+#[cfg(test)]
+mod open_ended_tests {
+    use super::*;
+
+    #[test]
+    fn an_open_ended_action_says_so_once_at_the_end_of_its_description() {
+        let run = Action::new("run", "Type a command line into the shell").open_ended();
+        assert_eq!(run.description, "Type a command line into the shell. What it runs can do anything you can.");
+        let again = run.clone().open_ended();
+        assert_eq!(again.description, run.description, "said once, however often it is declared");
+        assert_eq!(with_open_ended("Run it.  "), "Run it. What it runs can do anything you can.");
+        assert_eq!(with_open_ended(""), OPEN_ENDED);
+        assert_eq!(run.schema()["description"], run.description.as_str(), "published as it reads");
+    }
 }
 
 #[cfg(test)]
@@ -430,7 +570,7 @@ mod tests {
     }
 
     /// What an existing declaration publishes is byte for byte what it published before the
-    /// richer types existed: `type` and `description`, nothing else, and no `expected_seconds`.
+    /// richer types existed: `type` and `description`, nothing else, and neither optional key.
     #[test]
     fn the_three_original_types_publish_what_they_always_did() {
         let schema = Action::new("open", "Open")
@@ -443,6 +583,7 @@ mod tests {
         assert_eq!(props["zoom"], serde_json::json!({"type": "number", "description": ""}));
         assert_eq!(props["focus"], serde_json::json!({"type": "boolean", "description": ""}));
         assert!(schema.get("expected_seconds").is_none(), "{schema}");
+        assert!(schema.get("explains").is_none(), "{schema}");
     }
 
     /// Each richer type as the JSON Schema a model is handed and the Python port mirrors.
@@ -487,5 +628,32 @@ mod tests {
         assert_eq!(out["state"]["temp"], 21);
         assert_eq!(out["actions"][0]["name"], "refresh");
         assert!(out["revision"].as_str().unwrap().len() == 16);
+    }
+
+    /// An action that can say what one call of it does publishes the fact — and only the fact:
+    /// the sentence depends on arguments `describe` never has, so it travels by `app.explain`
+    /// and the schema is the same for every call of the action (#137).
+    #[test]
+    fn an_action_that_explains_one_call_says_it_can_and_carries_no_sentence() {
+        let schema = Action::new("set_backend", "Choose where pictures are made from now on")
+            .arg(Param::one_of("kind", &["comfyui", "openai-images", "fake"]))
+            .explain(|args| match args["kind"].as_str().unwrap_or_default() {
+                "fake" => "After this, prompts stay on this machine.".to_string(),
+                _ => String::new(),
+            })
+            .schema();
+        assert_eq!(schema["explains"], serde_json::json!(true), "{schema}");
+        assert!(!schema.to_string().contains("prompts stay"), "the sentence is not in describe: {schema}");
+
+        // And what the closure does with the arguments is the app's business, per call: one
+        // sentence for the call it can speak about, nothing for one it cannot.
+        let action = Action::new("set_backend", "Choose where pictures are made from now on")
+            .explain(|args| match args["kind"].as_str().unwrap_or_default() {
+                "fake" => "After this, prompts stay on this machine.".to_string(),
+                _ => String::new(),
+            });
+        let explainer = action.explainer.as_ref().unwrap();
+        assert_eq!(explainer.sentence(&serde_json::json!({"kind": "fake"})), "After this, prompts stay on this machine.");
+        assert_eq!(explainer.sentence(&serde_json::json!({"kind": "openai-images"})), "");
     }
 }

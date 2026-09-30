@@ -133,8 +133,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 //
                 // The grade is checked first, because the grade is the one thing the caller
                 // declares that the decision actually turns on.
-                let (grade, grade_note, published_purpose, naming) =
-                    match settle_grade(&app, &action, &grade) {
+                let (grade, grade_note, published_purpose, naming, explained) =
+                    match settle_grade(&app, &action, &grade, &parsed) {
                         Ok(settled) => settled,
                         Err(why) => return Err(why),
                     };
@@ -166,13 +166,48 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // shell surface publishes no description here to read.
                 let cannot_be_undone = approvals::unrecoverable(&published_purpose)
                     || approvals::unrecoverable(&purpose);
-                // And the card shows the app's own words when the caller sent none, so the red
-                // warning line, the session-rule offer and the decision above all read one
-                // sentence rather than three.
-                let purpose =
-                    if purpose.trim().is_empty() { published_purpose } else { purpose };
+                // And whether it runs whatever it is given (29 September 2026), read the same
+                // way: either sentence saying so asks — which can only tighten — and a session
+                // rule answers it, which `may_offer_session_rule` offers for it.
+                let runs_anything = approvals::open_ended(&published_purpose)
+                    || approvals::open_ended(&purpose);
+                let declared = crate::mind_mode::Declared {
+                    cannot_be_undone,
+                    open_ended: runs_anything,
+                };
+                // What the phone is shown of it: the app's own sentence, never the caller's, since
+                // a mind could describe a deletion as tidying (security review, 29 Sep 2026).
+                let published_summary = approvals::summary_of(&published_purpose);
+                // The card carries both: the caller's words, and the app's own sentence beside
+                // them, always. The red warning line, the session-rule offer and the rule check
+                // are read from the app's sentence (with the caller's, which can only add
+                // caution), so a caller that describes `terminal.run` as "list /tmp" cannot get
+                // a card that forgets the action can run anything (security review of #504).
 
-                match crate::mind_mode::decide(&grade, &app, &action, cannot_be_undone) {
+                // An agent answering a turn from the person's phone is asked about everything above
+                // a read, whatever the mode and whatever the desk's session rules: its door asks
+                // (`gate::Authority::asks_above`), so the card must be raised, not waved through.
+                let held_from_phone = matches!(
+                    crate::control_agent_terminal::calling_agent(),
+                    Some(Ok(ref a)) if crate::agents::reaches::is_held_remote(a)
+                ) && yantrik_ipc_transport::gate::grade(&grade).unwrap_or(usize::MAX)
+                    > yantrik_ipc_transport::gate::grade(crate::agents::reaches::REMOTE_ASKS_ABOVE).unwrap_or(0);
+                // The mode and the machine's ceiling decide first: a refusal stands. Plan mode
+                // changes nothing from a phone either. Otherwise a held agent is always asked, where
+                // the mode or a desk session rule would have let it run.
+                let decision = match crate::mind_mode::decide(&grade, &app, &action, declared) {
+                    refused @ crate::mind_mode::Decision::Refuse { .. } => refused,
+                    _ if held_from_phone && crate::mind_mode::current().as_str() == "plan" => {
+                        crate::mind_mode::Decision::Refuse {
+                            why: "this desktop is in plan mode: nothing changes, and no card is raised, \
+                                  for a turn asked from the person's phone either."
+                                .into(),
+                        }
+                    }
+                    _ if held_from_phone => crate::mind_mode::Decision::Ask,
+                    other => other,
+                };
+                match decision {
                     // The same sentence the bridge relays, from the same function, so a mind
                     // that reached the shell directly and one that came through the bridge hear
                     // one story rather than two.
@@ -207,9 +242,30 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // the store exactly as the caller sent it, because the grant is bound to those
                 // bytes and this line must never become one more thing approved beside them.
                 let target = target_line(&parsed, &naming);
+                // And the app's sentence about this one call, with these arguments (#137) —
+                // empty for an app that explains nothing per call, and then the card is exactly
+                // what it was. Display only, like the naming line: `parsed` reaches the store
+                // untouched and the grant binds to those bytes, never to a sentence about them.
                 let asked = approvals::request(
-                    &requester, verified, &app, &action, parsed, &grade, &purpose, &target,
+                    &requester,
+                    verified,
+                    approvals::Asked {
+                        app: &app,
+                        action: &action,
+                        grade: &grade,
+                        purpose: &purpose,
+                        published: &published_purpose,
+                        target: &target,
+                        explained: &explained,
+                    },
+                    parsed,
                 )?;
+
+                // To the phone, when an agent answering a turn from it raised it: once, when it
+                // first appears, never again for a repeat of the same request.
+                if asked.fresh {
+                    crate::channels::card_raised(&asked.id, cannot_be_undone, &published_summary);
+                }
 
                 // And in the pane of the agent that asked: the same card, under the same request
                 // id, so answering it there answers it here (design decision 4). Only for the
@@ -313,6 +369,17 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 Param::object("args_json")
                     .optional()
                     .describe("The same JSON object the request carried"),
+            )
+            .arg(
+                Param::integer("caller_pid")
+                    .optional()
+                    .describe("Internal, for an app forwarding a spend (#182): the pid the \
+                               kernel stamped on the call its agent token arrived in. Honoured \
+                               only when the forwarding process's executable is named like one \
+                               of the desktop's own (yantrik-*, *-service): a name check, which \
+                               same-user code can pass (#154). From any other caller it is \
+                               ignored, and the token is checked against the caller's own \
+                               kernel pid."),
             ),
             move |args| {
                 let id = required(args, "request_id")?;
@@ -324,7 +391,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 grant_belongs(
                     &id,
                     approvals::agent_of(&id).as_deref().unwrap_or_default(),
-                    &crate::control_agent_terminal::calling_agent(),
+                    &spending_agent(args),
                 )?;
                 approvals::consume(&id, &app, &action, &parsed)?;
                 if let Some(ui) = consume_ui.upgrade() {
@@ -349,18 +416,20 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             // told somebody to edit an environment variable.
             Action::new(
                 "set_mind_mode",
-                "Tighten what you may do on this desktop without being asked. Four modes, \
-                 loosest first: `bypass` (nothing is asked), `auto` (only destructive actions \
-                 are asked about), `ask` (anything that matters is asked about), `plan` (read \
-                 only — every change is refused). You can only move DOWN this list. A request to \
-                 loosen it is refused: that is the person's decision, made at the keyboard, and \
-                 `plan` is the useful one to set yourself before a long piece of work you want \
-                 checked first.",
+                "Tighten what you may do on this desktop without being asked. Five modes, \
+                 loosest first: `bypass_all` (nothing is asked), `bypass` (nothing is asked \
+                 except before what an app marks as impossible to undo), `auto` (only \
+                 destructive actions are asked about), `ask` (anything that matters is asked \
+                 about), `plan` (read only — every change is refused). You can only move DOWN \
+                 this list, and never INTO a bypass: from `bypass_all` you may step down to \
+                 `bypass`, but neither is entered from here. A request to loosen it is refused: \
+                 that is the person's decision, made at the keyboard, and `plan` is the useful \
+                 one to set yourself before a long piece of work you want checked first.",
             )
             .risk("safe")
             .arg(
                 Param::text("mode")
-                    .describe("plan, ask or auto — and only if it is tighter than the current mode"),
+                    .describe("plan, ask or auto — or bypass, from bypass_all — and only if it is tighter than the current mode"),
             ),
             move |args| {
                 let wanted = required(args, "mode")?;
@@ -385,7 +454,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             Action::new(
                 "record_unasked_action",
                 "Write down one action that ran WITHOUT the person being asked — because the \
-                 desktop is in auto or bypass mode, or because a session rule covers it. Call it \
+                 desktop is in auto, bypass or bypass_all mode, or because a session rule covers it. Call it \
                  straight after the action, with what actually happened. It records; it cannot \
                  authorise anything, and not calling it does not stop anything running. The \
                  person reads these in the mode menu and in ~/.local/share/yantrik/mind-audit.jsonl.",
@@ -397,7 +466,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             .arg(
                 Param::text("mode")
                     .optional()
-                    .describe("The mode it ran under: auto, bypass, or rule"),
+                    .describe("The mode it ran under: auto, bypass, bypass_all, or rule"),
             )
             .arg(
                 Param::object("args_json")
@@ -592,7 +661,8 @@ const NOTE_CHARS: usize = 62;
 type Naming = std::collections::BTreeMap<String, String>;
 
 /// The grade to act on, the note the card owes the person if it is not what was declared,
-/// the app's own sentence about the action, and what the app says its own ids name.
+/// the app's own sentence about the action, what the app says its own ids name, and what the app
+/// says about this one call with these arguments (#137).
 ///
 /// Refuses rather than guesses. An app this desktop does not have, an action it does not
 /// publish, or a surface that will not say — none of those is a reason to put a card in front of
@@ -607,29 +677,35 @@ fn settle_grade(
     app: &str,
     action: &str,
     claimed: &str,
-) -> Result<(String, String, String, Naming), String> {
-    let (published, purpose, naming) = published_detail(app, action)?;
+    args: &serde_json::Value,
+) -> Result<(String, String, String, Naming, String), String> {
+    let (published, purpose, naming, explained) = published_detail(app, action, args)?;
     let note = grade_note(claimed, &published);
-    Ok((published, note, purpose, naming))
+    Ok((published, note, purpose, naming, explained))
 }
 
-/// What the target app itself says one of its actions is graded, what it is for, and — beside
-/// that — what the app says its own ids name.
+/// What the target app itself says one of its actions is graded, what it is for, what the app
+/// says its own ids name, and what it says about one call of it with `args` (#137).
 ///
-/// The purpose and the naming are empty for the shell's own surface: the local registry shortcut
-/// below publishes a grade and nothing else, and reaching the description would mean a new
-/// function in `yantrik-app-runtime`, which this change does not own. Nothing published by the
-/// shell matches the "cannot be undone" wording today — `files_delete` says "Move a file or
+/// The purpose, the naming and the explanation are empty for the shell's own surface: the local
+/// registry shortcut below publishes a grade and nothing else, and reaching the description would
+/// mean a new function in `yantrik-app-runtime`, which this change does not own. Nothing published
+/// by the shell matches the "cannot be undone" wording today — `files_delete` says "Move a file or
 /// folder to recoverable Trash" — and the caller ORs this with what the request declared, so a
 /// shell action that acquired such a sentence would still be asked about as long as the bridge
 /// kept relaying the purpose it reads out of `describe`. And no shell action takes an opaque id
 /// today either, so there is nothing for a naming index to resolve.
-fn published_detail(app: &str, action: &str) -> Result<(String, String, Naming), String> {
+fn published_detail(
+    app: &str,
+    action: &str,
+    args: &serde_json::Value,
+) -> Result<(String, String, Naming, String), String> {
     published_detail_in(
         &yantrik_ipc_transport::server::socket_dir(),
         &crate::apps::Catalogue::shared().get(),
         app,
         action,
+        args,
     )
 }
 
@@ -639,7 +715,8 @@ fn published_detail_in(
     installed: &[crate::apps::DesktopEntry],
     app: &str,
     action: &str,
-) -> Result<(String, String, Naming), String> {
+    args: &serde_json::Value,
+) -> Result<(String, String, Naming, String), String> {
     let Some(surface) = surface_in(app, installed, dir) else {
         return Err(format!(
             "there is no app called `{app}` on this desktop, so nothing was put in front of the \
@@ -649,11 +726,18 @@ fn published_detail_in(
 
     // The shell asking the shell. Over the socket this would be a call the shell's own UI thread
     // has to answer while it is blocked making it — so it is read straight out of the registry
-    // that thread already holds. The registry carries grades and nothing else: the shell's own
-    // actions take paths, prompts and names, no opaque handle that needs a naming index.
+    // that thread already holds: the grade, and the description beside it, which the gate reads
+    // for what cannot be undone and what runs whatever it is given. Without the description the
+    // card and the dispatch disagreed about the shell's own actions — `agent_run` asked at the
+    // socket and ran unasked here in auto. The shell's actions take paths, prompts and names, no
+    // opaque handle that needs a naming index.
     if surface == "shell" {
         return yantrik_app_runtime::control::published_grade(action)
-            .map(|grade| (grade.to_string(), String::new(), Naming::new()))
+            .map(|grade| {
+                let purpose =
+                    yantrik_app_runtime::control::published_description(action).unwrap_or_default();
+                (grade.to_string(), purpose, Naming::new(), String::new())
+            })
             .ok_or_else(|| {
                 format!(
                     "`shell` publishes no action called `{action}`, so there is nothing to ask \
@@ -685,15 +769,20 @@ fn published_detail_in(
             )
         })?;
 
-    // One lookup for all three facts. Two would be two `app.describe` round trips on the UI
-    // thread for one card, and two chances for the grade, the sentence beside it and the names
-    // of its ids to come from different revisions of the same app.
+    // One lookup for all the facts `describe` carries. Two would be two `app.describe` round
+    // trips on the UI thread for one card, and two chances for the grade, the sentence beside it,
+    // the names of its ids and whether the action can explain one call of itself to come from
+    // different revisions of the same app.
     let published = reply["actions"]
         .as_array()
         .and_then(|list| list.iter().find(|a| a["name"].as_str() == Some(action)))
         .and_then(|a| {
             a["permission"].as_str().map(|grade| {
-                (grade.to_string(), a["description"].as_str().unwrap_or_default().to_string())
+                (
+                    grade.to_string(),
+                    a["description"].as_str().unwrap_or_default().to_string(),
+                    a["explains"].as_bool().unwrap_or(false),
+                )
             })
         })
         .ok_or_else(|| {
@@ -702,7 +791,100 @@ fn published_detail_in(
                  and nothing was put in front of the person."
             )
         })?;
-    Ok((published.0, published.1, naming_in(&reply)))
+    // The sentence about THIS call is the one thing `describe` cannot carry, because it depends
+    // on arguments `describe` never sees (#137). It costs a second round trip — but only for an
+    // action that just said on the first one that it can explain a call of itself, so no card
+    // pays for a question its app cannot answer.
+    let explained =
+        if published.2 { explained_in(&address, action, args) } else { String::new() };
+    Ok((published.0, published.1, naming_in(&reply), explained))
+}
+
+/// The app's sentence about ONE call, with these arguments (#137) — or empty, and the card is
+/// exactly what it was.
+///
+/// Reading, not acting: it can change no grade and spend no grant, and the shell asks it only
+/// after the describe above succeeded, so the surface is up and answering. Every way this second
+/// call can fail — a slow surface, a broken pipe, an app whose answer carries no sentence — is
+/// treated as the app having nothing to say: the person still gets the card, with the purpose
+/// and the arguments the grant is actually bound to. A missing line is never a missing card.
+///
+/// The answer is sanitised here, before the shell stores it or lends the sentence its own
+/// "says the app" label (see [`sanitised_explanation`]), and the approvals store cuts it to its
+/// bound on arrival, so what is recorded is bounded too.
+fn explained_in(address: &str, action: &str, args: &serde_json::Value) -> String {
+    yantrik_ipc_transport::SyncRpcClient::new(address)
+        .with_timeout(GRADE_LOOKUP)
+        .call("app.explain", serde_json::json!({ "action": action, "args": args }))
+        .ok()
+        .and_then(|reply| reply["explanation"].as_str().map(sanitised_explanation))
+        .unwrap_or_default()
+}
+
+/// The app's reply made safe to print under the shell's own label (#137).
+///
+/// The sentence is text the app wrote — and on a surface with a mind attached, text a MIND
+/// wrote — drawn on a card that vouches for it as the app's. So it arrives as one line of
+/// plain prose: bidi controls dropped, because an invisible U+202E lets a line read backwards
+/// and the card would vouch for the reversed reading; other control characters dropped,
+/// because nothing that cannot be seen belongs under a label; runs of whitespace and newlines
+/// collapsed to single spaces, because the block's place in the card's height arithmetic is
+/// one wrapped paragraph and never the app's own layout. The length bound is the store's
+/// (`EXPLAINED_CHARS`, applied in `Store::request`), so the cut names the true length once.
+fn sanitised_explanation(raw: &str) -> String {
+    /// Unicode's format characters (general category Cf), none of which draws anything. Among
+    /// them the bidi controls — the embeds and overrides (U+202A–U+202E), the isolates
+    /// (U+2066–U+2069), the directional marks (U+200E, U+200F) and the Arabic letter mark
+    /// (U+061C) — which change how the rest of a line reads; and the other invisibles a line can
+    /// hide words behind: zero-width spaces and joiners, the word joiner and invisible
+    /// operators, the byte-order mark, the soft hyphen, the interlinear annotation marks and the
+    /// tag characters.
+    fn is_format_character(c: char) -> bool {
+        matches!(
+            c,
+            '\u{00AD}'
+                | '\u{0600}'..='\u{0605}'
+                | '\u{061C}'
+                | '\u{06DD}'
+                | '\u{070F}'
+                | '\u{0890}'..='\u{0891}'
+                | '\u{08E2}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{206F}'
+                | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{110BD}'
+                | '\u{110CD}'
+                | '\u{13430}'..='\u{1343F}'
+                | '\u{1BCA0}'..='\u{1BCA3}'
+                | '\u{1D173}'..='\u{1D17A}'
+                | '\u{E0001}'
+                | '\u{E0020}'..='\u{E007F}'
+        )
+    }
+
+    let mut out = String::with_capacity(raw.len());
+    let mut gap = false;
+    for c in raw.chars() {
+        if is_format_character(c) || (c.is_control() && !c.is_whitespace()) {
+            continue; // dropped without a trace: nothing invisible survives the label
+        }
+        if c.is_whitespace() {
+            // A newline or tab is the app's layout, not the card's; a run of whitespace
+            // becomes one space, and a sentence never starts with one.
+            gap = !out.is_empty();
+        } else {
+            if gap {
+                out.push(' ');
+            }
+            out.push(c);
+            gap = false;
+        }
+    }
+    out
 }
 
 /// The app's own id→name index, from `describe`'s `state.naming`.
@@ -894,10 +1076,11 @@ fn draw_in_pane(agent: &str, request: &str, app: &str, action: &str) -> bool {
 
 /// May the caller spend request `id`, which was asked for `asked_for` (empty: for no agent)?
 ///
-/// A caller that runs as no agent — the person's own `yos act`, or an app's dispatch spending the
-/// grant it was handed (#116) — is not told apart here and is let through, as before. A caller
-/// that presented a token is held to it: a token that was not believed spends nothing, and an
-/// agent spends only what was asked for it. A child agent handed its parent's request id is
+/// A caller that runs as no agent — the person's own `yos act`, or a call that carried no token
+/// — is not told apart here and is let through, as before. A caller that presented a token is
+/// held to it: a token that was not believed spends nothing, and an agent spends only what was
+/// asked for it, whichever door the spend came through (#182) — the socket's `consume_approval`
+/// or the shell's own in-process dispatch. A child agent handed its parent's request id is
 /// refused, because a child starts with no grants.
 fn grant_belongs(
     id: &str,
@@ -917,6 +1100,60 @@ fn grant_belongs(
             if asked_for.is_empty() { "by a caller that runs as no agent".to_string() } else { format!("agent `{asked_for}`") }
         )),
     }
+}
+
+/// Who the `consume_approval` call being dispatched is for (#182).
+///
+/// An app that spends a grant forwards the spend here: the token rides beside `args` as always,
+/// and the pid the kernel stamped on the call the token arrived in rides among the arguments —
+/// because the peer of a forwarded call is the app, and a token is checked against the process
+/// tree it was issued into, never against whoever happens to hold the socket.
+///
+/// That pid is believed only when this call's own peer runs an executable named like one of the
+/// desktop's binaries (`owner::is_own_binary`): a pid a call is judged by is never anything the
+/// caller wrote (`identity`'s rule), and a direct caller holding a stolen token could otherwise
+/// write a harness's pid and pass the process-tree check with it. Any other caller — python's
+/// SDK spends, the person's own `yos act`, anything else on the socket — is judged by its own
+/// kernel pid, as before. The check is a name, so same-user code can pass it (#154).
+fn spending_agent(args: &serde_json::Value) -> Option<Result<crate::agents::AgentId, String>> {
+    let forwarder = yantrik_app_runtime::control::caller()
+        .and_then(|who| yantrik_ipc_transport::owner::exe_of(who.pid))
+        .is_some_and(|exe| yantrik_ipc_transport::owner::is_own_binary(&exe));
+    spending_agent_with(args, forwarder)
+}
+
+/// [`spending_agent`] with the forwarder question already answered. Split out because a test
+/// binary is never a forwarder, so only this way can a test reach the branch that believes
+/// `caller_pid` — the one every agent spend through a Rust app takes.
+fn spending_agent_with(
+    args: &serde_json::Value,
+    forwarder: bool,
+) -> Option<Result<crate::agents::AgentId, String>> {
+    let forwarded = if forwarder {
+        args.get("caller_pid").and_then(|v| v.as_u64()).map(|pid| pid as u32).filter(|pid| *pid > 0)
+    } else {
+        None
+    };
+    match forwarded {
+        Some(pid) => crate::control_agent_terminal::calling_agent_at(Some(pid)),
+        None => crate::control_agent_terminal::calling_agent(),
+    }
+}
+
+/// How the shell's own dispatch spends a grant, in-process (#116): the same store and the same
+/// checks the socket door applies — including whose grant it is (#182). The dispatch hands the
+/// spender the agent the call arrived as, token and kernel's pid together, which is everything
+/// `consume_approval` would otherwise read off the forwarded call itself.
+fn spend_in_process(
+    id: &str,
+    app: &str,
+    action: &str,
+    args: &serde_json::Value,
+    caller: Option<&yantrik_app_runtime::control::CallingAgent>,
+) -> Result<(), String> {
+    let calling = caller.map(|c| crate::control_agent_terminal::agent_for(&c.token, c.pid));
+    grant_belongs(id, approvals::agent_of(id).as_deref().unwrap_or_default(), &calling)?;
+    approvals::consume(id, app, action, args)
 }
 
 /// How request `id` came out, for the pane of the agent that asked: `None` while it is waiting.
@@ -946,7 +1183,7 @@ fn who_is_calling(claimed: &str) -> approvals::Verified {
     // A different uid is worth saying out loud rather than quietly resolving. The socket
     // directory is 0700 today, so this should be unreachable for anyone but root — which makes
     // it exactly the thing to notice if it ever happens.
-    if caller.uid != own_uid() {
+    if caller.uid != own_uid() && !yantrik_ipc_transport::mind_door::is_mind(caller.uid) {
         tracing::warn!(
             pid = caller.pid,
             uid = caller.uid,
@@ -1052,15 +1289,13 @@ pub fn machine_ceiling() -> String {
 /// This is the whole of the granting path. Two callbacks, each one line, each reachable only
 /// from a `TouchArea` in `intent_lens.slint`. Nothing else in this crate calls
 /// `approvals::grant` or `approvals::deny`, and they are `pub(crate)` so nothing outside it can.
-pub fn wire(ui: &App) {
+pub fn wire(ui: &App, bridge: std::sync::Arc<crate::bridge::CompanionBridge>) {
     // The apps spend a grant through this shell's `consume_approval` over the socket. This
     // shell's own dispatch cannot — asking itself over its own socket from its own RPC thread is
     // a call that cannot be answered until it returns — so it spends them in-process, through
-    // the same store and the same check. Still not a way to grant: `consume` burns what a click
-    // created and refuses everything else.
-    yantrik_app_runtime::control::spend_grants_with(|id, app, action, args| {
-        approvals::consume(id, app, action, args)
-    });
+    // the same store and the same checks, the agent the spend arrived as among them (#182).
+    // Still not a way to grant: `consume` burns what a click created and refuses everything else.
+    yantrik_app_runtime::control::spend_grants_with(spend_in_process);
 
     let allow_ui = ui.as_weak();
     ui.on_approval_allow(move |id| {
@@ -1087,6 +1322,19 @@ pub fn wire(ui: &App) {
     ui.on_approval_allow_session(move |id| {
         let id = id.to_string();
         let card = approvals::card(&id);
+        // The press can only come from a card that offered the rule, but the press and the paint
+        // are not the same moment. A card that offers no standing yes (an explained one, #137)
+        // gets the one action the person said yes to and no rule, whatever button reached here.
+        if card.as_ref().is_some_and(|card| !card.can_session) {
+            match approvals::grant(&id) {
+                Ok(()) => tracing::info!(request = %id, "allowed once: this card offers no session rule"),
+                Err(e) => tracing::info!(request = %id, reason = %e, "Allow did not apply"),
+            }
+            if let Some(ui) = session_ui.upgrade() {
+                sync(&ui);
+            }
+            return;
+        }
         match approvals::grant_for_session(&id) {
             Ok(()) => tracing::info!(request = %id, "a person allowed one action for this session"),
             Err(e) => {
@@ -1099,7 +1347,9 @@ pub fn wire(ui: &App) {
         }
         if let Some(card) = card {
             if let Err(e) =
-                crate::mind_mode::person_add_rule(&card.app, &card.action, &card.grade, &card.purpose)
+                // `said`, not `purpose`: the app's own sentence, whole, which the caller cannot
+                // leave out and the card's bound cannot cut (#504).
+                crate::mind_mode::person_add_rule(&card.app, &card.action, &card.grade, &card.said)
             {
                 tracing::warn!(request = %id, reason = %e, "no session rule was made for it");
             }
@@ -1131,11 +1381,11 @@ pub fn wire(ui: &App) {
     let chosen_ui = ui.as_weak();
     ui.on_mind_mode_chosen(move |mode| {
         let Some(mode) = crate::mind_mode::Mode::parse(&mode) else { return };
-        // Bypass has its own callback because it has its own confirmation and its own duration.
-        // Letting it arrive here would mean one click could enter it, which is the one mode
-        // that must cost a deliberate second answer.
-        if mode == crate::mind_mode::Mode::Bypass {
-            tracing::warn!("bypass does not arrive through the plain mode chooser");
+        // Either bypass has its own callback because it has its own confirmation and its own
+        // duration. Letting one arrive here would mean one click could enter it, and a bypass
+        // is the one kind of mode that must cost a deliberate second answer.
+        if mode.is_bypass() {
+            tracing::warn!(mode = mode.as_str(), "a bypass does not arrive through the plain mode chooser");
             return;
         }
         crate::mind_mode::person_set_mode(mode, crate::mind_mode::Bypass::Hour);
@@ -1145,11 +1395,15 @@ pub fn wire(ui: &App) {
         }
     });
 
+    // Which bypass and for how long, both off the red confirmation: `bypass` still asks before
+    // what cannot be undone, `bypass_all` asks nothing. Anything else — a mode that is not a
+    // bypass, a duration that is not one of the three — is dropped, never read as a default.
     let bypass_ui = ui.as_weak();
-    ui.on_mind_bypass_chosen(move |duration| {
+    ui.on_mind_bypass_chosen(move |kind, duration| {
+        let Some(mode) = crate::mind_mode::Mode::parse(&kind).filter(|m| m.is_bypass()) else { return };
         let Some(bypass) = crate::mind_mode::Bypass::parse(&duration) else { return };
-        crate::mind_mode::person_set_mode(crate::mind_mode::Mode::Bypass, bypass);
-        tracing::warn!(duration = %duration, "a person put this desktop into bypass");
+        crate::mind_mode::person_set_mode(mode, bypass);
+        tracing::warn!(mode = mode.as_str(), duration = %duration, "a person put this desktop into a bypass");
         if let Some(ui) = bypass_ui.upgrade() {
             publish_mode(&ui);
         }
@@ -1161,6 +1415,30 @@ pub fn wire(ui: &App) {
         tracing::info!(app = %app, action = %action, "a person revoked a session rule");
         if let Some(ui) = revoke_ui.upgrade() {
             publish_mode(&ui);
+        }
+    });
+
+    // Private mode (Pranab, 28 September 2026): the Mind off and nothing recorded, until the
+    // person turns it off. A pointer's choice like the modes, from the menu or the Lens's offer to
+    // leave it: nothing on the socket reaches it. The file is written first; if it cannot be, the
+    // switch shows where it really is rather than where it was pressed.
+    let private_ui = ui.as_weak();
+    ui.on_mind_private_chosen(move |on| {
+        match crate::private_mode::person_set_private(on) {
+            Ok(()) => {
+                crate::private_mode::enforce(on, &bridge);
+                tracing::warn!(on, "a person turned Private mode {}", if on { "on" } else { "off" });
+            }
+            Err(e) => {
+                tracing::error!(on, error = %e, "Private mode could not be written; it did not change");
+                crate::wire::notifications::private_mode_notice(
+                    if on { "Private mode did not turn on" } else { "Private mode did not turn off" },
+                    &format!("Its file could not be written: {e}"),
+                );
+            }
+        }
+        if let Some(ui) = private_ui.upgrade() {
+            ui.set_private_mode(crate::private_mode::is_on());
         }
     });
 
@@ -1408,6 +1686,8 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
         } else {
             card.purpose.into()
         },
+        // The caller's words, apart from the app's and labelled as the caller's (#504).
+        caller_says: card.caller_says.into(),
         // The first sentence of that description, and the line the card leads with (#218):
         // the whole paragraph is for the person who wants it, under "show more", not the first
         // thing everybody has to read. Empty when the app publishes nothing — the card hides
@@ -1422,6 +1702,11 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
         // One elided line beside the box, or nothing: the card hides the row when an app
         // publishes no naming index (#54), so this is a pass-through, not a second fallback.
         target: card.target.into(),
+        // The app's sentence about this one call (#137), drawn under the argument box — or
+        // empty, and the card hides the block and is exactly what it was. A pass-through like
+        // the naming line: the sanitising happened in `explained_in` and the bounding and the
+        // cutting in `approvals`, where the card's height arithmetic lives.
+        explained: card.explained.into(),
         warning: card.warning.into(),
         can_session: card.can_session,
         decision: match card.status {
@@ -1528,6 +1813,44 @@ fn publish_mode_if_changed(ui: &App) {
     }
 }
 
+/// One audit record as the mode menu draws it.
+///
+/// Pure and separate from the write so "the row names the actor" is a test that needs no shell
+/// (#220). The menu row used to show only the time, the action, its arguments and the outcome,
+/// so a list of unattended actions named everything except who did them. It now shows the
+/// verified mind, or the caller's claim marked as a claim — see [`audit_actor`].
+fn audit_row(e: &crate::mind_mode::AuditEntry) -> crate::MindAuditEntry {
+    crate::MindAuditEntry {
+        at: e.at.clone().into(),
+        what: format!("{}.{}", e.app, e.action).into(),
+        actor: audit_actor(e).into(),
+        // One line, already bounded the way the card bounds them. Joined with two spaces rather
+        // than newlines because this is a single elided `Text` in a menu, not a card. The grade
+        // and the mode it ran under stay in `describe shell` and in the file; see the struct.
+        args: e.args.join("  ").into(),
+        outcome: e.outcome.clone().into(),
+    }
+}
+
+/// Who did it, as this machine knows it: the verified mind or agent when there is one, and the
+/// caller's own claim only marked as a claim — `requester` is self-declared text that any mind
+/// can set to any name, including another mind's, and this row is what a person judges the
+/// unattended runs by. The same pairing as everywhere else a claimed name is shown ("says the
+/// caller": `intent_lens.slint`, the notifications after #134, `caller_identity.rs` / #43).
+fn audit_actor(e: &crate::mind_mode::AuditEntry) -> String {
+    let v = &e.verified;
+    if !v.attached_mind.is_empty() {
+        return v.attached_mind.clone();
+    }
+    if !v.agent.is_empty() {
+        return format!("agent {}", v.agent);
+    }
+    if e.requester.is_empty() {
+        return String::new();
+    }
+    format!("\u{201c}{}\u{201d} says the caller", e.requester)
+}
+
 fn publish_mode(ui: &App) {
     MODE_SHOWN.with(|shown| *shown.borrow_mut() = mode_fingerprint());
     // And to the apps, which enforce it (issue #116). Every change of mode or rule comes
@@ -1559,6 +1882,7 @@ fn publish_mode(ui: &App) {
         })
         .unwrap_or_default();
     ui.set_mind_session_rules(ModelRc::new(VecModel::from(rules)));
+    ui.set_mind_rules_cleared(crate::mind_mode::cleared_note().into());
 
     // Newest first on screen. The list answers "what has it just done", and a person scanning it
     // reads from the top — which is the opposite of the transcript order the approval records
@@ -1566,16 +1890,8 @@ fn publish_mode(ui: &App) {
     let mut audit: Vec<crate::MindAuditEntry> = crate::mind_mode::recent(
         crate::mind_mode::AUDIT_PUBLISHED,
     )
-    .into_iter()
-    .map(|e| crate::MindAuditEntry {
-        at: e.at.into(),
-        what: format!("{}.{}", e.app, e.action).into(),
-        // One line, already bounded the way the card bounds them. Joined with two spaces rather
-        // than newlines because this is a single elided `Text` in a menu, not a card. The grade
-        // and the mode it ran under stay in `describe shell` and in the file; see the struct.
-        args: e.args.join("  ").into(),
-        outcome: e.outcome.into(),
-    })
+    .iter()
+    .map(audit_row)
     .collect();
     audit.reverse();
     ui.set_mind_audit(ModelRc::new(VecModel::from(audit)));
@@ -1902,14 +2218,14 @@ mod control_approvals_tests {
     }
 
     /// The words that would be a way to loosen the mode, or mint a session rule, if one existed.
-    const MODE_WORDS: &[&str] = &["mode", "rule", "bypass", "permission", "ceiling"];
+    const MODE_WORDS: &[&str] = &["mode", "rule", "bypass", "permission", "ceiling", "private", "privacy"];
 
     /// The one action allowed to carry them, and why it is not a way to loosen anything:
     /// `set_mind_mode` refuses every request that would make the desktop more permissive.
     const MODE_PERMITTED: &[&str] = &["set_mind_mode"];
 
     /// The functions in `mind_mode` that a person's click reaches, and nothing else may.
-    const PERSON_ONLY: &[&str] = &["person_set_mode", "person_add_rule", "person_revoke_rule"];
+    const PERSON_ONLY: &[&str] = &["person_set_mode", "person_add_rule", "person_revoke_rule", "person_set_private"];
 
     /// The function those callbacks are wired in. Anything else naming them is the bug.
     const CALLBACK_HOME: &str = "wire";
@@ -2226,7 +2542,10 @@ mod control_approvals_tests {
                 // Files names no handle here — `name: taxes.pdf` is already the thing itself —
                 // so the naming row is empty, and this is the ordinary path on the card (#54).
                 target: String::new(),
+                explained: String::new(),
                 warning: "The app says this cannot be undone.".into(),
+                said: String::new(),
+                caller_says: String::new(),
                 can_session: false,
                 status: Status::Pending,
                 record: String::new(),
@@ -2292,7 +2611,7 @@ mod control_approvals_tests {
         let mut row = |args: serde_json::Value| {
             let id = store
                 .request("claude-code 2.1.276", Verified::default(), "studio", "set_backend",
-                    args, "sensitive", purpose, "", now, "19:32")
+                    args, "sensitive", purpose, "", "", now, "19:32")
                 .unwrap()
                 .id;
             let card = store.pending(now).into_iter().find(|c| c.id == id).unwrap();
@@ -2400,7 +2719,7 @@ mod control_approvals_tests {
         assert!(err.contains("not handed from one agent to another") && err.contains("pi:c-parent"), "{err}");
         assert!(grant_belongs("appr-2", "", &child).is_err(), "nor one the person asked for");
         assert!(grant_belongs("appr-1", "pi:c-parent", &Some(Err("no".into()))).is_err(), "a token not believed spends nothing");
-        assert!(grant_belongs("appr-1", "pi:c-parent", &None).is_ok(), "an app's own dispatch, as before");
+        assert!(grant_belongs("appr-1", "pi:c-parent", &None).is_ok(), "a caller that runs as no agent, as before — an app's dispatch forwards the claim it was handed (#182)");
     }
 
     /// #212: a card shown twice — once in the pane, once in the floating popup — was a card
@@ -2422,7 +2741,10 @@ mod control_approvals_tests {
                 summary: crate::approvals::summary_of("Delete a file. It is not recoverable."),
                 args: vec![],
                 target: String::new(),
+                explained: String::new(),
                 warning: String::new(),
+                said: String::new(),
+                caller_says: String::new(),
                 can_session: false,
                 status,
                 record: String::new(),
@@ -2490,8 +2812,18 @@ mod service_surface_approval_tests {
         dir
     }
 
-    /// A socket that answers `app.describe` with `describe`, as a service's own dispatch does.
-    fn serve(path: &Path, describe: serde_json::Value) {
+    /// A socket that answers as a service's own dispatch does: `app.describe` with `describe`,
+    /// and `app.explain` with `explain` — or with the -32601 a surface that has not implemented
+    /// it gives, when `explain` is `None`. Every request it answers is pushed onto the returned
+    /// log, so a test can hold the shell to what it asked and what it did not (#137).
+    fn serve(
+        path: &Path,
+        describe: serde_json::Value,
+        explain: Option<serde_json::Value>,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>> {
+        let asked: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = asked.clone();
         let listener = std::os::unix::net::UnixListener::bind(path).unwrap();
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
@@ -2501,11 +2833,22 @@ mod service_surface_approval_tests {
                     continue; // somebody asking whether anything is here
                 }
                 let asked: serde_json::Value = serde_json::from_str(&line).unwrap();
-                let reply = serde_json::json!({ "jsonrpc": "2.0", "id": asked["id"], "result": describe });
+                log.lock().unwrap().push(asked.clone());
+                let reply = match (asked["method"].as_str(), &explain) {
+                    (Some("app.explain"), Some(result)) => serde_json::json!({
+                        "jsonrpc": "2.0", "id": asked["id"], "result": result,
+                    }),
+                    (Some("app.explain"), None) => serde_json::json!({
+                        "jsonrpc": "2.0", "id": asked["id"],
+                        "error": { "code": -32601, "message": "unknown method `app.explain`" },
+                    }),
+                    _ => serde_json::json!({ "jsonrpc": "2.0", "id": asked["id"], "result": describe }),
+                };
                 let mut stream = stream;
                 let _ = stream.write_all(format!("{reply}\n").as_bytes());
             }
         });
+        asked
     }
 
     fn sysmon(grade: &str, description: &str) -> serde_json::Value {
@@ -2527,36 +2870,40 @@ mod service_surface_approval_tests {
         let dir = scratch("service");
         let installed = crate::surfaces::shipped_catalogue();
         // Nothing answers at all: refused, and the sentence says both places were looked in.
-        let err = published_detail_in(&dir, &installed, "system-monitor", "kill_process").unwrap_err();
+        let none = serde_json::json!({});
+        let err =
+            published_detail_in(&dir, &installed, "system-monitor", "kill_process", &none).unwrap_err();
         assert!(err.contains("neither its window nor a service"), "{err}");
 
         // The window was open once and crashed: its socket file is still there, nobody listens.
         drop(std::os::unix::net::UnixListener::bind(dir.join("app-system-monitor.sock")).unwrap());
-        serve(&dir.join("system-monitor.sock"), sysmon("dangerous", "End a running process by PID"));
+        serve(&dir.join("system-monitor.sock"), sysmon("dangerous", "End a running process by PID"), None);
 
         for name in ["system-monitor", "sysmonitor", "System Monitor"] {
             assert_eq!(
-                published_detail_in(&dir, &installed, name, "kill_process"),
+                published_detail_in(&dir, &installed, name, "kill_process", &none),
                 Ok((
                     "dangerous".to_string(),
                     "End a running process by PID".to_string(),
                     Naming::new(),
+                    String::new(),
                 )),
                 "`{name}`, with the window shut, is graded by its service"
             );
         }
-        let err = published_detail_in(&dir, &installed, "system-monitor", "no_such").unwrap_err();
+        let err = published_detail_in(&dir, &installed, "system-monitor", "no_such", &none).unwrap_err();
         assert!(err.contains("publishes no action called `no_such`"), "{err}");
 
         // With the window open, the window is what an act reaches, so it is what is asked.
         std::fs::remove_file(dir.join("app-system-monitor.sock")).unwrap();
-        serve(&dir.join("app-system-monitor.sock"), sysmon("sensitive", "the window's own account"));
+        serve(&dir.join("app-system-monitor.sock"), sysmon("sensitive", "the window's own account"), None);
         assert_eq!(
-            published_detail_in(&dir, &installed, "sysmonitor", "kill_process"),
+            published_detail_in(&dir, &installed, "sysmonitor", "kill_process", &none),
             Ok((
                 "sensitive".to_string(),
                 "the window's own account".to_string(),
                 Naming::new(),
+                String::new(),
             ))
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -2578,11 +2925,18 @@ mod service_surface_approval_tests {
             // stringifying that guess would be the shell vouching for a sentence the app wrote.
             "not-a-name": 7,
         });
-        serve(&dir.join("system-monitor.sock"), describe);
-        let (grade, purpose, naming) =
-            published_detail_in(&dir, &installed, "system-monitor", "kill_process").unwrap();
+        serve(&dir.join("system-monitor.sock"), describe, None);
+        let (grade, purpose, naming, explained) = published_detail_in(
+            &dir,
+            &installed,
+            "system-monitor",
+            "kill_process",
+            &serde_json::json!({"id": "01a0c718-3931-7342-b9c7-8de36140ddb0"}),
+        )
+        .unwrap();
         assert_eq!(grade, "dangerous");
         assert_eq!(purpose, "End a running process by PID");
+        assert_eq!(explained, "", "an action that declared no explainer is asked no second question");
         assert_eq!(
             naming.get("01a0c718-3931-7342-b9c7-8de36140ddb0").map(String::as_str),
             Some("Dentist, Fri 25 Sep 13:00"),
@@ -2607,12 +2961,145 @@ mod service_surface_approval_tests {
         let dir = scratch("undeclared");
         let installed = crate::surfaces::shipped_catalogue();
         assert_eq!(surface_in("hello-service", &installed, &dir), None);
-        serve(&dir.join("hello-service.sock"), serde_json::json!({ "app": "hello-service", "actions": [] }));
+        serve(&dir.join("hello-service.sock"), serde_json::json!({ "app": "hello-service", "actions": [] }), None);
         assert_eq!(surface_in("Hello Service", &installed, &dir).as_deref(), Some("hello-service"));
         // Declared names are still the catalogue's, whatever answers in the directory.
         assert_eq!(surface_in("container-manager", &installed, &dir).as_deref(), Some("containers"));
         assert_eq!(surface_in("yantrik", &installed, &dir).as_deref(), Some("shell"));
         assert_eq!(surface_in("../etc", &installed, &dir), None, "not a name, whatever is on the disk");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #137: an app that can say what ONE call of one of its actions does — with that call's
+    /// own arguments — has the sentence read beside the grade and carried to the card. The
+    /// sentence cannot ride `describe`, which never sees the arguments, so it is a second
+    /// round trip; `describe` carries the flag that says the second question has an answer.
+    #[test]
+    fn an_app_that_explains_one_call_has_its_sentence_read_beside_the_grade() {
+        let dir = scratch("explain");
+        let installed = crate::surfaces::shipped_catalogue();
+        drop(std::os::unix::net::UnixListener::bind(dir.join("app-system-monitor.sock")).unwrap());
+        let mut describe = sysmon("dangerous", "End a running process by PID");
+        describe["actions"][0]["explains"] = serde_json::json!(true);
+        let asked = serve(
+            &dir.join("system-monitor.sock"),
+            describe,
+            Some(serde_json::json!({
+                "app": "system-monitor",
+                "action": "kill_process",
+                "explanation": "After this, the session that pid belongs to ends and its unsaved work is gone.",
+            })),
+        );
+        let args = serde_json::json!({"pid": 4242});
+        let (grade, purpose, naming, explained) =
+            published_detail_in(&dir, &installed, "system-monitor", "kill_process", &args).unwrap();
+        assert_eq!(grade, "dangerous", "the explainer moves no grade");
+        assert_eq!(purpose, "End a running process by PID", "and rewrites no purpose");
+        assert!(naming.is_empty());
+        assert_eq!(
+            explained,
+            "After this, the session that pid belongs to ends and its unsaved work is gone."
+        );
+        // The second question was asked with the very arguments the card shows — the sentence
+        // is about THIS call, and about nothing else the shell could have asked it about.
+        let log = asked.lock().unwrap();
+        assert_eq!(
+            log.iter().map(|r| r["method"].as_str().unwrap_or("")).collect::<Vec<_>>(),
+            ["app.describe", "app.explain"]
+        );
+        assert_eq!(log[1]["params"]["action"], "kill_process");
+        assert_eq!(log[1]["params"]["args"], args);
+        drop(log);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #137, the ordinary case: an app that has not implemented `app.explain` gets today's card
+    /// back — same grade, same purpose, no sentence — and the shell does not even ask it the
+    /// second question, because `describe` said no action of its could answer. And an app that
+    /// claims the flag but then refuses (an old build still running, a handler that failed)
+    /// loses the line, never the card.
+    #[test]
+    fn an_app_that_does_not_explain_leaves_the_card_as_it_was() {
+        let dir = scratch("no-explain");
+        let installed = crate::surfaces::shipped_catalogue();
+        drop(std::os::unix::net::UnixListener::bind(dir.join("app-system-monitor.sock")).unwrap());
+        let asked = serve(
+            &dir.join("system-monitor.sock"),
+            sysmon("dangerous", "End a running process by PID"),
+            None,
+        );
+        let (grade, purpose, naming, explained) = published_detail_in(
+            &dir,
+            &installed,
+            "system-monitor",
+            "kill_process",
+            &serde_json::json!({"pid": 1}),
+        )
+        .unwrap();
+        assert_eq!((grade.as_str(), purpose.as_str()), ("dangerous", "End a running process by PID"));
+        assert!(naming.is_empty());
+        assert_eq!(explained, "", "nothing to say, and the card is what it was");
+        assert_eq!(
+            asked.lock().unwrap().iter().map(|r| r["method"].as_str().unwrap_or("")).collect::<Vec<_>>(),
+            ["app.describe"],
+            "a card for an app that cannot explain costs no second round trip"
+        );
+
+        // The flag claimed, the question refused: today's card, not a failure.
+        let dir2 = scratch("no-explain-refused");
+        drop(std::os::unix::net::UnixListener::bind(dir2.join("app-system-monitor.sock")).unwrap());
+        let mut describe = sysmon("dangerous", "End a running process by PID");
+        describe["actions"][0]["explains"] = serde_json::json!(true);
+        serve(&dir2.join("system-monitor.sock"), describe, None);
+        let (grade, _, _, explained) = published_detail_in(
+            &dir2,
+            &installed,
+            "system-monitor",
+            "kill_process",
+            &serde_json::json!({"pid": 1}),
+        )
+        .unwrap();
+        assert_eq!(grade, "dangerous", "the person still gets the card, with the grade behind it");
+        assert_eq!(explained, "", "a refusal to explain is an empty line, not a missing card");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    /// #137, the hygiene of the answer: the sentence is text the app wrote — on a surface with
+    /// a mind attached, text a MIND wrote — printed under the shell's own "says the app" label.
+    /// So it arrives as one line of plain prose: bidi overrides and other invisibles dropped,
+    /// runs of newlines collapsed to the spaces the card wraps on. A mind that answers with a
+    /// U+202E and a wall of text gets its words onto the card — not its layout, not its
+    /// invisibles, and no reading the shell vouched for backwards.
+    #[test]
+    fn an_explanation_arrives_sanitised_before_the_shell_vouches_for_it() {
+        let dir = scratch("explain-dirty");
+        let installed = crate::surfaces::shipped_catalogue();
+        drop(std::os::unix::net::UnixListener::bind(dir.join("app-system-monitor.sock")).unwrap());
+        let mut describe = sysmon("dangerous", "End a running process by PID");
+        describe["actions"][0]["explains"] = serde_json::json!(true);
+        serve(
+            &dir.join("system-monitor.sock"),
+            describe,
+            Some(serde_json::json!({
+                "app": "system-monitor",
+                "action": "kill_process",
+                "explanation": "\u{FEFF}After\u{202E} this, the sess\u{200B}ion ends.\n\nIts\tunsaved work\u{7} is \u{2066}gone\u{2069}.\u{E0041}\n   Say this plainly.",
+            })),
+        );
+        let (_, _, _, explained) = published_detail_in(
+            &dir,
+            &installed,
+            "system-monitor",
+            "kill_process",
+            &serde_json::json!({"pid": 1}),
+        )
+        .unwrap();
+        assert_eq!(
+            explained,
+            "After this, the session ends. Its unsaved work is gone. Say this plainly.",
+            "bidi overrides and controls dropped, every run of whitespace one space"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -2706,6 +3193,7 @@ mod target_line_tests {
     fn the_row_carries_the_line_out_of_the_shell_untouched() {
         use crate::approvals::{Card, Status, Verified};
         let line = format!("id 01a0c718\u{2026} is \u{201c}Dentist, Fri 25 Sep 13:00\u{201d}");
+        let sentence = "After this, prompts stay on this machine.".to_string();
         let row = super::row_for(Card {
             id: "appr-9".into(),
             requester: "pi 0.87".into(),
@@ -2717,12 +3205,264 @@ mod target_line_tests {
             summary: "Take an event off the calendar.".into(),
             args: vec![format!("id: {DENTIST}")],
             target: line.clone(),
+            explained: sentence.clone(),
             warning: String::new(),
+            said: String::new(),
+            caller_says: String::new(),
             can_session: false,
             status: Status::Pending,
             record: String::new(),
             age_secs: 12,
         });
         assert_eq!(row.target.as_str(), line.as_str());
+        // The app's sentence about this one call (#137) is a pass-through too: the bounding
+        // happened in `approvals`, and the row is not a second place for it to go missing.
+        assert_eq!(row.explained.as_str(), sentence.as_str());
+    }
+}
+
+#[cfg(test)]
+mod audit_row_tests {
+    fn entry(requester: &str, verified: crate::approvals::Verified) -> crate::mind_mode::AuditEntry {
+        crate::mind_mode::AuditEntry {
+            at: "12:03".into(),
+            unix: 1_790_000_000,
+            mode: "auto".into(),
+            requester: requester.into(),
+            verified,
+            app: "files".into(),
+            action: "move".into(),
+            args: vec!["from: /a".into(), "to: /b".into()],
+            grade: "sensitive".into(),
+            outcome: "ok".into(),
+        }
+    }
+
+    /// An unattended run's row in the mode menu names who did it (#220) — and a name the caller
+    /// only CLAIMED is marked as a claim, because `requester` is self-declared text any mind can
+    /// set to anything, including another mind's name.
+    #[test]
+    fn the_menu_audit_row_names_the_actor() {
+        let row = super::audit_row(&entry("Coder · pi", crate::approvals::Verified::default()));
+        assert_eq!(
+            row.actor.as_str(),
+            "\u{201c}Coder · pi\u{201d} says the caller",
+            "nothing was established, so the row shows the claim as a claim"
+        );
+        // The rest of the row is unchanged: the actor is added beside what was already there.
+        assert_eq!(row.at.as_str(), "12:03");
+        assert_eq!(row.what.as_str(), "files.move");
+        assert_eq!(row.args.as_str(), "from: /a  to: /b");
+        assert_eq!(row.outcome.as_str(), "ok");
+
+        // What the machine established outranks the claim: a caller saying it is "Coder · pi"
+        // while the kernel's ancestry says Hermes Agent is shown as Hermes Agent.
+        let verified = crate::approvals::Verified {
+            attached_mind: "Hermes Agent".into(),
+            ..Default::default()
+        };
+        let row = super::audit_row(&entry("Coder · pi", verified));
+        assert_eq!(row.actor.as_str(), "Hermes Agent", "the verified mind is the actor");
+
+        // No mind, but an agent token the harness was checked against: name the agent.
+        let verified = crate::approvals::Verified {
+            agent: "pi:c-7f3a91".into(),
+            ..Default::default()
+        };
+        let row = super::audit_row(&entry("", verified));
+        assert_eq!(row.actor.as_str(), "agent pi:c-7f3a91");
+
+        // Nothing established and nothing claimed: no empty quoted claim on the row.
+        let row = super::audit_row(&entry("", crate::approvals::Verified::default()));
+        assert_eq!(row.actor.as_str(), "");
+    }
+}
+
+/// #182: the line `grant_belongs` draws, held at the two doors an app's spend comes through —
+/// the socket's `consume_approval`, where the app forwards the token beside `args` and the
+/// kernel's pid for the call among the arguments, and the shell's own in-process spender.
+/// Before, a forwarded spend arrived saying nothing about who was spending, so agent B could
+/// replay agent A's request id through any app's dispatch and the person's Allow for A ran B's
+/// call.
+#[cfg(test)]
+mod grant_spends_tests {
+    #[test]
+    fn approvals_a_grant_asked_for_one_agent_cannot_be_spent_by_another_through_an_apps_dispatch() {
+        use super::{grant_belongs, spend_in_process, spending_agent};
+        use crate::approvals::{self, Verified};
+        use crate::control_agent_terminal::{install_resolver, RESOLVER_TESTS};
+        use std::sync::Arc;
+        use yantrik_agent_terminal::TokenTable;
+        use yantrik_app_runtime::control::{AgentTokenScope, Caller, CallerScope, CallingAgent};
+
+        // The resolver is the shell's one global; hold it for the length of the test.
+        let _held = RESOLVER_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        // This test process stands in for the harness that holds both tokens, the way
+        // control_agent_terminal's own token test does.
+        let me = std::process::id();
+        let table = Arc::new(TokenTable::new());
+        table.issue("t-a-182", crate::agents::AgentId::new("pi", "c-182"), Some(me));
+        table.issue("t-b-182", crate::agents::AgentId::new("deepseek", "c-182"), Some(me));
+        install_resolver(table);
+        // The kernel's account of the call being dispatched: the peer is this test process, a
+        // direct caller — this binary is `yantrik_ui-…`, not one of the desktop's forwarders —
+        // so the tokens are checked against this pid, which is the harness they were issued to.
+        let _who = CallerScope::enter(Some(Caller { pid: me as i32, uid: super::own_uid(), gid: 0 }));
+
+        // A request asked for agent A, which the person allowed.
+        let args = serde_json::json!({"text": "shopping"});
+        let asked = approvals::request(
+            "pi 0.9",
+            Verified { agent: "pi:c-182".into(), ..Verified::default() },
+            approvals::Asked {
+                app: "notes",
+                action: "create_note",
+                grade: "standard",
+                purpose: "Create a note",
+                published: "",
+                target: "",
+                explained: "",
+            },
+            args.clone(),
+        )
+        .unwrap();
+        approvals::grant(&asked.id).unwrap();
+        let id = asked.id.as_str();
+        let claim = |token: &str| CallingAgent { token: token.into(), pid: Some(me) };
+
+        // Agent B replays the id through the socket door. The token rode beside `args` — the
+        // dispatch lifted it into the scope the handler reads — and is believed from the
+        // kernel's own account of the caller; the `caller_pid` written among the arguments is
+        // ignored, this peer being no forwarder of the desktop's, and happens to name the same
+        // process. It names B, the grant was asked for A, and the spend is refused.
+        let forwarded = serde_json::json!({ "caller_pid": me });
+        {
+            let _token = AgentTokenScope::enter(Some("t-b-182".into()));
+            let calling = spending_agent(&forwarded);
+            assert_eq!(
+                calling.as_ref().and_then(|c| c.as_ref().ok()).map(|a| a.0.as_str()),
+                Some("deepseek:c-182"),
+                "the forwarded token resolves against the forwarded pid: {calling:?}"
+            );
+            let err = grant_belongs(id, approvals::agent_of(id).as_deref().unwrap_or_default(), &calling)
+                .unwrap_err();
+            assert!(
+                err.contains("asked for agent `pi:c-182`") && err.contains("not for the agent making this call"),
+                "{err}"
+            );
+        }
+        // In-process door, where the shell's own dispatch hands the spender the claim directly.
+        let err = spend_in_process(id, "notes", "create_note", &args, Some(&claim("t-b-182"))).unwrap_err();
+        assert!(err.contains("not for the agent making this call"), "{err}");
+
+        // Agent A spends its own grant through the same two doors — and it holds once.
+        {
+            let _token = AgentTokenScope::enter(Some("t-a-182".into()));
+            grant_belongs(id, approvals::agent_of(id).as_deref().unwrap_or_default(), &spending_agent(&forwarded))
+                .expect("the agent that asked spends it");
+        }
+        spend_in_process(id, "notes", "create_note", &args, Some(&claim("t-a-182"))).unwrap();
+        let err = spend_in_process(id, "notes", "create_note", &args, Some(&claim("t-a-182"))).unwrap_err();
+        assert!(err.contains("already used"), "{err}");
+
+        // A caller that runs as no agent — the person's own `yos act` — still spends what the
+        // person allowed, as before.
+        let person = approvals::request(
+            "yos",
+            Verified::default(),
+            approvals::Asked {
+                app: "notes",
+                action: "create_note",
+                grade: "standard",
+                purpose: "Create a note",
+                published: "",
+                target: "",
+                explained: "",
+            },
+            args.clone(),
+        )
+        .unwrap();
+        approvals::grant(&person.id).unwrap();
+        spend_in_process(&person.id, "notes", "create_note", &args, None).unwrap();
+    }
+
+    /// #182, the lead's review: `caller_pid` is the pid the kernel stamped on another call, so
+    /// only the desktop's own binaries — an app or a service forwarding a spend — are believed
+    /// when they send one. A direct caller holds no such trust: the pid a call is judged by is
+    /// never anything the caller wrote (that is `identity`'s whole rule), and a stolen token
+    /// plus a written harness pid would otherwise pass the process-tree check. This test
+    /// process is exactly such a direct caller — its binary is `yantrik_ui-…`, not one of the
+    /// installed `yantrik-*` / `*-service` forwarders — so the impersonation is refused by its
+    /// own kernel pid.
+    #[test]
+    fn approvals_a_direct_caller_cannot_name_the_spending_agent_itself() {
+        use super::spending_agent;
+        use crate::control_agent_terminal::{install_resolver, RESOLVER_TESTS};
+        use std::sync::Arc;
+        use yantrik_agent_terminal::TokenTable;
+        use yantrik_app_runtime::control::{AgentTokenScope, Caller, CallerScope};
+
+        // The resolver is the shell's one global; hold it for the length of the test.
+        let _held = RESOLVER_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        // The victim agent's token, issued into a harness process that does not exist here. A
+        // pid equal to the harness's is believed without a /proc walk, so a caller that could
+        // get that pid into the check would pass it holding nothing but the token.
+        let table = Arc::new(TokenTable::new());
+        table.issue("t-victim-182", crate::agents::AgentId::new("claude", "c-victim-182"), Some(999_999));
+        install_resolver(table);
+
+        // The kernel's account of this call: the peer is this test process, and it carries the
+        // stolen token beside `args` the way every agent call does.
+        let _who = CallerScope::enter(Some(Caller {
+            pid: std::process::id() as i32,
+            uid: super::own_uid(),
+            gid: 0,
+        }));
+        let _token = AgentTokenScope::enter(Some("t-victim-182".into()));
+
+        // It writes the harness pid among the arguments. Nothing about this socket peer is a
+        // forwarder, so `caller_pid` is ignored and the token meets the caller's OWN pid —
+        // which descends from no harness the token was issued to — and the call is refused.
+        let calling = spending_agent(&serde_json::json!({ "caller_pid": 999_999 }));
+        let err = calling
+            .expect("a token came with the call")
+            .expect_err("a direct caller is judged by its own kernel pid, never by one it wrote");
+        assert!(err.contains("was not issued to the process that sent it"), "the refusal says why: {err}");
+    }
+
+    /// The other branch of the same rule: a forwarder's `caller_pid` is what the token is checked
+    /// against. The token was issued into a harness this test process is not; forwarded by an
+    /// app with the harness's pid it resolves to that harness's agent, and the very same
+    /// arguments from a direct caller are judged by the caller's own pid and refused — so the
+    /// two branches cannot pass for each other, and a forwarder check that stopped matching the
+    /// desktop's apps would show here as every agent spend through an app being refused.
+    #[test]
+    fn approvals_a_forwarders_caller_pid_is_the_pid_the_token_meets() {
+        use super::spending_agent_with;
+        use crate::control_agent_terminal::{install_resolver, RESOLVER_TESTS};
+        use std::sync::Arc;
+        use yantrik_agent_terminal::TokenTable;
+        use yantrik_app_runtime::control::{AgentTokenScope, Caller, CallerScope};
+
+        let _held = RESOLVER_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let table = Arc::new(TokenTable::new());
+        table.issue("t-fwd-182", crate::agents::AgentId::new("pi", "c-fwd-182"), Some(999_998));
+        install_resolver(table);
+        let _who = CallerScope::enter(Some(Caller {
+            pid: std::process::id() as i32,
+            uid: super::own_uid(),
+            gid: 0,
+        }));
+        let _token = AgentTokenScope::enter(Some("t-fwd-182".into()));
+        let args = serde_json::json!({ "caller_pid": 999_998 });
+
+        let forwarded = spending_agent_with(&args, true).expect("a token came with the call");
+        assert_eq!(
+            forwarded.as_ref().map(|a| a.0.as_str()),
+            Ok("pi:c-fwd-182"),
+            "a forwarder's caller_pid is the pid the token is checked against"
+        );
+        let direct = spending_agent_with(&args, false).expect("a token came with the call");
+        assert!(direct.is_err(), "the same arguments from a direct caller: {direct:?}");
     }
 }

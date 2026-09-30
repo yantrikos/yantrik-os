@@ -319,6 +319,15 @@ mod an_idle_window_stops_drawing {
             if expression[at..].starts_with("ms") && value == 1.0 {
                 continue;
             }
+            // A duration in seconds — `interval: 1s` — is a thousand of the milliseconds the
+            // rest are counted in; read as a bare number it was a Timer a thousand times faster
+            // than written.
+            let seconds = expression[at..].starts_with('s')
+                && !expression[at + 1..]
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-');
+            let value = if seconds { value * 1000.0 } else { value };
             fastest = Some(fastest.map_or(value, |seen: f64| seen.min(value)));
         }
         fastest
@@ -453,6 +462,16 @@ mod an_idle_window_stops_drawing {
             (name, app.join("ui/app.slint"))
         }));
         found
+    }
+
+    #[test]
+    fn an_interval_is_read_in_the_unit_it_is_written_in() {
+        assert_eq!(fastest_interval_ms("160ms"), Some(160.0));
+        assert_eq!(fastest_interval_ms("1s"), Some(1000.0), "one second, not one millisecond");
+        assert_eq!(fastest_interval_ms("0.5s"), Some(500.0));
+        assert_eq!(fastest_interval_ms("max(100, root.ambient-interval-ms) * 1ms"), Some(100.0));
+        assert_eq!(fastest_interval_ms("root.fast ? 50ms : 2s"), Some(50.0));
+        assert_eq!(fastest_interval_ms("root.step2-s"), None, "a digit in a name is no number");
     }
 
     #[test]

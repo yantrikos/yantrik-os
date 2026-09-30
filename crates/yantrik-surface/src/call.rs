@@ -3,7 +3,7 @@
 use serde_json::Value;
 use yantrik_ipc_contracts::control_surface::View;
 use yantrik_ipc_contracts::email::ServiceError;
-use yantrik_ipc_transport::gate::{agent_token_of, grant_of, Authority};
+use yantrik_ipc_transport::gate::{agent_token_of, grant_of, Authority, CallingAgent};
 use yantrik_ipc_transport::reach::{self, Reach};
 
 use crate::context::{off_the_reactor, Caller, Later};
@@ -40,6 +40,22 @@ pub fn next_action_id(service_id: &str) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(1);
     format!("{service_id}#{}", NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
+/// The acts a mind-account caller makes without an agent's standing, as (surface, action). Anything
+/// not named here needs the token of a live agent, so an action added tomorrow needs it by
+/// default, and naming one here is a decision a reader sees.
+///
+/// One entry. The shell's `memory_validate` is asked by the person's memory server (#447), which
+/// runs as the mind account and is not an agent acting on the desktop: it has no conversation, no
+/// harness and so no token, and would be refused every time. It changes nothing, and its handler
+/// answers the mind account and nobody else, which is the check that stands in for standing here.
+/// The pair names the surface too, so another app's action of the same name gains nothing.
+pub const STANDING_NOT_NEEDED: &[(&str, &str)] = &[("shell", "memory_validate")];
+
+/// Whether an act on `app_id`'s surface needs a mind-account caller's standing.
+pub fn needs_standing(app_id: &str, action: &str) -> bool {
+    !STANDING_NOT_NEEDED.contains(&(app_id, action))
 }
 
 /// The parts of an `app.act` request, lifted off it in the one order that is safe.
@@ -96,6 +112,50 @@ impl ActCall {
         }
     }
 
+    /// While the person is in Private mode (`yantrik_ipc_transport::privacy`), no agent acts: a
+    /// call that carries an agent token, or comes from the mind account, is refused before
+    /// anything else is looked at. The person's own calls, which carry neither, are unaffected.
+    pub fn require_not_private(&self, who: Option<Caller>) -> Result<(), ServiceError> {
+        let token = !self.agent_token.as_deref().map(str::trim).unwrap_or_default().is_empty();
+        let mind = who.is_some_and(|c| yantrik_ipc_transport::mind_door::is_mind(c.uid));
+        if (token || mind) && yantrik_ipc_transport::privacy::is_private() {
+            return Err(refusal(yantrik_ipc_transport::privacy::REFUSAL.into()));
+        }
+        Ok(())
+    }
+
+    /// A caller the kernel says is the mind account (#411) acts only as an agent the shell has
+    /// attached: with the token its harness was given, and a token the shell knows. Without one it
+    /// would act unheld by any reach, as nobody in particular. Everyone else is unaffected.
+    ///
+    /// `app_id` is the surface's own: the few actions [`STANDING_NOT_NEEDED`] names are let
+    /// through on that surface alone.
+    pub fn require_standing(&self, app_id: &str, who: Option<Caller>) -> Result<(), ServiceError> {
+        if !needs_standing(app_id, &self.action) {
+            return Ok(());
+        }
+        let Some(caller) = who else { return Ok(()) };
+        if !yantrik_ipc_transport::mind_door::is_mind(caller.uid) {
+            return Ok(());
+        }
+        let token = self.agent_token.as_deref().map(str::trim).unwrap_or_default();
+        if token.is_empty() {
+            return Err(refusal(
+                "MIND: a mind acts on the desktop only as an attached agent, with the token its harness \
+                 was given; this call carried none. Nothing was run."
+                    .into(),
+            ));
+        }
+        let pid = u32::try_from(caller.pid).ok().filter(|p| *p > 0);
+        match reach::standing_of(token, pid) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(refusal(
+                "MIND: this agent token is not one the shell has given a live agent. Nothing was run.".into(),
+            )),
+            Err(why) => Err(refusal(format!("MIND: {why}, so no act from a mind runs until it can be. Nothing was run."))),
+        }
+    }
+
     /// Spend this call's grant, if it carries one, for exactly this action and these arguments
     /// as they were sent.
     ///
@@ -108,7 +168,9 @@ impl ActCall {
     ///    answers with the grade the surface publishes for the action now.
     /// 2. the ceiling, on that grade (#154) — inside `Authority::spend`.
     /// 3. the spend, against the arguments as sent: what the person saw on the card is what the
-    ///    grant is bound to, never the converted form the handler will read.
+    ///    grant is bound to, never the converted form the handler will read — and for the agent
+    ///    this call arrived as (`who` is the kernel's account of it), because a grant asked for
+    ///    by one agent is not another's to spend (#182).
     ///
     /// `checked` is called only when there is a grant: for a window it is a round trip to the UI
     /// thread, paid only by a call a person has just answered a card for.
@@ -116,11 +178,19 @@ impl ActCall {
         &self,
         authority: &mut Authority,
         app_id: &str,
+        who: Option<Caller>,
         checked: impl FnOnce() -> Result<&'static str, ServiceError>,
     ) -> Result<(), ServiceError> {
         let Some(id) = self.grant.as_deref() else { return Ok(()) };
         let grade = checked()?;
-        authority.spend(id, app_id, &self.action, grade, &self.args).map_err(refusal)
+        // The token beside `args` and the pid the kernel stamped on the call it arrived in:
+        // together they are who the shell resolves the spend against. No token, no claim — the
+        // person's own `yos act` spends as no agent, as it always has.
+        let caller = self.agent_token.as_ref().map(|token| CallingAgent {
+            token: token.clone(),
+            pid: who.and_then(|c| u32::try_from(c.pid).ok()).filter(|pid| *pid > 0),
+        });
+        authority.spend(id, app_id, &self.action, grade, &self.args, caller.as_ref()).map_err(refusal)
     }
 
     /// The dispatch's own record of the call. The audit log is the shell's job.
@@ -164,6 +234,22 @@ pub fn finish_later(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn only_the_shells_memory_validate_is_asked_without_standing() {
+        assert_eq!(STANDING_NOT_NEEDED, &[("shell", "memory_validate")], "an addition is a decision for a reader");
+        assert!(!needs_standing("shell", "memory_validate"));
+        // The same name on another surface, and any other shell action, still need it.
+        assert!(needs_standing("weather", "memory_validate"));
+        assert!(needs_standing("shell", "open_app"));
+        assert!(needs_standing("shell", "memory_validate "), "names are exact");
+        // Let through before anything asks who is calling: nobody here is the mind account, so
+        // this is the exemption itself answering, for any caller.
+        let call = ActCall::parse(&json!({"action": "memory_validate"})).unwrap();
+        let someone = Some(Caller { pid: 4242, uid: 1000, gid: 1000 });
+        assert!(call.require_standing("shell", someone).is_ok());
+        assert!(call.require_standing("shell", None).is_ok());
+    }
 
     #[test]
     fn every_dispatch_gets_its_own_name() {
@@ -213,8 +299,9 @@ mod tests {
             ceiling: "sensitive".into(),
             mode: yantrik_ipc_transport::gate::Mode::named("ask"),
             granted: false,
+            asks_above: None,
         };
-        call.spend_grant(&mut authority, "notes", || panic!("asked for a grade with no grant to spend"))
+        call.spend_grant(&mut authority, "notes", None, || panic!("asked for a grade with no grant to spend"))
             .unwrap();
         assert!(call.reach().unwrap().is_none(), "no token, no reach, no file read");
         assert!(!authority.granted);

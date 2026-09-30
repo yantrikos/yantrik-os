@@ -172,6 +172,49 @@ pub fn begin_turn() {
     TURN.with(|t| *t.borrow_mut() = Some(Turn::default()));
 }
 
+/// The tool a call amounts to, for the tools whose reach depends on their arguments.
+///
+/// `app_action` drives any app on the desktop, so its name says nothing: driving the browser's
+/// `go` or `type` sends as `browser_type` does, reading a page brings in what a stranger wrote as
+/// `browser_read` does, and the shell's `decide` and the hand-offs to other minds carry text out
+/// of this conversation (security review, 29 Sep 2026). Every other call is itself.
+pub fn effective<'a>(name: &'a str, category: &'a str, args: &serde_json::Value) -> (&'a str, &'a str) {
+    if name != "app_action" {
+        return (name, category);
+    }
+    let fold = |k: &str| args.get(k).and_then(serde_json::Value::as_str).unwrap_or("").trim().to_ascii_lowercase().replace(['_', ' '], "-");
+    let app = fold("app");
+    let app = app.strip_prefix("app-").unwrap_or(&app).to_string();
+    let action = fold("action").replace('-', "_");
+    match app.as_str() {
+        "browser" | "chromium" => match action.as_str() {
+            "read" | "text" | "find" | "tabs" | "look" | "where" | "watch" | "changes" | "wait" | "scroll" | "media" => {
+                ("browser_read", "browser")
+            }
+            // Not the browser category: that reads as untrusted content before anything else.
+            _ => ("browser_type", "network"),
+        },
+        "shell" => match action.as_str() {
+            "decide" | "send_message" | "send_to_agent" | "new_agent" | "hand_off" => ("http_request", "network"),
+            "read_screen" | "read_mind_view" => ("analyze_screen", "vision"),
+            _ => (name, category),
+        },
+        _ => (name, category),
+    }
+}
+
+/// `check` for one call, its arguments read by `effective`.
+pub fn check_call(name: &str, category: &str, args: &serde_json::Value) -> Result<(), String> {
+    let (as_name, as_category) = effective(name, category, args);
+    check(as_name, as_category).map_err(|why| if as_name == name { why } else { format!("{why} (`{name}` here is `{as_name}`)") })
+}
+
+/// `note` for one call, its arguments read by `effective`.
+pub fn note_call(name: &str, category: &str, args: &serde_json::Value) {
+    let (as_name, as_category) = effective(name, category, args);
+    note(as_name, as_category);
+}
+
 /// Whether a tool may run, and why not.
 pub fn check(name: &str, category: &str) -> Result<(), String> {
     TURN.with(|cell| {
@@ -347,5 +390,32 @@ mod tests {
         assert_eq!(classify("browser_read", "browser"), Sensitivity::ReturnsUntrustedContent);
         assert_eq!(classify("vault_get", "vault"), Sensitivity::ReturnsSecret);
         assert_eq!(classify("list_notes", "notes"), Sensitivity::Ordinary);
+    }
+
+    #[test]
+    fn an_app_action_is_what_it_drives() {
+        let as_ = |app: &str, action: &str| {
+            let (n, c) = effective("app_action", "app", &serde_json::json!({"app": app, "action": action}));
+            classify(n, c)
+        };
+        assert_eq!(as_("browser", "go"), Sensitivity::SendsOutward);
+        assert_eq!(as_("App Browser", "type"), Sensitivity::SendsOutward);
+        assert_eq!(as_("chromium", "press"), Sensitivity::SendsOutward);
+        assert_eq!(as_("browser", "read"), Sensitivity::ReturnsUntrustedContent);
+        assert_eq!(as_("shell", "decide"), Sensitivity::SendsOutward);
+        assert_eq!(as_("app-shell", "send_to_agent"), Sensitivity::SendsOutward);
+        assert_eq!(as_("shell", "read_screen"), Sensitivity::ReturnsUntrustedContent);
+        assert_eq!(as_("notes", "new_note"), Sensitivity::Ordinary);
+        assert_eq!(effective("vault_get", "vault", &serde_json::json!({})), ("vault_get", "vault"));
+    }
+
+    #[test]
+    fn a_secret_and_a_page_stop_the_browser_driven_through_app_action() {
+        let mut turn = Turn::default();
+        remember(&mut turn, "vault_get", "vault");
+        let (n, c) = effective("app_action", "app", &serde_json::json!({"app": "browser", "action": "read"}));
+        remember(&mut turn, n, c);
+        let (n, c) = effective("app_action", "app", &serde_json::json!({"app": "browser", "action": "go"}));
+        assert!(check_against(&turn, n, c).is_err());
     }
 }

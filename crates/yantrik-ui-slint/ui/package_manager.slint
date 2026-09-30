@@ -1,5 +1,6 @@
-// Package Manager — Alpine Linux package management GUI.
-// Screen 21. Search, browse, install, remove, upgrade APK packages.
+// Package Manager — Debian packages and Flathub apps.
+// Screen 21. Search, browse, install, remove, upgrade. Every row carries its source, because a
+// Debian package and a Flatpak are installed, removed and updated by different commands (#399).
 // Wrapped in WindowFrame by app.slint — no internal header needed.
 // Firelight treatment: glassmorphism, holographic glows, gradient accents.
 
@@ -9,6 +10,9 @@ import { Icon, Icons } from "components/icon.slint";
 import { ListView, LineEdit } from "std-widgets.slint";
 
 export struct PackageData {
+    // What the commands take: the package name, or a Flatpak's app id.
+    id: string,
+    // What the list shows: the same as `id` for Debian, the app's own name for a Flatpak.
     name: string,
     version: string,
     description: string,
@@ -16,6 +20,8 @@ export struct PackageData {
     upgradable: bool,
     size-text: string,
     repo: string,
+    // "debian" or "flathub".
+    source: string,
 }
 
 export struct PendingAction {
@@ -40,6 +46,8 @@ export component PackageManager inherits Rectangle {
     in property <string> error-text: "";
 
     // Detail panel
+    in property <string> detail-id: "";
+    in property <string> detail-source: "";
     in property <string> detail-name: "";
     in property <string> detail-version: "";
     in property <string> detail-description: "";
@@ -112,7 +120,7 @@ export component PackageManager inherits Rectangle {
                         search-focus := LineEdit {
                             horizontal-stretch: 1;
                             text <=> root.search-query;
-                            placeholder-text: "Search packages...";
+                            placeholder-text: "Search packages and Flathub apps...";
                             font-size: Theme.font-body;
                             edited(text) => {
                                 root.search(text);
@@ -426,14 +434,18 @@ export component PackageManager inherits Rectangle {
                             spacing: 12px;
 
                             Text {
-                                text: root.search-query != "" ? "No packages found" : "Click Refresh to load packages";
+                                text: root.search-query != "" ? "No packages found"
+                                    : root.active-filter == 3 ? "Find something to install"
+                                    : "Click Refresh to load packages";
                                 font-size: Theme.font-title;
                                 color: Theme.text-dim;
                                 horizontal-alignment: center;
                             }
 
                             Text {
-                                text: root.search-query != "" ? "Try a different search term" : "Or search for a package by name";
+                                text: root.search-query != "" ? "Try a different search term"
+                                    : root.active-filter == 3 ? "Search Flathub apps and Debian packages by name"
+                                    : "Or search for a package by name";
                                 font-size: Theme.font-small;
                                 color: Theme.text-dim;
                                 horizontal-alignment: center;
@@ -496,6 +508,26 @@ export component PackageManager inherits Rectangle {
                                         font-size: Theme.font-small;
                                         color: Theme.text-secondary;
                                         overflow: elide;
+                                    }
+                                }
+
+                                // Source badge: which store the row is from, so a Flatpak and a
+                                // Debian package of the same name are never mistaken for each other.
+                                Rectangle {
+                                    width: source-text.preferred-width + 14px;
+                                    height: 20px;
+                                    background: pkg.source == "flathub" ? AppIdentity.accent.transparentize(80%) : Theme.hover-fill;
+                                    border-radius: 10px;
+                                    border-width: 1px;
+                                    border-color: pkg.source == "flathub" ? AppIdentity.accent.transparentize(50%) : transparent;
+
+                                    source-text := Text {
+                                        text: pkg.source == "flathub" ? "Flathub" : "Debian";
+                                        font-size: Theme.fs-micro;
+                                        font-weight: 600;
+                                        color: pkg.source == "flathub" ? AppIdentity.accent : Theme.text-secondary;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
                                     }
                                 }
 
@@ -665,7 +697,7 @@ export component PackageManager inherits Rectangle {
                                 }
 
                                 install-ta := TouchArea {
-                                    clicked => { root.install-package(root.detail-name); }
+                                    clicked => { root.install-package(root.detail-id); }
                                 }
                             }
 
@@ -686,7 +718,7 @@ export component PackageManager inherits Rectangle {
                                 }
 
                                 upg-ta := TouchArea {
-                                    clicked => { root.upgrade-package(root.detail-name); }
+                                    clicked => { root.upgrade-package(root.detail-id); }
                                 }
                             }
 
@@ -707,7 +739,7 @@ export component PackageManager inherits Rectangle {
                                 }
 
                                 remove-ta := TouchArea {
-                                    clicked => { root.remove-package(root.detail-name); }
+                                    clicked => { root.remove-package(root.detail-id); }
                                 }
                             }
                         }
@@ -737,6 +769,42 @@ export component PackageManager inherits Rectangle {
                         // Info grid
                         VerticalLayout {
                             spacing: 12px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Source:";
+                                    font-size: Theme.font-small;
+                                    color: Theme.text-dim;
+                                    width: 100px;
+                                }
+                                Text {
+                                    text: root.detail-source == "flathub"
+                                        ? "Flathub — a sandboxed app, installed for this account only"
+                                        : "Debian — a system package";
+                                    font-size: Theme.font-small;
+                                    color: root.detail-source == "flathub" ? AppIdentity.accent : Theme.text-secondary;
+                                    wrap: word-wrap;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+
+                            if root.detail-id != "" && root.detail-id != root.detail-name : HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "App ID:";
+                                    font-size: Theme.font-small;
+                                    color: Theme.text-dim;
+                                    width: 100px;
+                                }
+                                Text {
+                                    text: root.detail-id;
+                                    font-size: Theme.font-small;
+                                    color: Theme.text-secondary;
+                                    wrap: word-wrap;
+                                    horizontal-stretch: 1;
+                                }
+                            }
 
                             if root.detail-repo != "" : HorizontalLayout {
                                 spacing: 8px;

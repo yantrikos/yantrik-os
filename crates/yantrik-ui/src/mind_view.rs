@@ -33,19 +33,59 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+/// The environment that titles Mind View's window: the title library preloaded into its labwc,
+/// when it ships beside the shell. Without it the window keeps labwc's own title; nothing else
+/// changes.
+fn title_preload() -> Vec<(&'static str, String)> {
+    let lib = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join(TITLE_LIBRARY)))
+        .filter(|p| p.is_file());
+    match lib {
+        Some(lib) => vec![
+            ("LD_PRELOAD", lib.display().to_string()),
+            ("YANTRIK_MIND_VIEW_TITLE", "Mind View".to_string()),
+        ],
+        None => Vec::new(),
+    }
+}
+
+/// The title library's file name, beside the shell in bin/.
+const TITLE_LIBRARY: &str = "libyantrik_mind_view_title.so";
+
 /// How long the nested compositor gets to say which display it is serving.
 ///
 /// It is paid off the UI thread (the launch waits on a worker, see `wire::dock::spawn_launch`),
 /// and only the first time: labwc on the software renderer answers in well under a second.
 const START_BUDGET: Duration = Duration::from_secs(5);
 
+/// The startup script the nested labwc runs, in the session's socket directory. Only a Mind View
+/// runs it, which is how one an earlier shell left is found.
+const SEAT_SCRIPT: &str = "mind-view-seat.sh";
+
 /// Where the nested labwc's configuration is installed, and where it is in a checkout.
 const INSTALLED_CONFIG: &str = "/opt/yantrik/share/labwc-mind";
 const CHECKOUT_CONFIG: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/labwc-mind");
 
-/// The app_id wlroots gives the window a nested compositor draws into. Not configurable in the
-/// wlroots this ships with; the window list reads it back as Mind View.
-pub const NESTED_APP_ID: &str = "wlroots";
+/// Whether a window on the person's desktop is the one a nested compositor draws into, which is
+/// Mind View. The window list then reads it back as Mind View.
+///
+/// The names are not ours to choose. wlroots gives the window the app_id `wlroots` and the title
+/// `wlroots - WL-1`, which is what the spike saw on labwc 0.7.1. labwc 0.8 retitles it
+/// `labwc - WL-1`, and on the VM that miss left the taskbar showing a black window by that name.
+/// So either program's name is accepted, as the app_id or as the start of such a title.
+///
+/// The title counts only when the window declared no app_id. Any page or terminal can set its
+/// own title to `labwc - WL-1`, and a window on the person's desktop must not pass as contained.
+pub fn is_nested_window(declared_id: &str, title: &str) -> bool {
+    const COMPOSITORS: [&str; 2] = ["wlroots", "labwc"];
+    if !declared_id.is_empty() {
+        return COMPOSITORS.iter().any(|c| declared_id.eq_ignore_ascii_case(c));
+    }
+    title
+        .split_once(" - ")
+        .is_some_and(|(name, output)| COMPOSITORS.contains(&name) && output.starts_with("WL-"))
+}
 
 /// The shell's own id for the Mind View window, as the window list and `show_app` spell it.
 pub const APP_ID: &str = "mind-view";
@@ -89,6 +129,9 @@ pub struct CallerFacts {
     pub agent: Option<bool>,
     /// The attached mind this caller's ancestry belongs to, if any.
     pub attached_mind: Option<String>,
+    /// Whether the kernel says the caller is the mind account (#411): a caller that came in
+    /// through the mind door. A mind by what it is, before anything it says or any /proc walk.
+    pub mind_account: bool,
 }
 
 /// Sort a caller into the person or a mind.
@@ -100,6 +143,10 @@ pub struct CallerFacts {
 /// - A process descended from an attached mind (Hermes, pi through `yos-mcp`).
 /// - Anything else — `yos` typed in the Terminal, labwc's Ctrl+Alt+T — is the person.
 pub fn classify(facts: &CallerFacts, own_pid: u32) -> Requester {
+    // First: the kernel's word on the account outranks everything, a missing pid included.
+    if facts.mind_account {
+        return Requester::Mind(facts.attached_mind.clone().unwrap_or_else(|| "a mind".to_string()));
+    }
     let Some(pid) = facts.pid else { return Requester::Person };
     match facts.agent {
         Some(true) => return Requester::Mind("an agent".to_string()),
@@ -128,7 +175,8 @@ pub fn requester_now() -> Requester {
         }
         _ => None,
     };
-    classify(&CallerFacts { pid, agent, attached_mind }, std::process::id())
+    let mind_account = caller.as_ref().is_some_and(|c| yantrik_ipc_transport::mind_door::is_mind(c.uid));
+    classify(&CallerFacts { pid, agent, attached_mind, mind_account }, std::process::id())
 }
 
 /// Where one launch goes, decided while the call that asked for it is still on this thread.
@@ -249,6 +297,44 @@ pub fn ensure() -> Result<Seat, String> {
     }
 }
 
+/// Stops every Mind View an earlier shell left running. A shell that stops, whether the
+/// supervisor restarts it or an update does, never stops the nested labwc it started, so each
+/// restart used to leave one on the person's desktop: a `labwc - WL-1` window that no shell
+/// tracks or can reach. VM 520 had two. Called once as the shell starts, and again before a Mind
+/// View is started.
+pub fn stop_left_behind() {
+    let script = yantrik_ipc_transport::server::socket_dir().join(SEAT_SCRIPT);
+    for pid in left_behind(Path::new("/proc"), &script, std::process::id()) {
+        tracing::info!(pid, "stopping a Mind View an earlier shell left running");
+        #[cfg(unix)]
+        // SAFETY: kill(2) on a pid read from /proc; a pid that has gone since is ESRCH, no harm.
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+        }
+    }
+}
+
+/// The labwcs running this session's Mind View startup script, which only a Mind View runs, from
+/// a `/proc`-shaped directory, leaving out `own` (this shell). Only asked while this shell holds
+/// no Mind View of its own: as it starts, and before it starts one.
+fn left_behind(proc_dir: &Path, script: &Path, own: u32) -> Vec<u32> {
+    let Ok(entries) = std::fs::read_dir(proc_dir) else { return Vec::new() };
+    let script = script.as_os_str().as_encoded_bytes();
+    let mut found: Vec<u32> = entries
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let pid: u32 = entry.file_name().to_str()?.parse().ok()?;
+            let cmdline = std::fs::read(entry.path().join("cmdline")).ok()?;
+            let args: Vec<&[u8]> = cmdline.split(|b| *b == 0).collect();
+            let labwc = args.first().is_some_and(|a| a.ends_with(b"labwc"));
+            let runs_script = args.windows(2).any(|w| w[0] == b"-s" && w[1] == script);
+            (labwc && runs_script && pid != own).then_some(pid)
+        })
+        .collect();
+    found.sort_unstable();
+    found
+}
+
 fn socket_path(wayland: &str) -> PathBuf {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_default();
     runtime.join(wayland)
@@ -270,14 +356,52 @@ fn seat_file(dir: &Path) -> PathBuf {
 /// `DISPLAY` in the environment — the only place those names can be read from, since labwc picks
 /// the first free `wayland-N` itself. Written to a file rather than passed as `sh -c '…'` because
 /// labwc splits `-s` into words itself, and quoting through that is not something to get wrong.
-fn seat_script(seat_file: &Path) -> String {
-    format!(
-        "#!/bin/sh\n\
-         # Written by yantrik-ui for Mind View (#239): say which display this labwc is serving.\n\
-         printf '%s\\n%s\\n' \"$WAYLAND_DISPLAY\" \"${{DISPLAY:-}}\" > '{seat}.tmp' && mv '{seat}.tmp' '{seat}'\n",
-        seat = seat_file.display()
-    )
+///
+/// It then does two things for how Mind View looks, both skipped where the tool is missing:
+/// - sizes it to [`SIZE_PERCENT`] of the person's screen, by setting the nested output's mode,
+///   which is what the window on their desktop follows. At wlroots' default 1280×720 it filled a
+///   small screen, and read as the desktop having gone black rather than as a window on it;
+/// - puts [`EMPTY_HINT`] behind the windows. A nested labwc draws nothing of its own, so an empty
+///   Mind View was a black rectangle that said nothing about what it was.
+///
+/// `outer` is the person's display, which the script cannot otherwise see: its own
+/// `WAYLAND_DISPLAY` is the nested one.
+fn seat_script(seat_file: &Path, config: &Path, outer: &str) -> String {
+    const SCRIPT: &str = r#"#!/bin/sh
+# Written by yantrik-ui for Mind View (#239): say which display this labwc is serving.
+printf '%s\n%s\n' "$WAYLAND_DISPLAY" "${DISPLAY:-}" > '@SEAT@.tmp' && mv '@SEAT@.tmp' '@SEAT@'
+# A window on the person's desktop, not all of it: a share of their screen, in logical pixels.
+if command -v wlr-randr >/dev/null; then
+    size=$(WAYLAND_DISPLAY='@OUTER@' wlr-randr | awk -v pct=@PCT@ '
+        /\(.*current/ && !mode { split($1, m, "x"); mode = 1 }
+        /Scale:/ && !scale { scale = $2 }
+        END { if (mode) { if (scale <= 0) scale = 1; printf "%dx%d", m[1] * pct / 100 / scale, m[2] * pct / 100 / scale } }')
+    output=$(wlr-randr | awk 'NR == 1 { print $1 }')
+    [ -n "$size" ] && [ -n "$output" ] && wlr-randr --output "$output" --custom-mode "$size"
+fi >/dev/null 2>&1 &
+# And say what it is while nothing is drawn in it.
+command -v swaybg >/dev/null && swaybg -m center -c '@BG@' -i '@HINT@' >/dev/null 2>&1 &
+"#;
+    SCRIPT
+        .replace("@SEAT@", &seat_file.display().to_string())
+        .replace("@OUTER@", outer)
+        .replace("@PCT@", &SIZE_PERCENT.to_string())
+        .replace("@BG@", EMPTY_BACKGROUND)
+        .replace("@HINT@", &config.join(EMPTY_HINT).display().to_string())
 }
+
+/// How much of the person's screen Mind View takes when it opens, in each direction. Enough for
+/// an app to be usable in, small enough to read as one window among theirs; the title bar's
+/// maximise button gives it the whole screen.
+const SIZE_PERCENT: u32 = 70;
+
+/// The picture behind an empty Mind View, in its configuration directory: its name and one line
+/// on what it is for.
+const EMPTY_HINT: &str = "empty.png";
+
+/// What the rest of the window is filled with around it: the desktop's inactive title bar colour
+/// (`config/labwc/themerc`), which is also the picture's own background.
+const EMPTY_BACKGROUND: &str = "#0c0c14";
 
 /// Read what the startup command wrote: the Wayland display, then the X display or nothing.
 fn parse_seat(text: &str) -> Option<Seat> {
@@ -285,6 +409,46 @@ fn parse_seat(text: &str) -> Option<Seat> {
     let wayland = lines.next().filter(|w| !w.is_empty() && !w.contains('/'))?.to_string();
     let x11 = lines.next().filter(|x| !x.is_empty()).map(str::to_string);
     Some(Seat { wayland, x11 })
+}
+
+/// Mind View's window, as the person's compositor names it: labwc's app id, and the title the
+/// title library gives it (crates/yantrik-mind-view-title).
+const WINDOW_MATCH: [&str; 2] = ["app_id:labwc", "title:Mind View"];
+
+/// Minimise Mind View's window the moment it first appears (#427).
+///
+/// A window that maps is focused and raised by the person's compositor like any other, so the
+/// first app a mind opened put Mind View over whatever the person was doing and took their
+/// keyboard: over the launcher they had just opened, in the case that found it. That is the
+/// interruption Mind View exists to end. It starts out of the way; the person opens it from its
+/// taskbar entry when they want to watch, and focus returns to what they had in front. Off the UI
+/// thread: it waits for the window, and wlrctl is a process.
+fn step_aside_when_shown() {
+    std::thread::spawn(|| {
+        let deadline = Instant::now() + START_BUDGET;
+        while Instant::now() < deadline {
+            let shown = Command::new("wlrctl")
+                .args(["toplevel", "find"])
+                .args(WINDOW_MATCH)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success());
+            if shown {
+                let minimised = Command::new("wlrctl")
+                    .args(["toplevel", "minimize"])
+                    .args(WINDOW_MATCH)
+                    .status()
+                    .is_ok_and(|s| s.success());
+                if !minimised {
+                    tracing::warn!("Mind View appeared but could not be set aside; it may be over the person's work");
+                }
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        tracing::debug!("Mind View's window did not appear in time to be set aside");
+    });
 }
 
 fn start() -> Result<Nested, String> {
@@ -303,8 +467,12 @@ fn start() -> Result<Nested, String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let seat_file = seat_file(&dir);
     let _ = std::fs::remove_file(&seat_file);
-    let script = dir.join("mind-view-seat.sh");
-    std::fs::write(&script, seat_script(&seat_file))
+    // One this shell does not hold is one an earlier shell left: its apps are out of reach, and
+    // it would stay on the desktop beside the new one.
+    stop_left_behind();
+    let script = dir.join(SEAT_SCRIPT);
+    let outer = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
+    std::fs::write(&script, seat_script(&seat_file, &config, &outer))
         .map_err(|e| format!("{}: {e}", script.display()))?;
     #[cfg(unix)]
     {
@@ -320,6 +488,9 @@ fn start() -> Result<Nested, String> {
         .arg(&script)
         // A window on the person's compositor, not a session of its own on the hardware.
         .env("WLR_BACKENDS", "wayland")
+        // Titled "Mind View" on the person's desktop, not labwc's own "labwc - WL-1": the
+        // title library answers labwc's wlr_wl_output_set_title (crates/yantrik-mind-view-title).
+        .envs(title_preload())
         // Its Xwayland sets DISPLAY for what it starts; the person's must not leak in.
         .env_remove("DISPLAY")
         .env_remove("SLINT_FULLSCREEN")
@@ -332,6 +503,7 @@ fn start() -> Result<Nested, String> {
         if let Some(seat) = std::fs::read_to_string(&seat_file).ok().as_deref().and_then(parse_seat)
         {
             if socket_path(&seat.wayland).exists() {
+                step_aside_when_shown();
                 return Ok(Nested { child, seat });
             }
         }
@@ -350,6 +522,23 @@ fn start() -> Result<Nested, String> {
     }
 }
 
+/// Where a window a mind opens outside the launcher is drawn, as the environment to start it
+/// with: Mind View's display when minds' apps go there and it is up (started if need be), the
+/// person's own otherwise. Handed to the companion's browser tools at startup, which used to write
+/// the person's display into every launch and so bypassed Mind View entirely.
+///
+/// Can wait for Mind View to start, so never on the UI thread; the companion's tools run on its
+/// own worker.
+pub fn display_for_mind() -> Vec<(&'static str, String)> {
+    if crate::wire::settings::minds_open_in_mind_view() {
+        if let Ok(seat) = ensure() {
+            return seat.env();
+        }
+    }
+    let person = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
+    vec![("WAYLAND_DISPLAY", person)]
+}
+
 // ── What is in it ────────────────────────────────────────────────────
 
 /// Record that `pid`, launched as `app_id`, is drawing in Mind View.
@@ -358,6 +547,53 @@ pub fn mark_launched(app_id: &str, pid: u32) {
         s.apps.retain(|(p, _)| *p != pid);
         s.apps.push((pid, app_id.to_string()));
     });
+}
+
+/// The one app drawing in Mind View that `want` names, by its id or the name it goes by. None when
+/// none does, or more than one does.
+///
+/// `close_window` reaches for this when nothing on the person's desktop answers: an app a mind
+/// opened is drawn here, not there, so "Close the Notes app" was refused with "no open window
+/// matches `Notes`" while Notes was open, and the mind told the person it was not (yantrik-mind,
+/// VM 520, 2026-09-27).
+pub fn app_named(want: &str) -> Option<String> {
+    let want = want.trim().to_lowercase();
+    if want.is_empty() {
+        return None;
+    }
+    let apps: Vec<String> = with_state(|s| s.apps.iter().map(|(_, id)| id.clone()).collect());
+    let mut found: Vec<String> = apps
+        .into_iter()
+        .filter(|id| {
+            let name = crate::windows::app_display_name(id).to_lowercase();
+            id.to_lowercase() == want || name == want || name.contains(&want)
+        })
+        .collect();
+    found.sort();
+    found.dedup();
+    (found.len() == 1).then(|| found.remove(0))
+}
+
+/// Ask an app drawing in Mind View to close, as its × does: on Mind View's own display, so an app
+/// with unsaved work can still put up its dialog. Returns the name it was asked by.
+pub fn close_app(app_id: &str) -> Result<String, String> {
+    let display = with_state(|s| s.nested.as_ref().map(|n| n.seat.wayland.clone()))
+        .ok_or_else(|| "Mind View is not running, so nothing is drawn there to close".to_string())?;
+    let title = crate::windows::app_display_name(app_id);
+    let args = ["toplevel".to_string(), "close".to_string(), format!("title:{title}")];
+    let (answer, wait) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("yos-wlrctl-mind-view".to_string())
+        .spawn(move || {
+            let _ = answer.send(Command::new("wlrctl").args(&args).env("WAYLAND_DISPLAY", &display).status());
+        })
+        .map_err(|_| "could not start a thread to talk to Mind View's compositor".to_string())?;
+    match wait.recv_timeout(Duration::from_secs(2)) {
+        Ok(Ok(status)) if status.success() => Ok(title),
+        Ok(Ok(_)) => Err(format!("Mind View's compositor has no window called `{title}` to close")),
+        Ok(Err(e)) => Err(format!("could not run wlrctl: {e}")),
+        Err(_) => Err("Mind View's compositor did not answer within 2 s".to_string()),
+    }
 }
 
 /// Forget an app that has exited.
@@ -371,8 +607,29 @@ pub fn app_pids() -> HashSet<u32> {
     with_state(|s| s.apps.iter().map(|(p, _)| *p).collect())
 }
 
+/// What is drawing in Mind View, as a person reads the apps' names, in the order they were opened.
+pub fn app_names() -> Vec<String> {
+    let ids: Vec<String> = with_state(|s| s.apps.iter().map(|(_, id)| id.clone()).collect());
+    let mut names: Vec<String> = Vec::new();
+    for id in ids {
+        let name = crate::windows::app_display_name(&id);
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
 fn is_mind_view_app(app_id: &str) -> bool {
     with_state(|s| s.apps.iter().any(|(_, id)| id == app_id))
+}
+
+/// The Wayland display Mind View draws on, while it is running.
+pub fn display_now() -> Option<String> {
+    with_state(|s| {
+        let n = s.nested.as_mut()?;
+        matches!(n.child.try_wait(), Ok(None)).then(|| n.seat.wayland.clone())
+    })
 }
 
 /// What `describe shell` says about Mind View.
@@ -404,7 +661,60 @@ mod tests {
     const SHELL: u32 = 4242;
 
     fn facts(pid: Option<u32>, agent: Option<bool>, mind: Option<&str>) -> CallerFacts {
-        CallerFacts { pid, agent, attached_mind: mind.map(str::to_string) }
+        CallerFacts { pid, agent, attached_mind: mind.map(str::to_string), mind_account: false }
+    }
+
+    #[test]
+    fn a_caller_the_kernel_says_is_the_mind_account_is_a_mind_whatever_else_is_true() {
+        let own = 4242;
+        let door = CallerFacts { pid: Some(777), agent: None, attached_mind: None, mind_account: true };
+        assert_eq!(classify(&door, own), Requester::Mind("a mind".to_string()), "no token, no ancestry: still a mind");
+        let named = CallerFacts { attached_mind: Some("Pi".to_string()), ..door };
+        assert_eq!(classify(&named, own), Requester::Mind("Pi".to_string()));
+    }
+
+    #[test]
+    fn a_mind_view_an_earlier_shell_left_is_found_by_its_script_and_nothing_else_is() {
+        let proc_dir = std::env::temp_dir().join(format!("mv-left-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&proc_dir);
+        let script = Path::new("/run/user/1000/yantrik/mind-view-seat.sh");
+        let process = |pid: u32, args: &[&str]| {
+            let dir = proc_dir.join(pid.to_string());
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut cmdline = args.join("\0");
+            cmdline.push('\0');
+            std::fs::write(dir.join("cmdline"), cmdline).unwrap();
+        };
+        let left = ["/usr/bin/labwc", "-C", "/opt/yantrik/share/labwc-mind", "-s", "/run/user/1000/yantrik/mind-view-seat.sh"];
+        process(256173, &left);
+        process(1021934, &left);
+        // The person's own compositor runs the shell, not the script.
+        process(713, &["labwc", "-s", "/opt/yantrik/bin/yantrik-ui /opt/yantrik/config.yaml"]);
+        // Another user's Mind View runs a script in their own runtime dir.
+        process(900, &["/usr/bin/labwc", "-C", "x", "-s", "/run/user/1001/yantrik/mind-view-seat.sh"]);
+        // Something that only names the script is not a labwc.
+        process(901, &["cat", "-s", "/run/user/1000/yantrik/mind-view-seat.sh"]);
+        std::fs::create_dir_all(proc_dir.join("self")).unwrap();
+
+        assert_eq!(left_behind(&proc_dir, script, SHELL), vec![256173, 1021934]);
+        assert_eq!(left_behind(&proc_dir, script, 256173), vec![1021934], "never this shell itself");
+        assert!(left_behind(&proc_dir.join("absent"), script, SHELL).is_empty(), "no /proc, nothing to stop");
+        let _ = std::fs::remove_dir_all(&proc_dir);
+    }
+
+    #[test]
+    fn an_app_a_mind_opened_is_found_by_its_name_and_only_when_one_answers() {
+        mark_launched("notes", 990_001);
+        assert_eq!(app_named("Notes").as_deref(), Some("notes"), "by the name it goes by");
+        assert_eq!(app_named("notes").as_deref(), Some("notes"), "by its id");
+        assert_eq!(app_named("  NOTES "), Some("notes".to_string()));
+        assert_eq!(app_named("Calendar"), None, "not drawn here");
+        assert_eq!(app_named(""), None);
+        mark_launched("notes", 990_002);
+        assert_eq!(app_named("Notes").as_deref(), Some("notes"), "two of one app are still one app");
+        mark_exited(990_001);
+        mark_exited(990_002);
+        assert_eq!(app_named("Notes"), None, "gone once it exits");
     }
 
     #[test]
@@ -485,7 +795,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = seat_file(&dir);
         let script = dir.join("seat.sh");
-        std::fs::write(&script, seat_script(&file)).unwrap();
+        std::fs::write(&script, seat_script(&file, Path::new(CHECKOUT_CONFIG), "wayland-0")).unwrap();
         let status = Command::new("sh")
             .arg(&script)
             .env("WAYLAND_DISPLAY", "wayland-7")
@@ -504,5 +814,25 @@ mod tests {
             Path::new(CHECKOUT_CONFIG).join("rc.xml").is_file(),
             "config/labwc-mind/rc.xml is what Mind View's labwc runs with"
         );
+    }
+
+    #[test]
+    fn the_empty_hint_ships_beside_the_configuration() {
+        assert!(
+            Path::new(CHECKOUT_CONFIG).join(EMPTY_HINT).is_file(),
+            "config/labwc-mind/empty.png is what an empty Mind View shows"
+        );
+    }
+
+    /// labwc 0.7.1 left wlroots' names on the window; 0.8.3 retitles it after itself.
+    #[test]
+    fn the_nested_window_is_known_by_either_compositor_name() {
+        assert!(is_nested_window("wlroots", "wlroots - WL-1"));
+        assert!(is_nested_window("labwc", "labwc - WL-1"));
+        assert!(is_nested_window("wlroots", "labwc - WL-1"));
+        assert!(is_nested_window("", "labwc - WL-2"));
+        assert!(!is_nested_window("", "labwc - notes.txt"));
+        assert!(!is_nested_window("", "wlroots - WLAN setup"));
+        assert!(!is_nested_window("firefox", "Mozilla Firefox"));
     }
 }

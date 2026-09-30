@@ -49,12 +49,9 @@ export component CommandPalette inherits Rectangle {
         border-radius: Theme.r-xl;
         clip: true;
 
-        // Glass background
-        background: @linear-gradient(180deg,
-            Theme.bg-deep.transparentize(9%) 0%,
-            Theme.bg-deep.transparentize(12%) 50%,
-            Theme.bg-deep.transparentize(15%) 100%
-        );
+        // Glass background. Slint's software renderer (GPU-less machines, VM 520) paints a gradient
+        // fill as a square inside the rounded border (#172), so a rounded panel's fill is solid.
+        background: Theme.bg-deep.transparentize(12%);
         border-width: 1px;
         border-color: Theme.hover-fill-strong;
 

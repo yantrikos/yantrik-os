@@ -435,6 +435,9 @@ struct EventBusInner {
     event_log: Mutex<Option<EventLog>>,
     /// Total events emitted (for stats).
     total_emitted: AtomicU64,
+    /// Whether events are written to the log. Off in the person's Private mode: subscribers in
+    /// this process still hear them, and nothing is kept.
+    recording: std::sync::atomic::AtomicBool,
 }
 
 impl EventBus {
@@ -445,6 +448,7 @@ impl EventBus {
                 subscribers: Mutex::new(Vec::new()),
                 event_log: Mutex::new(None),
                 total_emitted: AtomicU64::new(0),
+                recording: std::sync::atomic::AtomicBool::new(true),
             }),
         }
     }
@@ -453,6 +457,11 @@ impl EventBus {
     pub fn attach_log(&self, log: EventLog) {
         let mut lock = self.inner.event_log.lock().unwrap();
         *lock = Some(log);
+    }
+
+    /// Write events to the log (`true`, the default) or not (`false`).
+    pub fn set_recording(&self, on: bool) {
+        self.inner.recording.store(on, Ordering::SeqCst);
     }
 
     /// Subscribe to all events. Returns a receiver channel.
@@ -511,10 +520,13 @@ impl EventBus {
     fn broadcast(&self, event: YantrikEvent) {
         self.inner.total_emitted.fetch_add(1, Ordering::Relaxed);
 
-        // Persist to event log (non-blocking — errors are logged, not propagated)
-        if let Ok(mut log_lock) = self.inner.event_log.lock() {
-            if let Some(log) = log_lock.as_mut() {
-                log.record(&event);
+        // Persist to event log (non-blocking — errors are logged, not propagated), unless the
+        // person is in Private mode.
+        if self.inner.recording.load(Ordering::SeqCst) {
+            if let Ok(mut log_lock) = self.inner.event_log.lock() {
+                if let Some(log) = log_lock.as_mut() {
+                    log.record(&event);
+                }
             }
         }
 

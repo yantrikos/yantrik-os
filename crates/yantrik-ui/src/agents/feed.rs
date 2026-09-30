@@ -209,6 +209,16 @@ pub fn main_agent(harness: &str) -> AgentId {
     AgentId::new(harness, AgentId::MAIN)
 }
 
+/// The run the chat's latest turn with `agent` was, as a row id (`mind:main#n`), when that turn
+/// did work; None for talk. What the chat's reply links to.
+pub fn chat_run(agent: &AgentId) -> Option<String> {
+    super::store().read(|s| {
+        let a = s.agent(agent)?;
+        let t = a.turns.last().filter(|t| t.did_work())?;
+        Some(super::RowKey::run(agent, t.n).id())
+    })
+}
+
 /// Who an agent is, from what the harness host knows of it: its mind's name, and whether that
 /// mind holds more than one conversation.
 pub fn meta_for(agent: &AgentId) -> AgentMeta {
@@ -230,12 +240,96 @@ pub fn meta_for(agent: &AgentId) -> AgentMeta {
 /// The one hook in `wire/chat.rs`. The answer passes through a thread that copies each chunk into
 /// the store before forwarding it, so the Lens sees exactly what it saw before. If the Lens stops
 /// listening, this stops too and drops the harness's stream, which is what the harness saw before.
+///
+/// A word to a mind that is still at work is not a new turn yet. Opening one at once ended the
+/// turn doing the work — `open_turn` settles an open turn as failed — so asking a busy Hermes
+/// "what's the status?" recorded the town model it was building as failed and the agent as idle
+/// (#234: "all 15 rows say done while Hermes is still building"). Such a word waits for the first
+/// thing the mind says back. If the working turn has ended by then, as it has for a harness that
+/// queues the word behind it, the word is the next turn. If it is still open, the mind answered
+/// beside its work, and the exchange is kept as a note inside the working turn.
 pub fn lens_turn(harness: &str, prompt: &str, answer: Answer) -> Answer {
     let agent = main_agent(harness);
     super::store().upsert_agent(meta_for(&agent));
-    super::store().open_turn(&agent, prompt);
+    let working = working(&agent);
+    if !working {
+        super::store().open_chat_turn(&agent, prompt);
+    }
+    let prompt = prompt.to_string();
     let (tx, rx) = mpsc::channel();
     let spawned = std::thread::Builder::new().name("agents-lens-turn".into()).spawn(move || {
+        let mut reader = Reader::new(agent.clone(), false);
+        // Some(prompt) until the word to a working agent is placed; then `aside` says how.
+        let mut unplaced = working.then_some(prompt);
+        let mut aside: Option<String> = None;
+        let place = |unplaced: &mut Option<String>, aside: &mut Option<String>| {
+            if let Some(prompt) = unplaced.take() {
+                if self::working(&agent) {
+                    super::store().note(&agent, &format!("While it worked, you asked: “{}”", brief(&prompt)));
+                    *aside = Some(String::new());
+                } else {
+                    super::store().open_chat_turn(&agent, &prompt);
+                }
+            }
+        };
+        while let Ok(chunk) = answer.recv() {
+            place(&mut unplaced, &mut aside);
+            match (&mut aside, &chunk) {
+                (Some(said), Chunk::Text(text)) => said.push_str(text),
+                (Some(said), Chunk::Failed(why)) => said.push_str(&format!(" (failed: {why})")),
+                (Some(_), _) => {}
+                (None, _) => reader.chunk(&chunk),
+            }
+            if tx.send(chunk).is_err() {
+                if aside.is_none() {
+                    reader.finish(Some("The conversation panel stopped listening."));
+                }
+                return;
+            }
+        }
+        place(&mut unplaced, &mut aside);
+        match aside {
+            Some(said) if !said.trim().is_empty() => {
+                super::store().note(&agent, &format!("It answered beside its work: {}", brief(&said)))
+            }
+            Some(_) => {}
+            None => reader.finish(None),
+        }
+    });
+    if let Err(e) = spawned {
+        // No thread, no copy: the Lens must still get its answer. It already has nothing to read
+        // from, so say why instead.
+        tracing::warn!(error = %e, "could not follow a Lens turn for the Agents screen");
+    }
+    rx
+}
+
+/// Whether `agent` has a turn open in the store: it is at work on something.
+fn working(agent: &AgentId) -> bool {
+    super::store().read(|s| s.agent(agent).is_some_and(|a| a.open_turn().is_some()))
+}
+
+/// One line of an exchange kept as a note: flat, and short enough to read in the session.
+fn brief(text: &str) -> String {
+    super::progress::brief(text, 300)
+}
+
+/// What the desktop notes on a turn a harness picked back up after the shell restarted (#246).
+pub const PICKED_UP: &str = "Picked back up after the desktop restarted: what it says from here arrives as usual.";
+
+/// A turn a re-attaching harness was still answering when the shell restarted (#246): open it
+/// again in the store, say so, and read the rest of its answer into it. `forward` hands the
+/// answer on unchanged, for the Lens to show, when the turn is the Lens's own conversation.
+pub fn resumed(agent: AgentId, prompt: &str, answer: Answer, forward: bool) -> Option<Answer> {
+    super::store().upsert_agent(meta_for(&agent));
+    super::store().open_turn(&agent, prompt);
+    super::store().note(&agent, PICKED_UP);
+    if !forward {
+        record(agent, answer, false);
+        return None;
+    }
+    let (tx, rx) = mpsc::channel();
+    let _ = std::thread::Builder::new().name("agents-resumed-turn".into()).spawn(move || {
         let mut reader = Reader::new(agent, false);
         while let Ok(chunk) = answer.recv() {
             reader.chunk(&chunk);
@@ -246,12 +340,7 @@ pub fn lens_turn(harness: &str, prompt: &str, answer: Answer) -> Answer {
         }
         reader.finish(None);
     });
-    if let Err(e) = spawned {
-        // No thread, no copy: the Lens must still get its answer. It already has nothing to read
-        // from, so say why instead.
-        tracing::warn!(error = %e, "could not follow a Lens turn for the Agents screen");
-    }
-    rx
+    Some(rx)
 }
 
 /// Record an answer that nothing else is reading — a turn from New agent or an agent's prompt box.
@@ -346,5 +435,80 @@ mod tests {
     fn hermes_default_line_is_a_name_and_nothing_more() {
         let pieces = feed(&["⚙️ mcp_yantrik_os_os_act...\n", "Done."]);
         assert_eq!(shape(&pieces), vec!["CALL mcp_yantrik_os_os_act".to_string(), "Done.".to_string()]);
+    }
+
+    /// Everything a Lens turn forwarded, read to the end: the turn's thread has then finished
+    /// with the store.
+    fn drain(answer: Answer) {
+        while answer.recv().is_ok() {}
+    }
+
+    /// (turn count, last turn's prompt, whether it is open, whether it ended well, its notes).
+    fn last_turn(agent: &AgentId) -> (usize, String, bool, Option<bool>, Vec<String>) {
+        super::super::store().read(|s| {
+            let a = s.agent(agent).expect("the agent is recorded");
+            let t = a.turns.last().expect("it has a turn");
+            let notes = t
+                .items
+                .iter()
+                .filter_map(|i| match i {
+                    super::super::model::Item::Note(n) => Some(n.clone()),
+                    _ => None,
+                })
+                .collect();
+            (a.turns.len(), t.prompt.clone(), t.open(), t.ok, notes)
+        })
+    }
+
+    /// A mind that answers beside its work, as Hermes does ("still working"): the word asked
+    /// while it worked is a note in the working turn, and the working turn stays open and is not
+    /// failed. It used to be settled as failed the moment the word was sent (#234).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_word_to_a_mind_at_work_does_not_end_its_work() {
+        let agent = main_agent("feed-aside");
+        let (work_tx, work) = mpsc::channel();
+        let work = lens_turn("feed-aside", "build the town model", work);
+        work_tx.send(Chunk::Text("Starting on the roads.".into())).unwrap();
+
+        let (status_tx, status) = mpsc::channel();
+        let status = lens_turn("feed-aside", "what's the status?", status);
+        status_tx.send(Chunk::Text("Hermes is still working.".into())).unwrap();
+        drop(status_tx);
+        drain(status);
+
+        let (turns, prompt, open, ok, notes) = last_turn(&agent);
+        assert_eq!((prompt.as_str(), open, ok), ("build the town model", true, None), "the work goes on");
+        assert!(notes.iter().any(|n| n == "While it worked, you asked: “what's the status?”"), "{notes:?}");
+        assert!(notes.iter().any(|n| n == "It answered beside its work: Hermes is still working."), "{notes:?}");
+
+        drop(work_tx);
+        drain(work);
+        let (after, prompt, open, ok, _) = last_turn(&agent);
+        assert_eq!((after, prompt.as_str(), open, ok), (turns, "build the town model", false, Some(true)));
+    }
+
+    /// A mind whose host queues the word behind its work (pi, DeepSeek): by the time the mind
+    /// answers it, the work is done, and the word is the next turn of its own.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_word_queued_behind_the_work_becomes_the_next_turn() {
+        let agent = main_agent("feed-queued");
+        let (work_tx, work) = mpsc::channel();
+        let work = lens_turn("feed-queued", "tidy the photos", work);
+        let (next_tx, next) = mpsc::channel();
+        let next = lens_turn("feed-queued", "and then the music", next);
+
+        work_tx.send(Chunk::Text("Tidied.".into())).unwrap();
+        drop(work_tx);
+        drain(work);
+        let (first, _, _, ok, _) = last_turn(&agent);
+        assert_eq!(ok, Some(true), "the first turn ended as itself, not cut short by the second");
+
+        next_tx.send(Chunk::Text("On it.".into())).unwrap();
+        drop(next_tx);
+        drain(next);
+        let (turns, prompt, open, ok, _) = last_turn(&agent);
+        assert_eq!((turns, prompt.as_str(), open, ok), (first + 1, "and then the music", false, Some(true)));
     }
 }

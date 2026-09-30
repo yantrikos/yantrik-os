@@ -14,7 +14,7 @@ pub mod recipes;
 mod app_grid;
 pub mod dep_check;
 mod callbacks;
-mod files;
+pub(crate) mod files;
 /// Launching the app the one MIME rule picked: double-click, "Open with" and `files_open`
 /// all run their decision through here (#233).
 pub mod open_with;
@@ -34,6 +34,7 @@ mod timers;
 pub mod toast;
 mod voice_mode;
 pub mod apt;
+pub mod flatpak;
 pub mod package_manager;
 pub mod skill_store;
 pub mod device_dashboard;
@@ -43,6 +44,7 @@ pub mod version;
 pub mod ai_assist;
 pub mod ai_onboarding;
 pub mod ai_provider;
+pub mod decision_model;
 pub mod boot;
 pub mod location;
 pub mod pins;
@@ -56,7 +58,10 @@ pub mod cross_app;
 pub mod universal_actions;
 pub mod command_palette;
 pub mod installer;
+pub mod installer_disk;
+pub mod installer_locale;
 pub mod login;
+pub mod minds_panel;
 pub mod services;
 pub mod vault;
 
@@ -93,6 +98,8 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     agents::wire(ui, ctx);
     // After `harness` and `agents`: the panel reads the host and the Agents store they set up.
     crate::mind_panel::wire(ui);
+    // The Minds panel under the mind chip: the person's accounts and what each has left.
+    minds_panel::wire(ui, ctx);
     recipes::wire(ui, ctx);
     about::wire(ui, ctx);
     version::wire(ui, ctx);
@@ -101,6 +108,7 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     cross_app::wire(ui, ctx);
     ai_onboarding::wire(ui, ctx);
     ai_provider::wire(ui, ctx);
+    decision_model::wire(ui, ctx);
     installer::wire(ui, ctx);
     login::wire(ui, ctx);
     // After `login`, which is the other place a secret reaches the vault, and before `callbacks`,

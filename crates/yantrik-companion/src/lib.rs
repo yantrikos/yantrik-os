@@ -15,6 +15,7 @@
 //! Zero HTTP servers. Everything runs in a single process.
 
 pub mod agent_loop;
+pub mod shared_memory;
 pub mod audio_convert;
 pub mod embedder_bridge;
 pub mod automation;
@@ -53,6 +54,9 @@ pub mod telegram;
 pub mod task_manager;
 pub mod query_planner;
 pub mod interjection;
+pub mod judge_route;
+/// The decision model, shared with every thread that asks it.
+pub mod decisions;
 pub mod recipe;
 pub mod recipe_executor;
 pub mod recipe_templates;

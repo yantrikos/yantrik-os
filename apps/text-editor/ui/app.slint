@@ -37,6 +37,17 @@ export component TextEditorApp inherits AppWindow {
     in property <int> cursor-column: 1;
     in property <string> ending: "LF";
     in-out property <int> font-pixels: 14;
+    // #328: Slint's software renderer keeps every physical coordinate in an i16 and casts glyph
+    // origins and rectangle corners without a guard, so text laid out past ~32k physical pixels
+    // kills the process inside euclid. Everything the text layout sizes itself against is capped
+    // at this limit, and the Rust side windows the text itself to what fits inside it; at scale
+    // factor 2 the doubled coordinates plus the window chrome still leave headroom under i16::MAX.
+    in-out property <length> render-limit: 15000px;
+    // True while the text shown is a windowed part of the document; the view is read-only then,
+    // because edits report the TextInput's text back and would truncate the document to the view.
+    in property <bool> view-limited;
+    // Says so in the status bar; the whole document is kept and saved regardless.
+    in property <string> view-status;
     in-out property <bool> show-find;
     in-out property <bool> show-replace;
     in-out property <bool> match-case;
@@ -82,6 +93,9 @@ export component TextEditorApp inherits AppWindow {
         return reject;
     }
     changed dialog => { if(root.dialog != 0 && root.dialog != 3) { path-field.focus(); } else if(root.dialog == 0) { editor.focus(); } }
+    // How many lines fit inside the render limit depends on the font size (#328), so a change
+    // here re-windows the document. Handled before the busy/dialog gates in the Rust `action`.
+    changed font-pixels => { root.action("reflow"); }
     FocusScope {
     key-pressed(event) => { return root.shortcut(event); }
     VerticalLayout {
@@ -151,16 +165,18 @@ export component TextEditorApp inherits AppWindow {
             }
             scroll := ScrollView {
                 width:parent.width; height:parent.height;
-                viewport-width: max(self.visible-width, editor.preferred-width + 110px);
-                viewport-height:max(self.visible-height,editor.preferred-height + 40px);
+                // Capped at the render limit (#328): the viewport rect is cast to i16 physical
+                // coordinates when drawn, and the text inside is windowed to the same limit.
+                viewport-width: min(max(self.visible-width, editor.preferred-width + 110px), root.render-limit);
+                viewport-height:min(max(self.visible-height,editor.preferred-height + 40px), root.render-limit);
                 Rectangle {
                 width:scroll.viewport-width; height:scroll.viewport-height;
                 Rectangle {x:0px;y:0px;width:60px;height:scroll.viewport-height;background:Theme.bg-surface;}
                 gutter := Text {x:8px;y:20px;width:40px;text:root.numbers;horizontal-alignment:right;font-family:Theme.font-mono;font-size:root.font-pixels * 1px;color:Theme.text-dim;}
                 editor := TextInput {
-                    x:80px;y:20px;width:max(scroll.visible-width - 100px,self.preferred-width);height:self.preferred-height;
+                    x:80px;y:20px;width:min(max(scroll.visible-width - 100px,self.preferred-width),root.render-limit);height:min(self.preferred-height,root.render-limit);
                     text<=>root.content;font-family:Theme.font-mono;font-size:root.font-pixels * 1px;color:Theme.text-primary;
-                    single-line:false;wrap:no-wrap;read-only:root.busy || root.dialog != 0;
+                    single-line:false;wrap:no-wrap;read-only:root.busy || root.dialog != 0 || root.view-limited;
                     selection-background-color:Theme.accent;selection-foreground-color:Theme.bg-deep;
                     page-height:scroll.visible-height;
                     edited=>{root.edited(self.text);}
@@ -190,6 +206,7 @@ export component TextEditorApp inherits AppWindow {
             HorizontalLayout {padding-left:20px;padding-right:16px;spacing:18px;
                 Text {text:"Ln \{root.cursor-line}, Col \{root.cursor-column}";color:Theme.text-secondary;font-size:12px;vertical-alignment:center;}
                 Text {text:"\{root.line-count} lines";color:Theme.text-dim;font-size:12px;vertical-alignment:center;}
+                if root.view-status != "" : Text {text:root.view-status;color:Theme.amber;font-size:12px;vertical-alignment:center;max-width:420px;overflow:elide;}
                 Text {text:root.recovery-status;color:Theme.text-dim;font-size:12px;vertical-alignment:center;horizontal-stretch:1;overflow:elide;}
                 Text {text:root.language + "  ·  UTF-8  ·  " + root.ending;color:Theme.text-secondary;font-size:12px;vertical-alignment:center;}
             }

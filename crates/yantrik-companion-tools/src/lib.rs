@@ -43,6 +43,7 @@ pub mod memory_hygiene;
 pub mod network;
 pub mod networking;
 pub mod package;
+pub mod pipe;
 pub mod plugin;
 pub mod process;
 pub mod project;
@@ -62,6 +63,15 @@ pub mod window;
 pub mod workspace;
 
 use yantrik_companion_core::tools::ToolRegistry;
+
+/// Write a file the tools hand back to the model (a diagram, a screenshot) into our private
+/// scratch dir (`yantrik_ml::private_dir`), and return its path. Not `/tmp`, where a fixed name
+/// is one any other account can pre-plant; and never through a link or second name left at
+/// `name`, since the file tools can write into scratch too. Request bodies and captures that no
+/// one needs afterwards go through pipes instead (`pipe.rs`).
+pub(crate) fn write_scratch(name: &str, contents: &[u8]) -> Result<String, String> {
+    yantrik_ml::private_dir::write_scratch(name, contents).map_err(|e| format!("Failed to write {name}: {e}"))
+}
 
 /// Register all pure tools into the given registry.
 pub fn register_all(reg: &mut ToolRegistry) {

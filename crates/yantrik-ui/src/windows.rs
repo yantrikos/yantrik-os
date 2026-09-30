@@ -65,7 +65,19 @@ static COMPOSITOR: Mutex<Option<(Instant, Vec<WindowEntry>, Option<String>)>> = 
 pub fn refresh_compositor_windows() -> usize {
     let found = wlrctl_windows();
     let count = found.len();
-    let front = front_now();
+    let activation = activation_now();
+    SHELL_FRONT.store(
+        match activation {
+            Activation::Shell => 1,
+            Activation::Window(_) => 2,
+            Activation::Unknown => 0,
+        },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    let front = match activation {
+        Activation::Window(title) => Some(title),
+        _ => None,
+    };
     if let Ok(mut cache) = COMPOSITOR.lock() {
         let front = front.or_else(|| cache.as_ref().and_then(|(_, _, f)| f.clone()));
         *cache = Some((Instant::now(), found, front));
@@ -293,6 +305,11 @@ pub const APP_NAMES: &[(&str, &str)] = &[
     ("terminal", "Terminal"),
     ("weather", "Weather"),
 ];
+
+/// The name one of our app ids goes by on screen, for callers outside this file.
+pub fn app_display_name(app_id: &str) -> String {
+    display_name(app_id)
+}
 
 fn display_name(app_id: &str) -> String {
     APP_NAMES
@@ -713,32 +730,89 @@ fn wlrctl_windows() -> Vec<WindowEntry> {
 /// and off the UI thread by the approval cards when they need the answer for THIS moment rather
 /// than the cached one.
 pub(crate) fn front_now() -> Option<String> {
-    let output = std::process::Command::new("wlrctl")
-        .args(["toplevel", "list", "state:activated"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+    match activation_now() {
+        Activation::Window(title) => Some(title),
+        _ => None,
     }
-    activated_title(&String::from_utf8_lossy(&output.stdout))
 }
 
-/// The title of the single activated toplevel in a `wlrctl toplevel list state:activated`
-/// answer, or `None` if the answer is not exactly one window outside the shell. Parsed with
-/// [`toplevel_entry`], the same reader the full list uses, so the title is spelled the way the
-/// list spells it — which is what lets the merge match it.
-fn activated_title(text: &str) -> Option<String> {
+/// What the compositor says is in front: one app window, the shell itself, or not knowable.
+#[derive(Clone, Debug, PartialEq)]
+enum Activation {
+    Window(String),
+    Shell,
+    Unknown,
+}
+
+fn activation_now() -> Activation {
+    let Ok(output) = std::process::Command::new("wlrctl").args(["toplevel", "list", "state:activated"]).output()
+    else {
+        return Activation::Unknown;
+    };
+    if !output.status.success() {
+        return Activation::Unknown;
+    }
+    activation(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// A `wlrctl toplevel list state:activated` answer, read: exactly one line naming a window, or the
+/// shell, or anything else — which is not knowable. Parsed with [`toplevel_entry`], the same reader
+/// the full list uses, so the title is spelled the way the list spells it — which is what lets the
+/// merge match it.
+fn activation(text: &str) -> Activation {
     let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
     if lines.len() != 1 {
-        return None;
+        return Activation::Unknown;
     }
     let title = toplevel_entry(lines[0]).title;
-    if title.is_empty() || title == SHELL_WINDOW_TITLE {
-        // The person is looking at the desktop. No app window is in front.
-        return None;
+    if title == SHELL_WINDOW_TITLE {
+        // The person is looking at the desktop, or one of its screens. No app window is in front.
+        return Activation::Shell;
     }
-    Some(title)
+    if title.is_empty() {
+        return Activation::Unknown;
+    }
+    Activation::Window(title)
 }
+
+/// The title of the single activated toplevel, or `None` if the answer is not exactly one window
+/// outside the shell.
+#[cfg(test)]
+fn activated_title(text: &str) -> Option<String> {
+    match activation(text) {
+        Activation::Window(title) => Some(title),
+        _ => None,
+    }
+}
+
+/// Whether the shell's own window was in front at the last reading: `Some(true)` for the desktop
+/// or one of its screens, `Some(false)` for an app window, `None` when the compositor could not say.
+///
+/// The taskbar lights its first entry as the active one, and a screen of the shell (Files …) is
+/// only first when the shell is what the person is looking at (#467).
+pub fn shell_in_front() -> Option<bool> {
+    match SHELL_FRONT.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => Some(true),
+        2 => Some(false),
+        _ => None,
+    }
+}
+
+/// The app window the person is looking at, as of the last reading: its title exactly as
+/// `windows` lists it, or `None` when the desktop itself is in front or the compositor could not
+/// say ([`shell_in_front`] tells those two apart). For `describe shell`, so a reader of the screen
+/// can tell which open window is the one in front instead of guessing from the list's order.
+///
+/// A title and never a keyword: a window can be titled anything, "shell" included.
+pub fn in_front() -> Option<String> {
+    match shell_in_front()? {
+        true => None,
+        false => compositor_snapshot().1,
+    }
+}
+
+/// [`shell_in_front`]'s last reading: 0 not knowable, 1 the shell, 2 an app window.
+static SHELL_FRONT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 /// One `wlrctl toplevel list` line, as `(title, app_id)` — the shell's id, see [`toplevel_entry`].
 fn split_toplevel_line(line: &str) -> (String, String) {
@@ -773,10 +847,10 @@ fn toplevel_entry(line: &str) -> WindowEntry {
     // `images` — none of which is the id the dock keys its running mark by, so after a shell
     // restart those four tiles stayed dark with the apps plainly open on screen. Guessing is now
     // the last resort, for windows that are neither ours nor self-identifying.
-    let app_id = if declared_id == crate::mind_view::NESTED_APP_ID {
-        // The window a nested compositor draws into, which is Mind View. wlroots names it
-        // itself ("wlroots - WL-1") and the title is kept as it is, because the title is what
-        // the taskbar hands `wlrctl` to find it again.
+    let app_id = if crate::mind_view::is_nested_window(declared_id, &title) {
+        // The window a nested compositor draws into, which is Mind View. The compositor names
+        // it itself ("wlroots - WL-1", or "labwc - WL-1" on labwc 0.8) and the title is kept as
+        // it is, because the title is what the taskbar hands `wlrctl` to find it again.
         crate::mind_view::APP_ID.to_string()
     } else if !declared_id.is_empty() {
         declared_id.to_lowercase()
@@ -855,6 +929,18 @@ pub fn icon_for_app(app_id: &str) -> &'static str {
 /// Terminal: extract CWD from "user@host:/path" pattern.
 /// Browser: extract site name from "Page Title - Site" pattern.
 /// Files: extract current directory.
+/// What the taskbar calls Mind View: its name, and the apps the minds have open in it. The apps a
+/// mind opens are drawn inside Mind View rather than on the person's desktop, so they have no
+/// taskbar entries of their own; with only "Mind View" on the strip, Images opened by the Mind
+/// looked to Pranab like an app missing from the taskbar (VM 520, 28 Sep 2026).
+pub(crate) fn mind_view_label(apps: &[String]) -> String {
+    if apps.is_empty() {
+        "Mind View".to_string()
+    } else {
+        format!("Mind View · {}", apps.join(", "))
+    }
+}
+
 fn derive_context(title: &str, app_id: &str) -> String {
     match app_id {
         "terminal" => {
@@ -879,8 +965,8 @@ fn derive_context(title: &str, app_id: &str) -> String {
                 .unwrap_or("")
                 .to_string()
         }
-        // wlroots titles the window "wlroots - WL-1", which says nothing to a person.
-        "mind-view" => "Mind View".to_string(),
+        // The compositor titles the window "labwc - WL-1", which says nothing to a person.
+        "mind-view" => mind_view_label(&crate::mind_view::app_names()),
         "files" => {
             if title.contains('/') {
                 title.rsplit('/').next().unwrap_or("").to_string()
@@ -1076,6 +1162,11 @@ mod tests {
         assert_eq!(activated_title(""), None);
         assert_eq!(activated_title(": Editor\n: Terminal\n"), None);
         assert_eq!(activated_title(": Yantrik OS"), None);
+        // And the shell in front is told apart from not knowing (#467's taskbar order).
+        assert_eq!(activation(": Yantrik OS"), Activation::Shell);
+        assert_eq!(activation(": Terminal"), Activation::Window("Terminal".into()));
+        assert_eq!(activation(""), Activation::Unknown);
+        assert_eq!(activation(": Editor\n: Terminal\n"), Activation::Unknown);
     }
 
     /// A program's app_id is its binary's name, give or take a distribution's suffix.
@@ -1114,6 +1205,17 @@ mod tests {
         assert_eq!(matchspecs(SHELL_WINDOW_TITLE, &open), ["title:Yantrik OS"]);
     }
 
+    /// Mind View's entry says what is in it: the apps a mind opened are drawn inside it, and have
+    /// no entries of their own.
+    #[test]
+    fn mind_views_entry_names_what_is_open_in_it() {
+        assert_eq!(mind_view_label(&[]), "Mind View");
+        assert_eq!(
+            mind_view_label(&["Blender".to_string(), "Images".to_string()]),
+            "Mind View · Blender, Images"
+        );
+    }
+
     /// The declared app_id is kept as the compositor spelled it, beside the lowercased one the
     /// shell keys everything by.
     #[test]
@@ -1130,6 +1232,16 @@ mod tests {
         assert_eq!(mind_view.title, "wlroots - WL-1");
         assert_eq!(mind_view.subtitle, "Mind View");
         assert_eq!(mind_view.wayland_app_id, "wlroots");
+        // labwc 0.8 names it after itself, as VM 520 printed it, and it is still Mind View.
+        let labwc = toplevel_entry("labwc: labwc - WL-1");
+        assert_eq!(labwc.app_id, "mind-view");
+        assert_eq!(labwc.title, "labwc - WL-1");
+        assert_eq!(labwc.subtitle, "Mind View");
+        assert_eq!(toplevel_entry(": labwc - WL-1").app_id, "mind-view");
+        // A window that declares its own app_id is never Mind View by its title alone: a page
+        // or a terminal can be titled anything.
+        assert_ne!(toplevel_entry("chromium: labwc - WL-1").app_id, "mind-view");
+        assert_ne!(toplevel_entry("foot: wlroots - WL-1").app_id, "mind-view");
         assert_eq!(toplevel_entry("Some Foreign Window").wayland_app_id, "");
     }
 

@@ -83,6 +83,10 @@ llamacpp-rocm = ["llamacpp", "llama-cpp-2/rocm"]          # AMD (Radeon, Instinc
 llamacpp-vulkan = ["llamacpp", "llama-cpp-2/vulkan"]       # Universal GPU (Intel Arc, AMD, NVIDIA)
 llamacpp-metal = ["llamacpp", "llama-cpp-2/metal"]         # Apple Silicon (M1/M2/M3/M4)
 
+# geteuid, for checking that a private directory is really ours (private_dir.rs)
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [dev-dependencies]
 tempfile = "3"
 

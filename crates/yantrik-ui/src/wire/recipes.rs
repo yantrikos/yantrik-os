@@ -11,6 +11,7 @@
 //! question's box survives another recipe moving on.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -18,9 +19,13 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, Vec
 use yantrik_companion::recipe::Leave;
 use yantrik_companion::recipe_view::{self, RecipeOp, RecipeView, StepView};
 
+use crate::agents::catalog::Catalog;
 use crate::app_context::AppContext;
 use crate::bridge::CompanionHandle;
-use crate::{App, RecipeRowData, RecipeStageData, RecipeStepData, RecipeTabData, RecipesState};
+use crate::{
+    App, RecipeRoleData, RecipeRowData, RecipeSeatData, RecipeStageData, RecipeStepData, RecipeTabData,
+    RecipesState,
+};
 
 /// The screen id `app.slint` draws the Recipes screen at.
 pub const SCREEN: i32 = 35;
@@ -88,6 +93,12 @@ impl Tab {
     }
 }
 
+/// The seats a person has filled on the Recipes screen, before starting: `(recipe id, seat name)`
+/// to the chosen role's catalog id. Kept here — not in the companion — so it lives only as long as
+/// the screen holds it, and Start sends it as the run's inputs. It is UI-local because the rows are
+/// updated in place, so a seat filled must survive another recipe moving on.
+pub type SeatPicks = HashMap<(String, String), String>;
+
 struct Screen {
     tab: Tab,
     selected: Option<String>,
@@ -102,6 +113,8 @@ struct Screen {
     rows: Rc<VecModel<RecipeRowData>>,
     row_ids: Vec<String>,
     steps: Rc<VecModel<RecipeStepData>>,
+    /// The seats the person has filled for a formation's definition (#194).
+    seat_picks: SeatPicks,
 }
 
 type Shared = Rc<RefCell<Screen>>;
@@ -119,6 +132,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         rows: Rc::new(VecModel::default()),
         row_ids: Vec::new(),
         steps: Rc::new(VecModel::default()),
+        seat_picks: SeatPicks::default(),
     }));
     let g = ui.global::<RecipesState>();
     g.set_rows(ModelRc::from(state.borrow().rows.clone()));
@@ -174,11 +188,13 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     // Start, on a formation's definition: the person's own press, and so their leave for its
     // agents. The run is the worker's to make; what came of it comes back as the notice.
     g.on_start({
-        let (weak, companion) = (weak.clone(), companion.clone());
+        let (weak, companion, state) = (weak.clone(), companion.clone(), state.clone());
         move |id, text| {
             let Some(ui) = weak.upgrade() else { return };
             let g = ui.global::<RecipesState>();
-            match start_request(&crate::recipes::snapshot().views, &id, &text) {
+            let picks = state.borrow().seat_picks.clone();
+            let catalog = Catalog::load();
+            match start_request(&crate::recipes::snapshot().views, &id, &text, &catalog, &picks) {
                 Ok((recipe, inputs)) => {
                     let leave = Leave::new("the person, from the Recipes screen", None);
                     match companion.start_recipe(recipe, inputs, Some(leave)) {
@@ -197,6 +213,18 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                     g.set_notice_ok(false);
                 }
             }
+        }
+    });
+    // A seat filled from the catalog (#194): recorded against the recipe and its row redrawn, so
+    // the seat shows the role chosen. Start then sends it as that seat's input.
+    g.on_choose_seat({
+        let (weak, state) = (weak.clone(), state.clone());
+        move |id, seat, role| {
+            let Some(ui) = weak.upgrade() else { return };
+            let mut st = state.borrow_mut();
+            st.seat_picks.insert((id.to_string(), seat.to_string()), role.to_string());
+            st.local += 1;
+            draw(&ui, &mut *st);
         }
     });
     g.on_dismiss_notice({
@@ -226,12 +254,16 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     std::mem::forget(timer);
 }
 
-/// What the Recipes screen's Start asks the worker for: the formation's definition, and its one
-/// input given as `text`. Refused here for anything the screen cannot start.
+/// What the Recipes screen's Start asks the worker for: the formation's definition, its one
+/// input given as `text`, and every seat the person filled from the catalog (#194) as that seat's
+/// input. A seat left alone keeps the template's own role. Refused here for anything the screen
+/// cannot start.
 pub fn start_request(
     views: &[RecipeView],
     id: &str,
     text: &str,
+    catalog: &Catalog,
+    picks: &SeatPicks,
 ) -> Result<(String, serde_json::Map<String, serde_json::Value>), String> {
     let view = views.iter().find(|v| v.id == id).ok_or_else(|| format!("no recipe `{id}` any more"))?;
     if !can_start(view) {
@@ -244,6 +276,17 @@ pub fn start_request(
     }
     let mut inputs = serde_json::Map::new();
     inputs.insert(input.name.clone(), serde_json::Value::String(text.to_string()));
+    // The seats the person filled: the chosen role travels as that seat's input, so the run seats
+    // who they picked. A seat they left alone is not sent, and keeps the template's role. A pick
+    // the catalog no longer resolves (a role file removed since) is not sent either, so the seat
+    // falls back to the template's role — the same fallback seats_of shows on screen.
+    for seat in view.inputs.iter().filter(|i| i.default.is_some()) {
+        if let Some(role_id) = picks.get(&(id.to_string(), seat.name.clone())) {
+            if catalog.find(role_id).is_some() {
+                inputs.insert(seat.name.clone(), serde_json::Value::String(role_id.clone()));
+            }
+        }
+    }
     Ok((view.id.clone(), inputs))
 }
 
@@ -251,6 +294,50 @@ pub fn start_request(
 /// for it and starts it.
 fn can_start(v: &RecipeView) -> bool {
     v.template && v.formation && v.inputs.iter().filter(|i| i.default.is_none()).count() == 1
+}
+
+/// A startable formation's seats (#194): each input whose value names a catalog role, offered for
+/// the person to re-seat before starting. The role shown is the one they picked, else the
+/// template's default. An input that names no catalog role (a writers' room's cast of voices) is
+/// not a seat, and is left to the template.
+pub fn seats_of(v: &RecipeView, catalog: &Catalog, picks: &SeatPicks) -> Vec<RecipeSeatData> {
+    if !can_start(v) {
+        return Vec::new();
+    }
+    v.inputs
+        .iter()
+        .filter_map(|input| {
+            let default = input.default.as_deref()?;
+            // The person's pick, else the template's seat; a pick the catalog has lost (a role
+            // file removed since they made it) falls back to the template's, never to no role.
+            let picked = picks.get(&(v.id.clone(), input.name.clone())).map(String::as_str);
+            let role = picked.and_then(|p| catalog.find(p)).or_else(|| catalog.find(default))?;
+            Some(RecipeSeatData {
+                name: input.name.as_str().into(),
+                label: seat_label(&input.name).into(),
+                role: role.name.as_str().into(),
+                role_id: role.id.as_str().into(),
+            })
+        })
+        .collect()
+}
+
+/// A seat's name as a person reads it: "seat_1" becomes "Seat 1", "chair" becomes "Chair".
+fn seat_label(name: &str) -> String {
+    name.split('_').filter(|p| !p.is_empty()).map(capitalize).collect::<Vec<_>>().join(" ")
+}
+
+fn capitalize(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// The catalog's roles, as the choices every seat offers (#194).
+fn roles_of(catalog: &Catalog) -> Vec<RecipeRoleData> {
+    catalog.roles.iter().map(|r| RecipeRoleData { id: r.id.as_str().into(), name: r.name.as_str().into() }).collect()
 }
 
 /// Hand a press to the worker. What it made of it comes back as the notice.
@@ -291,7 +378,23 @@ fn draw(ui: &App, st: &mut Screen) {
     }
     let shown: Vec<&RecipeView> = snap.views.iter().filter(|v| st.tab.holds(v)).collect();
     let now = unix_now();
-    let rows: Vec<RecipeRowData> = shown.iter().map(|v| row_of(v, now)).collect();
+    let mut rows: Vec<RecipeRowData> = shown.iter().map(|v| row_of(v, now)).collect();
+    // A startable formation offers its seats as choices from the catalog (#194). Read the catalog
+    // once, and only when such a formation is actually shown; keep each model that did not change,
+    // so an opened chooser is not folded shut by another recipe taking a step.
+    if rows.iter().any(|r| r.can_start) {
+        let catalog = Catalog::load();
+        if let Some(model) = crate::models::changed(g.get_roles(), roles_of(&catalog)) {
+            g.set_roles(model);
+        }
+        for (row, v) in rows.iter_mut().zip(&shown) {
+            if row.can_start {
+                if let Some(model) = crate::models::changed(row.seats.clone(), seats_of(v, &catalog, &st.seat_picks)) {
+                    row.seats = model;
+                }
+            }
+        }
+    }
     let ids: Vec<String> = shown.iter().map(|v| v.id.clone()).collect();
     if ids == st.row_ids {
         // The same recipes in the same order: updated in place, so what is typed into a
@@ -428,6 +531,9 @@ pub fn row_of(v: &RecipeView, now: f64) -> RecipeRowData {
         formation: v.formation,
         can_start: can_start(v),
         start_hint: start_hint.into(),
+        // Filled in draw() for a startable formation, from the catalog and the person's picks
+        // (#194); empty for every other row.
+        seats: ModelRc::default(),
         needs_you: v.needs_you.is_some(),
     }
 }
@@ -684,10 +790,12 @@ mod tests {
         assert_eq!(drow.status_label, "formation, never run");
         assert_eq!(drow.start_hint, "The question the council is to answer…");
         let views = vec![dv.clone(), v.clone()];
-        let (id, inputs) = start_request(&views, formations::COUNCIL, "  Should we ship?  ").unwrap();
+        let catalog = Catalog::from_layers(&crate::agents::catalog::SHIPPED, &[]);
+        let no_picks = SeatPicks::default();
+        let (id, inputs) = start_request(&views, formations::COUNCIL, "  Should we ship?  ", &catalog, &no_picks).unwrap();
         assert_eq!((id.as_str(), inputs["question"].as_str()), (formations::COUNCIL, Some("Should we ship?")));
-        assert!(start_request(&views, formations::COUNCIL, " ").unwrap_err().contains("needs the question"));
-        assert!(start_request(&views, "rcp_council", "x").unwrap_err().contains("is not started from here"));
+        assert!(start_request(&views, formations::COUNCIL, " ", &catalog, &no_picks).unwrap_err().contains("needs the question"));
+        assert!(start_request(&views, "rcp_council", "x", &catalog, &no_picks).unwrap_err().contains("is not started from here"));
         let recipes_slint = read("../yantrik-ui-slint/ui/recipes.slint");
         assert!(recipes_slint.contains("RecipesState.start(root.recipe.id, start-input.value);"), "Start sends the input");
         assert!(recipes_slint.contains("root.kind == \"agent\" ? Icons.people"), "a working agent's stage wears the agents mark");
@@ -764,5 +872,92 @@ mod tests {
         let panel = &app[app.find("if root.mind-panel-shown : MindPanel {").expect("the panel")..];
         assert!(panel.contains(&format!("recipes-screen: {SCREEN};")), "the panel's recipe rows are links to this screen");
         assert!(panel.contains("RecipesState.show(id);"), "and open the recipe they name");
+    }
+
+    /// A startable formation's definition offers its seats as choices from the catalog (#194):
+    /// the Council's four seats draw with the roles that would sit in them, a role pressed into a
+    /// seat is what Start sends — and only for that seat — and an input that names no catalog
+    /// role (the writers' room's cast of voices) is no seat.
+    #[test]
+    fn a_formation_definition_offers_its_seats_as_catalog_choices() {
+        use yantrik_companion::recipe_templates::{self, formations};
+
+        let catalog = Catalog::from_layers(&crate::agents::catalog::SHIPPED, &[]);
+        let definition = |id: &str| -> RecipeView {
+            let template = recipe_templates::get_template(id).unwrap();
+            let recipe = Recipe {
+                id: id.into(),
+                name: template.name.into(),
+                description: String::new(),
+                status: RecipeStatus::Pending,
+                current_step: 0,
+                created_at: 0.0,
+                updated_at: 0.0,
+                enabled: true,
+                error_message: None,
+            };
+            let steps: Vec<StoredStep> = (template.steps)()
+                .into_iter()
+                .enumerate()
+                .map(|(i, step)| StoredStep { step_index: i, step, status: "pending".into(), result: None })
+                .collect();
+            recipe_view::view(&recipe, &steps, &Default::default())
+        };
+        let council = definition(formations::COUNCIL);
+
+        let seats: Vec<(String, String, String)> = seats_of(&council, &catalog, &SeatPicks::default())
+            .iter()
+            .map(|s| (s.label.to_string(), s.role.to_string(), s.role_id.to_string()))
+            .collect();
+        assert_eq!(
+            seats,
+            [
+                ("Seat 1".into(), "Researcher".into(), "researcher".into()),
+                ("Seat 2".into(), "Red team".into(), "red-team".into()),
+                ("Seat 3".into(), "Planner".into(), "planner".into()),
+                ("Chair".into(), "Chair".into(), "chair".into())
+            ]
+        );
+        let offered: Vec<String> = roles_of(&catalog).iter().map(|r| r.id.to_string()).collect();
+        assert!(
+            offered.iter().any(|id| id == "coder") && offered.iter().any(|id| id == "writer"),
+            "every catalog role is a choice: {offered:?}"
+        );
+
+        // A role pressed into a seat: the seat shows it, and Start sends it — only that seat, so
+        // the seats left alone keep the template's own roles.
+        let mut picks = SeatPicks::default();
+        picks.insert((formations::COUNCIL.to_string(), "seat_2".to_string()), "coder".to_string());
+        assert_eq!(seats_of(&council, &catalog, &picks)[1].role, "Coder");
+        let views = vec![council.clone()];
+        let (_, inputs) = start_request(&views, formations::COUNCIL, "Ship?", &catalog, &picks).unwrap();
+        assert_eq!(inputs["question"].as_str(), Some("Ship?"));
+        assert_eq!(inputs["seat_2"].as_str(), Some("coder"), "the seat the person filled");
+        assert!(
+            inputs.get("seat_1").is_none() && inputs.get("chair").is_none(),
+            "a seat left alone stays the template's"
+        );
+
+        // A pick the catalog has lost falls back to the template's seat, never to no role — on
+        // screen and in what Start sends, so the two never disagree.
+        let mut stale = SeatPicks::default();
+        stale.insert((formations::COUNCIL.to_string(), "seat_1".to_string()), "no-such-role".to_string());
+        assert_eq!(seats_of(&council, &catalog, &stale)[0].role_id, "researcher");
+        let (_, stale_inputs) = start_request(&views, formations::COUNCIL, "Ship?", &catalog, &stale).unwrap();
+        assert!(stale_inputs.get("seat_1").is_none(), "a stale pick is not sent; the seat keeps the template's role");
+
+        // The writers' room's cast is three names, not a catalog role: no seat is offered, and
+        // Start leaves the cast to the template.
+        let room = definition(formations::WRITERS_ROOM);
+        assert!(seats_of(&room, &catalog, &SeatPicks::default()).is_empty());
+        let (_, inputs) = start_request(&[room], formations::WRITERS_ROOM, "The larder, at midnight", &catalog, &SeatPicks::default()).unwrap();
+        assert!(inputs.get("voice_1").is_none());
+
+        // The screen draws the chooser: the seats on the definition's row, the catalog's roles as
+        // the choices, and a press carrying the seat and the role back to the shell.
+        let slint = read("../yantrik-ui-slint/ui/recipes.slint");
+        assert!(slint.contains("for seat in root.recipe.seats : SeatRow"), "the definition draws its seats");
+        assert!(slint.contains("for role in RecipesState.roles : YButton"), "an opened seat offers the catalog's roles");
+        assert!(slint.contains("RecipesState.choose-seat(root.recipe-id, root.seat.name, role.id);"), "a role pressed is the seat's pick");
     }
 }

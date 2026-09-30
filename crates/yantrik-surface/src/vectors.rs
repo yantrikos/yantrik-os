@@ -260,7 +260,7 @@ fn order_section() -> Vec<Value> {
                     if let Some(g) = grant {
                         params["grant"] = real(g).into();
                     }
-                    let authority = Authority { ceiling: v.ceiling.into(), mode: Mode::named(v.mode), granted: false };
+                    let authority = Authority { ceiling: v.ceiling.into(), mode: Mode::named(v.mode), granted: false, asks_above: None };
                     let mut out = json!({ "args": args, "grant": grant });
                     match surface.act(&params, None, authority) {
                         Ok(answer) => {

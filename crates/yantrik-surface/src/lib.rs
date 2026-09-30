@@ -100,8 +100,8 @@ pub use args::{
     with_defaults,
 };
 pub use call::{
-    finish_later, next_action_id, refusal, service_id_for, ActCall, NO_SUCH_METHOD, REFUSED,
-    UNANSWERED,
+    finish_later, needs_standing, next_action_id, refusal, service_id_for, ActCall, NO_SUCH_METHOD,
+    REFUSED, STANDING_NOT_NEEDED, UNANSWERED,
 };
 pub use context::{
     agent_token, answer_later, caller, off_the_reactor, AgentTokenScope, Caller, CallerScope, Later,
@@ -115,9 +115,10 @@ pub use surface::Surface;
 
 pub use serde_json;
 /// The envelope: what an app reports ([`View`]), what it offers ([`Action`], [`Param`]), and the
-/// two replies built from them.
+/// two replies built from them. [`Explainer`] is the sentence an action says about one call of
+/// itself (#137); most authors meet it only through [`Action::explain`].
 pub use yantrik_ipc_contracts::control_surface::{
-    act_json, describe_json, Action, Param, View, PARAM_TYPES,
+    act_json, act_json_stateless, describe_json, Action, Explainer, Param, View, PARAM_TYPES,
 };
 pub use yantrik_ipc_contracts::email::ServiceError;
 /// The ceiling, mode and grant rule every `app.act` meets. The dispatch calls it; it is exported
@@ -141,7 +142,7 @@ pub(crate) mod stand_in {
     fn install() {
         static ONCE: Once = Once::new();
         ONCE.call_once(|| {
-            crate::gate::spend_grants_with(|id, app, action, args| {
+            crate::gate::spend_grants_with(|id, app, action, args, _caller| {
                 let allowed = ALLOWED.lock().unwrap_or_else(|e| e.into_inner());
                 let Some((_, a, x, bound)) = allowed.iter().find(|(g, ..)| g == id) else {
                     return Err(format!("no approval request `{id}`."));
@@ -207,6 +208,7 @@ mod over_a_socket {
                     name: "Counter".into(),
                     surfaces: vec!["counter.increment".into(), "counter.who".into()],
                     ceiling: "standard".into(),
+                    asks_above: None,
                 })
             });
 

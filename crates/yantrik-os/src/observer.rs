@@ -135,6 +135,20 @@ impl SystemObserver {
             // which is also the one store, and the shell reads that store over its socket.
             // See services/notifications-service/src/freedesktop.rs.
 
+            // The person at the seat (#412): without this, nothing said the machine was left
+            // alone and the auto-lock never fired.
+            #[cfg(target_os = "linux")]
+            {
+                let tx = event_tx.clone();
+                let h = std::thread::Builder::new()
+                    .name("yos-idle".into())
+                    .spawn(move || {
+                        crate::idle::run_idle_monitor(tx);
+                    })
+                    .expect("failed to spawn idle monitor");
+                handles.push(h);
+            }
+
             // Keybind daemon (session D-Bus — org.yantrik.Keybinds)
             let tx = event_tx.clone();
             let h = std::thread::Builder::new()

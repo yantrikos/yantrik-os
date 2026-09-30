@@ -64,6 +64,18 @@ tools:
   max_tool_rounds: 3
   max_permission: "sensitive"
 
+# A judge (a System One model) picks the tool a request needs, so the chat model is sent that
+# one schema instead of a shortlist: fewer tokens, fewer wrong picks. Off until an endpoint is set.
+# It reads each request and your last few messages (never the assistant's replies; credentials
+# redacted); a cloud judge receives that text (never in incognito). If it is unsure or unreachable, tool selection is as it would be without it.
+# judge:
+#   endpoint: "http://127.0.0.1:8009"       # Kev on this machine (kev.serve)
+#   model: "kev-latest"
+#   # endpoint: "https://api.typesafe.ai"   # or TypeSafe's cloud
+#   # model: "jev-latest"
+#   # api_key_env: "JEV_API_KEY"            # the variable holding the key, never the key
+#   route_at: 0.7                           # how sure it must be to be followed
+
 cognition:
   think_interval_minutes: 15
   think_interval_active_minutes: 5

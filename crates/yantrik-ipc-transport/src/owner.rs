@@ -51,6 +51,28 @@ pub fn is_shell_binary(exe: &str) -> bool {
     exe.starts_with('/') && crate::peer_identity::basename(exe) == SHELL_BINARY
 }
 
+/// Whether `exe` — `/proc/<pid>/exe` resolved — is one of the desktop's own binaries: an app
+/// (`yantrik-*`) or a Rust service (`*-service`).
+///
+/// These are the only callers trusted to forward the kernel pid of another call (the
+/// `caller_pid` on `consume_approval`, #182), because they are the only ones that ever hold one:
+/// the peer of a forwarded spend is the forwarder, not the process the token arrived from. The
+/// rule is the file name, not the directory — as in [`is_shell_binary`], so an installed binary
+/// and a developer's own build both pass. A test binary (`yantrik_ui-…`, underscore) is
+/// deliberately none of them: a test is a direct caller and is judged by its own pid.
+///
+/// A name, so it keeps agents apart and does not stop the person's own user: a program running
+/// as that user can copy a binary to `~/yantrik-x`, or exec a real one after connecting, and be
+/// taken for a forwarder — the same-user limit #154 records for the shell.
+pub fn is_own_binary(exe: &str) -> bool {
+    let exe = exe.strip_suffix(DELETED).unwrap_or(exe);
+    if !exe.starts_with('/') {
+        return false;
+    }
+    let name = crate::peer_identity::basename(exe);
+    name.starts_with("yantrik-") || name.ends_with("-service")
+}
+
 /// The program behind a pid, as `/proc` says it, or `None` when it cannot be read.
 #[cfg(target_os = "linux")]
 pub fn exe_of(pid: i32) -> Option<String> {
@@ -118,6 +140,81 @@ pub fn must_be_the_shell(peer: Option<PeerCred>) -> Result<(), String> {
              the grant was not offered to it.",
             peer.pid
         )),
+    }
+}
+
+/// Whether `exe` is a program this desktop runs itself: `yantrik` (the CLI, whose `ask` and
+/// `serve` run the companion's tools), the shell and every app (`yantrik-*`), or a service
+/// (`*-service`). The callers a service's raw methods were written for (#161, #332).
+pub fn is_desktop_program(exe: &str) -> bool {
+    let exe = exe.strip_suffix(DELETED).unwrap_or(exe);
+    if !exe.starts_with('/') {
+        return false;
+    }
+    let name = crate::peer_identity::basename(exe);
+    name == "yantrik" || name.starts_with("yantrik-") || name.ends_with("-service")
+}
+
+/// The check on a service's raw methods that change something (#161): they answer only a program
+/// of this desktop's own, as the kernel's peer credentials and `/proc` identify it. Anything
+/// else is refused with a sentence that points at the graded door, `app.act`, which answers any
+/// caller under the ceiling, the mode and the grant.
+///
+/// `methods` names what was asked, for the sentence: `"sysmon.kill_process"`. This checks an
+/// executable, not a person. Code running as the same user can copy or exec a program with
+/// such a name (#154), so what these methods are worth stays with #43; what this ends is a
+/// script or a mind using the method instead of the action.
+pub fn desktop_programs_only(peer: Option<PeerCred>, methods: &str) -> Result<(), String> {
+    let Some(peer) = peer else {
+        return Err(format!(
+            "the kernel would not say which process is calling, and {methods} answers the \
+             desktop's own programs; the graded action on app.act answers any caller"
+        ));
+    };
+    match exe_of(peer.pid) {
+        Some(exe) if is_desktop_program(&exe) => Ok(()),
+        Some(exe) => Err(format!(
+            "{methods} answers the desktop's own programs, and the caller is {exe} (pid {}); the \
+             graded action on app.act answers any caller",
+            peer.pid
+        )),
+        None => Err(format!(
+            "the process calling {methods} (pid {}) could not be identified from /proc, and it \
+             answers the desktop's own programs; the graded action on app.act answers any caller",
+            peer.pid
+        )),
+    }
+}
+
+#[cfg(test)]
+mod desktop_program_tests {
+    use super::*;
+
+    #[test]
+    fn the_desktops_programs_are_its_cli_its_apps_and_its_services() {
+        for exe in [
+            "/opt/yantrik/bin/yantrik",
+            "/opt/yantrik/bin/yantrik-system-monitor",
+            "/opt/yantrik/bin/yantrik-ui (deleted)",
+            "/opt/yantrik/bin/email-service",
+        ] {
+            assert!(is_desktop_program(exe), "{exe}");
+        }
+        for exe in ["/usr/bin/python3", "/opt/yantrik/bin/yantrikish", "yantrik-ui", ""] {
+            assert!(!is_desktop_program(exe), "{exe}");
+        }
+    }
+
+    /// This test binary is none of them: the check refuses it by name, and says where the
+    /// graded door is.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_caller_that_is_not_one_is_refused_in_words_naming_the_graded_door() {
+        let me = PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 };
+        let why = desktop_programs_only(Some(me), "email.send_message").unwrap_err();
+        assert!(why.starts_with("email.send_message answers the desktop's own programs, and the caller is /"), "{why}");
+        assert!(why.ends_with("the graded action on app.act answers any caller"), "{why}");
+        assert!(desktop_programs_only(None, "notes.delete").unwrap_err().contains("would not say which process"));
     }
 }
 
@@ -262,6 +359,35 @@ mod tests {
             "/opt/yantrik/bin/yantrik-ui (deleted) (deleted)",
         ] {
             assert!(!is_shell_binary(exe), "{exe}");
+        }
+    }
+
+    /// The forwarders an agent's spend comes through — apps and Rust services, installed or a
+    /// developer's own build, live or replaced underfoot — are trusted with a forwarded pid
+    /// (#182). Everything else is a direct caller: the python `yos` execs, a Blender or
+    /// LibreOffice addon, a test binary (`yantrik_ui-…`, underscore), a bare name with no
+    /// directory, nothing at all.
+    #[test]
+    fn the_desktops_own_binaries_are_the_forwarders() {
+        for exe in [
+            "/opt/yantrik/bin/yantrik-notes",
+            "/home/yantrik/targets/bs4/release/yantrik-files",
+            "/opt/yantrik/bin/weather-service",
+            "/opt/yantrik/bin/system-monitor-service",
+            "/opt/yantrik/bin/yantrik-ui",
+            "/opt/yantrik/bin/yantrik-notes (deleted)",
+        ] {
+            assert!(is_own_binary(exe), "{exe}");
+        }
+        for exe in [
+            "/usr/bin/python3.12",
+            "/opt/blender/blender",
+            "/build/targets/bs4/release/deps/yantrik_ui-f7c63d24e57ff600",
+            "yantrik-notes",
+            "-service",
+            "",
+        ] {
+            assert!(!is_own_binary(exe), "{exe}");
         }
     }
 

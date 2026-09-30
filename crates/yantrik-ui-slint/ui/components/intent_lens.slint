@@ -9,6 +9,7 @@
 // Dismiss: Escape or click outside.
 
 import { Theme } from "theme.slint";
+import { QuestionRequest, QuestionCard } from "question_card.slint";
 import { Icon, Icons } from "icon.slint";
 import { MessageData, MessageBubble } from "message_bubble.slint";
 import { ListView } from "std-widgets.slint";
@@ -70,7 +71,13 @@ export struct ApprovalRequest {
     // (`summary_of`), so it is the app's own words and not a third name for the action. Empty
     // when the app publishes nothing; the card then hides this row rather than inventing one.
     summary: string,
-    purpose: string,        // the action's own published description
+    purpose: string,        // the action's own published description — never the caller's
+    // What the CALLER says the call is for: nothing checks it. Its own block, under its own
+    // label, after the app's sentence — never joined to it (re-review of #504: joined and cut
+    // together, a padded caller purpose pushed the app's sentence off the card and drew a fake
+    // "in the app's own words" line in its place). One paragraph, bounded, with the phrases the
+    // card uses for the app's voice marked as the caller's. Empty when it said nothing new.
+    caller-says: string,
     grade: string,          // safe | standard | sensitive | dangerous
     args: [string],         // one `key: value` per entry, each already cut to fit one line
     // What one of those arguments stands for, in the app's own words:
@@ -80,11 +87,22 @@ export struct ApprovalRequest {
     // to — and empty when the app publishes no name index or names none of these values, in
     // which case the card hides the row rather than drawing a blank.
     target: string,
+    // What the app says about THIS call, with these arguments (#137): Studio's card for
+    // `set_backend kind=fake` can say "after this, prompts stay on this machine", where its
+    // published purpose — the same paragraph for every call of the action — could only say
+    // that naming a hosted service sends prompts away. One already-bounded sentence, drawn
+    // under the argument box, and empty for an app that explains nothing per call, in which
+    // case the card hides the block and is exactly what it was. Like `target`, a sentence
+    // ABOUT the arguments, never one more thing the grant binds to — and while the card
+    // carries one, it offers no "Allow for this session" (`can_session` below).
+    explained: string,
     warning: string,        // "" unless there is something that cannot be undone
     // Whether "Allow for this session" may be offered at all. False for `dangerous` and for any
     // action whose own published sentence says it cannot be undone — the same predicate that
     // draws `warning`, so the card can never offer to stop asking about the thing it is warning
-    // about. Decided in approvals.rs from the UNCLIPPED purpose.
+    // about — and false while the card carries an `explained` sentence (#137): that sentence
+    // explained ONE call, and the session rule would stand in for every later one. Decided in
+    // approvals.rs from the UNCLIPPED purpose.
     can-session: bool,
     decision: string,       // "" while waiting; then allowed | denied | expired
     record: string,         // the one line that stays in the conversation afterwards
@@ -151,6 +169,9 @@ export component ApprovalCard inherits Rectangle {
     // inside the scrolling details section would also fight the outer one for the gesture.
     property <length> purpose-clamp: 42px;
     property <bool> purpose-open: false;
+    // The caller's words get two lines before "show more": they are a claim, not the action.
+    property <length> caller-clamp: 28px;
+    property <bool> caller-open: false;
 
     height: body.preferred-height;
     background: transparent;
@@ -475,6 +496,53 @@ export component ApprovalCard inherits Rectangle {
                 }
             }
 
+            // What the caller says it is for, after the app's sentence and labelled as the
+            // caller's: clamped to two lines under its own "show more", so no length of it can
+            // push the app's sentence down, and it cannot start a line of its own that reads as
+            // one of this card's labels (approvals.rs gives it as one neutralized paragraph).
+            if root.data.caller-says != "" : VerticalLayout {
+                spacing: 0px;
+
+                Rectangle {
+                    height: root.caller-open ? caller-text.preferred-height
+                        : min(caller-text.preferred-height, root.caller-clamp);
+                    clip: true;
+
+                    caller-text := Text {
+                        width: parent.width;
+                        y: 0px;
+                        text: root.data.caller-says;
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-caption;
+                        font-italic: true;
+                        wrap: word-wrap;
+                        vertical-alignment: top;
+                    }
+                }
+                if caller-text.preferred-height > root.caller-clamp : caller-more := TouchArea {
+                    width: caller-more-label.preferred-width + 16px;
+                    height: 20px;
+                    mouse-cursor: pointer;
+                    clicked => { root.caller-open = !root.caller-open; }
+
+                    caller-more-label := Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: root.caller-open ? "show less" : "show more";
+                        color: caller-more.has-hover ? Theme.amber-light : Theme.text-dim;
+                        font-size: Theme.fs-micro;
+                        vertical-alignment: center;
+                    }
+                }
+                Text {
+                    text: "says the caller about this call · nothing checks it";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-micro;
+                    wrap: no-wrap;
+                    overflow: elide;
+                }
+            }
+
             // The arguments, exactly as the grant is bound to them.
             //
             // One Text per argument, `no-wrap` and elided, so the box is exactly as many lines
@@ -509,6 +577,40 @@ export component ApprovalCard inherits Rectangle {
                     font-size: Theme.fs-micro;
                     wrap: no-wrap;
                     overflow: elide;
+                }
+            }
+
+            // What the app says about THIS call, with these arguments (#137), drawn directly
+            // under the argument box — the bridge in reading order: the purpose states the
+            // rule, the box shows the one call, and this says what that call does. One
+            // sentence, wrapped: it arrives already bounded (see `EXPLAINED_CHARS` in
+            // approvals.rs) and cut at a word like every prose line on this card, and the
+            // details section scrolls however it wraps. Hidden when empty, which is every app
+            // that explains nothing per call: their card is exactly what it was.
+            if root.data.explained != "" : VerticalLayout {
+                spacing: 0px;
+                Text {
+                    // Pinned to the layout's width, like `purpose-text` above: a wrapping Text
+                    // left to its default measures its height at its own unwrapped width, so
+                    // the section's preferred height would count this block as one line tall
+                    // however it wraps — and the details' scroll range is that preferred
+                    // height against the clipped box, so the wrapped lines below the fold
+                    // would be unreachable, the wheel having nothing to scroll.
+                    width: parent.width;
+                    text: root.data.explained;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-caption;
+                    wrap: word-wrap;
+                }
+                // Wrapped, not elided: this footnote is longer than the card is wide, and the
+                // elided line cut off exactly its point — "not to this sentence". The details
+                // section scrolls, so a wrapped footnote costs nothing but its second line.
+                Text {
+                    width: parent.width;
+                    text: "says the app about this one call, with these arguments · the grant binds to the argument box above, not to this sentence";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-micro;
+                    wrap: word-wrap;
                 }
             }
 
@@ -632,21 +734,44 @@ export component ApprovalCard inherits Rectangle {
             // subtle border: Deny is still the ordinary filled button and the easy default, and
             // the standing yes costs the most deliberate aim of the three. Not drawn at all for
             // `dangerous`, or for an action the app says cannot be undone — see `can-session`.
-            if root.data.can-session : Rectangle {
-                height: 30px;
-                border-radius: Theme.r-md;
-                background: session-ta.has-hover ? Theme.hover-fill : transparent;
-                border-width: 1px;
-                border-color: Theme.border-subtle;
+            //
+            // The line under the button is there because the rule it mints is desktop-wide
+            // (#182): a session rule is an (app, action) pair in the mode file, every door reads
+            // the same file, and no door asks which agent the rule was minted for — so it covers
+            // every mind on this desktop, and the card must say so plainly rather than let "for
+            // this session" read as "for this agent's session". Scoping the rule to the asking
+            // agent means changing the decision table in every implementation that replays it —
+            // the shell, the Python SDK, the bridge, the Blender addon — and the vectors they
+            // all replay; until then, the honest sentence is the fix. One fixed single-line
+            // row, like every caption above, so the card's height stays arithmetic (#218).
+            if root.data.can-session : VerticalLayout {
+                spacing: Theme.sp-1;
 
-                session-ta := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => { root.allow-session(); }
+                Rectangle {
+                    height: 30px;
+                    border-radius: Theme.r-md;
+                    background: session-ta.has-hover ? Theme.hover-fill : transparent;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+
+                    session-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.allow-session(); }
+                    }
+                    Text {
+                        text: "Allow " + root.data.app + "." + root.data.action + " for this session";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-caption;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        wrap: no-wrap;
+                        overflow: elide;
+                    }
                 }
                 Text {
-                    text: "Allow " + root.data.app + "." + root.data.action + " for this session";
+                    text: "covers every mind and caller, until restart or the mode is lowered";
                     color: Theme.text-dim;
-                    font-size: Theme.fs-caption;
+                    font-size: Theme.fs-micro;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                     wrap: no-wrap;
@@ -886,6 +1011,11 @@ export component IntentLens inherits Rectangle {
     /// 800px screen — the third one's buttons land under the taskbar — and a person facing a
     /// stack reads none of them properly, which is the failure the design is most afraid of.
     in property <int> approvals-waiting: 0;
+    /// Questions the mind this conversation is with asked and is waiting on (#25), oldest first.
+    in property <[QuestionRequest]> questions: [];
+    callback question-answer(string, string, string);   // agent id, request id, answer
+    // A reply's "Open the run": the run's row id (`mind:main#n`).
+    callback open-run(string);
 
     // Callbacks
     callback approval-allow(string);   // request id — a click, and nothing else, creates a grant
@@ -903,6 +1033,8 @@ export component IntentLens inherits Rectangle {
     callback open-in-agents();
     // "History": every conversation, on the Agents screen's All tab (#246).
     callback open-history();
+    // "New chat": the conversation starts again, for whichever mind is answering (#246).
+    callback new-chat();
 
     // Internal state
     in-out property <string> input-text: "";
@@ -1094,6 +1226,30 @@ export component IntentLens inherits Rectangle {
                     // screen (design/agents-workspace-2026-09-23.md, "The shape").
                     // Every earlier conversation, with any mind: the Agents screen's All tab, where
                     // each opens with its whole session and can be carried on (#246).
+                    // A new conversation is one press, not something only a restart did (#246).
+                    if root.messages.length > 0 : new-chat-hit := TouchArea {
+                        width: new-chat-label.preferred-width + 16px;
+                        height: 28px;
+                        y: (parent.height - 28px) / 2;
+                        mouse-cursor: pointer;
+                        clicked => { root.new-chat(); }
+
+                        Rectangle {
+                            width: parent.width;
+                            height: parent.height;
+                            border-radius: 6px;
+                            background: new-chat-hit.has-hover ? Theme.hover-fill : transparent;
+                        }
+                        new-chat-label := Text {
+                            width: parent.width;
+                            height: parent.height;
+                            text: "New chat";
+                            color: new-chat-hit.has-hover ? Theme.text-primary : Theme.text-secondary;
+                            font-size: Theme.fs-caption;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
                     if root.can-open-in-agents : history-hit := TouchArea {
                         width: history-label.preferred-width + 16px;
                         height: 28px;
@@ -1955,7 +2111,21 @@ export component IntentLens inherits Rectangle {
                     min-height: root.transcript-min;
 
                     for msg[idx] in root.messages : MessageBubble {
+                        open-run(run) => { root.open-run(run); }
                         data: msg;
+                    }
+                }
+
+                // The mind's questions, where approvals sit and for the same reason: waiting on the
+                // person, they must stay put rather than scroll away with the transcript.
+                if root.questions.length > 0 : VerticalLayout {
+                    spacing: Theme.sp-1;
+                    padding: Theme.sp-2;
+                    for q in root.questions : QuestionCard {
+                        mind: q.mind;
+                        prompt: q.prompt;
+                        options: q.options;
+                        answered(a) => { root.question-answer(q.agent, q.request, a); }
                     }
                 }
 

@@ -19,3 +19,7 @@ yantrik-ipc-transport = { workspace = true }
 yantrik-surface = { workspace = true }
 # One version string for every app binary's --version, resolved from what is installed.
 yantrik-version = { workspace = true }
+
+# geteuid, for checking the pid-file directory is really ours before trusting it (instance.rs).
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }

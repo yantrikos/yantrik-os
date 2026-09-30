@@ -20,7 +20,17 @@ use crate::{apps, lens, streaming, App};
 /// desktop had already worked out it was in Bentonville. These are facts about the machine,
 /// never configuration for the mind — the same things the status bar shows.
 pub(crate) fn desktop_context(place: &super::settings::Place) -> String {
+    machine_context(place, std::env::var("HOME").ok().as_deref())
+}
+
+/// The context from its parts. `home` is the person's home directory, what `~` means in their
+/// words: a mind running as its own account (#411) has another home, and cannot see this one, so
+/// "save it in ~/notes" was read as its own directory and the file "not found" there.
+fn machine_context(place: &super::settings::Place, home: Option<&str>) -> String {
     let mut machine = serde_json::Map::new();
+    if let Some(home) = home.filter(|h| h.starts_with('/') && *h != "/") {
+        machine.insert("home".into(), home.into());
+    }
     if !place.city.trim().is_empty() {
         machine.insert(
             "place".into(),
@@ -31,6 +41,19 @@ pub(crate) fn desktop_context(place: &super::settings::Place) -> String {
         machine.insert("timezone".into(), place.timezone.clone().into());
     }
     serde_json::json!({ "machine": machine }).to_string()
+}
+
+/// The desktop's context with the conversation handed over in it, for a harness that said it reads
+/// it there (`Attach::handover_context`): the person's words then go in `text` alone.
+pub(crate) fn context_with_handover(context: &str, handover: &crate::agents::handover::Handover) -> String {
+    let mut value: serde_json::Value = serde_json::from_str(context).unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "handover".into(),
+            serde_json::json!({ "from": handover.from, "text": handover.told }),
+        );
+    }
+    value.to_string()
 }
 
 /// The built-in's turn: relayed to the chat panel, and counted when it ends answered.
@@ -46,9 +69,14 @@ fn builtin_turn(
     ui_weak: &slint::Weak<App>,
     bridge: &Arc<CompanionBridge>,
     text: &str,
+    handover: Option<&crate::agents::handover::Handover>,
     streams: &streaming::Streams,
 ) {
-    let answer = bridge.send_message(text.to_string());
+    let sent = match handover {
+        Some(h) => crate::agents::handover::with_handover(h, text),
+        None => text.to_string(),
+    };
+    let answer = bridge.send_message(sent);
     let (tx, rx) = crossbeam_channel::unbounded::<String>();
     let bridge = bridge.clone();
     let asked = text.to_string();
@@ -81,7 +109,18 @@ fn builtin_turn(
             bridge.score_conversation_turn(asked);
         }
     });
-    streaming::stream_into(ui_weak.clone(), rx, text, streams);
+    match handover {
+        Some(h) => {
+            streaming::say(ui_weak, Some(text), "desktop", &switched_to("Yantrik Companion", h));
+            streaming::stream_answer(ui_weak.clone(), rx, streams);
+        }
+        None => streaming::stream_into(ui_weak.clone(), rx, text, streams),
+    }
+}
+
+/// The desktop's line when the conversation changes hands: who answers now, and that it knows.
+fn switched_to(mind: &str, handover: &crate::agents::handover::Handover) -> String {
+    format!("Now talking to {mind}. It has been told what you and {} said, so you can carry on.", handover.from)
 }
 
 /// Send what the person typed to whichever mind is actually driving.
@@ -120,24 +159,63 @@ fn dispatch(
 
     let Some(host) = super::harness::host() else {
         // No host yet (very early boot). The builtin is the only thing that could answer.
-        builtin_turn(ui_weak, bridge, text, streams);
+        builtin_turn(ui_weak, bridge, text, None, streams);
         return;
     };
 
-    // The builtin keeps its own path: it carries tool calls, the __REPLACE__ convention and the
-    // job board, none of which the harness protocol has or needs.
-    if host.active_id() == super::harness::BUILTIN_ID {
-        builtin_turn(ui_weak, bridge, text, streams);
+    // The conversation, handed over when the answering mind has changed since the last word
+    // (#245): the new mind is told what was said and what the last one is still doing, in front
+    // of the person's words, so the switch is seamless. The person's bubble shows what they typed.
+    let active = host.active_id();
+    let handover = (!text.trim_start().starts_with('/'))
+        .then(|| crate::agents::store().read(|s| crate::agents::handover::for_turn(s.agents(), &active, crate::agents::model::now())))
+        .flatten();
+
+    // Private mode: no mind is talked to, the built-in companion included. Not a word goes to
+    // one; the desktop says so under the person's own words, with the way out as the reply's
+    // link (`private_mode::LEAVE_LINK`).
+    if crate::private_mode::is_on() {
+        let mind = host.list().into_iter().find(|e| e.id == active).map(|e| e.name).unwrap_or_else(|| active.clone());
+        streaming::offer(ui_weak, Some(text), &crate::private_mode::lens_offer(&mind), crate::private_mode::LEAVE_LINK);
         return;
     }
 
+    // The builtin keeps its own path: it carries tool calls, the __REPLACE__ convention and the
+    // job board, none of which the harness protocol has or needs.
+    if active == super::harness::BUILTIN_ID {
+        builtin_turn(ui_weak, bridge, text, handover.as_ref(), streams);
+        return;
+    }
+
+    // A mind already at work is answered by the desktop first, from its own record of the task:
+    // what it was asked, how long it has run, its last steps, and whether it looks stuck. The
+    // mind itself could only say "still working" (#246), and a status question sat queued behind
+    // the task until it ended. The word still goes to the mind below, which answers it as it
+    // always did: beside its work, or when its work is done. Commands (`/stop`) go straight on.
+    let told = (!text.trim_start().starts_with('/'))
+        .then(|| {
+            let agent = crate::agents::feed::main_agent(&host.active_id());
+            crate::agents::store().read(|s| {
+                let a = s.agent(&agent)?;
+                crate::agents::progress::of(a, crate::agents::model::now()).map(|p| p.told(&a.meta.mind))
+            })
+        })
+        .flatten();
+
     // An attached harness answers in Chunks. Adapt them to the token protocol the pump already
     // speaks, on a thread, because `Answer` is a blocking std channel and this is the UI thread.
-    let answer = host.send(
-        yantrik_harness::Turn::new(text.to_string()).with_context(desktop_context(&super::settings::place())),
-    );
+    // A harness that reads the hand-over from the context gets the person's words alone; any other
+    // gets it in front of them, as before.
+    let context = desktop_context(&super::settings::place());
+    let (sent, context) = match &handover {
+        Some(h) if host.reads_handover(&active) => (text.to_string(), context_with_handover(&context, h)),
+        Some(h) => (crate::agents::handover::with_handover(h, text), context),
+        None => (text.to_string(), context),
+    };
+    let answer = host.send(yantrik_harness::Turn::new(sent).with_context(context).with_origin(yantrik_harness::protocol::Origin::desk()));
     // The same turn, recorded as this mind's agent on the Agents screen; the answer passes through.
     let answer = crate::agents::feed::lens_turn(&host.active_id(), text, answer);
+    let run_of = crate::agents::feed::main_agent(&host.active_id());
     let (tx, rx) = crossbeam_channel::unbounded::<String>();
     let bridge = bridge.clone();
     let asked = text.to_string();
@@ -166,6 +244,11 @@ fn dispatch(
                 return;
             }
         }
+        // A reply that did work links to its run in Agents (the chat is the conversation; the
+        // run is agent work). Named before the end so the pump puts it on this reply.
+        if let Some(run) = crate::agents::feed::chat_run(&run_of) {
+            let _ = tx.send(format!("{}{run}", crate::streaming::RUN_MARK));
+        }
         let _ = tx.send("__DONE__".to_string());
         // The bond is the person's relationship with the desktop, whichever mind answers — the
         // Bond screen and `describe shell` present it as such. But only the built-in ever
@@ -178,13 +261,117 @@ fn dispatch(
             bridge.score_conversation_turn(asked);
         }
     });
-    streaming::stream_into(ui_weak.clone(), rx, text, streams);
+    let mind = host.list().into_iter().find(|e| e.id == active).map(|e| e.name).unwrap_or_else(|| active.clone());
+    let desktop: Vec<String> =
+        [handover.as_ref().map(|h| switched_to(&mind, h)), told].into_iter().flatten().collect();
+    if desktop.is_empty() {
+        streaming::stream_into(ui_weak.clone(), rx, text, streams);
+    } else {
+        streaming::say(ui_weak, Some(text), "desktop", &desktop.join("
+
+"));
+        streaming::stream_answer(ui_weak.clone(), rx, streams);
+    }
+}
+
+/// An answer the Lens was waiting for when the shell restarted, picked back up after it (#246):
+/// the desktop says what is being continued, and the rest of the answer streams in under it.
+pub fn resume_in_lens(
+    ui_weak: &slint::Weak<App>,
+    mind: &str,
+    prompt: &str,
+    answer: yantrik_harness::Answer,
+    streams: &streaming::Streams,
+) {
+    let (tx, rx) = crossbeam_channel::unbounded::<String>();
+    std::thread::spawn(move || {
+        while let Ok(chunk) = answer.recv() {
+            let sent = match chunk {
+                yantrik_harness::Chunk::Text(t) => tx.send(t),
+                yantrik_harness::Chunk::Failed(why) => tx.send("__REPLACE__".to_string()).and_then(|_| tx.send(why)),
+                yantrik_harness::Chunk::Event(_) => Ok(()),
+            };
+            if sent.is_err() {
+                return;
+            }
+        }
+        let _ = tx.send("__DONE__".to_string());
+    });
+    streaming::say(
+        ui_weak,
+        None,
+        "desktop",
+        &format!(
+            "The desktop restarted while {mind} was answering \u{201c}{}\u{201d}. It kept working; the rest of its answer follows.",
+            crate::agents::progress::brief(prompt, 120)
+        ),
+    );
+    streaming::stream_answer(ui_weak.clone(), rx, streams);
 }
 
 /// Wire on_send_message and on_lens_submit callbacks.
 pub fn wire(ui: &App, ctx: &AppContext) {
     wire_send_message(ui, ctx);
     wire_lens_submit(ui, ctx);
+    wire_new_chat(ui, ctx);
+}
+
+/// New chat (#246): the Lens empties, and whichever mind is answering starts a new conversation.
+/// The built-in drops its conversation history; an attached mind is sent `/new`, which every
+/// harness answers itself (harnesses/lib/yantrik_harness.py `_command`, Hermes's own `/new`).
+/// Nothing is forgotten: the old conversation stays in Agents → History, and memory is not the
+/// conversation.
+fn wire_new_chat(ui: &App, ctx: &AppContext) {
+    let bridge = ctx.bridge.clone();
+    let ui_weak = ui.as_weak();
+    ui.on_lens_new_chat(move || {
+        use slint::Model as _;
+        let Some(ui) = ui_weak.upgrade() else { return };
+        // `/new` ends the work in progress as well as the conversation, in every harness. A mind
+        // at work is left at work: the desktop says so rather than stopping it on a press that
+        // looked like housekeeping.
+        if let Some(host) = super::harness::host() {
+            let agent = crate::agents::feed::main_agent(&host.active_id());
+            let busy = crate::agents::store().read(|s| {
+                let a = s.agent(&agent)?;
+                crate::agents::progress::of(a, crate::agents::model::now()).map(|p| (a.meta.mind.clone(), p.task))
+            });
+            if let Some((mind, task)) = busy {
+                streaming::say(
+                    &ui_weak,
+                    None,
+                    "desktop",
+                    &format!(
+                        "{mind} is still working on \u{201c}{}\u{201d}. A new chat would stop it, so this one \
+                         carries on; send /stop first if stopping it is what you want.",
+                        crate::agents::progress::brief(&task, 100)
+                    ),
+                );
+                return;
+            }
+        }
+        let messages = ui.get_messages();
+        if let Some(model) = messages.as_any().downcast_ref::<slint::VecModel<crate::MessageData>>() {
+            model.set_vec(Vec::new());
+        }
+        ui.set_lens_chat_mode(false);
+        let active = super::harness::host().map(|h| h.active_id());
+        match active.as_deref() {
+            None | Some(super::harness::BUILTIN_ID) => {
+                if let Err(e) = bridge.handle().new_conversation() {
+                    tracing::warn!(error = %e, "New chat: the companion was not told");
+                }
+            }
+            Some(_) => {
+                if let Some(host) = super::harness::host() {
+                    // The harness answers `/new` itself; its one-line reply is not news.
+                    let answer = host.send(yantrik_harness::Turn::new("/new".to_string()));
+                    std::thread::spawn(move || while answer.recv().is_ok() {});
+                }
+            }
+        }
+        tracing::info!(mind = ?active, "New chat");
+    });
 }
 
 /// Direct chat: send message → stream response.
@@ -271,6 +458,32 @@ fn wire_lens_submit(ui: &App, ctx: &AppContext) {
         // ignored the mind picker even after chat stopped doing so.
         dispatch(&ui_weak, &bridge, &query, &streams);
     });
+}
+
+#[cfg(test)]
+mod handover_context_tests {
+    use super::*;
+
+    /// A harness that reads the hand-over from the context gets it there, beside what the desktop
+    /// already says about itself, with the contract strings a mind may still key on unchanged.
+    #[test]
+    fn the_handover_rides_in_the_context_beside_the_machine() {
+        let handover = crate::agents::handover::Handover {
+            from: "Hermes Agent".into(),
+            told: "[From the desktop: you are taking this conversation over from Hermes Agent. The person \
+                   expects you to know what was said; it was:\n- The person: build the town model\nCarry on from here.]"
+                .into(),
+        };
+        let context = r#"{"machine":{"timezone":"America/Chicago"}}"#;
+        let with: serde_json::Value = serde_json::from_str(&context_with_handover(context, &handover)).unwrap();
+        assert_eq!(with["machine"]["timezone"], "America/Chicago", "what was there stays");
+        assert_eq!(with["handover"]["from"], "Hermes Agent");
+        let text = with["handover"]["text"].as_str().unwrap();
+        assert!(text.starts_with("[From the desktop:") && text.ends_with("Carry on from here.]"), "{text}");
+
+        let broken: serde_json::Value = serde_json::from_str(&context_with_handover("not json", &handover)).unwrap();
+        assert_eq!(broken["handover"]["from"], "Hermes Agent", "a context that did not parse still carries it");
+    }
 }
 
 #[cfg(test)]
@@ -419,16 +632,23 @@ mod tests {
             timezone: "America/Chicago".into(),
             source: "detected".into(),
         };
-        let v: serde_json::Value = serde_json::from_str(&super::desktop_context(&place)).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&super::machine_context(&place, Some("/home/ann"))).unwrap();
         assert_eq!(v["machine"]["place"]["city"], "Bentonville");
         assert_eq!(v["machine"]["timezone"], "America/Chicago");
+        assert_eq!(v["machine"]["home"], "/home/ann", "what ~ means in the person's words");
         // Coordinates and how the place was found stay on the machine.
         assert!(v["machine"].get("lat").is_none() && v["machine"]["place"].get("lat").is_none());
         assert!(v["machine"].get("source").is_none());
 
         let unknown: serde_json::Value =
-            serde_json::from_str(&super::desktop_context(&Default::default())).unwrap();
+            serde_json::from_str(&super::machine_context(&Default::default(), None)).unwrap();
         assert_eq!(unknown, serde_json::json!({ "machine": {} }));
+        for not_a_home in ["", "relative/dir", "/"] {
+            let v: serde_json::Value =
+                serde_json::from_str(&super::machine_context(&Default::default(), Some(not_a_home))).unwrap();
+            assert!(v["machine"].get("home").is_none(), "{not_a_home:?}");
+        }
     }
 
 }

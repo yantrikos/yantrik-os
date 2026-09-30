@@ -86,7 +86,7 @@ impl AppContext {
         ui.global::<ThemeMode>().set_dark(user_settings.dark_mode);
         ui.set_settings_dark_mode(user_settings.dark_mode);
         ui.set_settings_tool_permission(user_settings.tool_permission.clone().into());
-        ui.set_settings_auto_lock_secs(user_settings.auto_lock_secs);
+        ui.set_settings_auto_lock_secs(crate::wire::settings::auto_lock_choice(user_settings.auto_lock_secs));
         // The only place do-not-disturb comes back after a restart. Everything that suppresses a
         // toast reads `dnd_mode` off the window (see `wire::notifications::maybe_toast`), so this
         // one line is what makes "held until I say otherwise" mean anything across a reboot.
@@ -147,6 +147,13 @@ impl AppContext {
         if !crate::onboarding::marker_path().exists() {
             ui.set_onboarding_step(1);
             tracing::info!("First boot detected — onboarding enabled");
+            // Installed by the graphical installer, which already made the account: open on
+            // the optional-setup welcome (phase 3), past the animation and the name question.
+            if crate::onboarding::after_install_marker_path().exists() {
+                ui.set_onboard_after_install(true);
+                ui.set_onboard_phase(3);
+                tracing::info!("First boot after install — offering the optional setup");
+            }
         }
 
         // Lock screen PIN file
@@ -297,59 +304,14 @@ impl AppContext {
 
         // Start multi-provider chat system (Discord, Matrix, IRC, Slack, Signal, etc.)
         // This also handles Telegram if configured, replacing the legacy poller.
-        let chat_bridge_ref = bridge.clone();
         let _chat_handle = yantrik_companion::chat_bridge::start_chat(
             &chat_config_snapshot,
-            // AI callback: sends message through CompanionBridge, collects streaming response
-            Box::new(move |text: &str, context: &[String], policy: &yantrik_chat::policy::ConversationPolicy| {
-                let prompt = if context.is_empty() {
-                    text.to_string()
-                } else {
-                    let history = context.iter()
-                        .rev()
-                        .take(6)
-                        .rev()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    format!("[Chat context]\n{history}\n\n[Latest message]\n{text}")
-                };
-
-                // Send through bridge and collect all tokens
-                let token_rx = chat_bridge_ref.send_message(prompt);
-                let mut full_response = String::new();
-                let mut replacing = false;
-                while let Ok(token) = token_rx.recv() {
-                    match token.as_str() {
-                        "__DONE__" => break,
-                        "__REPLACE__" => {
-                            full_response.clear();
-                            replacing = true;
-                        }
-                        _ => {
-                            if replacing {
-                                full_response = token;
-                                replacing = false;
-                            } else {
-                                full_response.push_str(&token);
-                            }
-                        }
-                    }
-                }
-
-                if full_response.is_empty() {
-                    return None;
-                }
-
-                // Respect max reply length from policy
-                if let Some(max_len) = policy.max_reply_length {
-                    if full_response.len() > max_len {
-                        let boundary = full_response.floor_char_boundary(max_len.saturating_sub(3));
-                        full_response = format!("{}...", &full_response[..boundary]);
-                    }
-                }
-
-                Some(full_response)
+            // AI callback: the person's message to the mind answering, and its reply. The router
+            // asks only about a direct message from one of `chat.people` (`ChatRouter::set_people`).
+            Box::new(move |text: &str, context: &[String], policy: &yantrik_chat::policy::ConversationPolicy, asker: &yantrik_chat::router::Asker, outbox: &yantrik_chat::router::Outbox| {
+                // The mind answering, from the phone, answered later through the outbox; or an
+                // answer to a card on the phone, answered now. See `channels`.
+                crate::channels::from_phone(text, context, policy.max_reply_length, asker, outbox)
             }),
             // Brain callback: record events for cross-platform memory
             Box::new(move |sender_name: &str, _sender_id: &str, provider: &str, content_type: &str| {
@@ -362,7 +324,16 @@ impl AppContext {
                 // Brain integration happens via the CompanionBridge's RecordSystemEvent command
                 // The companion worker thread will process this and update brain state
             }),
+            // Private mode: the channels keep nothing while it is on.
+            Box::new(crate::private_mode::is_on),
+            // An answer to a card on the phone is never kept: its code is not context.
+            Box::new(crate::channels::is_card_answer),
         );
+        // What the shell sends to a channel unasked (a card on the phone), and which channels the
+        // person trusts with an Allow though their operator can read them.
+        if let Some(handle) = &_chat_handle {
+            crate::channels::configure(handle.outbox(), chat_config_snapshot.chat.phone_approvals.clone());
+        }
 
         // Set up UI models
         ui.set_messages(ModelRc::new(VecModel::<MessageData>::default()));

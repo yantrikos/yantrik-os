@@ -391,6 +391,7 @@ impl Role {
             name: self.name.clone(),
             surfaces: self.reach.surfaces.clone(),
             ceiling: self.reach.ceiling.clone(),
+            asks_above: None,
         }
     }
 }

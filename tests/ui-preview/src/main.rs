@@ -1,7 +1,13 @@
 #[path="../../../crates/yantrik-ui/src/models.rs"]
 mod production_models;
+// The installer's rules, the production file: the installer probe validates its fields with it.
+#[path="../../../crates/yantrik-ui/src/installer_rules.rs"]
+#[allow(dead_code)]
+mod installer_rules;
+mod installer_tests;
 mod files_tests;
 mod settings_tests;
+mod decision_tests;
 mod agents_tests;
 mod mind_panel_tests;
 mod recipes_tests;
@@ -9,11 +15,12 @@ mod formations_tests;
 mod screen_controls_tests;
 mod apps_button_tests;
 mod lens_tests;
-mod overview_tests;
+mod route_tests;
 mod approval_tests;
 mod taskbar_menu_tests;
 mod monitor_tests;
 mod weather_tests;
+mod minds_tests;
 use slint::{
     platform::{
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
@@ -39,10 +46,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
     slint::platform::set_platform(Box::new(Headless(window.clone())))?;
     if args.iter().any(|a| a == "verify-settings") { return settings_tests::run(&window, output, width, height); }
+    if args.iter().any(|a| a == "verify-decision") { return decision_tests::run(&window, output, width, height); }
     if args.iter().any(|a| a == "verify-files") { return files_tests::run(&window); }
     if args.iter().any(|a| a == "verify-agents") { return agents_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-agents-catalog") { return agents_tests::run_catalog(&window, output); }
     if args.iter().any(|a| a == "verify-mind-panel") { return mind_panel_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-minds") { return minds_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-recipes") { return recipes_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-formations") { return formations_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-lens-agents") { return agents_tests::run_lens(&window, output); }
@@ -52,9 +61,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-lens-answers") { return lens_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-approval-card") { return approval_tests::run(&window, output); }
     if args.iter().any(|a| a == "lens-answer") { return lens_tests::run_lens(&window, output); }
-    if args.iter().any(|a| a == "verify-agents-overview") { return overview_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-agents-route") { return route_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-monitor") { return monitor_tests::run(&window); }
     if args.iter().any(|a| a == "verify-weather") { return weather_tests::run(&window); }
+    if args.iter().any(|a| a == "verify-weather-snapped") { return weather_tests::snapped(&window, output); }
+    if args.iter().any(|a| a == "verify-installer") { return installer_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-editor") {
+        // #328: the production text editor drawing the very document from the crash report.
+        // Slint's software renderer casts glyph coordinates to i16 without a guard; this used
+        // to abort the window mid-draw, and bigger documents on the VM made every restart die.
+        let probe = EditorProbe::new()?;
+        probe.show()?;
+        window.set_size(slint::PhysicalSize::new(width, height));
+        let content = include_str!("../../../apps/text-editor/repro-328-content.py");
+        probe.set_repro_content(content.into());
+        let lines = content.lines().count();
+        probe.set_repro_lines(lines as i32);
+        probe.set_repro_numbers(
+            (1..=lines)
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+                .into(),
+        );
+        slint::platform::update_timers_and_animations();
+        let mut pixels = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(width, height);
+        window.request_redraw();
+        assert!(
+            window.draw_if_needed(|renderer| {
+                renderer.render(pixels.make_mut_slice(), width as usize);
+            }),
+            "the editor scene drew nothing"
+        );
+        let mut encoder = png::Encoder::new(BufWriter::new(File::create(output)?), width, height);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()?
+            .write_image_data(pixels.as_bytes())?;
+        println!("PASS: the production editor drew the #328 repro document ({lines} lines)");
+        return Ok(());
+    }
     if args.iter().any(|a| a == "verify-idle") {
         let probe = TerminalProbe::new()?;
         probe.show()?;

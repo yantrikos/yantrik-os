@@ -1,0 +1,16 @@
+[package]
+name = "yantrik-term"
+version = "0.1.0"
+edition = "2021"
+description = "The Yantrik terminal: the desktop's chat with any mind, in a terminal, over ssh too"
+
+[[bin]]
+name = "yantrik-term"
+path = "src/main.rs"
+
+[dependencies]
+yantrik-ipc-transport = { path = "../yantrik-ipc-transport" }
+serde_json = "1"
+ratatui = "0.30"
+crossterm = "0.29"
+unicode-width = "0.2"

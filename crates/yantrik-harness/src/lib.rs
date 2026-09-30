@@ -48,9 +48,10 @@
 pub mod event;
 pub mod host;
 pub mod protocol;
+pub mod run_store;
 
 pub use event::{AgentId, Event};
-pub use host::{AgentEntry, AgentState, Entry, EventCounts, Host, TurnEnd};
+pub use host::{AgentEntry, AgentState, Entry, EventCounts, Host, Resumed, TurnEnd};
 
 use std::sync::mpsc::Receiver;
 
@@ -67,16 +68,29 @@ pub struct Turn {
     pub text: String,
     /// Optional system framing — who the harness is, what it is looking at.
     pub context: Option<String>,
+    /// Where the turn came from: the Lens at the desk, or a channel on the person's phone.
+    /// `None` for a turn the desktop does not say (a harness that predates it sees no difference).
+    pub origin: Option<protocol::Origin>,
 }
 
 impl Turn {
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), context: None }
+        Self { text: text.into(), context: None, origin: None }
     }
 
     pub fn with_context(mut self, context: impl Into<String>) -> Self {
         self.context = Some(context.into());
         self
+    }
+
+    pub fn with_origin(mut self, origin: protocol::Origin) -> Self {
+        self.origin = Some(origin);
+        self
+    }
+
+    /// Whether the person asked this from away from the machine.
+    pub fn is_remote(&self) -> bool {
+        self.origin.as_ref().is_some_and(|o| o.remote)
     }
 }
 

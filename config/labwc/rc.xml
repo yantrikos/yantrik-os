@@ -121,6 +121,61 @@
       <action name="ToggleFullscreen" />
     </keybind>
 
+    <!--
+      ── Snap layouts ─────────────────────────────────────────────────────────────────────
+      Halves, quarters, thirds and two-thirds, so "left half full, right side split in two" is
+      three keys. Super+Alt and a letter, with the letters Rectangle (macOS) made familiar:
+      U I J K are the four corners as they sit on the keyboard, D F G the three thirds left to
+      right, E and T the two-thirds, C the middle. Super+Alt so nothing an app binds is taken.
+      The same layouts are on every window's menu (menu.xml, "Snap") and dragging a window with
+      Super held shows them all. The regions are named in <regions> at the end of this file.
+    -->
+    <keybind key="W-A-Left">
+      <action name="SnapToRegion" region="left-half" />
+    </keybind>
+    <keybind key="W-A-Right">
+      <action name="SnapToRegion" region="right-half" />
+    </keybind>
+    <keybind key="W-A-Up">
+      <action name="SnapToRegion" region="top-half" />
+    </keybind>
+    <keybind key="W-A-Down">
+      <action name="SnapToRegion" region="bottom-half" />
+    </keybind>
+    <keybind key="W-A-u">
+      <action name="SnapToRegion" region="top-left" />
+    </keybind>
+    <keybind key="W-A-i">
+      <action name="SnapToRegion" region="top-right" />
+    </keybind>
+    <keybind key="W-A-j">
+      <action name="SnapToRegion" region="bottom-left" />
+    </keybind>
+    <keybind key="W-A-k">
+      <action name="SnapToRegion" region="bottom-right" />
+    </keybind>
+    <keybind key="W-A-d">
+      <action name="SnapToRegion" region="left-third" />
+    </keybind>
+    <keybind key="W-A-f">
+      <action name="SnapToRegion" region="center-third" />
+    </keybind>
+    <keybind key="W-A-g">
+      <action name="SnapToRegion" region="right-third" />
+    </keybind>
+    <keybind key="W-A-e">
+      <action name="SnapToRegion" region="left-two-thirds" />
+    </keybind>
+    <keybind key="W-A-t">
+      <action name="SnapToRegion" region="right-two-thirds" />
+    </keybind>
+    <keybind key="W-A-c">
+      <action name="SnapToRegion" region="center" />
+    </keybind>
+    <keybind key="W-A-Return">
+      <action name="ToggleMaximize" />
+    </keybind>
+
     <!-- ── The shell, through its own control surface ──────────────────────────────────── -->
     <keybind key="W-l">
       <action name="Execute">
@@ -218,5 +273,106 @@
         <command>brightnessctl set 5%-</command>
       </action>
     </keybind>
+
+    <!-- ── Workspaces (#402) ──────────────────────────────────────────────────────────── -->
+    <!--
+      Four, as a keyboard-driven desktop has them: Super+1…4 goes to one, Super+Shift+1…4 sends
+      the focused window there and stays, Super+Ctrl+Left/Right steps between them. The shell's
+      own window — desktop, taskbar, status bar — is on every one (the windowRule below), so a
+      workspace holds apps, never a desktop without its taskbar.
+    -->
+    <keybind key="W-1">
+      <action name="GoToDesktop" to="1" />
+    </keybind>
+    <keybind key="W-S-1">
+      <action name="SendToDesktop" to="1" follow="no" />
+    </keybind>
+    <keybind key="W-2">
+      <action name="GoToDesktop" to="2" />
+    </keybind>
+    <keybind key="W-S-2">
+      <action name="SendToDesktop" to="2" follow="no" />
+    </keybind>
+    <keybind key="W-3">
+      <action name="GoToDesktop" to="3" />
+    </keybind>
+    <keybind key="W-S-3">
+      <action name="SendToDesktop" to="3" follow="no" />
+    </keybind>
+    <keybind key="W-4">
+      <action name="GoToDesktop" to="4" />
+    </keybind>
+    <keybind key="W-S-4">
+      <action name="SendToDesktop" to="4" follow="no" />
+    </keybind>
+    <keybind key="W-C-Left">
+      <action name="GoToDesktop" to="left" wrap="yes" />
+    </keybind>
+    <keybind key="W-C-Right">
+      <action name="GoToDesktop" to="right" wrap="yes" />
+    </keybind>
+
+    <!--
+      The launcher from anywhere (#402). Like Super+K, a compositor binding, so it works with
+      another app in front; the shell's own keys only work while its window has the keyboard.
+    -->
+    <keybind key="W-space">
+      <action name="Execute">
+        <command>/opt/yantrik/bin/yos act shell show_screen screen=launchpad</command>
+      </action>
+    </keybind>
   </keyboard>
+
+  <!--
+    Dragging a window to a screen edge snaps it: left or right to that half, the top to fill the
+    screen, with the outline shown first. labwc's default range is 1px, which a person almost
+    never hits with a moving pointer; 12 is what makes the edge feel like it pulls.
+  -->
+  <snapping>
+    <range>12</range>
+    <overlay>
+      <enabled>yes</enabled>
+      <delay>
+        <inner>350</inner>
+        <outer>350</outer>
+      </delay>
+    </overlay>
+    <topMaximize>yes</topMaximize>
+    <notifyClient>always</notifyClient>
+  </snapping>
+
+  <!--
+    The snap layouts, in percent of the usable screen (inside the margins above, so never over
+    the status bar or the taskbar). Named for the keys above and the window menu's "Snap"; drag
+    a window with Super held and the one under the pointer lights up. A test in yantrik-ui
+    (snap_layouts) fails if a key or a menu row names a region that is not here.
+  -->
+  <regions>
+    <region name="left-half" x="0%" y="0%" width="50%" height="100%" />
+    <region name="right-half" x="50%" y="0%" width="50%" height="100%" />
+    <region name="top-half" x="0%" y="0%" width="100%" height="50%" />
+    <region name="bottom-half" x="0%" y="50%" width="100%" height="50%" />
+    <region name="top-left" x="0%" y="0%" width="50%" height="50%" />
+    <region name="top-right" x="50%" y="0%" width="50%" height="50%" />
+    <region name="bottom-left" x="0%" y="50%" width="50%" height="50%" />
+    <region name="bottom-right" x="50%" y="50%" width="50%" height="50%" />
+    <region name="left-third" x="0%" y="0%" width="33%" height="100%" />
+    <region name="center-third" x="33%" y="0%" width="34%" height="100%" />
+    <region name="right-third" x="67%" y="0%" width="33%" height="100%" />
+    <region name="left-two-thirds" x="0%" y="0%" width="67%" height="100%" />
+    <region name="right-two-thirds" x="33%" y="0%" width="67%" height="100%" />
+    <region name="center" x="15%" y="5%" width="70%" height="90%" />
+  </regions>
+
+  <desktops>
+    <number>4</number>
+    <popupTime>600</popupTime>
+  </desktops>
+
+  <windowRules>
+    <!-- The shell is the desktop itself: present on every workspace, never switched away from. -->
+    <windowRule title="Yantrik OS">
+      <action name="ToggleOmnipresent" />
+    </windowRule>
+  </windowRules>
 </labwc_config>

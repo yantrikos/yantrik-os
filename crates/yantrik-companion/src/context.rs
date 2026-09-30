@@ -30,6 +30,9 @@ pub struct ContextSignals<'a> {
     pub recall_hint: Option<&'a str>,
     /// CK-5 cognitive awareness — narrative arcs, patterns, beliefs, style.
     pub ck5_awareness: Option<String>,
+    /// What the machine's shared memory recalled — what the other minds on it know (#31),
+    /// already formatted by `shared_memory::prompt_section`.
+    pub shared_memory: Option<String>,
 }
 
 /// Build a minimal message array for degraded/fallback LLM (tiny model).
@@ -129,6 +132,41 @@ pub fn build_messages(
     messages
 }
 
+/// The shared-memory section as the compact template carries it: its first three facts, under
+/// the template's "State" list. Empty when the section holds no facts.
+fn compact_shared(section: &str) -> String {
+    let facts: Vec<&str> = section.lines().filter(|l| l.starts_with("- ")).take(3).collect();
+    if facts.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("- Shared memory (the minds on this machine know):\n");
+    for fact in facts {
+        out.push_str(&format!("  {}\n", sanitize::escape_for_prompt(fact)));
+    }
+    out
+}
+
+#[cfg(test)]
+mod compact_shared_tests {
+    /// The default models are the Small tier, whose compact template drew none of the full
+    /// template's sections: the shared memory was recalled and then never shown to them.
+    #[test]
+    fn the_compact_template_carries_three_shared_facts() {
+        let section = crate::shared_memory::prompt_section(
+            &(0..5)
+                .map(|n| crate::shared_memory::Hit { kind: "memory".into(), text: format!("fact {n}"), source: String::new() })
+                .collect::<Vec<_>>(),
+            &[],
+        )
+        .unwrap();
+        let compact = super::compact_shared(&section);
+        assert!(compact.starts_with("- Shared memory (the minds on this machine know):\n"), "{compact}");
+        assert!(compact.contains("(remembered) fact 0") && compact.contains("(remembered) fact 2"), "{compact}");
+        assert!(!compact.contains("fact 3"), "three, for the small budget: {compact}");
+        assert_eq!(super::compact_shared("heading only\n"), "");
+    }
+}
+
 fn build_system_prompt(
     config: &CompanionConfig,
     state: &CompanionState,
@@ -197,6 +235,13 @@ fn build_system_prompt(
              - Preferences (may be stale): {top_memories}\n\
              - Hint: {urge_hint}\n"
         ));
+
+        // The machine's shared memory (#31), in the compact template too: the default models
+        // are this tier, and a section the full template alone draws is one they never see.
+        // Its first three facts, to fit the small budget.
+        if let Some(shared) = signals.and_then(|s| s.shared_memory.as_deref()) {
+            prompt.push_str(&compact_shared(shared));
+        }
 
         // Add tool chaining for Small (not Tiny)
         if matches!(state.model_tier, ModelTier::Small) && config.tools.enabled {
@@ -377,6 +422,16 @@ fn build_system_prompt(
                     prompt.push_str(&sanitize::escape_for_prompt(ck5));
                     prompt.push('\n');
                 }
+            }
+        }
+    }
+
+    // ── 7c. The machine's shared memory (#31) ──
+    if let Some(s) = signals {
+        if !over_budget(&prompt) {
+            if let Some(ref shared) = s.shared_memory {
+                prompt.push_str(&sanitize::escape_for_prompt(shared));
+                prompt.push('\n');
             }
         }
     }

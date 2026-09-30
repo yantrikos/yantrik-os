@@ -186,6 +186,15 @@ pub fn extract_and_learn(
         ) {
             Ok(rid) => {
                 tracing::debug!(rid, memory_text, "Learned from conversation");
+                // Written through to the machine's shared memory too, so every mind on it can
+                // recall what the person told this one (#31). Off this thread: the server is
+                // optional, and learning must not wait for it.
+                let (shared_text, shared_domain) = (memory_text.to_string(), domain.to_string());
+                std::thread::spawn(move || {
+                    if let Err(e) = crate::shared_memory::SharedMemory::machine().remember(&shared_text, importance, &shared_domain) {
+                        tracing::debug!(error = %e, "shared memory: a learned fact was not shared");
+                    }
+                });
                 // Assign importance tier + variable half-life (Gap 5)
                 crate::memory_evolution::assign_memory_tier(
                     &db.conn(), &rid, importance, memory_type, domain, evolution_config,

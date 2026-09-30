@@ -2,7 +2,7 @@
 //! git_commit, git_show, git_stash, git_diff_file.
 //! Read-heavy: most operations are Safe. Clone/commit/stash write to disk.
 
-use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path};
+use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path, validate_write_path};
 
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(GitStatusTool));
@@ -218,7 +218,8 @@ impl Tool for GitCloneTool {
             return "Error: URL contains invalid characters".to_string();
         }
 
-        let expanded = match validate_path(dest) {
+        // A clone writes a whole tree, .git/config (which git runs from) included.
+        let expanded = match validate_write_path(dest) {
             Ok(p) => p,
             Err(e) => return format!("Error: {e}"),
         };

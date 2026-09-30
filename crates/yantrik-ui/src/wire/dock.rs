@@ -1017,6 +1017,9 @@ pub(crate) fn session_env() -> Vec<(&'static str, String)> {
     if std::env::var_os("QT_QPA_PLATFORM").is_none() {
         env.push(("QT_QPA_PLATFORM", "wayland;xcb".to_string()));
     }
+    // The account each vendor answers with, when the person chose one other than its first
+    // (the Minds panel's "Use"): a Claude Code or Codex started from here uses that account.
+    env.extend(crate::accounts::act::launch_env());
     env
 }
 

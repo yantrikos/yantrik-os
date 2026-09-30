@@ -1,0 +1,64 @@
+# The one way out for the mind account: a CONNECT proxy on loopback that serves yantrik-mind only,
+# by the person's policy (design/mind-egress-2026-09-29.md). It starts by watching (audit): every
+# destination is let through and counted, and Settings shows where the Mind went. Enforce is the
+# person's switch.
+#
+# Installed by yantrik-update (hash-checked, root's), with a drop-in naming the desktop's owner,
+# who may use its control socket beside root. Enabled by the same updater.
+[Unit]
+Description=Yantrik egress: where a mind may connect
+After=network-online.target
+Wants=network-online.target
+Before=yantrik-mind.service
+
+[Service]
+Type=simple
+User=yantrik-egress
+Group=yantrik-egress
+ExecStart=/opt/yantrik/bin/yantrik-egress
+Environment=EGRESS_LISTEN=127.0.0.1:7450
+Environment=EGRESS_STATE=/var/lib/yantrik-egress
+Environment=EGRESS_CONTROL=/run/yantrik-egress/control
+Environment=RUST_LOG=info
+StateDirectory=yantrik-egress
+StateDirectoryMode=0700
+RuntimeDirectory=yantrik-egress
+RuntimeDirectoryMode=0755
+Restart=always
+RestartSec=1
+
+# It reads the kernel's socket table (to tell who is asking) and its own state, and connects out.
+# Nothing else.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+# AF_NETLINK: getifaddrs asks the kernel for this machine's own addresses through it, and those
+# are never a destination. Without it the list came back empty (VM 520, 29 Sep 2026).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+ProtectProc=invisible
+ProcSubset=pid
+PrivateIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+MemoryMax=256M
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target

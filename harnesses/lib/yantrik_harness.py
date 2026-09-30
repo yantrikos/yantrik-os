@@ -14,7 +14,8 @@ What a harness supplies is a handler:
 
     class Mind(Handler):
         concurrent = False                 # can two turns run at once?
-        def answer(self, turn): ...        # turn.text in, turn.emit(...) out
+        def answer(self, turn): ...        # turn.text in, turn.emit(...) out;
+                                           # turn.ask("Delete them?", ["Yes", "No"]) waits for the person
         def reset(self): ...               # /new
         def cancel(self, turn): ...        # /stop, on top of turn.cancelled being set
 
@@ -84,7 +85,17 @@ BUSY_REPLY = "still working on the previous request — ask again in a moment, o
 
 
 class HarnessError(Exception):
-    """The desktop refused a call, or could not be reached."""
+    """The desktop refused a call, or could not be reached.
+
+    `gone` says which: True when there was no desktop to answer (nothing at the socket, the
+    connection dropped, or a desktop that no longer knows this session because it restarted).
+    What a harness was doing then is not over. It is held until the harness attaches again and
+    says what it still holds (#246).
+    """
+
+    def __init__(self, message: str, gone: bool = False) -> None:
+        super().__init__(message)
+        self.gone = gone
 
 
 def socket_path() -> Optional[str]:
@@ -98,6 +109,12 @@ def socket_path() -> Optional[str]:
         # Named outright: honour it and look nowhere else, so pointing a harness at one desktop
         # can never silently fall through to another.
         return explicit if Path(explicit).exists() else None
+
+    # A harness running as the mind account (#411) reaches the desktop only at the mind door.
+    door = os.environ.get("YANTRIK_MIND_RUN", "").strip()
+    if door:
+        sock = Path(door) / "harness.sock"
+        return str(sock) if sock.exists() else None
 
     candidates: List[Path] = []
     runtime = os.environ.get("XDG_RUNTIME_DIR", "").strip()
@@ -130,16 +147,19 @@ def call(address: str, method: str, params: Dict[str, Any], timeout: float = 10.
                     break
                 buf += piece
     except OSError as exc:
-        raise HarnessError("%s: %s" % (method, exc)) from exc
+        raise HarnessError("%s: %s" % (method, exc), gone=True) from exc
     if not buf.strip():
-        raise HarnessError("%s: the desktop closed the connection without answering" % method)
+        raise HarnessError("%s: the desktop closed the connection without answering" % method, gone=True)
     try:
         reply = json.loads(buf)
     except ValueError as exc:
         raise HarnessError("%s: unreadable reply %r" % (method, buf[:200])) from exc
     if isinstance(reply, dict) and reply.get("error"):
         err = reply["error"]
-        raise HarnessError(err.get("message", str(err)) if isinstance(err, dict) else str(err))
+        message = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+        # A desktop that restarted does not know the session: the harness is the one that
+        # still holds the work, and attaching again is how it gives it back.
+        raise HarnessError(message, gone="not attached any more" in message)
     return reply.get("result") if isinstance(reply, dict) else None
 
 
@@ -260,6 +280,11 @@ class Turn:
         # turn that has actually gone quiet.
         self.last_call = time.monotonic()
         self._tail = ""          # the last delta, so the trail knows whether a newline is owed
+        # While the desktop is gone (#246): what this turn said, and how it ended if it did,
+        # held for the desktop that the harness attaches to next.
+        self.away = False
+        self.away_text: List[str] = []
+        self.away_end: Optional[Tuple[Optional[str]]] = None
         self._lock = threading.Lock()
 
     @property
@@ -382,6 +407,22 @@ class Turn:
             event["cost_usd"] = float(cost_usd)
         return self._event(event)
 
+    def ask(self, prompt: str, options: Optional[Sequence[str]] = None,
+            request_id: Optional[str] = None, timeout: Optional[float] = None) -> Optional[Any]:
+        """Ask the person something and wait for the answer (#25).
+
+        The desktop shows it as a card, with `options` as buttons (none: a free answer), and sends
+        the person's answer back exactly once. Returns that answer, or None when there is none to
+        wait for: the desktop did not take the question (an older one, or one that keeps no runs),
+        the turn was stopped or its panel went away, the desktop restarted (the question went with
+        it), or `timeout` seconds passed. Only this answer counts: a "yes" typed into the chat is
+        conversation, never an answer to the question.
+        """
+        ask = getattr(self.harness, "_ask", None)
+        if ask is None:
+            return None
+        return ask(self, str(prompt), [str(o) for o in (options or [])], request_id, timeout)
+
     def _event(self, event: Dict[str, Any]) -> bool:
         if self.closed or self.dropped:
             return not self.dropped
@@ -456,6 +497,11 @@ class PerConversation(Handler):
         """The conversations with a handler right now."""
         with self._lock:
             return sorted(self._held)
+
+    def tokens(self) -> Dict[str, str]:
+        """Each held conversation's agent token, for the desktop to take back on a re-attach."""
+        with self._lock:
+            return {c: token for c, (_, token) in self._held.items() if token}
 
     def mind(self, conversation: str) -> Optional[Handler]:
         with self._lock:
@@ -561,6 +607,9 @@ class Harness:
         self.session: Optional[str] = None
         self._resolved: Optional[str] = address
         self._open: Dict[int, Turn] = {}
+        # Questions a turn is waiting on (#25), by (turn id, request id): the answer, once it came.
+        self._questions: Dict[Tuple[int, str], Dict[str, Any]] = {}
+        self._asked = 0
         self._lock = threading.Lock()
         self._stopping = threading.Event()
         self._workers: List[threading.Thread] = []
@@ -572,6 +621,8 @@ class Harness:
         # Conversations turns have arrived in this session, so a new session can end them: the
         # desktop that issued them is gone, and so are their agents and tokens.
         self._seen: set = set()
+        # What the last attach offered back to the desktop (#246), to know what it took back.
+        self._asked_resume: List[Dict[str, Any]] = []
 
     # ── running ─────────────────────────────────────────────────────────
 
@@ -620,6 +671,15 @@ class Harness:
                 self._drop(turn)
         for conversation in reply.get("ended") or []:
             self._end(str(conversation))
+        for given in reply.get("answers") or []:
+            key = (given.get("turn_id"), str(given.get("request_id") or ""))
+            with self._lock:
+                waiting = self._questions.get(key)
+            if waiting is None:
+                self.log("an answer arrived for a question nothing is waiting on: turn %s, %s" % key)
+                continue
+            waiting["answer"] = given.get("answer")
+            waiting["done"].set()
 
     def _end(self, conversation: str) -> None:
         with self._lock:
@@ -661,6 +721,9 @@ class Harness:
                                   "conversations": bool(getattr(self.handler, "conversations", False))}
         if self.detail:
             params["detail"] = self.detail
+        self._asked_resume = self._resume_list()
+        if self._asked_resume:
+            params["resume"] = self._asked_resume
         try:
             reply = call(address, ATTACH, params) or {}
         except HarnessError as exc:
@@ -675,12 +738,67 @@ class Harness:
         self._complained_about_socket = False
         self._events_ok = True
         self.log("attached as `%s` (session %s)" % (self.id, self.session))
-        # Whatever the last session's conversations held — a process each, a history each — was
-        # for agents that desktop issued. Its tokens name nothing now.
-        for conversation in sorted(self._seen):
+        # What the desktop took back carries on under the same tokens (#246). Everything else
+        # the last session held, a process and a history for each conversation, was for agents
+        # that desktop issued, and its tokens name nothing now.
+        kept = self._resumed(reply)
+        for conversation in sorted(self._seen - kept):
             self._end(conversation)
-        self._seen = set()
+        self._seen = set(kept)
         return True
+
+    def _resume_list(self) -> List[Dict[str, Any]]:
+        """Each conversation this harness still holds, with its token and its open turn."""
+        tokens = getattr(self.handler, "tokens", None)
+        held = dict(tokens()) if callable(tokens) else {}
+        with self._lock:
+            open_turns = {t.conversation: t for t in self._open.values()
+                          if not t.closed and not t.dropped}
+        for conversation, turn in open_turns.items():
+            if turn.agent_token:
+                held.setdefault(conversation, turn.agent_token)
+        out = []
+        for conversation, token in sorted(held.items()):
+            entry: Dict[str, Any] = {"conversation": conversation, "agent_token": token}
+            turn = open_turns.get(conversation)
+            if turn is not None:
+                entry["turn_id"] = turn.turn_id
+                entry["prompt"] = turn.text
+            out.append(entry)
+        return out
+
+    def _resumed(self, reply: Dict[str, Any]) -> set:
+        """Move open turns to the ids the desktop gave them back under, send what they said while
+        it was gone, and drop the ones it did not take. Returns the conversations it kept."""
+        mapping = {int(r["was"]): int(r["turn_id"]) for r in reply.get("resumed") or []
+                   if isinstance(r.get("was"), int) and isinstance(r.get("turn_id"), int)}
+        refused = {str(r.get("conversation")) for r in reply.get("refused") or []}
+        asked = {r["conversation"] for r in self._asked_resume}
+        kept = (asked - refused) if "resumed" in reply else set()
+        with self._lock:
+            turns = list(self._open.values())
+        for turn in turns:
+            if turn.closed:
+                continue
+            new = mapping.get(turn.turn_id)
+            if new is None:
+                if turn.away:
+                    turn.away = False
+                    self._drop(turn)
+                    self._close(turn, error="the desktop restarted and did not take this back")
+                continue
+            with self._lock:
+                self._open.pop(turn.turn_id, None)
+                turn.turn_id, turn.session = new, self.session
+                self._open[new] = turn
+            said, end = "".join(turn.away_text), turn.away_end
+            turn.away, turn.away_text, turn.away_end = False, [], None
+            self.log("picked turn %d back up after the desktop came back" % new)
+            if said:
+                self._chunk(turn, said)
+            if end is not None:
+                self._close(turn, error=end[0])
+        return kept
 
     def _call(self, method: str, params: Dict[str, Any]) -> Any:
         address = self.address or getattr(self, "_resolved", None) or socket_path()
@@ -770,6 +888,14 @@ class Harness:
             reply = self._call(CHUNK, {"session": turn.session, "turn_id": turn.turn_id,
                                        "delta": delta}) or {}
         except HarnessError as exc:
+            if exc.gone:
+                # No desktop to answer, not a desktop that let the turn go: the answer so far is
+                # kept for the one this harness attaches to next, and the mind works on (#246).
+                if not turn.away:
+                    self.log("the desktop is gone; holding turn %d for the next one" % turn.turn_id)
+                turn.away = True
+                turn.away_text.append(delta)
+                return True
             # The desktop no longer holds this turn — it was failed for us (a re-attach, a
             # restart, a person who moved on). A turn that is dropped is over: the mind behind
             # it is told to stop, and this is logged once, not on every delta. Pi kept
@@ -785,11 +911,17 @@ class Harness:
             return False
         return True
 
-    def _event(self, turn: Turn, event: Dict[str, Any]) -> bool:
-        """One `harness.event`. False only when the panel is no longer listening."""
+    def _event(self, turn: Turn, event: Dict[str, Any],
+               reply_out: Optional[Dict[str, Any]] = None) -> bool:
+        """One `harness.event`. False only when the panel is no longer listening. `reply_out`, when
+        given, receives the desktop's reply, or `{"unsent": ...}` when the event was not sent."""
         if turn.closed or turn.dropped or self._stopping.is_set():
+            if reply_out is not None:
+                reply_out["unsent"] = "the turn is over"
             return not turn.dropped
         if not self._events_ok:
+            if reply_out is not None:
+                reply_out["unsent"] = "this desktop does not take events"
             return True
         try:
             reply = self._call(EVENT, {"session": turn.session, "turn_id": turn.turn_id,
@@ -801,12 +933,16 @@ class Harness:
                 self._events_ok = False
                 self.log("this desktop does not take harness.event; tool calls show as trail "
                          "lines only")
+                if reply_out is not None:
+                    reply_out["unsent"] = "this desktop does not take events"
                 return True
             if not turn.dropped:
                 self.log("event on turn %d failed: %s" % (turn.turn_id, exc))
             self._drop(turn)
             return False
         turn.last_call = time.monotonic()
+        if reply_out is not None:
+            reply_out.update(reply)
         if reply.get("dropped"):
             self._drop(turn)
             return False
@@ -816,6 +952,41 @@ class Harness:
             self.log("the desktop refused a %s event on turn %d: %s"
                      % (event.get("kind"), turn.turn_id, reply["refused"]))
         return True
+
+    def _ask(self, turn: Turn, prompt: str, options: List[str], request_id: Optional[str],
+             timeout: Optional[float]) -> Optional[Any]:
+        """`Turn.ask`: send the question, then wait for its answer on a later poll."""
+        asked_on = turn.turn_id
+        with self._lock:
+            self._asked += 1
+            rid = str(request_id or "q%d" % self._asked)
+            waiting: Dict[str, Any] = {"done": threading.Event(), "answer": None}
+            self._questions[(asked_on, rid)] = waiting
+        try:
+            event: Dict[str, Any] = {"kind": "request", "request_id": rid, "prompt": prompt}
+            if options:
+                event["options"] = options
+            reply: Dict[str, Any] = {}
+            if not self._event(turn, event, reply):
+                return None
+            not_taken = reply.get("unsent") or reply.get("refused") or reply.get("ignored")
+            if not_taken:
+                self.log("the desktop did not take a question on turn %d: %s" % (asked_on, not_taken))
+                return None
+            deadline = None if timeout is None else time.monotonic() + timeout
+            while not waiting["done"].wait(0.25):
+                if turn.cancelled.is_set() or turn.dropped or turn.closed or self._stopping.is_set():
+                    return None
+                # Re-opened under a new id by a desktop that restarted: the question, and the run
+                # that asked it, went with the old desktop.
+                if turn.turn_id != asked_on:
+                    return None
+                if deadline is not None and time.monotonic() >= deadline:
+                    return None
+            return waiting["answer"]
+        finally:
+            with self._lock:
+                self._questions.pop((asked_on, rid), None)
 
     def _drop(self, turn: Turn) -> None:
         """The panel stopped listening: nothing more is sent, and the mind is asked to stop."""
@@ -832,6 +1003,10 @@ class Harness:
         """Complete or fail, once. Every path out of a turn comes through here."""
         with self._lock:
             if turn.closed:
+                return
+            if turn.away:
+                # Finished while the desktop was gone: said when the next one takes it back.
+                turn.away_end = (error,)
                 return
             turn.closed = True
             self._open.pop(turn.turn_id, None)
@@ -858,7 +1033,7 @@ class Harness:
                 return
             now = time.monotonic()
             for turn in list(self._open.values()):
-                if turn.closed or now - turn.last_call < self.heartbeat_seconds:
+                if turn.closed or turn.away or now - turn.last_call < self.heartbeat_seconds:
                     continue
                 turn.last_call = now
                 try:

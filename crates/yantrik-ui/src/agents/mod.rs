@@ -18,7 +18,8 @@
 //! | `text(&id, delta)` | the host, for each `harness.chunk` |
 //! | `event(&id, &Event, Provenance)` | the host's `Chunk::Event` (`Reported`); anything the shell saw itself (`Verified`) |
 //! | `command_started / command_output / command_finished` | the agent terminal: `Jobs::on_output(agent, job, bytes)` and `Jobs::on_finish` (`Verified`, bytes as read off the PTY) |
-//! | `set_state(&id, State)` | the host (`HarnessGone`), the approval card and the terminal (`WaitingForYou`) |
+//! | `set_state(&id, State)` | the host (`HarnessGone`) and the approval card (`WaitingForYou`) |
+//! | `jobs_waiting(&[AgentId])` | the shell's tick: which agents have a terminal job at a prompt (`WaitingForYou`, #182) |
 //! | `approval_asked / approval_answered / approval_settled` | `control_approvals`: a request carrying this agent's token, and how it came out ([`settle_approvals`]) |
 //! | `remove_agent(&id)` | Close |
 //!
@@ -29,9 +30,12 @@
 // (design/desk-and-mind-2026-09-23.md, section 5).
 pub mod catalog;
 pub mod feed;
+pub mod handover;
 pub mod launch;
 pub mod model;
+pub mod progress;
 pub mod reaches;
+pub mod route;
 pub mod store;
 
 use std::path::PathBuf;
@@ -39,7 +43,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 pub use model::{AgentId, AgentMeta, ApprovalOutcome, CallState, Event, Provenance, RecipeOrigin, RoleMeta, State, Stream, Tab};
-pub use store::Store;
+pub use store::{RowKey, Store};
 
 /// The title every popped-out agent window starts with, so the window list can tell an agent's
 /// window from anything else a task might be named after.
@@ -108,6 +112,11 @@ impl Agents {
         self.lock().open_turn(id, prompt)
     }
 
+    /// A turn of the person's chat with a mind (the Lens): listed in Agents only if it does work.
+    pub fn open_chat_turn(&self, id: &AgentId, prompt: &str) {
+        self.lock().open_chat_turn(id, prompt)
+    }
+
     pub fn text(&self, id: &AgentId, delta: &str) {
         self.lock().text(id, delta)
     }
@@ -122,6 +131,10 @@ impl Agents {
 
     pub fn set_state(&self, id: &AgentId, state: State) {
         self.lock().set_state(id, state)
+    }
+
+    pub fn jobs_waiting(&self, waiting: &[AgentId]) {
+        self.lock().jobs_waiting(waiting)
     }
 
     pub fn command_started(&self, id: &AgentId, job: &str, command: &str, cwd: &str) {
@@ -158,6 +171,14 @@ impl Agents {
 
     pub fn approval_settled(&self, id: &AgentId, request: &str, outcome: ApprovalOutcome, record: &str) {
         self.lock().approval_settled(id, request, outcome, record)
+    }
+
+    pub fn question_answered(&self, id: &AgentId, request: &str, answer: &str) -> bool {
+        self.lock().question_answered(id, request, answer)
+    }
+
+    pub fn question_closed(&self, id: &AgentId, request: &str, why: &str) {
+        self.lock().question_closed(id, request, why)
     }
 
     /// Read the store. Keep it short: every feeder waits on the same lock.
@@ -212,6 +233,30 @@ pub fn settle_approvals(status_of: impl Fn(&str) -> Option<(ApprovalOutcome, Str
             store().approval_settled(&agent, &request, outcome, &record);
         }
     }
+}
+
+/// The fields of an agent's `describe shell` entry that are the person's: what they asked it
+/// (`title`), what it says it is doing, the commands it ran and the files it touched, and what is
+/// waiting on the person for it. Another mind reading `describe` is told none of them — only that
+/// the agent exists, which mind it is, how it stands and the counts — the same boundary as
+/// `read_agent`, which lets an agent read itself and the agents it started, and nothing else.
+pub const PERSONS_FIELDS: [&str; 6] = ["title", "status", "commands", "files", "pending_approvals", "running_jobs"];
+
+/// `for_describe`'s answer as an agent may read it: each entry with [`PERSONS_FIELDS`] taken out
+/// and marked `private`.
+pub fn for_describe_by_an_agent() -> serde_json::Value {
+    let mut view = for_describe();
+    if let Some(agents) = view["agents"].as_array_mut() {
+        for entry in agents.iter_mut() {
+            if let Some(map) = entry.as_object_mut() {
+                for field in PERSONS_FIELDS {
+                    map.remove(field);
+                }
+                map.insert("private".into(), "the person's; an agent reads its own session with read_agent".into());
+            }
+        }
+    }
+    view
 }
 
 /// What `describe shell` says under `agents`: the counts per tab, and one entry per agent with its
@@ -286,6 +331,48 @@ pub fn for_describe() -> serde_json::Value {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A chat reply links to its run only when the turn did work: talk stays with the chat.
+    #[test]
+    fn a_chat_reply_links_to_its_run_only_when_it_did_work() {
+        let mind = AgentId::new("chatlink", AgentId::MAIN);
+        store().open_chat_turn(&mind, "thanks!");
+        store().text(&mind, "Any time.");
+        assert_eq!(feed::chat_run(&mind), None, "talk: no run to link to");
+        store().close_turn(&mind, true);
+        store().open_chat_turn(&mind, "build a small game");
+        store().event(
+            &mind,
+            &Event::ToolStart { call: "c1".into(), name: "os_act".into(), target: "editor".into(), args: json!({}) },
+            Provenance::Reported,
+        );
+        assert_eq!(feed::chat_run(&mind).as_deref(), Some("chatlink:main#2"), "work: its run");
+    }
+
+    /// Another mind reading `describe` learns that an agent exists and how it stands — never what
+    /// the person asked it, the commands it ran, the files it touched or what waits on the person.
+    #[test]
+    fn an_agent_reading_describe_is_told_none_of_the_persons_fields() {
+        let pi = AgentId::new("pi", "c-private");
+        store().open_turn(&pi, "Lunch with Sam, 12:30");
+        store().approval_asked(&pi, "appr-private", "calendar.new_event");
+        let described = for_describe_by_an_agent();
+        let entry = described["agents"]
+            .as_array()
+            .and_then(|all| all.iter().find(|a| a["id"] == "pi:c-private"))
+            .unwrap_or_else(|| panic!("pi is still listed: {described}"))
+            .clone();
+        for field in PERSONS_FIELDS {
+            assert!(entry.get(field).is_none(), "{field} reached an agent: {entry}");
+        }
+        assert!(!entry.to_string().contains("Lunch with Sam"), "{entry}");
+        assert_eq!(entry["mind"], "pi");
+        assert_eq!(entry["needs_you"], true, "how it stands is not private");
+        assert!(entry["private"].as_str().unwrap().contains("read_agent"));
+        // The person's own describe is unchanged.
+        let theirs = for_describe();
+        assert!(theirs.to_string().contains("Lunch with Sam, 12:30"));
+    }
 
     /// `describe shell` → `agents`: each agent's id, mind, title and state, whether it needs the
     /// person, the commands the shell is running for it now, when it last did anything, and the

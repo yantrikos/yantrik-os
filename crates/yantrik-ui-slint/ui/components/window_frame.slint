@@ -87,12 +87,9 @@ export component WindowFrame inherits Rectangle {
     // answer being an accident of which file somebody edited last.
     in property <bool> content-has-controls: false;
 
-    // Glass body — semi-transparent deep background
-    background: @linear-gradient(180deg,
-        Theme.bg-deep.transparentize(9%) 0%,
-        Theme.bg-deep.transparentize(12%) 50%,
-        Theme.bg-deep.transparentize(9%) 100%
-    );
+    // Glass body — semi-transparent deep background. Slint's software renderer (GPU-less machines, VM 520) paints a gradient
+    // fill as a square inside the rounded border (#172), so a rounded window's fill is solid.
+    background: Theme.bg-deep.transparentize(9%);
     border-radius: root.is-maximized ? 0px : 12px;
     clip: true;
     drop-shadow-blur: root.is-maximized ? 0px : 24px;
@@ -122,19 +119,21 @@ export component WindowFrame inherits Rectangle {
         //
         // A floating window still gets the bar, because that is where its drag handle and its
         // controls live and there is nothing else to move it by.
+        //
+        // The frame's `clip: true` does not round what it clips under the software renderer, so
+        // the bar rounds its own top corners to match the frame's, and its fill is solid for the
+        // same reason as the frame's (#172).
         if !root.is-maximized || !root.content-has-controls : Rectangle {
             height: 36px;
-            background: @linear-gradient(180deg,
-                Theme.bg-surface.transparentize(44%) 0%,
-                Theme.bg-deep.transparentize(37%) 100%
-            );
+            border-top-left-radius: root.is-maximized ? 0px : 12px;
+            border-top-right-radius: root.is-maximized ? 0px : 12px;
+            background: Theme.bg-surface.transparentize(44%);
 
             // Top edge reflection
             Rectangle {
                 x: 12px; y: 0;
                 width: parent.width - 24px;
                 height: 1px;
-                border-radius: 0.5px;
                 background: @linear-gradient(90deg,
                     transparent 0%,
                     Theme.border-default 30%,

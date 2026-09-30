@@ -200,6 +200,14 @@ jobs:
       - name: The Python surface SDK answers like the Rust dispatch
         run: python3 -m unittest discover -s sdk/python/tests -v
 
+      # The browser surface (apps/browser, #477) against a real Chrome — the runner's own:
+      # shadow DOM, frames, a cookie wall, a checkout, dialogs, a bot check, and every way the
+      # security review found to press a commitment without the person's card.
+      - name: The browser surface reads real pages and refuses every road to a commitment
+        run: |
+          sudo apt-get install -y -qq python3-websocket >/dev/null
+          python3 tests/browser-core/test_live.py
+
       # What an outside author copies and reads (the surface SDK's piece F): the Python template,
       # held to the protocol by the real `yos check`; the LibreOffice adapter, built only on the
       # public SDK, driven against a fake UNO and over a real socket (its run against a real

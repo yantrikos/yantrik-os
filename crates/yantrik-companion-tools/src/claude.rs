@@ -120,10 +120,13 @@ impl Tool for ClaudeCodeTool {
 
 /// Run claude CLI in print mode (text response only, no tools).
 fn run_claude(prompt: &str, _verbose: bool) -> String {
+    // Options first, then `--`, then the prompt: `-p` is print mode and the prompt is a positional
+    // argument, so a prompt beginning with `-` would otherwise be parsed as more options.
     let result = std::process::Command::new("claude")
         .arg("-p")
-        .arg(prompt)
         .arg("--no-input")
+        .arg("--")
+        .arg(prompt)
         .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -157,12 +160,15 @@ fn run_claude(prompt: &str, _verbose: bool) -> String {
 
 /// Run claude CLI with tool access (can execute commands, read/write files).
 fn run_claude_code(task: &str, cwd: &str) -> String {
+    // As in `run_claude`: the task after `--`, so one beginning with `-` cannot add options —
+    // `--dangerously-skip-permissions`, say, or a wider `--allowedTools`.
     let result = std::process::Command::new("claude")
         .arg("-p")
-        .arg(task)
         .arg("--allowedTools")
         .arg("Bash,Read,Write,Glob,Grep")
         .arg("--no-input")
+        .arg("--")
+        .arg(task)
         .current_dir(cwd)
         .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
         .stdin(std::process::Stdio::null())

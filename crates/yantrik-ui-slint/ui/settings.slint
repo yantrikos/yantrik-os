@@ -9,6 +9,8 @@ import { SkillStore, SkillData } from "skill_store.slint";
 import { YButton, YIconButton } from "components/y_button.slint";
 import { YInput } from "components/y_input.slint";
 import { Icon, Icons } from "components/icon.slint";
+import { DecisionModelCard, DecisionPreset, DecisionUse } from "components/decision_model.slint";
+export { DecisionPreset, DecisionUse }
 
 // ── Settings sidebar category item ──
 export struct SettingsCategoryItem {
@@ -227,13 +229,17 @@ export component SettingsScreen inherits Rectangle {
     in property <string> mind-mode: "ask";
     in property <string> mind-mode-label: "Ask";
     in property <string> mind-mode-means: "";
+    // Either bypass — `bypass` or `bypass_all` ("Full bypass") — lights the one Bypass button.
+    property <bool> mind-in-bypass: root.mind-mode == "bypass" || root.mind-mode == "bypass_all";
     callback mind-mode-chosen(string);
-    /// Bypass is not set from here. It routes to the status bar's menu, which is where the
+    /// Neither bypass is set from here. It routes to the status bar's menu, which is where the
     /// confirmation and the durations live — one place, so there is one thing to get right.
     callback mind-bypass-requested();
 
     // Security
     in property <int> auto-lock-secs: 300;
+    // False when the compositor gives no idle signal: no lock can come, so none is promised (#412).
+    in property <bool> auto-lock-available: true;
     in-out property <bool> incognito-mode: false;
     in-out property <bool> dnd-mode: false;
     callback toggle-incognito-mode();
@@ -316,6 +322,21 @@ export component SettingsScreen inherits Rectangle {
     in property <[AIProviderData]> ai-providers: [];
     in property <[AIModelData]> available-models: [];
     in property <string> provider-test-result: "";      // "success", "error: ...", "testing", ""
+    // Decision model (components/decision_model.slint)
+    in property <[DecisionPreset]> decision-presets: [];
+    in property <string> decision-provider: "";
+    in property <string> decision-endpoint: "";
+    in property <string> decision-model: "";
+    in property <string> decision-key-env: "";
+    in property <[DecisionUse]> decision-uses: [];
+    in property <string> decision-where: "";
+    in property <bool> decision-leaves-machine: false;
+    in property <string> decision-status: "";
+    in property <bool> decision-status-good: false;
+    callback decision-choose(string);
+    callback decision-save(string, string, string);
+    callback decision-test();
+    callback decision-toggle-use(string);
     in-out property <bool> provider-panel-open: false;
     in-out property <string> editing-provider-id: "";   // empty = new provider
     callback add-provider();
@@ -1145,8 +1166,9 @@ export component SettingsScreen inherits Rectangle {
                                     // Directly under the ceiling above it, and saying so, because
                                     // the pair is the whole policy: the ceiling is the wall no
                                     // mode can reach past, and the mode decides what happens
-                                    // below it. The same four choices as the status-bar chip; the
-                                    // chip is where the countdown lives, so Bypass sends you
+                                    // below it. The same choices as the status-bar chip, the two
+                                    // bypasses behind one button; the chip is where the countdown
+                                    // lives and where the two are told apart, so Bypass sends you
                                     // there rather than having a second confirmation here.
                                     Rectangle { height: 1px; background: Theme.border-subtle; }
 
@@ -1171,11 +1193,14 @@ export component SettingsScreen inherits Rectangle {
                                                 height: 28px;
                                                 horizontal-stretch: 1;
                                                 border-radius: Theme.r-sm;
-                                                background: root.mind-mode == choice.id
+                                                // Chosen: this mode, or — for the Bypass button — either bypass.
+                                                property <bool> on: root.mind-mode == choice.id
+                                                    || (choice.id == "bypass" && root.mind-in-bypass);
+                                                background: self.on
                                                     ? (choice.id == "bypass" ? Theme.color-danger-dim : Theme.tint-accent)
                                                     : (mode-ta.has-hover ? Theme.hover-fill : transparent);
                                                 border-width: 1px;
-                                                border-color: root.mind-mode == choice.id
+                                                border-color: self.on
                                                     ? (choice.id == "bypass" ? Theme.color-danger : Theme.accent-dim)
                                                     : Theme.border-subtle;
 
@@ -1190,13 +1215,14 @@ export component SettingsScreen inherits Rectangle {
                                                     }
                                                 }
                                                 Text {
-                                                    text: choice.id == "bypass" && root.mind-mode == "bypass"
+                                                    text: choice.id == "bypass" && root.mind-in-bypass
                                                         ? root.mind-mode-label : choice.label;
                                                     color: choice.id == "bypass" ? Theme.color-danger
-                                                        : root.mind-mode == choice.id ? AppIdentity.accent
+                                                        : parent.on ? AppIdentity.accent
                                                         : Theme.text-secondary;
                                                     font-size: Theme.fs-micro;
-                                                    font-weight: root.mind-mode == choice.id ? 700 : 500;
+                                                    font-weight: parent.on ? 700 : 500;
+                                                    overflow: elide;
                                                     horizontal-alignment: center;
                                                     vertical-alignment: center;
                                                 }
@@ -1213,8 +1239,11 @@ export component SettingsScreen inherits Rectangle {
                                             text: "No mode reaches past the tool permission above — "
                                                 + root.tool-permission
                                                 + ". That wall is enforced inside every app, and only you can move it. "
-                                                + "Bypass is time-boxed and is chosen from the mode chip in the status bar, "
-                                                + "where its countdown stays in front of you.";
+                                                + "Bypass (which still asks before anything an app marks as impossible to undo, "
+                                                + "such as a purchase or a calendar delete, and once per session before running "
+                                                + "commands) and Full bypass (which asks nothing) "
+                                                + "are time-boxed and are chosen from the mode chip in the status bar, where the "
+                                                + "countdown stays in front of you.";
                                             color: Theme.text-dim;
                                             font-size: Theme.fs-micro;
                                             wrap: word-wrap;
@@ -1723,6 +1752,40 @@ export component SettingsScreen inherits Rectangle {
                                         wrap: word-wrap;
                                     }
                                 }
+                            }
+
+                            // ── DECISION MODEL ──
+                            HorizontalLayout {
+                                spacing: Theme.sp-2;
+                                Rectangle {
+                                    width: 3px; height: 14px;
+                                    border-radius: 1.5px;
+                                    background: Theme.accent;
+                                }
+                                Text {
+                                    text: "DECISION MODEL";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.fs-caption;
+                                    font-weight: 600;
+                                    letter-spacing: 3px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            DecisionModelCard {
+                                presets: root.decision-presets;
+                                provider: root.decision-provider;
+                                endpoint: root.decision-endpoint;
+                                model: root.decision-model;
+                                key-env: root.decision-key-env;
+                                uses: root.decision-uses;
+                                where-note: root.decision-where;
+                                leaves-machine: root.decision-leaves-machine;
+                                status: root.decision-status;
+                                status-good: root.decision-status-good;
+                                choose(id) => { root.decision-choose(id); }
+                                save(e, m, k) => { root.decision-save(e, m, k); }
+                                test => { root.decision-test(); }
+                                toggle-use(id) => { root.decision-toggle-use(id); }
                             }
 
                             // ── TASK ROUTING (V60) ──
@@ -3005,7 +3068,7 @@ SettingRow{label:"Network manager";description:"Open the native app to inspect a
 
 SettingRow{label:"Incognito";description:"Pause new built-in companion memories for this session. Existing memories remain. Resets when the shell restarts.";value:root.incognito-mode?"On":"Off";activated=>{root.toggle-incognito-mode();}}
 SettingRow{label:"Do Not Disturb";description:"Mute shell notification interruptions. This preference stays after a restart.";value:root.dnd-mode?"On":"Off";activated=>{root.toggle-dnd-mode();}}
-SettingRow{label:"Shell idle screen";description:"Show the shell lock view after inactivity on the desktop. This does not lock other native windows.";value:root.auto-lock-secs==0?"Never":root.auto-lock-secs<60?"30 seconds":"\{root.auto-lock-secs/60} minutes";activated=>{root.cycle-auto-lock();}}
+SettingRow{label:"Lock when away";description:"Lock the screen after this long with no keyboard or mouse. An agent working does not count as you being here.";value:root.auto-lock-secs==0?"Never":!root.auto-lock-available?"Unavailable on this display":root.auto-lock-secs<60?"30 seconds":"\{root.auto-lock-secs/60} minutes";activated=>{root.cycle-auto-lock();}}
 SettingRow{label:"Permissions";description:"Review the shell's tool permissions and outstanding requests.";value:"Review";activated=>{root.navigate-to(28);}}
 
                         Rectangle{height:24px;}

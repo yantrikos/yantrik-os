@@ -147,8 +147,11 @@ def yos_env():
     as a token.
     """
     env = dict(os.environ)
-    env.setdefault("XDG_RUNTIME_DIR", "/run/user/%d" % os.getuid())
-    env.setdefault("WAYLAND_DISPLAY", "wayland-0")
+    # A mind at the mind door (#411) has no session of its own to point at: yos finds everything
+    # through YANTRIK_MIND_RUN, and the person's runtime directory is not its to open.
+    if not env.get("YANTRIK_MIND_RUN", "").strip():
+        env.setdefault("XDG_RUNTIME_DIR", "/run/user/%d" % os.getuid())
+        env.setdefault("WAYLAND_DISPLAY", "wayland-0")
     if AGENT_TOKEN:
         env[AGENT_TOKEN_ENV] = AGENT_TOKEN
     else:
@@ -452,9 +455,11 @@ TOOLS = [
                        "two minutes, so this one call can take that long; if they allowed it, it "
                        "ran once with exactly those arguments, and if they said no it did not "
                        "run and you should not ask again unless they raise it themselves. In "
-                       "`auto` or `bypass` it simply runs and is written into their record of "
-                       "unasked actions — report those as things you did, not as things you were "
-                       "permitted. In `plan` every change is refused: say what you WOULD do, in "
+                       "`auto`, `bypass` or `bypass_all` it simply runs and is written into their "
+                       "record of unasked actions — report those as things you did, not as things "
+                       "you were permitted — except that `auto` and `bypass` still ask about "
+                       "anything the app says cannot be undone, and only `bypass_all` does not. "
+                       "In `plan` every change is refused: say what you WOULD do, in "
                        "full, and leave it with them. Never tell a person to edit a setting or an "
                        "environment variable to get past any of this; the card and the mode chip "
                        "are the way, and you can set a STRICTER mode yourself with shell's "
@@ -481,6 +486,32 @@ TOOLS = [
         "timeout": ACT_TIMEOUT,
     },
     {
+        "name": "os_screen",
+        # Open-world: it carries the browser's page, which is the web's.
+        "annotations": {"readOnlyHint": True, "openWorldHint": True},
+        # One reading of everything on screen, as text (#257). A mind asked "what's on my screen"
+        # otherwise described each app in turn, or asked for a screenshot: thousands of vision
+        # tokens to learn that a window says "Ready". On VM 520 this is about 1 KB for three
+        # windows and Mind View. It reaches only what os_describe could; a window it cannot read
+        # is named as unreadable, never left out.
+        "description": "What is on the screen right now, in one reading: which window is in "
+                       "front, each window with what it shows and what it can be asked to do "
+                       "(our apps by their summary and actions, other apps by their "
+                       "accessibility elements, the browser by its numbered links and fields), "
+                       "the apps open in Mind View, and anything waiting on the person. Use it "
+                       "before a screenshot. Act on what it lists with os_act. A window it says "
+                       "has no tree can be read from its pixels as text, each line with its box: "
+                       "os_act shell read_mind_view for Mind View, os_act shell read_screen for "
+                       "the person's desktop (that one asks them first). Pass args {\"region\": "
+                       "\"x,y,w,h\"} to read one part.",
+        "inputSchema": {"type": "object", "properties": {}},
+        "argv": lambda a: ["screen"],
+        # Its readers run one after another, each bounded: 10 s per foreign window, the page scan's
+        # own socket timeout, 5 s per app. A whole reading lost to the bridge's clock is worse
+        # than a slow one.
+        "timeout": 90,
+    },
+    {
         "name": "os_perception",
         "annotations": {"readOnlyHint": True, "openWorldHint": False},
         "description": "What the OS has noticed lately — files saved, apps opened, windows "
@@ -495,91 +526,178 @@ TOOLS = [
         "argv": lambda a: ["perception"] + ([str(a["count"])] if a.get("count") else []),
         "timeout": 20,
     },
+    # ── The browser (#477) ──
+    #
+    # Each web_* tool is an act on the browser's own surface (`app-browser`), made through
+    # os_act: the grade, the mode, the card, the ceiling and the taint are the ones every app
+    # meets, and the answer is the page as `yos` renders it. Until #477 these ran `yos web`,
+    # which drove the page over DevTools itself, with the commitment check in this process.
     {
         "name": "web_read",
         "annotations": {"readOnlyHint": True, "openWorldHint": True},
-        "description": "What is on the current web page: everything that can be interacted "
-                       "with, numbered, each with its accessible name. The numbers are refs "
-                       "for web_click and web_type and are only valid until the page changes.",
-        "inputSchema": {"type": "object", "properties": {}},
-        "argv": lambda a: ["web"],
-        "timeout": 45,
+        "description": "What is on the current web page: everything that can be clicked, typed "
+                       "into or chosen, each with a ref like e12 and its role, name and state, "
+                       "among the headings and alerts that say where it is. Refs stay the same "
+                       "while the element exists; one that is gone is refused, never mis-pressed. "
+                       "Controls marked as a commitment (buy, send, delete) are pressed with "
+                       "web_commit, which asks the person.",
+        "inputSchema": {"type": "object", "properties": {
+            "all": {"type": "boolean", "description": "every element, not only what is in view"}}},
+        "browser_action": "read",
+        "browser_args": lambda a: {"all": bool(a.get("all"))},
     },
     {
         "name": "web_text",
         "annotations": {"readOnlyHint": True, "openWorldHint": True},
         "description": "What the current page SAYS — the prose a reader sees, without the "
                        "markup or the interactive furniture.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"limit": {"type": "integer", "description": "max characters"}},
-        },
-        "argv": lambda a: ["web", "text"] + ([str(a["limit"])] if a.get("limit") else []),
-        "timeout": 45,
+        "inputSchema": {"type": "object", "properties": {
+            "limit": {"type": "integer", "description": "max characters"}}},
+        "browser_action": "text",
+        "browser_args": lambda a: {"limit": a.get("limit")},
     },
     {
         "name": "web_find",
         "annotations": {"readOnlyHint": True, "openWorldHint": True},
-        "description": "Locate something anywhere on the page, including off screen — useful "
-                       "when web_read only shows the viewport.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"words": {"type": "string"}},
-            "required": ["words"],
-        },
-        "argv": lambda a: ["web", "find"] + a["words"].split(),
-        "timeout": 45,
+        "description": "Locate something anywhere on the page, including off screen: the "
+                       "elements whose name, value or link holds these words, with their refs.",
+        "inputSchema": {"type": "object", "properties": {"words": {"type": "string"}},
+                        "required": ["words"]},
+        "browser_action": "find",
+        "browser_args": lambda a: {"query": a.get("words")},
     },
     {
         "name": "web_go",
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
-        "description": "Navigate the browser to a URL. The page takes a moment to settle; "
-                       "read it again afterwards rather than acting on the previous reading.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"url": {"type": "string"}},
-            "required": ["url"],
-        },
-        "argv": lambda a: ["web", "go", a["url"]],
-        "timeout": 45,
+        "description": "Open a URL in the browser and wait for it to load; answers with what is "
+                       "on the new page. new_tab opens it beside the current one.",
+        "inputSchema": {"type": "object", "properties": {
+            "url": {"type": "string"},
+            "new_tab": {"type": "boolean"}}, "required": ["url"]},
+        "browser_action": "go",
+        "browser_args": lambda a: {"url": a.get("url"), "new_tab": bool(a.get("new_tab"))},
     },
     {
         "name": "web_click",
-        # `yos web` refuses any control whose label reads as a commitment — buy, pay,
-        # send, submit, delete and the rest — and refuses it inside the same evaluation
-        # that would have pressed it, so there is no gap between reading the label and
-        # acting on it. What this tool can actually reach is therefore the ordinary
-        # surface of a page: links, filters, tabs, form fields short of the button that
-        # commits them.
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
-        "description": "Click element n from the most recent web_read. A stale ref clicks "
-                       "whatever occupies that position now, so re-read if the page may have "
-                       "moved.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"ref": {"type": "integer"}},
-            "required": ["ref"],
-        },
-        "argv": lambda a: ["web", "click", str(a["ref"])],
-        "timeout": 30,
+        "description": "Press an element by its ref, with the pointer, as a person would; answers "
+                       "with what changed — a new page, text that appeared (an error, a result), "
+                       "a dialog, a new tab. Refused, and nothing pressed, when the ref is gone, "
+                       "covered by something (the refusal names it) or disabled, and for a "
+                       "control that reads as a commitment: that is web_commit.",
+        "inputSchema": {"type": "object", "properties": {"ref": {"type": "string"}},
+                        "required": ["ref"]},
+        "browser_action": "click",
+        "browser_args": lambda a: {"ref": web_ref(a.get("ref"))},
     },
     {
         "name": "web_type",
-        # `yos web` refuses any control whose label reads as a commitment — buy, pay,
-        # send, submit, delete and the rest — and refuses it inside the same evaluation
-        # that would have pressed it, so there is no gap between reading the label and
-        # acting on it. What this tool can actually reach is therefore the ordinary
-        # surface of a page: links, filters, tabs, form fields short of the button that
-        # commits them.
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
-        "description": "Type text into element n from the most recent web_read.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"ref": {"type": "integer"}, "text": {"type": "string"}},
-            "required": ["ref", "text"],
-        },
-        "argv": lambda a: ["web", "type", str(a["ref"]), a["text"]],
-        "timeout": 30,
+        "description": "Type into a field by its ref, replacing what is there (keep=true to add "
+                       "to it), and press Enter after if enter=true — unless Enter would submit a "
+                       "form whose button reads as a commitment.",
+        "inputSchema": {"type": "object", "properties": {
+            "ref": {"type": "string"}, "text": {"type": "string"},
+            "enter": {"type": "boolean"}, "keep": {"type": "boolean"}},
+            "required": ["ref", "text"]},
+        "browser_action": "type",
+        "browser_args": lambda a: {"ref": web_ref(a.get("ref")), "text": a.get("text"),
+                                   "enter": bool(a.get("enter")), "clear": not a.get("keep")},
+    },
+    {
+        "name": "web_press",
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
+        "description": "Press a key — Enter, Tab, Escape, ArrowDown, PageDown, ctrl+a — in the "
+                       "element given, or wherever the focus is.",
+        "inputSchema": {"type": "object", "properties": {
+            "key": {"type": "string"}, "ref": {"type": "string"}}, "required": ["key"]},
+        "browser_action": "press",
+        "browser_args": lambda a: {"key": a.get("key"), "ref": web_ref(a["ref"]) if a.get("ref") else None},
+    },
+    {
+        "name": "web_select",
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
+        "description": "Choose an option, by its text, in a list (a select) by its ref.",
+        "inputSchema": {"type": "object", "properties": {
+            "ref": {"type": "string"}, "option": {"type": "string"}}, "required": ["ref", "option"]},
+        "browser_action": "select",
+        "browser_args": lambda a: {"ref": web_ref(a.get("ref")), "option": a.get("option")},
+    },
+    {
+        "name": "web_scroll",
+        "annotations": {"readOnlyHint": True, "openWorldHint": True},
+        "description": "Scroll the page (down, up, top, bottom) or bring a ref into view; "
+                       "answers with what is in view then.",
+        "inputSchema": {"type": "object", "properties": {
+            "direction": {"type": "string", "enum": ["down", "up", "top", "bottom"]},
+            "ref": {"type": "string"}}},
+        "browser_action": "scroll",
+        "browser_args": lambda a: ({"ref": web_ref(a["ref"])} if a.get("ref")
+                                   else {"direction": a.get("direction") or "down"}),
+    },
+    {
+        "name": "web_back",
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
+        "description": "Go back in the tab's history — or forward, or reload, with `to`.",
+        "inputSchema": {"type": "object", "properties": {
+            "to": {"type": "string", "enum": ["back", "forward", "reload"]}}},
+        "browser_action": lambda a: (a.get("to") if a.get("to") in ("forward", "reload") else "back"),
+        "browser_args": lambda a: {},
+    },
+    {
+        "name": "web_tabs",
+        "annotations": {"readOnlyHint": True, "openWorldHint": True},
+        "description": "The browser's open tabs, with their ids, and which one actions go to.",
+        "inputSchema": {"type": "object", "properties": {}},
+        "browser_action": "tabs",
+        "browser_args": lambda a: {},
+    },
+    {
+        "name": "web_tab",
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
+        "description": "Bring a tab (its id from web_tabs) to the front and act in it; with "
+                       "close=true, close it instead.",
+        "inputSchema": {"type": "object", "properties": {
+            "tab": {"type": "string"}, "close": {"type": "boolean"}}, "required": ["tab"]},
+        "browser_action": lambda a: "close_tab" if a.get("close") else "switch_tab",
+        "browser_args": lambda a: {"tab": a.get("tab")},
+    },
+    {
+        "name": "web_wait",
+        "annotations": {"readOnlyHint": True, "openWorldHint": True},
+        "description": "Wait for words to appear on the page, or for it to finish loading, up "
+                       "to `seconds` (at most 30).",
+        "inputSchema": {"type": "object", "properties": {
+            "text": {"type": "string"}, "seconds": {"type": "number"}}},
+        "browser_action": "wait",
+        "browser_args": lambda a: {"text": a.get("text"), "seconds": a.get("seconds")},
+    },
+    {
+        "name": "web_dialog",
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
+        "description": "Answer the page's alert, confirm or prompt: accept (default) or dismiss, "
+                       "with text for a prompt. A confirm that reads as a commitment is accepted "
+                       "with web_commit ref=dialog instead.",
+        "inputSchema": {"type": "object", "properties": {
+            "accept": {"type": "boolean"}, "text": {"type": "string"}}},
+        "browser_action": "dialog",
+        "browser_args": lambda a: {"accept": a.get("accept", True) is not False, "text": a.get("text")},
+    },
+    {
+        "name": "web_commit",
+        "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True},
+        "description": "Press a control whose label reads as a commitment — buy, pay, send, "
+                       "post, delete, confirm. It cannot be undone, so it puts a card on the "
+                       "person's screen and waits for them, every time. label is the control's "
+                       "label exactly as web_read shows it, and site the page's site; nothing is "
+                       "pressed if either has changed.",
+        "inputSchema": {"type": "object", "properties": {
+            "ref": {"type": "string", "description": "the control's ref, or `dialog`"},
+            "label": {"type": "string"}, "site": {"type": "string"}},
+            "required": ["ref", "label", "site"]},
+        "browser_action": "commit",
+        "browser_args": lambda a: {"ref": "dialog" if a.get("ref") == "dialog" else web_ref(a.get("ref")),
+                                   "label": a.get("label"), "site": a.get("site")},
     },
     {
         "name": "web_listen",
@@ -1029,10 +1147,94 @@ def run_agent_tool(tool, args):
     return text, is_error, seen.get("result")
 
 
+def web_ref(ref):
+    """`12`, `e12` or `[e12]` as the ref the browser hands out."""
+    r = str(ref if ref is not None else "").strip().strip("[]")
+    return "e" + r if r.isdigit() else r
+
+
+def present_browser(out):
+    """The browser's answer, as the page `yos` renders — one renderer for the command line and
+    for a mind. The raw JSON only when yos cannot be loaded here to render it."""
+    reply = result_object(out)
+    if not isinstance(reply, dict):
+        return out
+    result = reply.get("result", reply)
+    module = _yos_module()
+    render = getattr(module, "render_browser", None) if module is not None else None
+    shown = render(result) if render else None
+    return shown or json.dumps(result, indent=2, ensure_ascii=False)
+
+
+def run_browser_tool(tool, args):
+    """One of the web_* tools, as an os_act on the browser's surface. Returns (text, is_error)."""
+    missing = [k for k in tool["inputSchema"].get("required", [])
+               if args.get(k) is None or (k != "text" and args.get(k) == "")]
+    if missing:
+        return "%s needs %s." % (tool["name"], " and ".join(repr(k) for k in missing)), True
+    action = tool["browser_action"]
+    action = action(args) if callable(action) else action
+    inner = {k: v for k, v in tool["browser_args"](args).items() if v is not None}
+    act = {"app": "browser", "action": action, "args": inner}
+    full = dict(BY_NAME["os_act"], argv=lambda a: ["act", a["app"], a["action"]] + act_pairs(a) + ["--full"])
+    return run_tool(full, act, present=present_browser)
+
+
+BROWSER_NAMES = {"browser", "chromium"}     # what app-browser answers to (its aliases)
+# The browser's actions that put the caller's words into a page, whatever they are called: typing,
+# a key that types a character, a prompt's answer, a choice in a list. Each is web_type to the taint.
+BROWSER_WRITES = {"type", "press", "dialog", "select"}
+# Keys that carry no text: pressing them says nothing.
+SILENT_KEYS = {"enter", "return", "tab", "escape", "esc", "backspace", "delete", "arrowup", "up",
+               "arrowdown", "down", "arrowleft", "left", "arrowright", "right", "pageup",
+               "pagedown", "home", "end"}
+
+
+def browser_args(args):
+    """An os_act's arguments as the object the browser will get — read the way `act_pairs` reads
+    them, so the taint judges exactly what is sent: an object, JSON that arrived as text, or one
+    bare value for the action's one argument that carries words."""
+    inner = args.get("args")
+    if isinstance(inner, str):
+        try:
+            parsed = json.loads(inner)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            inner = parsed
+        else:
+            one = {"go": "url", "type": "text", "press": "key", "dialog": "text", "select": "option"}
+            inner = {one.get(str(args.get("action") or ""), "value"): inner}
+    return inner if isinstance(inner, dict) else {}
+
+
+def outbound_of(tool, args):
+    """The outbound name and arguments the taint rule reads for a call: a web tool's own, or —
+    for os_act on the browser, which is what every web tool now is — the web tool it amounts to.
+    Every way words reach a page counts: typing, a key with a character on it, a prompt's
+    answer, a choice in a list, and a URL carrying data."""
+    if tool["name"] != "os_act" or surface_name(args.get("app")) not in BROWSER_NAMES:
+        return tool["name"], args
+    inner = browser_args(args)
+    action = str(args.get("action") or "")
+    if action == "go":
+        return "web_go", inner
+    if action in BROWSER_WRITES:
+        if action == "press" and str(inner.get("key") or "").strip().lower().split("+")[-1] in SILENT_KEYS:
+            return tool["name"], args
+        if action == "dialog" and not inner.get("text"):
+            return tool["name"], args
+        return "web_type", inner
+    return tool["name"], args
+
+
 def call_tool(tool, args):
     """Any tool this bridge offers. Returns (text, is_error, meta)."""
     if tool["name"] in AGENT_BY_NAME:
         return run_agent_tool(tool, args)
+    if "browser_action" in tool:
+        text, is_error = run_browser_tool(tool, args)
+        return text, is_error, None
     text, is_error = run_tool(tool, args)
     return text, is_error, None
 
@@ -1125,16 +1327,19 @@ def action_parameters(app, action):
     p = yos(["describe", app], SHELL_CALL_TIMEOUT)
     if p is None or p.returncode != 0:
         return {}
-    lines = (p.stdout or "").splitlines()
+    # As `action_detail` reads it: `split("\n")`, never `splitlines()`, which also breaks on
+    # characters app text may carry, and an action only where `yos` puts one — `  act: `, two
+    # spaces and nothing looser (third review of #504).
+    lines = (p.stdout or "").split("\n")
     for i, line in enumerate(lines):
-        m = re.match(r"^\s*act:\s*([A-Za-z0-9_]+)\(([^)]*)\)", line)
+        m = re.match(r"^  act: ([A-Za-z0-9_]+)\(([^)]*)\)", line)
         if not m or m.group(1) != action:
             continue
         found = {n.strip().rstrip("?"): None
                  for n in m.group(2).split(",") if n.strip()}
         # The argument lines belong to this action until the next `act:` starts another one.
         for rest in lines[i + 1:]:
-            if re.match(r"^\s*act:\s", rest):
+            if rest.startswith("  act: "):
                 break
             arg = re.match(r"^ {8,}([A-Za-z0-9_]+)\??:\s*(.+?)\s*(?:[-—]\s.*)?$", rest)
             if arg and arg.group(1) in found:
@@ -1236,10 +1441,13 @@ def ambiguous(pair):
 # is session lifetime. There is deliberately NO tool to clear the taint — a caller that can
 # untaint itself is not constrained, and the only way back is a new session, which is a
 # person's decision rather than an agent's.
-PRIVATE_READS = {"os_describe", "os_perception", "web_listen",
+PRIVATE_READS = {"os_describe", "os_screen", "os_perception", "web_listen",
                  # Another agent's session: what it read, its commands' output.
                  "read_agent"}
 OUTBOUND = {"web_type", "web_go"}
+# Reads a mind makes through os_act, because they are the shell's actions: a display's text, read
+# from its pixels (#257). Private the way os_screen is — everything on the display is in them.
+SCREEN_READS = {("shell", "read_screen"), ("shell", "read_mind_view")}
 
 _SAW_PRIVATE = []          # what tainted this session, in order, for the refusal message
 TAINT_OFF = os.environ.get("YOS_MCP_NO_TAINT") == "1"
@@ -1264,15 +1472,73 @@ def payload_in_url(url):
     return False
 
 
+# A hand-off carries free text to another mind: a new agent's task, a message to one, a role's
+# task, a message put into the Lens. The session on the other end has read nothing private itself, so its own bridge is clean
+# and would type whatever it was handed into any page. From a session that has read private
+# state, then, a hand-off is how the taint would be laundered, and it asks the person every time,
+# whatever the mode, as putting data into a page is refused whatever the mode (found reviewing the
+# taint rule's sinks, 2026-09-27). Delegation still works; it is just never silent.
+HANDOFFS = {("shell", "new_agent"), ("shell", "send_to_agent"), ("shell", "hand_off"),
+            # The Lens, as if typed: the mind answering there may be another one, its session clean.
+            ("shell", "send_message")}
+
+
+def surface_name(app):
+    """The one spelling of an app every check here compares: how `yos` resolves a name, folded.
+
+    `yos` reaches the shell as `shell`, `Shell`, ` app_shell`, `App Shell` or `app-shell`: it
+    trims, ignores case, reads `_` and spaces as `-`, and tries `app-<name>` first. Every rule in
+    this bridge that names an app — the screen reads that taint, the hand-offs that ask — compared
+    the raw string, so `App Shell` reached the shell and met none of them (security review of
+    #257's reads, 28 Sep 2026)."""
+    name = re.sub(r"[\s_]+", "-", str(app or "").strip().lower())
+    return name[len("app-"):] if name.startswith("app-") else name
+
+
+def carries_private(app, action):
+    """Why this hand-off must be asked about, when it carries a tainted session's words. "" = no."""
+    if TAINT_OFF or not _SAW_PRIVATE or (app, action) not in HANDOFFS:
+        return ""
+    saw = ", ".join(dict.fromkeys(_SAW_PRIVATE))
+    return ("This session has already read private state (%s), and %s.%s carries text to another "
+            "mind whose own session has read nothing private and so could put it anywhere. It is "
+            "asked about whatever the mode, as typing into a page is refused whatever the mode: "
+            "not a fault, and not something to route around." % (saw, app, action))
+
+
+# Every address this session has gone to, as `visited_form` spells it. Once the session has read
+# something private, it may go back to these and nowhere new.
+_VISITED = set()
+
+
+def visited_form(url):
+    """An address as the visited set compares it: scheme and host folded, the rest as written."""
+    try:
+        from urllib.parse import urlsplit
+        u = urlsplit(str(url or "").strip())
+    except Exception:
+        return str(url or "").strip()
+    return "%s://%s%s%s%s" % (u.scheme.lower(), (u.netloc or "").lower(), u.path or "/",
+                              "?" + u.query if u.query else "", "#" + u.fragment if u.fragment else "")
+
+
 def taint_refusal(name, args):
     """Refuse an outbound call once this session has seen private data. None = allow."""
-    if TAINT_OFF or not _SAW_PRIVATE or name not in OUTBOUND:
-        return None
-    if name == "web_go" and not payload_in_url(args.get("url", "")):
-        # Plain navigation carries nothing out; going somewhere is not saying something.
+    if name == "web_go":
+        where = visited_form(args.get("url", ""))
+        if TAINT_OFF or not _SAW_PRIVATE:
+            _VISITED.add(where)
+            return None
+        # A tainted session goes back to where it has been, and nowhere new. A bare path or a host
+        # carries data as well as a query does — https://<secret>.example.net/<secret> needs no
+        # `?` — so "no query string" is not the test; "an address chosen before anything private
+        # was read, or since, from what the session already had" is (security review, 29 Sep 2026).
+        if where in _VISITED and not payload_in_url(args.get("url", "")):
+            return None
+    elif TAINT_OFF or not _SAW_PRIVATE or name not in OUTBOUND:
         return None
     saw = ", ".join(dict.fromkeys(_SAW_PRIVATE))
-    what = "type into a page" if name == "web_type" else "open a URL carrying data in it"
+    what = "type into a page" if name == "web_type" else "open an address it has not been to (any new address can carry data out, in its host or its path)"
     return ("this session has already read private state (%s), so it will not %s. "
             "Whatever is on this machine could be carried out that way, and nothing here "
             "can tell an innocent string from a secret. A person has to do this part, or "
@@ -1338,8 +1604,10 @@ def action_detail(app, action):
         `       Delete an event from the calendar. It is not recoverable.`
         `         id: string — the event's id, as list_events reports it`
 
-    Two-space signature, seven-space purpose, nine-space arguments — so the purpose is the line
-    under the signature indented past it but not as far as an argument.
+    Two-space signature, seven-space purpose, nine-space arguments — so the purpose is every
+    line under the signature indented past it but not as far as an argument. Every line, not the
+    first: a description that runs to a second line (`yos` indents each one) carries on there,
+    and the sentence that says an action runs whatever it is given comes at the end of it.
 
     **Not `--fold`.** The folded form is for a mind reading a describe, and it prints a large
     family of actions as signatures only — no purpose lines. This function's whole job is to
@@ -1357,8 +1625,12 @@ def action_detail(app, action):
         ungraded_because(app, action, (p.stderr or "").strip() if p is not None else
                          "the desktop did not answer in time")
         return None, ""
-    lines = (p.stdout or "").splitlines()
-    offered = re.findall(r"^\s*act:\s*([A-Za-z0-9_]+)\(", p.stdout or "", re.M)
+    # `split("\n")`, not `splitlines()`: the latter also breaks on U+2028, U+2029 and \x85,
+    # which app text in the state may carry raw — and a line it made could read as an action.
+    # And `^  act:` exactly, the two-space indent `yos` gives an action and nothing else
+    # (re-review of #504).
+    lines = (p.stdout or "").split("\n")
+    offered = re.findall(r"^  act: ([A-Za-z0-9_]+)\(", p.stdout or "", re.M)
     if offered:
         ungraded_because(app, action,
                          "%s is open and offers no action called %s. It offers: %s"
@@ -1375,15 +1647,15 @@ def action_detail(app, action):
                          "%s is not open: only its background service answered, which "
                          "reports what is stored and takes no actions" % app)
     for i, line in enumerate(lines):
-        m = re.match(r"^\s*act:\s*([A-Za-z0-9_]+)\([^)]*\)\s*\[([a-z]+),", line)
+        m = re.match(r"^  act: ([A-Za-z0-9_]+)\([^)]*\)  \[([a-z]+),", line)
         if not m or m.group(1) != action:
             continue
-        purpose = ""
-        if i + 1 < len(lines):
-            after = lines[i + 1]
-            if after.startswith("       ") and not after.startswith("         "):
-                purpose = after.strip()
-        return m.group(2), purpose
+        said = []
+        for after in lines[i + 1:]:
+            if not after.startswith("       ") or after.startswith("         "):
+                break
+            said.append(after.strip())
+        return m.group(2), " ".join(said)
     return None, ""
 
 
@@ -1418,7 +1690,7 @@ def shell_state():
 # It is duplicated deliberately: the alternative is a second round trip per `os_act` to ask the
 # shell to decide, and the mode already arrives on the read this bridge was making anyway. The
 # cost is that the two can drift; the selftest checks this copy against the same table.
-MODES = ["plan", "ask", "auto", "bypass"]
+MODES = ["plan", "ask", "auto", "bypass", "bypass_all"]
 
 
 def mind_mode(state):
@@ -1480,7 +1752,20 @@ def unrecoverable(purpose):
     return any(phrase in lower for phrase in UNRECOVERABLE_PHRASES)
 
 
-def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool="os_act"):
+# The one sentence an app puts at the end of an action's description to say it runs whatever it
+# is given (`gate::OPEN_ENDED`, published in surface-vectors.json as `open_ended`; the selftest
+# checks this copy against it).
+OPEN_ENDED = "What it runs can do anything you can."
+
+
+def open_ended(purpose):
+    """Does the app's own sentence declare that this action runs whatever it is given — so it
+    can do anything the person can? `gate::open_ended`: the one sentence, case aside."""
+    return OPEN_ENDED.lower() in (purpose or "").lower()
+
+
+def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool="os_act",
+           runs_anything=False):
     """Run it, ask about it, or refuse it — the whole table, as one pure function.
 
     Returns `(verdict, detail)`:
@@ -1503,7 +1788,7 @@ def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool
     `why` is written to be relayed to a person as it stands.
 
     Order is the security argument. The machine's ceiling is consulted FIRST, so no mode — not
-    even bypass — reaches past the owner's standing policy, and nothing above it is ever put in
+    even full bypass — reaches past the owner's standing policy, and nothing above it is ever put in
     front of a person either: a card no answer of theirs could satisfy teaches them that the card
     is noise.
 
@@ -1553,11 +1838,15 @@ def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool
     # promised "You are still asked about the destructive ones". `safe` is excluded, because a
     # read destroys nothing and wording that happens to match must not turn a look into a card.
     irreversible = bool(cannot_undo) and rank > 0
+    # And its word that it runs whatever it is given (`runs_anything`, from `open_ended()`; 29
+    # September 2026). Asked about once in ask, auto and bypass — a session rule answers it,
+    # which is the difference from what cannot be undone. Where both are said, that one wins.
+    opened = bool(runs_anything) and rank > 0 and not irreversible
 
     # What `ask` mode would have done, which is what the audit exists to record. It carries
-    # `irreversible` so an action `ask` would now stop for is still written down when a looser
-    # mode runs it anyway.
-    would_ask = rank >= LADDER.index("sensitive") or irreversible
+    # `irreversible` and `opened` so an action `ask` would now stop for is still written down
+    # when a looser mode runs it anyway.
+    would_ask = rank >= LADDER.index("sensitive") or irreversible or opened
 
     # A session rule turns an ask into a run, and never covers what the app says cannot be
     # undone. The card refuses to OFFER one for such an action, which is checked once at the
@@ -1579,12 +1868,23 @@ def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool
                 "— and let the person decide. They switch the mode from the chip in the status "
                 "bar." % (app, action))
     elif mode == "bypass":
-        # Unchanged, and the one mode that is. Bypass does not ask, by definition and by what
-        # its confirmation says; a card after "Stop asking me anything" would make that panel a
-        # lie. It is written down instead — `would_ask` is true here, so it lands in the audit.
+        # Every grade runs unasked, and what the app says cannot be undone still asks — only
+        # what an app marks, such as a purchase or a calendar delete (Pranab's decision, 28
+        # September 2026). `covered` is always False for such an action, so no session rule
+        # answers it here either. What runs whatever it is given asks too, and a rule does
+        # answer that.
+        if irreversible or opened:
+            verdict, detail = ("run", True) if covered else ("ask", None)
+        else:
+            verdict, detail = "run", would_ask
+    elif mode == "bypass_all":
+        # Full bypass: unchanged from what bypass used to be, and the one mode the app's own
+        # sentence does not touch. It does not ask, by definition and by what its confirmation
+        # says; a card after "asks nothing, not even those" would make that panel a lie. It is
+        # written down instead — `would_ask` is true here, so it lands in the audit.
         verdict, detail = "run", would_ask
     elif mode == "auto":
-        if rank >= LADDER.index("dangerous") or irreversible:
+        if rank >= LADDER.index("dangerous") or irreversible or opened:
             verdict, detail = ("run", True) if covered else ("ask", None)
         else:
             verdict, detail = "run", would_ask
@@ -1630,6 +1930,7 @@ def decide_outcome(vector):
         vector.get("ceiling"),
         cap=vector.get("env_cap"),
         tool=vector.get("tool") or "os_act",
+        runs_anything=vector.get("open_ended"),
     )
     if verdict == "run":
         return "run_logged" if detail else "run"
@@ -1853,7 +2154,7 @@ def guard_act(args):
     This used to be a wall. `delete_event` is graded `sensitive`, this bridge's ceiling is
     `standard`, and somebody who typed "delete the dentist appointment from my calendar" was told
     to raise an environment variable. Then it became a question. It is now a question the PERSON
-    has already answered in general — plan, ask, auto or bypass — and this reads their answer per
+    has already answered in general — plan, ask, auto, bypass or full bypass — and this reads their answer per
     call rather than applying one policy to a whole day's work.
     """
     app, action = args.get("app"), args.get("action")
@@ -1864,6 +2165,10 @@ def guard_act(args):
     level, purpose = action_detail(app, action)
     if level is None:
         why = ungraded_because(app, action)
+        # A `why` with nothing in it past a "yos:" prefix says nothing a mind can act on, and it
+        # reached one as "…could not be read: yos:" (yantrik-mind, 2026-09-27).
+        if not re.sub(r"^\s*yos:\s*", "", why or "").strip(" .:-\n\t"):
+            why = ""
         if "is not open" in why:
             return ("%s is not open, so %s was not run — nothing is wrong with the request. "
                     "Open it with os_act on shell: open_app name=%s (os_apps lists the exact "
@@ -1902,11 +2207,16 @@ def guard_act(args):
     # asked about exactly as a `dangerous` action is. `action_detail` already returned it — it
     # has always been read for the card's own words — so this costs nothing new.
     cannot_undo = unrecoverable(purpose)
+    runs_anything = open_ended(purpose)
     cap = CEILING if CEILING_SET else None
 
     # One call, one table — the harness's own cap included, so there is nothing here that the
     # vectors do not cover. See `decide`; `CEILING` is only a cap when somebody set it.
-    verdict, detail = decide(level, app, action, cannot_undo, mode, rules, machine, cap=cap)
+    verdict, detail = decide(level, app, action, cannot_undo, mode, rules, machine, cap=cap,
+                             runs_anything=runs_anything)
+    private = carries_private(app, action)
+    if private and verdict == "run":
+        verdict = "ask"
 
     if verdict.startswith("refuse"):
         return join(unreadable, detail), None, None, None
@@ -1917,7 +2227,7 @@ def guard_act(args):
             return None, (unreadable or None), None, None
         # The same test the table made. A rule does not cover what the app says cannot be
         # undone, so it must not be NAMED as the thing that let this through either: here that
-        # can only be a bypass, and "Bypass ended" counts what the bypass itself bought. (Only
+        # can only be full bypass, and "Bypass ended" counts what the bypass itself bought. (Only
         # `unasked` actions reach this line, so `cannot_undo` and the table's `irreversible`
         # cannot differ — a `safe` action is never unasked.)
         covered = (app, action) in rules and not cannot_undo
@@ -1952,8 +2262,12 @@ def guard_act(args):
             "look for another route to the same effect."
             % (mode, level, app, action))
 
+    asked_anyway = join(asked_anyway, private)
+    # The card says it too: the person is deciding whether what this session read goes on.
+    card_purpose = (join("Carries what this session has read (%s)." % ", ".join(dict.fromkeys(_SAW_PRIVATE)),
+                         purpose) if private else purpose)
     allowed, message, grant = ask_the_person(
-        app, action, level, purpose, bound, requester_name(state))
+        app, action, level, card_purpose, bound, requester_name(state))
     if allowed:
         return None, join(unreadable, join(asked_anyway, message)), None, grant
     return join(unreadable, join(asked_anyway, message)), None, None, None
@@ -2015,6 +2329,130 @@ def report_unasked(audit, outcome):
             "record of that: %s. Tell the person what you did.)" % err)
 
 
+# ── Reading the desktop without starting a process each time (#41) ─────────────────────────
+#
+# Every tool call used to start `yos` as a process: 132 ms of interpreter start-up for a
+# question the socket answers in about 1 ms, and a mind describes apps all the time. `yos` is
+# Python like this bridge, so the reading tools now run its command in this process instead:
+# the same code, the same output and the same exit status, without the process. `os_act` still
+# runs `yos` as a process. It can wait minutes on a person's approval, and a process is what
+# its timeout can end.
+#
+# `yos` is loaded only when it is a module that can be imported safely: its source must guard
+# its entry point with `if __name__ == "__main__":` and dispatch through `COMMANDS`. Anything
+# else (a test's fake, an older `yos`), or a load that fails, keeps the process.
+
+IN_PROCESS = {"os_apps", "os_describe"}
+_YOS_MODULE = []            # [module] once loaded; [None] once it cannot be
+_YOS_LOCK = threading.Lock()
+_CAPTURE = threading.local()
+
+
+class _Ran:
+    """What `subprocess.run` hands back, for a command run in this process."""
+
+    def __init__(self, returncode, stdout, stderr):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+
+def _captured_print(*values, sep=" ", end="\n", file=None, flush=False):
+    """`print` inside the loaded `yos`: into this call's buffers, never this process's stdout,
+    which carries the JSON-RPC stream."""
+    target = _CAPTURE.err if file is sys.stderr else _CAPTURE.out if file in (None, sys.stdout) else None
+    if target is None:
+        print(*values, sep=sep, end=end, file=file, flush=flush)
+    else:
+        target.append(sep.join(str(v) for v in values) + end)
+
+
+def _yos_module():
+    if _YOS_MODULE:
+        return _YOS_MODULE[0]
+    module = None
+    try:
+        with open(YOS, encoding="utf-8") as f:
+            source = f.read()
+        if 'if __name__ == "__main__":' in source and "COMMANDS" in source:
+            from importlib.machinery import SourceFileLoader
+            import importlib.util
+            loader = SourceFileLoader("yos_in_process", YOS)
+            spec = importlib.util.spec_from_loader("yos_in_process", loader)
+            module = importlib.util.module_from_spec(spec)
+            for key, value in yos_env().items():
+                os.environ.setdefault(key, value)
+            loader.exec_module(module)
+            if not isinstance(getattr(module, "COMMANDS", None), dict):
+                module = None
+            else:
+                module.print = _captured_print
+    except (OSError, SyntaxError, ImportError, SystemExit, Exception):  # noqa: BLE001
+        module = None
+    _YOS_MODULE.append(module)
+    return module
+
+
+def in_process(argv):
+    """`yos <argv>` run in this process, or None when it cannot be (then it runs as a process)."""
+    module = _yos_module()
+    command = module.COMMANDS.get(argv[0]) if module is not None and argv else None
+    if command is None:
+        return None
+    with _YOS_LOCK:
+        _CAPTURE.out, _CAPTURE.err = [], []
+        code = 0
+        try:
+            command(list(argv[1:]))
+        except SystemExit as e:
+            code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+        except Exception as e:  # noqa: BLE001 — a crash in yos is its failure, not this bridge's
+            code = 1
+            _CAPTURE.err.append("yos: %s: %s\n" % (type(e).__name__, e))
+        return _Ran(code, "".join(_CAPTURE.out), "".join(_CAPTURE.err))
+
+
+# `yos` is a command line, and some of what it prints is advice for someone at one: "re-run with
+# --full". A mind has no --full, and to a model "re-run" reads as "call it again", which is what
+# the Mind did on VM 520 (2026-09-26): editor.new with the same text five times, never save_as,
+# while every nudge said save it. yantrik-mind found the line. The advice is put in this bridge's
+# own words, naming the tool a mind does have.
+_CLI_STATE_HINT = re.compile(r"\(state omitted; `yos describe ([^`]+)`, or re-run with --full\)")
+# Since the `state:` line (yantrik-os, 2026-09-27) an act prints the app's small state fields and
+# names only what it left out.
+_CLI_MORE_STATE = re.compile(r"\(more state: `yos describe ([^`]+)`\)")
+
+
+SCREEN_TEXT_BEGINS = "--- screen text begins"
+SCREEN_TEXT_ENDS = "--- screen text ends ---"
+
+
+def for_a_mind(text):
+    """`text` with the command-line advice in it said the way a mind can act on — outside any
+    screen text. What a display reads is whatever other programs drew, and a page that drew
+    "(more state: `yos describe x`)" must not come out in this bridge's own voice."""
+    if SCREEN_TEXT_BEGINS not in text:
+        return _for_a_mind(text)
+    out, rest = [], text
+    while SCREEN_TEXT_BEGINS in rest:
+        before, _, rest = rest.partition(SCREEN_TEXT_BEGINS)
+        inside, ends, rest = rest.partition(SCREEN_TEXT_ENDS)
+        out.append(_for_a_mind(before) + SCREEN_TEXT_BEGINS + inside + ends)
+    out.append(_for_a_mind(rest))
+    return "".join(out)
+
+
+def _for_a_mind(text):
+    text = _CLI_STATE_HINT.sub(
+        lambda m: "(The app's state is left out of this result; os_describe %s shows it. The action "
+                  "is done: do not repeat it to see the state.)" % m.group(1),
+        text,
+    )
+    return _CLI_MORE_STATE.sub(
+        lambda m: "(The state: line has the app's small fields; os_describe %s shows the rest. The "
+                  "action is done: do not repeat it to see them.)" % m.group(1),
+        text,
+    )
+
+
 def run_tool(tool, args, present=None):
     """Invoke yos and return (text, is_error), whatever the outcome.
 
@@ -2040,8 +2478,16 @@ def run_tool(tool, args, present=None):
     sub-agent that was refused three URLs lost the desktop entirely and spent its remaining
     forty-seven turns being told to wait. Those answers go back unflagged, and say REFUSED in
     their first word instead, where a model cannot read them as success. Failures — a timeout,
-    a non-zero exit, an app that is not running, a missing argument — stay flagged.
+    a non-zero exit, an app that did not answer, a missing argument — stay flagged.
+
+    An app that is simply not open is neither: nothing failed and nobody said no. The request
+    was fine, and the answer says to open the app and call again. It goes back unflagged, like a
+    policy answer, so a model that trips over a closed app three times does not take this
+    server away from itself.
     """
+    if "browser_action" in tool:
+        # Every web tool is an act on the browser's surface (#477): made there, through os_act.
+        return run_browser_tool(tool, args)
     # Required arguments, said plainly. A call without one used to fail inside argv as a bare
     # KeyError — "could not run os_describe: 'app'" — which tells a model nothing it can act on.
     missing = [k for k in tool.get("inputSchema", {}).get("required", []) if not args.get(k)]
@@ -2071,6 +2517,12 @@ def run_tool(tool, args, present=None):
         # punctuation cost a whole confirmed turn on the third live drive.
         args = dict(args)
         args["action"] = str(args["action"]).strip().split("(", 1)[0].strip()
+        # One spelling from here on, so every rule below sees the app yos will reach.
+        args["app"] = surface_name(args.get("app"))
+        if (args["app"], args["action"]) in SCREEN_READS:
+            # Before the call, not after it: a read whose answer arrives with a failure after it
+            # (a state line that did not print) has still put the screen in front of the mind.
+            _SAW_PRIVATE.append("shell.%s" % args["action"])
         # With an agent token, the Terminal's `run` is the agent's own terminal instead — graded,
         # asked about and recorded as `shell.agent_run`, which is what will actually run.
         routed = agent_route(args)
@@ -2087,10 +2539,10 @@ def run_tool(tool, args, present=None):
     if refusal is not None:
         return policy_answer(refusal), False
 
-    # The taint rule is not a permission grade and no mode turns it off — not even bypass. A
+    # The taint rule is not a permission grade and no mode turns it off — not even full bypass. A
     # mode says how much the person trusts the mind; the taint says what this session has
     # already read, which is a fact about the session rather than a policy anybody set.
-    refusal = taint_refusal(tool["name"], args)
+    refusal = taint_refusal(*outbound_of(tool, args))
     if refusal is not None:
         return policy_answer(refusal), False
 
@@ -2125,8 +2577,9 @@ def run_tool(tool, args, present=None):
         # stdin closed to the child, for the reason in `yos`: this process's stdin belongs to
         # the client's JSON-RPC stream and nothing else may read from it. The environment is
         # `yos_env`'s: the desktop's session, and the agent token when this bridge has one.
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=yos_env(),
-                           stdin=subprocess.DEVNULL)
+        p = (in_process(argv[1:]) if tool["name"] in IN_PROCESS else None) or subprocess.run(
+            argv, capture_output=True, text=True, timeout=timeout, env=yos_env(),
+            stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         note = join(note, report_unasked(audit, "timed out"))
         return (prefix(note, "timed out after %ss — the desktop did not answer. It may be busy "
@@ -2139,7 +2592,7 @@ def run_tool(tool, args, present=None):
     # weaker thing for a person to read than "it was done" or "it failed".
     note = join(note, report_unasked(audit, "ok" if p.returncode == 0 else "failed"))
 
-    out = (p.stdout or "").strip()
+    out = for_a_mind((p.stdout or "").strip())
     err = (p.stderr or "").strip()
     app = args.get("app")
     if p.returncode != 0 and app and "no socket for" in err and tool["name"] in ("os_describe", "os_act"):
@@ -2167,6 +2620,11 @@ def run_tool(tool, args, present=None):
                 "the person allowed %s.%s, but the grant could not be spent: %s Nothing was "
                 "run. Tell them it did not go through." % (app, args.get("action"), why)), False
         return policy_answer(why), False
+    if p.returncode != 0 and tool["name"] == "os_act" and "PAGE:" in err:
+        # The browser's own "no": the ref is gone, the control is covered or disabled, or it reads
+        # as a commitment that only commit presses. Nothing was pressed or typed, and the same
+        # call again would meet the same answer — a policy answer, not a fault to retry.
+        return policy_answer(re.sub(r"^yos: (\S+\.app\.act refused: )?(PAGE: )?", "", err.strip())), False
     if p.returncode != 0 and tool["name"] == "os_act" and "REACH:" in err:
         # This agent was started as a catalog role, and the act is outside the role's reach. A
         # policy answer, as GRANT is: the desktop is healthy and said no, naming the role.
@@ -2187,6 +2645,11 @@ def run_tool(tool, args, present=None):
     if tool["name"] in PRIVATE_READS and p.returncode == 0:
         # Recorded after the call, not before: a read that failed saw nothing.
         _SAW_PRIVATE.append(tool["name"])
+    if (tool["name"] == "os_act" and p.returncode == 0 and surface_name(app) == "shell"
+            and args.get("action") == "hand_off" and (args.get("args") or {}).get("wait_seconds")):
+        # A hand-off that waited hands back what the role said — whatever it read on the way —
+        # by os_act as by the hand_off tool.
+        _SAW_PRIVATE.append("shell.hand_off")
 
     if not out:
         return prefix(note, "(the command succeeded and printed nothing)"
@@ -2259,6 +2722,103 @@ def reply(msg_id, result=None, error=None):
         sys.stdout.flush()
 
 
+# ── A mind going round in circles, told so where it will read it ─────────────────────────────
+#
+# On 23 September Hermes tried to build a game and called the editor four times in a row, each
+# refused with "Cannot open: No such file", then gave up with no word to anybody (#234). The
+# shell saw every refusal and could only watch. A mind reads exactly one thing from this bridge
+# while it works: the result of each call. So that is where the desktop says it. From the third
+# identical failure in a row, the result carries one bracketed line from the desktop: this is
+# going round, repeating it will not change the answer, and what to do instead. Any other
+# outcome resets the count. The line is added to the call's own result, never sent on its own,
+# so it cannot be taken for something the person said.
+
+LOOP_WARN_AT = 3
+LOOP_STOP_AT = 5
+_LOOPS = {}
+_LOOPS_LOCK = threading.Lock()
+
+
+def _loop_key(tool_name, arguments):
+    """The call, as the same call: tool, app and action, plus the arguments that would make
+    it a different call."""
+    args = arguments if isinstance(arguments, dict) else {}
+    try:
+        detail = json.dumps(args.get("args", args), sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        detail = repr(args)
+    return (tool_name, str(args.get("app", "")), str(args.get("action", "")), detail)
+
+
+def _outcome(text, is_error):
+    """A failure's identity: flagged, or a REFUSED policy answer, by its first line. None for
+    anything that succeeded."""
+    head = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
+    if is_error or head.startswith("REFUSED") or head.startswith("refused:"):
+        return head[:200]
+    return None
+
+
+def going_round(tool_name, arguments, text, is_error):
+    """`text` as the mind should read it: with the desktop's word added once the same call has
+    failed the same way `LOOP_WARN_AT` times in a row."""
+    agent = os.environ.get("YANTRIK_AGENT_TOKEN", "")
+    key = _loop_key(tool_name, arguments)
+    failed = _outcome(text, is_error)
+    with _LOOPS_LOCK:
+        last = _LOOPS.get(agent)
+        if failed is None:
+            _LOOPS.pop(agent, None)
+            return text
+        times = last[2] + 1 if last and last[0] == key and last[1] == failed else 1
+        _LOOPS[agent] = (key, failed, times)
+    if times < LOOP_WARN_AT:
+        return text
+    if times < LOOP_STOP_AT:
+        said = ("This call has now failed the same way %d times in a row, and repeating it will "
+                "not change the answer. Read the app's state first (os_describe), then try a "
+                "different action or different arguments. If nothing you can do gets past this, "
+                "stop and tell the person what is blocking you." % times)
+    else:
+        said = ("This call has failed the same way %d times in a row. Stop retrying it. Tell the "
+                "person what you were trying to do and what keeps refusing it, and ask how they "
+                "want to go on." % times)
+    return "%s\n\n[From the desktop: %s]" % (text, said)
+
+
+# ── Private mode ─────────────────────────────────────────────────────────────────────────────
+#
+# While the person has it on, no agent sees or does anything on this desktop. The sockets refuse
+# an agent's token and the mind account themselves (`yantrik_ipc_transport::privacy`); this is for
+# what they cannot tell apart — an agent's harness running as the person, reading describe with
+# no token. The file and the sentence are the transport's: absent is off, anything but a clear
+# `"private": false` is on.
+PRIVACY_REFUSAL = ("PRIVATE: the person has turned on Private mode. Nothing on this desktop is shown "
+                   "to agents or done for them until they turn it off. Nothing was run.")
+
+
+def private_now():
+    home = os.environ.get("HOME") or os.environ.get("USERPROFILE") or ""
+    if not os.path.isabs(home):
+        # Never "." (the transport's rule): an unknown home is taken to be private.
+        try:
+            import pwd
+            home = pwd.getpwuid(os.getuid()).pw_dir
+        except (ImportError, KeyError, OSError):
+            return True
+        if not os.path.isabs(home):
+            return True
+    try:
+        with open(os.path.join(home, ".config", "yantrik", "privacy.json"), encoding="utf-8") as f:
+            value = json.loads(f.read())
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError, UnicodeDecodeError):
+        return True
+    flag = value.get("private", True) if isinstance(value, dict) else True
+    return flag if isinstance(flag, bool) else True
+
+
 def serve_call(msg_id, tool, arguments):
     """Run one tools/call and answer it. The body of a worker thread; must not raise.
 
@@ -2268,10 +2828,15 @@ def serve_call(msg_id, tool, arguments):
     Nothing this returns, in either place, repeats the agent token.
     """
     meta = None
+    if private_now():
+        # Every caller of this bridge is an agent: nothing runs while the person is private.
+        reply(msg_id, {"content": [{"type": "text", "text": PRIVACY_REFUSAL}], "isError": True})
+        return
     try:
         text, is_error, meta = call_tool(tool, arguments)
     except Exception as e:  # a malformed argument must not take the server down
         text, is_error = "could not run %s: %s" % (tool["name"], e), True
+    text = going_round(tool["name"], arguments, text, is_error)
     result = {"content": [{"type": "text", "text": scrub(text)}], "isError": is_error}
     if meta is not None:
         result["_meta"] = {"yantrik/command": json.loads(scrub(json.dumps(meta)))}

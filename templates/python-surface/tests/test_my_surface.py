@@ -163,8 +163,11 @@ class TestWhatEachActionDoes(SurfaceCase):
         self.mode_is("auto")
         self.assertIn("its own description says it cannot be undone", self.refused("remove", index=0))
         self.assertEqual(len(self.program.tasks), 1, "nothing was removed")
-        # Bypass runs everything under the ceiling.
+        # Bypass still asks before what cannot be undone; full bypass runs everything under
+        # the ceiling.
         self.mode_is("bypass")
+        self.assertIn("its own description says it cannot be undone", self.refused("remove", index=0))
+        self.mode_is("bypass_all")
         self.assertEqual(self.act("remove", index=0)["result"],
                          {"removed": "Water the plants", "left": 0})
 

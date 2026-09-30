@@ -140,9 +140,18 @@ system:
 telegram:
   enabled: false
   # bot_token: "123456:ABC-DEF..."
-  # chat_id: "987654321"
+  # chat_id: "987654321"      # your private chat with the bot: this id is you
   poll_interval_secs: 3
   forward_proactive: true
+
+# Channels (Signal, Slack, Discord, Matrix, IRC). A message is answered only when it is a direct
+# message from someone named under `people`; strangers and groups never reach a mind. A message
+# that is answered goes to whichever mind is active, as the Lens does.
+chat:
+  enabled: false
+  # people:
+  #   - { provider: signal, id: "+15550001234" }
+  #   - { provider: slack,  id: "U012ABCDEF" }
 
 voice:
   enabled: true

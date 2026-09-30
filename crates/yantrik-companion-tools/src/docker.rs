@@ -20,6 +20,11 @@ fn sanitize_container_name(name: &str) -> Result<&str, String> {
     if name.is_empty() {
         return Err("container name is required".to_string());
     }
+    // It goes to docker as an argument; one beginning with `-` would be a docker option
+    // (`docker exec --privileged …`), not a container.
+    if name.starts_with('-') {
+        return Err(format!("Invalid container name '{name}': cannot begin with '-'"));
+    }
     if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
         Ok(name)
     } else {
@@ -288,5 +293,17 @@ impl Tool for DockerExecTool {
 
         let out = run_docker(&["exec", container, "sh", "-c", command]);
         truncate(&out, 3000)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_container_name;
+
+    #[test]
+    fn a_container_name_is_never_read_as_a_docker_option() {
+        assert!(sanitize_container_name("--privileged").is_err());
+        assert!(sanitize_container_name("-d").is_err());
+        assert!(sanitize_container_name("my-app_1").is_ok());
     }
 }

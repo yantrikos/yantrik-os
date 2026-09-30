@@ -89,6 +89,54 @@ pub fn stream_into(
     pump(ui_weak, token_rx, row, streams);
 }
 
+/// Put a finished message in the conversation: `asked` as the person's bubble first when given,
+/// then `said` under `role`. For words the desktop itself says (`"desktop"`), which the bubble
+/// labels as the desktop's so they are never read as the mind's.
+pub fn say(ui_weak: &slint::Weak<App>, asked: Option<&str>, role: &str, said: &str) {
+    let Some(ui) = ui_weak.upgrade() else { return };
+    let messages = ui.get_messages();
+    let Some(model) = messages.as_any().downcast_ref::<VecModel<MessageData>>() else { return };
+    if let Some(text) = asked {
+        model.push(MessageData {
+            run: Default::default(),
+            role: "user".into(),
+            content: SharedString::from(text),
+            is_streaming: false,
+            blocks: ModelRc::default(),
+        });
+        ui.set_lens_chat_mode(true);
+    }
+    model.push(MessageData {
+        run: Default::default(),
+        role: role.into(),
+        content: SharedString::from(said),
+        is_streaming: false,
+        blocks: ModelRc::default(),
+    });
+}
+
+/// `say` as the desktop, with a link under the words: `link` is what the bubble's link carries
+/// (a run id, or `private_mode::LEAVE_LINK`).
+pub fn offer(ui_weak: &slint::Weak<App>, asked: Option<&str>, said: &str, link: &str) {
+    say(ui_weak, asked, "desktop", said);
+    let Some(ui) = ui_weak.upgrade() else { return };
+    let messages = ui.get_messages();
+    let Some(model) = messages.as_any().downcast_ref::<VecModel<MessageData>>() else { return };
+    let last = model.row_count().saturating_sub(1);
+    if let Some(mut row) = model.row_data(last) {
+        row.run = link.into();
+        model.set_row_data(last, row);
+    }
+}
+
+/// Stream an answer into a bubble of its own, under a question already in the conversation.
+pub fn stream_answer(ui_weak: slint::Weak<App>, token_rx: crossbeam_channel::Receiver<String>, streams: &Streams) {
+    let Some(row) = open_bubbles(&ui_weak, None) else {
+        return;
+    };
+    pump(ui_weak, token_rx, row, streams);
+}
+
 /// Start a proactive AI stream — only the assistant's response is shown (no user bubble).
 /// Used for morning brief and other proactive messages where the AI speaks first.
 pub fn start_proactive_stream(
@@ -114,6 +162,7 @@ fn open_bubbles(ui_weak: &slint::Weak<App>, asked: Option<&str>) -> Option<usize
     let model = messages.as_any().downcast_ref::<VecModel<MessageData>>()?;
     if let Some(text) = asked {
         model.push(MessageData {
+            run: Default::default(),
             role: "user".into(),
             content: SharedString::from(text),
             is_streaming: false,
@@ -121,6 +170,7 @@ fn open_bubbles(ui_weak: &slint::Weak<App>, asked: Option<&str>) -> Option<usize
         });
     }
     model.push(MessageData {
+        run: Default::default(),
         role: "assistant".into(),
         content: "".into(),
         is_streaming: true,
@@ -140,6 +190,9 @@ fn open_bubbles(ui_weak: &slint::Weak<App>, asked: Option<&str>) -> Option<usize
 }
 
 /// Poll one answer at 60fps and append it to its own bubble.
+/// A token naming the run a reply was (`mind:main#n`), sent just before `__DONE__`.
+pub const RUN_MARK: &str = "__RUN__:";
+
 fn pump(
     ui_weak: slint::Weak<App>,
     token_rx: crossbeam_channel::Receiver<String>,
@@ -158,6 +211,23 @@ fn pump(
             if token == "__DONE__" {
                 done = true;
                 break;
+            }
+            // The run this reply was: its link, not its text. Never the desktop's own offer to
+            // leave Private mode, which only the desktop puts on a bubble (`streaming::offer`).
+            if token.strip_prefix(RUN_MARK) == Some(crate::private_mode::LEAVE_LINK) {
+                continue;
+            }
+            if let Some(run) = token.strip_prefix(RUN_MARK) {
+                if let Some(ui) = ui_weak.upgrade() {
+                    let messages = ui.get_messages();
+                    if let Some(model) = messages.as_any().downcast_ref::<VecModel<MessageData>>() {
+                        if let Some(mut bubble) = model.row_data(row) {
+                            bubble.run = run.into();
+                            model.set_row_data(row, bubble);
+                        }
+                    }
+                }
+                continue;
             }
             // __REPLACE__: the next token replaces the whole message content (used when tool
             // calls are detected, to strip raw XML).
