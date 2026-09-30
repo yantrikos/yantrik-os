@@ -60,6 +60,11 @@ mailparse = { workspace = true }
 html2text = { workspace = true }
 rusqlite = { workspace = true }
 libc = { workspace = true }
+# Un-minimising a window without maximising it (#265, src/foreign_toplevel.rs): wlrctl 0.2.2
+# exposes no unset_minimized, so the shell speaks the wlr foreign-toplevel protocol itself.
+# Both are already in the tree through winit, at the versions Cargo.lock resolves (0.31, 0.3).
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 
 [features]
 default = ["claude-cli"]
