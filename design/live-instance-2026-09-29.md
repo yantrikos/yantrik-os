@@ -39,8 +39,11 @@ not a desktop. The desktop stays calm; the activity around it is what's worth wa
     checks the model name echoed in each reply.
   - The Mind's first-run step can't list AIG's models (the gateway returns 404 for `/api/tags`),
     so the instance is configured with an address and model name directly.
-- **v1 is read-only:** the live desktop, the Pulse, the counters and the uptime. "Ask Yantrik"
-  comes later, once we know people watch and the moderation exists.
+- **v1 is view-only:** the live desktop, the Pulse, the counters and the uptime. The website has
+  no interaction endpoint at all; nothing a visitor does reaches the instance (Pranab,
+  29 Sep 2026). "Ask Yantrik" comes later, once we know people watch and the moderation exists.
+- **It must never be boring:** something real and visible happens around the clock (see
+  "Twenty-four hours of real work").
 
 ## The network: inside the house, walled off
 
@@ -122,6 +125,40 @@ on its own. Proposed:
 The goals live in the instance's config, not its prompt, so they are changed by us rather than by
 whatever it reads.
 
+### 2a. Twenty-four hours of real work: the Director
+
+A visitor who arrives at 3 a.m. should find Yantrik doing something. Nothing is staged, so the
+activity comes from **standing goals**, handed to the Mind one task at a time by a small scheduler
+on the instance, the Director. The Director decides *when* and *what kind*; the Mind decides how,
+and may propose its own next task within the goals. That choice is what makes it agency rather
+than a loop.
+
+| Kind | Rhythm | What the visitor sees |
+|---|---|---|
+| **Research round** | every ~30 min | The Browser opens a source from its feeds (arXiv lists, release notes, project blogs). It reads two or three, then writes "What I learned" in Notes. The Pulse shows the entities it links in memory. |
+| **Memory upkeep** | every ~20 min | Consolidating, correcting, resolving conflicts. It's cheap, local and honest, and it's the Pulse's heartbeat. |
+| **Notebook** | hourly | Tidying and cross-linking notes, and a running "today so far". |
+| **Files** | a few times a day | Sorting its research folder into topics in Files. |
+| **Numbers** | a few times a day | Turning something it has tracked (benchmarks, release counts) into a Spreadsheet chart. |
+| **Journal** | daily; weekly retrospective | A dated journal page, and once a week "what I learned this week". |
+
+Rules that keep it watchable:
+- **Something every one to three minutes.** Never more than a few minutes without a Pulse line.
+  Gaps between the heavy tasks fill with memory upkeep, which needs no cloud call.
+- **Variety.** The same app is never used twice in a row. The desktop is laid out calmly with the
+  snap layouts (#505), for example the Browser on the left two-thirds and Notes on the right
+  third, so the picture composes itself.
+- **Pacing, not token spam.** No text streaming token by token on screen. A task shows a window
+  changing, a note appearing, a chart drawn. The Pulse says what is happening in a line.
+- **It runs day and night.** The audience is in every time zone. Night only lengthens the
+  research interval; it never stops.
+- **Budgets.** The Director knows each model provider's free limits and spreads calls across
+  them: AIG first, then the free tiers in turn, one per provider. When a budget runs out it
+  shifts to local memory upkeep rather than going dark.
+- **Fixed kinds of work.** The Director only issues the task kinds above. What they read is the
+  public web, allowed host by host in the egress policy. A page it reads can't give it new kinds
+  of work.
+
 ### 3. The Pulse: what Yantrik is doing, published safely
 
 A small publisher on the instance, `yantrik-pulse`. It turns the OS's own records into public
@@ -156,8 +193,10 @@ desktop.
 
 ### 5. The relay and the page
 
-The relay is a small public host: the machine that already serves yantrikdb.com, or a new one
-(an open question below). It runs:
+The relay is a small **public** host outside the house, for example the machine that already
+serves yantrikdb.com. The instance pushes to it; browsers read only from it. So no public-facing
+server runs inside the home network, and the home IP never appears anywhere. The page is
+view-only and has no endpoint that reaches the instance. It runs:
 - MediaMTX for the video;
 - the SSE fan-out for the Pulse, with the last N events buffered so a new visitor sees the recent
   past;
