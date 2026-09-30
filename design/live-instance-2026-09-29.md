@@ -193,8 +193,10 @@ desktop.
 
 ### 5. The relay and the page
 
-The relay is a small **public** host outside the house, for example the machine that already
-serves yantrikdb.com. The instance pushes to it; browsers read only from it. So no public-facing
+The relay is a small **public** host outside the house: the VPS that already serves yantrikos.com
+and yantrikdb.com, addressed only by yantrikos.com names (`yantrikos.com/live`,
+`live.yantrikos.com`, `relay.yantrikos.com`). Its older warpmode.io name may lapse, so nothing
+here uses it. The instance pushes to it; browsers read only from it. So no public-facing
 server runs inside the home network, and the home IP never appears anywhere. The page is
 view-only and has no endpoint that reaches the instance. It runs:
 - MediaMTX for the video;
@@ -236,7 +238,8 @@ It depends on what we have built this month:
 
 ## Open questions
 
-1. **Where the relay runs:** the yantrikdb.com host (warpmode.io), or a new small VPS.
-2. **Where `yantrikos.com` itself is served:** `releases.yantrikos.com` is on the LAN.
-3. **The standing goals:** which feeds and topics, and what its own project should be.
-4. **Which cloud subscription** is the fallback, and its monthly ceiling.
+Decided (2026-09-30): the relay runs on the public VPS that serves yantrikos.com, and every name
+for it is a yantrikos.com one, never warpmode.io.
+
+1. **The standing goals:** which feeds and topics, and what its own project should be.
+2. **Which cloud subscription** is the fallback, and its monthly ceiling.
