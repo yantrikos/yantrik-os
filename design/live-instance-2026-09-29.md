@@ -29,8 +29,9 @@ not a desktop. The desktop stays calm; the activity around it is what's worth wa
 
 ## Decisions (Pranab, 29 Sep 2026)
 
-- **Host:** a new, dedicated VM on node2. It is not VM 520, the release gate that gets
-  reinstalled constantly, and it is not the family box.
+- **Host:** a new, dedicated VM on node2, on its own subnet behind a gate VM (see The network).
+  It is not VM 520, the release gate that gets reinstalled constantly, and it is not the family
+  box.
 - **Model:** the AIG gateway (`aig.mycluster.cyou`, the home Kubernetes cluster on node2) is
   primary: qwen3.8:27b as the reasoner, gemma4:e4b for fast dispatch. The cloud subscriptions we
   already hold are the fallback, so the stream never stalls when the gateway is down.
@@ -40,6 +41,47 @@ not a desktop. The desktop stays calm; the activity around it is what's worth wa
     so the instance is configured with an address and model name directly.
 - **v1 is read-only:** the live desktop, the Pulse, the counters and the uptime. "Ask Yantrik"
   comes later, once we know people watch and the moderation exists.
+
+## The network: inside the house, walled off
+
+The instance reads untrusted content all day, so what matters is what it can reach if something
+inside it goes wrong. On the LAN that would be Proxmox, the Kubernetes cluster, the family box
+and more. "No inbound ports" doesn't help, and neither does the egress proxy alone: it runs inside
+the VM, and root in the guest could turn it off. So the wall is enforced outside the VM
+(Pranab, 29 Sep: a separate subnet with one route to one AIG endpoint).
+
+```
+ internet  ◄── NAT ──┐
+          ┌──────────┴──────────┐         192.168.4.0/22 (the LAN)
+          │  live-gate (tiny VM)│ eth1 ── vmbr0 ── AIG, Proxmox, k8s, …
+          │  10.99.0.1  │ eth0  │
+          └─────────────┼───────┘
+                        │ vmbr9 — new bridge, no physical port, 10.99.0.0/24
+          ┌─────────────┴───────┐
+          │ live instance #001  │ 10.99.0.10, gateway 10.99.0.1
+          └─────────────────────┘
+```
+
+- **`vmbr9` has no uplink.** The instance's only way out is through the gate. This is enforced
+  by the hypervisor, so root inside the instance can't change it.
+- **The gate's nftables:** traffic from 10.99.0.0/24 is NATed to public addresses. It is dropped
+  for 10/8, 172.16/12, 192.168/16, 100.64/10 and 169.254/16, except the gate's own proxy port.
+- **The one endpoint is not AIG's address.** 192.168.4.203:443 is the Kubernetes ingress, and it
+  serves every hostname the cluster has. The gate runs a model proxy on `10.99.0.1:8443` instead.
+  It forwards only the chat calls (`/api/chat`, `/v1/chat/completions`), only with the
+  instance's own key, rate-limited and size-capped, and always to the one hostname
+  `aig.mycluster.cyou`.
+- **DNS:** the gate answers from public resolvers only, so the LAN's names (Technitium) are never
+  visible from the instance.
+- **Admin:** through Proxmox (`qm guest exec` / console). There is no network path from the LAN
+  into `vmbr9`.
+- **Nothing shared:** no SSH keys, mounts or credentials in common with the LAN. Its memory is
+  backed up and checked, so a compromise means rolling back to a snapshot, not starting over.
+- **Building it on node2:** the new bridge goes in a file of its own under
+  `/etc/network/interfaces.d`, and nothing about `vmbr0` changes; node2 also hosts AIG, the k8s
+  workers and the releases server. The Proxmox firewall stays off: enabling it cluster-wide with
+  the wrong defaults can lock out node2, and the bridge with no uplink already does the
+  isolating.
 
 ## What it is made of
 
