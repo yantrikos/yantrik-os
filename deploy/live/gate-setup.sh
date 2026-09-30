@@ -9,8 +9,9 @@
 # What it enforces, outside the instance, where root inside the instance cannot reach:
 #   - The instance may reach public addresses (NAT), and nothing private: not the LAN, the
 #     router, link-local, CGNAT, multicast. IPv6 is not forwarded at all.
-#   - It may reach the gate only for DNS (public resolvers, private answers refused) and the
-#     model proxy, which forwards exactly the chat calls, with the instance's key, to AIG.
+#   - It may reach the gate only for DNS (public resolvers, private answers refused), the model
+#     proxy, which forwards exactly the chat calls, with the instance's key, to AIG, and UDP 9000,
+#     where the video forwarder takes its desktop to the relay.
 #   - The LAN may reach the gate only on SSH, for administration.
 set -eu
 
@@ -58,9 +59,11 @@ table inet gate {
         iif lo accept
         ct state established,related accept
         ct state invalid drop
-        # From the instance: DNS and DHCP from this gate, and the model proxy. Nothing else.
+        # From the instance: DNS and DHCP from this gate, the model proxy, and its desktop video for
+        # the forwarder (deploy/live/gate-forward, which holds the relay's secrets). Nothing else.
         iifname \$LIVE_IF udp dport { 53, 67 } accept
         iifname \$LIVE_IF tcp dport { 53, 8443 } accept
+        iifname \$LIVE_IF udp dport 9000 accept
         iifname \$LIVE_IF icmp type echo-request limit rate 5/second accept
         # From the LAN: administration only.
         iifname \$LAN_IF tcp dport 22 accept
