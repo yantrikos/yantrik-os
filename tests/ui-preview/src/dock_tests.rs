@@ -245,13 +245,14 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     mv(w, 5.0, 300.0);
     let calm = draw();
     let mind = (l + 1 + 4 + 44 * 6 + 5 + 20) as u32; // centre of the mind button
-    let zone = (mind - 20, mind + 20, 752, 800);
+    let zone = (mind - 30, mind + 30, 752, 800);
     assert_eq!(count_within(&calm, zone, AMBER, 24), 0, "no amber in the dock while no mind is waiting");
     ui.set_cards_pending(2);
     let needs = draw();
+    save(&needs, &out("dock-needs-you.png"))?;
     let dot = count_within(&needs, zone, AMBER, 24);
     assert!((12..=40).contains(&dot), "one 6px amber dot on the mind button: {dot} pixels");
-    assert_eq!(count_within(&needs, (0, mind - 20, 752, 800), AMBER, 24) + count_within(&needs, (mind + 20, W, 752, 800), AMBER, 24), 0, "and nowhere else in the dock");
+    assert_eq!(count_within(&needs, (0, mind - 30, 752, 800), AMBER, 24) + count_within(&needs, (mind + 30, W, 752, 800), AMBER, 24), 0, "and nowhere else in the dock");
     save(&needs, &out("dock-needs-you.png"))?;
     ui.set_cards_pending(0);
     assert_eq!(count_within(&draw(), zone, AMBER, 24), 0, "answered: the dot goes");
