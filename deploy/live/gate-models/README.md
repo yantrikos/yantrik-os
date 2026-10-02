@@ -56,7 +56,7 @@ everything it touched. Step 2 keeps the Mind's previous settings as
 3. AIG, as the survival fallback.
 
 NVIDIA NIM is routed and the Mind is given its address and key (`YM_PROVIDER_BASE_URL_NIM`,
-`NIM_KEY`, the instance key, as for the others), but it is not in the chain until chosen. To make it
+`NVIDIA_API_KEY`, the instance key, as for the others; the Mind reads its NIM key under that name), but it is not in the chain until chosen. To make it
 the lead, change the one line `mind-env.sh` writes, `YM_PRIMARY_BRAIN`, to
 `nim:nvidia/nemotron-3-super-120b-a12b` (it supports tools) and run step 2. That model is the
 only one the gate lets through on this route.
