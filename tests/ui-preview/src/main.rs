@@ -19,6 +19,7 @@ mod lens_tests;
 mod route_tests;
 mod approval_tests;
 mod taskbar_menu_tests;
+mod alt_tab_tests;
 mod cards_waiting_tests;
 mod kit_controls_tests;
 mod bar_overlays_tests;
@@ -80,6 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-lens-agents") { return agents_tests::run_lens(&window, output); }
     if args.iter().any(|a| a == "verify-screen-controls") { return screen_controls_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-apps-button") { return apps_button_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-alt-tab") { return alt_tab_tests::run(&window, output, width, height); }
     if args.iter().any(|a| a == "verify-taskbar-menu") { return taskbar_menu_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-cards-waiting") { return cards_waiting_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-kit-controls") { return kit_controls_tests::run(&window, output); }

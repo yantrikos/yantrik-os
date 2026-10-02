@@ -98,11 +98,11 @@
     <!-- ── Windows ────────────────────────────────────────────────────────────────────── -->
     <!-- @help group="Windows" text="Switch to the next window" -->
     <keybind key="A-Tab">
-      <action name="NextWindow" />
+      <action name="Execute"><command>/opt/yantrik/bin/yos act shell open_switcher</command></action>
     </keybind>
     <!-- @help group="Windows" text="Switch to the previous window" -->
     <keybind key="A-S-Tab">
-      <action name="PreviousWindow" />
+      <action name="Execute"><command>/opt/yantrik/bin/yos act shell open_switcher direction=back</command></action>
     </keybind>
     <!-- @help group="Windows" text="Close the window" -->
     <keybind key="A-F4">

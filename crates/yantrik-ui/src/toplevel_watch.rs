@@ -88,6 +88,16 @@ pub fn front_title() -> Option<String> {
     LOG.lock().ok().and_then(|log| log.current.as_ref().map(|(_, t)| t.clone()))
 }
 
+/// The titles of the windows that have had focus, the most recent first, or nothing when the
+/// stream is not being followed. Windows that never had focus since the shell started are not
+/// here; the switcher lists them after these, in the compositor's order.
+pub fn recency() -> Vec<String> {
+    if !LIVE.load(Ordering::Relaxed) {
+        return Vec::new();
+    }
+    LOG.lock().map(|log| log.recent.iter().map(|(_, t)| t.clone()).collect()).unwrap_or_default()
+}
+
 /// Whether the window called `title` was the one in front when the person pressed its taskbar
 /// entry. `false` whenever that is not known, because the cost of a wrong `true` is a window put
 /// away that the person asked to see.
@@ -105,11 +115,13 @@ struct FocusLog<K> {
     current: Option<(K, String)>,
     previous: Option<(K, String)>,
     since: Option<Instant>,
+    /// Every window that has had focus and still exists, the one in front first. Alt+Tab's order.
+    recent: Vec<(K, String)>,
 }
 
-impl<K: PartialEq> FocusLog<K> {
+impl<K: PartialEq + Clone> FocusLog<K> {
     const fn new() -> Self {
-        Self { current: None, previous: None, since: None }
+        Self { current: None, previous: None, since: None, recent: Vec::new() }
     }
 
     /// The compositor's latest word on which window is activated.
@@ -122,12 +134,18 @@ impl<K: PartialEq> FocusLog<K> {
         let Some((key, title)) = front else { return false };
         match &mut self.current {
             // The same window under a new title (Chromium retitles on every tab): not a change
-            // of focus, so `previous` and `since` stay as they are.
+            // of focus, so `previous` and `since` stay as they are. The recency list follows the
+            // title, because Alt+Tab shows it.
             Some((k, t)) if *k == key => {
-                *t = title;
+                *t = title.clone();
+                if let Some(entry) = self.recent.iter_mut().find(|(k, _)| *k == key) {
+                    entry.1 = title;
+                }
                 false
             }
             _ => {
+                self.recent.retain(|(k, _)| *k != key);
+                self.recent.insert(0, (key.clone(), title.clone()));
                 self.previous = self.current.take();
                 self.current = Some((key, title));
                 self.since = Some(now);
@@ -138,6 +156,7 @@ impl<K: PartialEq> FocusLog<K> {
 
     /// A window went away. It is no longer the answer to "what was in front", whatever it was.
     fn closed(&mut self, key: &K) {
+        self.recent.retain(|(k, _)| k != key);
         if self.previous.as_ref().is_some_and(|(k, _)| k == key) {
             self.previous = None;
         }
@@ -395,6 +414,23 @@ mod tests {
         log.observe(Some((0, SHELL.into())), t + Duration::from_millis(5));
         log.closed(&1);
         assert!(!log.was_in_front("Notes", SHELL, t + Duration::from_millis(100)));
+    }
+
+    /// Alt+Tab's order: the window that had focus last comes first, a retitle follows the window
+    /// without moving it, and a closed window leaves the list.
+    #[test]
+    fn recency_is_most_recent_first_and_follows_retitles_and_closes() {
+        let (mut log, t) = log();
+        log.observe(Some((1, "Notes".into())), t);
+        log.observe(Some((2, "Inbox - Chromium".into())), t);
+        log.observe(Some((3, "Terminal".into())), t);
+        log.observe(Some((1, "Notes".into())), t);
+        let titles = |l: &FocusLog<u32>| l.recent.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>();
+        assert_eq!(titles(&log), ["Notes", "Terminal", "Inbox - Chromium"]);
+        log.observe(Some((1, "Notes: Handover".into())), t);
+        assert_eq!(titles(&log), ["Notes: Handover", "Terminal", "Inbox - Chromium"]);
+        log.closed(&3);
+        assert_eq!(titles(&log), ["Notes: Handover", "Inbox - Chromium"]);
     }
 
     /// With nothing observed yet, nothing is claimed.
