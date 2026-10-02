@@ -1091,6 +1091,10 @@ pub fn publish(
                 }
                 // An app's window would come up over a waiting card (card_watch).
                 crate::card_watch::hold_windows("open_app")?;
+                // The id the window will be known by, and a past failure of it cleared, so what
+                // the wait below reads back is this launch's and not an earlier one's.
+                let window_id = crate::wire::dock::launcher_id_in(&name, &catalogue);
+                crate::running::clear_launch_failure(&window_id);
                 // The launcher's own path: it resolves the binary, enforces one window per app,
                 // and focuses the running one instead of starting a second.
                 ui.invoke_launch_app(name.clone().into());
@@ -1111,6 +1115,25 @@ pub fn publish(
                 // was opened by (`sysmonitor` opens what answers as `system-monitor`).
                 if let Some(surface) = crate::wire::dock::surface_for(&name, &catalogue) {
                     answer["describe_as"] = surface.into();
+                }
+                // A program is not a window until one is seen. The dock spawns it on a worker and
+                // `launching` told a mind "done" for a terminal that never drew anywhere (2 Oct
+                // 2026), so the answer waits, off the UI thread, for the window to be listed —
+                // in Mind View's compositor for a mind's launch, on the desktop for a person's —
+                // and says where it is, or that it is not.
+                if answer.get("launching").is_some() {
+                    let wait = move || {
+                        let mut probe = crate::mind_landing::probe_for(window_id);
+                        let seen = crate::mind_landing::wait_for_window(
+                            &mut probe,
+                            crate::mind_landing::BUDGET,
+                            std::time::Duration::from_millis(250),
+                        );
+                        crate::mind_landing::answer(answer, &name, seen)
+                    };
+                    return yantrik_app_runtime::control::answer_later(wait)
+                        .map(|()| serde_json::json!({ "answering": "off the UI thread" }))
+                        .or_else(|wait| wait());
                 }
                 Ok(answer)
             },

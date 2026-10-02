@@ -19,13 +19,14 @@
 //! (`SO_PEERCRED`) and any agent token are still in scope when the dock's spawn runs. A click
 //! has no caller at all. Everything else is sorted by [`classify`].
 //!
-//! # Failing safe
+//! # When Mind View cannot start
 //!
 //! If the nested compositor cannot be started — no labwc, no config, or it does not say which
-//! display it is serving within [`START_BUDGET`] — the app opens on the person's desktop as it
-//! did before this existed, the reason is logged and published in `describe shell`, and Mind View
-//! is not tried again until the shell restarts. A broken Mind View must never cost a mind its
-//! apps, and must never cost the person the same wait twice.
+//! display it is serving within [`START_BUDGET`] — the reason is logged and published in
+//! `describe shell`, and Mind View is not tried again until the shell restarts. The mind's launch
+//! then fails with that reason. It used to open the app on the person's desktop instead, which
+//! put a mind's work over theirs in exactly the case nobody was watching (2 Oct 2026); a refused
+//! launch that says why is better than a window in the wrong place.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -207,24 +208,22 @@ pub fn route_now(app_id: &str) -> Route {
     };
     route(
         who,
-        unavailable().is_some(),
         crate::running::is_running(app_id) && !is_mind_view_app(app_id),
     )
 }
 
-/// [`route_now`] once the facts are in: a mind asked, whether Mind View has already failed this
-/// session, and whether the app is already open on the person's desktop.
-fn route(who: String, unavailable: bool, open_on_desktop: bool) -> Route {
-    if unavailable {
-        // As before Mind View existed, so a broken one costs nothing but itself.
-        return Route { mind_view: None, raise_on_handover: true };
-    }
+/// [`route_now`] once the facts are in: a mind asked, and whether the app is already open on the
+/// person's desktop. A Mind View that failed this session no longer sends the app to the desktop:
+/// a mind's app never opens on the person's desk, so the launch fails and says why.
+fn route(who: String, open_on_desktop: bool) -> Route {
     if open_on_desktop {
         // Our apps are single-instance: a second copy in Mind View would hand over to the window
         // already open and exit. The mind drives that window through its surface; it is not
         // brought over the person's work to do it.
         return Route { mind_view: None, raise_on_handover: false };
     }
+    // Also when Mind View is down: the launch then fails where it started and says why
+    // (`wire::dock::spawn_launch`), rather than opening the app over the person's work.
     Route { mind_view: Some(who), raise_on_handover: false }
 }
 
@@ -625,8 +624,42 @@ pub fn app_names() -> Vec<String> {
     names
 }
 
-fn is_mind_view_app(app_id: &str) -> bool {
+pub(crate) fn is_mind_view_app(app_id: &str) -> bool {
     with_state(|s| s.apps.iter().any(|(_, id)| id == app_id))
+}
+
+/// The windows Mind View's own compositor lists, one `wlrctl toplevel list` line each, or `None`
+/// when Mind View is not running or its compositor did not answer in 2 s. A process, so never on
+/// the UI thread.
+pub fn nested_window_lines() -> Option<Vec<String>> {
+    let display = display_now()?;
+    let (answer, wait) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("yos-wlrctl-mind-view-list".to_string())
+        .spawn(move || {
+            let _ = answer.send(
+                Command::new("wlrctl")
+                    .args(["toplevel", "list"])
+                    .env("WAYLAND_DISPLAY", &display)
+                    .stderr(Stdio::null())
+                    .output(),
+            );
+        })
+        .ok()?;
+    match wait.recv_timeout(Duration::from_secs(2)) {
+        Ok(Ok(out)) if out.status.success() => {
+            Some(String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect())
+        }
+        _ => None,
+    }
+}
+
+/// Whether one of Mind View's window lines is the app `id`: the id or its display name, which is
+/// what a window carries as its app id or title.
+pub fn lists_app(lines: &[String], id: &str) -> bool {
+    let id = id.to_lowercase();
+    let name = crate::windows::app_display_name(&id).to_lowercase();
+    lines.iter().map(|l| l.to_lowercase()).any(|l| l.contains(&id) || (!name.is_empty() && l.contains(&name)))
 }
 
 /// The Wayland display Mind View draws on, while it is running.
@@ -651,6 +684,17 @@ pub fn for_describe() -> serde_json::Value {
         apps.dedup();
         serde_json::json!({
             "minds_open_apps_here": on,
+            // Where a mind's windows are, in words a mind can repeat to the person.
+            "your_windows_are": if on {
+                "in Mind View, a window of its own on the person's desktop; never on their desk"
+            } else {
+                "on the person's desktop, because `minds open apps in Mind View` is off"
+            },
+            "agent_terminal": if on {
+                "commands from agent_run are shown live in a terminal in Mind View"
+            } else {
+                "commands from agent_run are not drawn anywhere; their output is in the answer and on the Agents screen"
+            },
             "running": running,
             "display": s.nested.as_ref().filter(|_| running).map(|n| n.seat.wayland.clone()),
             "apps": apps,
@@ -760,13 +804,11 @@ mod tests {
     }
 
     #[test]
-    fn a_minds_app_goes_to_mind_view_unless_it_cannot() {
+    fn a_minds_app_goes_to_mind_view_and_never_falls_back_to_the_desktop() {
         let who = || "Hermes".to_string();
-        assert_eq!(route(who(), false, false), Route { mind_view: Some(who()), raise_on_handover: false });
+        assert_eq!(route(who(), false), Route { mind_view: Some(who()), raise_on_handover: false });
         // Already open on the person's desktop: used where it is, and not raised over their work.
-        assert_eq!(route(who(), false, true), Route { mind_view: None, raise_on_handover: false });
-        // Mind View failed this session: exactly what happened before it existed.
-        assert_eq!(route(who(), true, false), Route { mind_view: None, raise_on_handover: true });
+        assert_eq!(route(who(), true), Route { mind_view: None, raise_on_handover: false });
     }
 
     #[test]
@@ -839,5 +881,27 @@ mod tests {
         assert!(!is_nested_window("", "labwc - notes.txt"));
         assert!(!is_nested_window("", "wlroots - WLAN setup"));
         assert!(!is_nested_window("firefox", "Mozilla Firefox"));
+    }
+
+    /// The mind path's environment is the nested display's and nothing of the person's: what the
+    /// dock's `launch` overlays after the session's own.
+    #[test]
+    fn the_mind_path_launches_with_mind_views_display_and_never_the_persons() {
+        let seat = Seat { wayland: "wayland-1".into(), x11: Some(":2".into()) };
+        assert_eq!(
+            seat.env(),
+            vec![("WAYLAND_DISPLAY", "wayland-1".to_string()), ("DISPLAY", ":2".to_string())]
+        );
+        // The source of the launch path: a mind's launch whose Mind View is down is refused, not
+        // handed to `launch` with no seat (the person's desktop).
+        let dock = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/wire/dock.rs")).unwrap();
+        let body = &dock[dock.find("fn spawn_launch(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let worker = &body[body.find("std::thread::spawn").unwrap()..];
+        assert!(
+            !worker.contains("None, true)") && !worker.contains("adapter, None"),
+            "a mind's launch must never fall back to the person's display:\n{worker}"
+        );
+        assert!(worker.contains("Some(&seat)"), "the worker launches on Mind View's seat");
     }
 }

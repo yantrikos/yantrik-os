@@ -74,7 +74,11 @@ pub fn jobs() -> &'static Jobs {
         // agent the terminal started it for — so one agent's output can never land in another's
         // card. On the job's worker thread; the store is behind a lock of its own, so no hop to
         // the UI thread is needed.
-        jobs.on_output(|agent, job, bytes| crate::agents::store().command_output(agent, &job.0, bytes));
+        jobs.on_output(|agent, job, bytes| {
+            crate::agents::store().command_output(agent, &job.0, bytes);
+            // And the same bytes to the terminal in Mind View, for an agent whose commands are shown.
+            crate::mind_agent_terminal::mirror(&agent.0, bytes);
+        });
         jobs.on_finish(|answer| {
             crate::agents::store().command_finished(
                 &answer.agent,
@@ -419,7 +423,8 @@ fn specs() -> [Action; 4] {
             "agent_run",
             &format!(
                 "Run one command line in a fresh terminal of your own, in your pane — not the \
-                 person's Terminal. Answers when it exits, with `exit_code` (or `signal`), \
+                 person's Terminal. Its output is also shown live in a terminal in Mind View, \
+                 your desk; `shown_in` in the answer says whether it was. Answers when it exits, with `exit_code` (or `signal`), \
                  `cwd_after` and the `tail` of its output; if it is still going after `wait` it \
                  answers `running: true` with a `job` id. The directory carries to your next \
                  command; exported variables and other shell state do not. The environment is \
@@ -508,12 +513,33 @@ fn agent_run(args: &Value, call: Call) -> Result<Value, String> {
         // Started, then carded, then waited on: the card opens in the agent's pane the moment the
         // command exists, and fills as its terminal does. `run` would be the same two steps with
         // nothing between them.
+        // The command's line is put in the Mind View log first, so no output can arrive ahead of it.
+        let mirror = crate::mind_agent_terminal::begin(&agent.0, &command);
         let job = jobs().start(&agent, &command, cwd)?;
         let started_in = jobs().answer(&job).map(|a| a.cwd.display().to_string()).unwrap_or_default();
         crate::agents::store().command_started(&agent, &job.0, &command, &started_in);
+        // Opened beside the running command rather than before it, so the first start of Mind View
+        // never delays the command. `tail -n +1` shows everything the log already holds.
+        let shown = mirror.map(|log| crate::mind_agent_terminal::show(&agent.0, &log));
         let answer = jobs().job(&agent, &job, wait)?;
         told(&answer);
-        Ok(answer_json(&answer))
+        let mut out = answer_json(&answer);
+        match &shown {
+            Some(shown) => {
+                if let (Some(into), Some(from)) =
+                    (out.as_object_mut(), crate::mind_agent_terminal::answer_fields(shown).as_object())
+                {
+                    into.extend(from.clone());
+                }
+            }
+            None => {
+                out["shown_in"] = "nowhere on screen".into();
+                out["shown_note"] = "minds' commands are shown in Mind View only while the setting \
+                    `minds open apps in Mind View` is on; the output is in this answer and on the Agents screen"
+                    .into();
+            }
+        }
+        Ok(out)
     })
 }
 

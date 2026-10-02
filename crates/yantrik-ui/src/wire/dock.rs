@@ -1126,8 +1126,15 @@ fn spawn_launch(
                 tracing::info!(app = %app_id, mind = %who, display = %seat.wayland, "Opening in Mind View");
                 launch(&app_id, &bin, &args, dir.as_deref(), adapter, Some(&seat), false);
             }
-            // Already logged, and published in `describe shell`. The app still opens.
-            Err(_) => launch(&app_id, &bin, &args, dir.as_deref(), adapter, None, true),
+            // Already logged, and published in `describe shell`. The app does NOT open on the
+            // person's desktop: a mind's app never goes there. The refusal is recorded where
+            // `open_app` reads it back, so the mind is told why instead of "launching".
+            Err(why) => crate::running::mark_launch_failed(
+                &app_id,
+                &bin,
+                &format!("Mind View is not available ({why}); the app was not opened on the person's desktop"),
+                0,
+            ),
         }
     });
 }

@@ -107,6 +107,10 @@ mod mind_mode;
 mod mind_panel;
 /// A desktop of the mind's own, inside one window: where the apps a mind opens are drawn (#239).
 mod mind_view;
+/// Whether the window a launch promised appeared, and where: `open_app`'s answer reads it back.
+mod mind_landing;
+/// The agent terminal's visible half: a terminal in Mind View showing a mind's commands.
+mod mind_agent_terminal;
 mod open_url;
 mod session_lock;
 // The snap layouts: rc.xml's regions and keys, and the window menu, kept in step (tests only).
