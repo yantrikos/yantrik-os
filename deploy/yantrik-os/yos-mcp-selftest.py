@@ -2487,6 +2487,13 @@ running = module.command_answer({"result": {"running": True, "job": "j7", "tail"
 check("a command still running says so, shows its output so far, and how to wait for it",
       running.startswith("Still running, as job j7.") and "Output so far:\ncompiling…" in running
       and "agent_job with job=j7" in running, running)
+refused = module.failure_answer(UNASKED, 1, "", "yos: shell.app.act refused: `wait` is a number of seconds.", True)
+check("a failed command leads with why it failed",
+      refused.startswith("failed (exit 1)\nyos: shell.app.act refused: `wait` is a number of seconds."), refused)
+check("and its grant note is the one line after it",
+      refused.splitlines()[-1].startswith("(Ran without asking anyone:") and len(refused.splitlines()) == 3, refused)
+other = module.failure_answer(UNASKED, 1, "", "yos: boom", False)
+check("any other failed act keeps the whole note in front", other.startswith(UNASKED) and other.endswith("yos: boom"), other)
 asked = "The person at the machine was asked and allowed this once, just now, for exactly these arguments."
 check("a person's answer is kept whole, not shortened", module.short_note(asked) == asked, module.short_note(asked))
 
