@@ -108,8 +108,9 @@ def apply(path, plugin_toolsets=()):
         raise ConfigError("`known_plugin_toolsets.%s` in %s is not a list; not touching it" % (PLATFORM, path))
     known[PLATFORM] = sorted({str(t) for t in (seen or [])} | {str(t) for t in plugin_toolsets})
     servers = _section(data, "mcp_servers", path)
-    if YANTRIK_OS not in servers:
-        servers[YANTRIK_OS] = dict(YANTRIK_OS_SERVER)
+    # Always this entry, whatever is there: a `yantrik_os` that runs another command is a "desktop
+    # tools" server the platform's allowlist trusts by name. Only the person's other servers stay.
+    servers[YANTRIK_OS] = dict(YANTRIK_OS_SERVER)
     _section(data, "skills", path)["inline_shell"] = False
     _section(data, "delegation", path)["max_iterations"] = DELEGATION_MAX_ITERATIONS
 
@@ -158,6 +159,13 @@ def problems(path, resolve):
         extra = [t for t in listed if t not in ALLOWED]
         if extra:
             wrong.append("platform_toolsets.%s lists %s, which the desktop platform may not have" % (PLATFORM, ", ".join(extra)))
+    servers = data.get("mcp_servers")
+    ours = servers.get(YANTRIK_OS) if isinstance(servers, dict) else None
+    if ours != YANTRIK_OS_SERVER:
+        wrong.append(
+            "mcp_servers.%s is not the desktop's own (command %s, timeout %d), so the desktop platform "
+            "has no desktop tools or tools from somewhere else" % (YANTRIK_OS, YANTRIK_OS_SERVER["command"], YANTRIK_OS_SERVER["timeout"])
+        )
     skills = data.get("skills")
     if isinstance(skills, dict) and skills.get("inline_shell"):
         wrong.append("skills.inline_shell is on, so a skill can run shell commands as it loads")
@@ -172,6 +180,27 @@ def problems(path, resolve):
     if extra:
         wrong.append("Hermes resolves the desktop platform to %s as well, which it may not have" % ", ".join(extra))
     return wrong
+
+
+def reassert(path, plugin_toolsets=hermes_plugin_toolsets, resolver=hermes_resolver):
+    """What a gateway start does: say what was wrong with the file as it found it, then put it right.
+
+    Returns `(found, left)`: the problems before and after the re-assertion. `found` is not empty
+    when the allowlist had been widened since the last start (`hermes update`, a plugin installed
+    by hand, an edit), in which case the gateway that is starting may already have read the
+    widened file and the caller must not attach. `left` is not empty when the file could not be
+    put right. A file that cannot be read or asked about is a problem, never a pass.
+    """
+    try:
+        found = problems(path, resolver())
+    except (ConfigError, OSError) as exc:
+        found = [str(exc)]
+    try:
+        apply(path, plugin_toolsets())
+        left = problems(path, resolver())
+    except (ConfigError, OSError) as exc:
+        left = [str(exc)]
+    return found, left
 
 
 def main(argv, plugin_toolsets=hermes_plugin_toolsets, resolver=hermes_resolver):

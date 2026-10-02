@@ -339,7 +339,20 @@ fn install_clicked(roots: &[std::path::PathBuf], id: &str) -> Result<String, Str
                     .map_err(|e| format!("installed, but it was not given the machine's memory: {e}"))
             }) as crate::harness_install::Worked
         });
-    crate::harness_install::install_then(&manifest, grant)
+    // An install that fails after a gateway is up (Hermes's final check) must not leave whatever
+    // the harness held standing: its live memory credentials are withdrawn. The grant is written
+    // only after a success, so there is none of this run's to roll back.
+    let id = manifest.id.clone();
+    let failed = (manifest.memory == harness_catalogue::Memory::Yantrikdb)
+        .then(|| Box::new(move || drop(crate::harness_memory::withdraw_live(host(), &id))) as crate::harness_install::Failed);
+    crate::harness_install::install_then_or(&manifest, grant, failed)
+}
+
+/// The person takes a harness's memory away, or uninstalls it: its grant is emptied, its live
+/// credentials are withdrawn, and the harness is told to void every one it holds.
+pub fn take_memory_away(id: &str) -> Result<String, String> {
+    let withdrawn = crate::harness_memory::take_away(host(), id)?;
+    Ok(format!("{id} has no memory of yours now; {withdrawn} credential(s) withdrawn"))
 }
 
 pub fn start(id: &str) -> Result<String, String> {

@@ -16,7 +16,7 @@ Seven methods on the `harness` socket, all spoken by the harness:
 harness.attach   {id, name, detail?, tools?, memory?, conversations?}  → {session}
 harness.poll     {session}              → {turn_id, text, context, conversation, agent_token, origin?} | {}
                                           … either may also carry cancelled: [turn_id], ended: [conversation],
-                                            answers: [{turn_id, request_id, answer}]
+                                            answers: [{turn_id, request_id, answer}], memory_revoked: true
 harness.chunk    {session, turn_id, delta}             → {}
 harness.event    {session, turn_id, event}             → {}      (optional — see below)
 harness.complete {session, turn_id}                    → {}
@@ -29,6 +29,10 @@ Attach, then loop: ask for a turn, stream the answer back in pieces, say you are
 a real harness replaces is the function that produces the answer. `harness.event`,
 `conversations`, `conversation`, `agent_token`, `cancelled`, `ended`, `answers` and `origin` are all
 optional to use: a harness that knows none of them works exactly as it always did.
+
+`memory_revoked: true` on a poll, once, means the person took this harness's memory away (or removed
+it): every memory credential it holds, for any session, is void now. Drop them all; do not wait for
+the next turn to arrive without one.
 
 A turn may carry `origin`, where the person asked it from (design/channels-2026-09-29.md):
 `{"channel": "lens"|"telegram"|"signal"|…, "remote": bool, "person", "carries": ["text","voice","photo"],

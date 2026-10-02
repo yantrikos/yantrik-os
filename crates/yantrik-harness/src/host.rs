@@ -294,6 +294,9 @@ struct Attached {
     cancelled: Vec<u64>,
     /// Conversations the desktop ended, to tell the harness on its next poll.
     ended: Vec<String>,
+    /// The person took this harness's memory away, to tell it on its next poll so it voids every
+    /// credential it holds now rather than at its next turn (`memory_revoked`).
+    memory_revoked: bool,
     /// Answers the person gave to questions its runs asked, to hand over on its next poll:
     /// `{turn_id, request_id, answer}`, each already consumed in the run store, so exactly once.
     answers: Vec<serde_json::Value>,
@@ -1122,6 +1125,10 @@ impl Host {
     pub fn revoke_memory_credentials(&self, harness_id: &str) -> Vec<String> {
         let mut state = self.lock();
         let Some(harness) = state.attached.get_mut(harness_id) else { return Vec::new() };
+        // Told to the harness itself on its next poll, so what it holds is void in its own process
+        // too: the memory server asks the shell about each credential, but a harness that keeps
+        // presenting one it was told is withdrawn is a harness the shell cannot see.
+        harness.memory_revoked = true;
         harness.agents.values_mut().filter_map(|agent| agent.memory.take()).map(|held| held.digest).collect()
     }
 
@@ -1439,6 +1446,7 @@ impl Host {
                 finished: VecDeque::new(),
                 cancelled: Vec::new(),
                 ended: Vec::new(),
+                memory_revoked: false,
                 answers: Vec::new(),
             },
         );
@@ -1644,7 +1652,9 @@ impl Host {
                     Some(agent) => {
                         // No grant now: whatever it was handed before is withdrawn, so the memory
                         // server finds nothing behind it.
-                        agent.memory = None;
+                        if agent.memory.take().is_some() {
+                            harness.memory_revoked = true;
+                        }
                         String::new()
                     }
                     None => String::new(),
@@ -1689,6 +1699,9 @@ impl Host {
         }
         if !harness.ended.is_empty() {
             reply["ended"] = serde_json::json!(std::mem::take(&mut harness.ended));
+        }
+        if std::mem::take(&mut harness.memory_revoked) {
+            reply["memory_revoked"] = serde_json::json!(true);
         }
         if !harness.answers.is_empty() {
             reply["answers"] = serde_json::json!(std::mem::take(&mut harness.answers));
@@ -3057,6 +3070,36 @@ mod tests {
         assert_eq!(second["text"], "two");
         assert!(second.get("memory_credential").is_none(), "revoked while it waited: {second}");
         assert_eq!(host.memory_credential_holder(&credential), None, "and the one it held names nothing now");
+        // The harness is told, once, so it voids what it holds in its own process too.
+        assert_eq!(second["memory_revoked"], true, "{second}");
+        host.handle_from(protocol::COMPLETE, &json!({ "session": session, "turn_id": second["turn_id"] }), Some(4242), Some(1000))
+            .unwrap();
+        assert!(poll_from(&host, &session, 4242, Some(1000)).unwrap().get("memory_revoked").is_none(), "once");
+    }
+
+    /// Taking a mind's memory away tells the mind (security review round 4, F2): the next poll,
+    /// turn or no turn, carries `memory_revoked`, once, and only for the mind it was taken from.
+    #[test]
+    fn a_revoke_is_pushed_to_the_harness_on_its_next_poll_once() {
+        let hash = |s: &str| format!("{:0>64}", s.len().to_string() + &s[4..10]);
+        let host = host_with_nothing().with_liveness(|pid| pid == 4242 || pid == 4243).with_memory(|_, _| true, hash);
+        let attach = |id: &str, pid: u32| {
+            host.handle_from(protocol::ATTACH, &json!({ "id": id, "name": id }), Some(pid), Some(1000)).unwrap()["session"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let (hermes, other) = (attach("hermes", 4242), attach("pi", 4243));
+        let _t = host.send_to(&AgentId::new("hermes", AgentId::MAIN), Turn::new("one")).unwrap();
+        let turn = poll_from(&host, &hermes, 4242, Some(1000)).unwrap();
+        let credential = turn["memory_credential"].as_str().unwrap().to_string();
+        assert!(turn.get("memory_revoked").is_none());
+
+        assert_eq!(host.revoke_memory_credentials("hermes").len(), 1);
+        assert_eq!(host.memory_credential_holder(&credential), None, "the shell stops vouching at once");
+        assert!(poll_from(&host, &other, 4243, Some(1000)).unwrap().get("memory_revoked").is_none(), "only hermes");
+        assert_eq!(poll_from(&host, &hermes, 4242, Some(1000)).unwrap()["memory_revoked"], true);
+        assert!(poll_from(&host, &hermes, 4242, Some(1000)).unwrap().get("memory_revoked").is_none(), "told once");
     }
 
     /// The person's grants are read from a file by the shell's policy, which must never run with

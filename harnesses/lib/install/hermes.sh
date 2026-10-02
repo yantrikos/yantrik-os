@@ -49,6 +49,10 @@ say "$(hermes --version 2>/dev/null | head -n 1 || echo Hermes) is here"
 say "copying the desktop plugin into ~/.hermes"
 mkdir -p "$HOME/.hermes/plugins/yantrik"
 cp -r "$plugin/." "$HOME/.hermes/plugins/yantrik/"
+# The adapter re-asserts and checks the desktop platform's allowlist every time the gateway starts
+# (guard.py), with the same file this script applies it with: one copy of the rule, not two.
+cp "$(dirname "$0")/hermes_config.py" "$HOME/.hermes/plugins/yantrik/hermes_config.py" \
+    || fail "could not copy the allowlist check beside the desktop plugin"
 hermes plugins enable yantrik-desktop || fail "Hermes would not enable the desktop plugin"
 
 # The Python Hermes runs on, which has its YAML library and is where its plugins are installed.
@@ -143,14 +147,21 @@ env_default() {
 mode=$(env_default YANTRIKDB_MODE yantrik)
 case "$mode" in
     yantrik|\"yantrik\"|\'yantrik\') ;;
-    *) say "YANTRIKDB_MODE is ${mode:-empty} in ~/.hermes/.env, so Hermes keeps its own YantrikDB rather than this machine's; set it to yantrik to share Yantrik Mind's" ;;
+    # Not an install that worked as asked: the desktop grants memory only to one that did, so
+    # this stops here, before the gateway, rather than granting memory Hermes would not use.
+    *) fail "YANTRIKDB_MODE is ${mode:-empty} in ~/.hermes/.env, so Hermes would keep its own YantrikDB rather than this machine's; set it to yantrik there and install again" ;;
 esac
 # The desktop's harness socket is in a directory only the person's own account can open (0700),
 # so whoever is typing in the chat panel is the person and there is nobody to pair with. The
 # plugin's register() sets this too, but Hermes reads a platform's gate from the profile's own
 # secrets (gateway/platforms/_shared.py, platform_gate_env), not from what a plugin put in its
 # environment, and the first message on a fresh machine was answered with a pairing code.
-env_default YANTRIK_ALLOW_ALL_USERS true >/dev/null
+# Only on the unix socket. A TCP address in YANTRIK_HARNESS is the dev path, which any local user
+# can reach, and there nobody is paired.
+case "${YANTRIK_HARNESS:-}" in
+    ""|off|unix:*|/*) env_default YANTRIK_ALLOW_ALL_USERS true >/dev/null ;;
+    *) say "YANTRIK_HARNESS is a network address (the dev path), so anyone on this machine could message Hermes; not turning pairing off" ;;
+esac
 
 # Hermes's gateway as the person's own user service, started now and at every login: nothing
 # else loads the plugin. `--if-missing` leaves one that is already there alone.
@@ -160,14 +171,25 @@ env_default YANTRIK_ALLOW_ALL_USERS true >/dev/null
 "$hermes_python" "$(dirname "$0")/hermes_config.py" apply "$config" >/dev/null \
     || fail "could not hold Hermes's desktop platform to the desktop's tools; see $config"
 
+# Checked before the gateway starts, and again once it has, against the same file. Hermes's gateway
+# is not something to leave running on an allowlist that does not hold: a failure here stops it,
+# and the install fails, so the desktop grants nothing and carries no credential to it.
+hermes_check() {
+    "$hermes_python" "$(dirname "$0")/hermes_config.py" check "$config"
+}
+stop_gateway() {
+    systemctl --user stop hermes-gateway >/dev/null 2>&1 || true
+}
+# A gateway from an earlier install may be running on a file that has just changed.
+hermes_check || { stop_gateway; fail "Hermes's desktop platform has more than the desktop's tools, and Hermes's gateway is stopped; see $config"; }
+
 hermes gateway install --if-missing --start-now --start-on-login </dev/null \
-    || fail "Hermes would not install its gateway service"
-systemctl --user restart hermes-gateway || fail "Hermes's gateway would not start"
+    || { stop_gateway; fail "Hermes would not install its gateway service"; }
+systemctl --user restart hermes-gateway || { stop_gateway; fail "Hermes's gateway would not start"; }
 
 # Read back last, after everything else that edits config.yaml has run: an install that leaves
 # Hermes's own terminal on the desktop platform is not finished, whatever else worked.
-"$hermes_python" "$(dirname "$0")/hermes_config.py" check "$config" \
-    || fail "Hermes's desktop platform still has Hermes's own tools; see $config"
+hermes_check || { stop_gateway; fail "Hermes's desktop platform still has Hermes's own tools, so its gateway is stopped; see $config"; }
 
 # The desktop opens `hermes model` next (the manifest's `configure`); by hand it is the same.
 say "Hermes is installed. Next, choose its model: Choose model on this row, or run: hermes model"

@@ -83,11 +83,24 @@ The Minds row then reads *Memory: YantrikDB (shared with Yantrik Mind)*. Only th
 click grants it: an agent that asks for the install through `install_harness` gets Hermes
 installed and grants it nothing.
 
+Taking the memory away reaches Hermes at once, not at its next turn: the desktop answers the
+harness's next poll with `memory_revoked`, and the adapter calls `set_desktop_credential(key, None)`
+for every session it ever registered one under. The shell stops vouching for the credential in
+`memory_validate` in the same moment. A turn the provider cannot take a credential for, or one
+whose address is not loopback `http://` or `unix:/abs/path` (checked here as well as in the
+provider), ends with no credential held for that session: the adapter fails closed.
+
 There is no button to take the grant back yet. Until there is, set `"hermes": {}` in
 `~/.config/yantrik/memory-grants.json`. An entry that grants nothing is a revocation: installing
 Hermes again does not give the memory back, and the row says so. (Removing the entry instead
 means nobody has decided, and the next Install grants it again.) The desktop keeps a narrowing
 made in that file, and ignores a widening it did not make.
+
+**The allowlist is held at every start.** The adapter re-asserts the desktop platform's toolset
+allowlist and the `yantrik_os` MCP server (`/opt/yantrik/bin/yos-mcp`, timeout 300) whenever the
+gateway starts (`guard.py`, with `hermes_config.py` copied beside it by the installer), and checks
+them again at every attach. If `hermes update`, a plugin or an edit had widened them, the file is put
+back, that start does not attach, and the Hermes row says why. Restart the gateway to attach.
 
 **What this does not protect against.** The id a harness attaches under is its own word, so any
 process running as the person can attach as `hermes` and be handed Hermes's credential with its

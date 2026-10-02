@@ -92,6 +92,13 @@ pub fn install(manifest: &Manifest) -> Result<String, String> {
 /// finished, so whoever waits for the row to settle sees what `worked` did. An `Err` from it is
 /// put on the row. Never run when the install failed.
 pub fn install_then(manifest: &Manifest, worked: Option<Worked>) -> Result<String, String> {
+    install_then_or(manifest, worked, None)
+}
+
+/// [`install_then`], with `failed` run when the command did not succeed: the install's own final
+/// check can fail after a gateway is already up, and whatever the harness held until then (a
+/// memory credential) is not to be left standing on an install that did not finish.
+pub fn install_then_or(manifest: &Manifest, worked: Option<Worked>, failed: Option<Failed>) -> Result<String, String> {
     let install: &Install = manifest
         .install
         .as_ref()
@@ -109,7 +116,7 @@ pub fn install_then(manifest: &Manifest, worked: Option<Worked>) -> Result<Strin
             }
         }) as Then
     });
-    spawn(&manifest.id, JobKind::Install, &doing, command.clone(), worked, then)?;
+    spawn(&manifest.id, JobKind::Install, &doing, command.clone(), worked, failed, then)?;
     Ok(command)
 }
 
@@ -133,6 +140,9 @@ type Then = Box<dyn FnOnce() + Send>;
 /// What has to be done once an install has worked, before the job is reported finished: an
 /// `Err` is the sentence the row shows.
 pub type Worked = Box<dyn FnOnce() -> Result<(), String> + Send>;
+
+/// What to do when an install did not succeed.
+pub type Failed = Box<dyn FnOnce() + Send>;
 
 /// Enable and start a harness's unit.
 ///
@@ -170,7 +180,7 @@ pub fn start(manifest: &Manifest) -> Result<String, String> {
     }
     steps.push(format!("systemctl --user enable --now {}", shell_quote(&manifest.unit)));
     let command = steps.join(" && ");
-    spawn(&manifest.id, JobKind::Start, &format!("starting {}", manifest.unit), command.clone(), None, None)?;
+    spawn(&manifest.id, JobKind::Start, &format!("starting {}", manifest.unit), command.clone(), None, None, None)?;
     Ok(command)
 }
 
@@ -190,6 +200,7 @@ fn spawn(
     doing: &str,
     command: String,
     worked: Option<Worked>,
+    failed: Option<Failed>,
     then: Option<Then>,
 ) -> Result<(), String> {
     // One at a time per harness. Two `npm install -g` for the same package at once is a package
@@ -260,6 +271,9 @@ fn spawn(
                 Err(e) => Some(format!("could not wait for it: {e}")),
             };
             let succeeded = outcome.is_none();
+            if let Some(failed) = failed.filter(|_| !succeeded) {
+                failed();
+            }
             // Before the job is marked finished, so the row never reads "finished" while what
             // the success was for is still being done, and a failed job never reaches it.
             let afterwards = match worked.filter(|_| succeeded) {

@@ -751,6 +751,22 @@ mod tests {
             assert_eq!(ask(caller(MIND_UID), &digest, Some(&borrowed), Some(store)), Ok(Value::Null));
         }
 
+        /// Revocation (security review round 4, F2): once the host withdraws a mind's credentials the
+        /// shell stops vouching for them, even while a grant still stands in the file the shell
+        /// was handed. (That the mind is told on its next poll is host.rs's test.)
+        #[test]
+        fn a_withdrawn_credential_is_no_longer_vouched_for_and_the_mind_is_told() {
+            let (host, digest) = host_with("pi", person());
+            let grants = || {
+                let mut store = Store::default();
+                store.minds.insert("pi".into(), Grants::ordinary());
+                Some(store)
+            };
+            assert_eq!(ask(caller(MIND_UID), &digest, Some(&host), grants()).unwrap()["mind"], "pi");
+            assert_eq!(host.revoke_memory_credentials("pi").len(), 1);
+            assert_eq!(ask(caller(MIND_UID), &digest, Some(&host), grants()), Ok(Value::Null));
+        }
+
         #[test]
         fn a_grants_file_that_cannot_be_trusted_answers_nobody() {
             let (real, digest) = host_with(FIRST_PARTY_MIND, MIND_UID);

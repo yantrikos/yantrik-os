@@ -295,6 +295,10 @@ pub struct Machine {
     /// The harnesses the person took the memory away from, so the row says a reinstall will not
     /// give it back.
     pub memory_revoked: Vec<String>,
+    /// Harnesses that refused to attach, and why, in their own words: a harness that holds itself
+    /// to a rule (Hermes's allowlist, #574) says here that it is not attached because it broke it.
+    /// Read fresh with the jobs, from `~/.config/yantrik/refused/<id>`.
+    pub refused: HashMap<String, String>,
 }
 
 // ── The states a row can be in ──────────────────────────────────────
@@ -483,6 +487,9 @@ fn from_manifest(machine: &Machine, manifest: &Manifest, attached: Option<&Entry
     let unit = machine.units.get(&manifest.unit).cloned().unwrap_or_default();
     let dir = manifest.dir.as_path();
 
+    // Only said while it is not attached: a harness that is attached is working, whatever a file
+    // left from an earlier start says.
+    let refusal = attached.is_none().then(|| machine.refused.get(&manifest.id)).flatten();
     let missing_require = manifest.requires.iter().find(|n| !n.met(machine, dir));
     let missing_setup = manifest.setup.iter().find(|n| !n.met(machine, dir));
 
@@ -499,6 +506,8 @@ fn from_manifest(machine: &Machine, manifest: &Manifest, attached: Option<&Entry
             JobKind::Install => State::Installing,
             JobKind::Start => State::Starting,
         }
+    } else if refusal.is_some() {
+        State::Failed
     } else if missing_require.is_some() {
         State::NotInstalled
     } else if missing_setup.is_some() {
@@ -548,7 +557,10 @@ fn from_manifest(machine: &Machine, manifest: &Manifest, attached: Option<&Entry
                 format!("{} is not installed as a user unit yet", manifest.unit)
             }
         }
-        State::Failed => format!("{} started and gave up", manifest.unit),
+        State::Failed => match refusal {
+            Some(why) => why.clone(),
+            None => format!("{} started and gave up", manifest.unit),
+        },
         State::Attached | State::Answering => String::new(),
     };
 
@@ -859,7 +871,27 @@ pub fn machine(jobs: HashMap<String, JobView>) -> Machine {
     };
     machine.jobs = jobs;
     (machine.memory_granted, machine.memory_revoked) = crate::harness_memory::decided_minds();
+    machine.refused = read_refused(&machine.config_dir);
     machine
+}
+
+/// What each harness that refused to attach said, from `<config_dir>/refused/<id>`: one line each.
+/// Only files named like a harness id are read, and only a line's worth of text is kept.
+pub fn read_refused(config_dir: &Path) -> HashMap<String, String> {
+    let mut found = HashMap::new();
+    let Ok(entries) = std::fs::read_dir(config_dir.join("refused")) else { return found };
+    for entry in entries.flatten() {
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(entry.path()) else { continue };
+        let line: String = text.lines().next().unwrap_or("").chars().take(300).collect();
+        if !line.trim().is_empty() {
+            found.insert(id, line.trim().to_string());
+        }
+    }
+    found
 }
 
 fn gather() -> Machine {
@@ -884,6 +916,7 @@ fn gather() -> Machine {
         jobs: HashMap::new(),
         memory_granted: Vec::new(),
         memory_revoked: Vec::new(),
+        refused: HashMap::new(),
     }
 }
 
@@ -945,6 +978,7 @@ mod tests {
                 jobs: HashMap::new(),
                 memory_granted: Vec::new(),
                 memory_revoked: Vec::new(),
+                refused: HashMap::new(),
             }
         }
     }
@@ -1081,6 +1115,35 @@ memory: honcho
         for id in ["pi", "deepseek", "openclaw"] {
             assert_eq!(manifests[id].memory, Memory::Own, "{id} was never built to use it");
         }
+    }
+
+    /// Hermes refuses to attach to a desktop whose platform it found widened (security review
+    /// round 4, F1), and says so where the person looks: its own row, not a log nobody reads.
+    #[test]
+    fn a_harness_that_refused_to_attach_says_why_on_its_row_until_it_attaches() {
+        let fixture = Fixture::new("refused");
+        fixture.harness("hermes", "id: hermes\nrequires:\n  - binary: hermes\n    why: Hermes itself\n");
+        fixture.program("hermes");
+        std::fs::create_dir_all(fixture.root.join("home/.config/yantrik/refused")).unwrap();
+        std::fs::write(
+            fixture.root.join("home/.config/yantrik/refused/hermes"),
+            "Hermes's desktop tools had been widened (terminal). They are restored; restart its gateway\nsecond line\n",
+        )
+        .unwrap();
+        std::fs::write(fixture.root.join("home/.config/yantrik/refused/not a id"), "x").unwrap();
+        let mut machine = fixture.machine();
+        machine.refused = read_refused(&machine.config_dir);
+        assert_eq!(machine.refused.len(), 1, "one line, only for a harness-shaped name: {:?}", machine.refused);
+        let refused = rows(&machine, &[builtin()]);
+        let hermes = row(&refused, "hermes");
+        assert_eq!(hermes.state, State::Failed);
+        assert!(hermes.need.contains("widened (terminal)") && !hermes.need.contains("second line"), "{}", hermes.need);
+        // Attached: it is working, whatever an old file says.
+        let attached = rows(&machine, &[builtin(), entry("hermes", false)]);
+        assert_eq!(row(&attached, "hermes").state, State::Attached);
+        assert!(row(&attached, "hermes").need.is_empty());
+        // No file, no refusal.
+        assert_eq!(row(&rows(&fixture.machine(), &[builtin()]), "hermes").state, State::Ready);
     }
 
     #[test]
