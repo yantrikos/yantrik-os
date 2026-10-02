@@ -17,6 +17,7 @@ import { YNoticeBar } from "components/notice_bar.slint";
 import { ToolCallData, ToolCallCard } from "components/tool_call.slint";
 import { ApprovalRequest, ApprovalCard } from "components/intent_lens.slint";
 import { QuestionCard } from "components/question_card.slint";
+import { WorkCardData } from "components/work_card.slint";
 import { RouteStopData, AgentsRoute } from "agents_route.slint";
 import { JumpToPresent } from "jump_to_present.slint";
 
@@ -147,6 +148,15 @@ export struct AgentRoleData {
 }
 
 export global AgentsState {
+    // What the Lens's conversation shows of the runs it started (Chat v2): one card per run,
+    // the run the strip describes, how many are live, and how many of those wait on the person.
+    // Filled by wire/agents.rs from the same store as the list below.
+    in-out property <[WorkCardData]> lens-cards: [];
+    in-out property <WorkCardData> lens-strip;
+    in-out property <int> lens-live: 0;
+    in-out property <int> lens-waiting: 0;
+    // "Built-in mind" or "Attached mind", for the conversation header.
+    in-out property <string> lens-identity: "";
     // The list.
     in-out property <[AgentTabData]> tabs: [];
     in-out property <string> tab: "active";

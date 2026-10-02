@@ -593,6 +593,9 @@ pub struct Card {
     pub status: Status,
     /// The one-line transcript record, once this has been decided. Empty while pending.
     pub record: String,
+    /// Wall-clock `HH:MM` it was decided at, for the resolved line's "Approved by you · 10:42".
+    /// Empty while pending, and for one that was never answered.
+    pub decided_at: String,
     pub age_secs: u64,
 }
 
@@ -1123,6 +1126,11 @@ impl Store {
                 said: record.said(),
                 status,
                 record: record_line(record, status),
+                decided_at: if status == Status::Pending || (status == Status::Expired && record.state != Status::Granted) {
+                    String::new()
+                } else {
+                    record.decided_at.clone()
+                },
                 age_secs: now.duration_since(record.created).as_secs(),
             };
             if status == Status::Pending {

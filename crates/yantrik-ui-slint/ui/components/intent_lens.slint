@@ -11,9 +11,13 @@
 import { Theme } from "theme.slint";
 import { QuestionRequest, QuestionCard } from "question_card.slint";
 import { Icon, Icons } from "icon.slint";
-import { MessageData, MessageBubble } from "message_bubble.slint";
-import { ListView } from "std-widgets.slint";
-import { JumpToPresent } from "jump_to_present.slint";
+import { MessageData } from "message_bubble.slint";
+import { WorkCardData, WorkCard, WorkStrip } from "work_card.slint";
+import { ChatMessage } from "chat_message.slint";
+import { ChatTranscript } from "chat_transcript.slint";
+import { ChatComposer } from "chat_composer.slint";
+import { ChatHeader, ChatEmpty } from "chat_chrome.slint";
+export { WorkCardData } from "work_card.slint";
 
 // A single result in the Intent Feed.
 export struct LensResult {
@@ -108,6 +112,7 @@ export struct ApprovalRequest {
     decision: string,       // "" while waiting; then allowed | denied | expired
     record: string,         // the one line that stays in the conversation afterwards
     age-text: string,       // "94s left", while waiting
+    decided-at: string,     // "10:42" once decided: the resolved line's time
 }
 
 // One request, or — once it has been answered — the line it leaves behind.
@@ -140,6 +145,8 @@ export component ApprovalCard inherits Rectangle {
     callback allow();
     callback allow-session();
     callback deny();
+    // The resolved line's "View action": the run of the agent that asked.
+    callback view-action();
 
     property <bool> waiting: root.data.decision == "";
 
@@ -179,43 +186,72 @@ export component ApprovalCard inherits Rectangle {
 
     body := VerticalLayout {
 
-    // Decided: one line in the transcript, and nothing else. The card is gone; the record of
-    // what was decided is not, because "did I allow that?" is a question people ask afterwards.
+    // Decided: one collapsed line in the transcript, and nothing else. The card is gone; the
+    // record of what was decided is not, because "did I allow that?" is a question people ask
+    // afterwards. "Approved" is what the person did, not what happened next: whether the action
+    // then ran is the run's business, and "View action" opens the run where it is recorded. The
+    // whole record sentence stays one hover away as the line's accessible description.
     if !root.waiting : HorizontalLayout {
         padding-left: Theme.sp-4;
         padding-right: Theme.sp-4;
         padding-top: Theme.sp-1;
         padding-bottom: Theme.sp-1;
         spacing: Theme.sp-2;
+        accessible-role: text;
+        accessible-description: root.data.record;
 
-        Rectangle {
-            width: 3px;
-            background: root.data.decision == "allowed" ? Theme.color-success
-                : root.data.decision == "denied" ? Theme.color-danger
-                : Theme.text-dim;
-        }
         Text {
-            text: root.data.record;
-            color: Theme.text-dim;
+            text: root.data.decision == "allowed" ? "Approved by you"
+                : root.data.decision == "denied" ? "Declined by you"
+                : root.data.record;
+            color: Theme.chat-text-2;
+            font-size: Theme.fs-caption;
+            vertical-alignment: center;
+            wrap: no-wrap;
+            overflow: elide;
+            horizontal-stretch: root.data.decision == "expired" ? 1 : 0;
+        }
+        if root.data.decision != "expired" && root.data.decided-at != "" : Text {
+            text: "\u{00b7} " + root.data.decided-at;
+            color: Theme.chat-text-2;
+            font-size: Theme.fs-caption;
+            vertical-alignment: center;
+            wrap: no-wrap;
+        }
+        if root.data.decision != "expired" && root.data.decided-at == "" : Text {
+            text: "\u{00b7} " + root.data.record;
+            color: Theme.chat-text-2;
             font-size: Theme.fs-caption;
             vertical-alignment: center;
             wrap: no-wrap;
             overflow: elide;
             horizontal-stretch: 1;
         }
+        if root.data.agent != "" : view-ta := TouchArea {
+            width: view-text.preferred-width;
+            mouse-cursor: pointer;
+            clicked => { root.view-action(); }
+            view-text := Text {
+                text: "\u{2014} View action";
+                color: view-ta.has-hover ? Theme.chat-text : Theme.chat-text-2;
+                font-size: Theme.fs-caption;
+                vertical-alignment: center;
+                wrap: no-wrap;
+            }
+        }
+        Rectangle { horizontal-stretch: 1; }
     }
 
     if root.waiting : Rectangle {
-        border-radius: Theme.r-lg;
+        border-radius: Theme.chat-radius;
         // Opaque, not glass: this card is drawn over whatever screen is up, and a question about
         // something that cannot be undone must not have another window's words showing through it.
-        background: Theme.bg-card;
+        background: Theme.chat-bar;
         border-width: 1px;
-        // The grade colours the edge of the card rather than a badge in the corner, so the one
-        // thing that changes how hard you should look is visible before you start reading.
-        border-color: root.data.grade == "dangerous" ? Theme.color-danger
-            : root.data.grade == "sensitive" ? Theme.color-warning
-            : Theme.glass-border-strong;
+        // A request is a person's answer being waited on, so its edge is the needs-you amber. The
+        // one grade that is worse than that keeps its own colour, so the thing that changes how
+        // hard you should look is still visible before you start reading.
+        border-color: root.data.grade == "dangerous" ? Theme.color-danger : Theme.chat-needs-you;
         drop-shadow-blur: 18px;
         drop-shadow-color: Theme.overlay-shadow;
         // The promise to the panel: never taller than it was told it may be. What yields is the
@@ -251,6 +287,13 @@ export component ApprovalCard inherits Rectangle {
             //
             // Four fixed single-line rows rather than anything that wraps, so the card's height
             // stays arithmetic — see the geometry table in design/approvals-2026-09-21.md.
+            Text {
+                text: "Approval needed";
+                color: Theme.chat-needs-you;
+                font-size: Theme.fs-body-strong;
+                font-weight: 600;
+                wrap: no-wrap;
+            }
             HorizontalLayout {
                 spacing: Theme.sp-2;
 
@@ -258,7 +301,7 @@ export component ApprovalCard inherits Rectangle {
                     width: 6px; height: 6px;
                     y: 5px;
                     border-radius: 3px;
-                    background: Theme.amber;
+                    background: Theme.chat-needs-you;
                 }
                 Text {
                     text: root.data.requester;
@@ -693,7 +736,7 @@ export component ApprovalCard inherits Rectangle {
                         clicked => { root.deny(); }
                     }
                     Text {
-                        text: "Deny";
+                        text: "Decline";
                         color: Theme.text-primary;
                         font-size: Theme.fs-body-strong;
                         horizontal-alignment: center;
@@ -707,15 +750,15 @@ export component ApprovalCard inherits Rectangle {
                     border-radius: Theme.r-md;
                     background: allow-ta.has-hover ? Theme.amber-glow : transparent;
                     border-width: 1px;
-                    border-color: Theme.amber;
+                    border-color: Theme.chat-needs-you;
 
                     allow-ta := TouchArea {
                         mouse-cursor: pointer;
                         clicked => { root.allow(); }
                     }
                     Text {
-                        text: "Allow once";
-                        color: Theme.amber-light;
+                        text: "Approve once";
+                        color: Theme.chat-needs-you;
                         font-size: Theme.fs-body-strong;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -1015,8 +1058,43 @@ export component IntentLens inherits Rectangle {
     /// Questions the mind this conversation is with asked and is waiting on (#25), oldest first.
     in property <[QuestionRequest]> questions: [];
     callback question-answer(string, string, string);   // agent id, request id, answer
-    // A reply's "Open the run": the run's row id (`mind:main#n`).
+    // The run's row id (`mind:main#n`), from a work card's Details or Review changes, or an agent's
+    // id from a resolved approval's "View action" — both land in the Agents screen. Also the
+    // desktop's own offer, while private, to leave Private mode (`private:leave`).
     callback open-run(string);
+
+    // ── Chat v2 ──
+    //
+    // What the shell knows of the runs this chat started, from the Agents store: one card per
+    // run, found by the id a reply carries. Nothing here is composed by the mind.
+    in property <[WorkCardData]> work-cards: [];
+    // The run the strip describes (the live one that most needs the person), and how many runs are
+    // live in this chat, and how many of those wait on the person. `strip.run == ""` is none.
+    in property <WorkCardData> strip;
+    in property <int> live-runs: 0;
+    in property <int> waiting-runs: 0;
+    // The composer's mode chip: the mind-mode label ("Ask"). The chip opens the existing choice.
+    in property <string> mode-label: "Ask";
+    // Where the mind runs, as the header says it: "Built-in mind" or "Attached mind".
+    in property <string> identity: "";
+    callback mode-clicked();
+    callback mind-clicked();
+    // "View desk": bring Mind View, the mind's own desk, in front.
+    callback view-desk(string);
+    // The panel's width: 440px until the person drags its left edge, then between 380 and 560.
+    // It is kept for this session only.
+    in-out property <length> panel-width: Theme.chat-panel-width;
+    // The panel's own height, between the two bars and inside its margins.
+    out property <length> panel-height: root.height - Theme.status-bar-height - Theme.taskbar-height
+        - 2 * Theme.chat-panel-gap;
+    // What the transcript is doing, for `describe` and for the preview checks (the transcript is
+    // inside the chat-mode block, whose ids cannot be named from out here): following the newest
+    // line, something arrived while reading further up, and how far down it is scrolled.
+    out property <bool> transcript-following: true;
+    out property <bool> transcript-missed: false;
+    out property <length> transcript-y: 0px;
+    // Whether the current-work strip is on screen.
+    out property <bool> strip-shown: root.chat-mode && root.strip.run != "";
 
     // Callbacks
     callback approval-allow(string);   // request id — a click, and nothing else, creates a grant
@@ -1119,7 +1197,7 @@ export component IntentLens inherits Rectangle {
     if root.is-open : TouchArea {
         x: 0;
         y: 0;
-        width: root.width - Theme.chat-panel-width;
+        width: root.width - root.panel-width - Theme.chat-panel-gap;
         height: root.height;
         clicked => { root.close-lens(); }
     }
@@ -1133,11 +1211,11 @@ export component IntentLens inherits Rectangle {
     // dock to hint that something was there. Nothing in the layout said "full height" on
     // purpose; it simply never subtracted the chrome it was underneath.
     Rectangle {
-        x: root.is-open ? root.width - Theme.chat-panel-width : root.width;
-        y: Theme.status-bar-height;
-        width: Theme.chat-panel-width;
-        height: root.height - Theme.status-bar-height - Theme.taskbar-height;
-        border-radius: 0;
+        x: root.is-open ? root.width - root.panel-width - Theme.chat-panel-gap : root.width;
+        y: Theme.status-bar-height + Theme.chat-panel-gap;
+        width: root.panel-width;
+        height: root.panel-height;
+        border-radius: Theme.chat-radius;
         clip: true;
         visible: root.is-open;
 
@@ -1160,14 +1238,21 @@ export component IntentLens inherits Rectangle {
         // A conversation is paragraphs, and at 9% the machine rail behind this panel put
         // "Model ollama-local:qwen3.5:9b-8k" and a column of service names inside the answer.
         // Same panel, two jobs, two treatments.
-        background: @linear-gradient(180deg,
-            Theme.bg-deep.transparentize(root.chat-mode ? 0% : 9%) 0%,
-            Theme.bg-deep.transparentize(root.chat-mode ? 0% : 12%) 50%,
-            Theme.bg-deep.transparentize(root.chat-mode ? 0% : 9%) 100%
+        //
+        // Chat v2: the conversation is one opaque charcoal panel with a 1px border, which is what
+        // a surface holding paragraphs and a decision should be. The gradient is the search
+        // rows' glass and is kept for them.
+        background: root.chat-mode ? Theme.chat-panel : @linear-gradient(180deg,
+            Theme.bg-deep.transparentize(9%) 0%,
+            Theme.bg-deep.transparentize(12%) 50%,
+            Theme.bg-deep.transparentize(9%) 100%
         );
+        border-width: root.chat-mode ? 1px : 0px;
+        border-color: Theme.chat-border;
 
-        // Left edge glow (panel border)
+        // Left edge glow (panel border). The conversation has its own 1px border instead.
         Rectangle {
+            visible: !root.chat-mode;
             x: 0; y: 0;
             width: 1px;
             height: 100%;
@@ -1195,139 +1280,19 @@ export component IntentLens inherits Rectangle {
             // In chat mode the search row below was still drawn, so the panel carried TWO text
             // fields — one at the top that ran the app-launcher and one at the bottom that
             // continued the conversation — and they did different things with the same Return
-            // key. Half the time the top one was hidden under the status bar, which is the only
-            // reason it had not been noticed. A conversation gets a header instead: who is
-            // answering, and a way out.
-            if root.chat-mode : Rectangle {
-                height: Theme.lens-input-height;
-                background: Theme.bg-surface;
-
-                HorizontalLayout {
-                    padding-left: 16px;
-                    padding-right: 8px;
-                    spacing: 10px;
-
-                    Icon {
-                        commands: Icons.companion;
-                        size: 16px;
-                        tint: Theme.accent;
-                        y: (parent.height - self.height) / 2;
-                    }
-                    Text {
-                        text: root.mind-name != "" ? root.mind-name : "Conversation";
-                        color: Theme.text-primary;
-                        font-size: Theme.fs-body;
-                        font-weight: 600;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                        overflow: elide;
-                    }
-                    // The Lens is the quick question; the whole of the conversation — every call as
-                    // a card, every command with its output — is this mind's agent on the Agents
-                    // screen (design/agents-workspace-2026-09-23.md, "The shape").
-                    // Every earlier conversation, with any mind: the Agents screen's All tab, where
-                    // each opens with its whole session and can be carried on (#246).
-                    // A new conversation is one press, not something only a restart did (#246).
-                    if root.messages.length > 0 : new-chat-hit := TouchArea {
-                        width: new-chat-label.preferred-width + 16px;
-                        height: 28px;
-                        y: (parent.height - 28px) / 2;
-                        mouse-cursor: pointer;
-                        clicked => { root.new-chat(); }
-
-                        Rectangle {
-                            width: parent.width;
-                            height: parent.height;
-                            border-radius: 6px;
-                            background: new-chat-hit.has-hover ? Theme.hover-fill : transparent;
-                        }
-                        new-chat-label := Text {
-                            width: parent.width;
-                            height: parent.height;
-                            text: "New chat";
-                            color: new-chat-hit.has-hover ? Theme.text-primary : Theme.text-secondary;
-                            font-size: Theme.fs-caption;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                    }
-                    if root.can-open-in-agents : history-hit := TouchArea {
-                        width: history-label.preferred-width + 16px;
-                        height: 28px;
-                        y: (parent.height - 28px) / 2;
-                        mouse-cursor: pointer;
-                        clicked => { root.open-history(); }
-
-                        Rectangle {
-                            width: parent.width;
-                            height: parent.height;
-                            border-radius: 6px;
-                            background: history-hit.has-hover ? Theme.hover-fill : transparent;
-                        }
-                        history-label := Text {
-                            width: parent.width;
-                            height: parent.height;
-                            text: "History";
-                            color: history-hit.has-hover ? Theme.text-primary : Theme.text-secondary;
-                            font-size: Theme.fs-caption;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                    }
-                    if root.can-open-in-agents : agents-hit := TouchArea {
-                        width: agents-label.preferred-width + 16px;
-                        height: 28px;
-                        y: (parent.height - 28px) / 2;
-                        mouse-cursor: pointer;
-                        clicked => { root.open-in-agents(); }
-
-                        Rectangle {
-                            width: parent.width;
-                            height: parent.height;
-                            border-radius: 6px;
-                            background: agents-hit.has-hover ? Theme.hover-fill : transparent;
-                        }
-                        agents-label := Text {
-                            width: parent.width;
-                            height: parent.height;
-                            text: "open in Agents";
-                            color: agents-hit.has-hover ? Theme.text-primary : Theme.accent;
-                            font-size: Theme.fs-caption;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                    }
-                    close-hit := TouchArea {
-                        width: 28px;
-                        height: 28px;
-                        y: (parent.height - 28px) / 2;
-                        mouse-cursor: pointer;
-                        clicked => { root.close-lens(); }
-
-                        Rectangle {
-                            width: 28px;
-                            height: 28px;
-                            border-radius: 6px;
-                            // Named rather than walked up to: `parent.parent` is not a thing
-                            // in Slint, and the id reads better anyway.
-                            background: close-hit.has-hover ? Theme.hover-fill : transparent;
-                            Icon {
-                                commands: Icons.close;
-                                size: 14px;
-                                tint: close-hit.has-hover ? Theme.text-primary : Theme.text-dim;
-                                x: (parent.width - self.width) / 2;
-                                y: (parent.height - self.height) / 2;
-                            }
-                        }
-                    }
-                }
-
-                Rectangle {
-                    y: parent.height - 1px;
-                    width: 100%;
-                    height: 1px;
-                    background: Theme.separator;
-                }
+            // key. A conversation gets a header instead: who is answering, and what a person does
+            // with the conversation as a whole. The Lens is the quick question; the whole of the
+            // conversation, every call as a card, is this mind's agent on the Agents screen.
+            if root.chat-mode : ChatHeader {
+                mind-name: root.mind-name;
+                identity: root.identity;
+                can-new-chat: root.messages.length > 0;
+                can-open-in-agents: root.can-open-in-agents;
+                mind-clicked => { root.mind-clicked(); }
+                new-chat => { root.new-chat(); }
+                history => { root.open-history(); }
+                open-in-agents => { root.open-in-agents(); }
+                close => { root.close-lens(); }
             }
 
             // ── Input area (search mode) ──
@@ -2078,14 +2043,14 @@ export component IntentLens inherits Rectangle {
                 // conversation has messages in it.
                 //
                 // The obvious place for this is the `changed is-open` handler on the component
-                // root, beside the one that focuses the search field. It cannot go there:
-                // `chat-input` is inside this `if`, and Slint will not let an id inside a
+                // root, beside the one that focuses the search field. It cannot go there: the
+                // composer is inside this `if`, and Slint will not let an id inside a
                 // conditional be named from outside it. Mirroring `is-open` onto a property of
                 // this element puts the change where the field is visible, which is the same
                 // handler in the only scope that can write it.
                 property <bool> lens-open: root.is-open;
                 changed lens-open => {
-                    if (self.lens-open) { chat-input.focus(); }
+                    if (self.lens-open) { composer.focus-input(); }
                 }
                 // ...and when this block is CREATED already open, which is the usual way in: the
                 // ask bar sets `is-open`, and only then does `open_lens` notice the conversation
@@ -2101,34 +2066,59 @@ export component IntentLens inherits Rectangle {
                     running: parent.focus-owed;
                     triggered => {
                         parent.focus-owed = false;
-                        if (parent.lens-open) { chat-input.focus(); }
+                        if (parent.lens-open) { composer.focus-input(); }
                     }
                 }
 
-                // Messages — fills available panel height, down to `transcript-min` while a
-                // card is waiting (see the property at the top of the component).
-                //
-                // It follows the newest message while the person is at the bottom, and once they
-                // scroll up to read, "Jump to present" brings them back (JumpToPresent, the kit's
-                // one follower, shared with the Agents session and the route).
+                // The conversation — fills the panel's height, down to `transcript-min` while a
+                // card is waiting (see the property at the top of the component). It follows the
+                // newest line only while the person is at the bottom; scrolled up, it stays put
+                // and says "New reply" (ChatTranscript).
                 Rectangle {
                     vertical-stretch: 1;
                     min-height: root.transcript-min;
 
-                    chat-list := ListView {
-                        width: 100%;
-                        height: 100%;
-                        for msg[idx] in root.messages : MessageBubble {
-                            open-run(run) => { root.open-run(run); }
-                            data: msg;
-                        }
+                    if root.messages.length == 0 : ChatEmpty {
+                        mind-name: root.mind-name;
+                        starter(words) => { composer.fill(words); }
                     }
-                    chat-follow := JumpToPresent {
+
+                    transcript := ChatTranscript {
                         width: 100%;
                         height: 100%;
-                        viewport-y <=> chat-list.viewport-y;
-                        viewport-height: chat-list.viewport-height;
-                        visible-height: chat-list.visible-height;
+                        visible: root.messages.length > 0;
+                        init => {
+                            root.transcript-following = true;
+                            root.transcript-missed = false;
+                        }
+                        changed following => { root.transcript-following = self.following; }
+                        changed missed => { root.transcript-missed = self.missed; }
+                        changed scroll-y => { root.transcript-y = self.scroll-y; }
+
+                        for msg[idx] in root.messages : VerticalLayout {
+                            ChatMessage {
+                                data: msg;
+                                mind-name: root.mind-name;
+                                group-start: idx == 0 || root.messages[idx - 1].role != msg.role;
+                                open-run(run) => { root.open-run(run); }
+                            }
+                            // The run this reply started, as one card, kept in step with the
+                            // store: the loop finds it by id, so it is updated in place and
+                            // never drawn twice. Plain talk has no run and so no card.
+                            for card in root.work-cards : VerticalLayout {
+                                if card.run == msg.run && msg.run != "" : Rectangle {
+                                    height: work-card.height + Theme.sp-1;
+                                    work-card := WorkCard {
+                                        x: Theme.sp-3 + 16px + Theme.sp-2;
+                                        y: 0;
+                                        width: parent.width - self.x - Theme.sp-4;
+                                        data: card;
+                                        view-desk(run) => { root.view-desk(run); }
+                                        details(run) => { root.open-run(run); }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -2147,7 +2137,7 @@ export component IntentLens inherits Rectangle {
 
                 // Approval cards and their records, between the conversation and the reply box.
                 //
-                // Here rather than interleaved in the ListView above because a request is not a
+                // Here rather than interleaved in the transcript above because a request is not a
                 // message: it arrives while the person is reading, it has to stay put while they
                 // decide, and a card that scrolls away with the transcript is a card that gets
                 // missed. It reads as the newest thing in the conversation, which is what it is.
@@ -2162,25 +2152,27 @@ export component IntentLens inherits Rectangle {
                         data: item;
                         // The tallest the card may be and still leave the panel showing
                         // everything else it owes: the header, the transcript sliver above and
-                        // the reply box below — the reply box was what went off the bottom edge
-                        // in #218, with the card's buttons a 3px sliver above it. The panel is
-                        // the window between the two bars; from it go the header row, the reply
-                        // bar at whatever height it has grown to, the transcript's floor, this
+                        // the strip and reply box below — the reply box was what went off the
+                        // bottom edge in #218, with the card's buttons a 3px sliver above it. The
+                        // panel is the window between the two bars, less its margins; from it go
+                        // the header, the composer at whatever height it has grown to, the
+                        // current-work strip when it is drawn, the transcript's floor, this
                         // block's padding with its "N more waiting" line (40px), and one row
                         // (32px) per decided record sharing this block with the card. The floor
                         // keeps a card's identity rows and buttons on any panel tall enough to
                         // hold them at all.
-                        height-limit: max(240px, root.height - Theme.status-bar-height
-                            - Theme.taskbar-height - Theme.lens-input-height - chat-bar.height
+                        height-limit: max(240px, root.panel-height - Theme.chat-header-height
+                            - composer.bar-height - (root.strip-shown ? Theme.chat-strip-height : 0px)
                             - root.transcript-min - 40px - 32px * root.approvals.length);
                         allow => { root.approval-allow(item.id); }
                         allow-session => { root.approval-allow-session(item.id); }
                         deny => { root.approval-deny(item.id); }
+                        view-action => { root.open-run(item.agent); }
                     }
 
                     if root.approvals-waiting > 0 : Text {
                         text: root.approvals-waiting + " more waiting — this one first";
-                        color: Theme.text-dim;
+                        color: Theme.chat-text-2;
                         font-size: Theme.fs-micro;
                         horizontal-alignment: center;
                         wrap: no-wrap;
@@ -2188,185 +2180,57 @@ export component IntentLens inherits Rectangle {
                     }
                 }
 
-                // Typing indicator
-                //
-                // Generating runs as long as thinking does, and this had the same gate and the
-                // same 16 ms as the bar above — three 5px dots holding the display at its frame
-                // rate whether or not the conversation was on screen. 160 ms at 0.05 keeps the
-                // 3.2 s cycle, and the offsets between the dots are unchanged.
-                if root.is-open && root.is-generating : HorizontalLayout {
-                    padding-left: 20px;
-                    padding-bottom: 8px;
-                    spacing: 6px;
-
-                    property <float> dot-phase: 0;
-                    Timer {
-                        interval: 160ms;
-                        running: root.is-open && root.is-generating;
-                        triggered => {
-                            parent.dot-phase = mod(parent.dot-phase + 0.05, 1.0);
-                        }
-                    }
-
-                    Rectangle {
-                        width: 5px; height: 5px; border-radius: 2.5px;
-                        background: Theme.cyan;
-                        opacity: 0.3 + 0.7 * sin(dot-phase * 6.2832 * 1rad);
-                    }
-                    Rectangle {
-                        width: 5px; height: 5px; border-radius: 2.5px;
-                        background: Theme.cyan;
-                        opacity: 0.3 + 0.7 * sin((dot-phase + 0.12) * 6.2832 * 1rad);
-                    }
-                    Rectangle {
-                        width: 5px; height: 5px; border-radius: 2.5px;
-                        background: Theme.cyan;
-                        opacity: 0.3 + 0.7 * sin((dot-phase + 0.24) * 6.2832 * 1rad);
-                    }
+                // The current-work strip: only while a run in this chat is live.
+                if root.strip-shown : WorkStrip {
+                    mind: root.strip.mind;
+                    state-label: root.strip.label;
+                    needs-you: root.strip.state == "needs-you";
+                    live-runs: root.live-runs;
+                    waiting-runs: root.waiting-runs;
+                    can-view-desk: root.strip.can-view-desk;
+                    view-desk => { root.view-desk(root.strip.run); }
+                    view-work => { root.open-in-agents(); }
                 }
 
-                // Input bar for chat mode. Grows with the field inside it (see `chat-input`),
-                // and named because the approval card's height-limit above subtracts what it is
-                // actually holding, not a guess at it.
-                chat-bar := Rectangle {
-                    height: max(48px, min(118px, chat-input.preferred-height + 14px) + 16px);
-                    background: Theme.bg-deep;
-
-                    Rectangle {
-                        y: 0; width: 100%; height: 1px;
-                        background: Theme.separator;
+                composer := ChatComposer {
+                    mind-name: root.mind-name;
+                    mode-label: root.mode-label;
+                    run-active: root.is-generating || root.live-runs > 0;
+                    mic => { root.mic-pressed(); }
+                    mode-clicked => { root.mode-clicked(); }
+                    escape => { root.close-lens(); }
+                    send(text) => {
+                        transcript.jump();
+                        root.send-message(text);
+                        composer.clear();
                     }
+                }
+            }
+        }
 
-                    HorizontalLayout {
-                        padding: 8px;
-                        padding-left: 12px;
-                        padding-right: 12px;
-                        spacing: 8px;
 
-                        // Mic button
-                        TouchArea {
-                            width: 32px;
-                            height: 32px;
-                            clicked => { root.mic-pressed(); }
-
-                            Rectangle {
-                                width: 32px; height: 32px;
-                                border-radius: 16px;
-                                background: Theme.bg-card;
-                                border-width: 1px;
-                                border-color: Theme.cyan-dim;
-
-                                Rectangle {
-                                    x: (parent.width - 8px) / 2;
-                                    y: 8px;
-                                    width: 8px; height: 10px;
-                                    border-radius: 4px;
-                                    background: Theme.cyan;
-                                }
-                            }
-                        }
-
-                        // Chat input
-                        Rectangle {
-                            horizontal-stretch: 1;
-                            // As tall as what has been typed, up to five lines or so. It was a
-                            // fixed 32px around a field that wraps, so the second line of a
-                            // sentence pushed the first one out through the top of the box.
-                            height: max(32px, min(118px, chat-input.preferred-height + 14px));
-                            border-radius: 16px;
-                            background: Theme.bg-input;
-                            border-width: 1px;
-                            border-color: chat-input.has-focus ? Theme.cyan-dim : Theme.border-subtle;
-                            forward-focus: chat-input;
-                            clip: true;
-
-                            animate border-color { duration: 200ms; }
-
-                            chat-input := TextInput {
-                                property <string> chat-text: "";
-                                x: 12px;
-                                // Centred while it fits; past the box's limit the LAST line is
-                                // the one kept in view, because that is where the cursor is.
-                                y: self.preferred-height + 14px <= parent.height
-                                    ? (parent.height - self.preferred-height) / 2
-                                    : parent.height - self.preferred-height - 7px;
-                                width: parent.width - 24px;
-                                color: Theme.text-primary;
-                                font-size: Theme.fs-body;
-                                wrap: word-wrap;
-                                single-line: false;
-                                text <=> chat-text;
-                                // The same reason as the search field: this one takes the cursor
-                                // when the Lens opens in chat mode, and a panel you cannot close
-                                // from the keyboard once you are typing in it is a trap.
-                                key-pressed(event) => {
-                                    if (event.text == Key.Escape) {
-                                        root.close-lens();
-                                        return accept;
-                                    }
-                                    // Enter sends; Shift+Enter is a new line. A multi-line
-                                    // TextInput never fires `accepted` — Enter is a character to
-                                    // it — so the handler below had not run since this field was
-                                    // made multi-line, and the only way to send a second message
-                                    // was to reach for the mouse and press `>`.
-                                    if (event.text == Key.Return && !event.modifiers.shift) {
-                                        if (self.chat-text != "") {
-                                            chat-follow.jump();
-                                            root.send-message(self.chat-text);
-                                            self.chat-text = "";
-                                        }
-                                        return accept;
-                                    }
-                                    return reject;
-                                }
-                                accepted => {
-                                    if chat-text != "" {
-                                        chat-follow.jump();
-                                        root.send-message(chat-text);
-                                        chat-text = "";
-                                    }
-                                }
-                            }
-
-                            if chat-input.chat-text == "" : Text {
-                                x: 12px;
-                                y: (parent.height - self.preferred-height) / 2;
-                                text: "Continue conversation...";
-                                color: Theme.text-dim;
-                                font-size: Theme.fs-body;
-                            }
-                        }
-
-                        // Send
-                        TouchArea {
-                            width: 32px;
-                            height: 32px;
-                            clicked => {
-                                if chat-input.chat-text != "" {
-                                    chat-follow.jump();
-                                    root.send-message(chat-input.chat-text);
-                                    chat-input.chat-text = "";
-                                }
-                            }
-
-                            Rectangle {
-                                width: 32px; height: 32px;
-                                border-radius: 16px;
-                                background: chat-input.chat-text != "" ? Theme.amber : Theme.bg-card;
-
-                                animate background { duration: 150ms; }
-
-                                Text {
-                                    text: ">";
-                                    color: chat-input.chat-text != "" ? Theme.bg-deep : Theme.text-dim;
-                                    font-size: Theme.fs-title-2;
-                                    font-weight: 700;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                            }
-                        }
-                    }
+        // Drag the left edge to resize, between 380 and 560px. The panel's own left edge moves
+        // as it grows, so the drag is measured against the pointer's place on the screen, not
+        // against the handle it is dragging: measured against the handle, every step would
+        // change what the next one was measured from and the edge would shudder.
+        if root.chat-mode : resize-handle := TouchArea {
+            x: 0;
+            width: 8px;
+            height: parent.height;
+            mouse-cursor: ew-resize;
+            property <length> start-width;
+            property <length> start-pointer;
+            pointer-event(event) => {
+                if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                    self.start-width = root.panel-width;
+                    self.start-pointer = self.absolute-position.x + self.mouse-x;
+                }
+            }
+            moved => {
+                if (self.pressed) {
+                    root.panel-width = clamp(
+                        self.start-width - (self.absolute-position.x + self.mouse-x - self.start-pointer),
+                        Theme.chat-panel-min, Theme.chat-panel-max);
                 }
             }
         }

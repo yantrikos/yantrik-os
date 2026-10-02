@@ -27,18 +27,26 @@ export component QuestionCard inherits Rectangle {
     in property <string> closed;
     callback answered(string);
 
-    background: Theme.bg-card;
-    border-radius: Theme.radius-card;
+    // Waiting on the person, so its edge is the needs-you amber; once answered or closed it is an
+    // ordinary inset. The card's behaviour is unchanged: the answer goes back once, through
+    // `answered`, and nothing here takes a default key.
+    property <bool> waiting: root.answer == "" && root.closed == "";
+    // "Write another answer" opens the same free-text box a question with no options has.
+    property <bool> writing: false;
+
+    background: Theme.chat-bar;
+    border-radius: Theme.chat-radius;
     border-width: 1px;
-    border-color: Theme.border-subtle;
+    border-color: root.waiting ? Theme.chat-needs-you : Theme.chat-border;
 
     VerticalLayout {
         padding: Theme.sp-3;
         spacing: Theme.sp-2;
         Text {
-            text: root.mind + " asks";
-            color: Theme.text-secondary;
+            text: root.waiting ? "Your answer needed \u{00b7} " + root.mind : root.mind + " asked";
+            color: root.waiting ? Theme.chat-needs-you : Theme.chat-text-2;
             font-size: Theme.fs-caption;
+            font-weight: 600;
         }
         Text {
             text: root.prompt;
@@ -55,7 +63,20 @@ export component QuestionCard inherits Rectangle {
                 clicked => { root.answered(option); }
             }
         }
-        if root.answer == "" && root.closed == "" && root.options.length == 0 : YInput {
+        if root.waiting && root.options.length > 0 && !root.writing : Rectangle {
+            height: 24px;
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.writing = true; }
+            }
+            Text {
+                text: "Write another answer";
+                color: Theme.chat-text-2;
+                font-size: Theme.fs-caption;
+                vertical-alignment: center;
+            }
+        }
+        if root.waiting && (root.options.length == 0 || root.writing) : YInput {
             placeholder: "answer " + root.mind + "…";
             accepted(text) => { root.answered(text); }
         }

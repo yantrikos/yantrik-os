@@ -1,0 +1,63 @@
+// The scrolling conversation: it follows what is new only while the person is already at the
+// bottom, and when they have scrolled up to read it leaves them there and offers "New reply".
+//
+// The old transcript was a ListView. A ListView does not know the height of rows it has not drawn,
+// so it estimates, and corrects the estimate as rows come into view; every correction moved
+// `viewport-y`, which the follower read as the reader scrolling away, so it stopped following and
+// the panel sat still on a new message. A Flickable over a plain layout knows its whole height
+// exactly, so a change in `viewport-y` is the person or us and nothing else. A transcript is
+// hundreds of rows at the most, which a layout draws without trouble.
+//
+// The follower is the kit's one JumpToPresent, shared with the Agents session. Nothing here
+// repeats or animates: the position changes when content changes, and only then.
+
+import { Theme } from "theme.slint";
+import { JumpToPresent } from "jump_to_present.slint";
+
+export component ChatTranscript inherits Rectangle {
+    // True at the bottom; false once the reader has scrolled up.
+    out property <bool> following <=> follow.following;
+    // Something arrived while they were reading further up: the pill says "New reply".
+    out property <bool> missed <=> follow.missed;
+    out property <bool> at-bottom <=> follow.at-bottom;
+    in-out property <length> scroll-y <=> flick.viewport-y;
+    out property <length> content-height: flick.viewport-height;
+
+    /// Back to the newest line and following again: sending a message, or pressing the pill.
+    public function jump() { follow.jump(); }
+
+    clip: true;
+
+    flick := Flickable {
+        width: parent.width;
+        height: parent.height;
+        viewport-width: self.width;
+        viewport-height: content.preferred-height;
+
+        content := VerticalLayout {
+            width: flick.viewport-width;
+            padding-bottom: Theme.sp-3;
+            @children
+        }
+    }
+
+    // A thin position mark, shown only when there is something to scroll to.
+    if flick.viewport-height > flick.height + 1px : Rectangle {
+        x: parent.width - 5px;
+        width: 3px;
+        y: max(0px, min(parent.height - self.height, -flick.viewport-y / flick.viewport-height * parent.height));
+        height: max(24px, flick.height * flick.height / flick.viewport-height);
+        border-radius: 1.5px;
+        background: Theme.chat-border;
+    }
+
+    follow := JumpToPresent {
+        width: 100%;
+        height: 100%;
+        viewport-y <=> flick.viewport-y;
+        viewport-height: flick.viewport-height;
+        visible-height: flick.height;
+        label: "Jump to latest";
+        new-label: "New reply";
+    }
+}

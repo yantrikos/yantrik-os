@@ -36,6 +36,7 @@ import { DeviceDashboardScreen, UsbDeviceData, PciDeviceData, InputDeviceData, S
 import { PermissionDashboardScreen, UserData, GroupData, PermFileData } from "permission_dashboard.slint";
 import { ToastBanner, ToastData, ToastActionData } from "components/toast_banner.slint";
 import { ProblemReportScreen, ProblemRow } from "problem_report.slint";
+import { WorkCardData } from "components/work_card.slint";
 // Agents (screen 34), and the window one agent pops out into. The window and the global it reads
 // are exported so the shell can create a window per agent and fill each one.
 import { AgentsScreen, AgentsState } from "agents.slint";
@@ -73,7 +74,7 @@ import { YMenuAction, YContextMenu } from "components/y_context_menu.slint";
 import { Icons } from "components/icon.slint";
 import { Tr } from "translations.slint";
 
-export { HarnessData, HarnessRowData, Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, ToolCallData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, ApprovalRequest, QuestionRequest, MindRule, MindAuditEntry, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, NotifActionData, ProcessData, ClipboardEntryData, CheatRowData, AppGridItem, CategoryItem, ServiceItem, WindowItem, DockItem, ToastData, ToastActionData, PackageData, PendingAction, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction, ProblemRow }
+export { HarnessData, HarnessRowData, Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, ToolCallData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, ApprovalRequest, QuestionRequest, MindRule, MindAuditEntry, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, NotifActionData, ProcessData, ClipboardEntryData, CheatRowData, AppGridItem, CategoryItem, ServiceItem, WindowItem, DockItem, ToastData, ToastActionData, PackageData, PendingAction, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction, ProblemRow, WorkCardData }
 
 export component App inherits Window {
     default-font-family: Theme.font-ui;
@@ -1582,6 +1583,23 @@ export component App inherits Window {
                 }
             }
             lens-can-open-in-agents: root.lens-can-open-in-agents;
+            // Chat v2: the run cards, the strip and the header's words.
+            lens-work-cards: AgentsState.lens-cards;
+            lens-strip: AgentsState.lens-strip;
+            lens-live-runs: AgentsState.lens-live;
+            lens-waiting-runs: AgentsState.lens-waiting;
+            lens-mode-label: root.mind-mode-label;
+            lens-identity: AgentsState.lens-identity;
+            // The same choice the status bar chip opens; it changes nothing by itself.
+            lens-mode-clicked => {
+                root.mind-menu-open = !root.mind-menu-open;
+                root.minds-panel-open = false;
+                root.mind-menu-confirming = false;
+                root.mind-menu-audit-open = false;
+            }
+            // Mind View is an ordinary window on the person's desktop, titled "Mind View"; the
+            // taskbar's own switch brings it in front.
+            lens-view-desk(run) => { root.switch-window("Mind View"); }
             lens-open-in-agents => { root.lens-open-in-agents(); }
             lens-open-history => { root.lens-open-history(); }
             lens-new-chat => { root.lens-new-chat(); }

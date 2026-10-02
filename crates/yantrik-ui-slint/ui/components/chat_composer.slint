@@ -1,0 +1,194 @@
+// The box a person writes to a mind in.
+//
+// Enter sends and Shift+Enter breaks the line; a multi-line TextInput never fires `accepted`, so
+// the key handler is the whole of it (the field once could not send a second message from the
+// keyboard). Escape closes the panel, because a panel you cannot leave from the keyboard once
+// you are typing in it is a trap. While a run is going the send button reads "Send follow-up",
+// which is what it does: the words go to the mind beside its work.
+//
+// The mode chip ("Ask") is the status bar chip's twin: it opens the same mind-mode choice, it does
+// not change the mode by itself, and a mode change applies to the next run. The starters in the
+// empty state call `fill`, which puts words in the box and never sends them.
+
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
+import { ChatPill } from "chat_parts.slint";
+
+export component ChatComposer inherits Rectangle {
+    in property <string> mind-name;
+    in property <string> mode-label: "Ask";
+    // A run for this chat is going: the button says so.
+    in property <bool> run-active: false;
+    out property <bool> has-text: input.chat-text != "";
+    // Whether the cursor is in the box (the idle-redraw and focus tests read it).
+    out property <bool> focused: input.has-focus;
+    // The bar's own height, which the panel's arithmetic subtracts.
+    out property <length> bar-height: max(112px, min(200px, input.preferred-height + 14px) + 72px);
+
+    callback send(string);
+    callback mic();
+    callback mode-clicked();
+    callback escape();
+
+    public function focus-input() { input.focus(); }
+    // Words into the box, nothing sent: the cursor goes to the end for the person to finish them.
+    public function fill(text: string) {
+        input.chat-text = text;
+        input.focus();
+        input.set-selection-offsets(text.character-count, text.character-count);
+    }
+    public function clear() { input.chat-text = ""; }
+    out property <string> draft: input.chat-text;
+
+    height: root.bar-height;
+    background: Theme.chat-bar;
+
+    Rectangle {
+        y: 0;
+        height: 1px;
+        background: Theme.chat-border;
+    }
+
+    // The box itself: a raised inset with a keyline that goes white on focus (never teal: teal is
+    // for minds).
+    Rectangle {
+        x: Theme.sp-3;
+        y: Theme.sp-3;
+        width: parent.width - 2 * Theme.sp-3;
+        height: parent.height - 2 * Theme.sp-3;
+        border-radius: Theme.chat-radius;
+        background: Theme.chat-panel;
+        border-width: 1px;
+        border-color: input.has-focus ? Theme.chat-text : Theme.chat-border;
+        forward-focus: input;
+        clip: true;
+
+        TouchArea { mouse-cursor: text; clicked => { input.focus(); } }
+
+        input := TextInput {
+            property <string> chat-text: "";
+            x: Theme.sp-3;
+            y: Theme.sp-3;
+            width: parent.width - 2 * Theme.sp-3;
+            height: parent.height - 56px;
+            color: Theme.chat-text;
+            font-size: Theme.fs-title-2;
+            wrap: word-wrap;
+            single-line: false;
+            text <=> chat-text;
+            accessible-role: text-input;
+            accessible-label: "Message " + root.mind-name;
+            key-pressed(event) => {
+                if (event.text == Key.Escape) {
+                    root.escape();
+                    return accept;
+                }
+                if (event.text == Key.Return && !event.modifiers.shift) {
+                    if (self.chat-text != "") {
+                        root.send(self.chat-text);
+                    }
+                    return accept;
+                }
+                return reject;
+            }
+        }
+
+        if input.chat-text == "" : Text {
+            x: Theme.sp-3;
+            y: Theme.sp-3;
+            text: "Message " + root.mind-name + "\u{2026}";
+            color: Theme.chat-text-2;
+            font-size: Theme.fs-title-2;
+        }
+
+        // The row under the words: the mode chip on the left, mic and send on the right.
+        HorizontalLayout {
+            x: Theme.sp-2;
+            y: parent.height - 44px;
+            width: parent.width - 2 * Theme.sp-2;
+            height: 36px;
+            spacing: Theme.sp-2;
+
+            VerticalLayout {
+                alignment: center;
+                mode-chip := Rectangle {
+                    height: 28px;
+                    width: chip-row.preferred-width + 2 * Theme.sp-3;
+                    border-radius: 14px;
+                    background: chip-ta.has-hover ? Theme.hover-fill : transparent;
+                    border-width: 1px;
+                    border-color: Theme.chat-border;
+                    accessible-role: button;
+                    accessible-label: "Mode: " + root.mode-label + ". Opens the mode choice.";
+                    accessible-action-default => { root.mode-clicked(); }
+
+                    chip-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.mode-clicked(); }
+                    }
+                    chip-row := HorizontalLayout {
+                        padding-left: Theme.sp-3;
+                        padding-right: Theme.sp-2;
+                        spacing: Theme.sp-1;
+                        Text {
+                            text: root.mode-label;
+                            color: Theme.chat-text;
+                            font-size: Theme.fs-caption;
+                            font-weight: 500;
+                            vertical-alignment: center;
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Icon {
+                                commands: Icons.chevron-down;
+                                size: 12px;
+                                tint: Theme.chat-text-2;
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+
+            // Voice: the same button the panel always had, drawn in the new language.
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 28px;
+                    height: 28px;
+                    border-radius: 14px;
+                    background: mic-ta.has-hover ? Theme.hover-fill : transparent;
+                    border-width: 1px;
+                    border-color: Theme.chat-border;
+                    accessible-role: button;
+                    accessible-label: "Speak";
+                    accessible-action-default => { root.mic(); }
+
+                    mic-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.mic(); }
+                    }
+                    Rectangle {
+                        x: (parent.width - self.width) / 2;
+                        y: 7px;
+                        width: 6px;
+                        height: 10px;
+                        border-radius: 3px;
+                        background: Theme.chat-text-2;
+                    }
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                ChatPill {
+                    label: root.run-active ? "Send follow-up" : "Send";
+                    primary: input.chat-text != "";
+                    enabled: input.chat-text != "";
+                    clicked => { root.send(input.chat-text); }
+                }
+            }
+        }
+    }
+}

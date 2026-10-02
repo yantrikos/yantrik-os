@@ -418,8 +418,31 @@ export global Theme {
     out property <length> lens-input-height: 48px;
     out property <length> lens-result-height: 44px;
 
-    // Chat side panel
-    out property <length> chat-panel-width: 380px;
+    // Chat side panel (Chat v2, design/minds-surfaces-spec-2026-10-02.md §1)
+    //
+    // 440px by default; the person can drag its left edge between the two bounds. The panel is
+    // opaque charcoal because it holds paragraphs and a decision, and anything showing through
+    // it makes both harder to read (design/ui-review-gpt6-astra-2026-10-02.md, rule 1).
+    out property <length> chat-panel-width: 440px;
+    out property <length> chat-panel-min: 380px;
+    out property <length> chat-panel-max: 560px;
+    out property <length> chat-panel-gap: 12px;
+    out property <length> chat-header-height: 64px;
+    out property <length> chat-strip-height: 48px;
+    out property <length> chat-radius: 16px;
+    // The panel, its bars and insets, its border, and the two colours with a meaning: teal is a
+    // mind (never a selection or a success), amber is "your answer is waiting" (nothing else).
+    out property <color> chat-panel:     ThemeMode.dark ? #151a1e : #f6f7f8;
+    out property <color> chat-bar:       ThemeMode.dark ? #101417 : #eceef0;
+    out property <color> chat-border:    ThemeMode.dark ? #343b41 : #cdd2d6;
+    out property <color> chat-text:      ThemeMode.dark ? #f2f4f5 : #151a1e;
+    out property <color> chat-text-2:    ThemeMode.dark ? #a8b0b6 : #4d565c;
+    out property <color> chat-mind:      ThemeMode.dark ? #69c8bc : #1f7f74;
+    out property <color> chat-needs-you: ThemeMode.dark ? #e7b567 : #9a6a14;
+    // A person's message: a light bubble with dark text, in either mode.
+    out property <color> chat-user-bubble: ThemeMode.dark ? #f2f4f5 : #20272c;
+    out property <color> chat-user-text:   ThemeMode.dark ? #151a1e : #f2f4f5;
+    out property <color> chat-raised:    ThemeMode.dark ? #1d2429 : #ffffff;
 
     // ─── Kit controls: slider, popover, toggle tile, bar indicator ─
     // Sizes. Each is the one number the control draws with, so a later screen that has to line

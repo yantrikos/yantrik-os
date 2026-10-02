@@ -16,6 +16,7 @@ mod formations_tests;
 mod screen_controls_tests;
 mod apps_button_tests;
 mod lens_tests;
+mod chat_tests;
 mod route_tests;
 mod approval_tests;
 mod taskbar_menu_tests;
@@ -88,6 +89,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-qs-levels") { return qs_levels_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-battery") { return battery_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-lens-answers") { return lens_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-chat") { return chat_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-approval-card") { return approval_tests::run(&window, output); }
     if args.iter().any(|a| a == "lens-answer") { return lens_tests::run_lens(&window, output); }
     if args.iter().any(|a| a == "verify-agents-route") { return route_tests::run(&window, output); }

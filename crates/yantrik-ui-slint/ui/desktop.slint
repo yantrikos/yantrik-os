@@ -29,6 +29,7 @@ import { Icon, Icons } from "components/icon.slint";
 import { AppColor } from "components/app_color.slint";
 import { AppTile } from "app_tile.slint";
 import { IntentLens, LensResult, ApprovalRequest } from "components/intent_lens.slint";
+import { WorkCardData } from "components/work_card.slint";
 import { QuestionRequest } from "components/question_card.slint";
 import { MessageData } from "components/message_bubble.slint";
 import { UrgeCardData, GlanceCard } from "components/glance_card.slint";
@@ -116,6 +117,17 @@ export component DesktopScreen inherits Rectangle {
     callback lens-open-in-agents();
     callback lens-open-history();
     callback lens-new-chat();
+
+    // Chat v2: the work cards of the runs this chat started, the strip's run and counts, the mode
+    // chip's label and the header's identity line. Filled from the Agents store and the mind mode.
+    in property <[WorkCardData]> lens-work-cards: [];
+    in property <WorkCardData> lens-strip;
+    in property <int> lens-live-runs: 0;
+    in property <int> lens-waiting-runs: 0;
+    in property <string> lens-mode-label: "Ask";
+    in property <string> lens-identity: "";
+    callback lens-mode-clicked();
+    callback lens-view-desk(string);
 
     // Urges (for quiet queue)
     in property <[UrgeCardData]> urges: [];
@@ -971,6 +983,15 @@ export component DesktopScreen inherits Rectangle {
         open-in-agents => { root.lens-open-in-agents(); }
         open-history => { root.lens-open-history(); }
         new-chat => { root.lens-new-chat(); }
+        work-cards: root.lens-work-cards;
+        strip: root.lens-strip;
+        live-runs: root.lens-live-runs;
+        waiting-runs: root.lens-waiting-runs;
+        mode-label: root.lens-mode-label;
+        identity: root.lens-identity;
+        mode-clicked => { root.lens-mode-clicked(); }
+        mind-clicked => { root.active-mind-clicked(); }
+        view-desk(run) => { root.lens-view-desk(run); }
         messages: root.messages;
         is-generating: root.is-generating;
         suggestions: root.lens-suggestions;

@@ -394,6 +394,61 @@ export component ApprovalLensProbe inherits Window {
     }
 }
 
+// Chat v2 (the conversation panel): the whole Lens in chat mode with the run cards, the strip, the
+// composer and the panel's own width, filled with fixture data by src/chat_tests.rs. What the person
+// sends is recorded there and never acted on.
+export { WorkCardData } from "components/work_card.slint";
+import { WorkCardData } from "components/work_card.slint";
+import { QuestionRequest } from "components/question_card.slint";
+export { QuestionRequest }
+export component ChatProbe inherits Window {
+    width: 1280px;
+    height: 800px;
+    default-font-family: Theme.font-ui;
+    background: Theme.bg-deep;
+    in property <[MessageData]> messages;
+    in property <[ApprovalRequest]> approvals;
+    in property <[QuestionRequest]> questions;
+    in property <[WorkCardData]> work-cards;
+    in property <WorkCardData> strip;
+    in property <int> live-runs: 0;
+    in property <int> waiting-runs: 0;
+    in property <string> mind-name: "Yantrik Mind";
+    in-out property <string> sent;
+    in-out property <int> sends: 0;
+    in-out property <int> mode-clicks: 0;
+    in-out property <string> opened-run;
+    in-out property <int> desks: 0;
+    in-out property <int> allowed: 0;
+    in-out property <int> denied: 0;
+    in-out property <length> panel-width <=> lens.panel-width;
+    out property <bool> following: lens.transcript-following;
+    out property <bool> missed: lens.transcript-missed;
+    out property <length> scroll-y: lens.transcript-y;
+    lens := IntentLens {
+        width: 100%;
+        height: 100%;
+        is-open: true;
+        chat-mode: true;
+        mind-name: root.mind-name;
+        identity: "Attached mind";
+        can-open-in-agents: true;
+        messages: root.messages;
+        approvals: root.approvals;
+        questions: root.questions;
+        work-cards: root.work-cards;
+        strip: root.strip;
+        live-runs: root.live-runs;
+        waiting-runs: root.waiting-runs;
+        send-message(text) => { root.sent = text; root.sends += 1; }
+        mode-clicked => { root.mode-clicks += 1; }
+        open-run(run) => { root.opened-run = run; }
+        view-desk(run) => { root.desks += 1; }
+        approval-allow(id) => { root.allowed += 1; }
+        approval-deny(id) => { root.denied += 1; }
+    }
+}
+
 export component AgentsProbe inherits Window {
     in property <length> canvas-width: 1280px;
     in property <length> canvas-height: 800px;
