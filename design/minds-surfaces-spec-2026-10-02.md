@@ -1,6 +1,6 @@
 # The minds' surfaces: chat, agents, an overloaded dock, Alt+Tab (2026-10-02)
 
-These are the specs for four surfaces: the chat and the Agents workroom (the parts of the OS that are its signature), the dock when it is full, and the window switcher. GPT‑6 Astra wrote them at Pranab's request. The renders are on the "Yantrik Shell 10×" canvas (https://claude.ai/artifact/FCLLZf6pgNfegzjsAY8TAU), on the boards Chat, Agents, Dock overloaded and Alt+Tab. The visual direction Pranab chose is the GPT render: a photographic wallpaper, solid charcoal, and a slim icons-only taskbar grounded on the bottom edge (Pranab, 2 Oct: grounded, not floating, so running apps get the whole screen above it). See `ui-review-gpt6-astra-2026-10-02.md` for the rules underneath.
+These are the specs for four surfaces: the chat and the Agents workroom (the parts of the OS that are its signature), the dock when it is full, and the window switcher. GPT‑6 Astra wrote them at Pranab's request. The renders are on the "Yantrik Shell 10×" canvas (https://claude.ai/artifact/FCLLZf6pgNfegzjsAY8TAU), on the boards Chat, Agents, Dock overloaded and Alt+Tab. The visual direction Pranab chose is the GPT render: a photographic wallpaper, solid charcoal, and a slim icons-only dock grounded on the bottom edge like the macOS Dock (Pranab, 2 Oct: grounded, not floating, so running apps get the whole screen above it). See `ui-review-gpt6-astra-2026-10-02.md` for the rules underneath.
 
 ## Core idea
 Chat and Agents are two views of the same work:
@@ -28,7 +28,7 @@ The object that connects them is the **work card**: a run's mind, state, desk pr
 ## 1. Chat
 **Layout**
 - A right panel, 440px wide by default, resizable from 380 to 560px.
-- 12px from the edges; it runs from 48px below the top to 12px above the taskbar.
+- 12px from the edges; it runs from 48px below the top to 12px above the dock.
 - On narrow screens it becomes full width.
 
 **Header (64px)**
@@ -104,13 +104,14 @@ The object that connects them is the **work card**: a run's mind, state, desk pr
 
 **Left out:** the List/Overview toggle, Tasks as a separate inbox, always-visible billing, scores, avatars, fake progress, and simulated thinking.
 
-## 3. The taskbar (dock), overloaded
-**Base: grounded, not floating**
-- Full width and flush with the bottom edge: no gap below, no side margins, no corner radius. #101417 with a 1px neutral border on its top edge only.
-- 48px tall. It reserves exactly 48px (its exclusive zone), so a maximised window fills everything between the top bar and the taskbar. Nothing of the wallpaper shows under or beside it.
-- The buttons sit centred in the bar: 40×40 buttons with 24px icons and 4px gaps.
-- The button row may use the bar's width less 32px; past that it pages (see Overflow).
-- A fullscreen app covers the taskbar. Popovers above it (the window list, Apps) open 8px above its top edge.
+## 3. The dock, overloaded
+**Base: grounded like the macOS Dock, not floating**
+- Centred and as wide as its buttons, growing as apps open, up to min(880px, viewport − 32px); past that it pages (see Overflow).
+- Its bottom edge is flush with the screen's bottom edge. The top corners have a 16px radius and the bottom corners are square. #101417 with a 1px neutral border on the top and sides.
+- 48px tall, with 4px padding: 40×40 buttons, 24px icons and 4px gaps.
+- It reserves exactly 48px across the whole screen width (its exclusive zone), so a maximised window ends at the dock's top edge and never sits under it. The wallpaper shows only beside the dock.
+- Hovering a button for 500ms shows its name in a small opaque label 8px above it; the window list (below) replaces the label for apps with several windows.
+- A fullscreen app covers the dock. Popovers above it (the window list, Apps) open 8px above its top edge.
 
 **Order**
 - Apps | pinned and running apps | divider | Yantrik Mind.
