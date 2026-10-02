@@ -14,11 +14,19 @@ The object that connects them is the **work card**: a run's mind, state, desk pr
 - **Tokens:**
   - text #F2F4F5, secondary #A8B0B6;
   - panels #151A1E, bars and insets #101417;
+  - tiles and controls on a panel #1E252B, with a 1px #2C343B border, so they stand out from it;
   - borders 1px #343B41;
-  - mind teal #69C8BC, needs-you amber #E7B567, folders #9DBDE5;
+  - the system accent, soft blue #8FB4E3; mind teal #69C8BC; needs-you amber #E7B567; folders #9DBDE5; destructive red #E5484D;
   - 16px radii, a 2px white focus ring.
 - **Type:** Barlow. Body 15/22, reading text 16/24, labels 13/18, nothing essential below 12px.
-- **Colour roles:** teal identifies minds and their presence. It is not a selection or success colour. Amber means a person's response is pending, nothing else. Selections use a neutral raised fill plus a white keyline.
+- **Colour roles** (Pranab, 2 Oct: the buttons all looked alike, and the tiles disappeared into the panels):
+  - **Soft blue is the one system accent.** It marks what is ON (an active toggle tile is filled blue with dark text and icon; a slider's filled part and knob) and the PRIMARY action (a filled blue button with a dark label).
+  - **Buttons have three kinds:** primary (filled blue, one per group at most), secondary (an outline: transparent, 1px #4A535B, white label) and destructive (filled red, only for what cannot be undone: delete, erase, power off).
+  - **Approval cards** fill "Approve once" as the primary, but it is never focused when the card appears and Enter never presses it. The look shows which button is the action; it never chooses for the person.
+  - **Teal** identifies minds and their presence, nothing else: not a selection, success or app colour.
+  - **Amber** means a person's response is pending, nothing else.
+  - **Selections** in shell surfaces (Alt+Tab, lists, the dock) use a neutral raised fill plus a white keyline. Inside apps, the current location (a sidebar row) may use the accent at 18%.
+- **App icons** are one set: full-colour rounded-square tiles with a simple white glyph, the same in the dock, the launcher and Alt+Tab. An app with its own brand icon is shown in a tile of that style. No mix of line icons and filled art in the dock, and no teal tile except a mind's.
 - **One state vocabulary, everywhere:** Queued · Working · Needs you · Paused · Finished · Stopped · Couldn't finish · Connection lost.
   - "Finished · 3 file changes recorded" is allowed; "Everything is fixed" is not.
   - Unobservable work reads "Last update 10:42".
