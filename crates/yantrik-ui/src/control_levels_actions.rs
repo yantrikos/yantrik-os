@@ -15,6 +15,7 @@
 //! from there through the event loop with the reading just taken.
 
 use serde_json::{json, Value};
+use slint::ComponentHandle;
 use yantrik_app_runtime::control::{answer_later, Action, App as ControlSurface, Param};
 
 use crate::control_levels::{self as levels, Machine};
