@@ -28,6 +28,6 @@ The card's buttons are `pointer-only` YButtons, so nothing is focused when the c
 
 ## Not verified
 - The ui-preview binary could not be linked: rustc is OOM-killed (~14 GB) compiling the Slint-generated code in this 15 GB sandbox, even at opt-level 0. So no `verify-*` scene (including `verify-colour-system`, `verify-kit-controls`, `verify-cards-waiting`, `verify-qs-levels`, `verify-idle`) was run and **no PNGs were looked at**. The pixel assertions in the new scene are unrun.
-- `cargo test -p yantrik-ui --bin yantrik-ui`: see the PR for the result if it completed (same memory limit).
+- `cargo test -p yantrik-ui --bin yantrik-ui`: NOT run. rustc was OOM-killed compiling `yantrik-ui-slint` (same ~14 GB limit). The `control_approvals.rs` and `card_watch.rs` tests were not run here; neither file is changed.
 - Colour consequences to eyeball: every `Theme.accent` user is now blue, including mind surfaces that used the old teal accent; `Theme.cyan` (mind teal) and amber are unchanged. The launcher button and unread dots are accent-filled. Light-mode values are my picks.
 - Not changed: the approval card's third "Allow … for this session" row (deliberately the quietest control), PowerButton icons in the launcher footer, app-local ribbon/icon buttons; there is no power-off confirm dialog to restyle (the power menu rows run immediately).
