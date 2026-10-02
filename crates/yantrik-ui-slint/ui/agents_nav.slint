@@ -13,15 +13,15 @@ import { WorkNavData, MindMark } from "agents_workroom.slint";
 // An amber count: requests waiting on the person. Only ever drawn when there is one.
 component NeedsBadge inherits Rectangle {
     in property <int> count;
-    width: max(20px, label.preferred-width + 12px);
-    height: 20px;
-    border-radius: 10px;
+    width: max(Theme.wr-badge-h, label.preferred-width + Theme.sp-3);
+    height: Theme.wr-badge-h;
+    border-radius: self.height / 2;
     background: Theme.amber;
     label := Text {
         text: root.count;
         color: Theme.bg-surface;
         font-size: Theme.fs-caption;
-        font-weight: 700;
+        font-weight: Theme.fw-headline;
         horizontal-alignment: center;
         vertical-alignment: center;
     }
@@ -34,10 +34,10 @@ component NavItem inherits Rectangle {
     in property <int> count;
     in property <bool> amber;
     callback clicked;
-    height: 40px;
+    height: Theme.wr-nav-item-h;
     border-radius: Theme.r-md;
     background: root.selected ? Theme.bg-elevated : ta.has-hover ? Theme.hover-fill : transparent;
-    border-width: root.selected ? 1px : 0px;
+    border-width: root.selected ? Theme.hairline : 0px;
     border-color: Theme.text-primary;
     accessible-role: button;
     accessible-label: root.label;
@@ -46,14 +46,14 @@ component NavItem inherits Rectangle {
         clicked => { root.clicked(); }
     }
     HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
-        spacing: 10px;
+        padding-left: Theme.sp-3;
+        padding-right: Theme.sp-3;
+        spacing: Theme.sp-2h;
         VerticalLayout {
             alignment: center;
             Icon {
                 commands: root.icon;
-                size: 16px;
+                size: Theme.bar-icon-size;
                 tint: root.selected ? Theme.text-primary : Theme.text-secondary;
             }
         }
@@ -61,7 +61,7 @@ component NavItem inherits Rectangle {
             text: root.label;
             color: root.selected ? Theme.text-primary : Theme.text-secondary;
             font-size: Theme.fs-body;
-            font-weight: root.selected ? 600 : 400;
+            font-weight: root.selected ? Theme.fw-headline : Theme.fw-body;
             vertical-alignment: center;
             horizontal-stretch: 1;
         }
@@ -81,10 +81,10 @@ component MindRow inherits Rectangle {
     in property <WorkNavData> data;
     in property <bool> selected;
     callback clicked;
-    height: 64px;
+    height: Theme.wr-nav-row-h;
     border-radius: Theme.r-md;
     background: root.selected ? Theme.bg-elevated : ta.has-hover ? Theme.hover-fill : transparent;
-    border-width: root.selected ? 1px : 0px;
+    border-width: root.selected ? Theme.hairline : 0px;
     border-color: Theme.text-primary;
     accessible-role: button;
     accessible-label: root.data.label + ", " + root.data.sub;
@@ -93,22 +93,22 @@ component MindRow inherits Rectangle {
         clicked => { root.clicked(); }
     }
     HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
-        spacing: 12px;
+        padding-left: Theme.sp-3;
+        padding-right: Theme.sp-3;
+        spacing: Theme.sp-3;
         VerticalLayout {
             alignment: center;
             MindMark { available: root.data.available; }
         }
         VerticalLayout {
             alignment: center;
-            spacing: 2px;
+            spacing: Theme.sp-half;
             horizontal-stretch: 1;
             Text {
                 text: root.data.label;
                 color: Theme.text-primary;
                 font-size: Theme.fs-body;
-                font-weight: 600;
+                font-weight: Theme.fw-headline;
                 overflow: elide;
             }
             Text {
@@ -129,10 +129,10 @@ component TaskRow inherits Rectangle {
     in property <WorkNavData> data;
     in property <bool> selected;
     callback clicked;
-    height: 40px;
+    height: Theme.wr-nav-item-h;
     border-radius: Theme.r-md;
     background: root.selected ? Theme.bg-elevated : ta.has-hover ? Theme.hover-fill : transparent;
-    border-width: root.selected ? 1px : 0px;
+    border-width: root.selected ? Theme.hairline : 0px;
     border-color: Theme.text-primary;
     accessible-role: button;
     accessible-label: root.data.label + ", " + root.data.sub;
@@ -141,12 +141,12 @@ component TaskRow inherits Rectangle {
         clicked => { root.clicked(); }
     }
     HorizontalLayout {
-        padding-left: 52px;
-        padding-right: 12px;
-        spacing: 8px;
+        padding-left: Theme.wr-nav-indent;
+        padding-right: Theme.sp-3;
+        spacing: Theme.sp-2;
         VerticalLayout {
             alignment: center;
-            spacing: 1px;
+            spacing: Theme.hairline;
             horizontal-stretch: 1;
             Text {
                 text: root.data.label;
@@ -179,7 +179,7 @@ export component WorkNav inherits Rectangle {
     callback pick-task(string);
 
     background: Theme.bg-card;
-    border-width: 1px;
+    border-width: Theme.hairline;
     border-color: Theme.border-subtle;
 
     nav-flick := Flickable {
@@ -190,8 +190,8 @@ export component WorkNav inherits Rectangle {
           width: nav-flick.width;
           height: col.preferred-height;
           col := VerticalLayout {
-            padding: 12px;
-            spacing: 4px;
+            padding: Theme.sp-3;
+            spacing: Theme.sp-1;
             alignment: start;
             NavItem {
                 label: "Workroom";
@@ -213,14 +213,14 @@ export component WorkNav inherits Rectangle {
                 selected: root.section == "history" && root.task == "";
                 clicked => { root.pick-section("history"); }
             }
-            Rectangle { height: 16px; }
+            Rectangle { height: Theme.sp-4; }
             Text {
                 text: "MINDS";
                 color: Theme.text-dim;
                 font-size: Theme.fs-micro;
-                letter-spacing: 2px;
-                height: 20px;
-                x: 12px;
+                letter-spacing: Theme.sp-half;
+                height: Theme.wr-badge-h;
+                x: Theme.sp-3;
             }
             if root.minds.length == 0 : Text {
                 text: "No mind is attached right now.";

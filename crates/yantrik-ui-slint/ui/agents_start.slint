@@ -31,10 +31,10 @@ component MindChip inherits Rectangle {
     in property <bool> chosen;
     callback clicked;
     width: chip.preferred-width;
-    height: 36px;
+    height: Theme.h-prominent;
     border-radius: Theme.r-md;
     background: root.chosen ? Theme.bg-elevated : ta.has-hover ? Theme.hover-fill : transparent;
-    border-width: 1px;
+    border-width: Theme.hairline;
     border-color: root.chosen ? Theme.text-primary : Theme.border-default;
     accessible-role: button;
     accessible-label: root.mind.name;
@@ -43,15 +43,15 @@ component MindChip inherits Rectangle {
         clicked => { root.clicked(); }
     }
     chip := HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
-        spacing: 8px;
+        padding-left: Theme.sp-3;
+        padding-right: Theme.sp-3;
+        spacing: Theme.sp-2;
         VerticalLayout {
             alignment: center;
             Rectangle {
-                width: 8px;
-                height: 8px;
-                border-radius: 4px;
+                width: Theme.sp-2;
+                height: Theme.sp-2;
+                border-radius: Theme.sp-1;
                 background: Theme.mind;
             }
         }
@@ -59,7 +59,7 @@ component MindChip inherits Rectangle {
             text: root.mind.name;
             color: Theme.text-primary;
             font-size: Theme.fs-body;
-            font-weight: root.chosen ? 600 : 400;
+            font-weight: root.chosen ? Theme.fw-headline : Theme.fw-body;
             vertical-alignment: center;
         }
     }
@@ -70,28 +70,28 @@ component RoleRow inherits Rectangle {
     in property <AgentRoleData> role;
     in property <bool> chosen;
     callback clicked;
-    height: 48px;
+    height: Theme.h-app-header;
     border-radius: Theme.r-md;
     background: root.chosen ? Theme.bg-elevated : ta.has-hover ? Theme.hover-fill : transparent;
-    border-width: root.chosen ? 1px : 0px;
+    border-width: root.chosen ? Theme.hairline : 0px;
     border-color: Theme.text-primary;
     ta := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
     HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
-        spacing: 8px;
+        padding-left: Theme.sp-2h;
+        padding-right: Theme.sp-2h;
+        spacing: Theme.sp-2;
         VerticalLayout {
             alignment: center;
-            spacing: 1px;
+            spacing: Theme.hairline;
             horizontal-stretch: 1;
             Text {
                 text: root.role.name;
                 color: Theme.text-primary;
                 font-size: Theme.fs-caption;
-                font-weight: 600;
+                font-weight: Theme.fw-headline;
                 overflow: elide;
             }
             Text {
@@ -132,26 +132,26 @@ export component StartSheet inherits Rectangle {
     TouchArea { clicked => { root.cancel(); } }
 
     sheet := Rectangle {
-        width: min(480px, parent.width);
+        width: min(Theme.wr-sheet-w, parent.width);
         x: parent.width - self.width;
         height: parent.height;
         background: Theme.bg-card;
-        border-width: 1px;
+        border-width: Theme.hairline;
         border-color: Theme.border-card;
         // Swallow clicks, so the scrim behind does not close the sheet from inside it.
         TouchArea { }
 
         VerticalLayout {
-            padding: 24px;
-            spacing: 16px;
+            padding: Theme.sp-6;
+            spacing: Theme.sp-4;
 
             HorizontalLayout {
-                height: 32px;
+                height: Theme.h-regular;
                 Text {
                     text: "Start work";
                     color: Theme.text-primary;
                     font-size: Theme.fs-display;
-                    font-weight: 600;
+                    font-weight: Theme.fw-headline;
                     vertical-alignment: center;
                     horizontal-stretch: 1;
                 }
@@ -169,19 +169,19 @@ export component StartSheet inherits Rectangle {
                 text: "What should get done?";
                 color: Theme.text-primary;
                 font-size: Theme.fs-body;
-                font-weight: 600;
+                font-weight: Theme.fw-headline;
             }
             Rectangle {
-                height: 120px;
+                height: Theme.wr-task-field-h;
                 border-radius: Theme.r-md;
                 background: Theme.bg-input;
-                border-width: 1px;
+                border-width: Theme.hairline;
                 border-color: prompt.has-focus ? Theme.text-primary : Theme.border-default;
                 prompt := TextInput {
-                    x: 12px;
-                    y: 10px;
-                    width: parent.width - 24px;
-                    height: parent.height - 20px;
+                    x: Theme.sp-3;
+                    y: Theme.sp-2h;
+                    width: parent.width - Theme.sp-6;
+                    height: parent.height - Theme.sp-5;
                     single-line: false;
                     wrap: word-wrap;
                     color: Theme.text-primary;
@@ -189,9 +189,9 @@ export component StartSheet inherits Rectangle {
                     accessible-label: "What should get done?";
                 }
                 if prompt.text == "" : Text {
-                    x: 12px;
-                    y: 10px;
-                    width: parent.width - 24px;
+                    x: Theme.sp-3;
+                    y: Theme.sp-2h;
+                    width: parent.width - Theme.sp-6;
                     text: "For example: tidy the photos folder, duplicates into Trash";
                     color: Theme.text-dim;
                     font-size: Theme.fs-body;
@@ -201,12 +201,12 @@ export component StartSheet inherits Rectangle {
 
             if !root.from-catalog : VerticalLayout {
                 vertical-stretch: 0;
-                spacing: 8px;
+                spacing: Theme.sp-2;
                 Text {
                     text: "Mind";
                     color: Theme.text-primary;
                     font-size: Theme.fs-body;
-                    font-weight: 600;
+                    font-weight: Theme.fw-headline;
                 }
                 if root.minds.length == 0 : Text {
                     text: "No mind is attached right now. Start one in Settings → Harnesses, then come back.";
@@ -215,7 +215,7 @@ export component StartSheet inherits Rectangle {
                     wrap: word-wrap;
                 }
                 HorizontalLayout {
-                    spacing: 8px;
+                    spacing: Theme.sp-2;
                     alignment: start;
                     for m in root.minds : MindChip {
                         mind: m;
@@ -229,12 +229,12 @@ export component StartSheet inherits Rectangle {
             Rectangle {
                 background: Theme.bg-input;
                 border-radius: Theme.r-md;
-                border-width: 1px;
+                border-width: Theme.hairline;
                 border-color: Theme.border-subtle;
-                height: summary.preferred-height + 24px;
+                height: summary.preferred-height + Theme.sp-6;
                 summary := VerticalLayout {
-                    padding: 12px;
-                    spacing: 4px;
+                    padding: Theme.sp-3;
+                    spacing: Theme.sp-1;
                     Text {
                         text: "Mode and permissions";
                         color: Theme.text-secondary;
@@ -258,7 +258,7 @@ export component StartSheet inherits Rectangle {
                         property <bool> show: false;
                         height: reach-col.preferred-height;
                         reach-col := VerticalLayout {
-                            spacing: 2px;
+                            spacing: Theme.sp-half;
                             Text {
                                 text: reach-box.show ? "hide the exact patterns" : "the exact patterns";
                                 color: Theme.text-primary;
@@ -282,22 +282,22 @@ export component StartSheet inherits Rectangle {
 
             // Optional: start as a role from the catalog instead of a bare mind.
             Rectangle {
-                height: 32px;
+                height: Theme.h-regular;
                 accessible-role: button;
                 accessible-label: "Role, optional";
                 HorizontalLayout {
-                    spacing: 6px;
+                    spacing: Theme.sp-1h;
                     alignment: start;
                     Icon {
                         commands: root.from-catalog ? Icons.chevron-down : Icons.chevron-right;
-                        size: 14px;
+                        size: Theme.wr-glyph;
                         tint: Theme.text-secondary;
                     }
                     Text {
                         text: "Role (optional)";
                         color: Theme.text-primary;
                         font-size: Theme.fs-body;
-                        font-weight: 600;
+                        font-weight: Theme.fw-headline;
                         vertical-alignment: center;
                     }
                     Text {
@@ -316,10 +316,10 @@ export component StartSheet inherits Rectangle {
             // a thumb on the edge shows where in the list the window is (#212). The cue goes away
             // at the bottom.
             if root.from-catalog : roles-box := Rectangle {
-                property <length> shown-h: min(root.roles.length * 50px, 200px);
-                property <bool> more-below: roles-col.preferred-height - roles-box.shown-h > 2px
-                    && -roles-flick.viewport-y < roles-col.preferred-height - roles-box.shown-h - 2px;
-                height: roles-box.shown-h + (roles-box.more-below ? 14px : 0px);
+                property <length> shown-h: min(root.roles.length * Theme.wr-role-row-h, Theme.wr-roles-max-h);
+                property <bool> more-below: roles-col.preferred-height - roles-box.shown-h > Theme.sp-half
+                    && -roles-flick.viewport-y < roles-col.preferred-height - roles-box.shown-h - Theme.sp-half;
+                height: roles-box.shown-h + (roles-box.more-below ? Theme.wr-fade-h : 0px);
                 roles-flick := Flickable {
                     height: roles-box.shown-h;
                     viewport-height: roles-col.preferred-height;
@@ -327,7 +327,7 @@ export component StartSheet inherits Rectangle {
                         width: roles-flick.width;
                         height: roles-col.preferred-height;
                         roles-col := VerticalLayout {
-                            spacing: 2px;
+                            spacing: Theme.sp-half;
                             for r in root.roles : RoleRow {
                                 role: r;
                                 chosen: r.id == root.role;
@@ -336,18 +336,18 @@ export component StartSheet inherits Rectangle {
                         }
                     }
                 }
-                if roles-col.preferred-height > roles-box.shown-h + 2px : Rectangle {
-                    x: roles-box.width - 4px;
-                    width: 3px;
-                    height: max(20px, roles-box.shown-h * (roles-box.shown-h / roles-col.preferred-height));
+                if roles-col.preferred-height > roles-box.shown-h + Theme.sp-half : Rectangle {
+                    x: roles-box.width - Theme.sp-1;
+                    width: Theme.wr-dot-gap;
+                    height: max(Theme.sp-5, roles-box.shown-h * (roles-box.shown-h / roles-col.preferred-height));
                     y: min(roles-box.shown-h - self.height,
                            -roles-flick.viewport-y * (roles-box.shown-h / roles-col.preferred-height));
-                    border-radius: 2px;
+                    border-radius: Theme.r-xs;
                     background: Theme.text-dim;
                 }
                 if roles-box.more-below : Text {
                     y: roles-box.shown-h;
-                    height: 14px;
+                    height: Theme.wr-fade-h;
                     text: "more roles below — scroll";
                     color: Theme.text-dim;
                     font-size: Theme.fs-micro;
@@ -368,7 +368,7 @@ export component StartSheet inherits Rectangle {
 
             HorizontalLayout {
                 alignment: end;
-                spacing: 8px;
+                spacing: Theme.sp-2;
                 YButton {
                     label: "Cancel";
                     variant: 2;

@@ -641,6 +641,32 @@ pub fn state_of(a: &Agent, run: Option<u64>) -> (&'static str, &'static str) {
     }
 }
 
+/// A run another agent started from the opened one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChildRun {
+    pub key: String,
+    pub title: String,
+    pub state: &'static str,
+    pub label: &'static str,
+}
+
+/// The runs the opened agent started, oldest first: one level, because a child cannot start
+/// agents of its own (`launch::stop_on`, which stops them with their parent). With a run chosen
+/// only the children started while that run was open are listed; without, all of them.
+pub fn child_runs(s: &Store, a: &Agent, run: Option<u64>) -> Vec<ChildRun> {
+    let window = run.and_then(|n| a.turns.iter().find(|t| t.n == n)).map(|t| (t.started, t.ended.unwrap_or(u64::MAX)));
+    s.children_of(&a.meta.id)
+        .iter()
+        .filter_map(|id| s.agent(id))
+        .filter(|c| window.is_none_or(|(from, to)| c.meta.started >= from && c.meta.started <= to))
+        .map(|c| {
+            let who = c.meta.role.as_ref().map(|r| r.name.clone()).unwrap_or_else(|| c.meta.mind.clone());
+            let (state, label) = state_of(c, None);
+            ChildRun { key: c.meta.id.0.clone(), title: format!("{who}: {}", c.meta.title), state, label }
+        })
+        .collect()
+}
+
 /// The desktop's mode in a word. It is the desktop's, not the run's: one mode governs every mind.
 pub fn mode_label(mode: crate::mind_mode::Mode) -> &'static str {
     use crate::mind_mode::Mode;
@@ -1135,5 +1161,104 @@ mod tests {
         assert_eq!(ago(42), "42s ago");
         assert_eq!(ago(190), "3m ago");
         assert_eq!(ago(7300), "2h ago");
+    }
+
+    /// The route showed the agents a run started and Stop on a parent stops them (review of #584,
+    /// finding 4); the task detail lists them now, under the run that started them, and a stranger
+    /// is not listed.
+    #[test]
+    fn the_task_detail_lists_the_runs_the_opened_one_started() {
+        let mut s = Store::new();
+        let parent = start(&mut s, "pi:c-parent01", "pi", "Review the migration");
+        let child = id("hermes:c-review01");
+        let mut meta = AgentMeta::new(child.clone(), "hermes");
+        meta.parent = Some(parent.clone());
+        meta.title = "Check the rollback".into();
+        s.upsert_agent(meta);
+        s.open_turn(&child, "Check the rollback");
+        start(&mut s, "deepseek:c-other01", "deepseek", "Something unrelated");
+
+        let a = s.agent(&parent).unwrap();
+        let kids = child_runs(&s, a, None);
+        assert_eq!(kids.len(), 1, "one child, not the stranger: {kids:?}");
+        assert_eq!(kids[0].key, "hermes:c-review01");
+        assert!(kids[0].title.contains("Check the rollback"), "{}", kids[0].title);
+        assert_eq!(kids[0].state, "working");
+        // A run chosen scopes it to what started while that run was open (the parent's one open
+        // turn is `n`); a run number that is not there lists them all; a child has none.
+        let n = a.turns[0].n;
+        assert_eq!(child_runs(&s, a, Some(n)).len(), 1, "started while that run was open");
+        assert_eq!(child_runs(&s, a, Some(9_999)).len(), 1, "an unknown run falls back to all children");
+        assert!(child_runs(&s, s.agent(&child).unwrap(), None).is_empty());
+    }
+
+    const WORKROOM_SLINT: [(&str, &str); 4] = [
+        ("agents_workroom.slint", include_str!("../../../yantrik-ui-slint/ui/agents_workroom.slint")),
+        ("agents_start.slint", include_str!("../../../yantrik-ui-slint/ui/agents_start.slint")),
+        ("agents_nav.slint", include_str!("../../../yantrik-ui-slint/ui/agents_nav.slint")),
+        ("agents_task.slint", include_str!("../../../yantrik-ui-slint/ui/agents_task.slint")),
+    ];
+
+    /// Review of #584, finding 1: sizes, spacings and weights come from the theme, not from
+    /// literals, so a density or scale change reaches the whole workroom. Only `0px` (nothing) may
+    /// be written out. Comments are free to name the spec's numbers.
+    #[test]
+    fn the_workroom_screens_use_tokens_and_no_pixel_or_weight_literals() {
+        for (name, src) in WORKROOM_SLINT {
+            for (n, line) in src.lines().enumerate() {
+                let code = line.split("//").next().unwrap();
+                let bytes = code.as_bytes();
+                let mut at = 0;
+                while let Some(found) = code[at..].find("px") {
+                    let end = at + found;
+                    let mut start = end;
+                    while start > 0 && (bytes[start - 1].is_ascii_digit() || bytes[start - 1] == b'.') {
+                        start -= 1;
+                    }
+                    let number = &code[start..end];
+                    let word_before = start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'-' || bytes[start - 1] == b'_');
+                    if !number.is_empty() && !word_before {
+                        assert!(
+                            number.parse::<f32>() == Ok(0.0),
+                            "{name}:{}: `{number}px` is a literal; use a Theme token: {line}",
+                            n + 1
+                        );
+                    }
+                    at = end + 2;
+                }
+                assert!(
+                    !line.contains("font-weight:") || !code.split("font-weight:").nth(1).is_some_and(|w| w.chars().any(|c| c.is_ascii_digit())),
+                    "{name}:{}: a numeric font-weight; use Theme.fw-*: {line}",
+                    n + 1
+                );
+            }
+        }
+    }
+
+    /// Every `Theme.` token these screens name is defined, so a renamed or mistyped one is a failing
+    /// test and not a Slint error found ten minutes into a build.
+    #[test]
+    fn every_theme_token_the_workroom_screens_name_exists() {
+        let theme = include_str!("../../../yantrik-design-tokens/slint/theme.slint");
+        for (name, src) in WORKROOM_SLINT {
+            for line in src.lines().filter(|l| !l.trim_start().starts_with("//")) {
+                let mut rest = line;
+                while let Some(at) = rest.find("Theme.") {
+                    let tail = &rest[at + 6..];
+                    let token: String = tail.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+                    assert!(
+                        theme.contains(&format!("property <length> {token}:"))
+                            || theme.contains(&format!("property <color> {token}:"))
+                            || theme.contains(&format!("property <int> {token}:"))
+                            || theme.contains(&format!("property <int>    {token}:"))
+                            || theme.contains(&format!("property <float>  {token}:"))
+                            || theme.contains(&format!("property <string> {token}:"))
+                            || theme.contains(&format!("{token}:")),
+                        "{name}: `Theme.{token}` is not defined in theme.slint"
+                    );
+                    rest = &tail[token.len()..];
+                }
+            }
+        }
     }
 }

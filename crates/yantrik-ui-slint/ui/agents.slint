@@ -23,13 +23,13 @@ import { QuestionCard } from "components/question_card.slint";
 import { JumpToPresent } from "jump_to_present.slint";
 import { YContextMenu } from "components/y_context_menu.slint";
 import {
-    WorkNavData, DeskCardData, DecisionData, ResultData, ChangeRowData, RunFactData, MindMark,
+    WorkNavData, DeskCardData, DecisionData, ResultData, ChangeRowData, ChildRunData, RunFactData, MindMark,
     WorkroomOverview, NeedsPage, HistoryPage,
 } from "agents_workroom.slint";
 import { WorkNav } from "agents_nav.slint";
-import { ChangesLedger, RunDetails, ConfirmDialog } from "agents_task.slint";
+import { ChangesLedger, ChildRuns, RunDetails, ConfirmDialog } from "agents_task.slint";
 import { AgentMindData, AgentRoleData, StartSheet } from "agents_start.slint";
-export { WorkNavData, DeskCardData, DecisionData, ResultData, ChangeRowData, RunFactData } from "agents_workroom.slint";
+export { WorkNavData, DeskCardData, DecisionData, ResultData, ChangeRowData, ChildRunData, RunFactData } from "agents_workroom.slint";
 export { AgentMindData, AgentRoleData } from "agents_start.slint";
 
 // One run of same-looking cells in a command's terminal.
@@ -177,6 +177,8 @@ export global AgentsState {
     in-out property <[ChangeRowData]> changes: [];
     in-out property <bool> changes-recorded: false;
     in-out property <[RunFactData]> run-facts: [];
+    // Runs the opened one started (a hand-off): listed under its changes, each opens its own run.
+    in-out property <[ChildRunData]> child-runs: [];
     // A desk's "more" menu, by the desk's key and where it opened; and a Stop asked, not yet
     // confirmed.
     in-out property <string> menu-key: "";
@@ -966,6 +968,11 @@ component TaskDetail inherits Rectangle {
                 ChangesLedger {
                     changes: AgentsState.changes;
                     recorded: AgentsState.changes-recorded;
+                }
+
+                ChildRuns {
+                    children: AgentsState.child-runs;
+                    open(key) => { AgentsState.select(key); }
                 }
 
                 VerticalLayout {

@@ -342,6 +342,14 @@ export global Theme {
     out property <length> sp-8: 40px;
     out property <length> sp-9: 48px;
 
+    // Half-steps between the spacing scale's rungs, for the few places a layout sits between two
+    // of them (a badge's inset, a row's gap). Prefer sp-1 to sp-9; reach for these only to keep
+    // an existing look.
+    out property <length> sp-half: 2px;
+    out property <length> sp-1h: 6px;
+    out property <length> sp-2h: 10px;
+    out property <length> sp-3h: 14px;
+
     // Touch targets
     out property <length> touch-target: 44px;
 
@@ -452,6 +460,41 @@ export global Theme {
     out property <length> tile-h: 56px;
     // On-screen display card (volume, brightness) and its width.
     out property <length> osd-w: 280px;
+    // Agents workroom (agents*.slint). The spec's numbers (design/minds-surfaces-spec-2026-10-02.md
+    // section 2) live here so a density or scale change reaches every screen of it at once.
+    // Marks: the mind's disc at four sizes.
+    out property <length> wr-mark-xs: 18px;
+    out property <length> wr-mark-s: 22px;
+    out property <length> wr-mark-m: 24px;
+    out property <length> wr-mark-l: 28px;
+    // The mind mark's inner dot, as a fraction of the mark.
+    out property <float>  wr-mark-core: 0.36;
+    out property <float>  wr-mark-ring-div: 12;     // the ring is size / this, at least the focus ring
+    out property <length> wr-glyph: 14px;           // small line icon beside text
+    out property <length> wr-fade-h: 14px;          // the "more below" fade under a scrolling list
+    out property <length> wr-dot-gap: 3px;          // gap between a run's progress dots; scrollbar width
+    // Nav: a mind's row, a section row, the indent of a mind's sub-rows, the count badge.
+    out property <length> wr-nav-row-h: 64px;
+    out property <length> wr-nav-item-h: 40px;
+    out property <length> wr-nav-indent: 52px;
+    out property <length> wr-badge-h: 20px;
+    // Decision shelf and desks.
+    out property <length> wr-shelf-card-h: 84px;
+    out property <length> wr-header-h: 44px;        // a desk's header; the screen's header row
+    out property <length> wr-row-h: 56px;
+    out property <length> wr-desk-min-w: 320px;
+    out property <length> wr-desk-h: 248px;
+    out property <length> wr-desk-preview-h: 104px;
+    out property <length> wr-desk-line-h: 48px;
+    out property <length> wr-desk-acts-h: 52px;
+    // Start-work sheet and task detail.
+    out property <length> wr-sheet-w: 480px;
+    out property <length> wr-detail-w: 440px;
+    out property <length> wr-task-field-h: 120px;
+    out property <length> wr-role-row-h: 50px;
+    out property <length> wr-roles-max-h: 200px;
+    out property <length> wr-btn-w: 120px;
+    out property <length> wr-btn-w-wide: 140px;
     // One-pixel edge of a control, and the stroke weights an icon is drawn with (regular beside
     // text, a touch heavier on a filled tile where it sits on the accent).
     out property <length> hairline: 1px;

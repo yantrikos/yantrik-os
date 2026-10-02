@@ -67,6 +67,15 @@ export struct ChangeRowData {
     tone: string,          // ok | bad | dim | warn
 }
 
+// A run another agent started from the opened one (a hand-off, a sub-task): Stop on the parent
+// stops these too, so the detail lists them.
+export struct ChildRunData {
+    key: string,           // the child's agent id; choosing it opens its run
+    title: string,         // "Reviewer: Check the migration"
+    label: string,         // its state in the screen's words
+    state: string,         // working | needs_you | done | failed | lost | idle
+}
+
 export struct RunFactData {
     label: string,
     value: string,
@@ -75,16 +84,16 @@ export struct RunFactData {
 // The mark of a mind: a teal ring and dot while it can answer, a quiet neutral ring when it cannot.
 export component MindMark inherits Rectangle {
     in property <bool> available: true;
-    in property <length> size: 28px;
+    in property <length> size: Theme.wr-mark-l;
     width: root.size;
     height: root.size;
     border-radius: root.size / 2;
-    border-width: max(2px, root.size / 12);
+    border-width: max(Theme.focus-ring-width, root.size / Theme.wr-mark-ring-div);
     border-color: root.available ? Theme.mind : Theme.text-dim;
     if root.available : Rectangle {
         x: (parent.width - self.width) / 2 - parent.border-width;
         y: (parent.height - self.height) / 2 - parent.border-width;
-        width: root.size * 0.36;
+        width: root.size * Theme.wr-mark-core;
         height: self.width;
         border-radius: self.width / 2;
         background: Theme.mind;
@@ -97,10 +106,10 @@ export component MindMark inherits Rectangle {
 export component DecisionCard inherits Rectangle {
     in property <DecisionData> data;
     callback open();
-    height: 84px;
+    height: Theme.wr-shelf-card-h;
     border-radius: Theme.r-lg;
     background: Theme.bg-card;
-    border-width: 1px;
+    border-width: Theme.hairline;
     border-color: Theme.amber;
     accessible-role: button;
     accessible-label: root.data.mind + ": " + root.data.text + ". " + root.data.action;
@@ -109,21 +118,21 @@ export component DecisionCard inherits Rectangle {
         clicked => { root.open(); }
     }
     HorizontalLayout {
-        padding: 14px;
-        spacing: 16px;
+        padding: Theme.sp-3h;
+        spacing: Theme.sp-4;
         VerticalLayout {
             alignment: center;
-            spacing: 4px;
+            spacing: Theme.sp-1;
             horizontal-stretch: 1;
             HorizontalLayout {
-                spacing: 8px;
-                height: 18px;
-                MindMark { size: 18px; }
+                spacing: Theme.sp-2;
+                height: Theme.wr-mark-xs;
+                MindMark { size: Theme.wr-mark-xs; }
                 Text {
                     text: root.data.mind;
                     color: Theme.text-primary;
                     font-size: Theme.fs-caption;
-                    font-weight: 600;
+                    font-weight: Theme.fw-headline;
                     vertical-alignment: center;
                 }
                 Text {
@@ -170,20 +179,20 @@ export component DecisionShelf inherits Rectangle {
     callback view-all();
     height: col.preferred-height;
     col := VerticalLayout {
-        spacing: 12px;
+        spacing: Theme.sp-3;
         Text {
             text: "Needs you · " + root.total + (root.total == 1 ? " request" : " requests")
                 + " from " + root.minds + (root.minds == 1 ? " mind" : " minds");
             color: Theme.text-primary;
             font-size: Theme.fs-title-2;
-            font-weight: 600;
+            font-weight: Theme.fw-headline;
         }
         for d in root.decisions : DecisionCard {
             data: d;
             open => { root.open(d.key); }
         }
         if root.total > root.decisions.length : Rectangle {
-            height: 32px;
+            height: Theme.h-regular;
             accessible-role: button;
             accessible-label: "View all " + root.total + " requests";
             HorizontalLayout {
@@ -192,7 +201,7 @@ export component DecisionShelf inherits Rectangle {
                     text: "View all " + root.total + " requests";
                     color: Theme.text-primary;
                     font-size: Theme.fs-body;
-                    font-weight: 600;
+                    font-weight: Theme.fw-headline;
                     vertical-alignment: center;
                 }
             }
@@ -207,8 +216,8 @@ export component DecisionShelf inherits Rectangle {
 // The ⋯ of a card: three dots, drawn, so it reads the same at any size and needs no font glyph.
 component OverflowButton inherits Rectangle {
     callback clicked();
-    width: 32px;
-    height: 28px;
+    width: Theme.h-regular;
+    height: Theme.h-compact;
     border-radius: Theme.r-md;
     background: ta.has-hover ? Theme.hover-fill : transparent;
     accessible-role: button;
@@ -219,13 +228,13 @@ component OverflowButton inherits Rectangle {
     }
     HorizontalLayout {
         alignment: center;
-        spacing: 3px;
+        spacing: Theme.wr-dot-gap;
         for i in 3 : VerticalLayout {
             alignment: center;
             Rectangle {
-                width: 4px;
-                height: 4px;
-                border-radius: 2px;
+                width: Theme.sp-1;
+                height: Theme.sp-1;
+                border-radius: Theme.r-xs;
                 background: Theme.text-secondary;
             }
         }
@@ -244,7 +253,7 @@ export component DeskCard inherits Rectangle {
     callback more(length, length);
     border-radius: Theme.r-lg;
     background: Theme.bg-card;
-    border-width: 1px;
+    border-width: Theme.hairline;
     border-color: root.desk.state == "needs_you" ? Theme.amber : Theme.border-card;
     clip: true;
     accessible-role: groupbox;
@@ -253,14 +262,14 @@ export component DeskCard inherits Rectangle {
     VerticalLayout {
         // Header, 44px.
         Rectangle {
-            height: 44px;
+            height: Theme.wr-header-h;
             HorizontalLayout {
-                padding-left: 12px;
-                padding-right: 12px;
-                spacing: 8px;
+                padding-left: Theme.sp-3;
+                padding-right: Theme.sp-3;
+                spacing: Theme.sp-2;
                 VerticalLayout {
                     alignment: center;
-                    MindMark { size: 22px; }
+                    MindMark { size: Theme.wr-mark-s; }
                 }
                 VerticalLayout {
                     alignment: center;
@@ -269,7 +278,7 @@ export component DeskCard inherits Rectangle {
                         text: root.desk.via == "" ? root.desk.mind : root.desk.via + " · " + root.desk.mind;
                         color: Theme.text-primary;
                         font-size: Theme.fs-caption;
-                        font-weight: 600;
+                        font-weight: Theme.fw-headline;
                         overflow: elide;
                     }
                     Text {
@@ -287,18 +296,18 @@ export component DeskCard inherits Rectangle {
                 }
             }
             Rectangle {
-                y: parent.height - 1px;
-                height: 1px;
+                y: parent.height - Theme.hairline;
+                height: Theme.hairline;
                 background: Theme.separator;
             }
         }
         // Preview.
         Rectangle {
-            height: 104px;
+            height: Theme.wr-desk-preview-h;
             background: Theme.bg-input;
             VerticalLayout {
                 alignment: center;
-                spacing: 4px;
+                spacing: Theme.sp-1;
                 Text {
                     text: "Desk preview unavailable";
                     color: Theme.text-secondary;
@@ -309,10 +318,10 @@ export component DeskCard inherits Rectangle {
         }
         // The observed line.
         Rectangle {
-            height: 48px;
+            height: Theme.wr-desk-line-h;
             Text {
-                x: 12px;
-                width: parent.width - 24px;
+                x: Theme.sp-3;
+                width: parent.width - Theme.sp-6;
                 text: root.desk.activity;
                 color: root.desk.state == "needs_you" ? Theme.amber : Theme.text-primary;
                 font-size: Theme.fs-caption;
@@ -323,12 +332,12 @@ export component DeskCard inherits Rectangle {
         }
         // Acts.
         Rectangle {
-            height: 52px;
+            height: Theme.wr-desk-acts-h;
             HorizontalLayout {
-                padding-left: 12px;
-                padding-right: 12px;
-                padding-bottom: 12px;
-                spacing: 8px;
+                padding-left: Theme.sp-3;
+                padding-right: Theme.sp-3;
+                padding-bottom: Theme.sp-3;
+                spacing: Theme.sp-2;
                 alignment: start;
                 YButton {
                     label: "View desk";
@@ -359,9 +368,9 @@ export component DeskGrid inherits Rectangle {
     callback view(string);
     callback chat(string);
     callback more(string, length, length);
-    property <length> gap: 16px;
-    property <length> card-h: 248px;
-    property <int> cols: max(1, Math.floor((root.width + root.gap) / (320px + root.gap)));
+    property <length> gap: Theme.sp-4;
+    property <length> card-h: Theme.wr-desk-h;
+    property <int> cols: max(1, Math.floor((root.width + root.gap) / (Theme.wr-desk-min-w + root.gap)));
     property <length> card-w: (root.width - (root.cols - 1) * root.gap) / root.cols;
     property <int> rows: Math.ceil(root.desks.length / root.cols);
     height: root.rows * root.card-h + max(0, root.rows - 1) * root.gap;
@@ -381,7 +390,7 @@ export component DeskGrid inherits Rectangle {
 export component ResultRow inherits Rectangle {
     in property <ResultData> data;
     callback clicked;
-    height: 56px;
+    height: Theme.wr-row-h;
     border-radius: Theme.r-md;
     background: ta.has-hover ? Theme.hover-fill : transparent;
     accessible-role: button;
@@ -391,16 +400,16 @@ export component ResultRow inherits Rectangle {
         clicked => { root.clicked(); }
     }
     HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
-        spacing: 12px;
+        padding-left: Theme.sp-3;
+        padding-right: Theme.sp-3;
+        spacing: Theme.sp-3;
         VerticalLayout {
             alignment: center;
-            MindMark { size: 24px; }
+            MindMark { size: Theme.wr-mark-m; }
         }
         VerticalLayout {
             alignment: center;
-            spacing: 2px;
+            spacing: Theme.sp-half;
             horizontal-stretch: 1;
             Text {
                 text: root.data.task;
@@ -450,8 +459,8 @@ export component WorkroomOverview inherits Rectangle {
             width: flick.width;
             height: col.preferred-height;
             col := VerticalLayout {
-                padding: 24px;
-                spacing: 24px;
+                padding: Theme.sp-6;
+                spacing: Theme.sp-6;
                 alignment: start;
 
                 if root.narrowed != "" : Text {
@@ -467,12 +476,12 @@ export component WorkroomOverview inherits Rectangle {
                     view-all => { root.view-all-requests(); }
                 }
                 if root.desks.length > 0 : VerticalLayout {
-                    spacing: 12px;
+                    spacing: Theme.sp-3;
                     Text {
                         text: "Working now";
                         color: Theme.text-primary;
                         font-size: Theme.fs-title-2;
-                        font-weight: 600;
+                        font-weight: Theme.fw-headline;
                     }
                     DeskGrid {
                         desks: root.desks;
@@ -482,7 +491,7 @@ export component WorkroomOverview inherits Rectangle {
                     }
                 }
                 if root.desks.length == 0 : VerticalLayout {
-                    spacing: 16px;
+                    spacing: Theme.sp-4;
                     Text {
                         text: "No minds are working right now. Start a task, or return to a recent result.";
                         color: Theme.text-primary;
@@ -490,12 +499,12 @@ export component WorkroomOverview inherits Rectangle {
                         wrap: word-wrap;
                     }
                     if root.recent.length > 0 : VerticalLayout {
-                        spacing: 4px;
+                        spacing: Theme.sp-1;
                         Text {
                             text: "Recent results";
                             color: Theme.text-primary;
                             font-size: Theme.fs-title-2;
-                            font-weight: 600;
+                            font-weight: Theme.fw-headline;
                         }
                         for r in root.recent : ResultRow {
                             data: r;
@@ -503,7 +512,7 @@ export component WorkroomOverview inherits Rectangle {
                         }
                     }
                     if root.runs > 0 : Rectangle {
-                        height: 32px;
+                        height: Theme.h-regular;
                         accessible-role: button;
                         accessible-label: "View history, " + root.runs + " runs";
                         HorizontalLayout {
@@ -512,7 +521,7 @@ export component WorkroomOverview inherits Rectangle {
                                 text: "View history · " + root.runs + (root.runs == 1 ? " run" : " runs");
                                 color: Theme.text-primary;
                                 font-size: Theme.fs-body;
-                                font-weight: 600;
+                                font-weight: Theme.fw-headline;
                                 vertical-alignment: center;
                             }
                         }
@@ -541,8 +550,8 @@ export component NeedsPage inherits Rectangle {
             width: flick.width;
             height: col.preferred-height;
             col := VerticalLayout {
-                padding: 24px;
-                spacing: 16px;
+                padding: Theme.sp-6;
+                spacing: Theme.sp-4;
                 alignment: start;
                 if root.decisions.length == 0 : Text {
                     text: "Nothing is waiting on you.";
@@ -573,14 +582,14 @@ export component HistoryPage inherits Rectangle {
             width: flick.width;
             height: col.preferred-height;
             col := VerticalLayout {
-                padding: 24px;
-                spacing: 12px;
+                padding: Theme.sp-6;
+                spacing: Theme.sp-3;
                 alignment: start;
                 Text {
                     text: "History · " + root.runs + (root.runs == 1 ? " run" : " runs");
                     color: Theme.text-primary;
                     font-size: Theme.fs-title-2;
-                    font-weight: 600;
+                    font-weight: Theme.fw-headline;
                 }
                 if root.results.length == 0 : Text {
                     text: "Nothing has finished yet.";

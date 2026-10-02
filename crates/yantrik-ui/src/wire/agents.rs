@@ -33,7 +33,7 @@ use crate::app_context::AppContext;
 use super::agents_workroom as workroom;
 use crate::{
     AccentPreset, AgentDetailsData, AgentHeaderData, AgentItemData, AgentMindData, AgentRoleData,
-    AgentRunData, AgentWindow, AgentsState, App, ApprovalRequest, ChangeRowData, DecisionData,
+    AgentRunData, AgentWindow, AgentsState, App, ApprovalRequest, ChangeRowData, ChildRunData, DecisionData,
     DeskCardData, ResultData, RunFactData, ThemeMode, ThemeOverrides, ToolCallData, WorkNavData,
 };
 
@@ -743,7 +743,7 @@ fn publish_workroom(g: &AgentsState, all: &workroom::Workroom, mind: Option<&str
 
 /// The opened run: its state in the screen's words, the changes recorded and the facts behind it.
 /// Worked out when the store changes, with the session, not every tick.
-fn publish_detail(g: &AgentsState, a: &Agent, run: Option<u64>) {
+fn publish_detail(g: &AgentsState, s: &Store, a: &Agent, run: Option<u64>) {
     let (state, label) = workroom::state_of(a, run);
     if g.get_detail_state() != state {
         g.set_detail_state(state.into());
@@ -770,6 +770,13 @@ fn publish_detail(g: &AgentsState, a: &Agent, run: Option<u64>) {
         workroom::run_facts(a, run).into_iter().map(|(label, value)| RunFactData { label: label.into(), value: value.into() }).collect();
     if let Some(model) = crate::models::changed(g.get_run_facts(), facts) {
         g.set_run_facts(model);
+    }
+    let children: Vec<ChildRunData> = workroom::child_runs(s, a, run)
+        .into_iter()
+        .map(|c| ChildRunData { key: c.key.into(), title: c.title.into(), label: c.label.into(), state: c.state.into() })
+        .collect();
+    if let Some(model) = crate::models::changed(g.get_child_runs(), children) {
+        g.set_child_runs(model);
     }
 }
 
@@ -846,7 +853,7 @@ fn draw(g: &AgentsState, surface: &mut Surface, s: &Store, agent: Option<&AgentI
     surface.drawn = Some(stamp);
     let items = items_of(a, &surface.expanded, &seen.approvals, surface.run);
     let items = if surface.grouped {
-        publish_detail(g, a, surface.run);
+        publish_detail(g, s, a, surface.run);
         workroom::group_calls(items, &surface.expanded)
     } else {
         items
