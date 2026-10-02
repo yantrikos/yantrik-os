@@ -405,8 +405,17 @@ export component GroundedDock inherits Rectangle {
             }
 
             // ── Pinned and running apps ──
-            // Only this page's buttons exist, so the layout's gaps are exactly the visible ones.
-            for b[i] in root.buttons : if i >= root.start && i < root.start + root.cap : DockBtn {
+            //
+            // Only this page's buttons take room. A `for` cannot hold an `if`, so every button has
+            // a slot of its own: 44px (the button and its trailing gap) on this page, 0px off it, in
+            // a layout with no spacing of its own. The last slot's gap hangs off the end.
+            if root.buttons.length > 0 : HorizontalLayout {
+                width: Math.max(0, Math.min(root.cap, root.buttons.length - root.start)) * root.slot - Theme.dock-gap;
+                spacing: 0px;
+                for b[i] in root.buttons : Rectangle {
+                    property <bool> on-page: i >= root.start && i < root.start + root.cap;
+                    width: self.on-page ? root.slot : 0px;
+                    if self.on-page : DockBtn {
                 name: b.windows > 1 ? b.label + ", " + b.windows + " windows" : b.label;
                 focused: b.focused;
                 running: b.running;
@@ -443,6 +452,8 @@ export component GroundedDock inherits Rectangle {
                     hovered: parent.attended;
                     x: (parent.width - self.width) / 2;
                     y: (parent.height - self.height) / 2;
+                }
+            }
                 }
             }
 
