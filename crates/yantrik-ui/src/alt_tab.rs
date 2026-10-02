@@ -11,42 +11,101 @@ pub const PAGE: usize = 8;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Cell {
-    /// The window's title, which is also how the compositor is asked to bring it forward.
+    /// The compositor's own id for the window (`toplevel_watch::TopWindow::id`): what the cell is
+    /// keyed by, and what the compositor is asked to activate. Two windows with one title have two
+    /// ids. When the window stream is not followed the ids are made up by [`Cell::listed`] and
+    /// the title is the only handle left.
+    pub id: u64,
     pub title: String,
     pub app_id: String,
     pub app_name: String,
 }
 
-/// The windows, most recently used first. `recency` is what the compositor's focus stream has
-/// seen (`toplevel_watch::recency`); windows it has not seen take focus follow in the order they
-/// were listed in, behind every window that is known. The same title is never listed twice, since
-/// the title is the only handle there is.
-pub fn order(open: Vec<Cell>, recency: &[String]) -> Vec<Cell> {
+/// Ids at and above this are not the compositor's: the stream was not followed, so the windows
+/// came from `wlrctl`'s list and were numbered in it. Nothing can be activated by such an id.
+pub const LISTED_ID_BASE: u64 = 1 << 32;
+
+impl Cell {
+    /// A window known only from a listing, at place `n` in it.
+    pub fn listed(n: usize, title: String, app_id: String, app_name: String) -> Cell {
+        Cell { id: LISTED_ID_BASE + n as u64, title, app_id, app_name }
+    }
+
+    /// Whether this is the desktop itself, which is raised rather than switched to.
+    pub fn title_is_shell(&self) -> bool {
+        self.title == crate::windows::SHELL_WINDOW_TITLE
+    }
+
+    /// Whether the id is the compositor's, so the window can be asked for by it.
+    pub fn is_live(&self) -> bool {
+        self.id < LISTED_ID_BASE
+    }
+}
+
+/// The windows, most recently used first. `recency` is the ids the compositor's focus stream has
+/// seen (`toplevel_watch::recency_ids`); windows it has not seen follow in the order they were
+/// listed, behind every window that is known. Every window is kept, including ones that share a
+/// title: they are different windows, told apart in the card by [`label`s](Switcher::labelled).
+pub fn order(open: Vec<Cell>, recency: &[u64]) -> Vec<Cell> {
     let mut rest = open;
     let mut ordered = Vec::with_capacity(rest.len());
-    for title in recency {
-        if let Some(at) = rest.iter().position(|c| &c.title == title) {
+    for id in recency {
+        if let Some(at) = rest.iter().position(|c| c.id == *id) {
             ordered.push(rest.remove(at));
         }
     }
-    for cell in rest {
-        if !ordered.iter().any(|c| c.title == cell.title) {
-            ordered.push(cell);
-        }
-    }
+    ordered.extend(rest);
     ordered
+}
+
+/// Give windows that would read the same a number, in switcher order: "Terminal", "Terminal (2)".
+/// A window alone under its title is left as it is.
+pub fn labelled(cells: Vec<Cell>) -> Vec<Cell> {
+    let mut seen: Vec<(String, usize)> = Vec::new();
+    let totals: Vec<usize> = cells.iter().map(|c| cells.iter().filter(|o| o.title == c.title && o.app_id == c.app_id).count()).collect();
+    cells
+        .into_iter()
+        .zip(totals)
+        .map(|(mut c, total)| {
+            if total > 1 {
+                let key = format!("{}\u{0}{}", c.app_id, c.title);
+                let n = match seen.iter_mut().find(|(k, _)| *k == key) {
+                    Some((_, n)) => {
+                        *n += 1;
+                        *n
+                    }
+                    None => {
+                        seen.push((key, 1));
+                        1
+                    }
+                };
+                if n > 1 {
+                    c.title = format!("{} ({n})", c.title);
+                }
+            }
+            c
+        })
+        .collect()
 }
 
 /// An open switcher. The cells are frozen at the moment it opened: a window that opens
 /// afterwards waits for the next time. One that closes while the switcher is up stays listed until
-/// it closes; choosing it then finds no window, and says so in the log.
+/// choosing it finds it gone; it is then dropped and the card stays up ([`Switcher::drop_selected`]).
 #[derive(Clone, Debug)]
 pub struct Switcher {
     cells: Vec<Cell>,
     selected: usize,
     /// The window that had focus before the shell was raised to show the switcher, so Escape can
     /// give it back.
-    origin: Option<String>,
+    origin: Option<Origin>,
+}
+
+/// The window that was in front when the switcher opened. `id` is there when the compositor's
+/// stream named it; without it the title is what the compositor is asked for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Origin {
+    pub id: Option<u64>,
+    pub title: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -83,21 +142,21 @@ impl Switcher {
     /// The first step selects the previous window — the one before the window in front — so
     /// Alt+Tab, Alt+Tab toggles between two. Backwards starts from the oldest. With one window
     /// there is nothing to step to and it stays selected.
-    pub fn open(cells: Vec<Cell>, origin: Option<String>, backwards: bool) -> Switcher {
+    pub fn open(cells: Vec<Cell>, origin: Option<Origin>, backwards: bool) -> Switcher {
         let selected = match cells.len() {
             0 | 1 => 0,
             n if backwards => n - 1,
             _ => 1,
         };
-        Switcher { cells, selected, origin }
+        Switcher { cells: labelled(cells), selected, origin }
     }
 
     pub fn cells(&self) -> &[Cell] {
         &self.cells
     }
 
-    pub fn origin(&self) -> Option<&str> {
-        self.origin.as_deref()
+    pub fn origin(&self) -> Option<&Origin> {
+        self.origin.as_ref()
     }
 
     pub fn selected(&self) -> Option<&Cell> {
@@ -170,6 +229,19 @@ impl Switcher {
         }
     }
 
+    /// Window `id` turned out to be gone: take it out. The selection stays on the same window, or
+    /// on the one that slid into its place when it was the selected one (the last if it was last).
+    /// `false` when no cell has that id.
+    pub fn remove(&mut self, id: u64) -> bool {
+        let Some(at) = self.cells.iter().position(|c| c.id == id) else { return false };
+        self.cells.remove(at);
+        if at < self.selected {
+            self.selected -= 1;
+        }
+        self.selected = self.selected.min(self.cells.len().saturating_sub(1));
+        true
+    }
+
     /// The pointer moved over cell `i` of the page.
     pub fn point_at(&mut self, i: usize) {
         let at = self.page() * PAGE + i;
@@ -201,11 +273,15 @@ mod tests {
     use super::*;
 
     fn cell(title: &str) -> Cell {
-        Cell { title: title.into(), app_id: "x".into(), app_name: title.into() }
+        Cell::listed(0, title.into(), "x".into(), title.into())
     }
 
     fn cells(n: usize) -> Vec<Cell> {
-        (0..n).map(|i| cell(&format!("w{i}"))).collect()
+        (0..n).map(|i| Cell { id: i as u64 + 1, title: format!("w{i}"), app_id: "x".into(), app_name: format!("w{i}") }).collect()
+    }
+
+    fn with_id(id: u64, title: &str) -> Cell {
+        Cell { id, title: title.into(), app_id: "x".into(), app_name: title.into() }
     }
 
     fn titles(cs: &[Cell]) -> Vec<&str> {
@@ -216,10 +292,43 @@ mod tests {
     /// order they were listed — never dropped, never doubled.
     #[test]
     fn recent_windows_lead_and_unseen_ones_follow_in_listed_order() {
-        let open = vec![cell("Files"), cell("Notes"), cell("Terminal"), cell("Mind View")];
-        let recency = vec!["Terminal".to_string(), "Gone".to_string(), "Notes".to_string()];
-        assert_eq!(titles(&order(open, &recency)), ["Terminal", "Notes", "Files", "Mind View"]);
-        assert_eq!(titles(&order(vec![cell("A"), cell("A")], &[])), ["A"]);
+        let open = vec![with_id(1, "Files"), with_id(2, "Notes"), with_id(3, "Terminal"), with_id(4, "Mind View")];
+        assert_eq!(titles(&order(open, &[3, 99, 2])), ["Terminal", "Notes", "Files", "Mind View"]);
+    }
+
+    /// The bug: two windows with one title were collapsed into one, and the second could not be
+    /// reached. Both are kept, in their own order, and the card tells them apart.
+    #[test]
+    fn windows_with_the_same_title_are_both_kept_and_told_apart() {
+        let open = vec![with_id(7, "Terminal"), with_id(8, "Terminal"), with_id(9, "Notes"), with_id(10, "Terminal")];
+        let kept = order(open, &[8, 7, 10, 9]);
+        assert_eq!(kept.iter().map(|c| c.id).collect::<Vec<_>>(), [8, 7, 10, 9], "ordered by id, none dropped");
+        let s = Switcher::open(kept, None, false);
+        let shown: Vec<&str> = s.cells().iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(shown, ["Terminal", "Terminal (2)", "Terminal (3)", "Notes"]);
+        assert_eq!(s.selected().unwrap().id, 7, "the first Tab selects the second window by id");
+        // Different apps wearing one title are different windows too, but read differently.
+        let mut other = with_id(2, "Docs");
+        other.app_id = "y".into();
+        assert_eq!(labelled(vec![with_id(1, "Docs"), other]).iter().map(|c| c.title.as_str()).collect::<Vec<_>>(), ["Docs", "Docs"]);
+    }
+
+    /// A window that closed while the card was up is taken out when choosing it fails, and the
+    /// selection stays on the window it was on.
+    #[test]
+    fn a_closed_window_is_removed_and_the_selection_stays_put() {
+        let mut s = Switcher::open(cells(4), None, false);
+        assert_eq!(s.selected().unwrap().id, 2);
+        assert!(s.remove(2));
+        assert_eq!(s.cells().len(), 3);
+        assert_eq!(s.selected().unwrap().id, 3, "the window that slid into its place");
+        assert!(s.remove(1), "a window before the selection goes; the selection follows its window");
+        assert_eq!(s.selected().unwrap().id, 3);
+        assert!(s.remove(4));
+        assert_eq!(s.selected().unwrap().id, 3);
+        assert!(!s.remove(42), "no such window: nothing changes");
+        assert!(s.remove(3) && s.selected().is_none() && s.plate().is_empty());
+        assert!(!Switcher::open(vec![], None, false).remove(1));
     }
 
     /// The first Tab goes to the window before the one in front, so two presses toggle; the

@@ -133,7 +133,8 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str, width: u32, height: u32) -> 
     let grid_w = cols as f32 * cell_w + (cols as f32 - 1.0) * 12.0;
     let x0 = card_x + (card_w - grid_w) / 2.0;
     let rows = (8 + cols - 1) / cols;
-    let card_h = 16.0 + rows as f32 * cell_h + (rows as f32 - 1.0) * 12.0 + 12.0 + 24.0 + 16.0;
+    // The pager row is a compact icon button's height (Theme.h-compact, 28).
+    let card_h = 16.0 + rows as f32 * cell_h + (rows as f32 - 1.0) * 12.0 + 12.0 + 28.0 + 16.0;
     let y0 = (height as f32 - (card_h + 48.0)) / 2.0 + 16.0;
     let (cx, cy) = (x0 + cell_w / 2.0, y0 + cell_h / 2.0); // the centre of cell 0
     draw();
@@ -145,5 +146,17 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str, width: u32, height: u32) -> 
     click(w, cx, cy);
     draw();
     assert!(log.borrow().iter().any(|e| e == "activate:0"), "a click on a cell activates it: {:?}", log.borrow());
+    
+    // The page arrows are the kit's icon buttons, which take the keyboard focus when clicked. The
+    // card's keys must still work afterwards, or a click on "next page" would leave Escape dead.
+    log.borrow_mut().clear();
+    let (px, py) = (card_x + card_w - 16.0 - 14.0, y0 - 16.0 + card_h - 16.0 - 14.0); // the "next page" button's centre
+    click(w, px, py);
+    draw();
+    assert!(log.borrow().iter().any(|e| e == &format!("navigate:page-next:{cols}")), "the next-page arrow pages: {:?}", log.borrow());
+    log.borrow_mut().clear();
+    key(w, Key::Escape.into());
+    draw();
+    assert_eq!(*log.borrow(), ["cancel"], "Escape still reaches the card after a click on a page arrow");
     Ok(())
 }

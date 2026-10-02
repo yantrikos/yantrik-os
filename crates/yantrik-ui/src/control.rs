@@ -961,7 +961,7 @@ pub fn publish(
                 .with("power_menu", crate::control_overlays::panel_for_describe(ui.get_power_menu_open(), screen, "close_power_menu"))
                 .with("clipboard_panel", crate::control_overlays::panel_for_describe(ui.get_clip_panel_open(), screen, "close_clipboard"))
                 .with("cheat_sheet", crate::control_overlays::panel_for_describe(ui.get_cheat_sheet_open(), screen, "close_cheat_sheet"))
-                // The Alt+Tab switcher: whether it is up and what it has selected.
+                // The window overview (Super+Tab): whether it is up and what it has selected.
                 .with("window_switcher", crate::control_switcher::for_describe(screen))
                 // The mode menu over the status bar's chip, for the same reason again:
                 // `show_mind_audit` opens it, and a caller that opened it has to be able to see
@@ -2080,7 +2080,7 @@ pub fn publish(
     let surface = crate::control_approvals::actions(surface, ui);
     // The bar's panels: open_quick_settings, open_power_menu, open_clipboard, open_cheat_sheet and their closes.
     let surface = crate::control_overlays::actions(surface, ui);
-    // The Alt+Tab switcher: open_switcher, switcher_move, switcher_commit, switcher_cancel.
+    // The window overview (Super+Tab): open_switcher, switcher_move, switcher_commit, switcher_cancel.
     let surface = crate::control_switcher::actions(surface, ui);
     // An agent's commands, each in a terminal of its own in its pane — agent_run, agent_job,
     // agent_input, agent_kill. The agent comes from its token, never an argument. See

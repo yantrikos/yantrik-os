@@ -444,6 +444,17 @@ export global Theme {
     out property <length> tile-h: 56px;
     // On-screen display card (volume, brightness) and its width.
     out property <length> osd-w: 280px;
+    // Window overview (Super+Tab card): cell, footer, icon sizes, the card's and plate's widest
+    // size, the plate's height, and the card widths below which it draws three and two columns.
+    out property <length> sw-cell-w: 224px;
+    out property <length> sw-footer-h: 41px;
+    out property <length> sw-icon-lg: 40px;
+    out property <length> sw-icon-sm: 18px;
+    out property <length> sw-card-max-w: 1040px;
+    out property <length> sw-plate-max-w: 720px;
+    out property <length> sw-plate-h: 40px;
+    out property <length> sw-cols-3-below: 760px;
+    out property <length> sw-cols-2-below: 560px;
     // One-pixel edge of a control, and the stroke weights an icon is drawn with (regular beside
     // text, a touch heavier on a filled tile where it sits on the accent).
     out property <length> hairline: 1px;

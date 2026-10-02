@@ -1,4 +1,4 @@
-// Alt+Tab switcher — one centred opaque card of the open windows, 8 to a page.
+// Window overview (Super+Tab; Alt+Tab is labwc's own) — one centred opaque card of the open windows, 8 to a page.
 //
 // Selection, order and paging all live in Rust (`alt_tab.rs`), so a pointer, a key and a
 // `yos act shell` call move the same state; this file draws what Rust hands it and reports
@@ -10,6 +10,7 @@
 
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icon.slint";
+import { YIconButton } from "y_button.slint";
 
 export struct SwitcherCell {
     title: string,
@@ -25,26 +26,26 @@ component SwitcherCellView inherits Rectangle {
 
     // 224 wide where the card has room (preview 208×117, cell 224×166); a card that is narrower
     // than three or two of those narrows the cells and keeps the preview's 16:9.
-    in property <length> cell-width: 224px;
-    property <length> preview-width: root.cell-width - 16px;
+    in property <length> cell-width: Theme.sw-cell-w;
+    property <length> preview-width: root.cell-width - 2 * Theme.sp-2;
     property <length> preview-height: root.preview-width * 9 / 16;
     width: root.cell-width;
-    height: 8px + root.preview-height + 41px;
+    height: Theme.sp-2 + root.preview-height + Theme.sw-footer-h;
     border-radius: Theme.r-lg;
     background: root.selected ? Theme.bg-elevated : transparent;
     // The outline is drawn inside the cell, so a selected cell never overlaps its neighbour.
-    border-width: root.selected ? 2px : 0px;
+    border-width: root.selected ? Theme.focus-ring-width : 0px;
     border-color: Theme.text-primary;
 
     // The preview slot: 208×117, 16:9.
     Rectangle {
-        x: 8px;
-        y: 8px;
+        x: Theme.sp-2;
+        y: Theme.sp-2;
         width: root.preview-width;
         height: root.preview-height;
         border-radius: Theme.r-md;
         background: Theme.bg-card;
-        border-width: 1px;
+        border-width: Theme.hairline;
         border-color: Theme.border-subtle;
 
         VerticalLayout {
@@ -53,8 +54,8 @@ component SwitcherCellView inherits Rectangle {
             Icon {
                 commands: Icons.app-or-window(root.cell.app-id);
                 tint: Theme.text-secondary;
-                size: 40px;
-                thickness: 1.4px;
+                size: Theme.sw-icon-lg;
+                thickness: Theme.icon-stroke;
                 x: (parent.width - self.width) / 2;
             }
             Text {
@@ -68,22 +69,22 @@ component SwitcherCellView inherits Rectangle {
 
     // Footer: 18px icon, then the app's name.
     Icon {
-        x: 16px;
-        y: 8px + root.preview-height + 16px;
+        x: Theme.sp-4;
+        y: Theme.sp-2 + root.preview-height + Theme.sp-4;
         commands: Icons.app-or-window(root.cell.app-id);
         tint: Theme.text-primary;
-        size: 18px;
-        thickness: 1.5px;
+        size: Theme.sw-icon-sm;
+        thickness: Theme.icon-stroke;
     }
     Text {
-        x: 42px;
-        y: 8px + root.preview-height;
-        width: parent.width - 42px - 12px;
-        height: 41px;
+        x: Theme.sp-4 + Theme.sw-icon-sm + Theme.sp-2;
+        y: Theme.sp-2 + root.preview-height;
+        width: parent.width - (Theme.sp-4 + Theme.sw-icon-sm + Theme.sp-2) - Theme.sp-3;
+        height: Theme.sw-footer-h;
         text: root.cell.app-name;
         color: Theme.text-primary;
         font-size: Theme.fs-caption;
-        font-weight: 600;
+        font-weight: Theme.fw-headline;
         vertical-alignment: center;
         overflow: elide;
     }
@@ -120,13 +121,17 @@ export component AltTab inherits Rectangle {
     height: 100%;
     visible: root.is-open;
 
-    property <int> columns: root.width < 560px ? 2 : root.width < 760px ? 3 : 4;
-    property <length> card-width: min(1040px, root.width - 64px);
+    // The pager row under the grid: a compact icon button's height.
+    property <length> pager-h: Theme.h-compact;
+    property <int> columns: root.width < Theme.sw-cols-2-below ? 2 : root.width < Theme.sw-cols-3-below ? 3 : 4;
+    property <length> card-width: min(Theme.sw-card-max-w, root.width - 2 * Theme.sp-7);
     property <int> rows: max(1, (root.cells.length + root.columns - 1) / root.columns);
-    property <length> cell-width: min(224px, (root.card-width - 32px - (root.columns - 1) * 12px) / root.columns);
-    property <length> cell-height: 8px + (root.cell-width - 16px) * 9 / 16 + 41px;
-    property <length> grid-width: root.columns * root.cell-width + (root.columns - 1) * 12px;
-    property <length> card-height: 16px + root.rows * root.cell-height + (root.rows - 1) * 12px + 12px + 24px + 16px;
+    property <length> cell-width: min(Theme.sw-cell-w, (root.card-width - 2 * Theme.sp-4 - (root.columns - 1) * Theme.sp-3) / root.columns);
+    property <length> cell-height: Theme.sp-2 + (root.cell-width - 2 * Theme.sp-2) * 9 / 16 + Theme.sw-footer-h;
+    property <length> grid-width: root.columns * root.cell-width + (root.columns - 1) * Theme.sp-3;
+    property <length> card-height: Theme.sp-4 + root.rows * root.cell-height + (root.rows - 1) * Theme.sp-3 + Theme.sp-3 + root.pager-h + Theme.sp-4;
+    // The card and its plate, centred together.
+    property <length> block-top: (root.height - (root.card-height + Theme.sp-2 + Theme.sw-plate-h)) / 2;
 
     if root.is-open : FocusScope {
         width: 100%;
@@ -145,106 +150,105 @@ export component AltTab inherits Rectangle {
             if (event.text == Key.PageUp) { root.navigate("page-prev", root.columns); return accept; }
             return reject;
         }
-    }
 
-    // Outside the card: a click puts the switcher away and changes nothing.
-    if root.is-open : TouchArea {
-        width: 100%;
-        height: 100%;
-        clicked => { root.cancel(); }
-    }
+        // The keys sit on the ancestor of everything below, so a key the page buttons do not use
+        // (after a click on one, which takes the focus) still reaches the switcher.
 
-    if root.is-open : Rectangle {
-        x: (root.width - root.card-width) / 2;
-        y: (root.height - (root.card-height + 8px + 40px)) / 2;
-        width: root.card-width;
-        height: root.card-height;
-        background: Theme.bg-surface;
-        border-radius: Theme.r-xl;
-        border-width: 1px;
-        border-color: Theme.border-strong;
+        // Outside the card: a click puts the switcher away and changes nothing.
+        if root.is-open : TouchArea {
+            width: 100%;
+            height: 100%;
+            clicked => { root.cancel(); }
+        }
 
-        // Absorbs clicks and the wheel; the wheel pages.
-        TouchArea {
-            scroll-event(e) => {
-                if (e.delta-y < 0) { root.navigate("page-next", root.columns); return accept; }
-                if (e.delta-y > 0) { root.navigate("page-prev", root.columns); return accept; }
-                return reject;
+        if root.is-open : Rectangle {
+            x: (root.width - root.card-width) / 2;
+            y: root.block-top;
+            width: root.card-width;
+            height: root.card-height;
+            background: Theme.bg-surface;
+            border-radius: Theme.r-xl;
+            border-width: Theme.hairline;
+            border-color: Theme.border-strong;
+
+            // Absorbs clicks and the wheel; the wheel pages.
+            TouchArea {
+                scroll-event(e) => {
+                    if (e.delta-y < 0) { root.navigate("page-next", root.columns); return accept; }
+                    if (e.delta-y > 0) { root.navigate("page-prev", root.columns); return accept; }
+                    return reject;
+                }
+            }
+
+            if root.cells.length == 0 : Text {
+                text: "No windows open";
+                color: Theme.text-dim;
+                font-size: Theme.fs-body;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            for cell[i] in root.cells : SwitcherCellView {
+                x: (parent.width - root.grid-width) / 2 + Math.mod(i, root.columns) * (root.cell-width + Theme.sp-3);
+                y: Theme.sp-4 + Math.floor(i / root.columns) * (root.cell-height + Theme.sp-3);
+                cell-width: root.cell-width;
+                cell: cell;
+                selected: i == root.selected;
+                pointer-moved => { root.hover(i); }
+                activated => { root.activate(i); }
+            }
+
+            // "9–16 of 37 windows · Page 2 of 5", with the page arrows when there is another page.
+            Text {
+                x: Theme.sp-4 + (root.pages > 1 ? root.pager-h + Theme.sp-2 : 0px);
+                y: parent.height - Theme.sp-4 - root.pager-h;
+                width: parent.width - 2 * Theme.sp-4 - (root.pages > 1 ? 2 * (root.pager-h + Theme.sp-2) : 0px);
+                height: root.pager-h;
+                text: root.status;
+                color: Theme.text-dim;
+                font-size: Theme.fs-caption;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            if root.pages > 1 : YIconButton {
+                x: Theme.sp-4;
+                y: parent.height - Theme.sp-4 - root.pager-h;
+                variant: 2;
+                label: "Previous page";
+                icon-path: Icons.chevron-left;
+                clicked => { root.navigate("page-prev", root.columns); }
+            }
+            if root.pages > 1 : YIconButton {
+                x: parent.width - Theme.sp-4 - root.pager-h;
+                y: parent.height - Theme.sp-4 - root.pager-h;
+                variant: 2;
+                label: "Next page";
+                icon-path: Icons.chevron-right;
+                clicked => { root.navigate("page-next", root.columns); }
             }
         }
 
-        if root.cells.length == 0 : Text {
-            text: "No windows open";
-            color: Theme.text-dim;
-            font-size: Theme.fs-body;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
-
-        for cell[i] in root.cells : SwitcherCellView {
-            x: (parent.width - root.grid-width) / 2 + Math.mod(i, root.columns) * (root.cell-width + 12px);
-            y: 16px + Math.floor(i / root.columns) * (root.cell-height + 12px);
-            cell-width: root.cell-width;
-            cell: cell;
-            selected: i == root.selected;
-            pointer-moved => { root.hover(i); }
-            activated => { root.activate(i); }
-        }
-
-        // "9–16 of 37 windows · Page 2 of 5", with the page arrows when there is another page.
-        Text {
-            x: 16px + (root.pages > 1 ? 40px : 0px);
-            y: parent.height - 16px - 24px;
-            width: parent.width - 32px - (root.pages > 1 ? 80px : 0px);
-            height: 24px;
-            text: root.status;
-            color: Theme.text-dim;
-            font-size: Theme.fs-caption;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
-        if root.pages > 1 : Rectangle {
-            x: 16px;
-            y: parent.height - 16px - 24px;
-            width: 32px;
-            height: 24px;
-            border-radius: Theme.r-sm;
-            background: pa.has-hover ? Theme.bg-card : transparent;
-            Text { text: "‹"; color: Theme.text-secondary; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; }
-            pa := TouchArea { clicked => { root.navigate("page-prev", root.columns); } }
-        }
-        if root.pages > 1 : Rectangle {
-            x: parent.width - 16px - 32px;
-            y: parent.height - 16px - 24px;
-            width: 32px;
-            height: 24px;
-            border-radius: Theme.r-sm;
-            background: pb.has-hover ? Theme.bg-card : transparent;
-            Text { text: "›"; color: Theme.text-secondary; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; }
-            pb := TouchArea { clicked => { root.navigate("page-next", root.columns); } }
-        }
-    }
-
-    // The selected window's full title, on a plate of its own under the card.
-    if root.is-open && root.plate != "" : Rectangle {
-        property <length> plate-width: min(720px, root.card-width);
-        x: (root.width - self.plate-width) / 2;
-        y: (root.height - (root.card-height + 8px + 40px)) / 2 + root.card-height + 8px;
-        width: self.plate-width;
-        height: 40px;
-        background: Theme.bg-surface;
-        border-radius: Theme.r-lg;
-        border-width: 1px;
-        border-color: Theme.border-strong;
-        Text {
-            x: 16px;
-            width: parent.width - 32px;
-            text: root.plate;
-            color: Theme.text-primary;
-            font-size: Theme.fs-body;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-            overflow: elide;
+        // The selected window's full title, on a plate of its own under the card.
+        if root.is-open && root.plate != "" : Rectangle {
+            property <length> plate-width: min(Theme.sw-plate-max-w, root.card-width);
+            x: (root.width - self.plate-width) / 2;
+            y: root.block-top + root.card-height + Theme.sp-2;
+            width: self.plate-width;
+            height: Theme.sw-plate-h;
+            background: Theme.bg-surface;
+            border-radius: Theme.r-lg;
+            border-width: Theme.hairline;
+            border-color: Theme.border-strong;
+            Text {
+                x: Theme.sp-4;
+                width: parent.width - 2 * Theme.sp-4;
+                text: root.plate;
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
+            }
         }
     }
 }

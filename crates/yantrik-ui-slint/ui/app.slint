@@ -455,7 +455,7 @@ export component App inherits Window {
     callback grid-toggle-pin(string);
     callback grid-search-apps(string);
 
-    // Alt+Tab switcher: Rust owns the order, the selection and the paging (alt_tab.rs) and hands
+    // Window overview (Super+Tab; Alt+Tab is labwc's own): Rust owns the order, the selection and the paging (alt_tab.rs) and hands
     // over the page being shown.
     in-out property <bool> alt-tab-open: false;
     in property <[SwitcherCell]> alt-tab-cells: [];
@@ -3366,7 +3366,7 @@ export component App inherits Window {
             close-menu => { root.taskbar-menu-open = false; }
         }
 
-        // Alt+Tab, over every screen: a switcher that only drew on the desktop would be
+        // The window overview, over every screen: a switcher that only drew on the desktop would be
         // unreachable from Files or Settings, where the shell is in front too.
         AltTab {
             is-open: root.alt-tab-open;
