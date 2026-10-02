@@ -4,7 +4,7 @@
 //! keys, and the panel's drag-to-resize. Pictures are written beside `output`.
 use super::*;
 use slint::platform::{Key, WindowEvent};
-use slint::{ModelRc, SharedString, VecModel};
+use slint::{Model, ModelRc, SharedString, VecModel};
 
 type Pixels = slint::SharedPixelBuffer<slint::Rgb8Pixel>;
 
