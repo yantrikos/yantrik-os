@@ -1,0 +1,59 @@
+configure: 1280x32
+configure: 1280x32
+configure: 1280x32
+configure: 1280x32
+configure: 1280x32
+configure: 1280x32
+configure: 1280x32
+configure: 1280x32
+bar: painted (Stats { renders: 2, pixels_painted: 43264, commits: 2 })
+bar: painted (Stats { renders: 2, pixels_painted: 41572, commits: 2 })
+configure: 1280x32
+configure: 360x200
+keyboard enter (popover: true)
+configure: 1280x32
+configure: 360x200
+configure: 1280x32
+configure: 360x200
+configure: 1280x32
+configure: 360x200
+popover: painted (Stats { renders: 3, pixels_painted: 91968, commits: 3 })
+popover: painted (Stats { renders: 4, pixels_painted: 101952, commits: 4 })
+popover: painted (Stats { renders: 5, pixels_painted: 111936, commits: 5 })
+popover: painted (Stats { renders: 6, pixels_painted: 121920, commits: 6 })
+wake: asked for Some(491ms), slept 251.257µs, animating false
+wake: asked for Some(486ms), slept 486.107699ms, animating false
+popover: painted (Stats { renders: 7, pixels_painted: 131904, commits: 7 })
+wake: asked for Some(491ms), slept 239.167µs, animating false
+wake: asked for Some(485ms), slept 485.124929ms, animating false
+popover: painted (Stats { renders: 8, pixels_painted: 141888, commits: 8 })
+wake: asked for Some(490ms), slept 261.488µs, animating false
+wake: asked for Some(484ms), slept 484.138845ms, animating false
+popover: painted (Stats { renders: 9, pixels_painted: 151872, commits: 9 })
+wake: asked for Some(491ms), slept 244.737µs, animating false
+wake: asked for Some(484ms), slept 484.136195ms, animating false
+popover: painted (Stats { renders: 10, pixels_painted: 161856, commits: 10 })
+wake: asked for Some(491ms), slept 249.657µs, animating false
+wake: asked for Some(486ms), slept 486.115388ms, animating false
+popover: painted (Stats { renders: 11, pixels_painted: 171840, commits: 11 })
+wake: asked for Some(492ms), slept 253.708µs, animating false
+wake: asked for Some(486ms), slept 486.14137ms, animating false
+popover: painted (Stats { renders: 12, pixels_painted: 181824, commits: 12 })
+wake: asked for Some(491ms), slept 317.419µs, animating false
+wake: asked for Some(485ms), slept 485.168176ms, animating false
+popover: painted (Stats { renders: 13, pixels_painted: 191808, commits: 13 })
+wake: asked for Some(491ms), slept 259.412µs, animating false
+wake: asked for Some(485ms), slept 485.128449ms, animating false
+popover: painted (Stats { renders: 14, pixels_painted: 201792, commits: 14 })
+wake: asked for Some(490ms), slept 345.44µs, animating false
+wake: asked for Some(484ms), slept 484.174626ms, animating false
+popover: painted (Stats { renders: 15, pixels_painted: 211776, commits: 15 })
+wake: asked for Some(491ms), slept 310.545µs, animating false
+wake: asked for Some(485ms), slept 485.138749ms, animating false
+popover: painted (Stats { renders: 16, pixels_painted: 221760, commits: 16 })
+wake: asked for Some(491ms), slept 258.497µs, animating false
+wake: asked for Some(484ms), slept 484.157481ms, animating false
+popover: painted (Stats { renders: 17, pixels_painted: 231744, commits: 17 })
+wake: asked for Some(490ms), slept 289.349µs, animating false
+wake: asked for Some(484ms), slept 378.237729ms, animating false
+report: bars=2 wakeups=36 renders=21 commits=21 pixels_painted=316580 cpu_ticks(user,sys)=(15, 3) (1 tick = 10 ms)

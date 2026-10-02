@@ -11697,6 +11697,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "yantrik-panel-spike"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "slint",
+ "slint-build",
+ "smithay-client-toolkit 0.20.0",
+ "wayland-client",
+ "wayland-protocols-misc",
+ "wayland-protocols-wlr",
+ "xkbcommon 0.8.0",
+ "yantrik-design-tokens",
+]
+
+[[package]]
 name = "yantrik-performance-core-tests"
 version = "0.1.0"
 dependencies = [
