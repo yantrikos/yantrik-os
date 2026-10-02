@@ -72,6 +72,10 @@ fn activity_of(a: &Agent, t: &Turn, state: &str, now: u64) -> String {
         "working" => match progress::of(a, now) {
             Some(p) => match (p.running, p.recent.last()) {
                 (Some(running), _) => format!("Running {running}"),
+                // The mind's own latest status line ("Grounding from memory…", "Thinking… (60 s)")
+                // outranks the last finished call, which says what it did, not what it does now.
+                // A tool_start clears it in the store, so a call in progress always wins.
+                (None, _) if !a.status.trim().is_empty() => progress::brief(a.status.trim(), 120),
                 (None, Some(last)) => last.clone(),
                 (None, None) if a.state == State::Thinking => "Thinking".to_string(),
                 (None, None) => last_update(),
@@ -192,6 +196,24 @@ mod tests {
 
         a.state = State::HarnessGone;
         assert_eq!(work_of(&a, &a.turns[0], now).label, "Connection lost");
+    }
+
+    #[test]
+    fn a_status_line_is_the_activity_line_until_a_call_starts() {
+        let mut a = agent(State::Thinking);
+        a.turns.push(turn(None, None, false, &[("files.list", CallState::Ok)]));
+        a.status = "Grounding from memory…".into();
+        assert_eq!(work_of(&a, &a.turns[0], 200).activity, "Grounding from memory…");
+        a.status = "Thinking… (60 s)".into();
+        assert_eq!(work_of(&a, &a.turns[0], 200).activity, "Thinking… (60 s)", "replaced, not appended");
+
+        // The store clears the status on tool_start and the running call is what is said.
+        a.status.clear();
+        a.state = State::RunningTool;
+        a.turns[0].items.push(Item::Card(Card::new("c2", "files.move", "", serde_json::Value::Null, Provenance::Reported, 20)));
+        assert!(work_of(&a, &a.turns[0], 200).activity.starts_with("Running files.move"));
+        a.status = "Thinking… (90 s)".into();
+        assert!(work_of(&a, &a.turns[0], 200).activity.starts_with("Running files.move"), "a running call outranks a status");
     }
 
     #[test]
