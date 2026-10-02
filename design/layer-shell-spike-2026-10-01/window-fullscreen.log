@@ -1,0 +1,5 @@
+probe-window: configure 800x600 maximized=false
+probe-window: keyboard ENTER (this window has focus)
+probe-window: configure 1280x720 maximized=false
+probe-window: keyboard LEAVE
+probe-window: keyboard ENTER (this window has focus)
