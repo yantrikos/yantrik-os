@@ -22,6 +22,7 @@
 //! whether a wired or a wireless interface is up and nothing more.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -66,6 +67,89 @@ type Sink = Box<dyn Fn(NetworkSnapshot) + Send>;
 
 static LATEST: Mutex<Option<NetworkSnapshot>> = Mutex::new(None);
 static SINK: Mutex<Option<Sink>> = Mutex::new(None);
+
+/// The one connection every action below shares. Each `new_connection()` is a socket and an
+/// executor thread, and a mind that loops `connect_wifi` could otherwise pile them up against the
+/// bus daemon's per-user connection limit and starve the shell's own D-Bus use.
+static BUS: Mutex<Option<Connection>> = Mutex::new(None);
+
+/// Held across the two quick mutating calls (`set_wifi_enabled`, `disconnect`), so two callers
+/// cannot interleave a radio change with a disconnect decided from a reading the other has changed.
+static MUTATING: Mutex<()> = Mutex::new(());
+
+/// Whether the last attempt to read NetworkManager failed: the picture held by [`latest`] is then
+/// older than it looks, and `describe shell` says so instead of presenting it as current.
+static STALE: AtomicBool = AtomicBool::new(false);
+
+/// Whether the signal listener is subscribed right now. While it is not, the monitor polls.
+static LISTENING: AtomicBool = AtomicBool::new(false);
+
+/// How soon a mind may start another join. A join runs up to [`JOIN_TIMEOUT`], and two mind
+/// joins in quick succession fight over the device (`ActivateConnection` flip-flops).
+const MIND_JOIN_SPACING: Duration = Duration::from_secs(5);
+
+/// How often the picture is re-read while the signal listener is down.
+const POLL_WITHOUT_SIGNALS: Duration = Duration::from_secs(15);
+
+/// Longest wait before the signal listener tries to subscribe again.
+const RESUBSCRIBE_CAP: Duration = Duration::from_secs(30);
+
+/// Whether the held picture could not be refreshed the last time it was tried.
+pub fn is_stale() -> bool {
+    STALE.load(Ordering::Relaxed)
+}
+
+/// One attempt to join at a time, and mind-started ones spaced out. Pure so the rule is a test.
+#[derive(Debug, Default)]
+pub(crate) struct JoinGate {
+    busy: bool,
+    last_mind: Option<Instant>,
+}
+
+impl JoinGate {
+    pub(crate) fn enter(&mut self, now: Instant, by_person: bool) -> Result<(), String> {
+        if self.busy {
+            return Err("a join is already in progress; wait for it to finish".to_string());
+        }
+        if !by_person {
+            if let Some(last) = self.last_mind {
+                if now.saturating_duration_since(last) < MIND_JOIN_SPACING {
+                    return Err("a network was joined a moment ago; wait a few seconds before asking again".to_string());
+                }
+            }
+            self.last_mind = Some(now);
+        }
+        self.busy = true;
+        Ok(())
+    }
+
+    pub(crate) fn leave(&mut self) {
+        self.busy = false;
+    }
+}
+
+static JOIN_GATE: Mutex<JoinGate> = Mutex::new(JoinGate { busy: false, last_mind: None });
+
+/// Proof that this caller holds the single join slot. Taken BEFORE a worker thread is spawned, so a
+/// mind that loops `connect_wifi` cannot start threads faster than joins finish; released when the
+/// join ends, however it ends.
+#[must_use = "the join slot is released when this is dropped"]
+pub struct JoinSlot(());
+
+impl Drop for JoinSlot {
+    fn drop(&mut self) {
+        if let Ok(mut gate) = JOIN_GATE.lock() {
+            gate.leave();
+        }
+    }
+}
+
+/// Claim the join slot, or say why not.
+pub fn begin_join(by_person: bool) -> Result<JoinSlot, String> {
+    let mut gate = JOIN_GATE.lock().map_err(|_| "the network service is busy".to_string())?;
+    gate.enter(Instant::now(), by_person)?;
+    Ok(JoinSlot(()))
+}
 
 /// The last reading, if there has been one.
 pub fn latest() -> Option<NetworkSnapshot> {
@@ -131,53 +215,85 @@ pub fn run_network_monitor(tx: Sender<SystemEvent>) {
     // One slot is enough: a wake already waiting says everything a second one would.
     let (wake_tx, wake_rx) = crossbeam_channel::bounded::<()>(1);
     let listener_conn = connection.clone();
-    let spawned = std::thread::Builder::new().name("yos-network-signals".into()).spawn(move || {
-        let rule = match zbus::MatchRule::builder()
-            .msg_type(zbus::message::Type::Signal)
-            .sender(NM)
-            .and_then(|b| b.path_namespace(NM_PATH))
-            .and_then(|b| Ok(b.build()))
-        {
-            Ok(rule) => rule,
-            Err(e) => {
-                tracing::warn!(error = %e, "Could not build the NetworkManager match rule");
-                return;
-            }
-        };
-        let iter = match zbus::blocking::MessageIterator::for_match_rule(rule, &listener_conn, None) {
-            Ok(i) => i,
-            Err(e) => {
-                tracing::warn!(error = %e, "Could not subscribe to NetworkManager signals");
-                return;
-            }
-        };
-        for message in iter {
-            if message.is_err() {
-                return;
-            }
-            // Full means a wake is already waiting; disconnected means the reader is gone.
-            if let Err(crossbeam_channel::TrySendError::Disconnected(_)) = wake_tx.try_send(()) {
-                return;
-            }
-        }
-    });
+    // The monitor keeps a sender of its own so the channel never reads as "disconnected" while the
+    // listener is down: that would turn the poll below into a busy loop.
+    let _keepalive = wake_tx.clone();
+    let spawned = std::thread::Builder::new()
+        .name("yos-network-signals".into())
+        .spawn(move || listen_for_signals(&listener_conn, &wake_tx));
     if spawned.is_err() {
-        tracing::warn!("Could not start the network signal listener");
-        return;
+        // No listener at all: the monitor still runs, on its poll, and says so.
+        tracing::warn!("Could not start the network signal listener; polling instead");
     }
 
     let mut last_link: Option<(bool, Option<String>)> = None;
     loop {
-        if let Some(snapshot) = read_snapshot(&connection) {
-            announce_link_change(&tx, &snapshot, &mut last_link);
-            publish(snapshot);
+        match read_snapshot(&connection) {
+            Some(snapshot) => {
+                STALE.store(false, Ordering::Relaxed);
+                announce_link_change(&tx, &snapshot, &mut last_link);
+                publish(snapshot);
+            }
+            None => {
+                // The held picture is older than it looks. Say so; never present it as current.
+                if !STALE.swap(true, Ordering::Relaxed) {
+                    tracing::warn!("NetworkManager did not answer; the network picture is stale");
+                }
+            }
         }
-        // Block until NetworkManager says something, then let the burst settle.
-        if wake_rx.recv().is_err() {
-            return;
+        // Block until NetworkManager says something, then let the burst settle. With no listener
+        // (it is down, resubscribing) or a failed read, ask again on a timer instead of waiting
+        // for a signal that cannot come: the picture must not freeze at the last reading.
+        if LISTENING.load(Ordering::Relaxed) && !is_stale() {
+            let _ = wake_rx.recv();
+        } else {
+            let _ = wake_rx.recv_timeout(POLL_WITHOUT_SIGNALS);
         }
         let deadline = Instant::now() + SETTLE_CAP;
         while Instant::now() < deadline && wake_rx.recv_timeout(SETTLE).is_ok() {}
+    }
+}
+
+/// Subscribe to NetworkManager's signals and wake the reader on each; when the subscription ends or
+/// cannot be made, say so, wake the reader once (it re-reads, then polls while this is down) and
+/// try again with a growing pause. Returns only when the reader is gone.
+fn listen_for_signals(conn: &Connection, wake_tx: &crossbeam_channel::Sender<()>) {
+    let mut pause = Duration::from_secs(1);
+    loop {
+        let subscribed = match zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .sender(NM)
+            .and_then(|b| b.path_namespace(NM_PATH))
+            .map(|b| b.build())
+        {
+            Ok(rule) => zbus::blocking::MessageIterator::for_match_rule(rule, conn, None)
+                .map_err(|e| format!("could not subscribe to NetworkManager signals: {e}")),
+            Err(e) => Err(format!("could not build the NetworkManager match rule: {e}")),
+        };
+        match subscribed {
+            Ok(iter) => {
+                LISTENING.store(true, Ordering::Relaxed);
+                pause = Duration::from_secs(1);
+                for message in iter {
+                    if message.is_err() {
+                        break;
+                    }
+                    // Full means a wake is already waiting; disconnected means the reader is gone.
+                    if let Err(crossbeam_channel::TrySendError::Disconnected(_)) = wake_tx.try_send(()) {
+                        return;
+                    }
+                }
+                tracing::warn!("NetworkManager signal stream ended; resubscribing");
+            }
+            Err(why) => tracing::warn!(%why, "Network signal listener is down; retrying"),
+        }
+        LISTENING.store(false, Ordering::Relaxed);
+        // Wake the reader so it re-reads now and falls back to its poll, not at the next signal.
+        if let Err(crossbeam_channel::TrySendError::Disconnected(_)) = wake_tx.try_send(()) {
+            return;
+        }
+        std::thread::sleep(pause);
+        pause = (pause * 2).min(RESUBSCRIBE_CAP);
     }
 }
 
@@ -463,8 +579,21 @@ fn new_connection() -> zbus::Result<Connection> {
     zbus::blocking::connection::Builder::system()?.method_timeout(CALL_TIMEOUT).build()
 }
 
+/// The shared connection, made on first use. A `Connection` is a handle: cloning it opens nothing.
 fn system_bus() -> Result<Connection, String> {
-    new_connection().map_err(|_| "the network service (NetworkManager) is not reachable".to_string())
+    let mut slot = BUS.lock().map_err(|_| "the network service is busy".to_string())?;
+    if let Some(conn) = slot.as_ref() {
+        return Ok(conn.clone());
+    }
+    let conn = new_connection().map_err(|_| "the network service (NetworkManager) is not reachable".to_string())?;
+    *slot = Some(conn.clone());
+    Ok(conn)
+}
+
+/// NetworkManager's picture read right now, on the shared connection: what a decision about to be
+/// acted on is made from, instead of [`latest`], which can be seconds behind.
+pub fn read_fresh() -> Option<NetworkSnapshot> {
+    read_snapshot(&system_bus().ok()?)
 }
 
 /// Ask the Wi-Fi device to look for networks. Called when the popover opens and not otherwise,
@@ -488,6 +617,7 @@ fn wifi_device_path(conn: &Connection, nm: &Props) -> Option<String> {
 
 /// Switch the Wi-Fi radio on or off, and answer with what NetworkManager says afterwards.
 pub fn set_wifi_enabled(on: bool) -> Result<bool, String> {
+    let _one_at_a_time = MUTATING.lock().unwrap_or_else(|e| e.into_inner());
     let conn = system_bus()?;
     let nm = get_all(&conn, NM_PATH, NM).ok_or("NetworkManager did not answer")?;
     if wifi_device_path(&conn, &nm).is_none() {
@@ -500,28 +630,68 @@ pub fn set_wifi_enabled(on: bool) -> Result<bool, String> {
     Ok(p_bool(&after, "WirelessEnabled").unwrap_or(false))
 }
 
+/// One wired or Wi-Fi connection that is up, as `disconnect` sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Link {
+    pub(crate) wired: bool,
+    pub(crate) primary: bool,
+    pub(crate) device: Option<String>,
+}
+
+/// Which device `disconnect` takes down. The primary connection's if it qualifies, else the first.
+///
+/// `allow_wired` is false for a mind's call: `Device.Disconnect` also blocks that device's
+/// autoconnect until something asks for it again. The popover can rejoin a Wi-Fi network but has no
+/// control that brings a wired link back, so a mind that unplugged the cable in software would
+/// leave the machine off the network until a reboot or a command line. A wired link is skipped
+/// for it, and when it is the only one, refused with the reason.
+pub(crate) fn choose_disconnect_target(links: &[Link], allow_wired: bool) -> Result<String, String> {
+    let usable: Vec<&Link> = links.iter().filter(|l| allow_wired || !l.wired).collect();
+    if usable.is_empty() {
+        return Err(if links.iter().any(|l| l.wired) {
+            "the connection is wired, and a wired link cannot be brought back from the popover once it is \
+             taken down: leave it to the person at the machine"
+                .to_string()
+        } else {
+            "nothing is connected".to_string()
+        });
+    }
+    let mut target: Option<&Option<String>> = None;
+    for link in usable {
+        if link.primary || target.is_none() {
+            target = Some(&link.device);
+        }
+    }
+    target.cloned().flatten().ok_or_else(|| "nothing is connected".to_string())
+}
+
 /// Disconnect the device carrying the connection. The radio stays as it was: this is "leave this
 /// network", and the Wi-Fi tile that used to do it ran `nmcli radio wifi off` under a caption that
 /// said "disconnect". The device will not rejoin by itself until a person asks it to.
 ///
+/// `allow_wired`: see [`choose_disconnect_target`]. The target is chosen from a reading taken
+/// inside this call, not from whatever the caller last saw.
+///
 /// Answers with the device's state afterwards, as NetworkManager words it.
-pub fn disconnect() -> Result<String, String> {
+pub fn disconnect(allow_wired: bool) -> Result<String, String> {
+    let _one_at_a_time = MUTATING.lock().unwrap_or_else(|e| e.into_inner());
     let conn = system_bus()?;
     let nm = get_all(&conn, NM_PATH, NM).ok_or("NetworkManager did not answer")?;
     let primary = p_path(&nm, "PrimaryConnection").filter(|p| is_real(p));
-    let mut target: Option<String> = None;
+    let mut links: Vec<Link> = Vec::new();
     for path in p_paths(&nm, "ActiveConnections") {
         let Some(a) = get_all(&conn, &path, ACTIVE) else { continue };
         let kind = p_string(&a, "Type").unwrap_or_default();
         if !matches!(kind.as_str(), "802-11-wireless" | "802-3-ethernet") {
             continue;
         }
-        let first_device = p_paths(&a, "Devices").into_iter().next();
-        if primary.as_deref() == Some(path.as_str()) || target.is_none() {
-            target = first_device;
-        }
+        links.push(Link {
+            wired: kind == "802-3-ethernet",
+            primary: primary.as_deref() == Some(path.as_str()),
+            device: p_paths(&a, "Devices").into_iter().next(),
+        });
     }
-    let device = target.ok_or("nothing is connected")?;
+    let device = choose_disconnect_target(&links, allow_wired)?;
     conn.call_method(Some(NM), device.as_str(), Some(DEVICE), "Disconnect", &())
         .map_err(|e| format!("NetworkManager refused: {e}"))?;
     let after = get_all(&conn, &device, DEVICE).ok_or("NetworkManager did not answer")?;
@@ -535,6 +705,35 @@ fn device_state_word(code: u32) -> &'static str {
         40..=90 => "connecting",
         120 => "failed",
         _ => "disconnected",
+    }
+}
+
+/// Whether a join of this kind may go ahead for this caller: a mind's may only use a saved profile.
+pub(crate) fn permitted(by_person: bool, decided: &Plan) -> Result<(), String> {
+    if by_person || matches!(decided, Plan::UseSaved) {
+        Ok(())
+    } else {
+        Err("that network is not saved on this machine; only a person can choose to join it".to_string())
+    }
+}
+
+/// What one look at a joining connection's state means for the wait.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum JoinStep {
+    Connected,
+    KeepWaiting,
+    Failed,
+}
+
+/// `state` is the active connection's `State` (0 unknown, 1 activating, 2 activated, 3
+/// deactivating, 4 deactivated), or `None` when NetworkManager did not answer inside the call
+/// timeout. No answer is not a failure: the join may be succeeding, so it keeps waiting until the
+/// cap, and only a state that says failed (or the cap) deletes the profile and gives up.
+pub(crate) fn join_step(state: Option<u32>, elapsed: Duration) -> JoinStep {
+    match state {
+        Some(2) => JoinStep::Connected,
+        Some(1) | Some(0) | None if elapsed < JOIN_TIMEOUT => JoinStep::KeepWaiting,
+        _ => JoinStep::Failed,
     }
 }
 
@@ -555,7 +754,9 @@ pub enum Joined {
 ///
 /// The request is taken by value and dropped before this returns, which overwrites the secret.
 /// Errors are words for a person and never contain it.
-pub fn connect(request: ConnectRequest, wait: bool) -> Result<Joined, String> {
+///
+/// `_slot` is the single join slot ([`begin_join`]), held until this returns.
+pub fn connect(request: ConnectRequest, wait: bool, _slot: JoinSlot) -> Result<Joined, String> {
     let ssid = request.ssid.clone();
     let conn = system_bus()?;
     let snapshot = read_snapshot(&conn).ok_or("NetworkManager did not answer")?;
@@ -579,6 +780,10 @@ pub fn connect(request: ConnectRequest, wait: bool) -> Result<Joined, String> {
     let (sae_only, _) = security_of(0, wpa, rsn);
 
     let decided = plan(&snapshot, &request, sae_only).map_err(|r| r.say(&ssid))?;
+    // The rule that a mind only switches to a network the machine already has saved belongs HERE,
+    // on the reading this call just took, and not only in the caller's earlier look at a snapshot
+    // that may be seconds old: a profile deleted in between must not turn a switch into a join.
+    permitted(request.by_person, &decided)?;
 
     let (created, active) = match decided {
         Plan::UseSaved => {
@@ -633,11 +838,11 @@ pub fn connect(request: ConnectRequest, wait: bool) -> Result<Joined, String> {
     loop {
         std::thread::sleep(Duration::from_millis(250));
         let state = get_all(&conn, active.as_str(), ACTIVE).and_then(|a| p_u32(&a, "State"));
-        match state {
-            Some(2) => return Ok(Joined::Connected),
-            Some(1) | Some(0) if started.elapsed() < JOIN_TIMEOUT => continue,
-            // Deactivating, deactivated, gone: it failed, or timed out still activating.
-            _ => {
+        match join_step(state, started.elapsed()) {
+            JoinStep::Connected => return Ok(Joined::Connected),
+            JoinStep::KeepWaiting => continue,
+            JoinStep::Failed => {
+                // Deactivating, deactivated, gone: it failed, or timed out still activating.
                 if let Some(profile) = created.as_ref() {
                     let _ = conn.call_method(Some(NM), profile.as_str(), Some(SETTINGS_CONN), "Delete", &());
                 }
@@ -770,7 +975,8 @@ mod tests {
         let code = src.split("#[cfg(test)]").next().unwrap();
         let nm_loop = &code[code.find("pub fn run_network_monitor").unwrap()..code.find("fn announce_link_change").unwrap()];
         assert!(nm_loop.contains("for_match_rule"), "the NetworkManager path subscribes to signals");
-        assert!(!nm_loop.contains("thread::sleep"), "the NetworkManager path has no sleep-and-ask loop");
+        let monitor = &code[code.find("pub fn run_network_monitor").unwrap()..code.find("fn listen_for_signals").unwrap()];
+        assert!(!monitor.contains("thread::sleep"), "the NetworkManager path has no sleep-and-ask loop");
     }
 
     /// The password never reaches a command line or a log: this file has no `Command`, and no
@@ -783,5 +989,102 @@ mod tests {
         for line in code.lines().filter(|l| l.contains("tracing::")) {
             assert!(!line.contains("request") && !line.contains("secret"), "a log line names the request: {line}");
         }
+    }
+
+    // ── security review round 3 ──
+
+    /// M1: a mind's join may only use a saved profile, decided inside `connect()` on its own fresh
+    /// reading. The case that got through: a saved open profile deleted between the handler's look
+    /// and the worker's, so the switch had become a create-and-join of an open network.
+    #[test]
+    fn a_minds_join_may_only_use_a_saved_profile_inside_connect_itself() {
+        assert!(permitted(false, &Plan::UseSaved).is_ok());
+        assert!(permitted(false, &Plan::JoinOpen).is_err(), "an open network nobody saved is a person's to join");
+        assert!(permitted(false, &Plan::JoinSecured { key_mgmt: "wpa-psk" }).is_err());
+        for plan in [Plan::UseSaved, Plan::JoinOpen, Plan::JoinSecured { key_mgmt: "wpa-psk" }] {
+            assert!(permitted(true, &plan).is_ok(), "a person's press may join");
+        }
+        let code = include_str!("network.rs").split("#[cfg(test)]").next().unwrap();
+        let connect = &code[code.find("pub fn connect(").unwrap()..code.find("fn saved_profile_path").unwrap()];
+        let check = connect.find("permitted(request.by_person, &decided)?").expect("connect() applies the rule itself");
+        assert!(check < connect.find("AddAndActivateConnection").unwrap(), "before any D-Bus write");
+    }
+
+    /// M2: one join at a time, a mind's joins spaced, and a person never held back by a mind's.
+    #[test]
+    fn only_one_join_runs_at_a_time_and_a_mind_cannot_loop_them() {
+        let t0 = Instant::now();
+        let mut gate = JoinGate::default();
+        assert!(gate.enter(t0, false).is_ok());
+        assert!(gate.enter(t0, true).unwrap_err().contains("already in progress"), "a second join waits, person or mind");
+        assert!(gate.enter(t0, false).is_err());
+        gate.leave();
+        assert!(gate.enter(t0 + Duration::from_secs(1), false).unwrap_err().contains("a moment ago"), "a mind's next join is spaced");
+        assert!(gate.enter(t0 + Duration::from_secs(1), true).is_ok(), "a person is never held back by a mind's spacing");
+        gate.leave();
+        assert!(gate.enter(t0 + MIND_JOIN_SPACING + Duration::from_secs(1), false).is_ok());
+    }
+
+    /// The only test that touches the static gate, so it cannot race another.
+    #[test]
+    fn the_slot_is_released_when_it_is_dropped() {
+        let first = begin_join(true).expect("the slot is free");
+        assert!(begin_join(true).is_err());
+        drop(first);
+        drop(begin_join(true).expect("free again after the join ended"));
+    }
+
+    /// M2: no per-call connection, and `connect` cannot be called without the slot.
+    #[test]
+    fn calls_share_one_connection_and_connect_requires_the_slot() {
+        let code = include_str!("network.rs").split("#[cfg(test)]").next().unwrap();
+        let makers = code.lines().filter(|l| !l.trim_start().starts_with("//") && l.contains("new_connection()")).count();
+        assert_eq!(makers, 3, "the monitor's, the shared bus's, and the definition: no per-call connection");
+        assert!(code.contains("pub fn connect(request: ConnectRequest, wait: bool, _slot: JoinSlot)"));
+        assert!(code.contains("MUTATING.lock()"), "radio and disconnect do not interleave");
+    }
+
+    fn link(wired: bool, primary: bool, device: &str) -> Link {
+        Link { wired, primary, device: Some(device.to_string()) }
+    }
+
+    /// M3: a mind cannot take down a wired link the popover has no control to bring back.
+    #[test]
+    fn a_mind_cannot_disconnect_a_wired_link() {
+        let only_wired = [link(true, true, "/eth0")];
+        assert!(choose_disconnect_target(&only_wired, false).unwrap_err().contains("wired"));
+        assert_eq!(choose_disconnect_target(&only_wired, true), Ok("/eth0".to_string()), "the person at the machine may");
+        // Wired is primary, Wi-Fi is up too: a mind's disconnect leaves the cable alone.
+        let both = [link(true, true, "/eth0"), link(false, false, "/wlan0")];
+        assert_eq!(choose_disconnect_target(&both, false), Ok("/wlan0".to_string()));
+        assert_eq!(choose_disconnect_target(&both, true), Ok("/eth0".to_string()), "the primary, as before");
+        assert!(choose_disconnect_target(&[], false).unwrap_err().contains("nothing is connected"));
+    }
+
+    /// M4: the listener restarts, the monitor polls while it is down and says when a read failed.
+    #[test]
+    fn a_dead_signal_listener_restarts_and_the_monitor_never_freezes_silently() {
+        let code = include_str!("network.rs").split("#[cfg(test)]").next().unwrap();
+        let listener = &code[code.find("fn listen_for_signals").unwrap()..code.find("/// `NetworkChanged` for the consumers").unwrap()];
+        assert!(listener.contains("loop {") && listener.contains("RESUBSCRIBE_CAP"), "it resubscribes with a growing pause");
+        assert!(listener.contains("tracing::warn!"), "and says it is down");
+        assert!(listener.contains("LISTENING.store(false"), "and tells the reader it is down");
+        let monitor = &code[code.find("pub fn run_network_monitor").unwrap()..code.find("fn listen_for_signals").unwrap()];
+        assert!(monitor.contains("POLL_WITHOUT_SIGNALS"), "the reader polls while there is no listener");
+        assert!(monitor.contains("STALE.swap(true") && monitor.contains("STALE.store(false"), "a failed read marks the picture stale until the next good one");
+        assert!(!monitor[monitor.find("let mut last_link").unwrap()..].contains("return"), "a closed channel or a failed read does not end the monitor");
+    }
+
+    /// L5: a poll that got no answer is not a failed join.
+    #[test]
+    fn a_join_poll_with_no_answer_keeps_waiting_until_the_cap() {
+        let soon = Duration::from_secs(3);
+        assert_eq!(join_step(None, soon), JoinStep::KeepWaiting, "the 2 s call timeout is not a failure");
+        assert_eq!(join_step(Some(1), soon), JoinStep::KeepWaiting);
+        assert_eq!(join_step(Some(2), soon), JoinStep::Connected);
+        assert_eq!(join_step(Some(4), soon), JoinStep::Failed, "deactivated is a failure");
+        assert_eq!(join_step(Some(3), soon), JoinStep::Failed);
+        assert_eq!(join_step(None, JOIN_TIMEOUT), JoinStep::Failed, "and the cap still ends the wait");
+        assert_eq!(join_step(Some(1), JOIN_TIMEOUT), JoinStep::Failed);
     }
 }

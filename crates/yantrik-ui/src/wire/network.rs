@@ -153,7 +153,8 @@ pub fn wire(ui: &App) {
 
     // Disconnect: leave the network. The radio stays as it is.
     state.on_disconnect(|| {
-        std::thread::spawn(|| match yantrik_os::network::disconnect() {
+        // `true`: it is the person at the machine, who can plug the cable back in.
+        std::thread::spawn(|| match yantrik_os::network::disconnect(true) {
             Ok(device) => tracing::info!(%device, "Network disconnected"),
             Err(why) => tracing::warn!(%why, "Could not disconnect"),
         });
@@ -171,7 +172,8 @@ pub fn wire(ui: &App) {
             // `control_network`, which never sets this.
             by_person: true,
         };
-        start_join(weak.clone(), request);
+        // A refusal has already been put under the row for a person's press.
+        let _ = start_join(weak.clone(), request);
     });
 
     let weak = ui.as_weak();
@@ -202,8 +204,25 @@ pub fn wire(ui: &App) {
 ///
 /// The request is moved into the worker and nowhere else. Its secret is not copied into the
 /// notice, the status text or a log line, and it is overwritten when the attempt ends.
-pub(crate) fn start_join(weak: slint::Weak<App>, request: ConnectRequest) {
+///
+/// One join runs at a time, and a mind's are spaced: the slot is taken HERE, before the thread
+/// exists, so a caller that loops this cannot start threads faster than joins finish. A refusal is
+/// returned to the caller and, for a person's press, shown under the row.
+pub(crate) fn start_join(weak: slint::Weak<App>, request: ConnectRequest) -> Result<(), String> {
     let ssid = request.ssid.clone();
+    let slot = match yantrik_os::network::begin_join(request.by_person) {
+        Ok(slot) => slot,
+        Err(why) => {
+            if request.by_person {
+                if let Some(ui) = weak.upgrade() {
+                    let state = ui.global::<NetworkState>();
+                    state.set_notice_ssid(ssid.as_str().into());
+                    state.set_notice(why.as_str().into());
+                }
+            }
+            return Err(why);
+        }
+    };
     if let Some(ui) = weak.upgrade() {
         let state = ui.global::<NetworkState>();
         state.set_joining_ssid(ssid.as_str().into());
@@ -211,7 +230,7 @@ pub(crate) fn start_join(weak: slint::Weak<App>, request: ConnectRequest) {
         state.set_notice(SharedString::default());
     }
     std::thread::spawn(move || {
-        let outcome = yantrik_os::network::connect(request, true);
+        let outcome = yantrik_os::network::connect(request, true, slot);
         match &outcome {
             Ok(_) => tracing::info!(%ssid, "Wi-Fi joined"),
             // The reason is words for a person and never contains the password.
@@ -238,6 +257,7 @@ pub(crate) fn start_join(weak: slint::Weak<App>, request: ConnectRequest) {
             }
         });
     });
+    Ok(())
 }
 
 /// Put one reading on every surface that states it.
@@ -442,7 +462,7 @@ mod tests {
         assert!(!radio.contains("disconnect"), "the radio tile does not disconnect. As written:\n{radio}");
 
         let leave = handler("disconnect");
-        assert!(leave.contains("network::disconnect()"), "Disconnect disconnects. As written:\n{leave}");
+        assert!(leave.contains("network::disconnect(true)"), "Disconnect disconnects. As written:\n{leave}");
         assert!(!leave.contains("set_wifi_enabled"), "Disconnect must not switch the radio off. As written:\n{leave}");
     }
 

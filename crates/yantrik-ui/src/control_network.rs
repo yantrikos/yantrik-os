@@ -8,9 +8,14 @@
 //!     NetworkManager reports it afterwards, not with the request.
 //!   * `disconnect_network` is the connected row's Disconnect: leave this network. It does not
 //!     switch the radio off. It answers with the device's state afterwards.
-//!     Both are `standard`, and `sensitive` while taking them would leave the machine with no
-//!     network at all (`grade_for`): the grade is kept in step with the machine's state, and is
-//!     `sensitive` until the first reading says otherwise.
+//!     Both are `dangerous`, as the same verbs already are in the minds' tools (`wifi_disconnect`,
+//!     `wifi_radio`) and in the Network Manager app: the same verb is not cheaper because it came
+//!     in through the shell. What they destroy is the channel a remote mind reaches the machine
+//!     by, and no reading of "another link is up" says that the mind's own path is that link
+//!     (`grade_for`). Because no state can lower the grade, nothing that goes stale can make a
+//!     call cheaper; the grade is still re-checked when the call runs (`grade_still_holds`), so
+//!     a rule that ever does depend on state cannot be decided from a reading that has moved.
+//!     A mind cannot take down a wired link at all: nothing in the popover brings it back.
 //!   * `connect_wifi ssid=...` is a row. `sensitive`, because joining a network moves every
 //!     mind's traffic onto it. It switches between networks the machine already has saved, and
 //!     nothing else. A network it has no profile for, secured OR open, is not joined: the row is
@@ -40,11 +45,16 @@
 //! published for one release, because the minds' tools and older `yos-mcp` read them.
 
 use slint::ComponentHandle;
-use yantrik_app_runtime::control::{answer_later, regrade, Action, App as ControlSurface, Param};
+use yantrik_app_runtime::control::{answer_later, published_grade, regrade, Action, App as ControlSurface, Param};
 use yantrik_os::network_model::{plan, Plan, Refusal};
 use yantrik_os::{ConnectRequest, NetworkSnapshot};
 
 use crate::App;
+
+/// `answer_later` has no slot to leave work in when a handler is called outside a dispatch (an
+/// in-process or test call). The work is NOT run inline then: it makes D-Bus calls, and on this
+/// thread they would be made on the one that draws.
+const NOT_A_DISPATCH: &str = "this action only runs as a dispatched call from the control surface";
 
 /// What `connect_wifi` will do, decided from the reading and nothing else. Pure, so the refusal to
 /// connect to a secured unknown network without a person is a test and not a promise.
@@ -77,26 +87,53 @@ pub(crate) fn plan_connect(snapshot: Option<&NetworkSnapshot>, ssid: &str) -> Re
     }
 }
 
-/// The grade an action carries right now, from what the machine is doing.
+/// The grade an action carries right now.
 ///
-/// Disconnecting, or switching the Wi-Fi radio off, is a reversible convenience while another link
-/// carries the machine, and the end of every mind's reach to it when this is the only one. A
-/// reading nobody has taken yet is treated as the worse case: `sensitive` is the safe direction to
-/// be wrong in.
-pub(crate) fn grade_for(action: &str, snapshot: Option<&NetworkSnapshot>) -> &'static str {
-    let Some(s) = snapshot else { return "sensitive" };
-    let removes_the_only_connection = match action {
-        "disconnect_network" => s.is_only_connection(),
-        // Turning the radio off removes the connection only when Wi-Fi is the one carrying it.
-        "set_wifi" => s.is_only_connection() && s.kind == yantrik_os::NetKind::Wifi,
-        _ => false,
-    };
-    if removes_the_only_connection { "sensitive" } else { "standard" }
+/// Disconnecting, or switching the Wi-Fi radio off, is `dangerous` here as it is in the companion's
+/// tools and in the Network Manager app, whichever links are up: "another link remains" does not
+/// mean the caller's own path remains (a mind reaching the box over Wi-Fi with a cable also in is
+/// cut off all the same), and a link NetworkManager counts as up may carry nothing. The reading is
+/// kept as an argument so a future rule that depends on state has one place to go, but it can only
+/// RAISE a grade: nothing here ever publishes less than `dangerous` for these two.
+pub(crate) fn grade_for(action: &str, _snapshot: Option<&NetworkSnapshot>) -> &'static str {
+    match action {
+        "disconnect_network" | "set_wifi" => "dangerous",
+        _ => "standard",
+    }
+}
+
+fn rank(grade: &str) -> usize {
+    yantrik_ipc_transport::gate::grade(grade).unwrap_or(usize::MAX)
+}
+
+/// Whether the grade the gate asked about is still the grade this action would be asked for now.
+///
+/// `published` is what the gate read at dispatch; `fresh` is a reading taken as late as the caller
+/// can. If the grade has gone UP in between, the approval (or the lack of one) was for something
+/// cheaper than what is about to happen, and the call is refused: a retry is asked at the new
+/// grade. A reading that is known to be stale is no reading.
+pub(crate) fn grade_still_holds(
+    action: &str,
+    published: &str,
+    fresh: Option<&NetworkSnapshot>,
+    stale: bool,
+) -> Result<(), String> {
+    if stale {
+        return Err("the network state could not be read just now, so nothing was changed; try again".to_string());
+    }
+    if rank(grade_for(action, fresh)) > rank(published) {
+        return Err(format!(
+            "the network changed since `{action}` was graded `{published}`; it is graded `{}` now, so \
+             nothing was changed. Ask again",
+            grade_for(action, fresh)
+        ));
+    }
+    Ok(())
 }
 
 /// Publish those grades. Called on every new reading and on every `describe`, both on the thread
 /// that owns the surface (the only one `regrade` answers on); until the first call the actions are
-/// declared `sensitive`.
+/// declared `dangerous`.
 pub(crate) fn sync_grades(snapshot: Option<&NetworkSnapshot>) {
     for action in ["disconnect_network", "set_wifi"] {
         // `Err` is "no surface installed on this thread yet", and the declared grade stands.
@@ -133,6 +170,9 @@ pub fn network_for_describe(snapshot: Option<&NetworkSnapshot>, ui: &App) -> ser
         "wifi_device": s.wifi_present,
         "wifi_radio": if s.wifi_present { serde_json::Value::from(s.radio_on) } else { serde_json::Value::Null },
         "popover_open": ui.get_network_open(),
+        // True when the last attempt to read NetworkManager failed: everything above is then the
+        // last picture that was read, and a caller should not treat it as current.
+        "stale": yantrik_os::network::is_stale(),
         // The three keys before this object grew.
         "online": readout.online,
         "type": readout.medium,
@@ -170,9 +210,11 @@ pub fn wifi_networks_for_describe(snapshot: Option<&NetworkSnapshot>) -> serde_j
 /// focus a field or raise the shell: any of those would put an access point of a mind's choosing
 /// under whatever the person is typing at that moment.
 fn mark_for_person(ui: &App, ssid: &str) -> Result<serde_json::Value, String> {
-    let who = {
-        let name = ui.get_active_harness_name().to_string();
-        if name.trim().is_empty() { "A mind".to_string() } else { name }
+    // Who MADE this call, from the caller's identity, and not whichever mind the person has selected:
+    // a call from another process would otherwise be put in the selected mind's mouth.
+    let who = match crate::mind_view::requester_now() {
+        crate::mind_view::Requester::Mind(name) if !name.trim().is_empty() => name,
+        _ => "A mind".to_string(),
     };
     let g = ui.global::<crate::NetworkState>();
     g.set_requested_ssid(ssid.into());
@@ -200,9 +242,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
 
     surface
         .action(
-            // The Wi-Fi tile. Declared `sensitive` and published `standard` unless switching it
-            // off would end the machine's only connection (`sync_grades`): reversible and local,
-            // but it cuts the machine off the network, and every mind with it, while it is off.
+            // The Wi-Fi tile. `dangerous`, like `wifi_radio` in the minds' tools: switching it off
+            // cuts the machine off the network, and every mind with it, while it is off.
             //
             // The answer is NetworkManager's `WirelessEnabled` read back after the call, not the
             // argument: a refused change (polkit, a hardware switch) comes back as the radio's
@@ -214,39 +255,51 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                  state as NetworkManager reports it afterwards. Refused on a machine with no \
                  Wi-Fi device",
             )
-            .risk("sensitive")
+            .risk("dangerous")
             .arg(Param::flag("enabled").describe("true for on, false for off")),
             move |args| {
                 let _ui = radio_weak.upgrade().ok_or_else(|| "the shell is gone".to_string())?;
                 let on = args["enabled"].as_bool().ok_or("`enabled` must be true or false")?;
-                if !yantrik_os::network::latest().map_or(false, |s| s.wifi_present) {
+                let latest = yantrik_os::network::latest();
+                if !latest.as_ref().map_or(false, |s| s.wifi_present) {
                     return Err("this machine has no Wi-Fi device".to_string());
                 }
+                // The grade the gate asked about, held against the machine as it is now.
+                let published = published_grade("set_wifi").ok_or("`set_wifi` has no published grade")?;
+                grade_still_holds("set_wifi", published, latest.as_ref(), yantrik_os::network::is_stale())?;
                 // The D-Bus call runs on the RPC side, not on the thread that draws.
                 let work = move || {
+                    // And once more, from a reading taken here, right before the act.
+                    grade_still_holds("set_wifi", published, yantrik_os::network::read_fresh().as_ref(), false)?;
                     let now = yantrik_os::network::set_wifi_enabled(on)?;
                     Ok(serde_json::json!({
                         "wifi_radio": now,
                         "took_effect": now == on,
                     }))
                 };
-                answer_later(work).map(|()| serde_json::json!("answered by the work")).or_else(|work| work())
+                answer_later(work).map(|()| serde_json::json!("answered by the work")).map_err(|_| NOT_A_DISPATCH.to_string())
             },
         )
         .action(
-            // The connected row's Disconnect. Graded like the radio (`grade_for`). It leaves the network
+            // The connected row's Disconnect. `dangerous`, like `wifi_disconnect` (`grade_for`). It leaves the network
             // and leaves the radio alone, which the Quick Settings tile did the other way round.
             Action::new(
                 "disconnect_network",
-                "Disconnect from the network the machine is on (Wi-Fi or wired). It does not \
+                "Disconnect from the Wi-Fi network the machine is on. A wired link is never taken \
+                 down by this: it cannot be brought back from the popover. It does not \
                  switch the Wi-Fi radio off: use set_wifi for that. The machine will not rejoin \
                  by itself until it is asked to. Answers with the device's state afterwards",
             )
-            .risk("sensitive"),
+            .risk("dangerous"),
             move |_args| {
                 let _ui = leave_weak.upgrade().ok_or_else(|| "the shell is gone".to_string())?;
+                let latest = yantrik_os::network::latest();
+                let published = published_grade("disconnect_network").ok_or("`disconnect_network` has no published grade")?;
+                grade_still_holds("disconnect_network", published, latest.as_ref(), yantrik_os::network::is_stale())?;
                 let work = move || {
-                    let device_state = yantrik_os::network::disconnect()?;
+                    grade_still_holds("disconnect_network", published, yantrik_os::network::read_fresh().as_ref(), false)?;
+                    // `false`: a mind may not take down a wired link, which the popover cannot restore.
+                    let device_state = yantrik_os::network::disconnect(false)?;
                     let after = yantrik_os::network::latest();
                     Ok(serde_json::json!({
                         "device_state": device_state,
@@ -254,7 +307,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                         "note": "NetworkManager has been asked to disconnect; `describe shell` network.state shows when it has finished",
                     }))
                 };
-                answer_later(work).map(|()| serde_json::json!("answered by the work")).or_else(|work| work())
+                answer_later(work).map(|()| serde_json::json!("answered by the work")).map_err(|_| NOT_A_DISPATCH.to_string())
             },
         )
         .action(
@@ -283,10 +336,11 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                         // Saved: no secret in the request, nothing is created, so there is nothing
                         // to protect and nothing to ask. The attempt runs off this thread and its
                         // outcome arrives as a change in the network state.
+                        // One join at a time and spaced: a refusal comes back to the caller.
                         crate::wire::network::start_join(
                             ui.as_weak(),
                             ConnectRequest { ssid: ssid.clone(), secret: None, by_person: false },
-                        );
+                        )?;
                         Ok(serde_json::json!({
                             "joined": false,
                             "joining": ssid,
@@ -418,7 +472,7 @@ mod tests {
         assert!(radio.contains("let now = yantrik_os::network::set_wifi_enabled(on)?"), "the radio's answer is what NetworkManager says:\n{radio}");
         assert!(radio.contains("\"wifi_radio\": now"), "and it is what the answer carries:\n{radio}");
         let leave = declaration("disconnect_network");
-        assert!(leave.contains("let device_state = yantrik_os::network::disconnect()?"), "disconnect answers with the device's state:\n{leave}");
+        assert!(leave.contains("let device_state = yantrik_os::network::disconnect(false)?"), "disconnect answers with the device's state:\n{leave}");
         assert!(leave.contains("\"device_state\": device_state"));
     }
 
@@ -468,38 +522,130 @@ mod tests {
         NetworkSnapshot { links: 1, ..laptop() }
     }
 
+    /// H1: the repo already grades these verbs `dangerous` (the minds' `wifi_disconnect` and
+    /// `wifi_radio`, the Network Manager app's own actions). The shell published them `standard`
+    /// whenever two links were up, so a mind refused on the tool could call the shell's action
+    /// cheaper. No reading may lower them: the grade is `dangerous` for every shape of machine.
     #[test]
-    fn disconnect_and_radio_off_are_sensitive_exactly_when_they_end_the_only_connection() {
-        // The only link, and it is Wi-Fi: both end the machine's network.
-        assert_eq!(grade_for("disconnect_network", Some(&on_wifi_only())), "sensitive");
-        assert_eq!(grade_for("set_wifi", Some(&on_wifi_only())), "sensitive");
-        // Wired as well as Wi-Fi: leaving either leaves the other.
-        let both = NetworkSnapshot { links: 2, ..laptop() };
-        assert_eq!(grade_for("disconnect_network", Some(&both)), "standard");
-        assert_eq!(grade_for("set_wifi", Some(&both)), "standard");
-        // Wired and the only link: disconnecting ends it, but the radio is not what carries it.
+    fn disconnect_and_radio_off_are_dangerous_for_every_reading() {
         let wired = NetworkSnapshot { kind: NetKind::Wired, state: NetState::Connected, links: 1, ..NetworkSnapshot::default() };
-        assert_eq!(grade_for("disconnect_network", Some(&wired)), "sensitive");
-        assert_eq!(grade_for("set_wifi", Some(&wired)), "standard");
-        // Nothing up: there is nothing to lose.
-        assert_eq!(grade_for("disconnect_network", Some(&NetworkSnapshot::default())), "standard");
-        // No reading yet: the worse case.
-        assert_eq!(grade_for("disconnect_network", None), "sensitive");
-        assert_eq!(grade_for("set_wifi", None), "sensitive");
+        let readings = [
+            None,
+            Some(on_wifi_only()),
+            Some(NetworkSnapshot { links: 2, ..laptop() }), // wired + Wi-Fi: "another link remains"
+            Some(NetworkSnapshot { links: 3, ..laptop() }),
+            Some(wired),
+            Some(NetworkSnapshot::default()),
+        ];
+        for reading in &readings {
+            for action in ["disconnect_network", "set_wifi"] {
+                assert_eq!(grade_for(action, reading.as_ref()), "dangerous", "{action} on {reading:?}");
+            }
+        }
         // Nothing else is graded here.
-        assert_eq!(grade_for("connect_wifi", Some(&both)), "standard");
+        assert_eq!(grade_for("connect_wifi", Some(&laptop())), "standard");
+    }
+
+    /// H1, against the other surfaces: the shell's grade is not below the one the minds' tools and
+    /// the app declare for the same verb.
+    #[test]
+    fn the_shells_grade_matches_the_tools_for_the_same_verbs() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let tools = std::fs::read_to_string(root.join("yantrik-companion-tools/src/wifi.rs")).unwrap();
+        for tool in ["wifi_disconnect", "wifi_radio"] {
+            let at = tools.find(&format!("\"{tool}\"")).unwrap_or_else(|| panic!("`{tool}` is no longer a tool"));
+            assert!(tools[at..].contains("PermissionLevel::Dangerous"), "{tool} is graded Dangerous elsewhere");
+        }
+        assert!(declaration("set_wifi").contains(".risk(\"dangerous\")"));
+        assert!(declaration("disconnect_network").contains(".risk(\"dangerous\")"));
+        assert!(declaration("connect_wifi").contains(".risk(\"sensitive\")"));
+    }
+
+    /// H2: the grade the gate read is re-checked against the machine when the call runs, and a call
+    /// whose grade went up since is refused, not run at the old one.
+    #[test]
+    fn a_call_graded_at_one_level_is_refused_if_the_grade_has_risen() {
+        let both = NetworkSnapshot { links: 2, ..laptop() };
+        // Same grade: goes ahead.
+        assert!(grade_still_holds("disconnect_network", "dangerous", Some(&both), false).is_ok());
+        // The stale case of the review: it was read at `standard` while two links were up, and the
+        // cable has gone since. It must not run at `standard`.
+        let refused = grade_still_holds("disconnect_network", "standard", Some(&on_wifi_only()), false).unwrap_err();
+        assert!(refused.contains("changed") && refused.contains("dangerous"), "{refused}");
+        assert!(grade_still_holds("set_wifi", "sensitive", None, false).is_err(), "no reading is the worse case");
+        // A reading known to be stale decides nothing.
+        assert!(grade_still_holds("set_wifi", "dangerous", Some(&both), true).unwrap_err().contains("could not be read"));
+    }
+
+    /// H2: both handlers hold the grade at the handler and again inside the work, before the call.
+    #[test]
+    fn both_handlers_recheck_the_grade_before_acting() {
+        for (name, call) in [("set_wifi", "network::set_wifi_enabled("), ("disconnect_network", "network::disconnect(")] {
+            let d = declaration(name);
+            let published = d.find("published_grade(").unwrap_or_else(|| panic!("{name} never reads the grade the gate asked about"));
+            let first = d.find("grade_still_holds(").unwrap();
+            let work = d.find("let work = move ||").unwrap();
+            let last = d.rfind("grade_still_holds(").unwrap();
+            let act = d.find(call).unwrap();
+            assert!(published < first && first < work, "{name} checks in the handler, before it hands off");
+            assert!(work < last && last < act, "{name} checks again inside the work, right before `{call}`");
+            assert!(d.contains("read_fresh()"), "{name}'s second check reads the machine, not the snapshot");
+        }
     }
 
     /// The grades are declared in the safe direction and kept in step with each reading and with
     /// every describe.
     #[test]
-    fn the_grades_are_declared_sensitive_and_kept_in_step() {
-        assert!(declaration("set_wifi").contains(".risk(\"sensitive\")"));
-        assert!(declaration("disconnect_network").contains(".risk(\"sensitive\")"));
+    fn the_grades_are_declared_and_kept_in_step() {
         assert!(declaration("connect_wifi").contains(".risk(\"sensitive\")"));
         assert!(code().contains("sync_grades(snapshot);"), "describe re-publishes the grades");
         let wire = include_str!("wire/network.rs").split("#[cfg(test)]").next().unwrap().to_string();
         assert!(wire.contains("crate::control_network::sync_grades("), "every new reading re-publishes them");
+    }
+
+    /// L4: outside a dispatch the work is refused, never run on the caller's thread.
+    #[test]
+    fn work_that_has_nowhere_to_go_is_refused_not_run_inline() {
+        let src = code();
+        assert!(!src.contains(".or_else(|work| work())"), "D-Bus work must not run inline on the UI thread");
+        for name in ["set_wifi", "disconnect_network"] {
+            assert!(declaration(name).contains("map_err(|_| NOT_A_DISPATCH.to_string())"), "{name} refuses instead");
+        }
+    }
+
+    /// M3: a mind's `disconnect_network` never takes down a wired link; the popover's own does.
+    #[test]
+    fn the_control_surface_never_disconnects_a_wired_link() {
+        assert!(declaration("disconnect_network").contains("network::disconnect(false)"));
+        let wire = include_str!("wire/network.rs").split("#[cfg(test)]").next().unwrap().to_string();
+        assert!(wire.contains("network::disconnect(true)"), "the person's Disconnect keeps working on any link");
+    }
+
+    /// M2: a mind's join goes through the one-at-a-time slot and a refusal reaches the caller.
+    #[test]
+    fn a_minds_join_takes_the_slot_and_hears_a_refusal() {
+        let join = declaration("connect_wifi");
+        assert!(join.contains("by_person: false },\n                        )?;"), "start_join's refusal is returned to the caller");
+        let wire = include_str!("wire/network.rs").split("#[cfg(test)]").next().unwrap().to_string();
+        let start = &wire[wire.find("pub(crate) fn start_join").unwrap()..];
+        assert!(start.find("begin_join(").unwrap() < start.find("thread::spawn").unwrap(), "the slot is taken before a thread exists");
+    }
+
+    /// L3: the mark names whoever made the call, not whichever mind the person selected.
+    #[test]
+    fn the_mark_names_the_caller_not_the_selected_mind() {
+        let src = code();
+        let ask = &src[src.find("fn mark_for_person").unwrap()..src.find("/// Add the three network actions").unwrap()];
+        assert!(ask.contains("requester_now()"));
+        assert!(!ask.contains("get_active_harness_name"), "the selected mind is not who called");
+    }
+
+    /// M4: `describe` says when the picture could not be refreshed.
+    #[test]
+    fn describe_says_when_the_picture_is_stale() {
+        let src = code();
+        let object = &src[src.find("pub fn network_for_describe").unwrap()..src.find("pub fn wifi_networks_for_describe").unwrap()];
+        assert!(object.contains("\"stale\": yantrik_os::network::is_stale()"));
     }
 
     /// D-Bus has no default timeout, and these handlers run on the thread that draws: the calls
@@ -510,7 +656,7 @@ mod tests {
             let d = declaration(name);
             let work = d.find("let work = move ||").unwrap_or_else(|| panic!("{name} has no work closure"));
             let later = d.find("answer_later(work)").unwrap_or_else(|| panic!("{name} does not use answer_later"));
-            for call in ["network::set_wifi_enabled(", "network::disconnect("] {
+            for call in ["network::set_wifi_enabled(", "network::disconnect(", "network::read_fresh("] {
                 if let Some(at) = d.find(call) {
                     assert!(at > work && at < later, "{name} calls {call} outside its work closure");
                 }
@@ -520,7 +666,7 @@ mod tests {
         let src = code();
         let rest = &src[src.find("fn mark_for_person").unwrap()..];
         let join = declaration("connect_wifi");
-        for call in ["network::set_wifi_enabled(", "network::disconnect(", "network::request_scan(", "network::connect("] {
+        for call in ["network::set_wifi_enabled(", "network::disconnect(", "network::request_scan(", "network::connect(", "network::read_fresh("] {
             assert!(!join.contains(call) && !rest[..rest.find("/// Add the three").unwrap()].contains(call), "`{call}` on the UI thread");
         }
     }
