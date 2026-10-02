@@ -54,6 +54,37 @@ fn where_now(ui: &App) -> serde_json::Value {
     })
 }
 
+/// `files_new_folder` / `files_new_file`: the checks on the UI thread, the disk on the socket's
+/// side of `answer_later`, so a slow or hung mount cannot freeze the desktop. The answer is the
+/// file-system fact (`created` / `existed`) and is settled; only the listing catches up after, by
+/// a refresh queued onto the UI thread once the disk has changed.
+fn make_here(
+    weak: &slint::Weak<App>,
+    args: &serde_json::Value,
+    folder: bool,
+) -> Result<serde_json::Value, String> {
+    let ui = weak.upgrade().ok_or_else(|| "the shell is gone".to_string())?;
+    mind::here(&ui.get_file_browser_path())?;
+    let name = args["name"].as_str().unwrap_or_default().to_string();
+    if name.is_empty() {
+        return Err("`name` is empty".into());
+    }
+    ensure_files_screen(&ui);
+    mind::may_make(&ui.get_file_browser_path(), &name)?;
+    let dir = crate::filebrowser::expand_home(&ui.get_file_browser_path());
+    let weak = ui.as_weak();
+    let work = move || {
+        let answer = crate::control_files_create::make(&dir, &name, folder)?;
+        if answer.get("created").is_some() {
+            let _ = weak.upgrade_in_event_loop(|ui| ui.invoke_file_refresh());
+        }
+        Ok(answer)
+    };
+    yantrik_app_runtime::control::answer_later(work)
+        .map(|()| serde_json::json!({ "answering": "off the UI thread" }))
+        .or_else(|work| work())
+}
+
 /// Whether the current listing has an entry by this name, so an action can refuse a name that is
 /// not there and say so, rather than invoke a callback that quietly does nothing.
 fn has_entry(ui: &App, name: &str) -> bool {
@@ -191,20 +222,13 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             },
         )
         .action(
-            Action::new("files_new_folder", "Create a folder in the current directory").defers()
-                .arg(Param::text("name").describe("The new folder's name")),
-            move |args| {
-                let ui = up(&for_folder)?;
-                mind::here(&ui.get_file_browser_path())?;
-                let name = args["name"].as_str().unwrap_or_default().to_string();
-                if name.is_empty() {
-                    return Err("`name` is empty".into());
-                }
-                ensure_files_screen(&ui);
-                mind::may_make(&ui.get_file_browser_path(), &name)?;
-                ui.invoke_file_create_folder(name.clone().into());
-                Ok(serde_json::json!({ "requested_folder": name, "now": where_now(&ui) }))
-            },
+            Action::new(
+                "files_new_folder",
+                "Create a folder in the current directory. Answers `created` (this call made it) or \
+                 `existed` (already there, nothing changed), with the absolute path and its `kind`",
+            )
+            .arg(Param::text("name").describe("The new folder's name")),
+            move |args| make_here(&for_folder, args, true),
         )
         .action(
             // The shell's own editor_* actions were the way to put text in a file until #253
@@ -213,23 +237,12 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             // text goes.
             Action::new(
                 "files_new_file",
-                "Create an empty file in the current directory. To write text into a file, use the \
-                 `editor` app: `new` with `text`, then `save_as` the path",
+                "Create an empty file in the current directory. Answers `created` or `existed` \
+                 (already there, left untouched), with the absolute path and its `kind`. To write \
+                 text into a file, use the `editor` app: `new` with `text`, then `save_as` the path",
             )
-            .defers()
             .arg(Param::text("name").describe("The new file's name")),
-            move |args| {
-                let ui = up(&for_file)?;
-                mind::here(&ui.get_file_browser_path())?;
-                let name = args["name"].as_str().unwrap_or_default().to_string();
-                if name.is_empty() {
-                    return Err("`name` is empty".into());
-                }
-                ensure_files_screen(&ui);
-                mind::may_make(&ui.get_file_browser_path(), &name)?;
-                ui.invoke_file_create_file(name.clone().into());
-                Ok(serde_json::json!({ "requested_file": name, "now": where_now(&ui) }))
-            },
+            move |args| make_here(&for_file, args, false),
         )
         .action(
             // Preserve the existing permission classification for automation callers.

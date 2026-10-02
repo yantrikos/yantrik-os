@@ -298,6 +298,7 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | shell | `set_mind_panel` | safe | showing: how much of one panel is drawn, remembered in the panel's own file; nothing sent, run or granted |
 | shell | `lock` | safe | only takes access away — Super+L must lock, not ask about locking (#215) |
 | shell | `files_go`, `files_enter`, `files_open`, `files_up`, `files_new_folder`, `files_new_file`, `files_select`, `files_view`, `files_rename`, `files_copy`, `files_cut`, `files_paste`, `files_trash_selected`, `files_undo_trash`, `files_toggle_trash`, `files_refresh`, `files_cancel`, `files_terminal` | standard | driving the Files screen; what they change is content, taken back by the paired verb or recovered from Trash |
+| shell | `files_new_folder`, `files_new_file` | standard | (same grade as the row above) answer the disk's own fact, **settled**, from the create call itself (`EEXIST`), not a stat beside it: `{"created": "<absolute path>", "kind": "directory"\|"file"}` when this call made it, `{"existed": "<absolute path>", "kind": …}` when it was already there and nothing was changed (`kind` is what is on disk, so a file where a folder was asked for says `file`), or an error. The disk work runs off the UI thread (`answer_later`); only the listing refresh trails |
 | shell | `files_delete` | dangerous | destroys without a trash |
 | shell | `check_update` | safe | reads |
 | shell | `set_update_channel` | sensitive | stored configuration: decides where every later update comes from |
