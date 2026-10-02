@@ -515,12 +515,29 @@ fn agent_run(args: &Value, call: Call) -> Result<Value, String> {
         // nothing between them.
         // The command's line is put in the Mind View log first, so no output can arrive ahead of it.
         let mirror = crate::mind_agent_terminal::begin(&agent.0, &command);
-        let job = jobs().start(&agent, &command, cwd)?;
+        let job = match jobs().start(&agent, &command, cwd) {
+            Ok(job) => job,
+            Err(e) => {
+                if matches!(mirror, crate::mind_agent_terminal::Begin::Log(_)) {
+                    crate::mind_agent_terminal::abandon(&agent.0);
+                }
+                return Err(e);
+            }
+        };
         let started_in = jobs().answer(&job).map(|a| a.cwd.display().to_string()).unwrap_or_default();
         crate::agents::store().command_started(&agent, &job.0, &command, &started_in);
-        // Opened beside the running command rather than before it, so the first start of Mind View
-        // never delays the command. `tail -n +1` shows everything the log already holds.
-        let shown = mirror.map(|log| crate::mind_agent_terminal::show(&agent.0, &log));
+        // Opened on a worker beside the running command, so neither the first start of Mind View
+        // nor the viewer's window wait delays the answer or the command's `wait`. `tail -n +1`
+        // shows everything the log already holds.
+        let shown = match mirror {
+            crate::mind_agent_terminal::Begin::Log(log) => {
+                Some(crate::mind_agent_terminal::show_later(&agent.0, log))
+            }
+            crate::mind_agent_terminal::Begin::Failed(why) => {
+                Some(crate::mind_agent_terminal::Shown::Not(why))
+            }
+            crate::mind_agent_terminal::Begin::Off => None,
+        };
         let answer = jobs().job(&agent, &job, wait)?;
         told(&answer);
         let mut out = answer_json(&answer);

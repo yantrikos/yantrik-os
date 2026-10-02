@@ -22,25 +22,64 @@ const MAX_ELEMENTS: usize = 250;
 /// Global CDP message counter for unique IDs.
 static MSG_ID: AtomicU32 = AtomicU32::new(1);
 
-/// Where a browser window the companion opens is drawn, as the environment to start it with.
-///
+/// The variables that name the person's own session. A window a mind opens must never inherit
+/// any of them: with `DISPLAY` left in, an X11-only or Wayland-falling-back app draws on the
+/// person's desktop however `WAYLAND_DISPLAY` is set (PR #582 review, B1). The shell's launcher
+/// and this crate's browser tools both clear exactly this list.
+pub const PERSON_SESSION_VARS: [&str; 4] = ["DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "XAUTHORITY"];
+
+/// Where a window a mind opens is drawn: what to set, after clearing what points at the person.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MindDisplay {
+    /// Cleared first, whatever the tool inherited.
+    pub clear: Vec<&'static str>,
+    /// Then set, so only these name a display.
+    pub set: Vec<(&'static str, String)>,
+}
+
+impl MindDisplay {
+    /// Mind View's display: everything of the person's cleared, then the seat's own set.
+    pub fn mind_view(set: Vec<(&'static str, String)>) -> Self {
+        Self { clear: PERSON_SESSION_VARS.to_vec(), set }
+    }
+
+    /// The person's own display, which only the person's setting (`minds open apps in Mind View`
+    /// off) may choose. Nothing is cleared.
+    pub fn person(wayland: String) -> Self {
+        Self { clear: Vec::new(), set: vec![("WAYLAND_DISPLAY", wayland)] }
+    }
+
+    pub fn apply(&self, command: &mut std::process::Command) {
+        for key in &self.clear {
+            command.env_remove(key);
+        }
+        for (key, value) in &self.set {
+            command.env(key, value);
+        }
+    }
+}
+
+/// The shell's answer to "where does a mind's window go": a display, or why there is none.
+pub type DisplayForMind = fn() -> Result<MindDisplay, String>;
+
 /// The shell sets this once at startup (`yantrik-ui`'s `mind_view::display_for_mind`), so a
 /// window a mind opens lands in Mind View (#239) rather than over the person's work. It used to be
-/// `WAYLAND_DISPLAY=wayland-0` written into the launch, which is the person's own display: the
-/// companion's Chromium opened on their desktop while Mind View sat beside it, empty and black.
-/// Without a shell to ask (tests, a companion run on its own), it is still that.
-static DISPLAY_FOR_MIND: std::sync::OnceLock<fn() -> Vec<(&'static str, String)>> =
-    std::sync::OnceLock::new();
+/// `WAYLAND_DISPLAY=wayland-0` written into the launch, which is the person's own display.
+///
+/// With no shell to ask (tests, a companion run on its own) there is no Mind View, so a headed
+/// window is refused rather than drawn on whatever display the process was started with.
+static DISPLAY_FOR_MIND: std::sync::OnceLock<DisplayForMind> = std::sync::OnceLock::new();
 
 /// Tell the browser tools where a mind's windows go. The first call wins.
-pub fn set_display_for_mind(display: fn() -> Vec<(&'static str, String)>) {
+pub fn set_display_for_mind(display: DisplayForMind) {
     let _ = DISPLAY_FOR_MIND.set(display);
 }
 
-fn display_for_mind() -> Vec<(&'static str, String)> {
+/// Where a headed window goes, or why it cannot be opened.
+pub(crate) fn display_for_mind() -> Result<MindDisplay, String> {
     match DISPLAY_FOR_MIND.get() {
         Some(display) => display(),
-        None => vec![("WAYLAND_DISPLAY", "wayland-0".to_string())],
+        None => Err("there is no Mind View to open a window in (the companion is running without the shell), and a mind's window is never opened on the person's desktop".to_string()),
     }
 }
 
@@ -476,13 +515,41 @@ fn port_is_open(port: u16) -> bool {
     .is_ok()
 }
 
-/// Check if Chromium CDP is reachable.
+/// Whether `cmdline` (a `/proc/<pid>/cmdline`, NUL-separated) is a browser serving DevTools on
+/// `port` from some profile other than `profile`: the person's own Chromium started with
+/// `--remote-debugging-port=9222`. Attaching to it would let a mind drive the person's tabs.
+fn is_foreign_debug_browser(cmdline: &[u8], port: u16, profile: &std::path::Path) -> bool {
+    let args: Vec<&str> = cmdline.split(|b| *b == 0).filter_map(|a| std::str::from_utf8(a).ok()).collect();
+    let serves = args.iter().any(|a| *a == format!("--remote-debugging-port={port}"));
+    if !serves {
+        return false;
+    }
+    let ours = args.iter().any(|a| a.strip_prefix("--user-data-dir=").is_some_and(|p| std::path::Path::new(p) == profile));
+    !ours
+}
+
+/// Whether the browser answering on the default CDP port belongs to someone else. Only a process
+/// that can be read answers yes: with none visible (another pid namespace), the port is taken as ours.
+fn cdp_port_is_the_persons() -> bool {
+    let profile = profile_dir("default");
+    let Ok(entries) = std::fs::read_dir("/proc") else { return false };
+    entries.flatten().any(|e| {
+        e.file_name().to_str().is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
+            && std::fs::read(e.path().join("cmdline"))
+                .is_ok_and(|c| is_foreign_debug_browser(&c, CDP_PORT, &profile))
+    })
+}
+
+/// Check if the companion's own Chromium CDP is reachable. A browser on that port that is not the
+/// companion's (the person's, started with remote debugging) does not count, so the companion
+/// never attaches to and drives the person's tabs.
 fn is_browser_running() -> bool {
     TcpStream::connect_timeout(
         &format!("{}:{}", CDP_HOST, CDP_PORT).parse().unwrap(),
         Duration::from_millis(500),
     )
     .is_ok()
+        && !cdp_port_is_the_persons()
 }
 
 /// Auto-launch Chromium in headless mode for data-extraction tools (web_search, browse).
@@ -509,7 +576,7 @@ fn ensure_headless_browser() -> Result<(), String> {
     let result = std::process::Command::new(&binary)
         .args([
             "--headless=new",
-            "--ozone-platform=wayland",
+            "--ozone-platform=headless",
             "--remote-debugging-address=127.0.0.1",
             "--remote-debugging-port=9222",
             "--remote-allow-origins=http://127.0.0.1:9222",
@@ -532,7 +599,11 @@ fn ensure_headless_browser() -> Result<(), String> {
         ])
         .arg(format!("--user-data-dir={}", profile.display()))
         .arg("about:blank")
-        .env("WAYLAND_DISPLAY", "wayland-0")
+        // Headless draws nothing, and it is not handed the person's display to draw on either.
+        .env_remove("DISPLAY")
+        .env_remove("WAYLAND_DISPLAY")
+        .env_remove("WAYLAND_SOCKET")
+        .env_remove("XAUTHORITY")
         .env("XDG_RUNTIME_DIR", "/run/user/1000")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -561,6 +632,25 @@ fn ensure_headless_browser() -> Result<(), String> {
 /// Prevents the AI from re-reading its own previously-opened pages as "user activity".
 fn cleanup_after_data_extraction(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>) {
     let _ = cdp_send(ws, "Page.navigate", json!({ "url": "about:blank" }));
+}
+
+/// `open_url`: a page opened in the companion's own browser, on a mind's display. Reuses the
+/// browser that is already up (navigating its first tab), else launches one headed.
+pub(crate) fn open_url_for_mind(url: &str) -> String {
+    if is_browser_running() {
+        if let Err(e) = validate_url(url) {
+            return format!("Error: {e}");
+        }
+        let (mut ws, _tab) = match connect_first_tab() {
+            Ok(v) => v,
+            Err(e) => return format!("Failed to open URL: {e}"),
+        };
+        return match cdp_send(&mut ws, "Page.navigate", json!({ "url": url })) {
+            Ok(_) => format!("Opened: {url} (in the companion's browser)"),
+            Err(e) => format!("Failed to open URL: {e}"),
+        };
+    }
+    launch_browser(&json!({ "url": url }))
 }
 
 // ── Launch Browser ──
@@ -594,102 +684,114 @@ impl Tool for LaunchBrowserTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
-        // Run watchdog check before launch — kill zombies from previous sessions
-        if let Some(warning) = super::browser_lifecycle::watchdog_check() {
-            tracing::info!("launch_browser pre-flight: {}", warning);
+        launch_browser(args)
+    }
+}
+
+/// `launch_browser`'s work, also what `open_url` does when no browser is up yet.
+fn launch_browser(args: &serde_json::Value) -> String {
+    // Run watchdog check before launch — kill zombies from previous sessions
+    if let Some(warning) = super::browser_lifecycle::watchdog_check() {
+        tracing::info!("launch_browser pre-flight: {}", warning);
+    }
+
+    // Check if already running
+    if is_browser_running() {
+        return "Browser already running (CDP on port 9222).".to_string();
+    }
+
+    let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("about:blank");
+    let headless = args.get("headless").and_then(|v| v.as_bool()).unwrap_or(false);
+    if url != "about:blank" {
+        if let Err(e) = validate_url(url) {
+            return format!("Error: {e}");
         }
+    }
 
-        // Check if already running
-        if is_browser_running() {
-            return "Browser already running (CDP on port 9222).".to_string();
+    // Launch Chromium with CDP + Wayland support
+    // Ensure Wayland env vars are set (worker thread may not have them)
+    // Which account this window is. One profile per identity, so a work account and a
+    // personal one are different sessions rather than the same cookie jar.
+    let identity = args.get("identity").and_then(|v| v.as_str()).unwrap_or("default");
+    let profile = profile_dir(identity);
+    if let Err(e) = std::fs::create_dir_all(&profile) {
+        return format!("Cannot create the profile directory {}: {e}", profile.display());
+    }
+    let port = port_for(identity);
+
+    let binary = match chrome_binary() {
+        Ok(b) => b,
+        Err(e) => return format!("Error: {e}"),
+    };
+
+    let mut chrome_args: Vec<String> = vec![
+        // Headless has no display to be ozone's platform; it is set to headless below.
+        if headless { "--ozone-platform=headless".into() } else { "--ozone-platform=wayland".into() },
+        "--remote-debugging-address=127.0.0.1".into(),
+        format!("--remote-debugging-port={port}"),
+        // Chrome 2026 refuses a DevTools websocket whose Origin it does not know. Only ours:
+        // `connect_tab` presents exactly this one, and a web page's script cannot.
+        format!("--remote-allow-origins={}", devtools_origin(port)),
+        format!("--user-data-dir={}", profile.display()),
+        "--no-first-run".into(),
+        "--no-default-browser-check".into(),
+        // Anti-detection: prevent navigator.webdriver=true (primary CAPTCHA trigger)
+        "--disable-blink-features=AutomationControlled".into(),
+        // Anti-detection: realistic viewport size
+        "--window-size=1920,1080".into(),
+    ];
+    // Headed by default, and that is the point rather than an oversight. What makes a site
+    // trust this browser is not a flag: it is a real profile with a real logged-in session, on
+    // the user's own machine and their own address. A headless window on a datacentre IP is
+    // what every cloud automation service is fighting, and running on someone's desktop is the
+    // one advantage they cannot buy. Headless is for background work on sites that do not care.
+    //
+    // `--disable-gpu` is deliberately absent when headed: it forces software rendering, and a
+    // SwiftShader WebGL string is itself a fingerprint.
+    if headless {
+        chrome_args.push("--headless=new".into());
+        chrome_args.push("--disable-gpu".into());
+        // The one signal `--headless=new` still leaks to any script that looks.
+        chrome_args.push(
+            "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36".into(),
+        );
+    }
+    chrome_args.push(url.to_string());
+
+    // A headed window goes where a mind's windows go, and nowhere else: Mind View's display
+    // with the person's cleared, or a refusal. Headless draws nothing, so it needs no display
+    // at all and the person's are cleared from it too.
+    let display = if headless {
+        MindDisplay::mind_view(Vec::new())
+    } else {
+        match display_for_mind() {
+            Ok(display) => display,
+            Err(why) => return format!("Not opened: {why}"),
         }
+    };
+    let mut command = std::process::Command::new(&binary);
+    command
+        .args(&chrome_args)
+        .env("XDG_RUNTIME_DIR", "/run/user/1000")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    display.apply(&mut command);
+    let result = command.spawn();
 
-        let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("about:blank");
-        let headless = args.get("headless").and_then(|v| v.as_bool()).unwrap_or(false);
-        if url != "about:blank" {
-            if let Err(e) = validate_url(url) {
-                return format!("Error: {e}");
-            }
-        }
-
-        // Launch Chromium with CDP + Wayland support
-        // Ensure Wayland env vars are set (worker thread may not have them)
-        // Which account this window is. One profile per identity, so a work account and a
-        // personal one are different sessions rather than the same cookie jar.
-        let identity = args.get("identity").and_then(|v| v.as_str()).unwrap_or("default");
-        let profile = profile_dir(identity);
-        if let Err(e) = std::fs::create_dir_all(&profile) {
-            return format!("Cannot create the profile directory {}: {e}", profile.display());
-        }
-        let port = port_for(identity);
-
-        let binary = match chrome_binary() {
-            Ok(b) => b,
-            Err(e) => return format!("Error: {e}"),
-        };
-
-        let mut chrome_args: Vec<String> = vec![
-            "--ozone-platform=wayland".into(),
-            "--remote-debugging-address=127.0.0.1".into(),
-            format!("--remote-debugging-port={port}"),
-            // Chrome 2026 refuses a DevTools websocket whose Origin it does not know. Only ours:
-            // `connect_tab` presents exactly this one, and a web page's script cannot.
-            format!("--remote-allow-origins={}", devtools_origin(port)),
-            format!("--user-data-dir={}", profile.display()),
-            "--no-first-run".into(),
-            "--no-default-browser-check".into(),
-            // Anti-detection: prevent navigator.webdriver=true (primary CAPTCHA trigger)
-            "--disable-blink-features=AutomationControlled".into(),
-            // Anti-detection: realistic viewport size
-            "--window-size=1920,1080".into(),
-        ];
-        // Headed by default, and that is the point rather than an oversight. What makes a site
-        // trust this browser is not a flag: it is a real profile with a real logged-in session, on
-        // the user's own machine and their own address. A headless window on a datacentre IP is
-        // what every cloud automation service is fighting, and running on someone's desktop is the
-        // one advantage they cannot buy. Headless is for background work on sites that do not care.
-        //
-        // `--disable-gpu` is deliberately absent when headed: it forces software rendering, and a
-        // SwiftShader WebGL string is itself a fingerprint.
-        if headless {
-            chrome_args.push("--headless=new".into());
-            chrome_args.push("--disable-gpu".into());
-            // The one signal `--headless=new` still leaks to any script that looks.
-            chrome_args.push(
-                "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36".into(),
-            );
-        }
-        chrome_args.push(url.to_string());
-
-        let result = std::process::Command::new(&binary)
-            .args(&chrome_args)
-            .env("XDG_RUNTIME_DIR", "/run/user/1000")
-            // A headed window goes where a mind's windows go. Headless draws nowhere, so it
-            // keeps the display it always had rather than starting Mind View for nothing.
-            .envs(if headless {
-                vec![("WAYLAND_DISPLAY", "wayland-0".to_string())]
-            } else {
-                display_for_mind()
-            })
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-
-        match result {
-            Ok(_) => {
-                // Wait a moment for CDP to become available
-                for _ in 0..10 {
-                    std::thread::sleep(Duration::from_millis(500));
-                    if is_browser_running() {
-                        let mode = if headless { "headless" } else { "visible" };
-                        return format!("Browser launched in {mode} mode (CDP on port 9222). Opening: {url}");
-                    }
+    match result {
+        Ok(_) => {
+            // Wait a moment for CDP to become available
+            for _ in 0..10 {
+                std::thread::sleep(Duration::from_millis(500));
+                if is_browser_running() {
+                    let mode = if headless { "headless" } else { "visible" };
+                    return format!("Browser launched in {mode} mode (CDP on port 9222). Opening: {url}");
                 }
-                "Browser process started but CDP not yet reachable. Try again in a few seconds.".to_string()
             }
-            Err(e) => format!("Failed to launch Chromium: {e}. Is chromium installed? (apk add chromium)"),
+            "Browser process started but CDP not yet reachable. Try again in a few seconds.".to_string()
         }
+        Err(e) => format!("Failed to launch Chromium: {e}. Is chromium installed? (apk add chromium)"),
     }
 }
 
@@ -2699,5 +2801,60 @@ mod login_tests {
         // username field; it must never carry what is typed into either field.
         assert!(!FIND_LOGIN_FORM_JS.contains(".value"), "the scan must not read field values");
         assert!(FIND_LOGIN_FORM_JS.contains("has_user_field"));
+    }
+}
+
+#[cfg(test)]
+mod mind_display_tests {
+    use super::*;
+
+    fn env_of(command: &std::process::Command, key: &str) -> Option<Option<String>> {
+        command.get_envs().find(|(k, _)| *k == key).map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+    }
+
+    /// B1/B3: a window for a mind is started with the person's session variables cleared, and only
+    /// the seat's own display set.
+    #[test]
+    fn a_mind_view_window_inherits_nothing_of_the_persons_session() {
+        let display = MindDisplay::mind_view(vec![("WAYLAND_DISPLAY", "wayland-1".to_string())]);
+        let mut command = std::process::Command::new("chromium");
+        command.env("DISPLAY", ":0").env("WAYLAND_DISPLAY", "wayland-0").env("WAYLAND_SOCKET", "3").env("XAUTHORITY", "/x");
+        display.apply(&mut command);
+        assert_eq!(env_of(&command, "DISPLAY"), Some(None));
+        assert_eq!(env_of(&command, "WAYLAND_SOCKET"), Some(None));
+        assert_eq!(env_of(&command, "XAUTHORITY"), Some(None));
+        assert_eq!(env_of(&command, "WAYLAND_DISPLAY"), Some(Some("wayland-1".to_string())));
+    }
+
+    /// Without a shell to say where Mind View is, a headed window is refused rather than drawn on
+    /// whatever display this process has. (The hook is process-wide and not set in tests.)
+    #[test]
+    fn with_no_shell_a_headed_window_is_refused_not_sent_to_wayland_0() {
+        let why = display_for_mind().expect_err("no Mind View, no window");
+        assert!(why.contains("never opened on the person's desktop"), "{why}");
+    }
+
+    #[test]
+    fn open_url_no_longer_runs_xdg_open() {
+        let src = include_str!("desktop.rs");
+        let f = &src[src.find("struct OpenUrlTool").unwrap_or(0)..];
+        assert!(!f.contains("Command::new(\"xdg-open\")"), "open_url must go through the Mind View launcher");
+        assert!(f.contains("open_url_for_mind"));
+    }
+
+    /// The person's own Chromium with remote debugging on 9222 is not the companion's browser.
+    #[test]
+    fn a_browser_on_the_default_port_from_another_profile_is_the_persons() {
+        let ours = std::path::Path::new("/home/p/.config/yantrik/browser/default");
+        let cmd = |args: &[&str]| args.join("\0").into_bytes();
+        let persons = cmd(&["chromium", "--remote-debugging-port=9222", "--user-data-dir=/home/p/.config/chromium"]);
+        assert!(is_foreign_debug_browser(&persons, 9222, ours));
+        let no_profile = cmd(&["chromium", "--remote-debugging-port=9222"]);
+        assert!(is_foreign_debug_browser(&no_profile, 9222, ours));
+        let mine = cmd(&["chromium", "--remote-debugging-port=9222", &format!("--user-data-dir={}", ours.display())]);
+        assert!(!is_foreign_debug_browser(&mine, 9222, ours));
+        let other_port = cmd(&["chromium", "--remote-debugging-port=9300"]);
+        assert!(!is_foreign_debug_browser(&other_port, 9222, ours));
+        assert!(!is_foreign_debug_browser(&cmd(&["vim"]), 9222, ours));
     }
 }

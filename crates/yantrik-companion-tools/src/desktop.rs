@@ -46,10 +46,10 @@ impl Tool for OpenUrlTool {
         if !url.starts_with("http://") && !url.starts_with("https://") {
             return "Error: URL must start with http:// or https://".to_string();
         }
-        match std::process::Command::new("xdg-open").arg(url).spawn() {
-            Ok(_) => format!("Opened: {url}"),
-            Err(e) => format!("Failed to open URL: {e}"),
-        }
+        // Not `xdg-open`: that opens the person's default browser on the person's desktop. A
+        // mind's page opens in the companion's own browser, on the display the shell says minds'
+        // windows go to (Mind View), or is refused (PR #582 review, B3).
+        super::browser::open_url_for_mind(url)
     }
 }
 

@@ -23,12 +23,14 @@
 //!
 //! If the nested compositor cannot be started — no labwc, no config, or it does not say which
 //! display it is serving within [`START_BUDGET`] — the reason is logged and published in
-//! `describe shell`, and Mind View is not tried again until the shell restarts. The mind's launch
+//! `describe shell`, and Mind View is tried again after `RETRY_AFTER`. The mind's launch
 //! then fails with that reason. It used to open the app on the person's desktop instead, which
 //! put a mind's work over theirs in exactly the case nobody was watching (2 Oct 2026); a refused
 //! launch that says why is better than a window in the wrong place.
 
 use std::collections::HashSet;
+
+use yantrik_companion::tools::browser::MindDisplay;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -59,6 +61,9 @@ const TITLE_LIBRARY: &str = "libyantrik_mind_view_title.so";
 /// It is paid off the UI thread (the launch waits on a worker, see `wire::dock::spawn_launch`),
 /// and only the first time: labwc on the software renderer answers in well under a second.
 const START_BUDGET: Duration = Duration::from_secs(5);
+
+/// How long a failed start is believed before Mind View is started again.
+const RETRY_AFTER: Duration = Duration::from_secs(30);
 
 /// The startup script the nested labwc runs, in the session's socket directory. Only a Mind View
 /// runs it, which is how one an earlier shell left is found.
@@ -107,12 +112,31 @@ pub struct Seat {
 
 impl Seat {
     /// The environment a process needs to draw on this display rather than the person's.
+    ///
+    /// Also pins the toolkits' backend choice to what Mind View offers: without an Xwayland of its
+    /// own, GTK and Qt are told Wayland only, so a dead Wayland socket makes an app fail instead
+    /// of falling back to the person's X display (PR #582 review, B1).
     pub fn env(&self) -> Vec<(&'static str, String)> {
         let mut env = vec![("WAYLAND_DISPLAY", self.wayland.clone())];
-        if let Some(x11) = &self.x11 {
-            env.push(("DISPLAY", x11.clone()));
+        match &self.x11 {
+            Some(x11) => {
+                env.push(("DISPLAY", x11.clone()));
+                env.push(("GDK_BACKEND", "wayland,x11".to_string()));
+                env.push(("QT_QPA_PLATFORM", "wayland;xcb".to_string()));
+            }
+            None => {
+                env.push(("GDK_BACKEND", "wayland".to_string()));
+                env.push(("QT_QPA_PLATFORM", "wayland".to_string()));
+            }
         }
         env
+    }
+
+    /// What every launch for a mind does to its environment: everything that names the person's
+    /// session cleared first, then this display set. The one place that decides it; the launcher,
+    /// the agent terminal's viewer and the companion's browser all apply it.
+    pub fn display(&self) -> MindDisplay {
+        MindDisplay::mind_view(self.env())
     }
 }
 
@@ -194,11 +218,15 @@ pub struct Route {
     /// front. Never for a mind working in its own view: raising the person's window because a mind
     /// asked for the app is the interruption Mind View exists to end.
     pub raise_on_handover: bool,
+    /// Whether to start a process at all. `false` for a mind that asks for an app already open on
+    /// the person's desktop: a second process there would be a second window on their desk, so
+    /// nothing is started and the answer says so (PR #582 review, B2).
+    pub spawn: bool,
 }
 
 /// Route the launch the current call asked for.
 pub fn route_now(app_id: &str) -> Route {
-    let desktop = Route { mind_view: None, raise_on_handover: true };
+    let desktop = Route { mind_view: None, raise_on_handover: true, spawn: true };
     if !crate::wire::settings::minds_open_in_mind_view() {
         return desktop;
     }
@@ -217,14 +245,15 @@ pub fn route_now(app_id: &str) -> Route {
 /// a mind's app never opens on the person's desk, so the launch fails and says why.
 fn route(who: String, open_on_desktop: bool) -> Route {
     if open_on_desktop {
-        // Our apps are single-instance: a second copy in Mind View would hand over to the window
-        // already open and exit. The mind drives that window through its surface; it is not
-        // brought over the person's work to do it.
-        return Route { mind_view: None, raise_on_handover: false };
+        // Not started again, anywhere on the person's desktop. Only the shell's own apps are
+        // single-instance; a catalogue app, `foot` or a browser would open a second window on
+        // their desk at a mind's request. The mind drives the window that is open through its
+        // surface, and is told it was neither launched nor raised.
+        return Route { mind_view: None, raise_on_handover: false, spawn: false };
     }
     // Also when Mind View is down: the launch then fails where it started and says why
     // (`wire::dock::spawn_launch`), rather than opening the app over the person's work.
-    Route { mind_view: Some(who), raise_on_handover: false }
+    Route { mind_view: Some(who), raise_on_handover: false, spawn: true }
 }
 
 // ── The nested compositor ────────────────────────────────────────────
@@ -237,8 +266,9 @@ struct Nested {
 #[derive(Default)]
 struct State {
     nested: Option<Nested>,
-    /// Why Mind View could not be started, once it could not. Cleared only by a restart.
-    unavailable: Option<String>,
+    /// Why Mind View could not be started, and when. Tried again after [`RETRY_AFTER`], so one slow
+    /// start on a loaded machine does not refuse every mind's app until the shell restarts.
+    unavailable: Option<(String, Instant)>,
     /// The apps launched into Mind View, by pid, with the id they were launched as.
     apps: Vec<(u32, String)>,
 }
@@ -252,7 +282,7 @@ fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> T {
 
 /// Why Mind View is not available this session, if it is not.
 pub fn unavailable() -> Option<String> {
-    with_state(|s| s.unavailable.clone())
+    with_state(|s| s.unavailable.as_ref().map(|(why, _)| why.clone()))
 }
 
 /// Held for the whole of a start, so two launches in the same instant start one compositor.
@@ -266,8 +296,11 @@ static STARTING: Mutex<()> = Mutex::new(());
 pub fn ensure() -> Result<Seat, String> {
     let _starting = STARTING.lock().unwrap_or_else(|p| p.into_inner());
     let current = with_state(|state| {
-        if let Some(why) = &state.unavailable {
-            return Some(Err(why.clone()));
+        if let Some((why, since)) = &state.unavailable {
+            if since.elapsed() < RETRY_AFTER {
+                return Some(Err(why.clone()));
+            }
+            state.unavailable = None;
         }
         let nested = state.nested.as_mut()?;
         let alive = matches!(nested.child.try_wait(), Ok(None));
@@ -294,8 +327,8 @@ pub fn ensure() -> Result<Seat, String> {
             Ok(seat)
         }
         Err(why) => {
-            tracing::warn!(reason = %why, "Mind View could not start; minds' apps open on the desktop");
-            with_state(|state| state.unavailable = Some(why.clone()));
+            tracing::warn!(reason = %why, "Mind View could not start; minds' apps are refused until it can");
+            with_state(|state| state.unavailable = Some((why.clone(), Instant::now())));
             Err(why)
         }
     }
@@ -526,21 +559,22 @@ fn start() -> Result<Nested, String> {
     }
 }
 
-/// Where a window a mind opens outside the launcher is drawn, as the environment to start it
-/// with: Mind View's display when minds' apps go there and it is up (started if need be), the
-/// person's own otherwise. Handed to the companion's browser tools at startup, which used to write
-/// the person's display into every launch and so bypassed Mind View entirely.
+/// Where a window a mind opens outside the launcher is drawn: Mind View's display, with every
+/// variable naming the person's session cleared (started if need be), or an error. Mind View
+/// being down is an error, not a fall back to the person's display; only the person's own
+/// setting (`minds open apps in Mind View` off) sends a mind's window to the desktop. Handed to
+/// the companion's browser tools at startup.
 ///
 /// Can wait for Mind View to start, so never on the UI thread; the companion's tools run on its
 /// own worker.
-pub fn display_for_mind() -> Vec<(&'static str, String)> {
-    if crate::wire::settings::minds_open_in_mind_view() {
-        if let Ok(seat) = ensure() {
-            return seat.env();
-        }
+pub fn display_for_mind() -> Result<MindDisplay, String> {
+    if !crate::wire::settings::minds_open_in_mind_view() {
+        let person = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
+        return Ok(MindDisplay::person(person));
     }
-    let person = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
-    vec![("WAYLAND_DISPLAY", person)]
+    ensure()
+        .map(|seat| seat.display())
+        .map_err(|why| format!("Mind View is not available ({why}); a mind's window is not opened on the person's desktop"))
 }
 
 // ── What is in it ────────────────────────────────────────────────────
@@ -654,12 +688,36 @@ pub fn nested_window_lines() -> Option<Vec<String>> {
     }
 }
 
-/// Whether one of Mind View's window lines is the app `id`: the id or its display name, which is
-/// what a window carries as its app id or title.
-pub fn lists_app(lines: &[String], id: &str) -> bool {
+/// Whether one of Mind View's window lines (`app_id: title`, as `wlrctl toplevel list` prints
+/// them) is the app `id`. The line is read the way the desktop's own window list reads it
+/// (`windows::toplevel_entry`): the declared app id when the window has one, else our own
+/// windows' exact title. A third-party window also answers to `aliases` (the program it ran),
+/// compared with its declared app id only. Never a word found inside a title: a title can say
+/// anything, and the agent terminal's viewer is titled `<agent> terminal`, which made `terminal`
+/// look open after any `agent_run` (PR #582 review, S1).
+pub fn lists_app(lines: &[String], id: &str, aliases: &[&str]) -> bool {
     let id = id.to_lowercase();
-    let name = crate::windows::app_display_name(&id).to_lowercase();
-    lines.iter().map(|l| l.to_lowercase()).any(|l| l.contains(&id) || (!name.is_empty() && l.contains(&name)))
+    lines.iter().any(|line| {
+        let window = crate::windows::toplevel_entry(line);
+        if is_agent_viewer(&window.wayland_app_id.to_lowercase(), &window.title) {
+            return false;
+        }
+        if window.app_id == id {
+            return true;
+        }
+        let declared = window.wayland_app_id.to_lowercase();
+        !declared.is_empty()
+            && aliases.iter().any(|a| {
+                let a = a.to_lowercase();
+                !a.is_empty() && (declared == a || declared == a.rsplit('/').next().unwrap_or(&a))
+            })
+    })
+}
+
+/// Whether a window is one the agent terminal's viewer opened (`foot`, titled `<agent> terminal`),
+/// which is not an app a mind asked for.
+fn is_agent_viewer(app_id: &str, title: &str) -> bool {
+    app_id == "foot" && title.trim_end().ends_with(" terminal")
 }
 
 /// The Wayland display Mind View draws on, while it is running.
@@ -686,7 +744,7 @@ pub fn for_describe() -> serde_json::Value {
             "minds_open_apps_here": on,
             // Where a mind's windows are, in words a mind can repeat to the person.
             "your_windows_are": if on {
-                "in Mind View, a window of its own on the person's desktop; never on their desk"
+                "inside Mind View (one window on the person's screen), not as windows of their own"
             } else {
                 "on the person's desktop, because `minds open apps in Mind View` is off"
             },
@@ -698,7 +756,7 @@ pub fn for_describe() -> serde_json::Value {
             "running": running,
             "display": s.nested.as_ref().filter(|_| running).map(|n| n.seat.wayland.clone()),
             "apps": apps,
-            "unavailable": s.unavailable,
+            "unavailable": s.unavailable.as_ref().map(|(why, _)| why),
         })
     })
 }
@@ -806,9 +864,9 @@ mod tests {
     #[test]
     fn a_minds_app_goes_to_mind_view_and_never_falls_back_to_the_desktop() {
         let who = || "Hermes".to_string();
-        assert_eq!(route(who(), false), Route { mind_view: Some(who()), raise_on_handover: false });
+        assert_eq!(route(who(), false), Route { mind_view: Some(who()), raise_on_handover: false, spawn: true });
         // Already open on the person's desktop: used where it is, and not raised over their work.
-        assert_eq!(route(who(), true), Route { mind_view: None, raise_on_handover: false });
+        assert_eq!(route(who(), true), Route { mind_view: None, raise_on_handover: false, spawn: false });
     }
 
     #[test]
@@ -828,10 +886,111 @@ mod tests {
     #[test]
     fn an_app_in_mind_view_gets_both_displays() {
         let seat = Seat { wayland: "wayland-1".into(), x11: Some(":2".into()) };
-        assert_eq!(
-            seat.env(),
-            vec![("WAYLAND_DISPLAY", "wayland-1".to_string()), ("DISPLAY", ":2".to_string())]
-        );
+        let env = seat.env();
+        assert!(env.contains(&("WAYLAND_DISPLAY", "wayland-1".to_string())));
+        assert!(env.contains(&("DISPLAY", ":2".to_string())));
+    }
+
+    fn env_of(command: &Command, key: &str) -> Option<Option<String>> {
+        command.get_envs().find(|(k, _)| *k == key).map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+    }
+
+    /// B1: with no Xwayland of its own, Mind View must not leave the person's `DISPLAY` (or their
+    /// socket, or their X authority) in the environment of what a mind starts, and the toolkits
+    /// are told Wayland only so a dead socket fails instead of falling back to their X display.
+    #[test]
+    fn a_minds_app_never_inherits_the_persons_display() {
+        let seat = Seat { wayland: "wayland-1".into(), x11: None };
+        let mut command = Command::new("true");
+        // What the shell itself holds, and `session_env` puts back.
+        command.env("DISPLAY", ":0").env("WAYLAND_DISPLAY", "wayland-0").env("WAYLAND_SOCKET", "3").env("XAUTHORITY", "/home/p/.Xauthority");
+        command.env("GDK_BACKEND", "x11").env("QT_QPA_PLATFORM", "xcb");
+        seat.display().apply(&mut command);
+        assert_eq!(env_of(&command, "DISPLAY"), Some(None), "DISPLAY must be cleared, not inherited");
+        assert_eq!(env_of(&command, "WAYLAND_SOCKET"), Some(None));
+        assert_eq!(env_of(&command, "XAUTHORITY"), Some(None));
+        assert_eq!(env_of(&command, "WAYLAND_DISPLAY"), Some(Some("wayland-1".to_string())));
+        assert_eq!(env_of(&command, "GDK_BACKEND"), Some(Some("wayland".to_string())));
+        assert_eq!(env_of(&command, "QT_QPA_PLATFORM"), Some(Some("wayland".to_string())));
+    }
+
+    #[test]
+    fn with_an_xwayland_only_mind_views_own_display_is_set() {
+        let seat = Seat { wayland: "wayland-1".into(), x11: Some(":7".into()) };
+        let mut command = Command::new("true");
+        command.env("DISPLAY", ":0");
+        seat.display().apply(&mut command);
+        assert_eq!(env_of(&command, "DISPLAY"), Some(Some(":7".to_string())));
+        assert_eq!(env_of(&command, "WAYLAND_DISPLAY"), Some(Some("wayland-1".to_string())));
+        // Whatever it is set to, it is never one of the person's displays.
+        assert!(!seat.env().iter().any(|(_, v)| v == ":0" || v == "wayland-0"));
+    }
+
+    /// Every variable the companion's browser tools clear is cleared by the shell's launcher too:
+    /// one list.
+    #[test]
+    fn the_shells_launches_clear_what_the_browser_tools_clear() {
+        let seat = Seat { wayland: "wayland-1".into(), x11: None };
+        assert_eq!(seat.display().clear, yantrik_companion::tools::browser::PERSON_SESSION_VARS.to_vec());
+    }
+
+    /// B3: Mind View down is an error for a mind's window, not the person's display.
+    #[test]
+    fn a_window_for_a_mind_is_refused_not_sent_to_the_person_when_mind_view_is_down() {
+        let src = include_str!("mind_view.rs");
+        let f = &src[src.find("pub fn display_for_mind()").unwrap()..];
+        let f = &f[..f.find("\n}\n").unwrap()];
+        assert!(f.contains("map_err"), "an unavailable Mind View must be an Err: {f}");
+        assert!(!f.contains("unwrap_or_else(|_| \"wayland-0\"") || f.contains("minds_open_in_mind_view"),
+            "the person's display is chosen only by the person's setting");
+    }
+
+    // ── Which window is the app (S1) ──
+
+    fn lines(l: &[&str]) -> Vec<String> {
+        l.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The agent terminal's viewer is a `foot` titled `<agent> terminal`: it is not the Terminal
+    /// app, and not `foot` the app either.
+    #[test]
+    fn the_agent_viewer_is_not_the_terminal_app_or_foot() {
+        let l = lines(&["foot: hermes terminal"]);
+        assert!(!lists_app(&l, "terminal", &["foot"]));
+        assert!(!lists_app(&l, "foot", &["foot"]));
+    }
+
+    /// Our own windows declare no app id, so they are known by their exact title.
+    #[test]
+    fn our_own_windows_are_found_by_their_title_and_not_by_words_in_one() {
+        assert!(lists_app(&lines(&[": Terminal"]), "terminal", &[]));
+        assert!(!lists_app(&lines(&["firefox: Files you may like - Mozilla Firefox"]), "files", &[]));
+        assert!(!lists_app(&lines(&["foot: notes.txt - editor"]), "notes", &[]));
+    }
+
+    /// A third-party window is found by the app id it declares, which is not the shell's id for it.
+    #[test]
+    fn a_third_party_window_is_found_by_the_program_it_ran() {
+        let l = lines(&["chromium: New Tab - Chromium", "Blender: Blender 4.2"]);
+        assert!(lists_app(&l, "browser", &["/usr/bin/chromium"]));
+        assert!(lists_app(&l, "blender", &["blender"]), "compared without case");
+        assert!(!lists_app(&l, "browser", &["firefox"]));
+        assert!(!lists_app(&l, "browser", &[""]), "an empty alias matches nothing");
+    }
+
+    #[test]
+    fn the_describe_text_does_not_contradict_itself() {
+        let src = include_str!("mind_view.rs");
+        assert!(!src.contains("never on their desk\""), "N2");
+        assert!(!src.contains("open on the desktop\");"), "N1");
+    }
+
+    /// S6: one failed start does not refuse every mind's app for the rest of the session.
+    #[test]
+    fn a_failed_start_is_tried_again_after_a_while() {
+        let src = include_str!("mind_view.rs");
+        assert!(src.contains("RETRY_AFTER"));
+        assert!(RETRY_AFTER <= Duration::from_secs(60));
     }
 
     /// The startup command is run by labwc, and what it writes is what [`parse_seat`] reads.

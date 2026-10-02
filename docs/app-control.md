@@ -634,3 +634,29 @@ runtime's dispatch.
 Windows from other applications are not in this list unless their `.desktop` file declares a
 surface (above) — an adapter is how one gets there. The rest publish through AT-SPI, and
 `a11y-service` reads whatever the toolkit chose to expose.
+
+## Where a mind's windows go (Mind View)
+
+While the setting `minds open apps in Mind View` is on (the default; only the person can change it),
+every window a mind opens is drawn in Mind View and never on the person's desktop:
+
+- Every launch for a mind clears `DISPLAY`, `WAYLAND_DISPLAY`, `WAYLAND_SOCKET` and `XAUTHORITY`
+  and then sets Mind View's own display (`mind_view::Seat::display`; the companion's browser tools
+  use the same list, `PERSON_SESSION_VARS`). Mind View without an Xwayland gets Wayland-only
+  toolkit settings, so a dead socket fails the app instead of falling back to the person's X display.
+- Mind View down is a refusal that says so (`failed_launches`), never a fall back to the desktop.
+  A failed start is tried again after 30 s.
+- `open_app` for an app already open on the person's desktop starts nothing: the answer says it was
+  not launched again and not raised, and the mind drives the open window through its surface.
+- `open_app` and, for a mind, `files_open` answer after the window is seen: `window: appeared`
+  with `where`, or an error that says only what was observed (a refusal; an exit; "no window listed
+  within 8 s", which does not say where a slow start may still land).
+- `open_url` and `launch_browser` open the companion's own browser in Mind View, or are refused.
+  A browser on the default debugging port that is not the companion's (the person's own) is not
+  attached to.
+- `agent_run` mirrors the command and its output into a terminal in Mind View. The view is text
+  and colours only (no screen clears, no carriage returns, no titles), capped per command; the
+  answer and the Agents screen keep the full output.
+- Not changed by design: `open_app files|settings|launchpad` switches the person's own screen;
+  `focus_window`/`close_window` act on the person's windows; a mind typing into the Terminal app
+  drives whichever Terminal window is open, including the person's if that is the one open.

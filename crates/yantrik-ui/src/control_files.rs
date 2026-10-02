@@ -131,7 +131,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             // is not the file browser. A web page, an SVG or a PDF leaves it for the browser
             // window instead (#233), so the description names that too.
             Action::new("files_open", "Open a file in the current directory (image, text, audio; a web page, SVG or PDF in the browser)")
-                .arg(Param::text("name").describe("A file name shown in the current listing")),
+                .arg(Param::text("name").describe("A file name shown in the current listing"))
+                .defers(),
             move |args| {
                 let ui = up(&for_open)?;
                 // The file opens in a window of its own (editor, viewer, mpv, the browser), which
@@ -152,8 +153,29 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // The entry too, links followed: opening puts its contents in a window the mind
                 // can read back, and a link in the home may lead anywhere.
                 mind::may_open_entry(&ui.get_file_browser_path(), &name)?;
+                // Asked on this thread, where the caller is in scope: a mind's app opens in Mind
+                // View on a worker, which can be refused, and the person's desktop is not the
+                // fallback. The answer then waits for the window like `open_app`'s, instead of
+                // saying `opened` for a launch that was refused (PR #582 review, S5).
+                let for_mind = matches!(crate::mind_view::requester_now(), crate::mind_view::Requester::Mind(_));
+                crate::running::clear_launch_failure(&app);
                 ui.invoke_file_open(name.clone().into());
-                Ok(serde_json::json!({ "opened": name, "app": app, "screen": crate::control::screen_name(ui.get_current_screen()) }))
+                let answer = serde_json::json!({ "opened": name, "app": app, "screen": crate::control::screen_name(ui.get_current_screen()) });
+                if !for_mind {
+                    return Ok(answer);
+                }
+                let wait = move || {
+                    let mut probe = crate::mind_landing::probe_for(app.clone());
+                    let seen = crate::mind_landing::wait_for_window(
+                        &mut probe,
+                        crate::mind_landing::BUDGET,
+                        crate::mind_landing::STEP,
+                    );
+                    crate::mind_landing::answer(answer, &app, seen)
+                };
+                yantrik_app_runtime::control::answer_later(wait)
+                    .map(|()| serde_json::json!({ "answering": "off the UI thread" }))
+                    .or_else(|wait| wait())
             },
         )
         .action(

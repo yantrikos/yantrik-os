@@ -11,11 +11,15 @@
 
 use std::time::{Duration, Instant};
 
-/// How long a launch has to put up a window before the answer is "it did not".
+/// How long a launch has to put up a window before the answer is "none listed yet".
 pub const BUDGET: Duration = Duration::from_secs(8);
 
 /// How often the probe is asked while waiting.
-const STEP: Duration = Duration::from_millis(250);
+pub const STEP: Duration = Duration::from_millis(250);
+
+/// What `running::mark_launch_failed`'s status starts with when the launch was refused before any
+/// process started (Mind View was down): nothing ran anywhere, so nothing is "exited with".
+pub const REFUSED: &str = "refused: ";
 
 /// Where a window appeared.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,10 +43,22 @@ impl Place {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Seen {
     Window(Place),
-    /// The launch is known to have failed, with the reason in words.
+    /// The launch was refused before anything started, with the reason in words.
+    Refused(String),
+    /// The program started and exited, with what is known of how.
     Failed(String),
     /// Nothing yet.
     Nothing,
+}
+
+/// Why the wait ended without a window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Miss {
+    Refused(String),
+    Failed(String),
+    /// Nothing was listed in the time given. Says nothing about where the window went, or whether
+    /// it will still appear.
+    Timeout(u64),
 }
 
 /// Ask `probe` until a window shows, the launch is known to have failed, or `budget` runs out.
@@ -51,19 +67,17 @@ pub fn wait_for_window(
     probe: &mut dyn FnMut() -> Seen,
     budget: Duration,
     step: Duration,
-) -> Result<Place, String> {
+) -> Result<Place, Miss> {
     let deadline = Instant::now() + budget;
     loop {
         match probe() {
             Seen::Window(place) => return Ok(place),
-            Seen::Failed(why) => return Err(why),
+            Seen::Refused(why) => return Err(Miss::Refused(why)),
+            Seen::Failed(why) => return Err(Miss::Failed(why)),
             Seen::Nothing => {}
         }
         if Instant::now() >= deadline {
-            return Err(format!(
-                "no window appeared within {} s of the launch",
-                budget.as_secs().max(1)
-            ));
+            return Err(Miss::Timeout(budget.as_secs().max(1)));
         }
         std::thread::sleep(step);
     }
@@ -75,14 +89,22 @@ pub fn wait_for_window(
 pub fn probe_for(id: String) -> impl FnMut() -> Seen {
     move || {
         if let Some(failure) = crate::running::last_launch_failure(&id) {
-            return Seen::Failed(format!(
-                "`{}` exited with {} after {} ms, before it showed a window",
-                failure.binary, failure.status, failure.lived_ms
-            ));
+            return match failure.status.strip_prefix(REFUSED) {
+                Some(why) => Seen::Refused(why.to_string()),
+                None => Seen::Failed(format!(
+                    "`{}` exited with {} after {} ms, before it showed a window",
+                    failure.binary, failure.status, failure.lived_ms
+                )),
+            };
         }
         if crate::mind_view::is_mind_view_app(&id) {
+            let binary = crate::running::running()
+                .into_iter()
+                .find(|a| a.app_id == id)
+                .map(|a| a.binary)
+                .unwrap_or_default();
             return match crate::mind_view::nested_window_lines() {
-                Some(lines) if crate::mind_view::lists_app(&lines, &id) => {
+                Some(lines) if crate::mind_view::lists_app(&lines, &id, &[&binary]) => {
                     Seen::Window(Place::MindView)
                 }
                 _ => Seen::Nothing,
@@ -96,11 +118,13 @@ pub fn probe_for(id: String) -> impl FnMut() -> Seen {
 }
 
 /// `open_app`'s answer, from what the wait found. `base` is the answer as it stood (`launching`,
-/// `describe_as`); the window is added to it, or the failure is the answer.
+/// `describe_as`); the window is added to it, or the failure is the answer. It says only what was
+/// observed: "nothing was opened on the person's desktop" is added for a refusal, where the
+/// shell knows it, and never for a timeout, where a slow start may still land anywhere.
 pub fn answer(
     mut base: serde_json::Value,
     name: &str,
-    seen: Result<Place, String>,
+    seen: Result<Place, Miss>,
 ) -> Result<serde_json::Value, String> {
     match seen {
         Ok(place) => {
@@ -110,16 +134,21 @@ pub fn answer(
                 if let Some(display) = crate::mind_view::display_now() {
                     base["display"] = display.into();
                 }
-            } else {
-                base["note"] = "the app was already open on the person's desktop and was used where \
-                                it is, not raised over their work"
-                    .into();
             }
             Ok(base)
         }
-        Err(why) => Err(format!(
-            "`{name}` was started but there is no window to show for it: {why}. Nothing was opened \
-             on the person's desktop. `describe shell` lists `failed_launches` and `mind_view`."
+        Err(Miss::Refused(why)) => Err(format!(
+            "`{name}` was not started: {why}. It was not opened on the person's desktop. \
+             `describe shell` lists `failed_launches` and `mind_view`."
+        )),
+        Err(Miss::Failed(why)) => Err(format!(
+            "`{name}` was started but there is no window to show for it: {why}. \
+             `describe shell` lists `failed_launches` and `mind_view`."
+        )),
+        Err(Miss::Timeout(secs)) => Err(format!(
+            "`{name}` was started but no window of it was listed within {secs} s. It may still be \
+             starting; `describe shell` lists `failed_launches` and `mind_view`, and its window \
+             will show in `list_windows` if it comes up."
         )),
     }
 }
@@ -128,7 +157,7 @@ pub fn answer(
 mod tests {
     use super::*;
 
-    fn run(mut looks: Vec<Seen>) -> (Result<Place, String>, usize) {
+    fn run(mut looks: Vec<Seen>) -> (Result<Place, Miss>, usize) {
         let mut asked = 0;
         let mut probe = || {
             asked += 1;
@@ -145,22 +174,43 @@ mod tests {
         assert_eq!(asked, 2);
     }
 
-    /// The bug itself: the launch was accepted, nothing ever drew, and the answer said done.
+    /// The bug itself: the launch was accepted, nothing ever drew, and the answer said done. And
+    /// the repaired answer claims nothing it did not check: a timeout says nothing about the
+    /// person's desktop, because a cold browser can still land there at second nine.
     #[test]
     fn open_app_answers_the_truth_when_no_window_appears() {
         let (out, _) = run(vec![]);
-        let why = out.expect_err("no window must not be an answer of success");
-        assert!(why.contains("no window appeared"), "{why}");
-        let answered = answer(serde_json::json!({ "launching": "terminal" }), "terminal", Err(why));
-        let text = answered.expect_err("the answer to a launch with no window is an error");
-        assert!(text.contains("no window to show"), "{text}");
-        assert!(text.contains("Nothing was opened on the person's desktop"), "{text}");
+        let miss = out.expect_err("no window must not be an answer of success");
+        assert!(matches!(miss, Miss::Timeout(_)), "{miss:?}");
+        let text = answer(serde_json::json!({ "launching": "terminal" }), "terminal", Err(miss))
+            .expect_err("the answer to a launch with no window is an error");
+        assert!(text.contains("no window of it was listed"), "{text}");
+        assert!(text.contains("may still be starting"), "{text}");
+        assert!(!text.contains("desktop"), "a timeout must not assert where nothing went: {text}");
+    }
+
+    /// Only a refusal, where the shell knows nothing was started, says the desktop was spared; and
+    /// it is not dressed up as "exited with ..." (it did not run).
+    #[test]
+    fn a_refusal_is_told_as_one_and_only_it_vouches_for_the_desktop() {
+        let text = answer(
+            serde_json::json!({}),
+            "notes",
+            Err(Miss::Refused("Mind View is not available (no labwc)".into())),
+        )
+        .unwrap_err();
+        assert!(text.contains("was not started: Mind View is not available (no labwc)"), "{text}");
+        assert!(text.contains("not opened on the person's desktop"), "{text}");
+        assert!(!text.contains("exited with"), "{text}");
+        let died = answer(serde_json::json!({}), "notes", Err(Miss::Failed("`notes` exited with 1 after 40 ms".into())))
+            .unwrap_err();
+        assert!(!died.contains("desktop"), "{died}");
     }
 
     #[test]
     fn a_launch_known_to_have_died_does_not_wait_out_the_budget() {
         let (out, asked) = run(vec![Seen::Failed("it exited".into()), Seen::Window(Place::Desktop)]);
-        assert_eq!(out, Err("it exited".to_string()));
+        assert_eq!(out, Err(Miss::Failed("it exited".to_string())));
         assert_eq!(asked, 1);
     }
 
@@ -171,6 +221,5 @@ mod tests {
         assert_eq!(ok["where"], "Mind View");
         let desk = answer(serde_json::json!({}), "notes", Ok(Place::Desktop)).unwrap();
         assert_eq!(desk["where"], "the person's desktop");
-        assert!(desk["note"].as_str().unwrap().contains("not raised"));
     }
 }

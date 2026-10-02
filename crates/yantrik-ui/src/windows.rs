@@ -807,7 +807,7 @@ fn split_toplevel_line(line: &str) -> (String, String) {
 /// The declared app_id is kept twice: lowercased as the shell's `app_id`, which is what every
 /// table in the shell is keyed by, and verbatim as `wayland_app_id`, which is what the compositor
 /// answers to — `app_id:Blender` finds Blender's window and `app_id:blender` does not.
-fn toplevel_entry(line: &str) -> WindowEntry {
+pub(crate) fn toplevel_entry(line: &str) -> WindowEntry {
     let (declared_id, title) = match line.split_once(':') {
         Some((id, rest)) if !rest.trim().is_empty() => (id.trim(), rest.trim()),
         // A foreign toplevel with no separator at all is all title.

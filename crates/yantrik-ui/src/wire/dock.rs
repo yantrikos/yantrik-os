@@ -1111,6 +1111,12 @@ fn spawn_launch(
     adapter: Option<(&str, &str)>,
 ) {
     let route = crate::mind_view::route_now(app_id);
+    if !route.spawn {
+        // A mind asked for an app that is already open on the person's desktop. A second process
+        // there would be a second window on their desk, so none is started (PR #582, B2).
+        tracing::info!(app = app_id, "Not launched again: already open on the person's desktop");
+        return;
+    }
     let Some(who) = route.mind_view else {
         return launch(app_id, bin, args, dir, adapter, None, route.raise_on_handover);
     };
@@ -1122,6 +1128,19 @@ fn spawn_launch(
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let adapter = adapter.as_ref().map(|(s, c)| (s.as_str(), c.as_str()));
         match crate::mind_view::ensure() {
+            // Blender speaks X11 only (see `blender_display`). In Mind View it needs Mind View's own
+            // Xwayland: the person's `$DISPLAY` is not an option for a mind.
+            Ok(seat) if app_id == "blender" && seat.x11.is_none() => {
+                crate::running::mark_launch_failed(
+                    &app_id,
+                    &bin,
+                    &format!(
+                        "{}Blender speaks X11 only and Mind View has no Xwayland, so it was not started",
+                        crate::mind_landing::REFUSED
+                    ),
+                    0,
+                );
+            }
             Ok(seat) => {
                 tracing::info!(app = %app_id, mind = %who, display = %seat.wayland, "Opening in Mind View");
                 launch(&app_id, &bin, &args, dir.as_deref(), adapter, Some(&seat), false);
@@ -1132,11 +1151,70 @@ fn spawn_launch(
             Err(why) => crate::running::mark_launch_failed(
                 &app_id,
                 &bin,
-                &format!("Mind View is not available ({why}); the app was not opened on the person's desktop"),
+                &format!("{}Mind View is not available ({why})", crate::mind_landing::REFUSED),
                 0,
             ),
         }
     });
+}
+
+/// The command that starts one app: the person's session environment, or for Mind View the same
+/// with everything that names the person's session cleared and the seat's display set. Separate
+/// from [`launch`] so the environment a mind's app gets can be tested without starting anything.
+fn launch_command(
+    path: &std::path::Path,
+    args: &[&str],
+    dir: Option<&std::path::Path>,
+    seat: Option<&crate::mind_view::Seat>,
+) -> std::process::Command {
+    let mut command = std::process::Command::new(path);
+    if let Some(dir) = dir {
+        command.current_dir(dir);
+    }
+    command.args(args);
+    if seat.is_some() {
+        // A browser hands a second launch over to the one already running on its profile, and a
+        // window then appears wherever that one is: the person's desktop (PR #582, S3). A mind's
+        // browser has a profile of its own, so it is its own process in Mind View.
+        command.args(singleton_isolation(path, &mind_browser_profile()));
+    }
+    for (key, value) in session_env() {
+        command.env(key, value);
+    }
+    // After the session's own, so the nested display wins over the person's. Clears DISPLAY,
+    // WAYLAND_SOCKET and the rest before setting, however `session_env` or the shell's own
+    // environment filled them: a mind's app that inherited the person's DISPLAY drew on their
+    // desktop (PR #582, B1).
+    if let Some(seat) = seat {
+        seat.display().apply(&mut command);
+    }
+    command
+}
+
+/// Where a mind's browser keeps its profile in Mind View: not the person's.
+fn mind_browser_profile() -> std::path::PathBuf {
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".local/share")))
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("yantrik").join("mind-view-browser")
+}
+
+/// The extra arguments that make a browser started for a mind a process of its own, by program.
+/// Empty for anything that is not a singleton browser.
+fn singleton_isolation(program: &std::path::Path, profile: &std::path::Path) -> Vec<String> {
+    let name = program.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_lowercase();
+    match name.as_str() {
+        "chromium" | "chromium-browser" | "google-chrome" | "google-chrome-stable" | "chrome" => {
+            let _ = std::fs::create_dir_all(profile.join("chromium"));
+            vec![format!("--user-data-dir={}", profile.join("chromium").display())]
+        }
+        "firefox" | "firefox-esr" => {
+            let _ = std::fs::create_dir_all(profile.join("firefox"));
+            vec!["--no-remote".into(), "--profile".into(), profile.join("firefox").display().to_string()]
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Start one app, on the person's desktop or on `seat`.
@@ -1150,18 +1228,7 @@ fn launch(
     raise_on_handover: bool,
 ) {
     let path = resolve_app_binary(bin);
-    let mut command = std::process::Command::new(&path);
-    if let Some(dir) = dir {
-        command.current_dir(dir);
-    }
-    command.args(args);
-    for (key, value) in session_env() {
-        command.env(key, value);
-    }
-    // After the session's own, so the nested display wins over the person's.
-    for (key, value) in seat.map(crate::mind_view::Seat::env).unwrap_or_default() {
-        command.env(key, value);
-    }
+    let mut command = launch_command(&path, args, dir, seat);
     match command
         // The shell is often started with SLINT_FULLSCREEN=1 (dev runs, kiosk sessions). A child
         // inherits the environment, and an app that inherits that variable opens fullscreen too.
@@ -1727,6 +1794,53 @@ mod tests {
     /// Blender needs three things, and the third is a display. The first two were checked;
     /// the third was discovered by watching `open_app name=blender` answer "launching" and
     /// then nothing, on a session without Xwayland (#96).
+    fn env_of(command: &std::process::Command, key: &str) -> Option<Option<String>> {
+        command.get_envs().find(|(k, _)| *k == key).map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+    }
+
+    /// B1 at the real launch: the command a mind's app is started with, built the way `launch`
+    /// builds it. The person's DISPLAY, which `session_env` fills in when the shell has none, is
+    /// gone when Mind View has no Xwayland, and a launch for the person keeps it.
+    #[test]
+    fn a_minds_launch_command_never_carries_the_persons_display() {
+        let seat = crate::mind_view::Seat { wayland: "wayland-1".into(), x11: None };
+        let command = launch_command(std::path::Path::new("/usr/bin/blender"), &["--python", "x"], None, Some(&seat));
+        assert_eq!(env_of(&command, "DISPLAY"), Some(None), "DISPLAY must be cleared for a mind");
+        assert_eq!(env_of(&command, "WAYLAND_SOCKET"), Some(None));
+        assert_eq!(env_of(&command, "WAYLAND_DISPLAY"), Some(Some("wayland-1".to_string())));
+        assert_eq!(env_of(&command, "GDK_BACKEND"), Some(Some("wayland".to_string())));
+        let person = launch_command(std::path::Path::new("/usr/bin/blender"), &[], None, None);
+        assert_ne!(env_of(&person, "DISPLAY"), Some(None), "the person's own launch is untouched");
+        assert_eq!(env_of(&person, "WAYLAND_DISPLAY"), None);
+    }
+
+    /// S3: a browser started for a mind is not the person's browser's second window.
+    #[test]
+    fn a_browser_for_a_mind_gets_a_profile_of_its_own() {
+        let profile = std::env::temp_dir().join(format!("yos-prof-{}", std::process::id()));
+        let chromium = singleton_isolation(std::path::Path::new("/usr/bin/chromium"), &profile);
+        assert!(chromium[0].starts_with("--user-data-dir=") && chromium[0].ends_with("chromium"), "{chromium:?}");
+        let firefox = singleton_isolation(std::path::Path::new("/usr/bin/firefox"), &profile);
+        assert_eq!(firefox[0], "--no-remote");
+        assert_eq!(firefox[1], "--profile");
+        assert!(singleton_isolation(std::path::Path::new("/usr/bin/foot"), &profile).is_empty());
+        let _ = std::fs::remove_dir_all(profile);
+    }
+
+    /// B2: a mind asking for an app open on the person's desktop starts nothing.
+    #[test]
+    fn a_minds_launch_of_an_app_open_on_the_desktop_starts_no_process() {
+        let src = include_str!("dock.rs");
+        let f = &src[src.find("fn spawn_launch(").unwrap()..];
+        let f = &f[..f.find("\n/// The command that starts one app").unwrap()];
+        let gate = f.find("if !route.spawn").expect("spawn_launch must honour route.spawn");
+        let first_launch = f.find("launch(").unwrap();
+        assert!(gate < first_launch, "the no-spawn gate must come before any launch");
+        // And no launch for a mind goes without a seat.
+        assert!(!f.contains("None, true)") && !f.contains("None, false)"), "{f}");
+        assert!(f.contains("Some(&seat), false)"));
+    }
+
     #[test]
     fn blender_without_an_x_display_is_refused_before_it_is_started() {
         assert!(blender_display(Some(":0")).is_ok());
