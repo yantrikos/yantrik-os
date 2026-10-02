@@ -1,0 +1,612 @@
+// The Agents workroom (screen 34): its data, and the pages the navigation points at, drawn from props.
+//
+// design/minds-surfaces-spec-2026-10-02.md, section 2. A decision shelf for what waits on the
+// person, a grid of desks for the minds at work, the empty state, Needs you and History. The
+// navigation is agents_nav.slint, the changes ledger and the Stop question agents_task.slint. The
+// words and the numbers are worked out by the shell (crates/yantrik-ui/src/wire/agents_workroom.rs);
+// these components only draw them.
+//
+// Colour is a vocabulary here, not decoration: teal (`Theme.mind`) marks a mind and nothing else,
+// amber marks a response the person owes and nothing else, and a selection is a raised neutral
+// fill with a white keyline. Every surface is opaque.
+
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "components/icon.slint";
+import { YButton } from "components/y_button.slint";
+
+// A row under MINDS: the mind itself, or one of its live task agents.
+export struct WorkNavData {
+    kind: string,          // mind | task
+    id: string,            // a mind's harness id, a task's row key
+    label: string,
+    sub: string,           // "2 working" · "Idle" · "Unavailable"
+    needs: int,            // requests waiting on the person
+    working: bool,
+    available: bool,
+}
+
+// A desk: one run being worked on now.
+export struct DeskCardData {
+    key: string,           // what opening it selects
+    mind-id: string,
+    mind: string,
+    via: string,           // "Council recipe → Reviewer": whose work it is, when a recipe's or a role's
+    task: string,
+    state: string,         // working | needs_you
+    label: string,         // "Working" · "Needs you"
+    activity: string,      // an observed line, or "Last update 10:42"
+    since: string,
+}
+
+// Something waiting on the person.
+export struct DecisionData {
+    key: string,
+    request: string,
+    mind: string,
+    task: string,
+    text: string,
+    age: string,
+    action: string,        // "Review command" · "Review moves" · "Answer question"
+}
+
+// A finished run.
+export struct ResultData {
+    key: string,
+    mind: string,
+    task: string,
+    outcome: string,       // done | failed | stopped
+    label: string,         // "Finished" · "Couldn't finish"
+    when: string,
+}
+
+// One line of a task's changes ledger.
+export struct ChangeRowData {
+    group: string,         // Commands | Files | Approvals | Reported by the mind
+    text: string,
+    status: string,
+    tone: string,          // ok | bad | dim | warn
+}
+
+// A run another agent started from the opened one (a hand-off, a sub-task): Stop on the parent
+// stops these too, so the detail lists them.
+export struct ChildRunData {
+    key: string,           // the child's agent id; choosing it opens its run
+    title: string,         // "Reviewer: Check the migration"
+    label: string,         // its state in the screen's words
+    state: string,         // working | needs_you | done | failed | lost | idle
+}
+
+export struct RunFactData {
+    label: string,
+    value: string,
+}
+
+// The mark of a mind: a teal ring and dot while it can answer, a quiet neutral ring when it cannot.
+export component MindMark inherits Rectangle {
+    in property <bool> available: true;
+    in property <length> size: Theme.wr-mark-l;
+    width: root.size;
+    height: root.size;
+    border-radius: root.size / 2;
+    border-width: max(Theme.focus-ring-width, root.size / Theme.wr-mark-ring-div);
+    border-color: root.available ? Theme.mind : Theme.text-dim;
+    if root.available : Rectangle {
+        x: (parent.width - self.width) / 2 - parent.border-width;
+        y: (parent.height - self.height) / 2 - parent.border-width;
+        width: root.size * Theme.wr-mark-core;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: Theme.mind;
+    }
+}
+
+// One thing waiting on the person: the mind, its task, the request and how long it has waited,
+// with the specific act it asks for. Pressing it opens the run, where the shell's own approval
+// card (or the question, or the command's prompt) is answered — there is one card, not two.
+export component DecisionCard inherits Rectangle {
+    in property <DecisionData> data;
+    callback open();
+    height: Theme.wr-shelf-card-h;
+    border-radius: Theme.r-lg;
+    background: Theme.bg-card;
+    border-width: Theme.hairline;
+    border-color: Theme.amber;
+    accessible-role: button;
+    accessible-label: root.data.mind + ": " + root.data.text + ". " + root.data.action;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.open(); }
+    }
+    HorizontalLayout {
+        padding: Theme.sp-3h;
+        spacing: Theme.sp-4;
+        VerticalLayout {
+            alignment: center;
+            spacing: Theme.sp-1;
+            horizontal-stretch: 1;
+            HorizontalLayout {
+                spacing: Theme.sp-2;
+                height: Theme.wr-mark-xs;
+                MindMark { size: Theme.wr-mark-xs; }
+                Text {
+                    text: root.data.mind;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-caption;
+                    font-weight: Theme.fw-headline;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.data.task;
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-caption;
+                    overflow: elide;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+            }
+            Text {
+                text: root.data.text;
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+                overflow: elide;
+            }
+            Text {
+                text: "Asked " + root.data.age;
+                color: Theme.amber;
+                font-size: Theme.fs-caption;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            YButton {
+                label: root.data.action;
+                variant: 1;
+                size: 1;
+                clicked => { root.open(); }
+            }
+        }
+    }
+}
+
+// "Needs you · 3 requests from 2 minds", at most three cards, then "View all 8 requests".
+export component DecisionShelf inherits Rectangle {
+    in property <[DecisionData]> decisions;
+    // How many requests there are in all, however many cards `decisions` holds: the shell hands
+    // over the first three on the overview and every one on the Needs you page.
+    in property <int> total;
+    in property <int> minds;
+    callback open(string);
+    callback view-all();
+    height: col.preferred-height;
+    col := VerticalLayout {
+        spacing: Theme.sp-3;
+        Text {
+            text: "Needs you · " + root.total + (root.total == 1 ? " request" : " requests")
+                + " from " + root.minds + (root.minds == 1 ? " mind" : " minds");
+            color: Theme.text-primary;
+            font-size: Theme.fs-title-2;
+            font-weight: Theme.fw-headline;
+        }
+        for d in root.decisions : DecisionCard {
+            data: d;
+            open => { root.open(d.key); }
+        }
+        if root.total > root.decisions.length : Rectangle {
+            height: Theme.h-regular;
+            accessible-role: button;
+            accessible-label: "View all " + root.total + " requests";
+            HorizontalLayout {
+                alignment: start;
+                Text {
+                    text: "View all " + root.total + " requests";
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-body;
+                    font-weight: Theme.fw-headline;
+                    vertical-alignment: center;
+                }
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.view-all(); }
+            }
+        }
+    }
+}
+
+// The ⋯ of a card: three dots, drawn, so it reads the same at any size and needs no font glyph.
+component OverflowButton inherits Rectangle {
+    callback clicked();
+    width: Theme.h-regular;
+    height: Theme.h-compact;
+    border-radius: Theme.r-md;
+    background: ta.has-hover ? Theme.hover-fill : transparent;
+    accessible-role: button;
+    accessible-label: "More";
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        alignment: center;
+        spacing: Theme.wr-dot-gap;
+        for i in 3 : VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: Theme.sp-1;
+                height: Theme.sp-1;
+                border-radius: Theme.r-xs;
+                background: Theme.text-secondary;
+            }
+        }
+    }
+}
+
+// A desk: the mind and its task in a 44px header, a preview, one observed line, and the acts.
+//
+// No preview is drawn. The shell can capture Mind View's display, but nothing says which mind
+// opened which window there (control_screen.rs), so a picture on this card could belong to
+// another mind. It says so instead; a capture is a follow-up, not something to fake.
+export component DeskCard inherits Rectangle {
+    in property <DeskCardData> desk;
+    callback view();
+    callback chat();
+    callback more(length, length);
+    border-radius: Theme.r-lg;
+    background: Theme.bg-card;
+    border-width: Theme.hairline;
+    border-color: root.desk.state == "needs_you" ? Theme.amber : Theme.border-card;
+    clip: true;
+    accessible-role: groupbox;
+    accessible-label: root.desk.mind + ", " + root.desk.label + ": " + root.desk.task;
+
+    VerticalLayout {
+        // Header, 44px.
+        Rectangle {
+            height: Theme.wr-header-h;
+            HorizontalLayout {
+                padding-left: Theme.sp-3;
+                padding-right: Theme.sp-3;
+                spacing: Theme.sp-2;
+                VerticalLayout {
+                    alignment: center;
+                    MindMark { size: Theme.wr-mark-s; }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: root.desk.via == "" ? root.desk.mind : root.desk.via + " · " + root.desk.mind;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-caption;
+                        font-weight: Theme.fw-headline;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: root.desk.task;
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-micro;
+                        overflow: elide;
+                    }
+                }
+                Text {
+                    text: root.desk.since == "" ? root.desk.label : root.desk.label + " · " + root.desk.since;
+                    color: root.desk.state == "needs_you" ? Theme.amber : Theme.text-secondary;
+                    font-size: Theme.fs-caption;
+                    vertical-alignment: center;
+                }
+            }
+            Rectangle {
+                y: parent.height - Theme.hairline;
+                height: Theme.hairline;
+                background: Theme.separator;
+            }
+        }
+        // Preview.
+        Rectangle {
+            height: Theme.wr-desk-preview-h;
+            background: Theme.bg-input;
+            VerticalLayout {
+                alignment: center;
+                spacing: Theme.sp-1;
+                Text {
+                    text: "Desk preview unavailable";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-caption;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+        // The observed line.
+        Rectangle {
+            height: Theme.wr-desk-line-h;
+            Text {
+                x: Theme.sp-3;
+                width: parent.width - Theme.sp-6;
+                text: root.desk.activity;
+                color: root.desk.state == "needs_you" ? Theme.amber : Theme.text-primary;
+                font-size: Theme.fs-caption;
+                wrap: word-wrap;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+        }
+        // Acts.
+        Rectangle {
+            height: Theme.wr-desk-acts-h;
+            HorizontalLayout {
+                padding-left: Theme.sp-3;
+                padding-right: Theme.sp-3;
+                padding-bottom: Theme.sp-3;
+                spacing: Theme.sp-2;
+                alignment: start;
+                YButton {
+                    label: "View desk";
+                    variant: 1;
+                    size: 0;
+                    clicked => { root.view(); }
+                }
+                YButton {
+                    label: "Chat";
+                    variant: 2;
+                    size: 0;
+                    clicked => { root.chat(); }
+                }
+                VerticalLayout {
+                    alignment: start;
+                    more-button := OverflowButton {
+                        clicked => { root.more(self.absolute-position.x, self.absolute-position.y + self.height); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Working now: desks in a grid, each at least 320px wide, 16px apart.
+export component DeskGrid inherits Rectangle {
+    in property <[DeskCardData]> desks;
+    callback view(string);
+    callback chat(string);
+    callback more(string, length, length);
+    property <length> gap: Theme.sp-4;
+    property <length> card-h: Theme.wr-desk-h;
+    property <int> cols: max(1, Math.floor((root.width + root.gap) / (Theme.wr-desk-min-w + root.gap)));
+    property <length> card-w: (root.width - (root.cols - 1) * root.gap) / root.cols;
+    property <int> rows: Math.ceil(root.desks.length / root.cols);
+    height: root.rows * root.card-h + max(0, root.rows - 1) * root.gap;
+    for desk[i] in root.desks : DeskCard {
+        x: Math.mod(i, root.cols) * (root.card-w + root.gap);
+        y: Math.floor(i / root.cols) * (root.card-h + root.gap);
+        width: root.card-w;
+        height: root.card-h;
+        desk: desk;
+        view => { root.view(desk.key); }
+        chat => { root.chat(desk.mind-id); }
+        more(x, y) => { root.more(desk.key, x, y); }
+    }
+}
+
+// A finished run, one line: the mind, what it was asked, how it ended and when.
+export component ResultRow inherits Rectangle {
+    in property <ResultData> data;
+    callback clicked;
+    height: Theme.wr-row-h;
+    border-radius: Theme.r-md;
+    background: ta.has-hover ? Theme.hover-fill : transparent;
+    accessible-role: button;
+    accessible-label: root.data.mind + ", " + root.data.task + ", " + root.data.label;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: Theme.sp-3;
+        padding-right: Theme.sp-3;
+        spacing: Theme.sp-3;
+        VerticalLayout {
+            alignment: center;
+            MindMark { size: Theme.wr-mark-m; }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: Theme.sp-half;
+            horizontal-stretch: 1;
+            Text {
+                text: root.data.task;
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+                overflow: elide;
+            }
+            Text {
+                text: root.data.mind + " · " + root.data.label;
+                color: root.data.outcome == "done" ? Theme.text-secondary : Theme.text-dim;
+                font-size: Theme.fs-caption;
+                overflow: elide;
+            }
+        }
+        Text {
+            text: root.data.when;
+            color: Theme.text-dim;
+            font-size: Theme.fs-caption;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// The overview: the shelf (when something waits), then Working now — or, with no desks, the empty
+// state with the latest results.
+export component WorkroomOverview inherits Rectangle {
+    in property <[DecisionData]> decisions;
+    in property <int> requests;
+    in property <int> request-minds;
+    in property <[DeskCardData]> desks;
+    in property <[ResultData]> recent;
+    in property <int> runs;
+    // The mind the workroom is narrowed to, by name, when one is chosen.
+    in property <string> narrowed;
+    callback open(string);
+    callback view-all-requests();
+    callback view-history();
+    callback chat(string);
+    callback more(string, length, length);
+
+    flick := Flickable {
+        width: parent.width;
+        height: parent.height;
+        viewport-height: col.preferred-height;
+        // A Rectangle between the Flickable and the layout, as every scroller in this screen has.
+        Rectangle {
+            width: flick.width;
+            height: col.preferred-height;
+            col := VerticalLayout {
+                padding: Theme.sp-6;
+                spacing: Theme.sp-6;
+                alignment: start;
+
+                if root.narrowed != "" : Text {
+                    text: "Showing " + root.narrowed + " only";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-caption;
+                }
+                if root.decisions.length > 0 : DecisionShelf {
+                    decisions: root.decisions;
+                    total: root.requests;
+                    minds: root.request-minds;
+                    open(key) => { root.open(key); }
+                    view-all => { root.view-all-requests(); }
+                }
+                if root.desks.length > 0 : VerticalLayout {
+                    spacing: Theme.sp-3;
+                    Text {
+                        text: "Working now";
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-title-2;
+                        font-weight: Theme.fw-headline;
+                    }
+                    DeskGrid {
+                        desks: root.desks;
+                        view(key) => { root.open(key); }
+                        chat(mind) => { root.chat(mind); }
+                        more(key, x, y) => { root.more(key, x, y); }
+                    }
+                }
+                if root.desks.length == 0 : VerticalLayout {
+                    spacing: Theme.sp-4;
+                    Text {
+                        text: "No minds are working right now. Start a task, or return to a recent result.";
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-title-2;
+                        wrap: word-wrap;
+                    }
+                    if root.recent.length > 0 : VerticalLayout {
+                        spacing: Theme.sp-1;
+                        Text {
+                            text: "Recent results";
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-title-2;
+                            font-weight: Theme.fw-headline;
+                        }
+                        for r in root.recent : ResultRow {
+                            data: r;
+                            clicked => { root.open(r.key); }
+                        }
+                    }
+                    if root.runs > 0 : Rectangle {
+                        height: Theme.h-regular;
+                        accessible-role: button;
+                        accessible-label: "View history, " + root.runs + " runs";
+                        HorizontalLayout {
+                            alignment: start;
+                            Text {
+                                text: "View history · " + root.runs + (root.runs == 1 ? " run" : " runs");
+                                color: Theme.text-primary;
+                                font-size: Theme.fs-body;
+                                font-weight: Theme.fw-headline;
+                                vertical-alignment: center;
+                            }
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.view-history(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Needs you, the whole page: every request, oldest first.
+export component NeedsPage inherits Rectangle {
+    in property <[DecisionData]> decisions;
+    in property <int> requests;
+    in property <int> request-minds;
+    callback open(string);
+    flick := Flickable {
+        width: parent.width;
+        height: parent.height;
+        viewport-height: col.preferred-height;
+        Rectangle {
+            width: flick.width;
+            height: col.preferred-height;
+            col := VerticalLayout {
+                padding: Theme.sp-6;
+                spacing: Theme.sp-4;
+                alignment: start;
+                if root.decisions.length == 0 : Text {
+                    text: "Nothing is waiting on you.";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-body;
+                }
+                if root.decisions.length > 0 : DecisionShelf {
+                    decisions: root.decisions;
+                    total: root.requests;
+                    minds: root.request-minds;
+                    open(key) => { root.open(key); }
+                }
+            }
+        }
+    }
+}
+
+// History: finished runs, newest first.
+export component HistoryPage inherits Rectangle {
+    in property <[ResultData]> results;
+    in property <int> runs;
+    callback open(string);
+    flick := Flickable {
+        width: parent.width;
+        height: parent.height;
+        viewport-height: col.preferred-height;
+        Rectangle {
+            width: flick.width;
+            height: col.preferred-height;
+            col := VerticalLayout {
+                padding: Theme.sp-6;
+                spacing: Theme.sp-3;
+                alignment: start;
+                Text {
+                    text: "History · " + root.runs + (root.runs == 1 ? " run" : " runs");
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-title-2;
+                    font-weight: Theme.fw-headline;
+                }
+                if root.results.length == 0 : Text {
+                    text: "Nothing has finished yet.";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-body;
+                }
+                for r in root.results : ResultRow {
+                    data: r;
+                    clicked => { root.open(r.key); }
+                }
+                if root.runs > root.results.length : Text {
+                    text: "Showing the latest " + root.results.length + ". Older runs are in each mind's saved sessions.";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-caption;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}

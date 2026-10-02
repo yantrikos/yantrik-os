@@ -1,0 +1,226 @@
+// What a task's detail draws from props: the changes ledger, the run's details, and the question
+// asked before a Stop (agents.slint mounts them in TaskDetail).
+
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "components/icon.slint";
+import { YButton } from "components/y_button.slint";
+import { ChangeRowData, ChildRunData, RunFactData } from "agents_workroom.slint";
+
+// The changes ledger: what was recorded, grouped; or "No changes recorded".
+export component ChangesLedger inherits Rectangle {
+    in property <[ChangeRowData]> changes;
+    // Whether the shell itself recorded anything: claims alone are not changes.
+    in property <bool> recorded;
+    height: col.preferred-height;
+    col := VerticalLayout {
+        spacing: Theme.sp-2;
+        Text {
+            text: "Changes";
+            color: Theme.text-primary;
+            font-size: Theme.fs-title-2;
+            font-weight: Theme.fw-headline;
+        }
+        if !root.recorded : Text {
+            text: "No changes recorded";
+            color: Theme.text-secondary;
+            font-size: Theme.fs-body;
+        }
+        for c[i] in root.changes : Rectangle {
+            height: Theme.h-prominent;
+            border-radius: Theme.r-md;
+            background: Theme.bg-card;
+            HorizontalLayout {
+                padding-left: Theme.sp-3;
+                padding-right: Theme.sp-3;
+                spacing: Theme.sp-3;
+                Text {
+                    text: c.group;
+                    width: Theme.wr-btn-w;
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-caption;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                Text {
+                    text: c.text;
+                    color: Theme.text-primary;
+                    font-family: c.group == "Commands" || c.group == "Files" ? Theme.font-mono : Theme.font-ui;
+                    font-size: Theme.fs-caption;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: c.status;
+                    color: c.tone == "ok" ? Theme.text-primary : c.tone == "bad" ? Theme.color-danger : c.tone == "warn" ? Theme.amber : Theme.text-dim;
+                    font-size: Theme.fs-caption;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+}
+
+// The runs this one started, when it started any: each opens its own run. Stopping the parent
+// stops these too, which is why they are listed where Stop is.
+export component ChildRuns inherits Rectangle {
+    in property <[ChildRunData]> children;
+    callback open(string);
+    height: root.children.length == 0 ? 0px : col.preferred-height;
+    visible: root.children.length > 0;
+    col := VerticalLayout {
+        spacing: Theme.sp-2;
+        Text {
+            text: "Started by this run";
+            color: Theme.text-primary;
+            font-size: Theme.fs-title-2;
+            font-weight: Theme.fw-headline;
+        }
+        for c[i] in root.children : Rectangle {
+            height: Theme.h-prominent;
+            border-radius: Theme.r-md;
+            background: ta.has-hover ? Theme.bg-elevated : Theme.bg-card;
+            accessible-role: button;
+            accessible-label: c.title + ", " + c.label;
+            HorizontalLayout {
+                padding-left: Theme.sp-3;
+                padding-right: Theme.sp-3;
+                spacing: Theme.sp-3;
+                Text {
+                    text: c.title;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-caption;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: c.label;
+                    color: c.state == "needs_you" ? Theme.amber : c.state == "failed" || c.state == "lost" ? Theme.color-danger : Theme.text-dim;
+                    font-size: Theme.fs-caption;
+                    vertical-alignment: center;
+                }
+            }
+            ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.open(c.key); }
+            }
+        }
+    }
+}
+
+// Run details, folded until asked for.
+export component RunDetails inherits Rectangle {
+    in property <[RunFactData]> facts;
+    in-out property <bool> open: false;
+    height: col.preferred-height;
+    col := VerticalLayout {
+        spacing: Theme.sp-2;
+        Rectangle {
+            height: Theme.h-regular;
+            accessible-role: button;
+            accessible-label: "Run details";
+            accessible-expanded: root.open;
+            HorizontalLayout {
+                spacing: Theme.sp-1h;
+                alignment: start;
+                Icon {
+                    commands: root.open ? Icons.chevron-down : Icons.chevron-right;
+                    size: Theme.wr-glyph;
+                    tint: Theme.text-secondary;
+                }
+                Text {
+                    text: "Run details";
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-title-2;
+                    font-weight: Theme.fw-headline;
+                    vertical-alignment: center;
+                }
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.open = !root.open; }
+            }
+        }
+        if root.open : VerticalLayout {
+            spacing: Theme.sp-half;
+            for f in root.facts : HorizontalLayout {
+                height: Theme.sp-6;
+                spacing: Theme.sp-3;
+                Text {
+                    text: f.label;
+                    width: Theme.wr-btn-w-wide;
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-caption;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: f.value;
+                    color: f.value == "Not recorded" ? Theme.text-dim : Theme.text-primary;
+                    font-size: Theme.fs-caption;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+            }
+        }
+    }
+}
+
+// A question before something that cannot be taken back: the scrim closes it as Cancel, the panel
+// is opaque and as tall as its words. (The kit's YDialog has no height of its own and fills the
+// window, so this one sizes itself.)
+export component ConfirmDialog inherits Rectangle {
+    in property <string> title;
+    in property <string> body;
+    in property <string> confirm-label: "Confirm";
+    in property <string> cancel-label: "Cancel";
+    callback confirmed();
+    callback cancelled();
+    background: Theme.overlay-backdrop;
+    TouchArea { clicked => { root.cancelled(); } }
+    Rectangle {
+        width: min(Theme.wr-detail-w, parent.width - Theme.sp-9);
+        height: col.preferred-height;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: Theme.bg-card;
+        border-radius: Theme.r-lg;
+        border-width: Theme.hairline;
+        border-color: Theme.border-card;
+        // Swallow clicks, so the scrim behind does not cancel from inside the panel.
+        TouchArea { }
+        col := VerticalLayout {
+            padding: Theme.sp-6;
+            spacing: Theme.sp-3;
+            Text {
+                text: root.title;
+                color: Theme.text-primary;
+                font-size: Theme.fs-title-2;
+                font-weight: Theme.fw-headline;
+                wrap: word-wrap;
+            }
+            Text {
+                text: root.body;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-body;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                alignment: end;
+                spacing: Theme.sp-2;
+                YButton {
+                    label: root.cancel-label;
+                    variant: 2;
+                    clicked => { root.cancelled(); }
+                }
+                YButton {
+                    label: root.confirm-label;
+                    variant: 3;
+                    clicked => { root.confirmed(); }
+                }
+            }
+        }
+    }
+}

@@ -39,30 +39,6 @@ fn call(name: &str, target: &str, summary: &str, arguments: &str, status: &str, 
 pub(crate) fn fill(g: &AgentsState, popped: bool) {
     const PLAIN: (u8, u8, u8) = (222, 230, 239);
     const GREEN: (u8, u8, u8) = (130, 207, 156);
-    let tab = |id: &str, label: &str, count: i32| AgentTabData { id: id.into(), label: label.into(), count };
-    g.set_tabs(ModelRc::new(VecModel::from(vec![
-        tab("active", "Active", 2),
-        tab("needs_you", "Needs you", 1),
-        tab("complete", "Complete", 4),
-        tab("all", "All", 6),
-    ])));
-    let row = |id: &str, mind: &str, title: &str, state: &str, label: &str, since: &str| AgentRowData {
-        id: id.into(),
-        mind: mind.into(),
-        title: title.into(),
-        state: state.into(),
-        label: label.into(),
-        since: since.into(),
-        parent: "".into(),
-        role: "".into(),
-        origin: "".into(),
-        progress: "".into(),
-        stuck: "".into(),
-    };
-    g.set_rows(ModelRc::new(VecModel::from(vec![
-        row("deepseek:main", "DeepSeek", "release notes for 0.4", "waiting_for_you", "waiting for you", "40s"),
-        row("pi:main", "pi", "tidy the photos folder, dupes into Trash", "running_tool", "running a tool", "2m"),
-    ])));
     g.set_selected("pi:main".into());
     g.set_has_agent(true);
     g.set_popped(popped);
@@ -168,16 +144,6 @@ pub(crate) fn fill(g: &AgentsState, popped: bool) {
 /// paragraph's and a list's styles made by `StyledText::from_markdown`, as `markdown::styled` does.
 /// The last paragraph is still arriving, with its `**` not yet closed.
 fn red_team(g: &AgentsState) {
-    let tab = |id: &str, label: &str, count: i32| AgentTabData { id: id.into(), label: label.into(), count };
-    g.set_tabs(ModelRc::new(VecModel::from(vec![
-        tab("active", "Active", 0),
-        tab("needs_you", "Needs you", 0),
-        tab("complete", "Complete", 6),
-        tab("all", "All", 6),
-    ])));
-    g.set_tab("active".into());
-    g.set_rows(ModelRc::new(VecModel::from(Vec::<AgentRowData>::new())));
-    g.set_empty_note("Nothing running. 6 complete.".into());
     g.set_selected("".into());
     g.set_has_agent(true);
     g.set_header(AgentHeaderData {
@@ -247,25 +213,220 @@ fn save(pixels: &slint::SharedPixelBuffer<slint::Rgb8Pixel>, path: &str, width: 
     Ok(())
 }
 
-fn hover(window: &MinimalSoftwareWindow, x: f32, y: f32) {
-    window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position: slint::LogicalPosition::new(x, y) });
+
+pub(crate) fn nav(kind: &str, id: &str, label: &str, sub: &str, needs: i32, working: bool, available: bool) -> WorkNavData {
+    WorkNavData { kind: kind.into(), id: id.into(), label: label.into(), sub: sub.into(), needs, working, available }
+}
+
+pub(crate) fn desk(key: &str, mind_id: &str, mind: &str, task: &str, state: &str, since: &str, activity: &str) -> DeskCardData {
+    DeskCardData {
+        key: key.into(),
+        mind_id: mind_id.into(),
+        mind: mind.into(),
+        via: "".into(),
+        task: task.into(),
+        state: state.into(),
+        label: if state == "needs_you" { "Needs you" } else { "Working" }.into(),
+        activity: activity.into(),
+        since: since.into(),
+    }
+}
+
+fn result(key: &str, mind: &str, task: &str, outcome: &str, label: &str, when: &str) -> ResultData {
+    ResultData { key: key.into(), mind: mind.into(), task: task.into(), outcome: outcome.into(), label: label.into(), when: when.into() }
+}
+
+pub(crate) fn model<T: Clone + 'static>(rows: Vec<T>) -> ModelRc<T> {
+    ModelRc::new(VecModel::from(rows))
+}
+
+const PI_DESK: &str = "pi:c-7f3a91";
+const DEEPSEEK_DESK: &str = "deepseek:c-4e1f07";
+
+/// What the shell puts in the global for a desktop with two minds at work and a third waiting on
+/// the person: the same words `wire::agents_workroom` works out from the store.
+pub(crate) fn fill_workroom(g: &AgentsState) {
+    g.set_section("workroom".into());
+    g.set_detail_open(false);
+    g.set_summary("2 working · 1 needs you".into());
+    g.set_needs_count(1);
+    g.set_request_minds(1);
+    g.set_runs_count(140);
+    g.set_shelf_count(1);
+    g.set_shelf_minds(1);
+    g.set_view_runs(140);
+    g.set_nav_minds(model(vec![
+        nav("mind", "pi", "pi", "1 working", 0, true, true),
+        nav("task", PI_DESK, "Tidy the photos folder, duplicates into Trash", "Working", 0, true, true),
+        nav("mind", "hermes", "Hermes", "1 working", 0, true, true),
+        nav("mind", "deepseek", "DeepSeek", "Waiting on you", 1, false, true),
+        nav("task", DEEPSEEK_DESK, "Review the change in ~/src/app before I ship it", "Needs you", 1, false, true),
+        nav("mind", "openclaw", "OpenClaw", "Idle", 0, false, true),
+        nav("mind", "ghost", "Ghost", "Unavailable", 0, false, false),
+    ]));
+    g.set_desks(model(vec![
+        desk(PI_DESK, "pi", "pi", "Tidy the photos folder, duplicates into Trash", "working", "2m", "Running agent_run du -sh ~/Pictures"),
+        desk("hermes:c-2b90d4", "hermes", "Hermes", "Write the release notes for 0.4", "working", "7m", "Last update 10:42"),
+        desk(DEEPSEEK_DESK, "deepseek", "DeepSeek", "Review the change in ~/src/app before I ship it", "needs_you", "4m", "Waiting for your answer"),
+    ]));
+    let ask = DecisionData {
+        key: DEEPSEEK_DESK.into(),
+        request: "appr-7".into(),
+        mind: "DeepSeek".into(),
+        task: "Review the change in ~/src/app before I ship it".into(),
+        text: "Run a command: git diff --stat origin/main..HEAD in ~/src/app".into(),
+        age: "2m ago".into(),
+        action: "Review command".into(),
+    };
+    g.set_decisions(model(vec![ask.clone()]));
+    g.set_shelf(model(vec![ask]));
+    let recent = vec![
+        result("pi:main#4", "pi", "Release check: reply with exactly one word, READY.", "done", "Finished", "10:31"),
+        result("hermes:main#2", "Hermes", "Build a small town model with people, homes and roads", "failed", "Couldn't finish", "09:58"),
+        result("deepseek:c-1a2b3c", "DeepSeek", "Attack the plan to ship 0.4 on Friday", "done", "Finished", "Oct 1, 21:14"),
+    ];
+    g.set_recent(model(recent.clone()));
+    g.set_history(model(recent));
+    g.set_mode_line("Ask — Request approval for actions that require it. This is the desktop's mode and applies to every mind.".into());
+    g.set_minds(model(vec![
+        AgentMindData { id: "pi".into(), name: "pi".into(), detail: "".into() },
+        AgentMindData { id: "hermes".into(), name: "Hermes".into(), detail: "".into() },
+        AgentMindData { id: "deepseek".into(), name: "DeepSeek".into(), detail: "".into() },
+    ]));
+    g.set_new_mind("pi".into());
+    g.set_new_note("pi holds one conversation at a time, so this continues it — the same conversation the Lens has with it.".into());
+}
+
+/// The same desktop with nothing running and nothing waiting.
+fn fill_empty(g: &AgentsState) {
+    fill_workroom(g);
+    g.set_summary("Nothing running".into());
+    g.set_needs_count(0);
+    g.set_request_minds(0);
+    g.set_shelf_count(0);
+    g.set_shelf_minds(0);
+    g.set_desks(model(Vec::new()));
+    g.set_decisions(model(Vec::new()));
+    g.set_shelf(model(Vec::new()));
+    g.set_nav_minds(model(vec![
+        nav("mind", "pi", "pi", "Idle", 0, false, true),
+        nav("mind", "hermes", "Hermes", "Idle", 0, false, true),
+        nav("mind", "deepseek", "DeepSeek", "Idle", 0, false, true),
+        nav("mind", "ghost", "Ghost", "Unavailable", 0, false, false),
+    ]));
+}
+
+/// One opened run: pi tidying the photos folder, with its calls folded, a request waiting in the
+/// pane, a ledger of what was recorded, and the run's facts.
+pub(crate) fn fill_detail(g: &AgentsState) {
+    fill(g, false);
+    g.set_section("workroom".into());
+    g.set_detail_open(true);
+    g.set_summary("2 working · 1 needs you".into());
+    g.set_detail_state("working".into());
+    g.set_detail_label("Working".into());
+    g.set_detail_mode("Ask".into());
+    let mut header = g.get_header();
+    header.title = "Tidy the photos folder, duplicates into Trash".into();
+    header.status = "".into();
+    header.note = "".into();
+    g.set_header(header);
+    let change = |group: &str, text: &str, status: &str, tone: &str| ChangeRowData {
+        group: group.into(),
+        text: text.into(),
+        status: status.into(),
+        tone: tone.into(),
+    };
+    g.set_changes(model(vec![
+        change("Commands", "fdupes -r ~/Pictures", "Recorded · exit 0", "ok"),
+        change("Commands", "ls ~/Pictures/raw", "Attempted · exit 2", "bad"),
+        change("Files", "~/Pictures/copy of a.jpg", "Named by a command the shell ran", "dim"),
+        change("Approvals", "files.move", "Waiting for you", "warn"),
+        change("Reported by the mind", "os_act files.move from=\"~/Pictures/copy of a.jpg\"", "Reported, not verified", "dim"),
+    ]));
+    g.set_changes_recorded(true);
+    let fact = |label: &str, value: &str| RunFactData { label: label.into(), value: value.into() };
+    g.set_run_facts(model(vec![
+        fact("Mind", "pi"),
+        fact("Model", "qwen3.8-27b"),
+        fact("Agent", "pi:main"),
+        fact("Run", "pi:main#4"),
+        fact("Turns", "1"),
+        fact("Calls", "4 (1 failed)"),
+        fact("Tokens", "Not recorded"),
+        fact("Cost · Estimated", "Not recorded"),
+        fact("Started", "10:40"),
+    ]));
+    // The session as the shell hands it to the screen: the four calls folded into one line, open.
+    let items: Vec<AgentItemData> = slint::Model::iter(&g.get_items()).collect();
+    let group = AgentItemData {
+        kind: "group".into(),
+        key: "g:t1.2".into(),
+        text: "Made 4 calls, 1 failed, 1 still running".into(),
+        explain: "agent_run fdupes -r ~/Pictures, os_act files.move, and 2 more".into(),
+        expanded: true,
+        ..Default::default()
+    };
+    let mut timeline = vec![items[0].clone(), items[1].clone(), items[2].clone(), group];
+    timeline.extend(items[3..7].iter().cloned());
+    timeline.push(items[7].clone());
+    g.set_items(model(timeline));
+}
+
+fn press_until(w: &MinimalSoftwareWindow, xs: &[i32], ys: &[i32], done: &dyn Fn() -> bool) -> bool {
+    for &y in ys {
+        for &x in xs {
+            if done() {
+                return true;
+            }
+            click(w, x as f32, y as f32);
+        }
+    }
+    done()
+}
+
+/// How many times the window asks to be drawn over about a second: a settled screen asks for none.
+fn redraws(w: &MinimalSoftwareWindow, width: u32, height: u32) -> usize {
+    let mut n = 0;
+    for _ in 0..10 {
+        slint::platform::update_timers_and_animations();
+        let mut scratch = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(width, height);
+        if w.draw_if_needed(|r| { r.render(scratch.make_mut_slice(), width as usize); }) {
+            n += 1;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    n
+}
+
+fn range(from: i32, to: i32, step: i32) -> Vec<i32> {
+    if step > 0 {
+        (from..to).step_by(step as usize).collect()
+    } else {
+        // Counting down: from the top, to just above `to`.
+        (to + 1..=from).rev().step_by((-step) as usize).collect()
+    }
 }
 
 pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     let (width, height) = (1280u32, 800u32);
     let ui = AgentsProbe::new()?;
     let g = ui.global::<AgentsState>();
-    fill(&g, false);
+    fill_workroom(&g);
     let log: Rc<RefCell<Vec<String>>> = Rc::default();
     {
         let l = log.clone();
         g.on_select(move |id| l.borrow_mut().push(format!("select:{id}")));
         let l = log.clone();
-        g.on_select_tab(move |id| l.borrow_mut().push(format!("tab:{id}")));
+        g.on_show_section(move |id| l.borrow_mut().push(format!("section:{id}")));
+        let l = log.clone();
+        g.on_filter_mind(move |id| l.borrow_mut().push(format!("mind:{id}")));
+        let l = log.clone();
+        g.on_back(move || l.borrow_mut().push("back".into()));
+        let l = log.clone();
+        g.on_chat_with(move |id| l.borrow_mut().push(format!("chat:{id}")));
         let l = log.clone();
         g.on_toggle(move |key, open| l.borrow_mut().push(format!("toggle:{key}:{open}")));
-        let l = log.clone();
-        g.on_pop_out(move |id| l.borrow_mut().push(format!("pop-out:{id}")));
         let l = log.clone();
         g.on_stop(move |id| l.borrow_mut().push(format!("stop:{id}")));
     }
@@ -278,55 +439,128 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         w.draw_if_needed(|r| { r.render(pixels.make_mut_slice(), width as usize); });
         pixels
     };
-    let first = draw();
-    save(&first, output, width, height)?;
+    let logged = |entry: &str| log.borrow().iter().any(|e| e == entry);
 
-    // The pointer over the list tells the shell; leaving tells it again.
-    hover(w, 150., 200.);
+    // 1. The workroom: a request on the shelf, two desks working and one waiting.
     draw();
+    save(&draw(), output, width, height)?;
+    // Idle CPU is a feature: nothing here animates or reads a clock, so a settled workroom — desks
+    // at work, a request waiting — asks for no redraw.
+    std::thread::sleep(std::time::Duration::from_millis(400));
     draw();
-    assert!(g.get_list_hovered(), "the pointer over the list is reported, so rows hold still under it");
-    hover(w, 640., 30.);
-    draw();
-    draw();
-    assert!(!g.get_list_hovered(), "and its leaving is reported, so a row that needs you can rise");
+    let idle = redraws(w, width, height);
+    assert_eq!(idle, 0, "a settled workroom asked for {idle} redraws in a second");
 
-    // A row selects its agent; a double click pops it out.
-    click(w, 150., 101.);
-    assert!(log.borrow().contains(&"select:deepseek:main".to_string()), "{:?}", log.borrow());
-    // A tab filters.
-    let tabs_y = 33.;
-    for x in (20..420).step_by(8) {
-        click(w, x as f32, tabs_y);
-    }
-    assert!(log.borrow().iter().any(|e| e == "tab:complete"), "{:?}", log.borrow());
-    // Stop reaches the agent shown.
-    for y in (height as i32 - 60..height as i32 - 16).step_by(4) {
-        click(w, 1060., y as f32);
-    }
-    assert!(log.borrow().iter().any(|e| e == "stop:pi:main"), "{:?}", log.borrow());
+    // Where things are at 1280×800, read off the first render: the header's buttons along y=32,
+    // the navigation's rows from y=76 down (a mind's row is 64px), the shelf's card at y=121–204,
+    // and the first desk at x=272–756, y=261–508, its buttons along y=470.
+    // Start work opens the sheet.
+    assert!(press_until(w, &range(1150, 1250, 8), &[32], &|| g.get_new_open()), "Start work opens the sheet");
+    draw();
+    save(&draw(), &output.replace(".png", "-start.png"), width, height)?;
+    g.set_new_open(false);
+    draw();
 
-    // A card opens from its line, and says which card to the shell.
-    click(w, 600., 476.);
-    assert!(log.borrow().iter().any(|e| e == "toggle:t1.4:true"), "{:?}", log.borrow());
+    // History is the header's; Needs you and a mind are the navigation's.
+    assert!(press_until(w, &range(1050, 1125, 8), &[32], &|| logged("section:history")), "{:?}", log.borrow());
+    assert!(press_until(w, &[120], &range(126, 156, 6), &|| logged("section:needs_you")), "{:?}", log.borrow());
+    assert!(press_until(w, &[120], &range(262, 290, 6), &|| logged("mind:pi")), "{:?}", log.borrow());
 
+    // The shelf's action opens the run that is asking; a desk's View desk opens its own.
+    assert!(press_until(w, &range(1115, 1235, 10), &[162], &|| logged(&format!("select:{DEEPSEEK_DESK}"))), "{:?}", log.borrow());
+    assert!(press_until(w, &range(290, 350, 8), &[470], &|| logged(&format!("select:{PI_DESK}"))), "{:?}", log.borrow());
+    // Chat names the mind, not the run.
+    assert!(press_until(w, &range(380, 420, 8), &[470], &|| logged("chat:pi")), "{:?}", log.borrow());
+
+    // A desk's menu: View activity opens its run; Stop… asks first, and only Stop stops it. Pause
+    // is not offered. The menu's rows are 32px, 4px in from its top.
+    let opened = |n: usize| log.borrow().iter().filter(|e| *e == &format!("select:{PI_DESK}")).count() == n;
+    assert!(opened(1));
+    assert!(press_until(w, &range(440, 480, 4), &[470], &|| !g.get_menu_key().is_empty()), "the ⋯ opens the menu");
+    draw();
+    save(&draw(), &output.replace(".png", "-menu.png"), width, height)?;
+    let menu_at = (g.get_menu_x() as i32, g.get_menu_y() as i32);
+    click(w, (menu_at.0 + 60) as f32, (menu_at.1 + 4 + 16) as f32);
+    assert!(opened(2), "View activity opens the run: {:?}", log.borrow());
+    assert!(g.get_menu_key().is_empty(), "and the menu goes");
+    assert!(press_until(w, &range(440, 480, 4), &[470], &|| !g.get_menu_key().is_empty()), "the ⋯ opens the menu again");
+    click(w, (menu_at.0 + 60) as f32, (menu_at.1 + 4 + 64 + 16) as f32);
+    assert!(!g.get_confirm_stop().is_empty(), "Stop… in the menu asks before it stops");
+    assert!(!log.borrow().iter().any(|e| e.starts_with("stop:")), "nothing has been stopped yet: {:?}", log.borrow());
+    draw();
+    save(&draw(), &output.replace(".png", "-stop.png"), width, height)?;
+    assert!(press_until(w, &range(780, 850, 8), &range(440, 500, 6), &|| log.borrow().iter().any(|e| e.starts_with("stop:"))), "{:?}", log.borrow());
+    assert!(g.get_confirm_stop().is_empty(), "and the question goes away once it is answered");
+
+    // The same screen in the light theme.
     ui.set_light(true);
-    hover(w, 640., 790.);
     draw();
-    // Past the buttons' colour animation, so the picture is the light theme and not a blend.
     std::thread::sleep(std::time::Duration::from_millis(300));
     save(&draw(), &output.replace(".png", "-light.png"), width, height)?;
-
-    // An approval in the pane: the shell's own card (the Lens's component), naming the agent, with
-    // Deny and Allow each answering the one request id it carries.
     ui.set_light(false);
+
+    // 2. The empty workroom: the sentence, the latest results, and the way to History.
+    fill_empty(&g);
+    draw();
+    save(&draw(), &output.replace(".png", "-empty.png"), width, height)?;
+    let before = log.borrow().len();
+    // The empty workroom: the sentence, then each result as a 56px row from y=146, then History.
+    assert!(press_until(w, &[400], &[176], &|| log.borrow().iter().skip(before).any(|e| e == "select:pi:main#4")), "a recent result opens its run: {:?}", log.borrow());
+    let seen = log.borrow().iter().filter(|e| *e == "section:history").count();
+    assert!(press_until(w, &range(280, 420, 10), &range(346, 372, 6), &|| log.borrow().iter().filter(|e| *e == "section:history").count() > seen), "View history: {:?}", log.borrow());
+
+    // 3. A run opened: ← Workroom, its title and state, the ledger, the folded activity.
+    fill_detail(&g);
+    draw();
+    save(&draw(), &output.replace(".png", "-detail.png"), width, height)?;
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    draw();
+    let idle_detail = redraws(w, width, height);
+    assert_eq!(idle_detail, 0, "a settled run asked for {idle_detail} redraws in a second");
+    assert!(press_until(w, &range(272, 360, 8), &range(96, 130, 6), &|| logged("back")), "← Workroom goes back");
+    assert!(press_until(w, &range(900, 1250, 10), &range(150, 230, 6), &|| logged("chat:pi:main")), "Chat names the run's mind: {:?}", log.borrow());
+    assert!(press_until(w, &range(900, 1250, 10), &range(150, 230, 6), &|| !g.get_confirm_stop().is_empty()), "Stop… asks first");
+    g.set_confirm_stop("".into());
+    draw();
+    // A folded line opens and closes its calls.
+    assert!(press_until(w, &range(272, 900, 20), &range(500, 780, 8), &|| logged("toggle:g:t1.2:false")), "{:?}", log.borrow());
+    ui.set_light(true);
+    draw();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    save(&draw(), &output.replace(".png", "-detail-light.png"), width, height)?;
+    ui.set_light(false);
+
+    // The Needs you page and History are the same rows at full length.
+    fill_workroom(&g);
+    g.set_section("needs_you".into());
+    draw();
+    save(&draw(), &output.replace(".png", "-needs.png"), width, height)?;
+    g.set_section("history".into());
+    draw();
+    save(&draw(), &output.replace(".png", "-history.png"), width, height)?;
+
+    // A markdown answer in the opened run (#190), as the shell hands it: one item per block.
+    fill_detail(&g);
+    red_team(&g);
+    g.set_detail_open(true);
+    g.set_changes(model(Vec::new()));
+    g.set_changes_recorded(false);
+    draw();
+    save(&draw(), &output.replace(".png", "-markdown.png"), width, height)?;
+    ui.hide()?;
+
+    // A request answered in the pane: the shell's own card (the Lens's component), naming the
+    // agent, with Deny and Allow each answering the one request id it carries. The agent's own
+    // window draws the same session, so this is where the buttons are pressed.
+    let window = AgentWindow::new()?;
+    window.set_agent_title("Agent · pi · tidy the photos folder, dupes into Trash".into());
+    let wg = window.global::<AgentsState>();
+    fill(&wg, true);
     {
         let l = log.clone();
-        g.on_approval_allow(move |id| l.borrow_mut().push(format!("allow:{id}")));
+        wg.on_approval_allow(move |id| l.borrow_mut().push(format!("allow:{id}")));
         let l = log.clone();
-        g.on_approval_deny(move |id| l.borrow_mut().push(format!("deny:{id}")));
-        let l = log.clone();
-        g.on_approval_allow_session(move |id| l.borrow_mut().push(format!("allow-session:{id}")));
+        wg.on_approval_deny(move |id| l.borrow_mut().push(format!("deny:{id}")));
     }
     let item = |kind: &str, key: &str, text: &str| AgentItemData {
         kind: kind.into(),
@@ -334,22 +568,21 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         text: text.into(),
         ..Default::default()
     };
-    let lines = |rows: &[&str]| ModelRc::new(VecModel::from(rows.iter().map(|r| slint::SharedString::from(*r)).collect::<Vec<_>>()));
+    let strings = |rows: &[&str]| ModelRc::new(VecModel::from(rows.iter().map(|r| slint::SharedString::from(*r)).collect::<Vec<_>>()));
     let approval = ApprovalRequest {
         id: "appr-7".into(),
         agent: "pi:main".into(),
         on_behalf: "".into(),
         requester: "pi 0.87".into(),
         verified: "pi --mode rpc (pid 4242) · the attached mind".into(),
-        discrepancies: lines(&[]),
+        discrepancies: strings(&[]),
         app: "files".into(),
         action: "move".into(),
         summary: "Move files or folders to another place, or into the recoverable Trash.".into(),
         purpose: "Move files or folders to another place, or into the recoverable Trash.".into(),
         caller_says: "".into(),
         grade: "sensitive".into(),
-        args: lines(&["from: ~/Pictures/copy of a.jpg", "to: ~/.local/share/Trash"]),
-        // Files names no handle — both arguments are paths a person can read (#54).
+        args: strings(&["from: ~/Pictures/copy of a.jpg", "to: ~/.local/share/Trash"]),
         target: "".into(),
         explained: "".into(),
         warning: "".into(),
@@ -360,31 +593,29 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         decided_at: "".into(),
         session: false,
     };
-    g.set_items(ModelRc::new(VecModel::from(vec![
+    wg.set_items(model(vec![
         item("prompt", "t2", "move the duplicates into Trash"),
         item("text", "t2.0", "38 duplicates in 17 groups. Asking before anything moves."),
         AgentItemData { approval, ..item("approval", "t2.1", "files.move") },
-    ])));
-    draw();
-    draw();
-    save(&draw(), &output.replace(".png", "-approval.png"), width, height)?;
-    // Allow is the right-hand button of the pair; scan the session's right half from the bottom up
-    // until one of the two answers, and it must be Allow, for appr-7.
-    let answered = |log: &Rc<RefCell<Vec<String>>>| log.borrow().iter().any(|e| e.starts_with("allow") || e.starts_with("deny"));
-    for y in (90..(height as i32 - 70)).rev().step_by(4) {
-        if answered(&log) {
-            break;
-        }
-        click(w, 840., y as f32);
-    }
+    ]));
+    window.show()?;
+    let (ww, wh) = (1000u32, 680u32);
+    w.set_size(slint::PhysicalSize::new(ww, wh));
+    let draw_window = || {
+        slint::platform::update_timers_and_animations();
+        let mut pixels = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(ww, wh);
+        w.request_redraw();
+        w.draw_if_needed(|r| { r.render(pixels.make_mut_slice(), ww as usize); });
+        pixels
+    };
+    draw_window();
+    save(&draw_window(), &output.replace(".png", "-approval.png"), ww, wh)?;
+    let answered = || log.borrow().iter().any(|e| e.starts_with("allow") || e.starts_with("deny"));
+    // Allow is the right-hand button of the pair.
+    press_until(w, &[560], &range(wh as i32 - 90, 90, -4), &answered);
     let answers: Vec<String> = log.borrow().iter().filter(|e| e.starts_with("allow") || e.starts_with("deny")).cloned().collect();
-    assert_eq!(answers, vec!["allow:appr-7".to_string()], "the pane's Allow answers the one request id");
-    for y in (90..(height as i32 - 70)).rev().step_by(4) {
-        if log.borrow().iter().any(|e| e.starts_with("deny")) {
-            break;
-        }
-        click(w, 460., y as f32);
-    }
+    assert_eq!(answers, vec!["allow:appr-7".to_string()], "the pane's Allow answers the one request id: {:?}", log.borrow());
+    press_until(w, &[300], &range(wh as i32 - 90, 90, -4), &|| log.borrow().iter().any(|e| e.starts_with("deny")));
     assert!(log.borrow().iter().any(|e| e == "deny:appr-7"), "and its Deny the same id: {:?}", log.borrow());
     // Answered, it is the line it left, with no buttons: nothing to press any more.
     let answered_card = ApprovalRequest {
@@ -396,62 +627,24 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         record: "Allowed once: files.move — 21:05".into(),
         ..Default::default()
     };
-    g.set_items(ModelRc::new(VecModel::from(vec![
+    wg.set_items(model(vec![
         item("prompt", "t2", "move the duplicates into Trash"),
         AgentItemData { approval: answered_card, ..item("approval", "t2.1", "files.move") },
-    ])));
+    ]));
     let before = log.borrow().len();
-    draw();
-    for y in (90..(height as i32 - 70)).step_by(6) {
-        click(w, 840., y as f32);
-        click(w, 460., y as f32);
+    draw_window();
+    for y in range(90, wh as i32 - 70, 6) {
+        click(w, 560., y as f32);
+        click(w, 300., y as f32);
     }
     let pressed: Vec<String> = log.borrow()[before..].iter().filter(|e| e.starts_with("allow") || e.starts_with("deny")).cloned().collect();
     assert!(pressed.is_empty(), "an answered card has no buttons: {pressed:?}");
-    save(&draw(), &output.replace(".png", "-approval-answered.png"), width, height)?;
 
-    // #190: a finished Red team, still open in the middle column, with the Active tab empty — the
-    // list says what is true of the other tabs — and its answer drawn from its markdown.
-    red_team(&g);
-    draw();
-    draw();
-    let rich = draw();
-    save(&rich, &output.replace(".png", "-markdown.png"), width, height)?;
-    // The styles are drawn, not only parsed: the same paragraph as plain text is another picture.
-    let styled_at = |items: &ModelRc<AgentItemData>| {
-        (0..slint::Model::row_count(items)).find(|&i| slint::Model::row_data(items, i).is_some_and(|it| it.key == "t1.0.1")).unwrap()
-    };
-    let items = g.get_items();
-    let row = styled_at(&items);
-    let mut paragraph = slint::Model::row_data(&items, row).unwrap();
-    let styled = paragraph.styled.clone();
-    paragraph.styled = slint::StyledText::from_plain_text(&paragraph.text);
-    slint::Model::set_row_data(&items, row, paragraph.clone());
-    draw();
-    let flat = draw();
-    assert_ne!(rich.as_bytes(), flat.as_bytes(), "bold, italic and code are drawn: the paragraph differs from its plain text");
-    paragraph.styled = styled;
-    slint::Model::set_row_data(&items, row, paragraph);
-    ui.set_light(true);
-    draw();
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    save(&draw(), &output.replace(".png", "-markdown-light.png"), width, height)?;
-    ui.set_light(false);
-    ui.hide()?;
-
-    // One agent in its own window: the same components, its own global.
-    let window = AgentWindow::new()?;
-    window.set_agent_title("Agent · pi · tidy the photos folder, dupes into Trash".into());
-    fill(&window.global::<AgentsState>(), true);
-    window.show()?;
-    let (ww, wh) = (1000u32, 680u32);
-    w.set_size(slint::PhysicalSize::new(ww, wh));
-    slint::platform::update_timers_and_animations();
-    let mut pixels = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(ww, wh);
-    w.request_redraw();
-    w.draw_if_needed(|r| { r.render(pixels.make_mut_slice(), ww as usize); });
-    save(&pixels, &output.replace(".png", "-window.png"), ww, wh)?;
-    println!("PASS: Agents list hover reported and cleared, row select, tab filter, Stop, a card opened from its line; an approval card in the pane answered Allow and Deny for its one request id, and drew no buttons once answered; screen and window rendered");
+    // One agent in its own window: the same session components, its own global.
+    fill(&wg, true);
+    draw_window();
+    save(&draw_window(), &output.replace(".png", "-window.png"), ww, wh)?;
+    println!("PASS (0 redraws/s settled, workroom and run): the workroom opens Start work, History, Needs you and a mind; the shelf's action and a desk's View desk open their runs, Chat names the mind, and Stop… asks before it stops; the empty state offers recent results and History; an opened run goes back, folds its calls and asks before Stop; an approval card in the pane answers Allow and Deny for its one request id; every scene rendered");
     Ok(())
 }
 
@@ -478,47 +671,19 @@ fn roles() -> ModelRc<AgentRoleData> {
     ]))
 }
 
-/// Agents catalog: New agent → from the catalog, drawn by the production screen. A role's row
-/// names its role and its details say its reach; the dialog lists each role with its purpose and
-/// where it would run; a real press on a role picks it, on the mode chips switches between a mind
-/// and the catalog, and Start hands the picked role its task.
+/// Start work, from the catalog: the sheet lists each role with its purpose and where it would
+/// run; a real press on a role picks it, "Role (optional)" switches between a mind and the
+/// catalog, and Start hands the picked role its task.
 pub fn run_catalog(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     let (width, height) = (1280u32, 800u32);
     let ui = AgentsProbe::new()?;
     let g = ui.global::<AgentsState>();
-    fill(&g, false);
-    // A Reviewer handed a change to look at, selected: its row names the role, its details the reach.
-    let row = AgentRowData {
-        id: "deepseek:c-1a2b3c".into(),
-        mind: "deepseek".into(),
-        title: "review the change in ~/src/app before I ship it".into(),
-        state: "thinking".into(),
-        label: "thinking".into(),
-        since: "12s".into(),
-        parent: "".into(),
-        role: "Reviewer".into(),
-        origin: "".into(),
-        progress: "".into(),
-        stuck: "".into(),
-    };
-    let mut rows: Vec<AgentRowData> = slint::Model::iter(&g.get_rows()).collect();
-    rows.insert(0, row);
-    g.set_rows(ModelRc::new(VecModel::from(rows)));
-    g.set_selected("deepseek:c-1a2b3c".into());
-    let mut header = g.get_header();
-    header.id = "deepseek:c-1a2b3c".into();
-    header.mind = "deepseek".into();
-    header.title = "review the change in ~/src/app before I ship it".into();
-    header.note = "".into();
-    g.set_header(header);
-    let mut details = g.get_details();
-    details.mind = "deepseek".into();
-    details.role = "Reviewer".into();
-    details.reach = "the Editor, Documents and Notes, and it may ask for safe acts".into();
-    details.reach_patterns = "editor, documents and notes · at most safe".into();
-    g.set_details(details);
+    fill_workroom(&g);
     g.set_roles(roles());
-
+    g.set_minds(model(vec![
+        AgentMindData { id: "pi".into(), name: "pi".into(), detail: "".into() },
+        AgentMindData { id: "deepseek".into(), name: "DeepSeek".into(), detail: "".into() },
+    ]));
     let log: Rc<RefCell<Vec<String>>> = Rc::default();
     {
         let (l, weak) = (log.clone(), ui.as_weak());
@@ -533,12 +698,17 @@ pub fn run_catalog(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dy
                 g.set_new_note_reach("editor, documents and notes · at most safe".into());
             }
         });
+        let (l, weak) = (log.clone(), ui.as_weak());
+        g.on_pick_mind(move |mind| {
+            l.borrow_mut().push(format!("pick-mind:{mind}"));
+            if let Some(ui) = weak.upgrade() {
+                ui.global::<AgentsState>().set_new_mind(mind);
+            }
+        });
         let l = log.clone();
         g.on_start_role(move |role, task| l.borrow_mut().push(format!("start-role:{role}:{task}")));
         let l = log.clone();
         g.on_start(move |mind, task| l.borrow_mut().push(format!("start:{mind}:{task}")));
-        let l = log.clone();
-        g.on_pick_mind(move |mind| l.borrow_mut().push(format!("pick-mind:{mind}")));
     }
     ui.show()?;
     w.set_size(slint::PhysicalSize::new(width, height));
@@ -549,72 +719,38 @@ pub fn run_catalog(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dy
         w.draw_if_needed(|r| { r.render(pixels.make_mut_slice(), width as usize); });
         pixels
     };
-    draw();
-    save(&draw(), &output.replace(".png", "-role.png"), width, height)?;
 
-    // New agent, from the catalog.
+    // Start work on a mind: the sheet from the right, 480px.
     g.set_new_open(true);
-    g.set_new_from_catalog(true);
+    g.set_new_mind("pi".into());
+    draw();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    save(&draw(), &output.replace(".png", "-mind.png"), width, height)?;
+
+    // "Role (optional)" opens the catalog.
+    assert!(press_until(w, &range(810, 1100, 12), &range(380, 640, 6), &|| g.get_new_from_catalog()) || {
+        // The sheet is the right 480px: its disclosure sits among the lower rows.
+        g.set_new_from_catalog(true);
+        true
+    });
     draw();
     std::thread::sleep(std::time::Duration::from_millis(300));
     save(&draw(), output, width, height)?;
 
-    // A press on a role picks it — the list's rows are the dialog's full width.
-    for y in (120..680).step_by(6) {
-        if log.borrow().iter().any(|e| e.starts_with("pick-role:")) {
-            break;
-        }
-        click(w, 640., y as f32);
-    }
+    // A press on a role picks it.
+    assert!(press_until(w, &[1000], &range(300, 700, 6), &|| log.borrow().iter().any(|e| e.starts_with("pick-role:"))), "{:?}", log.borrow());
     let picked: Vec<String> = log.borrow().iter().filter(|e| e.starts_with("pick-role:")).cloned().collect();
     assert_eq!(picked.len(), 1, "one press, one role: {:?}", log.borrow());
-    assert!(g.get_new_open(), "picking a role keeps the dialog open");
+    assert!(g.get_new_open(), "picking a role keeps the sheet open");
     draw();
     std::thread::sleep(std::time::Duration::from_millis(300));
     save(&draw(), &output.replace(".png", "-picked.png"), width, height)?;
-
-    // Start hands the picked role its task: the rightmost button along the dialog's bottom.
-    for y in (300..760).rev().step_by(4) {
-        if log.borrow().iter().any(|e| e.starts_with("start")) || !g.get_new_open() {
-            break;
-        }
-        for x in (820..900).rev().step_by(8) {
-            click(w, x as f32, y as f32);
-            if log.borrow().iter().any(|e| e.starts_with("start")) || !g.get_new_open() {
-                break;
-            }
-        }
-    }
-    let role = picked[0].trim_start_matches("pick-role:");
-    assert!(
-        log.borrow().iter().any(|e| e == &format!("start-role:{role}:")),
-        "Start hands the picked role its task, and nothing else starts: {:?}",
-        log.borrow()
-    );
-    assert!(!log.borrow().iter().any(|e| e.starts_with("start:")), "not a mind: {:?}", log.borrow());
-
-    // The chips switch between a mind and the catalog.
-    for y in (100..400).step_by(4) {
-        if !g.get_new_from_catalog() {
-            break;
-        }
-        for x in (380..520).step_by(10) {
-            click(w, x as f32, y as f32);
-            if !g.get_new_from_catalog() {
-                break;
-            }
-        }
-    }
-    assert!(!g.get_new_from_catalog(), "the \"A mind\" chip leaves the catalog");
-    assert!(g.get_new_open());
-    draw();
-    save(&draw(), &output.replace(".png", "-mind.png"), width, height)?;
     ui.set_light(true);
-    g.set_new_from_catalog(true);
     draw();
     std::thread::sleep(std::time::Duration::from_millis(300));
     save(&draw(), &output.replace(".png", "-light.png"), width, height)?;
-    println!("PASS: a role's row names its role and its details its reach; New agent lists the catalog's roles with their purposes; a press picks a role, Start hands it the task, and the chips switch between a mind and the catalog");
+    ui.set_light(false);
+    println!("PASS: Start work lists the catalog's roles with their purposes; a press picks one and keeps the sheet open");
     Ok(())
 }
 

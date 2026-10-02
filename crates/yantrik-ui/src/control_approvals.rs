@@ -1603,18 +1603,24 @@ fn fingerprint(cards: &[Card], pane: &str) -> String {
     format!("{cards}|pane:{pane}")
 }
 
-/// The agent whose pane is on screen right now, or "" when no pane is: the Agents screen, in
-/// its list view, with an agent selected. That pane is where the agent's own card is answered,
+/// The agent whose pane is on screen right now, or "" when no pane is: the Agents screen with a
+/// run opened. That pane is where the agent's own card is answered,
 /// so the popup must not draw it a second time (#212).
 fn pane_agent(ui: &App) -> String {
-    if ui.get_current_screen() != crate::wire::agents::SCREEN {
-        return String::new();
-    }
     let g = ui.global::<crate::AgentsState>();
-    if g.get_view() != "list" {
+    pane_agent_of(ui.get_current_screen() == crate::wire::agents::SCREEN, g.get_detail_open(), &g.get_selected())
+}
+
+/// [`pane_agent`] without the window, so every case is a test. A run opened over the workroom is
+/// the pane; the workroom's own pages are not, and a request on its shelf is answered in the popup
+/// until its run is opened. `selected` is the screen's key, `agent#n` for a run of a chat: the
+/// card is the agent's. A key that names nothing is no pane, so the popup keeps the card (a card
+/// hidden from the popup and not drawn in a pane is a decision nobody can make).
+fn pane_agent_of(on_agents_screen: bool, detail_open: bool, selected: &str) -> String {
+    if !on_agents_screen || !detail_open || selected.is_empty() {
         return String::new();
     }
-    g.get_selected().to_string()
+    crate::agents::RowKey::parse(selected).agent.0
 }
 
 /// Whether a card is answered in the pane on screen. The pane draws live buttons for exactly
@@ -2772,37 +2778,39 @@ mod control_approvals_tests {
         assert!(grant_belongs("appr-1", "pi:c-parent", &None).is_ok(), "a caller that runs as no agent, as before — an app's dispatch forwards the claim it was handed (#182)");
     }
 
+    fn card(id: &str, status: crate::approvals::Status, agent: &str) -> crate::approvals::Card {
+        use crate::approvals::{Card, Verified};
+        Card {
+            id: id.into(),
+            requester: "pi 0.87".into(),
+            verified: Verified { agent: agent.into(), ..Verified::default() },
+            app: "files".into(),
+            action: "delete".into(),
+            grade: "sensitive".into(),
+            purpose: "Delete a file. It is not recoverable.".into(),
+            summary: crate::approvals::summary_of("Delete a file. It is not recoverable."),
+            args: vec![],
+            target: String::new(),
+            explained: String::new(),
+            warning: String::new(),
+            said: String::new(),
+            caller_says: String::new(),
+            can_session: false,
+            status,
+            record: String::new(),
+            decided_at: String::new(),
+            session: false,
+            age_secs: 3,
+        }
+    }
+
     /// #212: a card shown twice — once in the pane, once in the floating popup — was a card
     /// nobody could tell was one question or two. One place answers it now: the pane when the
     /// agent's own pane is on screen, the popup otherwise, and never neither.
     #[test]
     fn approvals_a_card_the_pane_answers_is_not_in_the_popup_too() {
-        use crate::approvals::{Card, Status, Verified};
+        use crate::approvals::Status;
 
-        fn card(id: &str, status: Status, agent: &str) -> Card {
-            Card {
-                id: id.into(),
-                requester: "pi 0.87".into(),
-                verified: Verified { agent: agent.into(), ..Verified::default() },
-                app: "files".into(),
-                action: "delete".into(),
-                grade: "sensitive".into(),
-                purpose: "Delete a file. It is not recoverable.".into(),
-                summary: crate::approvals::summary_of("Delete a file. It is not recoverable."),
-                args: vec![],
-                target: String::new(),
-                explained: String::new(),
-                warning: String::new(),
-                said: String::new(),
-                caller_says: String::new(),
-                can_session: false,
-                status,
-                record: String::new(),
-                decided_at: String::new(),
-                session: false,
-                age_secs: 3,
-            }
-        }
         // As `cards()` returns them: the decided records first, then the pending, oldest first.
         let cards = vec![
             card("appr-0", Status::Granted, "pi:c-1"),
@@ -2841,11 +2849,57 @@ mod control_approvals_tests {
         let src = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/control_approvals.rs")).unwrap();
         let src = src.split("#[cfg(test)]").next().unwrap();
         assert!(src.contains("!pane.is_empty() && card.verified.agent == pane"), "the popup matches the pane by the verified agent alone");
-        assert!(src.contains("ui.get_current_screen() != crate::wire::agents::SCREEN"), "only the Agents screen has a pane");
-        assert!(src.contains("g.get_view() != \"list\""), "the map is not a pane: the session is not on screen");
+        assert!(src.contains("ui.get_current_screen() == crate::wire::agents::SCREEN"), "only the Agents screen has a pane");
+        assert!(src.contains("!on_agents_screen || !detail_open"), "the workroom's pages are not a pane: no session is on screen");
         let wire = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/wire/agents.rs")).unwrap();
         let wire = wire.split("#[cfg(test)]").next().unwrap();
         assert!(wire.contains("c.verified.agent == a.meta.id.0"), "the pane's live buttons are the same predicate");
+    }
+
+    /// The popup hides an agent's card only while that agent's run is open over the Agents screen
+    /// (review of #584, finding 3). Every other state leaves the card in the popup, so a request
+    /// is never hidden from both places.
+    #[test]
+    fn the_popup_hides_a_card_only_while_its_runs_pane_is_open() {
+        use crate::approvals::Status;
+        // Open run of a chat: the agent is the key's agent.
+        assert_eq!(super::pane_agent_of(true, true, "pi:c-1#3"), "pi:c-1");
+        assert_eq!(super::pane_agent_of(true, true, "pi:c-1"), "pi:c-1");
+        // The workroom's pages (shelf, desks, Needs you, History) are not a pane.
+        assert_eq!(super::pane_agent_of(true, false, "pi:c-1"), "", "no run open: the shelf's request is answered in the popup");
+        // The flag left true while the key was cleared, or the screen is elsewhere: nothing is
+        // drawn in a pane, so nothing is hidden from the popup.
+        assert_eq!(super::pane_agent_of(true, true, ""), "");
+        assert_eq!(super::pane_agent_of(false, true, "pi:c-1"), "");
+        // And a card is in the pane only for the agent the pane shows.
+        assert!(!super::in_the_pane(&card("appr-1", Status::Pending, "pi:c-2"), &super::pane_agent_of(true, true, "pi:c-1")));
+        assert!(!super::in_the_pane(&card("appr-1", Status::Pending, "pi:c-1"), &super::pane_agent_of(true, false, "pi:c-1")));
+    }
+
+    /// Everything that clears the selected run also closes the pane, so `detail_open` cannot
+    /// outlive its run: `refresh` closes it whenever nothing is selected or the run is gone, and
+    /// every place that clears the selection goes through it (`leave_run`, `on_back`, a close from
+    /// another door).
+    #[test]
+    fn nothing_that_clears_the_selection_leaves_the_pane_flag_open() {
+        let wire = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/wire/agents.rs")).unwrap();
+        let wire = wire.split("#[cfg(test)]").next().unwrap();
+        let refresh = wire.find("fn refresh(").expect("refresh");
+        let refresh = &wire[refresh..refresh + wire[refresh..].find("\n}\n").unwrap()];
+        assert!(
+            refresh.contains("(st.selected.is_none() && g.get_detail_open())") && refresh.contains("g.set_detail_open(false)"),
+            "refresh is what closes the pane when nothing is selected"
+        );
+        assert!(refresh.contains("s.agent(id).is_none()"), "and when the run is no longer in the store");
+        let lines: Vec<&str> = wire.lines().collect();
+        for (n, line) in lines.iter().enumerate().filter(|(_, l)| l.contains("selected = None")) {
+            let after = lines[n..(n + 14).min(lines.len())].join("\n");
+            assert!(
+                after.contains("set_detail_open(false)") || after.contains("refresh(ui"),
+                "wire/agents.rs line {}: clears the selection without closing the pane or refreshing",
+                n + 1
+            );
+        }
     }
 }
 

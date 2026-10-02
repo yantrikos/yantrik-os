@@ -191,6 +191,13 @@ export global Theme {
     out property <color> amber-glow:        ThemeMode.dark ? #d4a57450 : #d4a57430;
     out property <color> amber-glow-strong: ThemeMode.dark ? #d4a574a0 : #d4a57460;
 
+    // ─── Mind teal ────────────────────────────────────────────────
+    // Marks a mind and its presence, and nothing else: not selection, not success, not the
+    // person's accent. Fixed, so a mind reads the same whichever accent preset is chosen
+    // (design/minds-surfaces-spec-2026-10-02.md, "Colour roles"). Amber, above, is the other
+    // half of the rule: a response from the person is pending.
+    out property <color> mind:              ThemeMode.dark ? #69c8bc : #1d7a70;
+
     // ─── Cyan palette ─────────────────────────────────────────────
     // The same crisp cyan as the default accent: most of what reads "cyan" here is the accent
     // written before AccentPreset existed, and the two must not drift apart.
@@ -320,6 +327,7 @@ export global Theme {
     out property <int>    fw-hero: 600;
     out property <length> fs-hero-sub: 17px;
     out property <int>    fw-hero-sub: 400;
+    out property <length> fs-page: 24px;         // A screen's own title: Agents, History
     out property <length> fs-display: 20px;      // Panel titles, major headers
     out property <int>    fw-display: 600;
     out property <length> fs-title-1: 18px;      // App titles, large section headers
@@ -348,6 +356,14 @@ export global Theme {
     out property <length> sp-7: 32px;
     out property <length> sp-8: 40px;
     out property <length> sp-9: 48px;
+
+    // Half-steps between the spacing scale's rungs, for the few places a layout sits between two
+    // of them (a badge's inset, a row's gap). Prefer sp-1 to sp-9; reach for these only to keep
+    // an existing look.
+    out property <length> sp-half: 2px;
+    out property <length> sp-1h: 6px;
+    out property <length> sp-2h: 10px;
+    out property <length> sp-3h: 14px;
 
     // Touch targets
     out property <length> touch-target: 44px;
@@ -539,6 +555,41 @@ export global Theme {
     out property <length> sw-plate-h: 40px;
     out property <length> sw-cols-3-below: 760px;
     out property <length> sw-cols-2-below: 560px;
+    // Agents workroom (agents*.slint). The spec's numbers (design/minds-surfaces-spec-2026-10-02.md
+    // section 2) live here so a density or scale change reaches every screen of it at once.
+    // Marks: the mind's disc at four sizes.
+    out property <length> wr-mark-xs: 18px;
+    out property <length> wr-mark-s: 22px;
+    out property <length> wr-mark-m: 24px;
+    out property <length> wr-mark-l: 28px;
+    // The mind mark's inner dot, as a fraction of the mark.
+    out property <float>  wr-mark-core: 0.36;
+    out property <float>  wr-mark-ring-div: 12;     // the ring is size / this, at least the focus ring
+    out property <length> wr-glyph: 14px;           // small line icon beside text
+    out property <length> wr-fade-h: 14px;          // the "more below" fade under a scrolling list
+    out property <length> wr-dot-gap: 3px;          // gap between a run's progress dots; scrollbar width
+    // Nav: a mind's row, a section row, the indent of a mind's sub-rows, the count badge.
+    out property <length> wr-nav-row-h: 64px;
+    out property <length> wr-nav-item-h: 40px;
+    out property <length> wr-nav-indent: 52px;
+    out property <length> wr-badge-h: 20px;
+    // Decision shelf and desks.
+    out property <length> wr-shelf-card-h: 84px;
+    out property <length> wr-header-h: 44px;        // a desk's header; the screen's header row
+    out property <length> wr-row-h: 56px;
+    out property <length> wr-desk-min-w: 320px;
+    out property <length> wr-desk-h: 248px;
+    out property <length> wr-desk-preview-h: 104px;
+    out property <length> wr-desk-line-h: 48px;
+    out property <length> wr-desk-acts-h: 52px;
+    // Start-work sheet and task detail.
+    out property <length> wr-sheet-w: 480px;
+    out property <length> wr-detail-w: 440px;
+    out property <length> wr-task-field-h: 120px;
+    out property <length> wr-role-row-h: 50px;
+    out property <length> wr-roles-max-h: 200px;
+    out property <length> wr-btn-w: 120px;
+    out property <length> wr-btn-w-wide: 140px;
     // One-pixel edge of a control, and the stroke weights an icon is drawn with (regular beside
     // text, a touch heavier on a filled tile where it sits on the accent).
     out property <length> hairline: 1px;

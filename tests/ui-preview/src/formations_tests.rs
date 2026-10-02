@@ -264,42 +264,47 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
 
 /// The Agents screen: the Council's Reviewer, and the approval card it raised.
 fn agents_row_and_card(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use super::agents_tests::{desk, fill_workroom, model};
     let (width, height) = (1280u32, 800u32);
     let ui = AgentsProbe::new()?;
     let g = ui.global::<AgentsState>();
-    // The Agents screen as the shell fills it, then the Build recipe's Reviewer selected.
-    super::agents_tests::fill(&g, false);
-    let row = |id: &str, mind: &str, title: &str, state: &str, label: &str, role: &str, origin: &str| AgentRowData {
-        id: id.into(),
-        mind: mind.into(),
-        title: title.into(),
-        state: state.into(),
-        label: label.into(),
-        since: "40s".into(),
-        parent: "".into(),
-        role: role.into(),
-        origin: origin.into(),
-        progress: "".into(),
-        stuck: "".into(),
+    // The workroom as the shell fills it, with the work three recipes handed out: each desk says
+    // whose work it is, as a row did before.
+    fill_workroom(&g);
+    let via = |via: &str, d: DeskCardData| DeskCardData { via: via.into(), ..d };
+    g.set_desks(model(vec![
+        via(
+            "Build recipe → Reviewer",
+            desk("deepseek:c-9d1e02", "deepseek", "deepseek", "Review the change just made for: add a --dry-run flag", "needs_you", "40s", "Waiting for your answer"),
+        ),
+        via(
+            "Council recipe → Red team",
+            desk("pi:c-77b2e0", "pi", "pi", "Answer this question on your own, as well as you can…", "working", "40s", "Last update 10:42"),
+        ),
+        via(
+            "Council recipe → Planner",
+            desk("deepseek:c-a41c55", "deepseek", "deepseek", "Answer this question on your own, as well as you can…", "working", "40s", "Last update 10:42"),
+        ),
+    ]));
+    ui.show()?;
+    w.set_size(slint::PhysicalSize::new(width, height));
+    let draw = || {
+        slint::platform::update_timers_and_animations();
+        let mut pixels = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(width, height);
+        w.request_redraw();
+        w.draw_if_needed(|r| { r.render(pixels.make_mut_slice(), width as usize); });
+        pixels
     };
-    g.set_rows(ModelRc::new(VecModel::from(vec![
-        row("deepseek:c-9d1e02", "deepseek", "Review the change just made for: add a --dry-run flag", "waiting_for_you", "waiting for you", "Reviewer", "Build recipe"),
-        row("pi:c-77b2e0", "pi", "Answer this question on your own, as well as you can…", "thinking", "thinking", "Red team", "Council recipe"),
-        row("deepseek:c-a41c55", "deepseek", "Answer this question on your own, as well as you can…", "thinking", "thinking", "Planner", "Council recipe"),
-        row("pi:main", "pi", "tidy the photos folder", "done", "done", "", ""),
-    ])));
-    g.set_selected("deepseek:c-9d1e02".into());
+    draw();
+    save(&draw(), &output.replace(".png", "-agents-desks.png"), width, height)?;
+    // The Build recipe's Reviewer opened, with the card it raised in the pane.
+    super::agents_tests::fill_detail(&g);
     let mut header = g.get_header();
     header.id = "deepseek:c-9d1e02".into();
     header.mind = "deepseek".into();
     header.title = "Review the change just made for: add a --dry-run flag".into();
     header.note = "".into();
     g.set_header(header);
-    let mut details = g.get_details();
-    details.mind = "deepseek".into();
-    details.role = "Reviewer".into();
-    details.reach = "editor, documents and notes · at most safe".into();
-    g.set_details(details);
     let lines = |rows: &[&str]| ModelRc::new(VecModel::from(rows.iter().map(|r| SharedString::from(*r)).collect::<Vec<_>>()));
     let card = ApprovalRequest {
         id: "appr-12".into(),
@@ -332,15 +337,6 @@ fn agents_row_and_card(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Bo
         item("text", "t1.0", "Reading the plan and the Coder's change first."),
         AgentItemData { approval: card, ..item("approval", "t1.1", "notes.list_notes") },
     ])));
-    ui.show()?;
-    w.set_size(slint::PhysicalSize::new(width, height));
-    let draw = || {
-        slint::platform::update_timers_and_animations();
-        let mut pixels = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(width, height);
-        w.request_redraw();
-        w.draw_if_needed(|r| { r.render(pixels.make_mut_slice(), width as usize); });
-        pixels
-    };
     draw();
     save(&draw(), &output.replace(".png", "-agents.png"), width, height)?;
     ui.hide()?;

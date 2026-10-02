@@ -1,5 +1,9 @@
 //! The Agents screen (34), and every agent popped out into a window of its own.
 //!
+//! The screen is a workroom (see `agents_workroom` for what it says and `agents.slint` for how it
+//! is drawn): decisions waiting, desks at work, the minds, and one run's detail when it is opened.
+//! A popped-out window is still one agent's whole session, as it was.
+//!
 //! Both draw from the one store in `crate::agents`, through the `AgentsState` global in
 //! `agents.slint`. The screen's instance of that global lives on the shell's window; each popped-out
 //! `AgentWindow` has its own, filled by the same code from the same store — so the two views of an
@@ -22,14 +26,15 @@ use std::time::Duration;
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 
 use crate::agents::model::{
-    bytes, now, Agent, Approval, ApprovalOutcome, CallState, Card, Details, Item, Mark, OutputKind, Provenance, State, Tab, Turn,
+    bytes, now, Agent, Approval, ApprovalOutcome, CallState, Card, Details, Item, Mark, OutputKind, Provenance, State, Turn,
 };
 use crate::agents::{self, feed, launch, AgentId, Store};
 use crate::app_context::AppContext;
+use super::agents_workroom as workroom;
 use crate::{
-    AccentPreset, AgentDetailsData, AgentHeaderData, AgentItemData, AgentMindData, AgentRoleData, AgentRowData,
-    AgentRunData, AgentTabData, AgentWindow, AgentsState, App, ApprovalRequest, RouteStopData, ThemeMode,
-    ThemeOverrides, ToolCallData, WorkCardData,
+    AccentPreset, AgentDetailsData, AgentHeaderData, AgentItemData, AgentMindData, AgentRoleData,
+    AgentRunData, AgentWindow, AgentsState, App, ApprovalRequest, ChangeRowData, ChildRunData, DecisionData,
+    DeskCardData, ResultData, RunFactData, ThemeMode, ThemeOverrides, ToolCallData, WorkCardData, WorkNavData,
 };
 use super::lens_work;
 
@@ -64,6 +69,9 @@ struct Surface {
     /// The store revision and local change drawn last.
     drawn: Option<(u64, u64)>,
     local: u64,
+    /// The screen's detail reads as a timeline: runs of calls are folded into one line each, and
+    /// the run's ledger and facts are published. A popped-out window shows every card, as before.
+    grouped: bool,
 }
 
 impl Surface {
@@ -77,6 +85,7 @@ impl Surface {
             keys: Vec::new(),
             drawn: None,
             local: 0,
+            grouped: false,
         }
     }
 
@@ -101,29 +110,28 @@ struct Popped {
 }
 
 struct Screen {
-    tab: Tab,
+    /// The run opened, when the screen shows one.
     selected: Option<AgentId>,
     /// The run picked, when the selected row is one run of a chat (`agent#n`).
     run: Option<u64>,
-    /// The rows as drawn, so they can be held still while the pointer is over them.
-    order: Vec<agents::RowKey>,
     main: Surface,
     windows: BTreeMap<AgentId, Popped>,
     /// When New agent last read the catalog, while it is open.
     roles_read: Option<std::time::Instant>,
+    /// The mind the workroom is narrowed to, by harness id.
+    mind: Option<String>,
 }
 
 type Shared = Rc<RefCell<Screen>>;
 
 pub fn wire(ui: &App, _ctx: &AppContext) {
     let state: Shared = Rc::new(RefCell::new(Screen {
-        tab: Tab::Active,
         selected: None,
         run: None,
-        order: Vec::new(),
-        main: Surface::new(),
+        main: Surface { grouped: true, ..Surface::new() },
         windows: BTreeMap::new(),
         roles_read: None,
+        mind: None,
     }));
     let g = ui.global::<AgentsState>();
     g.set_items(ModelRc::from(state.borrow().main.items.clone()));
@@ -138,40 +146,46 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
         }
     };
 
-    g.on_select_tab(on(|ui, state, key| {
-        {
-            let mut st = state.borrow_mut();
-            st.tab = Tab::from_key(&key);
-            st.order.clear();
-            st.selected = None;
-            st.run = None;
-        }
-        ui.global::<AgentsState>().set_tab(key.into());
-        refresh(ui, state, true);
-    }));
     g.on_select(on(|ui, state, id| {
         let key = agents::RowKey::parse(&id);
         let mut st = state.borrow_mut();
         st.selected = Some(key.agent);
         st.run = key.run;
         drop(st);
+        // Choosing a run, from a desk, a request, History or the navigation, opens it.
+        ui.global::<AgentsState>().set_detail_open(true);
         refresh(ui, state, true);
     }));
+    // ── The workroom: its pages, a mind's narrowing, back from a run, and Chat ──
+    g.on_back({
+        let (weak, state) = (weak.clone(), state.clone());
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                leave_run(&ui, &state);
+            }
+        }
+    });
+    g.on_show_section(on(|ui, state, section| {
+        let g = ui.global::<AgentsState>();
+        state.borrow_mut().mind = None;
+        g.set_mind_filter("".into());
+        g.set_mind_filter_name("".into());
+        g.set_section(section.into());
+        leave_run(ui, state);
+    }));
+    g.on_filter_mind(on(|ui, state, mind| {
+        let g = ui.global::<AgentsState>();
+        state.borrow_mut().mind = Some(mind.clone());
+        g.set_mind_filter(mind.into());
+        g.set_section("workroom".into());
+        leave_run(ui, state);
+    }));
+    g.on_chat_with(on(|ui, _state, id| notice(&ui.global::<AgentsState>(), chat_with(ui, &id))));
     g.on_pop_out(on(|ui, state, id| pop_out(ui, state, agent_of_row(&id))));
     g.on_stop(on(|ui, state, id| {
         notice(&ui.global::<AgentsState>(), launch::stop(&agent_of_row(&id)));
         refresh(ui, state, true);
     }));
-    g.on_close(on(|ui, state, id| close(ui, state, agent_of_row(&id), false)));
-    g.on_close_confirmed(on(|ui, state, id| close(ui, state, agent_of_row(&id), true)));
-    g.on_close_cancelled({
-        let weak = weak.clone();
-        move || {
-            if let Some(ui) = weak.upgrade() {
-                ui.global::<AgentsState>().set_confirm_close("".into());
-            }
-        }
-    });
     g.on_toggle({
         let (weak, state) = (weak.clone(), state.clone());
         move |key, open| {
@@ -252,14 +266,12 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
         let (weak, state) = (weak.clone(), state.clone());
         move || {
             let Some(ui) = weak.upgrade() else { return };
-            {
-                let mut st = state.borrow_mut();
-                st.tab = Tab::All;
-                st.order.clear();
-            }
             let g = ui.global::<AgentsState>();
-            g.set_tab(Tab::All.key().into());
-            g.set_view("list".into());
+            g.set_section("history".into());
+            g.set_mind_filter("".into());
+            g.set_mind_filter_name("".into());
+            g.set_detail_open(false);
+            state.borrow_mut().mind = None;
             ui.set_lens_open(false);
             ui.set_current_screen(SCREEN);
             ui.invoke_navigate(SCREEN);
@@ -303,6 +315,41 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
     std::mem::forget(timer);
 }
 
+/// Back to the page a run was opened from: nothing selected, and nothing half-asked.
+fn leave_run(ui: &App, state: &Shared) {
+    {
+        let mut st = state.borrow_mut();
+        st.selected = None;
+        st.run = None;
+    }
+    let g = ui.global::<AgentsState>();
+    g.set_detail_open(false);
+    g.set_confirm_stop("".into());
+    g.set_menu_key("".into());
+    refresh(ui, state, true);
+}
+
+/// Chat: the person's conversation with a mind, in the Lens. `id` is a harness id (a desk's mind)
+/// or an agent's id (`pi:c-7f3a91`, a run's): either way it is the mind that is chosen, and the
+/// Lens opens on it. The choice is the Lens's own (`harness::choose`), so a mind that cannot
+/// answer says why instead of the Lens opening on another.
+fn chat_with(ui: &App, id: &str) -> Result<(), String> {
+    let harness = id.split_once(':').map_or(id, |(harness, _)| harness);
+    let host = crate::wire::harness::host().ok_or_else(|| "the harness host is not running yet".to_string())?;
+    crate::wire::harness::choose(host, harness)?;
+    // Remembered, as every choice of a mind is (`use_harness`): the host's choice is restored from
+    // the saved one, and one that was never saved is handed back to the old mind a moment later.
+    crate::wire::settings::set_preferred_mind(harness);
+    // The Lens is drawn by the desktop and nowhere else, so Chat goes there, as `open_lens` does.
+    if ui.get_current_screen() != 1 {
+        ui.set_current_screen(1);
+        ui.invoke_navigate(1);
+    }
+    ui.set_lens_open(true);
+    ui.invoke_open_lens();
+    Ok(())
+}
+
 /// Turns a re-attaching harness picked back up after the shell restarted (#246): back in their
 /// agents, and, for the Lens's own conversation, back in the Lens, where the person was
 /// waiting for the answer.
@@ -318,7 +365,7 @@ fn pick_up_resumed(ui: &App, streams: &crate::streaming::Streams) {
     }
 }
 
-/// New agent's Start, either way: the new agent selected on Active, or why it did not start.
+/// Start work, either way: the new agent opened, or why it did not start.
 fn started(ui: &App, state: &Shared, outcome: Result<AgentId, String>) {
     let g = ui.global::<AgentsState>();
     match outcome {
@@ -327,14 +374,11 @@ fn started(ui: &App, state: &Shared, outcome: Result<AgentId, String>) {
             g.set_new_error("".into());
             {
                 let mut st = state.borrow_mut();
-                if st.tab != Tab::All {
-                    st.tab = Tab::Active;
-                    g.set_tab(Tab::Active.key().into());
-                }
-                st.order.clear();
                 st.selected = Some(agent);
                 st.run = None;
             }
+            // The desk it was given is the page to watch.
+            g.set_detail_open(true);
             refresh(ui, state, true);
         }
         Err(why) => g.set_new_error(why.into()),
@@ -500,54 +544,21 @@ fn pick_mind(g: &AgentsState, mind: &str) {
     g.set_new_note(note.into());
 }
 
-/// Redraw the screen: tabs, list, and the selected agent's session and details.
+/// Redraw the screen: the workroom, and the opened run's session and details.
 fn refresh(ui: &App, state: &Shared, force: bool) {
     let g = ui.global::<AgentsState>();
     let seen = Seen::now();
-    let hovering = g.get_list_hovered();
+    // Read before the store's lock is taken: the terminal has its own.
+    let jobs = waiting_input_jobs();
     let mut st = state.borrow_mut();
     let st = &mut *st;
     agents::store().read(|s| {
-        let tasks = s.tasks(TASKS_SHOWN);
-        let tabs: Vec<AgentTabData> = Tab::EVERY
-            .iter()
-            .zip(s.counts())
-            .chain(std::iter::once((&Tab::Tasks, tasks.len())))
-            .map(|(tab, count)| AgentTabData { id: tab.key().into(), label: tab.label().into(), count: count as i32 })
-            .collect();
-        if let Some(model) = crate::models::changed(g.get_tabs(), tabs) {
-            g.set_tabs(model);
-        }
-
-        let empty = if st.tab == Tab::Tasks {
-            if tasks.is_empty() { "No tasks yet. Everything asked of a mind, in the Lens or from New agent, is listed here, newest first.".to_string() } else { String::new() }
-        } else {
-            empty_note(st.tab, s.counts())
-        };
-        if g.get_empty_note() != empty.as_str() {
-            g.set_empty_note(empty.into());
-        }
-
-        let (order, rows): (Vec<agents::RowKey>, Vec<AgentRowData>) = if st.tab == Tab::Tasks {
-            // One row per request (#234), keyed `agent#turn`; picking one opens that run.
-            let keys: Vec<agents::RowKey> = tasks.iter().map(|(id, n)| agents::RowKey::run(id, *n)).collect();
-            let rows = keys.iter().filter_map(|k| row_for(s, k)).collect();
-            (keys, rows)
-        } else {
-            let hold = (hovering && !st.order.is_empty()).then_some(st.order.as_slice());
-            let order = s.rows(st.tab, hold);
-            let rows = order.iter().filter_map(|k| row_for(s, k)).collect();
-            (order, rows)
-        };
-        st.order = order;
-        if let Some(model) = crate::models::changed(g.get_rows(), rows) {
-            g.set_rows(model);
-        }
-
-        if st.selected.as_ref().is_none_or(|id| s.agent(id).is_none()) {
-            let first = st.order.first().cloned();
-            st.selected = first.as_ref().map(|k| k.agent.clone());
-            st.run = first.and_then(|k| k.run);
+        // A run opened that the store no longer has (closed from another door) goes back to the
+        // page it came from. Nothing is selected on its own: the workroom opens on the workroom.
+        if st.selected.as_ref().is_some_and(|id| s.agent(id).is_none()) || (st.selected.is_none() && g.get_detail_open()) {
+            st.selected = None;
+            st.run = None;
+            g.set_detail_open(false);
         }
         let selected = st
             .selected
@@ -557,14 +568,17 @@ fn refresh(ui: &App, state: &Shared, force: bool) {
         if g.get_selected() != selected.as_str() {
             g.set_selected(selected.into());
         }
-        let selected = st.selected.clone();
+        let selected = st.selected.clone().filter(|_| g.get_detail_open());
         st.main.run = st.run;
         draw(&g, &mut st.main, s, selected.as_ref(), &seen, force);
 
-        // Published whatever the view, so choosing Overview finds the route already there.
-        publish_route(&g, s, selected.as_ref(), st.run);
+        publish_workroom(&g, &room_now(s, &seen, &jobs), st.mind.as_deref());
         publish_lens(&g, s);
     });
+    let mode_line = workroom::mode_line(crate::mind_mode::current());
+    if g.get_mode_line() != mode_line.as_str() {
+        g.set_mode_line(mode_line.into());
+    }
 
     if g.get_new_open() {
         let rows: Vec<AgentMindData> = seen
@@ -642,52 +656,175 @@ fn work_card(w: &lens_work::Work) -> WorkCardData {
     }
 }
 
-/// The Overview (Pranab, 27 September): the selected run as a route, not every agent at once.
-/// Set only where it changed, so a route in which nothing moves asks for no redraw.
-fn publish_route(g: &AgentsState, s: &Store, agent: Option<&AgentId>, run: Option<u64>) {
-    let a = agent.and_then(|id| s.agent(id));
-    let children: Vec<&Agent> = match a {
-        Some(a) => s.agents().iter().filter(|c| c.meta.parent.as_ref() == Some(&a.meta.id)).collect(),
-        None => Vec::new(),
+/// The workroom as it stands: what the screen draws and `describe shell` says, from the one
+/// reading of the stores.
+fn room_now(s: &Store, seen: &Seen, jobs: &[(AgentId, String)]) -> workroom::Workroom {
+    let mut minds: Vec<(String, String)> = seen.minds.iter().map(|(id, name, _)| (id.clone(), name.clone())).collect();
+    minds.sort();
+    let mut attached = seen.attached();
+    attached.push(crate::wire::harness::BUILTIN_ID.to_string());
+    workroom::compose(s, &minds, &attached, &seen.approvals, jobs, now())
+}
+
+/// `describe shell` under `workroom`: which page the screen is on and what it says — the counts,
+/// each mind's state, and, for the person's own reader, the desks and the requests waiting. A mind
+/// reading it is told the counts and the states, never what the person asked of the others or
+/// what is being asked of them (the boundary `agents::PERSONS_FIELDS` holds for `agents`).
+pub fn workroom_for_describe(ui: &App, agent_reading: bool) -> serde_json::Value {
+    // Read before the store's lock is taken: the approvals and the terminal have their own.
+    let seen = Seen::now();
+    let jobs = waiting_input_jobs();
+    let room = agents::store().read(|s| room_now(s, &seen, &jobs));
+    let g = ui.global::<AgentsState>();
+    let opened = g.get_detail_open().then(|| g.get_selected().to_string()).filter(|key| !key.is_empty());
+    let narrowed = Some(g.get_mind_filter().to_string()).filter(|mind| !mind.is_empty());
+    workroom::for_describe(&room, &g.get_section(), opened.as_deref(), narrowed.as_deref(), agent_reading)
+}
+
+/// The minds the workroom can be narrowed to, as `(id, name)`: the navigation's own list.
+pub fn workroom_minds_now() -> Vec<(String, String)> {
+    let seen = Seen::now();
+    let jobs = waiting_input_jobs();
+    let room = agents::store().read(|s| room_now(s, &seen, &jobs));
+    room.nav.into_iter().filter(|n| n.kind == "mind").map(|n| (n.id, n.label)).collect()
+}
+
+/// The workroom, into the global: the navigation, the desks, the shelf and the pages behind it.
+/// Every list is set only where it changed, so a workroom in which nothing moves asks for no
+/// redraw. The header's counts and the navigation are the whole desktop's; the pages are the
+/// narrowed mind's when one is chosen.
+fn publish_workroom(g: &AgentsState, all: &workroom::Workroom, mind: Option<&str>) {
+    let view = mind.map_or_else(|| all.clone(), |m| all.narrowed(m));
+    let set = |current: slint::SharedString, text: String, put: &dyn Fn(slint::SharedString)| {
+        if current != text.as_str() {
+            put(text.into());
+        }
     };
-    let route = a.and_then(|a| agents::route::route(a, run, &children, now()));
-    let note = match a {
-        None => "Pick a run in the list to see its route.",
-        Some(_) => "It has not run anything yet.",
-    };
-    let (title, summary, live, stops) = match route {
-        Some(r) => (r.title, r.summary, r.live, r.stops),
-        None => (String::new(), String::new(), false, Vec::new()),
-    };
-    let stops: Vec<RouteStopData> = stops
-        .into_iter()
-        .map(|st| RouteStopData {
-            key: st.key.into(),
-            kind: st.kind.into(),
-            state: st.state.into(),
-            title: st.title.into(),
-            sub: st.sub.into(),
-            track_in: st.track_in.into(),
-            track_out: st.track_out.into(),
-            train_in: st.train_in,
-            train_out: st.train_out,
-            train_span: st.train_span,
+    set(g.get_summary(), all.summary(), &|t| g.set_summary(t));
+    let name = mind
+        .and_then(|m| all.nav.iter().find(|n| n.kind == "mind" && n.id == m))
+        .map(|n| n.label.clone())
+        .unwrap_or_default();
+    set(g.get_mind_filter_name(), name, &|t| g.set_mind_filter_name(t));
+    for (current, now, put) in [
+        (g.get_needs_count(), all.requests as i32, &(|n| g.set_needs_count(n)) as &dyn Fn(i32)),
+        (g.get_request_minds(), all.request_minds as i32, &|n| g.set_request_minds(n)),
+        (g.get_runs_count(), all.runs as i32, &|n| g.set_runs_count(n)),
+        (g.get_shelf_count(), view.requests as i32, &|n| g.set_shelf_count(n)),
+        (g.get_shelf_minds(), view.request_minds as i32, &|n| g.set_shelf_minds(n)),
+        (g.get_view_runs(), view.runs as i32, &|n| g.set_view_runs(n)),
+    ] {
+        if current != now {
+            put(now);
+        }
+    }
+
+    let nav: Vec<WorkNavData> = all
+        .nav
+        .iter()
+        .map(|n| WorkNavData {
+            kind: n.kind.into(),
+            id: n.id.as_str().into(),
+            label: n.label.as_str().into(),
+            sub: n.sub.as_str().into(),
+            needs: n.needs as i32,
+            working: n.working,
+            available: n.available,
         })
         .collect();
-    if let Some(model) = crate::models::changed(g.get_route_stops(), stops) {
-        g.set_route_stops(model);
+    if let Some(model) = crate::models::changed(g.get_nav_minds(), nav) {
+        g.set_nav_minds(model);
     }
-    if g.get_route_title() != title.as_str() {
-        g.set_route_title(title.into());
+    let desks: Vec<DeskCardData> = view
+        .desks
+        .iter()
+        .map(|d| DeskCardData {
+            key: d.key.as_str().into(),
+            mind_id: d.mind_id.as_str().into(),
+            mind: d.mind.as_str().into(),
+            via: d.via.as_str().into(),
+            task: d.task.as_str().into(),
+            state: d.state.into(),
+            label: d.label.as_str().into(),
+            activity: d.activity.as_str().into(),
+            since: d.since.as_str().into(),
+        })
+        .collect();
+    if let Some(model) = crate::models::changed(g.get_desks(), desks) {
+        g.set_desks(model);
     }
-    if g.get_route_summary() != summary.as_str() {
-        g.set_route_summary(summary.into());
+    let decision = |d: &workroom::Decision| DecisionData {
+        key: d.key.as_str().into(),
+        request: d.request.as_str().into(),
+        mind: d.mind.as_str().into(),
+        task: d.task.as_str().into(),
+        text: d.text.as_str().into(),
+        age: workroom::ago(d.age_secs).into(),
+        action: d.action.as_str().into(),
+    };
+    // The Needs you page lists the whole desktop's; the shelf is the narrowed mind's, three of them.
+    let every: Vec<DecisionData> = all.decisions.iter().map(decision).collect();
+    if let Some(model) = crate::models::changed(g.get_decisions(), every) {
+        g.set_decisions(model);
     }
-    if g.get_route_live() != live {
-        g.set_route_live(live);
+    let shelf: Vec<DecisionData> = view.decisions.iter().take(workroom::SHELF_SHOWN).map(decision).collect();
+    if let Some(model) = crate::models::changed(g.get_shelf(), shelf) {
+        g.set_shelf(model);
     }
-    if g.get_route_note() != note {
-        g.set_route_note(note.into());
+    let result = |r: &workroom::Finished| ResultData {
+        key: r.key.as_str().into(),
+        mind: r.mind.as_str().into(),
+        task: r.task.as_str().into(),
+        outcome: r.outcome.into(),
+        label: r.label.into(),
+        when: r.when.as_str().into(),
+    };
+    let recent: Vec<ResultData> = view.history.iter().take(workroom::RECENT_SHOWN).map(result).collect();
+    if let Some(model) = crate::models::changed(g.get_recent(), recent) {
+        g.set_recent(model);
+    }
+    let history: Vec<ResultData> = view.history.iter().map(result).collect();
+    if let Some(model) = crate::models::changed(g.get_history(), history) {
+        g.set_history(model);
+    }
+}
+
+/// The opened run: its state in the screen's words, the changes recorded and the facts behind it.
+/// Worked out when the store changes, with the session, not every tick.
+fn publish_detail(g: &AgentsState, s: &Store, a: &Agent, run: Option<u64>) {
+    let (state, label) = workroom::state_of(a, run);
+    if g.get_detail_state() != state {
+        g.set_detail_state(state.into());
+    }
+    if g.get_detail_label() != label {
+        g.set_detail_label(label.into());
+    }
+    let turns: Vec<&Turn> = match run {
+        Some(n) => a.turns.iter().filter(|t| t.n == n).collect(),
+        None => a.turns.iter().collect(),
+    };
+    let changes = workroom::changes_of(&turns);
+    if g.get_changes_recorded() != workroom::recorded(&changes) {
+        g.set_changes_recorded(workroom::recorded(&changes));
+    }
+    let rows: Vec<ChangeRowData> = changes
+        .iter()
+        .map(|c| ChangeRowData { group: c.group.into(), text: c.text.as_str().into(), status: c.status.as_str().into(), tone: c.tone.into() })
+        .collect();
+    if let Some(model) = crate::models::changed(g.get_changes(), rows) {
+        g.set_changes(model);
+    }
+    let facts: Vec<RunFactData> =
+        workroom::run_facts(a, run).into_iter().map(|(label, value)| RunFactData { label: label.into(), value: value.into() }).collect();
+    if let Some(model) = crate::models::changed(g.get_run_facts(), facts) {
+        g.set_run_facts(model);
+    }
+    let children: Vec<ChildRunData> = workroom::child_runs(s, a, run)
+        .into_iter()
+        .map(|c| ChildRunData { key: c.key.into(), title: c.title.into(), label: c.label.into(), state: c.state.into() })
+        .collect();
+    if let Some(model) = crate::models::changed(g.get_child_runs(), children) {
+        g.set_child_runs(model);
     }
 }
 
@@ -741,6 +878,13 @@ fn draw(g: &AgentsState, surface: &mut Surface, s: &Store, agent: Option<&AgentI
         g.set_details(details);
     }
 
+    if surface.grouped {
+        // The mode is the desktop's and moves with the person's choice, not with the store.
+        let mode = workroom::mode_label(crate::mind_mode::current());
+        if g.get_detail_mode() != mode {
+            g.set_detail_mode(mode.into());
+        }
+    }
     let fresh = surface.agent.as_ref() != Some(&a.meta.id) || surface.drawn_run != surface.run;
     if fresh {
         surface.agent = Some(a.meta.id.clone());
@@ -755,7 +899,14 @@ fn draw(g: &AgentsState, surface: &mut Surface, s: &Store, agent: Option<&AgentI
         return;
     }
     surface.drawn = Some(stamp);
-    publish_items(g, surface, items_of(a, &surface.expanded, &seen.approvals, surface.run), fresh);
+    let items = items_of(a, &surface.expanded, &seen.approvals, surface.run);
+    let items = if surface.grouped {
+        publish_detail(g, s, a, surface.run);
+        workroom::group_calls(items, &surface.expanded)
+    } else {
+        items
+    };
+    publish_items(g, surface, items, fresh);
 }
 
 /// Put a session's items in the model: in place when only the end changed, so the view keeps its
@@ -783,85 +934,14 @@ fn publish_items(g: &AgentsState, surface: &mut Surface, items: Vec<AgentItemDat
 
 // ── From the store to what the screen draws ────────────────────────
 
-fn row_of(a: &Agent) -> AgentRowData {
-    let (progress, stuck) = row_progress(a, crate::agents::model::now());
-    AgentRowData {
-        id: a.meta.id.0.as_str().into(),
-        mind: a.meta.mind.as_str().into(),
-        title: one_line(latest_request(&a.turns, &a.meta.title), TITLE_CHARS).into(),
-        state: a.state.key().into(),
-        label: a.state.label().into(),
-        since: since(a).into(),
-        parent: a.meta.parent.as_ref().map(|p| p.0.clone()).unwrap_or_default().into(),
-        role: a.meta.role.as_ref().map(|r| r.name.clone()).unwrap_or_default().into(),
-        origin: a.meta.recipe.as_ref().map(|r| r.label()).unwrap_or_default().into(),
-        progress: progress.into(),
-        stuck: stuck.into(),
-    }
-}
-
-/// How many requests the Tasks tab lists, newest first.
-const TASKS_SHOWN: usize = 60;
-
-/// One row of the list: an agent as before, or one run of a chat, marked where it came from.
-fn row_for(s: &Store, key: &agents::RowKey) -> Option<AgentRowData> {
-    let a = s.agent(&key.agent)?;
-    let Some(n) = key.run else { return Some(row_of(a)) };
-    let mut row = task_row(a, n, now())?;
-    let from_chat = a.is_plain_main() && a.turns.iter().find(|t| t.n == n).is_some_and(|t| t.origin != crate::agents::model::TurnOrigin::Agent);
-    if from_chat {
-        row.origin = "Chat".into();
-    }
-    Some(row)
-}
-
-/// The agent a row is about: a Tasks row's id is `agent#turn`.
+/// The agent a run's key is about: a run's key is `agent#turn`.
 fn agent_of_row(id: &str) -> AgentId {
     AgentId(id.split_once('#').map_or(id, |(agent, _)| agent).to_string())
 }
 
-/// One request, as a Tasks row (#234): what was asked, which mind, how it stands, and, while it
-/// runs, the shell's own count of its calls and whether it looks stuck.
-fn task_row(a: &Agent, n: u64, now: u64) -> Option<AgentRowData> {
-    let turn = a.turns.iter().find(|t| t.n == n)?;
-    let mut row = row_of(a);
-    row.id = format!("{}#{}", a.meta.id.0, n).into();
-    row.title = crate::agents::progress::brief(&turn.prompt, 120).into();
-    if turn.open() {
-        row.since = duration(now.saturating_sub(turn.started)).into();
-    } else {
-        // A task the desktop's stopping cut off is lost, not failed: the mind never gave up on it.
-        let (state, label) = if turn.lost {
-            ("lost", "lost when the desktop stopped")
-        } else if turn.ok == Some(false) {
-            ("failed", "could not finish")
-        } else {
-            ("done", "done")
-        };
-        row.state = state.into();
-        row.label = label.into();
-        row.since = clock(turn.ended.unwrap_or(turn.started)).into();
-        row.progress = format!("{} call{}", turn.cards().count(), if turn.cards().count() == 1 { "" } else { "s" }).into();
-        row.stuck = "".into();
-    }
-    Some(row)
-}
-
-/// A working agent's row line from the shell's own record (#234): its calls counted and when it
-/// was last heard from, and why it looks stuck when it does. Empty for an agent at rest.
-fn row_progress(a: &Agent, now: u64) -> (String, String) {
-    let Some(p) = crate::agents::progress::of(a, now) else { return (String::new(), String::new()) };
-    let mut line = format!("{} call{}", p.calls, if p.calls == 1 { "" } else { "s" });
-    if p.failed > 0 {
-        line.push_str(&format!(" · {} failed", p.failed));
-    }
-    line.push_str(&format!(" · heard {} ago", crate::agents::progress::span(p.quiet_secs)));
-    (line, p.stuck.unwrap_or_default())
-}
-
-/// What an agent was last asked, which is what its row is about now.
+/// What an agent was last asked, which is what its title is about now.
 ///
-/// The row used to carry the conversation's first prompt for ever. The Lens's conversation with a
+/// A title used to carry the conversation's first prompt for ever. The Lens's conversation with a
 /// mind is one long-lived agent, so every request a person made there sat under whatever they
 /// asked first, hours before: on VM 520, "Release check: reply with exactly one word, READY."
 /// over a town model, a daily briefing and a game (#234, #246).
@@ -869,7 +949,7 @@ fn row_progress(a: &Agent, now: u64) -> (String, String) {
 /// this only bounds the work of a prompt pasted in whole.
 const TITLE_CHARS: usize = 200;
 
-fn latest_request<'a>(turns: &'a [Turn], first: &'a str) -> &'a str {
+pub(super) fn latest_request<'a>(turns: &'a [Turn], first: &'a str) -> &'a str {
     turns.iter().rev().map(|t| t.prompt.trim()).find(|p| !p.is_empty()).unwrap_or(first)
 }
 
@@ -882,7 +962,7 @@ fn since(a: &Agent) -> String {
     }
 }
 
-fn duration(secs: u64) -> String {
+pub(super) fn duration(secs: u64) -> String {
     match secs {
         0..=4 => "just now".into(),
         5..=59 => format!("{secs}s"),
@@ -1026,7 +1106,7 @@ fn thousands(n: u64) -> String {
     }
 }
 
-fn one_line(text: &str, max: usize) -> String {
+pub(super) fn one_line(text: &str, max: usize) -> String {
     let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= max {
         return flat;
@@ -1155,37 +1235,7 @@ fn prose_of(key: &str, text: &str) -> Vec<AgentItemData> {
 /// What the list says when the tab it is on has no one in it: what is true of the others. "No
 /// agents yet" only when there are none at all — an empty Active tab beside six finished agents
 /// said there were none, with one of them open in the middle column (#190).
-fn empty_note(tab: Tab, counts: [usize; 4]) -> String {
-    let [active, _, complete, all] = counts;
-    if all == 0 {
-        return "No agents yet. New agent starts one; a question in the Lens to an attached mind \
-                shows up here too."
-            .to_string();
-    }
-    // Every agent is either active (working, waiting, or idle between prompts) or complete.
-    let (going, done) = (format!("{active} active"), format!("{complete} complete"));
-    match tab {
-        Tab::Active => format!("Nothing running. {done}."),
-        Tab::NeedsYou if active > 0 => format!("Nothing is waiting on you. {going}."),
-        Tab::NeedsYou => format!("Nothing is waiting on you. {done}."),
-        Tab::Complete => format!("Nothing has finished yet. {going}."),
-        // All holds every agent, so it is empty only when there are none, above.
-        Tab::All => format!("{going}, {done}."),
-        // Tasks says its own sentence in `refresh`: it counts requests, not agents.
-        Tab::Tasks => String::new(),
-    }
-}
 
-/// An approval, as the pane draws it: the shell's own card — the Lens's component, filled from the
-/// shell's approval store under the one request id — while the request waits; the line it left
-/// once it is over.
-///
-/// The buttons are drawn only when all three hold: the session item is one the shell made
-/// (`approval_asked`, never an event or the agent's text), the shell's store says the request is
-/// still waiting, and that request was asked for THIS agent — its token's, not its words'. Anything
-/// else draws a line with no buttons.
-/// The most answers a question card offers as buttons, and the longest a button's label or the
-/// question itself is drawn: the agent chooses them, and must not be able to push the pane apart.
 const QUESTION_OPTIONS: usize = 6;
 const QUESTION_OPTION_CHARS: usize = 40;
 const QUESTION_CHARS: usize = 2000;
@@ -1468,35 +1518,6 @@ fn card_of(c: &Card, key: String, open: bool) -> AgentItemData {
 
 // ── Acts ──────────────────────────────────────────────────────────
 
-/// Close an agent: asked first when it is still working; then stopped, its window closed, and
-/// taken off the list with its saved session.
-fn close(ui: &App, state: &Shared, agent: AgentId, confirmed: bool) {
-    let g = ui.global::<AgentsState>();
-    let busy = agents::store().read(|s| s.agent(&agent).is_some_and(Agent::busy));
-    if busy && !confirmed {
-        g.set_confirm_close(agent.0.as_str().into());
-        return;
-    }
-    g.set_confirm_close("".into());
-    if busy {
-        if let Err(why) = launch::stop(&agent) {
-            tracing::info!(agent = %agent, %why, "closing an agent that could not be stopped");
-        }
-    }
-    agents::store().remove_agent(&agent);
-    {
-        let mut st = state.borrow_mut();
-        if let Some(popped) = st.windows.remove(&agent) {
-            let _ = popped.window.hide();
-        }
-        if st.selected.as_ref() == Some(&agent) {
-            st.selected = None;
-            st.run = None;
-        }
-    }
-    refresh(ui, state, true);
-}
-
 /// The title an agent's window carries. labwc and the taskbar know a window by it.
 fn window_title(mind: &str, title: &str) -> String {
     one_line(&format!("{}{mind} · {title}", agents::WINDOW_TITLE_PREFIX), 90)
@@ -1654,24 +1675,20 @@ fn forward_approvals(g: &AgentsState, shell: &slint::Weak<App>) {
 /// Put one agent on the Agents screen: selected, under a tab that lists it, the screen shown.
 /// The Lens's "open in Agents", a notification's Open, and `show_agent` all come here.
 fn show_agent(ui: &App, state: &Shared, agent: AgentId) {
-    let known = agents::store().read(|s| s.agent(&agent).map(|a| a.state));
+    // `show_agent` may name one run of a chat (`agent#n`): the chat's link to it opens that run.
+    let key = agents::RowKey::parse(&agent.0);
+    let known = agents::store().read(|s| s.agent(&key.agent).is_some());
     let g = ui.global::<AgentsState>();
-    let Some(agent_state) = known else {
+    if !known {
         notice(&g, Err(format!("`{agent}` is no longer in the list.")));
         return;
-    };
+    }
     {
         let mut st = state.borrow_mut();
-        if !st.tab.holds(agent_state) {
-            st.tab = Tab::All;
-            g.set_tab(Tab::All.key().into());
-        }
-        st.order.clear();
-        // `show_agent` may name one run of a chat (`agent#n`): the chat's link to it opens that run.
-        let key = agents::RowKey::parse(&agent.0);
         st.selected = Some(key.agent);
         st.run = key.run;
     }
+    g.set_detail_open(true);
     ui.set_current_screen(SCREEN);
     ui.invoke_navigate(SCREEN);
     refresh(ui, state, true);
@@ -2287,28 +2304,33 @@ mod tests {
         assert!(actions.contains("\"show_agent\""));
     }
 
-    /// #368: a role agent's first prompt is its whole brief, many lines long. A row and the pane's
-    /// header are one line each, and an embedded newline breaks a Text however it elides, so the
-    /// brief drew over the rows below it.
+    /// #368: a role agent's first prompt is its whole brief, many lines long. A desk's task and the
+    /// pane's header are one line each, and an embedded newline breaks a Text however it elides, so
+    /// the brief drew over what was below it.
     #[test]
-    fn a_multi_line_request_is_one_line_in_its_row_and_its_header() {
+    fn a_multi_line_request_is_one_line_in_its_desk_and_its_header() {
         let mut s = Store::new();
         let id = AgentId("deepseek:c-brief1".into());
         s.open_turn(&id, "You are the Researcher on this desktop.\n\nFind out what is true\nand say how you know.");
         let a = s.agent(&id).unwrap();
-        let row = row_of(a);
-        assert_eq!(row.title.as_str(), "You are the Researcher on this desktop. Find out what is true and say how you know.");
         let seen = Seen { minds: Vec::new(), agents: Vec::new(), approvals: Vec::new() };
-        assert!(!header_of(a, &seen).title.contains('\n'));
+        let header = header_of(a, &seen);
+        assert_eq!(header.title.as_str(), "You are the Researcher on this desktop. Find out what is true and say how you know.");
+        let desk = |s: &Store| {
+            let room = workroom::compose(s, &[], &[], &[], &[], now());
+            room.desks.into_iter().next().expect("the open turn is a desk").task
+        };
+        assert!(!desk(&s).contains('\n'));
         s.open_turn(&id, &format!("{}\nend", "x".repeat(500)));
-        let long = row_of(s.agent(&id).unwrap());
+        let long = header_of(s.agent(&id).unwrap(), &seen);
         assert!(!long.title.contains('\n') && long.title.chars().count() <= TITLE_CHARS);
+        assert!(!desk(&s).contains('\n'));
     }
 
-    /// Agents catalog: a role's agent is named by its role in the list, and its details say what
+    /// Agents catalog: a role's agent is named by its role on its desk, and its details say what
     /// the role may touch; an agent started on a mind alone says neither.
     #[test]
-    fn a_roles_row_names_the_role_and_its_details_say_its_reach() {
+    fn a_roles_desk_names_the_role_and_its_details_say_its_reach() {
         let mut s = Store::new();
         let reviewer = AgentId("deepseek:c-role01".into());
         let mut meta = agents::AgentMeta::new(reviewer.clone(), "deepseek");
@@ -2318,8 +2340,7 @@ mod tests {
         s.upsert_agent(meta);
         s.upsert_agent(agents::AgentMeta::new(AgentId("pi:c-plain1".into()), "pi"));
         let a = s.agent(&reviewer).unwrap();
-        let row = row_of(a);
-        assert_eq!((row.role.as_str(), row.mind.as_str()), ("Reviewer", "deepseek"));
+        assert_eq!((workroom::via_of(a).as_str(), a.meta.mind.as_str()), ("Reviewer", "deepseek"));
         let details = details_of(a, s.details(&reviewer).unwrap_or_default());
         // #212: the reach reads as a sentence a person reads; the patterns the doors enforce are
         // one click away, never the first thing shown.
@@ -2329,7 +2350,7 @@ mod tests {
         );
         assert_eq!(details.reach_patterns.as_str(), "editor, documents and notes · at most safe");
         let plain = s.agent(&AgentId("pi:c-plain1".into())).unwrap();
-        assert_eq!((row_of(plain).role.as_str(), details_of(plain, Details::default()).reach.as_str()), ("", ""));
+        assert_eq!((workroom::via_of(plain).as_str(), details_of(plain, Details::default()).reach.as_str()), ("", ""));
 
         // A session saved before the words were kept falls back to its patterns, and then has no
         // second copy of them to open.
@@ -2347,19 +2368,20 @@ mod tests {
         assert_eq!(old.reach, "editor, documents and notes · at most safe");
         assert_eq!(old.reach_patterns, "");
 
-        // The screen offers the catalog in New agent and draws both, with the patterns behind a
-        // click in the details column.
+        // Start work offers the catalog and the screen hands the picked role its task; a run's
+        // details say the role and its reach, with the patterns behind a click.
         let slint = read("../yantrik-ui-slint/ui/agents.slint");
         for drawn in [
-            "From the catalog",
             "AgentsState.start-role(AgentsState.new-role",
-            "AgentsState.pick-role(role.id)",
+            "AgentsState.pick-role(id)",
             "label: \"Role\"",
             "AgentsState.details.reach",
             "AgentsState.details.reach-patterns",
         ] {
             assert!(slint.contains(drawn), "{drawn:?} is not in agents.slint");
         }
+        let sheet = read("../yantrik-ui-slint/ui/agents_start.slint");
+        assert!(sheet.contains("Role (optional)") && sheet.contains("root.pick-role(r.id)"), "the sheet offers the catalog");
     }
 
     /// #190: a catalog role's answer — a heading, bold labels, italics, backticks, a list, a fence —
@@ -2419,56 +2441,12 @@ mod tests {
         assert_eq!(next.last().unwrap().block, "bullet");
     }
 
-    /// #190: an empty tab says what is true of the others. "No agents yet" only when there are none.
+    /// A run's key is `agent#turn`, and what acts on a run acts on its agent.
     #[test]
-    fn an_empty_tab_says_what_the_other_tabs_hold() {
-        // [active, needs you, complete, all]
-        assert_eq!(empty_note(Tab::Active, [0, 0, 6, 6]), "Nothing running. 6 complete.");
-        assert_eq!(empty_note(Tab::NeedsYou, [2, 0, 4, 6]), "Nothing is waiting on you. 2 active.");
-        assert_eq!(empty_note(Tab::NeedsYou, [0, 0, 6, 6]), "Nothing is waiting on you. 6 complete.");
-        assert_eq!(empty_note(Tab::Complete, [3, 1, 0, 3]), "Nothing has finished yet. 3 active.");
-        for tab in Tab::EVERY {
-            assert!(empty_note(tab, [0, 0, 0, 0]).starts_with("No agents yet."), "{tab:?}");
-        }
-        assert!(!empty_note(Tab::Active, [0, 0, 6, 6]).contains("No agents"));
-
-        // And the list draws it — the sentence is the shell's, not a guess in the view.
-        let slint = read("../yantrik-ui-slint/ui/agents.slint");
-        assert!(slint.contains("text: AgentsState.empty-note;"), "agents.slint draws the shell's sentence");
-        assert!(!slint.contains("No agents yet"), "and has no sentence of its own that could disagree");
-    }
-
-    /// #234: "I am not able to see the task list in the Agents section." Every request is its own
-    /// row, newest first, whichever conversation it was in, and says how it stood when it ended.
-    /// A row's buttons act on its agent.
-    #[test]
-    fn every_request_is_a_task_row_newest_first() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        use std::sync::Arc;
-        let clock = Arc::new(AtomicU64::new(1_000));
-        let at = clock.clone();
-        let mut s = Store::with_clock(Box::new(move || at.load(Ordering::SeqCst)));
+    fn a_runs_key_names_its_agent() {
         let hermes = AgentId("hermes:main".into());
-        s.open_turn(&hermes, "a note for the market meeting");
-        s.close_turn(&hermes, true);
-        clock.store(2_000, Ordering::SeqCst);
-        s.open_turn(&hermes, "build a small game");
-        s.close_turn(&hermes, false);
-        clock.store(3_000, Ordering::SeqCst);
-        s.open_turn(&hermes, "build the town model");
-
-        let tasks = s.tasks(10);
-        let titles: Vec<String> = tasks
-            .iter()
-            .map(|(id, n)| task_row(s.agent(id).unwrap(), *n, 3_100).unwrap().title.to_string())
-            .collect();
-        assert_eq!(titles, ["build the town model", "build a small game", "a note for the market meeting"]);
-        let game = task_row(s.agent(&hermes).unwrap(), tasks[1].1, 3_100).unwrap();
-        assert_eq!((game.state.as_str(), game.label.as_str()), ("failed", "could not finish"));
-        let town = task_row(s.agent(&hermes).unwrap(), tasks[0].1, 3_100).unwrap();
-        assert_eq!(town.since.as_str(), "1m", "the working one says how long it has run");
-        assert_eq!(agent_of_row(&town.id), hermes, "its buttons act on its agent");
-        assert_eq!(agent_of_row("hermes:main"), hermes, "an agent row's id is the agent");
+        assert_eq!(agent_of_row("hermes:main#4"), hermes, "Stop on a run acts on its agent");
+        assert_eq!(agent_of_row("hermes:main"), hermes, "an agent's key is the agent");
     }
 
     #[test]
@@ -2551,15 +2529,15 @@ mod rough_edges_tests {
             assert!(offered.iter().any(|o| o == id), "the dialog does not offer `{id}`: {offered:?}");
         }
 
-        // The fold is the screen's: the cue is drawn while the window is not at the bottom, from
+        // The fold is the sheet's: the cue is drawn while the window is not at the bottom, from
         // the list's own height against the window's — never a hard-coded count of roles.
-        let slint = read("../yantrik-ui-slint/ui/agents.slint");
+        let slint = read("../yantrik-ui-slint/ui/agents_start.slint");
         for drawn in [
             "more roles below",
             "roles-box.more-below",
-            "-roles-flick.viewport-y < roles-col.preferred-height - roles-box.shown-h - 2px",
+            "-roles-flick.viewport-y < roles-col.preferred-height - roles-box.shown-h - Theme.sp-half",
         ] {
-            assert!(slint.contains(drawn), "{drawn:?} is not in agents.slint");
+            assert!(slint.contains(drawn), "{drawn:?} is not in agents_start.slint");
         }
     }
 
@@ -2594,7 +2572,7 @@ mod rough_edges_tests {
     }
 
     /// The reach a person read was the doors' own patterns ("shell.agent_* and editor · at most
-    /// sensitive"). The dialog's note now says it in words, and the patterns — what the doors
+    /// sensitive"). The sheet's note now says it in words, and the patterns — what the doors
     /// actually enforce — are one click away under them, never gone.
     #[test]
     fn the_dialogs_reach_reads_as_words_with_the_patterns_one_click_away() {
@@ -2604,14 +2582,16 @@ mod rough_edges_tests {
         assert!(src.contains("g.set_new_note_reach(patterns.into());"), "and the patterns go to the dialog with it");
 
         let slint = read("../yantrik-ui-slint/ui/agents.slint");
-        for drawn in ["AgentsState.new-note-reach", "the exact patterns", "AgentsState.details.reach-patterns"] {
+        let sheet = read("../yantrik-ui-slint/ui/agents_start.slint");
+        for drawn in ["AgentsState.new-note-reach", "AgentsState.details.reach-patterns"] {
             assert!(slint.contains(drawn), "{drawn:?} is not in agents.slint");
         }
-        // Both chip handlers clear the patterns with the note, so a role's reach cannot linger
-        // under a mind that has none.
+        assert!(sheet.contains("the exact patterns"), "the sheet offers the patterns behind the words");
+        // Both ways of switching between a mind and the catalog clear the patterns with the note,
+        // so a role's reach cannot linger under a mind that has none.
         assert!(
             slint.matches("AgentsState.new-note-reach = \"\";").count() >= 2,
-            "the chips clear the patterns with the note"
+            "switching between a mind and the catalog clears the patterns with the note"
         );
     }
 }

@@ -17,7 +17,6 @@ mod screen_controls_tests;
 mod apps_button_tests;
 mod lens_tests;
 mod chat_tests;
-mod route_tests;
 mod approval_tests;
 mod dock_tests;
 mod taskbar_menu_tests;
@@ -103,7 +102,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-approval-card") { return approval_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-approval-pointer-only") { return approval_tests::run_pointer_only(&window, output); }
     if args.iter().any(|a| a == "lens-answer") { return lens_tests::run_lens(&window, output); }
-    if args.iter().any(|a| a == "verify-agents-route") { return route_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-monitor") { return monitor_tests::run(&window); }
     if args.iter().any(|a| a == "verify-weather") { return weather_tests::run(&window); }
     if args.iter().any(|a| a == "verify-weather-snapped") { return weather_tests::snapped(&window, output); }

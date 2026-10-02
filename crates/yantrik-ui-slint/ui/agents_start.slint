@@ -1,0 +1,387 @@
+// Start work: the sheet that gives a mind something to do (Agents, screen 34).
+//
+// 480px from the right edge: what should get done, which mind, what it will be allowed to do, and
+// — optionally — a role from the agent catalog to start as. It starts exactly what New agent
+// started: an agent on a mind (`launch::start`), or a catalog role handed the task as the person
+// (`hand_off_from_screen`). Pure props and callbacks, so the screen's global stays in agents.slint
+// and a preview can draw this alone.
+
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "components/icon.slint";
+import { YButton } from "components/y_button.slint";
+
+export struct AgentMindData {
+    id: string,
+    name: string,
+    detail: string,
+}
+
+// A role from the agent catalog, as the sheet lists it.
+export struct AgentRoleData {
+    id: string,
+    name: string,
+    purpose: string,       // what it is for, in one line
+    reach: string,         // what it may touch
+    runs-on: string,       // the attached mind it would run on now; "" when none of its minds is
+    available: bool,
+}
+
+component MindChip inherits Rectangle {
+    in property <AgentMindData> mind;
+    in property <bool> chosen;
+    callback clicked;
+    width: chip.preferred-width;
+    height: Theme.h-prominent;
+    border-radius: Theme.r-md;
+    background: root.chosen ? Theme.bg-elevated : ta.has-hover ? Theme.hover-fill : transparent;
+    border-width: Theme.hairline;
+    border-color: root.chosen ? Theme.text-primary : Theme.border-default;
+    accessible-role: button;
+    accessible-label: root.mind.name;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    chip := HorizontalLayout {
+        padding-left: Theme.sp-3;
+        padding-right: Theme.sp-3;
+        spacing: Theme.sp-2;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: Theme.sp-2;
+                height: Theme.sp-2;
+                border-radius: Theme.sp-1;
+                background: Theme.mind;
+            }
+        }
+        Text {
+            text: root.mind.name;
+            color: Theme.text-primary;
+            font-size: Theme.fs-body;
+            font-weight: root.chosen ? Theme.fw-headline : Theme.fw-body;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// One role in the list: its name, what it is for, and the mind it would run on now.
+component RoleRow inherits Rectangle {
+    in property <AgentRoleData> role;
+    in property <bool> chosen;
+    callback clicked;
+    height: Theme.h-app-header;
+    border-radius: Theme.r-md;
+    background: root.chosen ? Theme.bg-elevated : ta.has-hover ? Theme.hover-fill : transparent;
+    border-width: root.chosen ? Theme.hairline : 0px;
+    border-color: Theme.text-primary;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: Theme.sp-2h;
+        padding-right: Theme.sp-2h;
+        spacing: Theme.sp-2;
+        VerticalLayout {
+            alignment: center;
+            spacing: Theme.hairline;
+            horizontal-stretch: 1;
+            Text {
+                text: root.role.name;
+                color: Theme.text-primary;
+                font-size: Theme.fs-caption;
+                font-weight: Theme.fw-headline;
+                overflow: elide;
+            }
+            Text {
+                text: root.role.purpose;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-caption;
+                overflow: elide;
+            }
+        }
+        Text {
+            text: root.role.available ? "on " + root.role.runs-on : "no mind attached";
+            color: Theme.text-dim;
+            font-size: Theme.fs-micro;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component StartSheet inherits Rectangle {
+    in property <[AgentMindData]> minds;
+    in property <[AgentRoleData]> roles;
+    in property <string> mind;
+    in property <string> role;
+    in property <bool> from-catalog;
+    // What the chosen mind or role will do, in the shell's words, and the patterns behind them.
+    in property <string> note;
+    in property <string> note-reach;
+    in property <string> error;
+    // The desktop's mode, as a sentence: "Ask — request approval for actions that require it."
+    in property <string> mode-line;
+    callback pick-mind(string);
+    callback pick-role(string);
+    callback set-catalog(bool);
+    callback submit(string);
+    callback cancel();
+
+    background: Theme.overlay-backdrop;
+    TouchArea { clicked => { root.cancel(); } }
+
+    sheet := Rectangle {
+        width: min(Theme.wr-sheet-w, parent.width);
+        x: parent.width - self.width;
+        height: parent.height;
+        background: Theme.bg-card;
+        border-width: Theme.hairline;
+        border-color: Theme.border-card;
+        // Swallow clicks, so the scrim behind does not close the sheet from inside it.
+        TouchArea { }
+
+        VerticalLayout {
+            padding: Theme.sp-6;
+            spacing: Theme.sp-4;
+
+            HorizontalLayout {
+                height: Theme.h-regular;
+                Text {
+                    text: "Start work";
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-display;
+                    font-weight: Theme.fw-headline;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                YButton {
+                    icon-only: true;
+                    icon-path: Icons.close;
+                    label: "Close";
+                    variant: 2;
+                    size: 1;
+                    clicked => { root.cancel(); }
+                }
+            }
+
+            Text {
+                text: "What should get done?";
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+                font-weight: Theme.fw-headline;
+            }
+            Rectangle {
+                height: Theme.wr-task-field-h;
+                border-radius: Theme.r-md;
+                background: Theme.bg-input;
+                border-width: Theme.hairline;
+                border-color: prompt.has-focus ? Theme.text-primary : Theme.border-default;
+                prompt := TextInput {
+                    x: Theme.sp-3;
+                    y: Theme.sp-2h;
+                    width: parent.width - Theme.sp-6;
+                    height: parent.height - Theme.sp-5;
+                    single-line: false;
+                    wrap: word-wrap;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-body;
+                    accessible-label: "What should get done?";
+                }
+                if prompt.text == "" : Text {
+                    x: Theme.sp-3;
+                    y: Theme.sp-2h;
+                    width: parent.width - Theme.sp-6;
+                    text: "For example: tidy the photos folder, duplicates into Trash";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-body;
+                    wrap: word-wrap;
+                }
+            }
+
+            if !root.from-catalog : VerticalLayout {
+                vertical-stretch: 0;
+                spacing: Theme.sp-2;
+                Text {
+                    text: "Mind";
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-body;
+                    font-weight: Theme.fw-headline;
+                }
+                if root.minds.length == 0 : Text {
+                    text: "No mind is attached right now. Start one in Settings → Harnesses, then come back.";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-caption;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: Theme.sp-2;
+                    alignment: start;
+                    for m in root.minds : MindChip {
+                        mind: m;
+                        chosen: m.id == root.mind;
+                        clicked => { root.pick-mind(m.id); }
+                    }
+                }
+            }
+
+            // What it may do: the desktop's mode, and what the mind or role reaches.
+            Rectangle {
+                background: Theme.bg-input;
+                border-radius: Theme.r-md;
+                border-width: Theme.hairline;
+                border-color: Theme.border-subtle;
+                height: summary.preferred-height + Theme.sp-6;
+                summary := VerticalLayout {
+                    padding: Theme.sp-3;
+                    spacing: Theme.sp-1;
+                    Text {
+                        text: "Mode and permissions";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-caption;
+                    }
+                    Text {
+                        text: root.mode-line;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-caption;
+                        wrap: word-wrap;
+                    }
+                    if root.note != "" : Text {
+                        text: root.note;
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-caption;
+                        wrap: word-wrap;
+                    }
+                    // The note says the reach in words; the patterns it was made from — the ones
+                    // the doors enforce — are one click away (#212). Only this line toggles.
+                    if root.note-reach != "" : reach-box := Rectangle {
+                        property <bool> show: false;
+                        height: reach-col.preferred-height;
+                        reach-col := VerticalLayout {
+                            spacing: Theme.sp-half;
+                            Text {
+                                text: reach-box.show ? "hide the exact patterns" : "the exact patterns";
+                                color: Theme.text-primary;
+                                font-size: Theme.fs-micro;
+                            }
+                            if reach-box.show : Text {
+                                text: root.note-reach;
+                                color: Theme.text-secondary;
+                                font-family: Theme.font-mono;
+                                font-size: Theme.fs-micro;
+                                wrap: word-wrap;
+                            }
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { reach-box.show = !reach-box.show; }
+                        }
+                    }
+                }
+            }
+
+            // Optional: start as a role from the catalog instead of a bare mind.
+            Rectangle {
+                height: Theme.h-regular;
+                accessible-role: button;
+                accessible-label: "Role, optional";
+                HorizontalLayout {
+                    spacing: Theme.sp-1h;
+                    alignment: start;
+                    Icon {
+                        commands: root.from-catalog ? Icons.chevron-down : Icons.chevron-right;
+                        size: Theme.wr-glyph;
+                        tint: Theme.text-secondary;
+                    }
+                    Text {
+                        text: "Role (optional)";
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-body;
+                        font-weight: Theme.fw-headline;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.from-catalog ? "" : "start as a role from the catalog";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-caption;
+                        vertical-alignment: center;
+                    }
+                }
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.set-catalog(!root.from-catalog); }
+                }
+            }
+            // Every role is reachable: the list scrolls, says so while more is below the fold, and
+            // a thumb on the edge shows where in the list the window is (#212). The cue goes away
+            // at the bottom.
+            if root.from-catalog : roles-box := Rectangle {
+                property <length> shown-h: min(root.roles.length * Theme.wr-role-row-h, Theme.wr-roles-max-h);
+                property <bool> more-below: roles-col.preferred-height - roles-box.shown-h > Theme.sp-half
+                    && -roles-flick.viewport-y < roles-col.preferred-height - roles-box.shown-h - Theme.sp-half;
+                height: roles-box.shown-h + (roles-box.more-below ? Theme.wr-fade-h : 0px);
+                roles-flick := Flickable {
+                    height: roles-box.shown-h;
+                    viewport-height: roles-col.preferred-height;
+                    Rectangle {
+                        width: roles-flick.width;
+                        height: roles-col.preferred-height;
+                        roles-col := VerticalLayout {
+                            spacing: Theme.sp-half;
+                            for r in root.roles : RoleRow {
+                                role: r;
+                                chosen: r.id == root.role;
+                                clicked => { root.pick-role(r.id); }
+                            }
+                        }
+                    }
+                }
+                if roles-col.preferred-height > roles-box.shown-h + Theme.sp-half : Rectangle {
+                    x: roles-box.width - Theme.sp-1;
+                    width: Theme.wr-dot-gap;
+                    height: max(Theme.sp-5, roles-box.shown-h * (roles-box.shown-h / roles-col.preferred-height));
+                    y: min(roles-box.shown-h - self.height,
+                           -roles-flick.viewport-y * (roles-box.shown-h / roles-col.preferred-height));
+                    border-radius: Theme.r-xs;
+                    background: Theme.text-dim;
+                }
+                if roles-box.more-below : Text {
+                    y: roles-box.shown-h;
+                    height: Theme.wr-fade-h;
+                    text: "more roles below — scroll";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-micro;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            if root.error != "" : Text {
+                text: root.error;
+                color: Theme.color-danger;
+                font-size: Theme.fs-caption;
+                wrap: word-wrap;
+            }
+
+            // The form above keeps its height; whatever is left is under it, above the buttons.
+            Rectangle { vertical-stretch: 1; min-height: 0px; }
+
+            HorizontalLayout {
+                alignment: end;
+                spacing: Theme.sp-2;
+                YButton {
+                    label: "Cancel";
+                    variant: 2;
+                    clicked => { root.cancel(); }
+                }
+                YButton {
+                    label: "Start";
+                    icon-path: Icons.play;
+                    variant: 0;
+                    disabled: (root.from-catalog ? root.role == "" : root.mind == "") || prompt.text == "";
+                    clicked => { root.submit(prompt.text); }
+                }
+            }
+        }
+    }
+}

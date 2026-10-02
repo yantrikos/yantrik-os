@@ -768,6 +768,10 @@ pub fn publish(
                     "agents",
                     if agent_reading { crate::agents::for_describe_by_an_agent() } else { crate::agents::for_describe() },
                 )
+                // The Agents workroom as the screen says it: the page, the counts, each mind's
+                // state — and, for the person's reader, the desks and the requests waiting.
+                // `show_workroom` changes the page.
+                .with("workroom", crate::wire::agents::workroom_for_describe(&ui, agent_reading))
                 // The agent catalog: the roles `hand_off` can start, what each may touch, and
                 // whether a mind it runs on is attached now. See `agents::catalog`.
                 .with("catalog", crate::agents::catalog::for_describe())
@@ -2084,6 +2088,8 @@ pub fn publish(
     // The chat in one read, for a client that is not the Lens: the Yantrik terminal. See
     // `control_chat`.
     let surface = crate::control_chat::actions(surface, ui);
+    // The workroom's own navigation: show_workroom. See `control_workroom`.
+    let surface = crate::control_workroom::actions(surface, ui);
     crate::control_agents::actions(surface, ui).serve();
 }
 

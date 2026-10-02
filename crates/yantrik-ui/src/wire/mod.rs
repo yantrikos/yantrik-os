@@ -18,6 +18,7 @@ pub mod agents;
 #[cfg(test)]
 mod lens_card_layout;
 pub mod lens_work;
+pub mod agents_workroom;
 pub mod runs_on_card;
 // The Recipes screen: every recipe as its stages, live.
 pub mod recipes;
