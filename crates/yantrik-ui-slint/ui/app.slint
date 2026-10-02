@@ -463,16 +463,17 @@ export component App inherits Window {
     // may ever hide one instead.
     callback taskbar-window-clicked(string);
 
-    // The taskbar entry's own right-click menu (#232). Rust builds the rows — which ones there
-    // are depends on whether the window's app is pinned — and every row's id is the name of the
-    // `shell` control action that runs it, so the menu is a second VIEW of one surface and not
-    // a second path. Drawn at the end of this file, over everything, like the desktop's own
-    // menu is over its screen.
     // The grounded dock's model (dock_model.rs): this page's worth of buttons is the dock's own
     // business, so Rust hands over ALL of them and the windows of every app in them.
     in property <[DockButton]> dock-buttons: [];
     in property <[DockWindow]> dock-windows: [];
     in property <int> dock-reveal-index: -1;
+
+    // The taskbar entry's own right-click menu (#232). Rust builds the rows — which ones there
+    // are depends on whether the window's app is pinned — and every row's id is the name of the
+    // `shell` control action that runs it, so the menu is a second VIEW of one surface and not
+    // a second path. Drawn at the end of this file, over everything, like the desktop's own
+    // menu is over its screen.
     in-out property <int> dock-first: 0;
     in-out property <int> dock-capacity: 0;
     in-out property <bool> taskbar-menu-open: false;

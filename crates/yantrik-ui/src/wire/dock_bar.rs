@@ -64,11 +64,7 @@ pub fn publish(ui: &App, installed: &[DesktopEntry]) {
         dock_model::entries(&pinned, &wins, front.as_deref(), &mut order.borrow_mut(), |id, group| {
             if id == "mind-view" {
                 // A mind's desk: labelled as such, by what Mind View calls it.
-                return group
-                    .iter()
-                    .map(|w| w.subtitle.clone())
-                    .find(|s| !s.is_empty())
-                    .unwrap_or_else(|| "Mind View".to_string());
+                return dock_model::mind_view_label(group);
             }
             entry_of(installed, id)
                 .filter(|_| !has_own_glyph(&tr, id))
@@ -125,7 +121,10 @@ pub fn publish(ui: &App, installed: &[DesktopEntry]) {
         _ => -1,
     };
 
-    if let Some(model) = crate::models::changed(ui.get_dock_buttons(), buttons) {
+    // Keyed by app: a window's title changes every few seconds (a browser tab, a terminal), and a
+    // replaced model clears the dock's hover label and closes a list the person is reading. Only
+    // a different set of apps replaces it.
+    if let Some(model) = crate::models::update(ui.get_dock_buttons(), buttons, |b| b.app_id.clone()) {
         ui.set_dock_buttons(model);
     }
     if let Some(model) = crate::models::changed(ui.get_dock_windows(), rows) {
@@ -140,15 +139,40 @@ pub fn publish(ui: &App, installed: &[DesktopEntry]) {
 /// dock as it is — including the buttons paged out of sight, marked `shown: false`.
 pub fn for_describe(ui: &App) -> serde_json::Value {
     let buttons = ui.get_dock_buttons();
-    let total = buttons.row_count();
-    let page = dock_model::page(total, ui.get_dock_capacity().max(0) as usize, ui.get_dock_first().max(0) as usize);
-    let list: Vec<serde_json::Value> = buttons
+    let rows: Vec<DescribeRow> = buttons
+        .iter()
+        .map(|b| DescribeRow {
+            app: b.app_id.to_string(),
+            label: b.label.to_string(),
+            pinned: b.pinned,
+            running: b.running,
+            windows: b.windows,
+            focused: b.focused,
+        })
+        .collect();
+    describe_value(&rows, ui.get_dock_capacity().max(0) as usize, ui.get_dock_first().max(0) as usize, ui.get_cards_pending() > 0)
+}
+
+/// One button as `describe shell` reports it.
+pub struct DescribeRow {
+    pub app: String,
+    pub label: String,
+    pub pinned: bool,
+    pub running: bool,
+    pub windows: i32,
+    pub focused: bool,
+}
+
+/// The `dock` field of `describe shell`, from plain data so its shape is tested without a screen.
+pub fn describe_value(rows: &[DescribeRow], capacity: usize, first: usize, needs_you: bool) -> serde_json::Value {
+    let page = dock_model::page(rows.len(), capacity, first);
+    let list: Vec<serde_json::Value> = rows
         .iter()
         .enumerate()
         .map(|(i, b)| {
             serde_json::json!({
-                "app": b.app_id.to_string(),
-                "label": b.label.to_string(),
+                "app": b.app,
+                "label": b.label,
                 "pinned": b.pinned,
                 "running": b.running,
                 "windows": b.windows,
@@ -165,7 +189,56 @@ pub fn for_describe(ui: &App) -> serde_json::Value {
             "before": page.before,
             "after": page.after,
         },
-        "needs_you": ui.get_cards_pending() > 0,
+        "needs_you": needs_you,
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(app: &str, running: bool) -> DescribeRow {
+        DescribeRow { app: app.into(), label: app.into(), pinned: true, running, windows: i32::from(running), focused: false }
+    }
+
+    /// `describe shell` → `dock` is read by minds; its keys are a contract.
+    #[test]
+    fn describe_shell_dock_has_buttons_page_and_needs_you() {
+        let rows = [row("files", false), row("notes", true), row("terminal", true), row("browser", false)];
+        let v = describe_value(&rows, 2, 1, true);
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        keys.sort();
+        assert_eq!(keys, ["buttons", "needs_you", "page"]);
+        assert_eq!(v["needs_you"], true);
+        let b = v["buttons"].as_array().unwrap();
+        assert_eq!(b.len(), 4, "every button, paged out of sight or not");
+        for k in ["app", "label", "pinned", "running", "windows", "focused", "shown"] {
+            assert!(b[0].get(k).is_some(), "a button reports `{k}`");
+        }
+        let shown: Vec<bool> = b.iter().map(|x| x["shown"].as_bool().unwrap()).collect();
+        assert_eq!(shown, [false, true, true, false], "the page is the two after the first");
+        assert_eq!((v["page"]["first"].as_u64(), v["page"]["before"].as_u64(), v["page"]["after"].as_u64()), (Some(1), Some(1), Some(1)));
+    }
+
+    /// A mind's own desk is one button named by what Mind View calls it; the apps a mind opens
+    /// inside it never become buttons of their own, because `windows::shell_windows` removes them
+    /// before the dock sees the list. Pinned as a source scan: the filter is one line, and losing it
+    /// would put a mind's apps on the person's dock.
+    #[test]
+    fn a_minds_apps_stay_off_the_dock() {
+        let src = include_str!("../windows.rs");
+        let f = &src[src.find("pub fn shell_windows").unwrap()..];
+        let f = &f[..f.find("\n}\n").unwrap()];
+        assert!(f.contains("mind_view::app_pids()") && f.contains("launched.retain(|app| !in_mind_view.contains(&app.pid))"), "shell_windows drops the apps a mind opened:\n{f}");
+        // And the dock reads only that list.
+            }
+
+    /// The dock's windows come from the shell's own window list, and only from it.
+    #[test]
+    fn the_dock_reads_the_shells_window_list() {
+        let whole = include_str!("dock_bar.rs");
+        let me = whole.split("#[cfg(test)]").next().unwrap();
+        assert!(me.contains("ui.get_window_list()"));
+        assert!(!me.contains("compositor_snapshot") && !me.contains("running::running"), "no second source of windows");
+    }
+}

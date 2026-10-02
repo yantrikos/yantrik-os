@@ -160,23 +160,29 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     let page_two = draw();
     assert_eq!(ui.get_dock_first(), 4, "the last page is full: it starts at 4, not 16");
     save(&page_two, &out("dock-paged-2.png"))?;
-    // Back: the wheel pages too (scrolling up goes to earlier apps).
+    // Back: the wheel pages over the WHOLE bar, not at one spot (#585 S3). Scroll up at the Apps
+    // button, on a middle app, on the page buttons, in the gap beside the divider and on the mind
+    // button: every one must go back a page. The sweep that used to stand here only logged where
+    // the wheel landed and asserted nothing.
     let mut soft: Vec<String> = Vec::new();
-    mv(w, 640.0, row_y as f32);
-    draw();
-    'sweep: for wx in (220..1060).step_by(24) {
-        for dy in [60.0f32, -60.0] {
-            mv(w, wx as f32, row_y as f32);
-            w.dispatch_event(WindowEvent::PointerScrolled { position: slint::LogicalPosition::new(wx as f32, row_y as f32), delta_x: 0.0, delta_y: dy });
-            draw();
-            if ui.get_dock_first() != 4 {
-                println!("wheel dy={dy} at x={wx}: first={}", ui.get_dock_first());
-                break 'sweep;
-            }
-        }
+    let (pl, pr) = span(&page_two, row_y);
+    let spots: [(&str, u32); 5] = [
+        ("the Apps button", pl + 1 + 4 + 20),
+        ("an app in the middle", pl + 1 + 4 + 44 * 3 + 20),
+        ("the back page button", pl + 1 + 4 + 44 + 16),
+        ("the page-on button", pl + 1 + 4 + 44 + 36 + 16 * 44 + 16),
+        ("the mind button", pr - 4 - 20),
+    ];
+    for (what, wx) in spots {
+        ui.set_dock_first(4);
+        draw();
+        mv(w, wx as f32, row_y as f32);
+        draw();
+        w.dispatch_event(WindowEvent::PointerScrolled { position: slint::LogicalPosition::new(wx as f32, row_y as f32), delta_x: 0.0, delta_y: 60.0 });
+        draw();
+        if ui.get_dock_first() >= 4 { soft.push(format!("the wheel over {what} (x={wx}) did not page back: first={}", ui.get_dock_first())); }
     }
     ui.set_dock_first(0);
-    if false { soft.push("the wheel over the dock turns the page back".into()); }
     // Alt+Tab to an app on another page reveals that page.
     ui.set_dock_reveal_index(18);
     draw();

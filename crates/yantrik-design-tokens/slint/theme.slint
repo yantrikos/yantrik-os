@@ -412,9 +412,6 @@ export global Theme {
     /// and config/labwc/rc.xml reserves exactly this much (`<margin bottom>`). Change one, change
     /// both: the compositor keeps maximised windows above it by that number alone.
     out property <length> taskbar-height: 48px;
-    out property <length> dock-height: 64px;
-    out property <length> dock-icon-size: 32px;
-    out property <length> dock-item-size: 48px;   // Hit area per dock icon
     out property <length> orb-desktop-size: 80px;
 
     // ─── The grounded dock (spec §3) ──────────────────────────────
@@ -422,7 +419,7 @@ export global Theme {
     out property <length> dock-button: 40px;
     out property <length> dock-pad: 4px;
     out property <length> dock-gap: 4px;
-    out property <length> dock-icon: 32px;       // the tile inside a button; spec allows 24-36px
+    out property <length> dock-icon: 24px;       // the tile inside a button: spec §3, "40×40 buttons with 24px icons"
     out property <length> dock-pager-w: 32px;
     out property <length> dock-max-w: 880px;     // min(this, viewport - dock-side-margin)
     out property <length> dock-side-margin: 32px;
@@ -432,8 +429,16 @@ export global Theme {
     out property <length> dock-list-w: 320px;
     out property <length> dock-list-row: 56px;
     out property <length> dock-list-max-h: 400px;
+    out property <length> dock-label-h: 28px;      // the hover label
+    out property <length> dock-list-head: 40px;    // the window list's header
+    out property <length> dock-numeral: 14px;      // the several-windows count plate
+    out property <length> dock-desk-strip: 12px;   // the show-desktop corner
+    out property <length> dock-divider-inset: 8px;
+    out property <length> dock-check: 16px;
+    out property <real> dock-tile-radius-ratio: 0.26;
+    out property <real> dock-mind-glyph-ratio: 0.6;
     out property <length> dock-label-gap: 8px;   // a label or a list opens this far above the dock
-    // Delays, written out in dock.slint too: the idle-window test reads a Timer's rate from its
+    // Delays, written out in grounded_dock.slint too: the idle-window test reads a Timer's rate from its
     // text and cannot resolve a token.
     out property <duration> dock-label-delay: 500ms;
     out property <duration> dock-list-delay: 250ms;

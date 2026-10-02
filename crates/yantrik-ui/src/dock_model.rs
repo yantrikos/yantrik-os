@@ -158,9 +158,79 @@ pub fn page(total: usize, capacity: usize, first: usize) -> Page {
     Page { first, shown: capacity, before: first, after: total - first - capacity }
 }
 
+/// What a mind's desk (the Mind View window) is called on the dock: what Mind View calls it, or
+/// "Mind View" when it says nothing.
+pub fn mind_view_label(group: &[Win]) -> String {
+    group.iter().map(|w| w.subtitle.clone()).find(|s| !s.is_empty()).unwrap_or_else(|| "Mind View".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mind_view_is_labelled_by_the_mind_or_by_its_own_name() {
+        let mut named = win("Mind View", "mind-view");
+        named.subtitle = "pi".into();
+        assert_eq!(mind_view_label(&[win("Mind View", "mind-view"), named]), "pi");
+        assert_eq!(mind_view_label(&[win("Mind View", "mind-view")]), "Mind View");
+    }
+
+    /// The dock's bottom edge and the compositor's reserved strip are two numbers in two files:
+    /// if they drift, maximised windows slide under the dock or leave a gap above it (#585 S4).
+    #[test]
+    fn the_compositor_margin_is_the_docks_height() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let rc = std::fs::read_to_string(root.join("config/labwc/rc.xml")).unwrap();
+        let at = rc.find("<margin ").expect("rc.xml reserves the shell's strips");
+        let tag = &rc[at..at + rc[at..].find("/>").unwrap()];
+        let bottom: f32 = tag.split("bottom=\"").nth(1).unwrap().split('"').next().unwrap().parse().unwrap();
+        let theme = std::fs::read_to_string(root.join("crates/yantrik-design-tokens/slint/theme.slint")).unwrap();
+        let token = theme.lines().find(|l| l.contains("out property <length> taskbar-height:")).expect("the token");
+        let px: f32 = token.split(':').nth(1).unwrap().trim().trim_end_matches(';').trim_end_matches("px").parse().unwrap();
+        assert_eq!(bottom, px, "rc.xml <margin bottom> must equal Theme.taskbar-height");
+        let status = theme.lines().find(|l| l.contains("out property <length> status-bar-height:")).expect("status token");
+        let top: f32 = tag.split("top=\"").nth(1).unwrap().split('"').next().unwrap().parse().unwrap();
+        assert!(status.contains(&format!("{top}px")), "and <margin top> the status bar's");
+    }
+
+    /// The attribute that avoids the rustc ICE sits on `mod windows;` itself, not on whatever
+    /// module was added above it (#585 B1).
+    #[test]
+    fn the_dead_code_allowance_guards_windows() {
+        let main = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs")).unwrap();
+        let lines: Vec<&str> = main.lines().collect();
+        let at = lines.iter().position(|l| l.trim() == "mod windows;").expect("mod windows;");
+        assert_eq!(lines[at - 1].trim(), "#[allow(dead_code)]", "the attribute is on the line above `mod windows;`");
+        let d = lines.iter().position(|l| l.trim() == "mod dock_model;").expect("mod dock_model;");
+        assert!(d < at - 3, "and dock_model sits above the note, not between it and windows");
+    }
+
+    /// The dock's icons are the spec's 24px, and nothing claims the spec allows more (#585 S1).
+    #[test]
+    fn dock_icons_are_the_specs_24px() {
+        let theme = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../yantrik-design-tokens/slint/theme.slint")).unwrap();
+        let line = theme.lines().find(|l| l.contains("out property <length> dock-icon:")).unwrap();
+        assert!(line.contains(": 24px;"), "{line}");
+        assert!(!theme.contains("spec allows 24-36px"));
+    }
+
+    /// One wheel area under the whole bar, and every dock button forwards the wheel: a button's own
+    /// area accepts the scroll, so one that did not forward it would swallow it (#585 S3).
+    #[test]
+    fn the_wheel_pages_over_the_whole_bar() {
+        let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../yantrik-ui-slint/ui/components/grounded_dock.slint")).unwrap();
+        assert!(src.contains("wheel-bar := YWheelArea"), "a wheel area under the bar");
+        let buttons = src.matches("DockBtn {").count();
+        assert_eq!(src.matches("wheel(n) => { root.page-by(n); }").count(), buttons + 1, "{buttons} buttons and the bar each page");
+    }
+
+    /// "1 windows" (#585 N2).
+    #[test]
+    fn the_list_header_says_one_window() {
+        let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../yantrik-ui-slint/ui/components/grounded_dock.slint")).unwrap();
+        assert!(src.contains(r#"root.list-count == 1 ? "1 window""#));
+    }
 
     fn win(title: &str, app: &str) -> Win {
         Win { title: title.into(), app_id: app.into(), subtitle: String::new() }

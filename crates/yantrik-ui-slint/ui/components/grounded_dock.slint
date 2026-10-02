@@ -24,6 +24,10 @@
 // file only draws it, and reports presses by the same names the taskbar used, so the shell's
 // handlers (app.slint, wire/window_switcher.rs) and the control surface did not change.
 //
+// Hover and the window list survive a refresh: Rust updates a button's row in place while the apps
+// are the same (models::update), so a terminal's title changing under a resting pointer does not
+// clear the label or close a list the person is reading. Only a changed set of apps clears them.
+//
 // Idle: the three Timers below run only while a pointer rests on a button or the list is waiting
 // to close, and each stops itself. At rest nothing ticks and nothing animates.
 
@@ -108,16 +112,16 @@ component DockBtn inherits Rectangle {
     if root.windows > 1 : Rectangle {
         x: parent.width - self.width - 1px;
         y: 1px;
-        width: max(14px, num.preferred-width + 6px);
-        height: 14px;
-        border-radius: 7px;
+        width: max(Theme.dock-numeral, num.preferred-width + 6px);
+        height: Theme.dock-numeral;
+        border-radius: Theme.dock-numeral / 2;
         background: Theme.dock-bar;
         border-width: 1px;
         border-color: Theme.dock-raised-line;
         num := Text {
             text: root.windows;
             color: Theme.text-secondary;
-            font-size: 11px;
+            font-size: Theme.fs-micro;
             font-weight: 600;
             horizontal-alignment: center;
             vertical-alignment: center;
@@ -338,6 +342,16 @@ export component GroundedDock inherits Rectangle {
         y: parent.height - self.height;
         clip: true;
 
+        // The wheel pages over the whole bar, not only over an app button: this sits under
+        // everything, so the gaps, the divider and the page buttons (plain TouchAreas, which do
+        // not take scroll events) fall through to it. A DockBtn's own YWheelArea ACCEPTS every
+        // scroll that lands on it, so each one below forwards `wheel` too; one that did not would
+        // swallow the wheel over the Apps and mind buttons (#585 review: "responds at one position").
+        wheel-bar := YWheelArea {
+            width: 100%; height: 100%;
+            wheel(n) => { root.page-by(n); }
+        }
+
         Rectangle {
             y: 0;
             width: 100%;
@@ -358,6 +372,7 @@ export component GroundedDock inherits Rectangle {
             DockBtn {
                 name: root.launcher-label;
                 clicked => { root.close-list(); root.open-launcher(); }
+                wheel(n) => { root.page-by(n); }
                 attention(on) => { root.attend(on, "launchpad", root.launcher-label, 0, self.anchor-x); }
                 AppTile {
                     size: Theme.dock-icon;
@@ -373,6 +388,7 @@ export component GroundedDock inherits Rectangle {
                 name: root.minimized-title;
                 running: true;
                 clicked => { root.close-list(); root.restore-screen(); }
+                wheel(n) => { root.page-by(n); }
                 attention(on) => { root.attend(on, "minimized", root.minimized-title, 0, self.anchor-x); }
                 AppTile {
                     size: Theme.dock-icon;
@@ -499,9 +515,9 @@ export component GroundedDock inherits Rectangle {
             Rectangle {
                 width: 1px;
                 Rectangle {
-                    y: 8px;
+                    y: Theme.dock-divider-inset;
                     width: 1px;
-                    height: parent.height - 16px;
+                    height: parent.height - 2 * Theme.dock-divider-inset;
                     background: Theme.dock-border;
                 }
             }
@@ -511,6 +527,7 @@ export component GroundedDock inherits Rectangle {
                 name: root.cards-waiting > 0 ? root.mind-label + ", " + root.cards-waiting + " waiting for you" : root.mind-label;
                 needs-you: root.cards-waiting > 0;
                 clicked => { root.close-list(); root.open-companion(); }
+                wheel(n) => { root.page-by(n); }
                 attention(on) => { root.attend(on, "mind", root.cards-waiting > 0 ? root.mind-label + " — " + root.cards-waiting + " waiting for you" : root.mind-label, 0, self.anchor-x); }
                 // The mind's own tile: teal, the one place teal appears in the dock. A mind that
                 // cannot be reached is a grey tile rather than a teal one that lies.
@@ -519,11 +536,11 @@ export component GroundedDock inherits Rectangle {
                     height: Theme.dock-icon;
                     x: (parent.width - self.width) / 2;
                     y: (parent.height - self.height) / 2;
-                    border-radius: Theme.dock-icon * 0.26;
+                    border-radius: Theme.dock-icon * Theme.dock-tile-radius-ratio;
                     background: root.companion-online ? Theme.mind-teal : Theme.dock-raised-line;
                     Icon {
                         commands: Icons.companion;
-                        size: Theme.dock-icon * 0.6;
+                        size: Theme.dock-icon * Theme.dock-mind-glyph-ratio;
                         tint: Theme.mind-teal-ink;
                         thickness: 1.8px;
                         x: (parent.width - self.width) / 2;
@@ -542,7 +559,7 @@ export component GroundedDock inherits Rectangle {
     desk := TouchArea {
         x: parent.width - self.width;
         y: parent.height - Theme.taskbar-height;
-        width: 12px;
+        width: Theme.dock-desk-strip;
         height: Theme.taskbar-height;
         mouse-cursor: pointer;
         clicked => { root.close-list(); root.show-desktop(); }
@@ -552,8 +569,8 @@ export component GroundedDock inherits Rectangle {
     //
     // Small, opaque, 8px above the dock. Not for an app whose window list is up: the list names it.
     if root.label-shown && !root.list-shown && root.over-name != "" : Rectangle {
-        width: lbl.preferred-width + 20px;
-        height: 28px;
+        width: lbl.preferred-width + 2 * Theme.sp-3;
+        height: Theme.dock-label-h;
         x: max(8px, min(root.over-x - self.width / 2, root.width - self.width - 8px));
         y: bar.y - Theme.dock-label-gap - self.height;
         border-radius: Theme.r-md;
@@ -581,7 +598,7 @@ export component GroundedDock inherits Rectangle {
         clicked => { root.close-list(); }
     }
     if root.list-shown : panel := Rectangle {
-        property <length> head-h: 40px;
+        property <length> head-h: Theme.dock-list-head;
         property <length> body-h: min(Theme.dock-list-max-h - self.head-h, root.list-count * Theme.dock-list-row);
         width: Theme.dock-list-w;
         height: self.head-h + self.body-h;
@@ -618,7 +635,7 @@ export component GroundedDock inherits Rectangle {
                 overflow: elide;
             }
             Text {
-                text: root.list-count + " windows";
+                text: root.list-count == 1 ? "1 window" : root.list-count + " windows";
                 color: Theme.text-secondary;
                 font-size: Theme.fs-caption;
                 vertical-alignment: center;
@@ -666,7 +683,7 @@ export component GroundedDock inherits Rectangle {
                         // The one in front: a neutral check, not an accent.
                         if w.current : Icon {
                             commands: Icons.check;
-                            size: 16px;
+                            size: Theme.dock-check;
                             tint: Theme.text-secondary;
                             thickness: 1.8px;
                             y: (parent.height - self.height) / 2;
