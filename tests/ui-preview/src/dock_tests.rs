@@ -35,10 +35,14 @@ fn px(p: &Pixels, x: u32, y: u32) -> (u8, u8, u8) {
 }
 
 fn count(p: &Pixels, region: (u32, u32, u32, u32), want: (u8, u8, u8)) -> usize {
+    count_within(p, region, want, 0)
+}
+
+fn count_within(p: &Pixels, region: (u32, u32, u32, u32), want: (u8, u8, u8), slack: i16) -> usize {
     let (x0, x1, y0, y1) = region;
     (y0..y1).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter(|&(x, y)| {
         let c = px(p, x, y);
-        let near = |a: u8, b: u8| (a as i16 - b as i16).abs() <= 24;
+        let near = |a: u8, b: u8| (a as i16 - b as i16).abs() <= slack;
         near(c.0, want.0) && near(c.1, want.1) && near(c.2, want.2)
     }).count()
 }
@@ -242,15 +246,15 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     let calm = draw();
     let mind = (l + 1 + 4 + 44 * 6 + 5 + 20) as u32; // centre of the mind button
     let zone = (mind - 20, mind + 20, 752, 800);
-    assert_eq!(count(&calm, zone, AMBER), 0, "no amber in the dock while no mind is waiting");
+    assert_eq!(count_within(&calm, zone, AMBER, 24), 0, "no amber in the dock while no mind is waiting");
     ui.set_cards_pending(2);
     let needs = draw();
-    let dot = count(&needs, zone, AMBER);
+    let dot = count_within(&needs, zone, AMBER, 24);
     assert!((12..=40).contains(&dot), "one 6px amber dot on the mind button: {dot} pixels");
-    assert_eq!(count(&needs, (0, mind - 20, 752, 800), AMBER) + count(&needs, (mind + 20, W, 752, 800), AMBER), 0, "and nowhere else in the dock");
+    assert_eq!(count_within(&needs, (0, mind - 20, 752, 800), AMBER, 24) + count_within(&needs, (mind + 20, W, 752, 800), AMBER, 24), 0, "and nowhere else in the dock");
     save(&needs, &out("dock-needs-you.png"))?;
     ui.set_cards_pending(0);
-    assert_eq!(count(&draw(), zone, AMBER), 0, "answered: the dot goes");
+    assert_eq!(count_within(&draw(), zone, AMBER, 24), 0, "answered: the dot goes");
 
     // And at rest again, nothing hovered, no list: still no frames.
     let mut redraws = 0;
