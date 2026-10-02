@@ -15,10 +15,12 @@ import importlib.util
 import os
 import sys
 
+# NGC_API_KEY is deliberately not an alias: an NGC personal key can carry scopes beyond the NIM API
+# (registry, org), and a key installed on the gate should be one made for build.nvidia.com only.
 NAMES = {
     "OLLAMA_CLOUD_KEY": ["OLLAMA_CLOUD_KEY", "OLLAMA_API_KEY", "OLLAMA_CLOUD_API_KEY"],
     "NANOGPT_KEY": ["NANOGPT_KEY", "NANOGPT_API_KEY", "NANO_GPT_API_KEY", "NANO_GPT_KEY"],
-    "NIM_KEY": ["NIM_KEY", "NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY", "NGC_API_KEY"],
+    "NIM_KEY": ["NIM_KEY", "NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY"],
 }
 
 
