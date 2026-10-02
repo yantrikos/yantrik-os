@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn the_dock_reads_the_shells_window_list() {
         let whole = include_str!("dock_bar.rs");
-        let me = whole.split("#[cfg(test)]").next().unwrap();
+        let me: String = whole.split("#[cfg(test)]").next().unwrap().split_whitespace().collect();
         assert!(me.contains("ui.get_window_list()"));
         assert!(!me.contains("compositor_snapshot") && !me.contains("running::running"), "no second source of windows");
     }
