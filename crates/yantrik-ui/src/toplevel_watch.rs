@@ -425,7 +425,9 @@ mod tests {
         log.observe(Some((2, "Inbox - Chromium".into())), t);
         log.observe(Some((3, "Terminal".into())), t);
         log.observe(Some((1, "Notes".into())), t);
-        let titles = |l: &FocusLog<u32>| l.recent.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>();
+        fn titles(l: &FocusLog<u32>) -> Vec<&str> {
+            l.recent.iter().map(|(_, t)| t.as_str()).collect()
+        }
         assert_eq!(titles(&log), ["Notes", "Terminal", "Inbox - Chromium"]);
         log.observe(Some((1, "Notes: Handover".into())), t);
         assert_eq!(titles(&log), ["Notes: Handover", "Terminal", "Inbox - Chromium"]);

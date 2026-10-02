@@ -355,7 +355,8 @@ mod tests {
 
     fn declaration(name: &str) -> String {
         let src = code();
-        let at = src.find(&format!("\"{name}\",")).unwrap_or_else(|| panic!("`{name}` is no longer published"));
+        // The name on its own line, as `Action::new(` is written, not the same string in `describe`.
+        let at = src.find(&format!("\n                \"{name}\",\n")).unwrap_or_else(|| panic!("`{name}` is no longer published"));
         let rest = &src[at..];
         rest[..rest.find("Action::new(").unwrap_or(rest.len())].to_string()
     }
