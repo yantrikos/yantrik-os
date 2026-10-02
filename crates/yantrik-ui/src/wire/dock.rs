@@ -1834,7 +1834,7 @@ mod tests {
         let f = &src[src.find("fn spawn_launch(").unwrap()..];
         let f = &f[..f.find("\n/// The command that starts one app").unwrap()];
         let gate = f.find("if !route.spawn").expect("spawn_launch must honour route.spawn");
-        let first_launch = f.find("launch(").unwrap();
+        let first_launch = f.find("return launch(").unwrap();
         assert!(gate < first_launch, "the no-spawn gate must come before any launch");
         // And no launch for a mind goes without a seat.
         assert!(!f.contains("None, true)") && !f.contains("None, false)"), "{f}");

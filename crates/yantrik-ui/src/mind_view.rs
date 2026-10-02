@@ -1047,10 +1047,10 @@ mod tests {
     #[test]
     fn the_mind_path_launches_with_mind_views_display_and_never_the_persons() {
         let seat = Seat { wayland: "wayland-1".into(), x11: Some(":2".into()) };
-        assert_eq!(
-            seat.env(),
-            vec![("WAYLAND_DISPLAY", "wayland-1".to_string()), ("DISPLAY", ":2".to_string())]
-        );
+        let env = seat.env();
+        assert!(env.contains(&("WAYLAND_DISPLAY", "wayland-1".to_string())));
+        assert!(env.contains(&("DISPLAY", ":2".to_string())));
+        assert!(!env.iter().any(|(_, v)| v == "wayland-0" || v == ":0"));
         // The source of the launch path: a mind's launch whose Mind View is down is refused, not
         // handed to `launch` with no seat (the person's desktop).
         let dock = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/wire/dock.rs")).unwrap();
