@@ -725,6 +725,9 @@ pub fn publish(
             View::new(summary)
                 .with("screen", screen_name(screen))
                 .with("conversation", serde_json::Value::Array(conversation))
+                // What the answering mind says it is doing now ("Thinking… (60 s)"), while its
+                // turn runs; empty otherwise. The chat's work card shows the same line.
+                .with("conversation_status", crate::wire::agents::latest_status())
                 // True when the conversation above was withheld: the chat is the person's, and an
                 // agent reads its own session with `read_agent`.
                 .with("conversation_private", agent_reading)
