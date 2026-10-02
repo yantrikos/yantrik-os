@@ -254,7 +254,7 @@ component StateDot inherits Rectangle {
     height: 8px;
     border-radius: 4px;
     background: root.state == "waiting_for_you" ? Theme.amber
-        : root.state == "thinking" || root.state == "running_tool" ? Theme.accent
+        : root.state == "thinking" || root.state == "running_tool" ? Theme.cyan
         : root.state == "done" ? Theme.color-success
         : root.state == "failed" ? Theme.color-danger
         : Theme.text-dim;

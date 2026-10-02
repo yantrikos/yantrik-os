@@ -740,14 +740,15 @@ export component SettingsScreen inherits Rectangle {
                                     vertical-alignment: center;
                                 }
 
-                                // The dark-theme value of each AccentPreset, so the swatch is the
-                                // colour you get (theme.slint; these drifted once already).
+                                // The swatch is the preset's own token, so it is the colour you get.
+                                // The serialised id stays "cyan" for the first preset: saved
+                                // settings and the control surface already say it.
                                 for accent in [
-                                    {id:"cyan",label:"Cyan",color:#38d8cd},
-                                    {id:"amber",label:"Amber",color:#f2b73e},
-                                    {id:"purple",label:"Purple",color:#b98aef},
-                                    {id:"green",label:"Green",color:#5ede78},
-                                    {id:"pink",label:"Pink",color:#f27aa0}
+                                    {id:"cyan",label:"Soft blue",color:AccentPreset.swatch-0},
+                                    {id:"amber",label:"Amber",color:AccentPreset.swatch-1},
+                                    {id:"purple",label:"Purple",color:AccentPreset.swatch-2},
+                                    {id:"green",label:"Green",color:AccentPreset.swatch-3},
+                                    {id:"pink",label:"Pink",color:AccentPreset.swatch-4}
                                 ] : AccentChoice {swatch:accent.color;label:accent.label;selected:root.accent-color==accent.id;chosen=>{root.choose-accent(accent.id);}}
 
                             }

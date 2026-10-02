@@ -28,13 +28,21 @@ export global ThemeMode {
 export global AccentPreset {
     in-out property <int> index: 0;
 
+    // The dark-theme value of each preset, once. `accent` below and the Settings swatches both
+    // read these, so the picker cannot show one colour and apply another (it did, #583).
+    out property <color> swatch-0: #8fb4e3;
+    out property <color> swatch-1: #f2b73e;
+    out property <color> swatch-2: #b98aef;
+    out property <color> swatch-3: #5ede78;
+    out property <color> swatch-4: #f27aa0;
+
     // Resolved accent colors — reactive to index + dark mode.
     out property <color> accent:
-        index == 0 ? (ThemeMode.dark ? #8fb4e3 : #2b64a8)   // soft blue, the system accent
-      : index == 1 ? (ThemeMode.dark ? #f2b73e : #8f6512)   // amber
-      : index == 2 ? (ThemeMode.dark ? #b98aef : #7338b4)   // purple
-      : index == 3 ? (ThemeMode.dark ? #5ede78 : #1f7d30)   // green
-      :               (ThemeMode.dark ? #f27aa0 : #bd3563);  // pink
+        index == 0 ? (ThemeMode.dark ? swatch-0 : #2b64a8)   // soft blue, the system accent
+      : index == 1 ? (ThemeMode.dark ? swatch-1 : #8f6512)   // amber
+      : index == 2 ? (ThemeMode.dark ? swatch-2 : #7338b4)   // purple
+      : index == 3 ? (ThemeMode.dark ? swatch-3 : #1f7d30)   // green
+      :               (ThemeMode.dark ? swatch-4 : #bd3563);  // pink
 
     out property <color> accent-light:
         index == 0 ? (ThemeMode.dark ? #a9c5ec : #4a82c2)
@@ -73,7 +81,7 @@ export global AccentPreset {
 
     // Label for current accent (for settings display)
     out property <string> label:
-        index == 0 ? "Cyan"
+        index == 0 ? "Soft blue"
       : index == 1 ? "Amber"
       : index == 2 ? "Purple"
       : index == 3 ? "Green"
@@ -94,7 +102,7 @@ export global ThemeOverrides {
     in-out property <color> text-primary-override: #f4f6fa;
     in-out property <color> text-secondary-override: #c0c8d6;
     in-out property <color> text-dim-override:     #95a1b4;
-    in-out property <color> accent-override:       #38d8cd;
+    in-out property <color> accent-override:       #8fb4e3;
 }
 
 // The person's "reduce motion" choice. Components that move something across the screen (a

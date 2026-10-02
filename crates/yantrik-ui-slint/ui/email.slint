@@ -1746,7 +1746,7 @@ export component EmailClient inherits Rectangle {
                             YIconButton { icon-path: Icons.archive; variant: 1; clicked => { root.archive-email(root.email-detail.id); } }
                             YIconButton { icon-path: Icons.trash; variant: 1; clicked => { root.delete-email(root.email-detail.id); } }
                             YIconButton { icon-path: root.email-detail.is-read ? Icons.mail : Icons.mail-open; variant: 1; clicked => { root.mark-read(root.email-detail.id); } }
-                            YIconButton { icon-path: Icons.star; variant: root.email-detail.is-flagged ? 1 : 1; clicked => { root.mark-flagged(root.email-detail.id); } }
+                            YIconButton { icon-path: Icons.star; variant: root.email-detail.is-flagged ? 0 : 1; clicked => { root.mark-flagged(root.email-detail.id); } }
 
                             // Only for a message that has an HTML original to open; a plain-text
                             // mail's original is the text already on screen.

@@ -40,6 +40,7 @@ run target/ui-validation/qs-levels.png 1280 800 verify-qs-levels
 run target/ui-validation/battery.png 1280 800 verify-battery
 run target/ui-validation/lens-answers.png 640 800 verify-lens-answers
 run target/ui-validation/approval-card.png 1280 800 verify-approval-card
+run target/ui-validation/approval-pointer-only.png 1280 800 verify-approval-pointer-only
 run target/ui-validation/agents-route.png 1280 800 verify-agents-route
 for scene in notes files settings desktop agent; do
     run "target/ui-validation/$scene.png" 1280 800 "$scene"

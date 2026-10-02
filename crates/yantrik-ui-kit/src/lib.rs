@@ -769,3 +769,117 @@ mod a_test_crate_runs_when_ci_runs {
         );
     }
 }
+
+/// The colour-system change (#583) touched the approval buttons, which are a security boundary:
+/// a card's Allow once must be answerable by a click and by nothing else. Each test names the
+/// mistake the review found. The rendered half (focus, Tab, Enter, a click, on the real card)
+/// is `verify-approval-pointer-only` in tests/ui-preview; these read the source, so they also
+/// run where the Slint crate is too heavy to build.
+#[cfg(test)]
+mod consent_buttons_are_pointer_only {
+    use std::path::{Path, PathBuf};
+
+    fn read(rel: &str) -> String {
+        let root: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
+    }
+
+    /// The text of the `YButton { … }` whose body contains `needle`.
+    fn button_with(src: &str, needle: &str) -> String {
+        let at = src.find(needle).unwrap_or_else(|| panic!("`{needle}` is no longer in the file"));
+        let open = src[..at].rfind("YButton {").expect("a YButton opens before the label");
+        let close = open + src[open..].find('}').expect("the YButton closes");
+        src[open..close].to_string()
+    }
+
+    /// `pointer-only` used to gate the focus scope and nothing else: the accessibility default
+    /// action (AT-SPI DoDefaultAction, which a screen reader or any same-session process can
+    /// send with no pointer and no keyboard) still called `clicked()`, so it pressed Allow once.
+    #[test]
+    fn the_accessibility_default_action_does_not_press_a_pointer_only_button() {
+        let src = read("crates/yantrik-ui-kit/slint/y_button.slint");
+        let line = src.lines().find(|l| l.contains("accessible-action-default")).expect("YButton answers the default action");
+        assert!(line.contains("pointer-only"), "the default action must be gated on pointer-only: {line}");
+        let focus = src.find("keyboard := FocusScope").expect("the focus scope");
+        assert!(src[focus..focus + 200].contains("!root.pointer-only"), "the focus scope is disabled for pointer-only");
+        // Every other way a press can reach `clicked` is the keyboard scope or the pointer.
+        let presses = src.matches("root.clicked()").count();
+        assert_eq!(presses, 3, "clicked() has three callers (default action, key, pointer); a fourth needs a pointer-only gate and a line here");
+        assert!(src.contains("if (!root.pointer-only) { keyboard.focus(); }"), "a click does not hand a pointer-only button the focus");
+    }
+
+    /// Deleting `pointer-only: true` from the card must fail a test. The probe in
+    /// colour_system_probe.slint is a hand-built pair and would not notice.
+    #[test]
+    fn the_real_approval_card_keeps_pointer_only_on_both_buttons() {
+        let src = read("crates/yantrik-ui-slint/ui/components/intent_lens.slint");
+        for label in ["label: \"Deny\";", "label: \"Allow once\";"] {
+            let b = button_with(&src, label);
+            assert!(b.contains("pointer-only: true;"), "{label} lost pointer-only:\n{b}");
+        }
+        // Nothing on the card takes focus when it appears.
+        let card = &src[src.find("label: \"Deny\";").unwrap() - 600..src.find("label: \"Allow once\";").unwrap() + 400];
+        for banned in ["forward-focus", "init =>", ".focus()", "key-pressed", "accessible-action"] {
+            assert!(!card.contains(banned), "the approval buttons must not use `{banned}`");
+        }
+    }
+
+    /// A change a mind proposes is a consent too (review item 9): Apply answers a click only.
+    #[test]
+    fn a_proposals_apply_button_is_pointer_only() {
+        let src = read("crates/yantrik-ui-kit/slint/agent_proposal.slint");
+        let b = button_with(&src, "root.data.verb != \"\" ? root.data.verb : \"Apply\"");
+        assert!(b.contains("pointer-only: true;"), "Apply lost pointer-only:\n{b}");
+    }
+
+    /// The picker showed a teal swatch labelled Cyan and applied the soft blue.
+    #[test]
+    fn the_accent_swatches_come_from_the_presets_not_from_hex() {
+        let settings = read("crates/yantrik-ui-slint/ui/settings.slint");
+        let list = &settings[settings.find("for accent in [").unwrap()..];
+        let list = &list[..list.find("] : AccentChoice").unwrap()];
+        assert!(!list.contains('#'), "a swatch is a token, not a hex literal:\n{list}");
+        assert!(list.contains("Soft blue") && !list.contains("Cyan"), "preset 0 is the soft blue");
+        let theme = read("crates/yantrik-design-tokens/slint/theme.slint");
+        assert!(theme.contains("swatch-0: #8fb4e3"), "swatch-0 is the default accent");
+        assert!(theme.contains("ThemeMode.dark ? swatch-0 :"), "the preset reads the same token the swatch does");
+        assert!(!theme.contains("accent-override:       #38d8cd"), "the theme-file fallback is not the retired teal accent");
+        assert!(theme.contains("index == 0 ? \"Soft blue\""), "the preset's label");
+    }
+
+    /// Mind identity stays teal while the shell accent is blue.
+    #[test]
+    fn a_minds_thinking_dot_and_mark_are_teal_not_the_shell_accent() {
+        let agents = read("crates/yantrik-ui-slint/ui/agents.slint");
+        assert!(agents.contains("\"running_tool\" ? Theme.cyan"), "the thinking dot is the mind colour");
+        let lens = read("crates/yantrik-ui-slint/ui/components/intent_lens.slint");
+        let at = lens.find("commands: Icons.companion;").unwrap();
+        assert!(lens[at..at + 120].contains("tint: Theme.cyan"), "the companion mark is the mind colour");
+    }
+
+    /// `is-flagged ? 1 : 1` made a flagged and an unflagged email look the same.
+    #[test]
+    fn a_flagged_email_does_not_look_unflagged() {
+        let email = read("crates/yantrik-ui-slint/ui/email.slint");
+        assert!(!email.contains("is-flagged ? 1 : 1"), "both arms are the same");
+        assert!(email.contains("variant: root.email-detail.is-flagged ? 0 : 1;"));
+    }
+
+    /// Kind 2 was retired; no call site may still pass it, and the button no longer special-cases it.
+    #[test]
+    fn no_one_asks_for_the_retired_button_kind() {
+        let src = read("crates/yantrik-ui-kit/slint/y_button.slint");
+        assert!(!src.contains("variant == 2"), "variant 2 is not a kind");
+        for rel in ["tests/ui-preview/preview.slint", "crates/yantrik-ui-slint/ui/file_browser.slint", "crates/yantrik-ui-slint/ui/email.slint"] {
+            assert!(!read(rel).contains("variant: 2;"), "{rel} still asks for variant 2");
+        }
+    }
+
+    /// Empty Trash cannot be undone, so it is the destructive kind (the dialog stays, too).
+    #[test]
+    fn empty_trash_is_destructive() {
+        let src = read("crates/yantrik-ui-slint/ui/file_browser.slint");
+        let at = src.find("label: \"Empty Trash\"; size: 0;").expect("the toolbar button");
+        assert!(src[at..at + 60].contains("variant: 3"));
+    }
+}
