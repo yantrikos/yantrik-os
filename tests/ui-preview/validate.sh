@@ -33,6 +33,7 @@ run target/ui-validation/apps-button.png 1280 800 verify-apps-button
 run target/ui-validation/taskbar-menu.png 1280 800 verify-taskbar-menu
 run target/ui-validation/cards-waiting.png 1280 800 verify-cards-waiting
 run target/ui-validation/kit-controls.png 880 460 verify-kit-controls
+run target/ui-validation/colour-system.png 720 360 verify-colour-system
 run target/ui-validation/bar-overlays.png 1280 800 verify-bar-overlays
 run target/ui-validation/cheat-sheet.png 1280 800 verify-cheat-sheet
 run target/ui-validation/qs-levels.png 1280 800 verify-qs-levels
@@ -42,6 +43,7 @@ run target/ui-validation/network.png 1280 800 verify-network
 run target/ui-validation/lens-answers.png 640 800 verify-lens-answers
 run target/ui-validation/approval-card.png 1280 800 verify-approval-card
 run target/ui-validation/chat.png 1280 800 verify-chat
+run target/ui-validation/approval-pointer-only.png 1280 800 verify-approval-pointer-only
 run target/ui-validation/agents-route.png 1280 800 verify-agents-route
 for scene in notes files settings desktop agent; do
     run "target/ui-validation/$scene.png" 1280 800 "$scene"

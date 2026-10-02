@@ -362,7 +362,7 @@ component SeatRow inherits Rectangle {
             alignment: start;
             for role in RecipesState.roles : YButton {
                 label: role.name;
-                variant: role.id == root.seat.role-id ? 0 : 2;
+                variant: role.id == root.seat.role-id ? 0 : 1;
                 size: 0;
                 clicked => {
                     RecipesState.choose-seat(root.recipe-id, root.seat.name, role.id);
@@ -661,7 +661,7 @@ component RecipeCard inherits Rectangle {
                 if !root.confirming && root.recipe.can-cancel : YButton {
                     label: "Cancel";
                     icon-path: Icons.stop;
-                    variant: 2;
+                    variant: 1;
                     size: 0;
                     clicked => { root.confirming = true; }
                 }
@@ -690,7 +690,7 @@ component NoticeBar inherits Rectangle {
             label: "Dismiss";
             icon-path: Icons.close;
             icon-only: true;
-            variant: 2;
+            variant: 1;
             size: 0;
             clicked => { RecipesState.dismiss-notice(); }
         }

@@ -1009,7 +1009,7 @@ export component EmailClient inherits Rectangle {
                     YButton {
                         label: "Add Account";
                         icon-path: Icons.plus;
-                        variant: 2;
+                        variant: 1;
                         size: 0;
                         clicked => { root.add-account(); }
                     }
@@ -1435,7 +1435,7 @@ export component EmailClient inherits Rectangle {
 
                             YButton {
                                 label: "Cancel";
-                                variant: 2;
+                                variant: 1;
                                 size: 0;
                                 clicked => { root.cancel-compose(); }
                             }
@@ -1738,21 +1738,21 @@ export component EmailClient inherits Rectangle {
                             alignment: start;
 
                             YButton { label: "Reply"; icon-path: Icons.reply; variant: 1; size: 0; clicked => { root.reply-email(); } }
-                            YButton { label: "Reply all"; icon-path: Icons.reply; variant: 2; size: 0; clicked => { root.reply-all-email(); } }
-                            YButton { label: "Forward"; icon-path: Icons.forward; variant: 2; size: 0; clicked => { root.forward-email(); } }
+                            YButton { label: "Reply all"; icon-path: Icons.reply; variant: 1; size: 0; clicked => { root.reply-all-email(); } }
+                            YButton { label: "Forward"; icon-path: Icons.forward; variant: 1; size: 0; clicked => { root.forward-email(); } }
 
                             Rectangle { width: 1px; height: 18px; y: (parent.height - 18px) / 2; background: Theme.separator; }
 
-                            YIconButton { icon-path: Icons.archive; variant: 2; clicked => { root.archive-email(root.email-detail.id); } }
-                            YIconButton { icon-path: Icons.trash; variant: 2; clicked => { root.delete-email(root.email-detail.id); } }
-                            YIconButton { icon-path: root.email-detail.is-read ? Icons.mail : Icons.mail-open; variant: 2; clicked => { root.mark-read(root.email-detail.id); } }
-                            YIconButton { icon-path: Icons.star; variant: root.email-detail.is-flagged ? 1 : 2; clicked => { root.mark-flagged(root.email-detail.id); } }
+                            YIconButton { icon-path: Icons.archive; variant: 1; clicked => { root.archive-email(root.email-detail.id); } }
+                            YIconButton { icon-path: Icons.trash; variant: 1; clicked => { root.delete-email(root.email-detail.id); } }
+                            YIconButton { icon-path: root.email-detail.is-read ? Icons.mail : Icons.mail-open; variant: 1; clicked => { root.mark-read(root.email-detail.id); } }
+                            YIconButton { icon-path: Icons.star; variant: root.email-detail.is-flagged ? 0 : 1; clicked => { root.mark-flagged(root.email-detail.id); } }
 
                             // Only for a message that has an HTML original to open; a plain-text
                             // mail's original is the text already on screen.
                             if root.email-detail.has-html : YButton {
                                 label: "Open original";
-                                icon-path: Icons.browser; variant: 2; size: 0;
+                                icon-path: Icons.browser; variant: 1; size: 0;
                                 clicked => { root.open-original(); }
                             }
 

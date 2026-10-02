@@ -7,38 +7,13 @@
 // not. See design/problem-reports-2026-09-23.md.
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "components/icon.slint";
+import { YButton } from "components/y_button.slint";
 
 export struct ProblemRow {
     id: string,        // the file name, which is what `report_problem` takes
     title: string,     // "yantrik-studio panicked" / "yantrik-arcade crashed" / "…failed"
     when: string,      // "19:43" or "Mon 21 Sep"
     kind: string,      // panic | crash | failure
-}
-
-component FlatButton inherits Rectangle {
-    in property <string> label;
-    in property <bool> primary: false;
-    in property <bool> enabled: true;
-    callback clicked;
-    height: 32px;
-    width: label-text.preferred-width + Theme.sp-5;
-    border-radius: 8px;
-    background: root.primary ? Theme.accent : Theme.hover-fill;
-    border-width: root.primary ? 0px : 1px;
-    border-color: Theme.border-strong;
-    opacity: root.enabled ? 1.0 : 0.45;
-    label-text := Text {
-        text: root.label;
-        color: root.primary ? Theme.text-on-accent : Theme.text-primary;
-        font-size: Theme.fs-caption;
-        font-weight: 600;
-        vertical-alignment: center;
-        horizontal-alignment: center;
-    }
-    TouchArea {
-        enabled: root.enabled;
-        clicked => { root.clicked(); }
-    }
 }
 
 export component ProblemReportScreen inherits Rectangle {
@@ -78,7 +53,7 @@ export component ProblemReportScreen inherits Rectangle {
                         vertical-alignment: center;
                         horizontal-stretch: 1;
                     }
-                    FlatButton { label: "Refresh"; clicked => { root.refresh(); } }
+                    YButton { label: "Refresh"; variant: 1; clicked => { root.refresh(); } }
                 }
                 if root.rows.length == 0 : Text {
                     text: "Nothing that this desktop noticed. When an app crashes or fails, its record appears here — a local file, sent nowhere unless you send it.";
@@ -213,15 +188,16 @@ export component ProblemReportScreen inherits Rectangle {
 
                 if root.selected >= 0 : HorizontalLayout {
                     spacing: Theme.sp-2;
-                    FlatButton {
+                    YButton {
                         label: root.sending ? "Sending…" : "Send this report";
-                        primary: true;
-                        enabled: !root.sending;
+                        variant: 0;
+                        disabled: root.sending;
                         clicked => { root.send(); }
                     }
-                    FlatButton {
+                    YButton {
                         label: "Delete this record";
-                        enabled: !root.sending;
+                        variant: 3;
+                        disabled: root.sending;
                         clicked => { root.delete-record(); }
                     }
                     Rectangle { horizontal-stretch: 1; }

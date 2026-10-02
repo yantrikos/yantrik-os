@@ -110,7 +110,7 @@ export component TerminalWorkbench inherits Rectangle {
                         tab-touch := TouchArea { mouse-cursor: pointer; clicked => { root.select-tab(index); terminal-keys.focus(); } }
                         Rectangle { x: 10px; y: 19px; width: 5px; height: 5px; border-radius: 3px; background: tab.alive ? #78c9b8 : #8390a0; }
                         Text { x: 23px; width: parent.width - 49px; height: 100%; text: tab.title; color: tab.active ? Theme.text-primary : Theme.text-secondary; font-size: 12px; vertical-alignment: center; overflow: elide; }
-                        YButton { x: parent.width - 26px; y: 9px; width: 24px; height: 24px; label: "Close " + tab.title; icon-path: Icons.close; icon-only: true; variant: 2; size: 0; clicked => { root.close-tab(index); terminal-keys.focus(); } }
+                        YButton { x: parent.width - 26px; y: 9px; width: 24px; height: 24px; label: "Close " + tab.title; icon-path: Icons.close; icon-only: true; variant: 1; size: 0; clicked => { root.close-tab(index); terminal-keys.focus(); } }
                         Rectangle { y: parent.height - 2px; height: 2px; width: parent.width; background: tab.active || tab-focus.has-focus ? Theme.accent : transparent; }
                     }
                 }
@@ -121,16 +121,16 @@ export component TerminalWorkbench inherits Rectangle {
                     padding: 8px; spacing: 8px;
                     find-input := YInput { init => { self.focus(); } value <=> root.query; placeholder: "Find in session history…"; edited(value) => { root.search(value); } accepted(value) => { root.action("next-match"); } }
                     Text { text: root.query == "" ? "1,000-line history" : root.match-count == 0 ? "No matches" : "\{root.match-index} / \{root.match-count} lines"; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; }
-                    YButton { label: "Previous match"; icon-path: Icons.chevron-up; icon-only: true; variant: 2; size: 0; disabled: root.match-count == 0; clicked => { root.action("previous-match"); } }
-                    YButton { label: "Next match"; icon-path: Icons.chevron-down; icon-only: true; variant: 2; size: 0; disabled: root.match-count == 0; clicked => { root.action("next-match"); } }
-                    YButton { label: "Close find"; icon-path: Icons.close; icon-only: true; variant: 2; size: 0; clicked => { root.show-search = false; } }
+                    YButton { label: "Previous match"; icon-path: Icons.chevron-up; icon-only: true; variant: 1; size: 0; disabled: root.match-count == 0; clicked => { root.action("previous-match"); } }
+                    YButton { label: "Next match"; icon-path: Icons.chevron-down; icon-only: true; variant: 1; size: 0; disabled: root.match-count == 0; clicked => { root.action("next-match"); } }
+                    YButton { label: "Close find"; icon-path: Icons.close; icon-only: true; variant: 1; size: 0; clicked => { root.show-search = false; } }
                 }
             }
             if root.notice != "" : Rectangle {
                 height: 38px; background: Theme.bg-elevated;
                 HorizontalLayout { padding-left: 16px; padding-right: 8px; spacing: 8px;
                     Text { text: root.notice; color: Theme.text-primary; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                    YButton { label: "Dismiss message"; icon-path: Icons.close; icon-only: true; size: 0; variant: 2; clicked => { root.action("dismiss"); } }
+                    YButton { label: "Dismiss message"; icon-path: Icons.close; icon-only: true; size: 0; variant: 1; clicked => { root.action("dismiss"); } }
                 }
             }
             canvas := Rectangle {
@@ -163,7 +163,7 @@ export component TerminalWorkbench inherits Rectangle {
                     HorizontalLayout {
                         Text { text: "Session assistant"; color: Theme.text-primary; font-size: 14px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
                         YButton { label: root.explaining ? "Explaining…" : "Explain output"; icon-path: Icons.spark; size: 0; variant: 1; loading: root.explaining; clicked => { root.action("explain"); } }
-                        YButton { label: "Close assistant"; icon-path: Icons.close; icon-only: true; variant: 2; size: 0; clicked => { root.show-assistant = false; } }
+                        YButton { label: "Close assistant"; icon-path: Icons.close; icon-only: true; variant: 1; size: 0; clicked => { root.show-assistant = false; } }
                     }
                     Flickable { viewport-width: self.width; viewport-height: explanation-text.preferred-height;
                         explanation-text := Text { width: parent.width; text: root.explanation == "" ? "Ask for an explanation of the visible output when you need it." : root.explanation; color: Theme.text-secondary; font-size: 13px; wrap: word-wrap; }
@@ -176,7 +176,7 @@ export component TerminalWorkbench inherits Rectangle {
                     Rectangle { width: 5px; height: 5px; y: (parent.height - self.height) / 2; border-radius: 3px; background: root.alive ? #78c9b8 : Theme.text-dim; }
                     Text { text: root.status; color: Theme.text-secondary; font-size: 11px; vertical-alignment: center; }
                     Text { text: root.directory; color: Theme.text-secondary; font-size: 11px; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
-                    if root.scrollback > 0 : YButton { label: "Back to live"; size: 0; variant: 2; clicked => { root.action("live"); terminal-keys.focus(); } }
+                    if root.scrollback > 0 : YButton { label: "Back to live"; size: 0; variant: 1; clicked => { root.action("live"); terminal-keys.focus(); } }
                     if root.scrollback == 0 && root.width >= 780px : Text { text: "Ctrl Shift T  New tab   ·   Ctrl Shift F  Find"; color: Theme.text-dim; font-size: 11px; vertical-alignment: center; }
                     Text { text: "\{root.font-size}px"; color: Theme.text-dim; font-size: 11px; vertical-alignment: center; }
                 }

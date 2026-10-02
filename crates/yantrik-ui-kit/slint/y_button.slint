@@ -1,6 +1,13 @@
 // YButton — the one button.
 //
-// Variants: 0 primary (accent), 1 secondary (raised), 2 tertiary (quiet), 3 danger.
+// Kinds (`variant`), exactly three:
+//   0 primary      filled accent, dark label. One per group at most.
+//   1 secondary    an outline: transparent, 1px outline-border, white label.
+//   3 destructive  filled red, white label. Only for what cannot be undone: delete, erase,
+//                  power off.
+// Any other value draws as secondary, so a stale call site (2 was a quiet "tertiary" kind,
+// now retired) still draws something valid. Hover and pressed are neutral steps (a lighter or
+// darker fill, a brighter outline), never new colours. Focus keeps the 2px white ring.
 // Sizes: 0 compact 28px, 1 regular 32px, 2 prominent 36px.
 //
 // Icons are stroke paths (`icon-path`, an SVG path on the 20×20 grid from the Icons global),
@@ -23,17 +30,24 @@ export component YButton inherits Rectangle {
     in property <bool> disabled: false;
     in property <bool> loading: false;
     in property <bool> icon-only: false;
+    // Pointer-only: never takes keyboard focus, so Tab cannot land on it and Enter or Space can
+    // never press it, and the accessibility default action (AT-SPI DoDefaultAction, which a
+    // screen reader or any same-session process can send with no pointer at all) does nothing
+    // either. For the approval card, where the look says which button is the action but nothing
+    // may press it except a deliberate click. The cost is that a keyboard-only person cannot
+    // answer such a card; that is the spec's choice, and the only non-pointer way to press one
+    // used to be the accessibility action, which is closed here on purpose.
+    in property <bool> pointer-only: false;
     callback clicked();
     forward-focus: keyboard;
     accessible-role: button;
     accessible-label: root.label;
-    accessible-enabled: !root.disabled && !root.loading;
-    accessible-action-default => { if (!root.disabled && !root.loading) { root.clicked(); } }
+    accessible-enabled: !root.disabled && !root.loading && !root.pointer-only;
+    accessible-action-default => { if (!root.disabled && !root.loading && !root.pointer-only) { root.clicked(); } }
 
     property <bool> hovered: ta.has-hover && !root.disabled;
     property <bool> pressed: ta.pressed && !root.disabled;
-    property <bool> on-accent: root.variant == 0 || root.variant == 3;
-    property <color> fg: root.on-accent ? Theme.text-on-accent : Theme.text-primary;
+    property <color> fg: root.variant == 0 ? Theme.text-on-accent : root.variant == 3 ? Theme.text-on-destructive : Theme.text-primary;
     property <length> glyph: root.size == 0 ? 13px : 15px;
 
     height: root.size == 0 ? Theme.h-compact : root.size == 2 ? Theme.h-prominent : Theme.h-regular;
@@ -46,19 +60,18 @@ export component YButton inherits Rectangle {
     clip: true;
 
     background:
-        root.variant == 3 ? (root.pressed ? Theme.color-danger.darker(30%) : root.hovered ? Theme.color-danger.brighter(10%) : Theme.color-danger)
-      : root.variant == 2 ? (root.pressed ? Theme.hover-fill-strong : root.hovered ? Theme.hover-fill : transparent)
-      : root.variant == 1 ? (root.pressed ? Theme.hover-fill-strong : root.hovered ? Theme.bg-elevated.brighter(8%) : Theme.bg-elevated)
+        root.variant == 3 ? (root.pressed ? Theme.destructive-pressed : root.hovered ? Theme.destructive-hover : Theme.destructive)
+      : root.variant != 0 ? (root.pressed ? Theme.hover-fill-strong : root.hovered ? Theme.hover-fill : transparent)
       :                     (root.pressed ? Theme.accent-button-pressed : root.hovered ? Theme.accent-button-hover : Theme.accent);
 
-    border-width: keyboard.has-focus ? 2px : root.variant == 1 ? 1px : 0;
-    border-color: keyboard.has-focus ? Theme.text-primary : root.hovered ? Theme.border-strong : Theme.border-default;
+    border-width: keyboard.has-focus ? 2px : root.variant != 0 && root.variant != 3 ? 1px : 0;
+    border-color: keyboard.has-focus ? Theme.focus-ring : root.pressed ? Theme.text-secondary : root.hovered ? Theme.text-dim : Theme.outline-border;
 
     animate background { duration: Theme.dur-fast; }
     animate opacity { duration: Theme.dur-fast; }
 
     keyboard := FocusScope {
-        enabled: !root.disabled && !root.loading;
+        enabled: !root.disabled && !root.loading && !root.pointer-only;
         key-pressed(event) => {
             if (event.text == "\n" || event.text == " ") {
                 if (!event.repeat && !root.disabled && !root.loading) { root.clicked(); }
@@ -72,7 +85,7 @@ export component YButton inherits Rectangle {
         enabled: !root.disabled && !root.loading;
         mouse-cursor: root.disabled ? default : pointer;
         clicked => {
-            if (!root.disabled && !root.loading) { keyboard.focus(); root.clicked(); }
+            if (!root.disabled && !root.loading) { if (!root.pointer-only) { keyboard.focus(); } root.clicked(); }
         }
     }
 

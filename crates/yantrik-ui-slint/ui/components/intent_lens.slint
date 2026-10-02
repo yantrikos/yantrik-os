@@ -18,6 +18,7 @@ import { ChatTranscript } from "chat_transcript.slint";
 import { ChatComposer } from "chat_composer.slint";
 import { ChatHeader, ChatEmpty } from "chat_chrome.slint";
 export { WorkCardData } from "work_card.slint";
+import { YButton } from "y_button.slint";
 
 // A single result in the Intent Feed.
 export struct LensResult {
@@ -753,56 +754,33 @@ export component ApprovalCard inherits Rectangle {
             decide := VerticalLayout {
                 spacing: Theme.sp-2;
 
-            // Deny first, and neither button dressed up as the obvious one.
+            // Deny first, then Allow once as the primary: the look says which button is the
+            // action, and never chooses for the person. (Pranab, 2 Oct: the buttons all looked
+            // alike. This card used to dress Allow as an amber outline to avoid approval fatigue;
+            // the fix for that is not the look but the behaviour, which has not moved.)
             //
-            // The failure this guards against is approval fatigue: a prominent, accent-filled
-            // Allow next to a grey Deny trains a person to click the bright one without
-            // reading, which is exactly how the one request that mattered gets waved through.
-            // So Deny is the ordinary filled button and Allow is an outline you have to aim at.
+            // Both are `pointer-only`: neither takes keyboard focus, so nothing is focused when
+            // the card appears, Tab cannot land on them and Enter or Space can never press
+            // either. A click is the only way to answer. The press guard in card_watch.rs and
+            // the tests in control_approvals.rs still apply to what the click does.
             HorizontalLayout {
                 spacing: Theme.sp-2;
                 padding-top: Theme.sp-1;
 
-                Rectangle {
-                    height: Theme.h-regular;
+                YButton {
+                    label: "Decline";
+                    variant: 1;
+                    pointer-only: true;
                     horizontal-stretch: 1;
-                    border-radius: Theme.r-md;
-                    background: deny-ta.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated;
-                    border-width: 1px;
-                    border-color: Theme.border-default;
-
-                    deny-ta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { root.deny(); }
-                    }
-                    Text {
-                        text: "Decline";
-                        color: Theme.text-primary;
-                        font-size: Theme.fs-body-strong;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
+                    clicked => { root.deny(); }
                 }
 
-                Rectangle {
-                    height: Theme.h-regular;
+                YButton {
+                    label: "Approve once";
+                    variant: 0;
+                    pointer-only: true;
                     horizontal-stretch: 1;
-                    border-radius: Theme.r-md;
-                    background: allow-ta.has-hover ? Theme.amber-glow : transparent;
-                    border-width: 1px;
-                    border-color: Theme.chat-needs-you;
-
-                    allow-ta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { root.allow(); }
-                    }
-                    Text {
-                        text: "Approve once";
-                        color: Theme.chat-needs-you;
-                        font-size: Theme.fs-body-strong;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
+                    clicked => { root.allow(); }
                 }
             }
 
@@ -815,7 +793,7 @@ export component ApprovalCard inherits Rectangle {
             // bypass, which is the blunt instrument this is trying to make unnecessary.
             //
             // Below the button row rather than beside it, at caption size, in dim text with a
-            // subtle border: Deny is still the ordinary filled button and the easy default, and
+            // subtle border: Deny is still the secondary button beside the primary, and
             // the standing yes costs the most deliberate aim of the three. Not drawn at all for
             // `dangerous`, or for an action the app says cannot be undone — see `can-session`.
             //

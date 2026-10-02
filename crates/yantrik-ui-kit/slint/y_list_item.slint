@@ -1,11 +1,11 @@
 // YListItem — the universal row: leading glyph, title, subtitle, trailing metadata and badge.
 //
-// Selection is a 2px accent bar on the left edge plus the selected surface — a shape the eye
-// finds without reading. The leading glyph is a stroke icon (`icon-path`) in a rounded square;
+// Selection is a 2px white keyline on the left edge plus the selected surface, never the accent
+// (which means ON and PRIMARY in the shell): a shape the eye finds without reading. The leading
+// glyph is a stroke icon (`icon-path`) in a rounded square;
 // `icon-char` remains as a fallback for rows that genuinely are initials (a person, a drive
 // letter), which is the one case where a character is the right icon.
 import { Theme } from "theme.slint";
-import { AppIdentity } from "app_color.slint";
 import { Icon } from "icon.slint";
 
 export component YListItem inherits Rectangle {
@@ -49,7 +49,7 @@ export component YListItem inherits Rectangle {
         height: parent.height - 12px;
         y: 6px;
         border-radius: 1px;
-        background: root.selected ? AppIdentity.accent : transparent;
+        background: root.selected ? Theme.focus-ring : transparent;
     }
 
     ta := TouchArea {
@@ -97,7 +97,7 @@ export component YListItem inherits Rectangle {
             if root.icon-path != "" : Icon {
                 commands: root.icon-path;
                 size: root.two-line ? 16px : 14px;
-                tint: root.selected ? AppIdentity.accent : root.icon-tint;
+                tint: root.selected ? Theme.text-primary : root.icon-tint;
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
             }

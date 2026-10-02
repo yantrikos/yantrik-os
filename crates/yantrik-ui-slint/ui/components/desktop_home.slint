@@ -103,7 +103,7 @@ export component DesktopHome inherits Rectangle {
                     spacing: 16px;
                     HorizontalLayout {
                         Text { text: "Your workspace"; font-size: Theme.fs-headline; font-weight: 600; color: Theme.text-primary; vertical-alignment: center; horizontal-stretch: 1; }
-                        YButton { label: "All apps"; icon-path: Icons.chevron-right; icon-trailing: true; variant: 2; clicked => { root.all-apps(); } }
+                        YButton { label: "All apps"; icon-path: Icons.chevron-right; icon-trailing: true; variant: 1; clicked => { root.all-apps(); } }
                     }
                     if root.pins.length == 0 : Text {
                         text: "Make this space yours. Open All apps and pin your favourites.";
@@ -196,7 +196,7 @@ export component DesktopHome inherits Rectangle {
                     text: root.online ? (root.mind-name != "" ? root.mind-name + " is within reach" : "Your companion is within reach") : "Your workspace is ready. Connect a mind when you need one.";
                     color: Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1;
                 }
-                YButton { label: root.online ? "Open companion" : "Connect a mind"; variant: 2; size: 0; clicked => { root.configure-mind(); } }
+                YButton { label: root.online ? "Open companion" : "Connect a mind"; variant: 1; size: 0; clicked => { root.configure-mind(); } }
             }
         }
     }

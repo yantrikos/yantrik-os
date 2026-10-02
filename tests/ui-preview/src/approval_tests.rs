@@ -305,3 +305,48 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     );
     Ok(())
 }
+
+/// The real approval card, drawn by IntentLens (not a hand-built pair), answered by keys: Tab,
+/// Enter, Return and Space, however many times and in whatever order focus lands, press neither
+/// Deny, Allow once nor the session row; a click on each still does (#583). Deleting
+/// `pointer-only: true` from either card button makes Tab-Enter reach it and fail the first
+/// assertion. The accessibility default action is not reachable from here; it is covered by the
+/// source scan `consent_buttons_are_pointer_only` in the kit crate.
+pub fn run_pointer_only(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use slint::platform::Key;
+    let (width, height) = (1280u32, 800u32);
+    let (panel_left, panel_top, panel_bottom) = (900.0f32, 32.0f32, 760.0f32);
+    let ui = ApprovalLensProbe::new()?;
+    ui.set_messages(ModelRc::new(VecModel::from(vec![message("user", "Start the Council.")])));
+    ui.set_approvals(ModelRc::new(VecModel::from(vec![card(RUN_RECIPE_SUMMARY)])));
+    ui.show()?;
+    w.set_size(slint::PhysicalSize::new(width, height));
+    render(w, width, height);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    save(&settle(w, width, height), output, width, height)?;
+
+    // Shift+Tab and Tab both ways round the whole focus chain, with every confirming key at each
+    // stop: if either button, or the row under them, could take focus it would be pressed here.
+    for _ in 0..12 {
+        for k in [slint::SharedString::from(Key::Tab), "\n".into(), "\r".into(), " ".into()] {
+            key(w, k);
+        }
+        key(w, slint::SharedString::from(Key::Backtab));
+        key(w, "\n".into());
+        key(w, " ".into());
+        render(w, width, height);
+    }
+    assert_eq!(
+        (ui.get_allowed(), ui.get_denied()),
+        (0, 0),
+        "Tab, Enter, Return and Space press neither Allow once nor Deny on the real approval card"
+    );
+
+    let (deny_x, allow_x) = (panel_left + 100.0, panel_left + 280.0);
+    let before = ui.get_denied();
+    scan(w, deny_x, panel_top, panel_bottom - 4.0, || ui.get_denied() > before).expect("a click on Deny answers");
+    let before = ui.get_allowed();
+    scan(w, allow_x, panel_top, panel_bottom - 4.0, || ui.get_allowed() > before).expect("a click on Allow once answers");
+    println!("PASS approval card: keys press nothing (Tab/Backtab/Enter/Return/Space ×12), a click answers Deny and Allow once");
+    Ok(())
+}

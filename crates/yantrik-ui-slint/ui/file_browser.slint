@@ -658,7 +658,7 @@ export component FileBrowser inherits Rectangle {
                         background: tab.is-active ? Theme.bg-deep : transparent;
                         TouchArea { clicked => { root.file-switch-tab(index); listing.focus(); } }
                         Text { x: 12px; width: parent.width - 42px; height: parent.height; vertical-alignment: center; text: tab.label; color: tab.is-active ? Theme.text-primary : Theme.text-secondary; font-size: 12px; overflow: elide; }
-                        YButton { x: parent.width - 27px; y: 5px; width: 24px; height: 24px; icon-only: true; label: "Close tab"; icon-path: Icons.close; variant: 2; size: 0; clicked => { root.file-close-tab(index); } }
+                        YButton { x: parent.width - 27px; y: 5px; width: 24px; height: 24px; icon-only: true; label: "Close tab"; icon-path: Icons.close; variant: 1; size: 0; clicked => { root.file-close-tab(index); } }
                         Rectangle { y: parent.height - 2px; height: 2px; background: tab.is-active ? Theme.accent : transparent; }
                     }
                 }
@@ -668,9 +668,9 @@ export component FileBrowser inherits Rectangle {
                 height: 54px; background: Theme.bg-surface;
                 Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border-subtle; }
                 HorizontalLayout { padding: 10px; spacing: 5px;
-                    YButton { label: "Back"; icon-path: Icons.arrow-left; icon-only: true; variant: 2; disabled: !root.can-go-back || root.file-trash-mode; clicked => { root.go-back(); } }
-                    YButton { label: "Forward"; icon-path: Icons.arrow-right; icon-only: true; variant: 2; disabled: !root.can-go-forward || root.file-trash-mode; clicked => { root.go-forward(); } }
-                    YButton { label: "Parent folder"; icon-path: Icons.arrow-up; icon-only: true; variant: 2; disabled: root.file-trash-mode || root.current-path == "/"; clicked => { root.go-up(); } }
+                    YButton { label: "Back"; icon-path: Icons.arrow-left; icon-only: true; variant: 1; disabled: !root.can-go-back || root.file-trash-mode; clicked => { root.go-back(); } }
+                    YButton { label: "Forward"; icon-path: Icons.arrow-right; icon-only: true; variant: 1; disabled: !root.can-go-forward || root.file-trash-mode; clicked => { root.go-forward(); } }
+                    YButton { label: "Parent folder"; icon-path: Icons.arrow-up; icon-only: true; variant: 1; disabled: root.file-trash-mode || root.current-path == "/"; clicked => { root.go-up(); } }
                     Rectangle { width: 6px; }
                     path-area := Rectangle { horizontal-stretch: 1; min-width: 80px; clip: true;
                         if root.address-editing : YInput { init => { self.focus(); } value: root.current-path; placeholder: "Enter a folder path"; accepted(path) => { root.navigate-to-path(path); root.address-editing = false; listing.focus(); } }
@@ -690,7 +690,7 @@ export component FileBrowser inherits Rectangle {
                                 disabled: root.file-trash-mode;
                                 clicked => { root.navigate-to-path(crumb.full-path); }
                             }
-                            YButton { width: 28px; label: "Edit location · Ctrl L"; icon-path: Icons.pencil; icon-only: true; variant: 2; size: 0; disabled: root.file-trash-mode; clicked => { root.address-editing = true; } }
+                            YButton { width: 28px; label: "Edit location · Ctrl L"; icon-path: Icons.pencil; icon-only: true; variant: 1; size: 0; disabled: root.file-trash-mode; clicked => { root.address-editing = true; } }
                         }
                     }
                     search-input := YInput { width: root.width >= 1000px ? 240px : 180px; mode: 1; value <=> root.search-text; placeholder: "Search this folder"; edited(text) => { root.file-filter-changed(text); } }
@@ -744,13 +744,13 @@ export component FileBrowser inherits Rectangle {
                                         color: Theme.text-secondary; font-size: 12px; overflow: elide;
                                     }
                                 }
-                                if root.selection-count > 0 && !root.file-trash-mode : YButton { y: 14px; label: "Copy"; icon-path: Icons.copy; icon-only: root.width < 950px; size: 0; variant: 2; clicked => { root.copy-selected(); } }
-                                if root.selection-count > 0 && !root.file-trash-mode : YButton { y: 14px; label: "Move to Trash"; icon-path: Icons.trash; icon-only: true; size: 0; variant: 2; disabled: root.operation-busy; clicked => { root.delete-selected(); } }
-                                if root.selection-count > 0 : YButton { y: 14px; label: "Clear selection"; icon-path: Icons.close; icon-only: true; size: 0; variant: 2; clicked => { root.clear-selection(); listing.focus(); } }
+                                if root.selection-count > 0 && !root.file-trash-mode : YButton { y: 14px; label: "Copy"; icon-path: Icons.copy; icon-only: root.width < 950px; size: 0; variant: 1; clicked => { root.copy-selected(); } }
+                                if root.selection-count > 0 && !root.file-trash-mode : YButton { y: 14px; label: "Move to Trash"; icon-path: Icons.trash; icon-only: true; size: 0; variant: 1; disabled: root.operation-busy; clicked => { root.delete-selected(); } }
+                                if root.selection-count > 0 : YButton { y: 14px; label: "Clear selection"; icon-path: Icons.close; icon-only: true; size: 0; variant: 1; clicked => { root.clear-selection(); listing.focus(); } }
                                 if root.file-trash-mode : YButton { y: 14px; label: "Restore"; size: 0; variant: 1; disabled: root.selection-count != 1 || root.operation-busy; clicked => { root.command("restore"); } }
-                                if root.file-trash-mode && root.width >= 900px : YButton { y: 14px; label: "Empty Trash"; size: 0; variant: 2; disabled: root.entries.length == 0 || root.operation-busy; clicked => { root.command("empty-trash"); } }
-                                if !root.file-trash-mode : YButton { y: 14px; label: root.sort-field == "name" ? "Name" : root.sort-field == "size" ? "Size" : "Modified"; icon-path: Icons.sort; size: 0; variant: 2; clicked => { root.sort-field = root.sort-field == "name" ? "size" : root.sort-field == "size" ? "modified" : "name"; root.file-sort-changed(root.sort-field, root.sort-ascending); } }
-                                if !root.file-trash-mode : YButton { y: 14px; label: "Reverse sort order"; icon-path: root.sort-ascending ? Icons.arrow-up : Icons.arrow-down; icon-only: true; size: 0; variant: 2; clicked => { root.sort-ascending = !root.sort-ascending; root.file-sort-changed(root.sort-field, root.sort-ascending); } }
+                                if root.file-trash-mode && root.width >= 900px : YButton { y: 14px; label: "Empty Trash"; size: 0; variant: 3; disabled: root.entries.length == 0 || root.operation-busy; clicked => { root.command("empty-trash"); } }
+                                if !root.file-trash-mode : YButton { y: 14px; label: root.sort-field == "name" ? "Name" : root.sort-field == "size" ? "Size" : "Modified"; icon-path: Icons.sort; size: 0; variant: 1; clicked => { root.sort-field = root.sort-field == "name" ? "size" : root.sort-field == "size" ? "modified" : "name"; root.file-sort-changed(root.sort-field, root.sort-ascending); } }
+                                if !root.file-trash-mode : YButton { y: 14px; label: "Reverse sort order"; icon-path: root.sort-ascending ? Icons.arrow-up : Icons.arrow-down; icon-only: true; size: 0; variant: 1; clicked => { root.sort-ascending = !root.sort-ascending; root.file-sort-changed(root.sort-field, root.sort-ascending); } }
                             }
                         }
                         // ── Column heads, in the list ──
@@ -853,7 +853,7 @@ export component FileBrowser inherits Rectangle {
                 if root.detail-panel-visible && root.width >= 1050px && root.selected-index >= 0 : Rectangle {
                     width: 250px; background: Theme.bg-surface;
                     VerticalLayout { padding: 18px; spacing: 12px;
-                        HorizontalLayout { Text { text: "Details"; color: Theme.text-primary; font-size: 14px; font-weight: 600; horizontal-stretch: 1; } YButton { label: "Close details"; icon-path: Icons.close; icon-only: true; variant: 2; size: 0; clicked => { root.detail-panel-visible = false; } } }
+                        HorizontalLayout { Text { text: "Details"; color: Theme.text-primary; font-size: 14px; font-weight: 600; horizontal-stretch: 1; } YButton { label: "Close details"; icon-path: Icons.close; icon-only: true; variant: 1; size: 0; clicked => { root.detail-panel-visible = false; } } }
                         Icon { commands: Icons.file-kind(root.file-details.icon-char); size: 42px; tint: Theme.accent; }
                         Text { text: root.file-details.name; color: Theme.text-primary; font-size: 17px; font-weight: 600; wrap: word-wrap; }
                         Text { text: root.file-details.file-type + "\n" + root.file-details.size-text + "\n" + root.file-details.modified-text; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; }
@@ -861,7 +861,7 @@ export component FileBrowser inherits Rectangle {
                         YButton { label: "Open preview"; icon-path: Icons.eye; variant: 1; clicked => { root.file-quick-look(root.selected-index); } }
                         HorizontalLayout { spacing: 5px;
                             YButton { label: "Summarize"; icon-path: Icons.spark; size: 0; variant: 1; disabled: root.is-summarizing || !root.file-details.is-text-file; clicked => { root.request-summarize(); } }
-                            YButton { label: "Ask AI"; size: 0; variant: 2; disabled: root.is-summarizing || !root.file-details.is-text-file; clicked => { root.request-ask-ai(); } }
+                            YButton { label: "Ask AI"; size: 0; variant: 1; disabled: root.is-summarizing || !root.file-details.is-text-file; clicked => { root.request-ask-ai(); } }
                         }
                         if root.is-summarizing || root.ai-summary != "" : Flickable {
                             min-height: 80px; vertical-stretch: 1; viewport-width: self.width; viewport-height: answer.preferred-height;
@@ -892,11 +892,11 @@ export component FileBrowser inherits Rectangle {
                         if root.notice-created-dir { root.navigate-dir(root.notice-created); }
                         else { root.open-file(root.notice-created); }
                     } }
-                    if root.notice-created != "" : YButton { label: "Rename"; variant: 2; size: 0; clicked => {
+                    if root.notice-created != "" : YButton { label: "Rename"; variant: 1; size: 0; clicked => {
                         root.dialog-kind = "Rename"; root.dialog-old = root.notice-created; root.dialog-value = root.notice-created;
                     } }
                     if root.can-undo : YButton { label: "Undo trash"; variant: 1; size: 0; disabled: root.operation-busy; clicked => { root.undo-trash(); } }
-                    YButton { label: "Dismiss message"; icon-path: Icons.close; icon-only: true; variant: 2; size: 0; clicked => { root.dismiss-notice(); } }
+                    YButton { label: "Dismiss message"; icon-path: Icons.close; icon-only: true; variant: 1; size: 0; clicked => { root.dismiss-notice(); } }
                 }
                 if !root.operation-busy && root.notice == "" : HorizontalLayout {
                     padding-left: 16px; padding-right: 16px; spacing: 16px;
@@ -943,14 +943,14 @@ export component FileBrowser inherits Rectangle {
                             icon-path: Icons.link; variant: 1; horizontal-stretch: 1;
                             clicked => { root.open-with-visible = false; root.open-with(app.id); }
                         }
-                        YButton { label: "Always use"; variant: 2; size: 0; disabled: root.file-trash-mode;
+                        YButton { label: "Always use"; variant: 1; size: 0; disabled: root.file-trash-mode;
                             clicked => { root.open-with-visible = false; root.open-with-always(app.id, app.name); } }
                     }
-                    YButton { label: "Rename"; icon-path: Icons.editor; variant: 2; disabled: root.file-trash-mode || root.operation-busy; clicked => { root.open-with-visible = false; root.command("rename"); } }
-                    YButton { label: "Move to Trash"; icon-path: Icons.trash; variant: 2; disabled: root.file-trash-mode || root.operation-busy; clicked => { root.open-with-visible = false; root.delete-selected(); } }
+                    YButton { label: "Rename"; icon-path: Icons.editor; variant: 1; disabled: root.file-trash-mode || root.operation-busy; clicked => { root.open-with-visible = false; root.command("rename"); } }
+                    YButton { label: "Move to Trash"; icon-path: Icons.trash; variant: 1; disabled: root.file-trash-mode || root.operation-busy; clicked => { root.open-with-visible = false; root.delete-selected(); } }
                 }
                 HorizontalLayout { alignment: end; spacing: 8px;
-                    YButton { init => { if root.file-quick-look-open || root.dialog-kind == "Empty Trash" { self.focus(); } } label: root.file-quick-look-open || root.open-with-visible ? "Close" : "Cancel"; variant: 2; clicked => { root.dialog-kind = ""; root.file-close-quick-look(); root.open-with-visible = false; listing.focus(); } }
+                    YButton { init => { if root.file-quick-look-open || root.dialog-kind == "Empty Trash" { self.focus(); } } label: root.file-quick-look-open || root.open-with-visible ? "Close" : "Cancel"; variant: 1; clicked => { root.dialog-kind = ""; root.file-close-quick-look(); root.open-with-visible = false; listing.focus(); } }
                     if root.dialog-kind != "" : YButton { label: root.dialog-kind == "Empty Trash" ? "Empty Trash" : root.dialog-kind == "Rename" ? "Rename" : "Create"; variant: root.dialog-kind == "Empty Trash" ? 3 : 0; disabled: root.dialog-kind != "Empty Trash" && root.dialog-value == ""; clicked => { root.submit-dialog(); } }
                 }
             }

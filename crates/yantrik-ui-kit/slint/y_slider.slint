@@ -187,7 +187,8 @@ export component YSlider inherits Rectangle {
             width: Theme.slider-thumb;
             height: Theme.slider-thumb;
             border-radius: self.height / 2;
-            background: Theme.knob;
+            // The knob is the accent too, so the filled part and the thing you hold read as one.
+            background: Theme.accent;
             border-width: Theme.hairline;
             border-color: Theme.knob-border;
             drop-shadow-blur: Theme.shadow-sm-blur;

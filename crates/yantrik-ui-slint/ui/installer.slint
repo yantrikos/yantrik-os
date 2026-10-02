@@ -887,6 +887,7 @@ export component InstallerScreen inherits Rectangle {
                         }
                         PillButton {
                             label: "Erase disk and install";
+                            destructive: true;
                             width: 220px;
                             enabled: root.can-install;
                             clicked => {
