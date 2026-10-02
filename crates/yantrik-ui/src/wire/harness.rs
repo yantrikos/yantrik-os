@@ -324,17 +324,22 @@ fn install_in(roots: &[std::path::PathBuf], id: &str) -> Result<String, String> 
 /// The person's Install click: the same job and, for a harness whose manifest says its memory is
 /// the machine's YantrikDB, the grant that makes it so (crate::harness_memory).
 ///
-/// Granted once the job has started rather than once it succeeds. The click is the person's
-/// consent, and only here, on the UI thread, does the shell know a person made it; a job's end
-/// happens on a background thread. A second press refused because the first is still running
-/// grants nothing. A grant for a Hermes whose install then failed is shown on its row, and is
-/// used by nothing until a harness attaches under that id.
+/// The consent is taken here, on the UI thread, where the shell knows a person clicked; the grant
+/// is written only once the install has worked. An install that failed leaves no grant behind for
+/// whatever later attaches under that id, and a second press refused because the first is still
+/// running grants nothing.
 fn install_clicked(roots: &[std::path::PathBuf], id: &str) -> Result<String, String> {
     let manifest = manifest_in(roots, id)?;
-    let command = crate::harness_install::install(&manifest)?;
-    crate::harness_memory::grant_on_persons_install(&manifest)
-        .map_err(|e| format!("installing, but it was not given the machine's memory: {e}"))?;
-    Ok(command)
+    let grant: Option<crate::harness_install::Worked> =
+        (manifest.memory == harness_catalogue::Memory::Yantrikdb).then(|| {
+            let manifest = manifest.clone();
+            Box::new(move || {
+                crate::harness_memory::grant_on_persons_install(&manifest)
+                    .map(|_| ())
+                    .map_err(|e| format!("installed, but it was not given the machine's memory: {e}"))
+            }) as crate::harness_install::Worked
+        });
+    crate::harness_install::install_then(&manifest, grant)
 }
 
 pub fn start(id: &str) -> Result<String, String> {
@@ -845,11 +850,15 @@ mod tests {
 
     impl MemoryFixture {
         fn new(id: &str) -> MemoryFixture {
+            MemoryFixture::with_install(id, "true")
+        }
+
+        fn with_install(id: &str, command: &str) -> MemoryFixture {
             let root = std::env::temp_dir().join(format!("yantrik-install-grant-{id}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&root);
             let dir = root.join("share").join(id);
             std::fs::create_dir_all(&dir).unwrap();
-            let manifest = format!("id: {id}\nmemory: yantrikdb\ninstall:\n  command: \"true\"\n");
+            let manifest = format!("id: {id}\nmemory: yantrikdb\ninstall:\n  command: \"{command}\"\n");
             std::fs::write(dir.join(harness_catalogue::MANIFEST), manifest).unwrap();
             MemoryFixture { grants: root.join("home/.config/yantrik/memory-grants.json"), root }
         }
@@ -908,6 +917,29 @@ mod tests {
         // credential with no restart of the shell.
         let store = crate::memory_grants::load();
         assert!(crate::memory_grants::carries_memory(store.as_ref(), "memtest-click", Some(1000), |_| false));
+    }
+
+    /// The grant waits for the install to work. One written at the click outlived an install that
+    /// failed, ready for whatever attached under that id next.
+    #[test]
+    fn an_install_that_failed_leaves_no_memory_grant_behind() {
+        let fixture = MemoryFixture::with_install("memtest-failed", "exit 3");
+        let _using = crate::memory_grants::test_file::using(fixture.grants.clone());
+        install_clicked(&fixture.roots(), "memtest-failed").expect("the job starts");
+        fixture.settle("memtest-failed");
+        assert_eq!(crate::harness_install::views()["memtest-failed"].error, "install failed: it exited 3");
+        assert!(!fixture.grants.exists(), "a failed install wrote a memory grant");
+        assert!(crate::harness_memory::granted_minds().is_empty());
+    }
+
+    #[test]
+    fn while_the_install_runs_nothing_is_granted_yet() {
+        let fixture = MemoryFixture::with_install("memtest-running", "sleep 0.5");
+        let _using = crate::memory_grants::test_file::using(fixture.grants.clone());
+        install_clicked(&fixture.roots(), "memtest-running").expect("the job starts");
+        assert!(crate::harness_memory::granted_minds().is_empty(), "granted before the install worked");
+        fixture.settle("memtest-running");
+        assert_eq!(crate::harness_memory::granted_minds(), ["memtest-running"]);
     }
 
     /// pi's manifest, plus what — if anything — systemd says about its unit. The manifest

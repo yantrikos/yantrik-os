@@ -2,8 +2,8 @@
 //!
 //! Installing Hermes from this desktop was meant to give Hermes the memory Yantrik Mind keeps, so
 //! the two remember the same person, and not a second memory of them in ~/.hermes. A manifest says
-//! `memory: yantrikdb` for a harness built that way, and the person's Install click on its row
-//! grants it ordinary recall, remember and believe, saved where the person's grants are saved, so
+//! `memory: yantrikdb` for a harness built that way, and the person's Install click on its row,
+//! once the install has worked, grants it ordinary recall, remember and believe, saved where the person's grants are saved, so
 //! the shell's baseline holds it and a later edit behind the shell's back cannot widen it.
 //!
 //! Only the click does this. The control surface's `install_harness` runs the same install and
@@ -145,7 +145,7 @@ mod tests {
     fn the_row_says_where_its_memory_is_in_plain_words() {
         assert_eq!(line(Memory::Own, true, true), "");
         assert_eq!(line(Memory::Yantrikdb, true, true), "Memory: YantrikDB (shared with Yantrik Mind)");
-        assert_eq!(line(Memory::Yantrikdb, false, true), SHARED, "granted at the click, while it installs");
+        assert_eq!(line(Memory::Yantrikdb, false, true), SHARED, "granted already, as during a reinstall");
         assert!(line(Memory::Yantrikdb, false, false).starts_with("Memory: Install gives it YantrikDB"));
         assert!(line(Memory::Yantrikdb, true, false).starts_with("Memory: not granted YantrikDB"));
     }

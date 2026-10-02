@@ -43,8 +43,11 @@ Hermes arrives with a `terminal`, `file`, `code_execution`, `browser` and `web` 
 desktop they are a second, **ungraded** route to everything the apps already offer, and each
 `terminal` call stops on Hermes's own approval — which reaches the person as a paragraph to answer
 with `/approve`, five minutes at a time. The first long job given to it spent most of its life
-waiting on those. `hermes tools` does not know plugin platforms, so set it in
-`~/.hermes/config.yaml`:
+waiting on those. *Install* sets this in `~/.hermes/config.yaml` for you, keeping every other key
+and a copy of the file as it was (`config.yaml.before-yantrik-desktop`), and fails if it reads the
+file back and finds any of those five toolsets on the desktop platform
+(`harnesses/lib/install/hermes_config.py`). `hermes tools` does not know plugin platforms and
+`hermes config set` cannot write a list, so by hand it is:
 
 ```yaml
 platform_toolsets:
@@ -60,7 +63,8 @@ delegation:
 - the installer puts the YantrikDB memory provider into Hermes, sets `memory.provider` to it,
   writes `YANTRIKDB_MODE=yantrik` into `~/.hermes/.env` (only when it is not set there already),
   and turns off Hermes's own `MEMORY.md` and `USER.md`;
-- the desktop grants Hermes ordinary recall, remember and believe in
+- once the install has worked, and not before, the desktop grants Hermes ordinary recall,
+  remember and believe in
   `~/.config/yantrik/memory-grants.json`. Never health, finance or household memory, and
   credentials are never a grant;
 - from Hermes's next turn, each turn carries a credential for the memory server, which this

@@ -51,6 +51,21 @@ mkdir -p "$HOME/.hermes/plugins/yantrik"
 cp -r "$plugin/." "$HOME/.hermes/plugins/yantrik/"
 hermes plugins enable yantrik-desktop || fail "Hermes would not enable the desktop plugin"
 
+# The Python Hermes runs on, which has its YAML library and is where its plugins are installed.
+hermes_bin=$(readlink -f "$(command -v hermes)") || fail "cannot tell where hermes is installed"
+hermes_python="$(dirname "$hermes_bin")/python"
+[ -x "$hermes_python" ] || fail "no Python beside $hermes_bin"
+
+# The desktop's tools and not Hermes's own: Hermes's `terminal`, `file`, `code_execution`,
+# `browser` and `web` are a second, ungraded route around every app on this desktop. A live
+# machine whose install skipped this ran Hermes's own terminal as the person, past every shell
+# approval. `hermes config set` cannot write a list, so hermes_config.py does it with Hermes's own
+# Python, keeping every other key, after `plugins enable`, which edits the same lists.
+config=$(hermes config path) || fail "Hermes would not say where its config.yaml is"
+say "giving Hermes's desktop platform the desktop's tools in $config"
+"$hermes_python" "$(dirname "$0")/hermes_config.py" apply "$config" \
+    || fail "could not give Hermes's desktop platform the desktop's tools; config.yaml is as it was"
+
 # Hermes's memory is this machine's YantrikDB, the one Yantrik Mind keeps (harness.yaml's
 # `memory: yantrikdb`), never a second memory of the person in ~/.hermes. Hermes finds a memory
 # provider as a directory in ~/.hermes/plugins and switches to it with `memory.provider`. The
@@ -59,17 +74,14 @@ hermes plugins enable yantrik-desktop || fail "Hermes would not enable the deskt
 # Not `hermes plugins install`: that clones whatever the repository's default branch holds today.
 # In `yantrik` mode the provider presents, on every call, the credential the desktop hands Hermes
 # with each turn (YANTRIK_MEMORY_CREDENTIAL and YANTRIK_MEMORY_URL, set by adapter.py); the
-# desktop grants it when the person presses Install, never when a mind asks for the install.
-# TODO(pin): the pip reference for yantrikdb-hermes-plugin with its yantrik mode.
-YANTRIKDB_PLUGIN=""
-# TODO(pin): the name Hermes knows the provider by, for `memory.provider`.
+# desktop grants it once the install the person pressed has worked, never for one a mind asked for.
+# v0.28.0, the release with `yantrik` mode (yantrikos/yantrikdb-hermes-plugin#93), by commit: a
+# tag can be moved and a commit cannot. Moved on by hand, with the review of what changed.
+YANTRIKDB_PLUGIN="yantrikdb-hermes-plugin @ git+https://github.com/yantrikos/yantrikdb-hermes-plugin@e3ad889d1890cfe04057641051da30e7d6a35d74"
+# Hermes picks a memory provider by its directory in ~/.hermes/plugins, which this package names.
 MEMORY_PROVIDER=yantrikdb
 
-[ -n "$YANTRIKDB_PLUGIN" ] \
-    || fail "the YantrikDB memory provider is not pinned in hermes.sh yet; stopping rather than leave Hermes with a memory of its own"
-hermes_bin=$(readlink -f "$(command -v hermes)") || fail "cannot tell where hermes is installed"
-hermes_python="$(dirname "$hermes_bin")/python"
-[ -x "$hermes_python" ] || fail "no Python beside $hermes_bin to install the memory provider into"
+command -v git >/dev/null 2>&1 || fail "the YantrikDB memory provider is fetched with git, and there is no git"
 say "installing the YantrikDB memory provider into Hermes"
 # Hermes's own installer makes its environment with uv, which leaves pip out of it, and puts uv
 # in ~/.local/bin, which common.sh has put on PATH.
@@ -81,13 +93,16 @@ else
     "$hermes_python" -m pip install "$YANTRIKDB_PLUGIN" </dev/null \
         || fail "the YantrikDB memory provider did not install (and there is no uv to try)"
 fi
-# TODO(pin): confirm the registering command of the pinned version.
-"$(dirname "$hermes_bin")/yantrikdb-hermes" install </dev/null \
+# `--force` replaces the shim an earlier install left, which is the package's own and nothing of
+# the person's. Its "next steps" are not shown: they suggest YANTRIKDB_MODE=embedded, the
+# separate memory this install exists to avoid.
+"$(dirname "$hermes_bin")/yantrikdb-hermes" install --force </dev/null >/dev/null \
     || fail "the YantrikDB memory provider would not register itself with Hermes"
 hermes config set memory.provider "$MEMORY_PROVIDER" || fail "Hermes would not take $MEMORY_PROVIDER as its memory"
-# Hermes keeps MEMORY.md and USER.md beside any provider, as its docs say: an external provider
-# is additive. Left on, they are a second memory of the person that Yantrik Mind never sees.
-# TODO(pin): confirm the provider does not stand in for them itself.
+# A provider runs beside Hermes's own MEMORY.md and USER.md and does not replace them (Hermes's
+# agent_init.py and system_prompt.py). Left on, they are a second memory of the person that
+# Yantrik Mind never sees. Off, Hermes's own memory tool says it is not available, and what it
+# would have added still reaches the provider.
 hermes config set memory.memory_enabled false || fail "Hermes would not turn off its own MEMORY.md"
 hermes config set memory.user_profile_enabled false || fail "Hermes would not turn off its own USER.md"
 
@@ -130,6 +145,11 @@ env_default YANTRIK_ALLOW_ALL_USERS true >/dev/null
 hermes gateway install --if-missing --start-now --start-on-login </dev/null \
     || fail "Hermes would not install its gateway service"
 systemctl --user restart hermes-gateway || fail "Hermes's gateway would not start"
+
+# Read back last, after everything else that edits config.yaml has run: an install that leaves
+# Hermes's own terminal on the desktop platform is not finished, whatever else worked.
+"$hermes_python" "$(dirname "$0")/hermes_config.py" check "$config" \
+    || fail "Hermes's desktop platform still has Hermes's own tools; see $config"
 
 # The desktop opens `hermes model` next (the manifest's `configure`); by hand it is the same.
 say "Hermes is installed. Next, choose its model: Choose model on this row, or run: hermes model"

@@ -12,10 +12,10 @@ docs: README.md
 
 # Hermes's memory is this machine's YantrikDB, the one Yantrik Mind keeps, so the two remember the
 # same person and Hermes keeps no second memory of them. The installer gives Hermes the YantrikDB
-# memory provider in its `yantrik` mode; the person's Install click grants Hermes ordinary recall,
-# remember and believe (crates/yantrik-ui/src/harness_memory.rs); and every turn then carries the
-# credential the provider presents to the memory server (adapter.py). Installed any other way,
-# Hermes is granted nothing until the person grants it.
+# memory provider in its `yantrik` mode; the person's Install click, once the install has worked,
+# grants Hermes ordinary recall, remember and believe (crates/yantrik-ui/src/harness_memory.rs); and
+# every turn then carries the credential the provider presents to the memory server (adapter.py).
+# Installed any other way, Hermes is granted nothing until the person grants it.
 memory: yantrikdb
 
 requires:
