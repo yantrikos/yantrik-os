@@ -42,6 +42,9 @@ Environment=YM_WEBUI=off
 # home. The desktop reaches the Mind through the harness; nothing on this OS needs the endpoint.
 Environment=YM_CTL=off
 Environment=YANTRIK_MIND_RUN=/run/yantrik-minds
+# YANTRIK_PERSON_UID, whose shell vouches for the memory credentials other minds present to the
+# memory server (#447), is set by the launcher to the machine's one person and is never taken from
+# the settings file. Set it here only on a machine with more than one person's account.
 # Out through the egress proxy (design/mind-egress-2026-09-29.md): where the mind connects is
 # counted and, once the person turns it to enforce, held to their policy. Both spellings, because
 # curl reads only the lowercase http one. Loopback goes direct: the memory server is there.

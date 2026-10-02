@@ -15,6 +15,14 @@ comments and blank lines skipped. A key the unit already sets is the unit's: HOM
 YANTRIK_MIND_RUN come from the unit, so a settings file written when the Mind lived in the
 person's home cannot point it back there, where it can no longer look.
 
+YANTRIK_PERSON_UID is the unit's too, and the settings file is never read for it, even when the
+unit leaves it out. It names whose desktop vouches for the memory credentials other minds present
+to the Mind's memory server (#447): the server asks that person's shell what each credential may
+do. A file the mind account can write deciding it would let the mind choose who vouches for whom.
+When the unit does not set it, it is the uid of the machine's one person, found as below. With
+none, or more than one, it is left unset, the memory server accepts no other mind's credential,
+and the launcher says so in one line.
+
 Two settings have a default when the file leaves them out, because without them the Mind speaks as
 its engine's stock persona ("JARVIS, an extension of the user"): YM_MIND_NAME, the name the
 desktop's mind picker shows, and YM_OPERATOR, its person's full name as the desktop greets them.
@@ -54,14 +62,18 @@ def parse(text):
     return settings
 
 
-def person_name(passwd="/etc/passwd"):
-    """The full name of the machine's one person, or None when there is not exactly one."""
+# The settings key that names whose shell vouches for memory credentials. Never the file's.
+PERSON_UID = "YANTRIK_PERSON_UID"
+
+
+def people(passwd="/etc/passwd"):
+    """Every account a person logs in as: (uid, full name) each. None when passwd is unreadable."""
     try:
         with open(passwd, encoding="utf-8", errors="replace") as f:
             text = f.read(1 << 20)
     except OSError:
         return None
-    people = []
+    found = []
     for line in text.splitlines():
         fields = line.split(":")
         if len(fields) < 7 or not fields[2].isdigit() or int(fields[2]) not in PERSON_UIDS:
@@ -70,8 +82,35 @@ def person_name(passwd="/etc/passwd"):
             continue
         # The GECOS full name is its first comma field; an account without one is its login.
         name = "".join(c for c in fields[4].split(",")[0] if c.isprintable()).strip()[:64]
-        people.append(name or fields[0])
-    return people[0] if len(people) == 1 else None
+        found.append((int(fields[2]), name or fields[0]))
+    return found
+
+
+def person_name(passwd="/etc/passwd"):
+    """The full name of the machine's one person, or None when there is not exactly one."""
+    found = people(passwd)
+    return found[0][1] if found and len(found) == 1 else None
+
+
+def person_uid(env, unit_set, passwd="/etc/passwd"):
+    """Set YANTRIK_PERSON_UID in env from the unit or the one person, never from the settings.
+
+    `unit_set` is the unit's own value, read before the settings file was. Returns the one line
+    to print when it is left unset, or None.
+    """
+    env.pop(PERSON_UID, None)
+    if unit_set:
+        env[PERSON_UID] = unit_set
+        return None
+    found = people(passwd)
+    if found is None:
+        return "%s is not set: %s cannot be read, so no other mind's memory credential is accepted" % (
+            PERSON_UID, passwd)
+    if len(found) != 1:
+        return "%s is not set: this machine has %s, so no other mind's memory credential is accepted" % (
+            PERSON_UID, "no person's account" if not found else "%d people's accounts" % len(found))
+    env[PERSON_UID] = str(found[0][0])
+    return None
 
 
 def fill_defaults(env, passwd="/etc/passwd"):
@@ -86,6 +125,8 @@ def fill_defaults(env, passwd="/etc/passwd"):
 def main():
     if os.getuid() == 0:
         sys.exit("yantrik-mind-launch runs as the mind's own account, never as root")
+    # Taken before the settings are read, so only the unit can have put it here.
+    unit_person = os.environ.get(PERSON_UID, "")
     path = os.environ.get("YM_ENV_PATH", "")
     if path:
         try:
@@ -99,6 +140,9 @@ def main():
                 for key, value in parse(f.read(1 << 20)).items():
                     os.environ.setdefault(key, value)
     fill_defaults(os.environ)
+    why = person_uid(os.environ, unit_person)
+    if why:
+        print("yantrik-mind-launch: " + why, file=sys.stderr, flush=True)
     os.execv(MIND, [MIND] + sys.argv[1:])
 
 

@@ -6,9 +6,12 @@ way its Telegram adapter makes it a Telegram bot: the gateway runs the agent, it
 approvals and its memory exactly as it always does, and this file carries text between the gateway
 and the desktop's chat.
 
-Everything that makes Hermes Hermes — the model, the endpoint, the keys, the memory provider —
-stays in ~/.hermes, where Hermes keeps it. Nothing here reads or passes any of it to the OS, and the
-socket protocol has no field that could carry it.
+Everything that makes Hermes Hermes — the model, the endpoint, the keys — stays in ~/.hermes, where
+Hermes keeps it. Nothing here reads or passes any of it to the OS, and the socket protocol has no
+field that could carry it. Its memory is the one exception, in the other direction: on this machine
+it is the person's YantrikDB, the memory Yantrik Mind keeps, and each turn of a Hermes the person
+granted it brings the credential Hermes's YantrikDB provider presents to the memory server. This
+file puts it where the provider reads it, and takes it away with the turn that no longer brings it.
 
 Two things differ from a chat app, and both come from the desktop thinking in turns:
 
@@ -112,6 +115,8 @@ class YantrikAdapter(BasePlatformAdapter):
         self._tasks: list[asyncio.Task] = []
         self._owner = os.environ.get("USER") or getpass.getuser() or OWNER_ID
         self._said_no_desktop = False
+        # Whether the last turn carried a memory credential, so a change is logged once.
+        self._carried_memory: Optional[bool] = None
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────────────────────
 
@@ -150,6 +155,7 @@ class YantrikAdapter(BasePlatformAdapter):
             except desktop.HarnessError:
                 pass
         self._session = None
+        desktop.carry_memory({})
         self._mark_disconnected()
 
     async def _call(self, method: str, params: Dict[str, Any], timeout: float = 10.0) -> Any:
@@ -197,6 +203,9 @@ class YantrikAdapter(BasePlatformAdapter):
                     # failed on its side; attach again and carry on.
                     logger.warning("[yantrik] lost the desktop (%s); attaching again", exc)
                     self._session = None
+                    # The credential named an agent of that session; whatever attaches next is
+                    # handed its own with its first turn.
+                    desktop.carry_memory({})
                     for turn in self._ledger.open_turns():
                         self._ledger.close(turn.turn_id)
                     await asyncio.sleep(RETRY_SECONDS)
@@ -260,6 +269,18 @@ class YantrikAdapter(BasePlatformAdapter):
     async def _on_turn(self, assignment: Dict[str, Any]) -> None:
         turn_id = str(assignment["turn_id"])
         text = str(assignment.get("text") or "")
+        # Before the gateway sees the message, so the memory provider's prefetch for this turn
+        # already presents this turn's credential, or none when the grant was taken away.
+        carried = desktop.carry_memory(assignment)
+        if carried != self._carried_memory:
+            # Whether, never what: the credential is never written to a log.
+            logger.info(
+                "[yantrik] %s",
+                "turns now carry a credential for the machine's memory"
+                if carried
+                else "turns carry no credential for the machine's memory",
+            )
+            self._carried_memory = carried
         source = self.build_source(
             chat_id=CHAT_ID,
             chat_name="Yantrik desktop",

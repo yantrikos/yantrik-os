@@ -197,7 +197,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let host = host.clone();
         ui.on_install_harness(move |id| {
             let Some(ui) = weak.upgrade() else { return };
-            let outcome = manifest(&id).and_then(|m| crate::harness_install::install(&m));
+            // The person's own click, and the one place a harness is granted memory by being
+            // installed: `install` below, the control surface's, never is.
+            let outcome = install_clicked(&harness_catalogue::roots(), &id);
             report(&ui, &id, outcome);
             // Straight away rather than on the next tick: two seconds between pressing a button
             // and the row changing is two seconds in which it looks like nothing happened, and
@@ -282,6 +284,9 @@ pub fn catalogue_for_describe() -> serde_json::Value {
                     "provider": row.provider_line,
                     "can_assign_provider": row.can_assign_provider,
                     "can_revert_provider": row.can_revert_provider,
+                    // Where its memory is: the machine's YantrikDB, shared with Yantrik Mind, for
+                    // a harness the person granted it on Install. Empty for one with its own.
+                    "memory": row.memory_line,
                     "builtin": row.builtin,
                     "docs": row.docs,
                 })
@@ -292,7 +297,11 @@ pub fn catalogue_for_describe() -> serde_json::Value {
 
 /// The manifest for an id, or a sentence saying there is none.
 fn manifest(id: &str) -> Result<Manifest, String> {
-    harness_catalogue::read_manifests(&harness_catalogue::roots())
+    manifest_in(&harness_catalogue::roots(), id)
+}
+
+fn manifest_in(roots: &[std::path::PathBuf], id: &str) -> Result<Manifest, String> {
+    harness_catalogue::read_manifests(roots)
         .remove(id)
         .ok_or_else(|| format!("nothing on this machine describes a harness called `{id}`"))
 }
@@ -301,9 +310,31 @@ fn manifest(id: &str) -> Result<Manifest, String> {
 ///
 /// Parity, the same way `use_harness` has it: anything a person can do on the Harnesses screen
 /// an agent can ask for, and the grading on the action is what decides whether the person is
-/// asked first.
+/// asked first. With one difference, on purpose: this install grants no memory. A mind that can
+/// install another mind must not be able to give it the person's memory by doing so, and an
+/// approval card for "install Hermes" does not say that it would.
 pub fn install(id: &str) -> Result<String, String> {
-    crate::harness_install::install(&manifest(id)?)
+    install_in(&harness_catalogue::roots(), id)
+}
+
+fn install_in(roots: &[std::path::PathBuf], id: &str) -> Result<String, String> {
+    crate::harness_install::install(&manifest_in(roots, id)?)
+}
+
+/// The person's Install click: the same job and, for a harness whose manifest says its memory is
+/// the machine's YantrikDB, the grant that makes it so (crate::harness_memory).
+///
+/// Granted once the job has started rather than once it succeeds. The click is the person's
+/// consent, and only here, on the UI thread, does the shell know a person made it; a job's end
+/// happens on a background thread. A second press refused because the first is still running
+/// grants nothing. A grant for a Hermes whose install then failed is shown on its row, and is
+/// used by nothing until a harness attaches under that id.
+fn install_clicked(roots: &[std::path::PathBuf], id: &str) -> Result<String, String> {
+    let manifest = manifest_in(roots, id)?;
+    let command = crate::harness_install::install(&manifest)?;
+    crate::harness_memory::grant_on_persons_install(&manifest)
+        .map_err(|e| format!("installing, but it was not given the machine's memory: {e}"))?;
+    Ok(command)
 }
 
 pub fn start(id: &str) -> Result<String, String> {
@@ -504,6 +535,7 @@ fn publish_catalogue(ui: &App, entries: &[yantrik_harness::Entry]) {
             provider_line: row.provider_line.into(),
             can_assign_provider: row.can_assign_provider,
             can_revert_provider: row.can_revert_provider,
+            memory_line: row.memory_line.into(),
             docs: row.docs.into(),
         })
         .collect();
@@ -802,6 +834,80 @@ mod tests {
         assert!(refused.message.contains("person's own Yantrik Mind"), "{}", refused.message);
         assert!(!refused.message.contains("  "), "one sentence, no stray spaces: {}", refused.message);
         assert!(service.host.list().iter().all(|e| e.id != "mind"), "nothing attached as mind");
+    }
+
+    /// A harness root holding one manifest whose memory is the machine's, with an install that
+    /// does nothing, and a grants file of the test's own to look at.
+    struct MemoryFixture {
+        root: std::path::PathBuf,
+        grants: std::path::PathBuf,
+    }
+
+    impl MemoryFixture {
+        fn new(id: &str) -> MemoryFixture {
+            let root = std::env::temp_dir().join(format!("yantrik-install-grant-{id}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            let dir = root.join("share").join(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            let manifest = format!("id: {id}\nmemory: yantrikdb\ninstall:\n  command: \"true\"\n");
+            std::fs::write(dir.join(harness_catalogue::MANIFEST), manifest).unwrap();
+            MemoryFixture { grants: root.join("home/.config/yantrik/memory-grants.json"), root }
+        }
+
+        fn roots(&self) -> Vec<std::path::PathBuf> {
+            vec![self.root.join("share")]
+        }
+
+        /// Wait for the install job to end, so it is not left running on the board.
+        fn settle(&self, id: &str) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while crate::harness_install::views().get(id).is_some_and(|j| j.running) {
+                assert!(std::time::Instant::now() < deadline, "the install never finished");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
+
+    impl Drop for MemoryFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// The control surface's `install_harness` is something a mind can call. Installing a harness
+    /// whose manifest says `memory: yantrikdb` through it must not give that harness the person's
+    /// memory: only the person's own click does.
+    #[test]
+    fn a_mind_installing_a_harness_through_the_control_surface_grants_it_no_memory() {
+        let fixture = MemoryFixture::new("memtest-control");
+        let _using = crate::memory_grants::test_file::using(fixture.grants.clone());
+        install_in(&fixture.roots(), "memtest-control").expect("the install itself runs");
+        fixture.settle("memtest-control");
+        assert!(!fixture.grants.exists(), "the control path wrote a memory grant");
+        assert!(crate::harness_memory::granted_minds().is_empty());
+
+        // And the action is that path, with nothing of its own beside it that could grant.
+        let control = include_str!("../control.rs");
+        let at = control.find("\"install_harness\",").expect("the action is registered");
+        let end = at + control[at..].find(".action(").expect("another action follows");
+        let handler = &control[at..end];
+        assert!(handler.contains("crate::wire::harness::install(&id)"), "{handler}");
+        assert!(!handler.contains("harness_memory") && !handler.contains("memory_grants"), "{handler}");
+    }
+
+    #[test]
+    fn the_persons_install_click_grants_ordinary_memory_and_the_next_turn_carries_it() {
+        let fixture = MemoryFixture::new("memtest-click");
+        let _using = crate::memory_grants::test_file::using(fixture.grants.clone());
+        install_clicked(&fixture.roots(), "memtest-click").expect("installing");
+        fixture.settle("memtest-click");
+        let store = crate::memory_grants::load().expect("the saved grants read back");
+        assert_eq!(store.grants_for("memtest-click", false), crate::memory_grants::Grants::ordinary());
+        assert_eq!(crate::harness_memory::granted_minds(), ["memtest-click"]);
+        // What the host asks at every hand-over, so the harness's next turn carries its memory
+        // credential with no restart of the shell.
+        let store = crate::memory_grants::load();
+        assert!(crate::memory_grants::carries_memory(store.as_ref(), "memtest-click", Some(1000), |_| false));
     }
 
     /// pi's manifest, plus what — if anything — systemd says about its unit. The manifest

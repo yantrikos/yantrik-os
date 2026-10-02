@@ -31,6 +31,41 @@ class HarnessError(Exception):
     """The desktop refused a call, or could not be reached."""
 
 
+# Where Hermes's YantrikDB memory provider, in its `yantrik` mode, reads the credential to present
+# to the machine's memory server and where that server is, on every call it makes.
+MEMORY_CREDENTIAL = "YANTRIK_MEMORY_CREDENTIAL"
+MEMORY_URL = "YANTRIK_MEMORY_URL"
+
+
+def carry_memory(assignment: Dict[str, Any], environ=os.environ) -> bool:
+    """Hand the YantrikDB provider this turn's memory credential, or take away the last one.
+
+    The desktop puts a credential on every turn of a mind the person granted some use of their
+    memory (#447), and none on a turn of a mind with no grant. So a turn without one is a grant
+    taken away, and what an earlier turn left in the environment is removed rather than kept: a
+    revoked grant has to stop working at the next turn, not when Hermes next restarts. The memory
+    server asks the desktop about each credential as well, so a stale one would be refused there;
+    this is so Hermes never presents one.
+
+    Returns whether the turn carried one. The credential itself is never returned, printed or
+    logged.
+    """
+    credential = assignment.get("memory_credential")
+    url = assignment.get("memory_url")
+    if not isinstance(credential, str) or not credential:
+        environ.pop(MEMORY_CREDENTIAL, None)
+        environ.pop(MEMORY_URL, None)
+        return False
+    environ[MEMORY_CREDENTIAL] = credential
+    # A credential with nowhere to present it is still set, so the provider can say why it has
+    # no memory rather than finding nothing; a URL from an earlier turn is not reused with it.
+    if isinstance(url, str) and url:
+        environ[MEMORY_URL] = url
+    else:
+        environ.pop(MEMORY_URL, None)
+    return True
+
+
 def socket_path() -> Optional[str]:
     """Where the desktop's harness socket is, if there is one.
 

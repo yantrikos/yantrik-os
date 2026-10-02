@@ -80,6 +80,69 @@ class LedgerTests(unittest.TestCase):
         self.assertTrue(turn.said_anything)
 
 
+CREDENTIAL = "mem-" + "ab" * 32
+URL = "unix:/run/yantrik-mind/1000/memory.sock"
+
+
+class MemoryCredentialTests(unittest.TestCase):
+    """What the YantrikDB provider reads on every call (#447), set from the turn Hermes is on."""
+
+    def test_a_granted_turn_hands_the_provider_its_credential_and_where_to_present_it(self):
+        env = {}
+        self.assertTrue(desktop.carry_memory({"turn_id": 1, "memory_credential": CREDENTIAL, "memory_url": URL}, env))
+        self.assertEqual(env, {"YANTRIK_MEMORY_CREDENTIAL": CREDENTIAL, "YANTRIK_MEMORY_URL": URL})
+
+    def test_a_turn_without_one_takes_the_last_one_away_so_a_revoked_grant_stops_working(self):
+        env = {}
+        desktop.carry_memory({"memory_credential": CREDENTIAL, "memory_url": URL}, env)
+        self.assertFalse(desktop.carry_memory({"turn_id": 2, "text": "hi"}, env))
+        self.assertEqual(env, {}, "nothing from the granted turn is left behind")
+        # An empty one, or one that is not a string, is none at all.
+        desktop.carry_memory({"memory_credential": CREDENTIAL, "memory_url": URL}, env)
+        self.assertFalse(desktop.carry_memory({"memory_credential": "", "memory_url": URL}, env))
+        self.assertEqual(env, {})
+        self.assertFalse(desktop.carry_memory({"memory_credential": ["mem-x"]}, env))
+        self.assertEqual(env, {})
+
+    def test_a_credential_with_nowhere_to_go_does_not_reuse_an_old_address(self):
+        env = {}
+        desktop.carry_memory({"memory_credential": CREDENTIAL, "memory_url": URL}, env)
+        self.assertTrue(desktop.carry_memory({"memory_credential": CREDENTIAL}, env))
+        self.assertEqual(env, {"YANTRIK_MEMORY_CREDENTIAL": CREDENTIAL})
+
+    def test_the_process_environment_is_the_default_because_the_provider_reads_it_there(self):
+        saved = {k: os.environ.get(k) for k in ("YANTRIK_MEMORY_CREDENTIAL", "YANTRIK_MEMORY_URL")}
+        try:
+            desktop.carry_memory({"memory_credential": CREDENTIAL, "memory_url": URL})
+            self.assertEqual(os.environ["YANTRIK_MEMORY_CREDENTIAL"], CREDENTIAL)
+            desktop.carry_memory({})
+            self.assertNotIn("YANTRIK_MEMORY_CREDENTIAL", os.environ)
+            self.assertNotIn("YANTRIK_MEMORY_URL", os.environ)
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_the_credential_is_never_logged_or_returned(self):
+        import logging
+
+        with self.assertNoLogs(level=logging.DEBUG):
+            got = desktop.carry_memory({"memory_credential": CREDENTIAL, "memory_url": URL}, {})
+        self.assertIs(got, True)
+
+    def test_the_adapter_says_whether_a_turn_carried_memory_and_never_what(self):
+        # The adapter needs Hermes to import, so its log lines are read as source: the one place
+        # it speaks of the credential names the fact, never the value.
+        source = (Path(__file__).resolve().parents[1] / "adapter.py").read_text(encoding="utf-8")
+        self.assertIn("desktop.carry_memory(assignment)", source)
+        for line in source.splitlines():
+            if "logger." in line:
+                self.assertNotIn("memory_credential", line)
+                self.assertNotIn("MEMORY_CREDENTIAL", line)
+
+
 class FakeDesktop:
     """A socket that answers like the shell: one JSON-RPC line in, one out, then close."""
 

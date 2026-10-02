@@ -98,10 +98,30 @@ pub struct Manifest {
     /// harness keeps its own settings, and this is its own way of asking for them.
     #[serde(default)]
     pub configure: Option<Configure>,
+    /// Where its memory lives. `yantrikdb` says the machine's own YantrikDB is its memory, the one
+    /// Yantrik Mind keeps: the person's Install click grants it ordinary recall, remember and
+    /// believe (crate::harness_memory), and the harness reads and writes there instead of keeping
+    /// a store of its own. Left out, it keeps its own memory wherever it always has.
+    #[serde(default)]
+    pub memory: Memory,
     /// The directory this was read from. Not in the file; filled in by [`read_manifest`] so
     /// `file:` needs and `{dir}` in an install command resolve without a second lookup.
     #[serde(skip)]
     pub dir: PathBuf,
+}
+
+/// Where a harness keeps its memory, as its manifest says.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Memory {
+    /// The machine's YantrikDB, shared with Yantrik Mind.
+    Yantrikdb,
+    /// Its own, wherever it keeps it. Also what a word this desktop does not know reads as: a
+    /// manifest from a newer image must not be refused whole, and only `yantrikdb` is ever
+    /// granted anything.
+    #[default]
+    #[serde(other)]
+    Own,
 }
 
 /// One thing that has to exist. Exactly one of the three fields is set.
@@ -269,6 +289,9 @@ pub struct Machine {
     pub units: HashMap<String, Unit>,
     /// Keyed by harness id.
     pub jobs: HashMap<String, JobView>,
+    /// The harnesses the person's memory grants give something, as third parties. Read fresh with
+    /// the jobs rather than cached, so the row says so the moment Install grants it.
+    pub memory_granted: Vec<String>,
 }
 
 // ── The states a row can be in ──────────────────────────────────────
@@ -362,6 +385,9 @@ pub struct Row {
     pub can_assign_provider: bool,
     /// It was given one here, and Revert would put its own file back.
     pub can_revert_provider: bool,
+    /// Where its memory is, for a harness whose manifest says (crate::harness_memory::line).
+    /// Empty for one that keeps its own.
+    pub memory_line: String,
     pub unit: String,
     /// Where to read more. A path, because it is a file on this machine.
     pub docs: String,
@@ -400,6 +426,7 @@ pub fn rows(machine: &Machine, minds: &[Entry]) -> Vec<Row> {
             provider_line: String::new(),
             can_assign_provider: false,
             can_revert_provider: false,
+            memory_line: String::new(),
             unit: String::new(),
             docs: String::new(),
         });
@@ -439,6 +466,7 @@ pub fn rows(machine: &Machine, minds: &[Entry]) -> Vec<Row> {
             provider_line: String::new(),
             can_assign_provider: false,
             can_revert_provider: false,
+            memory_line: String::new(),
             unit: String::new(),
             docs: String::new(),
         });
@@ -565,6 +593,11 @@ fn from_manifest(machine: &Machine, manifest: &Manifest, attached: Option<&Entry
             Some(c) if !busy && !matches!(state, State::NotInstalled | State::Installing) => c.label.clone(),
             _ => String::new(),
         },
+        memory_line: crate::harness_memory::line(
+            manifest.memory,
+            !matches!(state, State::NotInstalled | State::Installing),
+            machine.memory_granted.contains(&manifest.id),
+        ),
         unit: manifest.unit.clone(),
         docs: if manifest.docs.is_empty() {
             String::new()
@@ -812,16 +845,16 @@ pub fn machine(jobs: HashMap<String, JobView>) -> Machine {
     static LAST: std::sync::Mutex<Option<(std::time::Instant, Machine)>> =
         std::sync::Mutex::new(None);
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((at, cached)) = last.as_ref() {
-        if at.elapsed() < CACHE {
-            let mut machine = cached.clone();
-            machine.jobs = jobs;
-            return machine;
+    let mut machine = match last.as_ref() {
+        Some((at, cached)) if at.elapsed() < CACHE => cached.clone(),
+        _ => {
+            let machine = gather();
+            *last = Some((std::time::Instant::now(), machine.clone()));
+            machine
         }
-    }
-    let mut machine = gather();
-    *last = Some((std::time::Instant::now(), machine.clone()));
+    };
     machine.jobs = jobs;
+    machine.memory_granted = crate::harness_memory::granted_minds();
     machine
 }
 
@@ -845,6 +878,7 @@ fn gather() -> Machine {
         units: read_units(&units),
         manifests,
         jobs: HashMap::new(),
+        memory_granted: Vec::new(),
     }
 }
 
@@ -904,6 +938,7 @@ mod tests {
                 path_dirs: vec![self.root.join("bin")],
                 units: HashMap::new(),
                 jobs: HashMap::new(),
+                memory_granted: Vec::new(),
             }
         }
     }
@@ -1010,6 +1045,62 @@ setup:
         assert!(hermes.command.starts_with("hermes model"), "{}", hermes.command);
         assert!(hermes.command.contains("restart hermes-gateway"), "the running gateway must pick it up");
         assert!(manifests["openclaw"].configure.as_ref().unwrap().command.contains("openclaw onboard"));
+    }
+
+    #[test]
+    fn a_manifest_says_whether_its_memory_is_the_machines_and_an_unknown_word_grants_nothing() {
+        let read = |text: &str| serde_yaml::from_str::<Manifest>(text).unwrap().memory;
+        assert_eq!(read("id: hermes
+memory: yantrikdb
+"), Memory::Yantrikdb);
+        assert_eq!(read("id: pi
+"), Memory::Own, "said nothing: its own");
+        assert_eq!(read("id: pi
+memory: own
+"), Memory::Own);
+        // A word from a newer image is not a reason to lose the whole row, nor to grant anything.
+        assert_eq!(read("id: pi
+memory: honcho
+"), Memory::Own);
+    }
+
+    #[test]
+    fn hermes_ships_saying_its_memory_is_the_machines_and_the_others_keep_their_own() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../harnesses");
+        if !repo.exists() {
+            return;
+        }
+        let manifests = read_manifests(&[repo]);
+        assert_eq!(manifests["hermes"].memory, Memory::Yantrikdb, "that was the whole point");
+        for id in ["pi", "deepseek", "openclaw"] {
+            assert_eq!(manifests[id].memory, Memory::Own, "{id} was never built to use it");
+        }
+    }
+
+    #[test]
+    fn the_row_says_hermes_shares_the_minds_memory_once_the_person_granted_it() {
+        let manifest = "id: hermes
+memory: yantrikdb
+requires:
+  - binary: hermes
+    why: Hermes itself
+";
+        let fixture = Fixture::new("memory-line");
+        fixture.harness("hermes", manifest);
+        let before = rows(&fixture.machine(), &[builtin()]);
+        assert!(row(&before, "hermes").memory_line.starts_with("Memory: Install gives it YantrikDB"));
+        fixture.program("hermes");
+        let mut machine = fixture.machine();
+        machine.memory_granted = vec!["hermes".into()];
+        let after = rows(&machine, &[builtin(), entry("hermes", false)]);
+        assert_eq!(row(&after, "hermes").memory_line, "Memory: YantrikDB (shared with Yantrik Mind)");
+        // Taken away again: the row stops claiming it.
+        machine.memory_granted.clear();
+        let revoked = rows(&machine, &[builtin(), entry("hermes", false)]);
+        assert!(row(&revoked, "hermes").memory_line.starts_with("Memory: not granted"));
+        // A harness that keeps its own memory says nothing about it.
+        fixture.harness("pi", PI);
+        assert_eq!(row(&rows(&fixture.machine(), &[builtin()]), "pi").memory_line, "");
     }
 
     #[test]

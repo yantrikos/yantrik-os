@@ -4,8 +4,12 @@ A Hermes *platform* plugin, not a process of ours. Hermes is a gateway with its 
 Telegram, Slack, IRC — and this makes a Yantrik OS desktop one more of them: what you type in the
 chat panel arrives as a message, and Hermes streams the answer back.
 
-Hermes keeps its model, endpoint, keys and memory in `~/.hermes`, as it always has. This plugin
-reads none of it except the model name, which it passes as the `detail` the picker shows.
+Hermes keeps its model, endpoint and keys in `~/.hermes`, as it always has. This plugin reads none
+of it except the model name, which it passes as the `detail` the picker shows.
+
+Its memory is not in `~/.hermes`. On this machine Hermes remembers in YantrikDB, the memory Yantrik
+Mind keeps, so both minds know the same person and Hermes keeps no second record of them; see
+[Memory](#memory) below.
 
 ## Install
 
@@ -13,7 +17,8 @@ reads none of it except the model name, which it passes as the `detail` the pick
 missing, and has an *Install* button that does all of it with the output on the row:
 `harnesses/lib/install/hermes.sh` installs Hermes itself when it is not there (Hermes's own
 installer, into `~/.hermes`, no root, browser and computer-use tools left out), copies and enables
-the plugin, and installs and starts Hermes's gateway as your user service. Hermes then needs a
+the plugin, installs the YantrikDB memory provider and makes it Hermes's memory, and installs and
+starts Hermes's gateway as your user service. Hermes then needs a
 model, which is Hermes's own setting, so the row opens Hermes's own picker (`hermes model`) in a
 terminal as soon as the install finishes, and keeps a *Choose model* button for changing it
 later. The gateway is restarted afterwards so the running Hermes uses it. There is no *Start*
@@ -47,6 +52,26 @@ platform_toolsets:
 delegation:
   max_iterations: 25        # a research sub-agent that may take 50 turns will take 50
 ```
+
+## Memory
+
+`harness.yaml` says `memory: yantrikdb`. Pressing *Install* on the row does three things for it:
+
+- the installer puts the YantrikDB memory provider into Hermes, sets `memory.provider` to it,
+  writes `YANTRIKDB_MODE=yantrik` into `~/.hermes/.env` (only when it is not set there already),
+  and turns off Hermes's own `MEMORY.md` and `USER.md`;
+- the desktop grants Hermes ordinary recall, remember and believe in
+  `~/.config/yantrik/memory-grants.json`. Never health, finance or household memory, and
+  credentials are never a grant;
+- from Hermes's next turn, each turn carries a credential for the memory server, which this
+  plugin puts in `YANTRIK_MEMORY_CREDENTIAL` and `YANTRIK_MEMORY_URL` for the provider. A turn
+  without one removes both, so a grant taken away stops working at the next turn.
+
+The Minds row then reads *Memory: YantrikDB (shared with Yantrik Mind)*. Only the person's own
+click grants it: an agent that asks for the install through `install_harness` gets Hermes
+installed and grants it nothing. There is no button to take the grant back yet. Until there is,
+remove `hermes` from `~/.config/yantrik/memory-grants.json`; the desktop keeps a narrowing made
+there, and ignores a widening it did not make.
 
 ## Turning it off
 

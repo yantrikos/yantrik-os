@@ -5,7 +5,8 @@ version: 0.1.0
 description: >
   Makes Hermes a mind of a Yantrik OS desktop. Attaches to the desktop's harness socket, takes
   what the person types in the chat panel as messages, and streams answers, progress and approval
-  prompts back. Hermes keeps its own model, keys and memory; nothing about them reaches the OS.
+  prompts back. Hermes keeps its own model and keys; nothing about them reaches the OS. Its memory
+  is the machine's YantrikDB, reached with the credential each granted turn carries.
 author: Yantrik OS
 optional_env:
   - name: YANTRIK_HARNESS

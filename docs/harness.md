@@ -407,8 +407,12 @@ systemctl --user restart hermes-gateway    # or however Hermes is started
 yos act shell use_harness id=hermes        # once it appears in the picker
 ```
 
-Hermes keeps its model, endpoint, keys and memory in `~/.hermes`, as it always has. The plugin
-reads none of it except the model name, which it passes as the `detail` the picker shows.
+Hermes keeps its model, endpoint and keys in `~/.hermes`, as it always has. The plugin reads none
+of it except the model name, which it passes as the `detail` the picker shows. Its memory is the
+machine's YantrikDB, shared with Yantrik Mind: its manifest says `memory: yantrikdb`, the person's
+Install click grants it ordinary recall, remember and believe, and the plugin hands each turn's
+`memory_credential` and `memory_url` to Hermes's YantrikDB provider
+([harnesses/hermes/README.md](../harnesses/hermes/README.md#memory)).
 
 **Give the desktop platform the desktop's tools, not Hermes's own.** Hermes arrives with a
 `terminal`, `file`, `code_execution`, `browser` and `web` toolset of its own. On this desktop

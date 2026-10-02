@@ -90,6 +90,9 @@ export struct HarnessRowData {
     provider-line: string,
     can-assign-provider: bool,
     can-revert-provider: bool,
+    // "Memory: YantrikDB (shared with Yantrik Mind)" for a harness the person's Install granted
+    // the machine's memory; empty for one that keeps its own.
+    memory-line: string,
     docs: string,
 }
 
@@ -3602,6 +3605,13 @@ SettingRow{label:"About this device";description:"Detailed information about thi
                                     text: h.provider-line;
                                     color: Theme.text-secondary;
                                     font-size: Theme.fs-caption;
+                                }
+
+                                if h.memory-line != "" : Text {
+                                    text: h.memory-line;
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.fs-caption;
+                                    wrap: word-wrap;
                                 }
 
                                 // Which saved provider: one button each. Nothing is written until
