@@ -2140,8 +2140,13 @@ mod tests {
     /// The Lens's "open in Agents" is wired from its header to the shell, through every layer.
     #[test]
     fn the_lens_offers_open_in_agents_and_the_shell_answers_it() {
+        // The header button (Chat v2: ChatHeader) is offered only for an agent's conversation, and
+        // the Lens forwards its press.
+        let header = read("../yantrik-ui-slint/ui/components/chat_chrome.slint");
+        assert!(header.contains("if root.can-open-in-agents : ChatIconButton {\n                    label: \"Open in Agents\";"));
+        assert!(header.contains("clicked => { root.open-in-agents(); }"));
         let lens = read("../yantrik-ui-slint/ui/components/intent_lens.slint");
-        assert!(lens.contains("if root.can-open-in-agents : agents-hit := TouchArea") && lens.contains("clicked => { root.open-in-agents(); }"));
+        assert!(lens.contains("open-in-agents => { root.open-in-agents(); }"));
         let desktop = read("../yantrik-ui-slint/ui/desktop.slint");
         assert!(desktop.contains("open-in-agents => { root.lens-open-in-agents(); }"));
         assert!(desktop.contains("can-open-in-agents: root.lens-can-open-in-agents;"));
