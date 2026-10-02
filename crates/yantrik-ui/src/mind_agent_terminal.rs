@@ -270,10 +270,8 @@ mod tests {
         mirror("t-agent", b"ignored");
         assert!(!log.exists(), "an agent that never began is not mirrored");
         with_state(|s| s.logs.insert("t-agent".into(), log.clone()));
-        mirror("t-agent", b"hello
-");
-        assert_eq!(std::fs::read_to_string(&log).unwrap(), "hello
-");
+        mirror("t-agent", b"hello\r\n");
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "hello\r\n");
         let _ = std::fs::remove_dir_all(dir);
     }
 
