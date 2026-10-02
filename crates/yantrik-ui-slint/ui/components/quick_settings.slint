@@ -9,6 +9,10 @@ export component QuickSettings inherits Rectangle {
     in property <int> battery-level: 100;
     in property <bool> battery-charging: false;
     in property <bool> wifi-connected: false;
+    // Whether there is a Wi-Fi device at all, and whether its radio is on. Neither is
+    // `wifi-connected`, which says a network is joined.
+    in property <bool> wifi-present: false;
+    in property <bool> wifi-radio-on: false;
     in property <string> wifi-ssid: "";
     // The machine's real levels. A row for hardware that is not there (a VM has no backlight,
     // a box may have no audio server) is not drawn at all, rather than drawn with a made-up value.
@@ -82,8 +86,13 @@ export component QuickSettings inherits Rectangle {
             padding: 20px;
             spacing: 16px;
 
-            // -- WiFi toggle --
-            HorizontalLayout {
+            // -- Wi-Fi radio --
+            // The tile is the radio, and says so: pressing it switches Wi-Fi on or off, the same
+            // act as the network popover's Wi-Fi tile (`NetworkState.set-radio`). It used to run
+            // `nmcli radio wifi off` while its caption promised a disconnect. Leaving a network is
+            // the popover's Disconnect button. Drawn only where there is a Wi-Fi device: a
+            // switch for hardware that is not there is a lie (the wired VM has none).
+            if root.wifi-present : HorizontalLayout {
                 spacing: 14px;
 
                 TouchArea {
@@ -97,10 +106,10 @@ export component QuickSettings inherits Rectangle {
                         border-radius: 14px;
                         // Solid: a gradient fill on a rounded tile draws square corners under
                         // the software renderer (#172).
-                        background: root.wifi-connected ? Theme.tint-cyan : Theme.bg-deep;
+                        background: root.wifi-radio-on ? Theme.tint-cyan : Theme.bg-deep;
                         border-width: 1px;
-                        border-color: root.wifi-connected ? Theme.cyan-dim : Theme.separator;
-                        drop-shadow-blur: root.wifi-connected ? 8px : 0;
+                        border-color: root.wifi-radio-on ? Theme.cyan-dim : Theme.separator;
+                        drop-shadow-blur: root.wifi-radio-on ? 8px : 0;
                         drop-shadow-color: Theme.cyan-glow;
 
                         VerticalLayout {
@@ -118,31 +127,31 @@ export component QuickSettings inherits Rectangle {
                                     width: 16px; height: 16px;
                                     border-radius: 8px;
                                     border-width: 2px;
-                                    border-color: root.wifi-connected ? Theme.cyan : Theme.text-dim;
+                                    border-color: root.wifi-radio-on ? Theme.cyan : Theme.text-dim;
                                     background: transparent;
-                                    opacity: root.wifi-connected ? 0.8 : 0.3;
+                                    opacity: root.wifi-radio-on ? 0.8 : 0.3;
                                 }
                                 Rectangle {
                                     x: 6px; y: 5px;
                                     width: 10px; height: 10px;
                                     border-radius: 5px;
                                     border-width: 2px;
-                                    border-color: root.wifi-connected ? Theme.cyan : Theme.text-dim;
+                                    border-color: root.wifi-radio-on ? Theme.cyan : Theme.text-dim;
                                     background: transparent;
-                                    opacity: root.wifi-connected ? 0.6 : 0.2;
+                                    opacity: root.wifi-radio-on ? 0.6 : 0.2;
                                 }
                                 Rectangle {
                                     x: 9px; y: 11px;
                                     width: 4px; height: 4px;
                                     border-radius: 2px;
-                                    background: root.wifi-connected ? Theme.cyan : Theme.text-dim;
-                                    drop-shadow-blur: root.wifi-connected ? 4px : 0;
+                                    background: root.wifi-radio-on ? Theme.cyan : Theme.text-dim;
+                                    drop-shadow-blur: root.wifi-radio-on ? 4px : 0;
                                     drop-shadow-color: Theme.cyan-glow;
                                 }
                             }
                             Text {
                                 text: "WiFi";
-                                color: root.wifi-connected ? Theme.text-primary : Theme.text-dim;
+                                color: root.wifi-radio-on ? Theme.text-primary : Theme.text-dim;
                                 font-size: Theme.fs-micro;
                                 font-weight: 600;
                                 horizontal-alignment: center;
@@ -156,21 +165,21 @@ export component QuickSettings inherits Rectangle {
                     horizontal-stretch: 1;
 
                     Text {
-                        text: root.wifi-connected ?
-                              (root.wifi-ssid != "" ? root.wifi-ssid : "Connected") :
-                              "Disconnected";
+                        text: !root.wifi-radio-on ? "Wi-Fi is off"
+                            : root.wifi-connected ? (root.wifi-ssid != "" ? root.wifi-ssid : "Connected")
+                            : "Not connected";
                         color: Theme.text-primary;
                         font-size: Theme.font-body;
                     }
                     Text {
-                        text: root.wifi-connected ? "Tap to disconnect" : "Tap to connect";
+                        text: root.wifi-radio-on ? "Tap to turn Wi-Fi off" : "Tap to turn Wi-Fi on";
                         color: Theme.text-dim;
                         font-size: Theme.fs-micro;
                     }
                 }
             }
 
-            Rectangle { height: 1px; background: Theme.separator; }
+            if root.wifi-present : Rectangle { height: 1px; background: Theme.separator; }
 
             // -- Brightness slider --
             if root.brightness-available : VerticalLayout {

@@ -20,6 +20,9 @@ pub fn run_mock_observer(tx: Sender<SystemEvent>) {
     let mut battery_level: u8 = 85;
     let mut battery_charging = false;
     let mut network_connected = true;
+    // The same reading the real monitor gives, so the bar's indicator is drawn on a machine
+    // with no NetworkManager.
+    crate::network::publish(crate::network::mock_snapshot());
 
     loop {
         std::thread::sleep(Duration::from_secs(5));
@@ -60,6 +63,11 @@ pub fn run_mock_observer(tx: Sender<SystemEvent>) {
         // Network toggles every 2 minutes (24 ticks)
         if tick % 24 == 0 {
             network_connected = !network_connected;
+            crate::network::publish(if network_connected {
+                crate::network::mock_snapshot()
+            } else {
+                crate::network_model::NetworkSnapshot::default()
+            });
             let _ = tx.send(SystemEvent::NetworkChanged {
                 connected: network_connected,
                 ssid: if network_connected {

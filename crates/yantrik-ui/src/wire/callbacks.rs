@@ -342,24 +342,9 @@ fn wire_whisper_cards(ui: &App, ctx: &AppContext) {
 fn wire_quick_settings(ui: &App) {
     use super::dep_check::has_command;
 
-    // Toggle WiFi via nmcli
-    ui.on_toggle_wifi(move || {
-        if !has_command("nmcli") {
-            tracing::warn!("nmcli not installed — WiFi toggle unavailable (apk add networkmanager)");
-            return;
-        }
-        let output = std::process::Command::new("nmcli")
-            .args(["radio", "wifi"])
-            .output();
-        let currently_on = output
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "enabled")
-            .unwrap_or(false);
-        let new_state = if currently_on { "off" } else { "on" };
-        let _ = std::process::Command::new("nmcli")
-            .args(["radio", "wifi", new_state])
-            .spawn();
-        tracing::info!(new_state, "WiFi toggled");
-    });
+    // The Wi-Fi tile is the radio, and it is wired in `wire::network` (`NetworkState.set-radio`),
+    // the same act as the network popover's tile. It used to run `nmcli radio wifi off` here
+    // under the caption "Tap to disconnect".
 
     // Brightness and volume are wired in wire/backlight.rs and wire/audio.rs, which read the
     // machine's real levels as well as set them.

@@ -880,6 +880,9 @@ pub fn publish(
                 .with("memory_percent", ui.get_bar_mem_percent())
                 .with("disk", ui.get_bar_disk_text().to_string())
                 .with("disk_percent", ui.get_bar_disk_percent())
+                // `wifi` is the older field and stays for one release: the minds' tools and older
+                // yos-mcp read it. It is true only for a Wi-Fi connection, so on a wired machine
+                // it is false while the machine is online; `network` says the rest.
                 .with("wifi", ui.get_wifi_connected())
                 // The machine's own levels, as Quick Settings shows them. `null` / `available:
                 // false` rather than a number when the machine has no audio server or no
@@ -899,19 +902,19 @@ pub fn publish(
                         ui.get_brightness_level(),
                     ),
                 )
-                // `wifi` alone was the whole of what the desktop said about
-                // its network, and on the wired test machine it is false —
-                // so a mind reading this concluded there was no network on a
-                // machine that was online the entire time. What is up, and
-                // over what, is the network service's answer, as the status
-                // bar and the System screen show it.
+                // What the bar's network mark shows, from the one NetworkManager reading: kind
+                // (wired | wifi | none), state, ssid, strength, ip, vpn, connectivity. `online`,
+                // `type` and `connection` are the keys it had before, kept for one release.
+                // See `control_network`.
                 .with(
                     "network",
-                    serde_json::json!({
-                        "online": ui.get_network_online(),
-                        "type": ui.get_network_medium().to_string(),
-                        "connection": ui.get_network_detail().to_string(),
-                    }),
+                    crate::control_network::network_for_describe(yantrik_os::network::latest().as_ref(), &ui),
+                )
+                // The visible networks, only where there is a Wi-Fi device (null otherwise, like
+                // `battery`). `connect_wifi` joins one that is open or saved.
+                .with(
+                    "wifi_networks",
+                    crate::control_network::wifi_networks_for_describe(yantrik_os::network::latest().as_ref()),
                 )
                 // `null` with no battery. State, the times and the profile come from
                 // `power_status`, which also composes the bar's words, so the two cannot drift.
@@ -2022,6 +2025,9 @@ pub fn publish(
     let surface = crate::control_overlays::actions(surface, ui);
     // The media keys' actions: set_volume, set_mute, set_brightness, set_mic_mute, mute_mic, show_caps_lock.
     let surface = crate::control_levels_actions::actions(surface, ui);
+    // The network mark's popover as data: set_wifi, disconnect_network, connect_wifi. See
+    // `control_network`, which also says why no action there takes a password.
+    let surface = crate::control_network::actions(surface, ui);
     // An agent's commands, each in a terminal of its own in its pane — agent_run, agent_job,
     // agent_input, agent_kill. The agent comes from its token, never an argument. See
     // `control_agent_terminal` and design/agents-workspace-2026-09-23.md, decision 3.

@@ -1,0 +1,32 @@
+// The bar's network mark: Wi-Fi as four bars, and distinct marks for wired, a VPN, "linked but no
+// internet" and offline. It is the kit's YIndicator with the network's own glyphs; the click, the
+// hover, the tooltip and the focus ring are the indicator's, so it behaves like every other mark
+// on the bar.
+//
+//   wifi     four bars, the lit ones in the text colour and the rest dim
+//   wired    the globe (the Network Manager window draws the same one)
+//   vpn      the shield
+//   offline  the globe, struck through
+//   no internet is the mark of the medium plus the amber attention dot, not a fifth glyph: the
+//   person is still on Wi-Fi or on the cable, and the dot says what is wrong with it.
+//
+// Drawn on every machine: a wired VM has a network too. What a machine without a Wi-Fi device
+// does not get is the Wi-Fi half of the popover, not this mark.
+import { YIndicator } from "../y_indicator.slint";
+import { Icons } from "../icon.slint";
+import { NetworkState } from "network_state.slint";
+
+export component NetworkIndicator inherits YIndicator {
+    icon: NetworkState.mark == "wifi"
+        ? (NetworkState.bars >= 4 ? Icons.signal-4 : NetworkState.bars == 3 ? Icons.signal-3 : NetworkState.bars == 2 ? Icons.signal-2 : Icons.signal-1)
+        : NetworkState.mark == "vpn" ? Icons.shield
+        : NetworkState.mark == "wired" ? Icons.network
+        : Icons.network-off;
+    icon-under: NetworkState.mark == "wifi" ? Icons.signal-bars : "";
+    tooltip: NetworkState.requested-ssid != ""
+        ? NetworkState.requested-by + " asked to join " + NetworkState.requested-ssid
+        : NetworkState.tooltip;
+    attention: NetworkState.no-internet || NetworkState.portal || NetworkState.requested-ssid != "";
+    // The bar is along the top: the tooltip drops below it.
+    tooltip-above: false;
+}

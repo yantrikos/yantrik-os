@@ -10,10 +10,6 @@ use slint::{ComponentHandle, Timer, TimerMode};
 
 use slint::{ModelRc, VecModel};
 
-// The network service's own shape, rather than hand-read JSON keys: the
-// contract is what keeps the two ends of this wire from drifting.
-use yantrik_ipc_contracts::network::{method as network_method, NetworkStatus};
-
 use crate::app_context::{self, AppContext};
 use crate::{cards, features, lock, system_context, windows, App, ProcessData, WindowItem};
 
@@ -24,17 +20,6 @@ const EM_DASH: &str = "\u{2014}";
 
 /// Maximum number of data points in the chart history ring buffer.
 const CHART_HISTORY_LEN: usize = 60;
-
-/// How often the network reading is re-asked of the network service. The
-/// service answers from live interface state; 15s matches the observer's own
-/// network poll cadence and keeps an RPC out of most 3s ticks.
-const NETWORK_REFRESH: Duration = Duration::from_secs(15);
-
-/// How long to leave a service that did not answer alone. The call blocks the
-/// thread that draws the screen for up to the client's timeout, so a wedged
-/// service is re-asked once a minute rather than four times; the observer's
-/// flag carries the reading in the meantime.
-const NETWORK_RETRY: Duration = Duration::from_secs(60);
 
 /// Wire the system poll timer.
 pub fn wire(ui: &App, ctx: &AppContext) {
@@ -62,11 +47,6 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     // new fact.
     let last_network: RefCell<Option<system_context::NetworkState>> = RefCell::new(None);
 
-    // Network cache: when the network service was last asked, and what it said.
-    // `None` inside the option is the service failing to answer, which is a
-    // different thing from not having asked yet.
-    let net_cache: RefCell<Option<(Instant, Option<NetworkStatus>)>> = RefCell::new(None);
-
     let timer = Timer::default();
     timer.start(TimerMode::Repeated, Duration::from_secs(3), move || {
         // 0. Sync interruptibility with focus mode state
@@ -75,38 +55,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             scorer.borrow_mut().set_interruptibility(target);
         }
 
-        // 0b. Publish the network reading.
-        //
-        // Before the early return below, and not inside the status-bar block
-        // further down, because the status bar is drawn above every screen
-        // while that block runs only on ticks where the observer happened to
-        // have something to say. The service is asked at its own cadence; the
-        // observer's flag is the fallback for when it cannot be reached.
+        // 0b. The brightness keys move the panel behind the shell's back; one file read. (The
+        // network reading is not here: `wire::network` publishes it on NetworkManager's signals.)
         if let Some(ui) = ui_weak.upgrade() {
-            // Read the cache out before the refresh arm below can write to it:
-            // a borrow guard held across that would make borrow_mut panic.
-            let cached = net_cache.borrow().as_ref().and_then(|(asked, answer)| {
-                let window = if answer.is_some() { NETWORK_REFRESH } else { NETWORK_RETRY };
-                (asked.elapsed() < window).then(|| answer.clone())
-            });
-            let answer = match cached {
-                Some(answer) => answer,
-                None => {
-                    let fresh = ask_network_service();
-                    *net_cache.borrow_mut() = Some((Instant::now(), fresh.clone()));
-                    fresh
-                }
-            };
-            let readout = {
-                let snap = snapshot.borrow();
-                network_readout(
-                    answer.as_ref(),
-                    snap.network_connected,
-                    snap.network_ssid.as_deref(),
-                )
-            };
-            publish_network(&ui, &readout);
-            // The brightness keys move the panel behind the shell's back; one file read.
             super::backlight::refresh(&ui);
         }
 
@@ -231,9 +182,8 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             // signals (or the sysfs fallback) and power-profiles-daemon's, not a poll here.
             crate::power_status::apply_battery(&ui, &snap);
             crate::power_status::apply_profile(&ui, snap.power_profile.as_ref());
-            // The network properties are set in step 0b, above every early
-            // return, because the status bar carries them on every screen —
-            // the address among them, when the service reports one. This is
+            // The network properties are set by `wire::network`, from NetworkManager's own
+            // signals — the address among them, when it reports one. This is
             // the fallback for when it does not: whatever `ip` lists first.
             if snap.network_connected {
                 if ui.get_settings_ip_address().is_empty() {
@@ -563,144 +513,6 @@ fn memory_readouts(snap: &yantrik_os::SystemSnapshot) -> MemoryReadouts {
     }
 }
 
-/// What the shell knows about being online, and over what.
-///
-/// One reading behind the status bar's indicator, the System screen's network
-/// row, Settings > Network and `describe`. Each used to derive its own, which
-/// is how the shell came to draw a Wi-Fi mark over NetworkManager's "Wired
-/// connection 1" on a machine with no wireless device in it.
-#[derive(Debug, Clone, PartialEq)]
-struct NetworkReadout {
-    /// Something is up and carrying traffic. True on a wired machine — this is
-    /// what the status bar's indicator means, and what a mind reads to decide
-    /// whether it can fetch anything.
-    online: bool,
-    /// The medium in the service's own word: `wifi`, `ethernet`, `vpn`,
-    /// `bridge`, `other` — or empty, which is the service having named none.
-    /// Only `wifi` is wireless.
-    medium: String,
-    /// The label the network row stands under.
-    label: String,
-    /// What stands beside it: the SSID, the connection's name, the address.
-    detail: String,
-    /// The SSID, and only ever an SSID — empty on anything not wireless.
-    ssid: String,
-    /// The address the service reports for the connection that is up.
-    ip: String,
-}
-
-/// Derive the reading from the network service's answer, falling back to the
-/// observer when the service cannot be reached.
-///
-/// `observer_connected` and `observer_connection` are the observer's
-/// `NetworkChanged`: whether *some* interface is up, and the name
-/// NetworkManager gives the primary connection. That name is the connection's,
-/// not an SSID — on the wired test machine it is "Wired connection 1" — so it
-/// is used as a name and never as evidence of wireless.
-fn network_readout(
-    service: Option<&NetworkStatus>,
-    observer_connected: bool,
-    observer_connection: Option<&str>,
-) -> NetworkReadout {
-    let Some(status) = service else {
-        // The service is the only component that knows the medium, so with it
-        // unreachable nothing here names one. The observer still knows whether
-        // an interface is up, which is all "online" claims.
-        return NetworkReadout {
-            online: observer_connected,
-            medium: String::new(),
-            label: "Network".to_string(),
-            detail: if observer_connected {
-                observer_connection.unwrap_or("Connected").to_string()
-            } else {
-                "Offline".to_string()
-            },
-            ssid: String::new(),
-            ip: String::new(),
-        };
-    };
-
-    let medium = status.conn_type.trim().to_ascii_lowercase();
-    let label = match medium.as_str() {
-        "wifi" => "Wi-Fi",
-        "ethernet" => "Ethernet",
-        "vpn" => "VPN",
-        "bridge" => "Bridge",
-        _ => "Network",
-    };
-    let ssid = if medium == "wifi" {
-        status.ssid.clone().unwrap_or_default()
-    } else {
-        String::new()
-    };
-    let ip = status.ip_address.clone().unwrap_or_default();
-    let detail = if !status.connected {
-        "Offline".to_string()
-    } else {
-        [ssid.as_str(), observer_connection.unwrap_or(""), ip.as_str()]
-            .into_iter()
-            .find(|candidate| !candidate.is_empty())
-            .unwrap_or("Connected")
-            .to_string()
-    };
-
-    NetworkReadout {
-        online: status.connected,
-        medium,
-        label: label.to_string(),
-        detail,
-        ssid,
-        ip,
-    }
-}
-
-/// Ask the network service what is up. `None` is "could not be reached",
-/// which is not the same answer as "nothing is connected".
-fn ask_network_service() -> Option<NetworkStatus> {
-    yantrik_ipc_transport::SyncRpcClient::for_service("network")
-        .call_typed(network_method::STATUS, &serde_json::json!({}))
-        .ok()
-}
-
-/// Push the reading into every property that states it.
-///
-/// Every write is guarded by a comparison. This runs on every 3s tick, a
-/// Slint property set marks its dependents dirty whether or not the value
-/// moved, and the status bar's mark depends on these — so writing
-/// unconditionally would repaint an idle desktop every three seconds.
-fn publish_network(ui: &App, r: &NetworkReadout) {
-    if ui.get_network_online() != r.online {
-        ui.set_network_online(r.online);
-    }
-    if ui.get_network_medium().as_str() != r.medium {
-        ui.set_network_medium(r.medium.as_str().into());
-    }
-    if ui.get_network_label().as_str() != r.label {
-        ui.set_network_label(r.label.as_str().into());
-    }
-    if ui.get_network_detail().as_str() != r.detail {
-        ui.set_network_detail(r.detail.as_str().into());
-    }
-    // Wireless specifically: the Quick Settings tile, which is a radio.
-    let wireless = r.online && r.medium == "wifi";
-    if ui.get_wifi_connected() != wireless {
-        ui.set_wifi_connected(wireless);
-    }
-    if ui.get_sys_wifi_ssid().as_str() != r.ssid {
-        ui.set_sys_wifi_ssid(r.ssid.as_str().into());
-    }
-    // The address Settings > Network shows. The service reports it for the
-    // connection that is actually up; the `ip` command the poll falls back on
-    // takes the first global address it finds, which on a machine with a VPN
-    // or a container bridge is not necessarily this one. One owner, so that
-    // nothing goes on showing an address after the connection has gone.
-    if !r.online {
-        ui.set_settings_ip_address(Default::default());
-    } else if !r.ip.is_empty() {
-        ui.set_settings_ip_address(r.ip.as_str().into());
-    }
-}
-
 /// Screens the auto-lock may lock from: all but boot (0), first run (2) — no PIN to unlock with
 /// yet — and the two locked screens. Never from login (32): the PIN screen unlocks to the
 /// desktop, so locking there would trade the login password for the PIN (as `lock` refuses to).
@@ -752,91 +564,6 @@ mod tests {
         for screen in [0, 2, 3, 32] {
             assert!(!may_auto_lock(screen), "screen {screen}");
         }
-    }
-
-    /// The live machine's answer, captured from `yos describe network`:
-    /// online via ethernet at 192.168.4.44, ssid null, no wireless adapter.
-    fn wired_machine() -> NetworkStatus {
-        NetworkStatus {
-            connected: true,
-            conn_type: "ethernet".to_string(),
-            ssid: None,
-            ip_address: Some("192.168.4.44".to_string()),
-        }
-    }
-
-    #[test]
-    fn a_wired_machine_is_online_and_is_not_wifi() {
-        let r = network_readout(Some(&wired_machine()), true, Some("Wired connection 1"));
-        // The whole of #50's second screen: "WiFi" stood over NetworkManager's
-        // connection name on a machine with no wireless device.
-        assert_eq!(r.label, "Ethernet");
-        assert_eq!(r.detail, "Wired connection 1");
-        assert_eq!(r.ssid, "");
-        assert_eq!(r.medium, "ethernet");
-        // And it is online, which is what the status bar's mark means. Deriving
-        // that from the wifi flag drew a wired machine as offline.
-        assert!(r.online);
-        assert_eq!(r.ip, "192.168.4.44");
-    }
-
-    #[test]
-    fn a_wireless_machine_shows_its_ssid() {
-        let status = NetworkStatus {
-            connected: true,
-            conn_type: "wifi".to_string(),
-            ssid: Some("Wombat".to_string()),
-            ip_address: Some("10.0.0.8".to_string()),
-        };
-        let r = network_readout(Some(&status), true, Some("Wombat"));
-        assert_eq!(r.label, "Wi-Fi");
-        assert_eq!(r.detail, "Wombat");
-        assert_eq!(r.ssid, "Wombat");
-        assert!(r.online);
-    }
-
-    #[test]
-    fn a_connection_with_no_name_falls_back_to_its_address() {
-        let mut status = wired_machine();
-        status.ssid = None;
-        let r = network_readout(Some(&status), true, None);
-        assert_eq!(r.detail, "192.168.4.44");
-    }
-
-    #[test]
-    fn nothing_up_says_so() {
-        // The service's own answer when no interface is carrying anything:
-        // connected false, type "none".
-        let status = NetworkStatus {
-            connected: false,
-            conn_type: "none".to_string(),
-            ssid: None,
-            ip_address: None,
-        };
-        let r = network_readout(Some(&status), false, None);
-        assert!(!r.online);
-        assert_eq!(r.label, "Network");
-        assert_eq!(r.detail, "Offline");
-        // A name left over from the last connection is not evidence of one.
-        let r = network_readout(Some(&status), true, Some("Wired connection 1"));
-        assert!(!r.online);
-        assert_eq!(r.detail, "Offline");
-    }
-
-    #[test]
-    fn an_unreachable_service_claims_no_medium() {
-        // Whether an interface is up is the observer's to answer. What it is
-        // carrying is not, so an unverifiable "Wi-Fi" is not printed.
-        let r = network_readout(None, true, Some("Wired connection 1"));
-        assert!(r.online);
-        assert_eq!(r.medium, "");
-        assert_eq!(r.label, "Network");
-        assert_eq!(r.detail, "Wired connection 1");
-        assert_eq!(r.ssid, "");
-
-        let r = network_readout(None, false, None);
-        assert!(!r.online);
-        assert_eq!(r.detail, "Offline");
     }
 
     #[test]

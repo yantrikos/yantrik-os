@@ -38,12 +38,18 @@ import { YWheelArea } from "y_wheel.slint";
 
 export component YIndicator inherits Rectangle {
     in property <string> icon: "";
+    // A fainter glyph drawn beneath `icon` in the same box: the unlit bars of a signal mark, so
+    // 2 of 4 reads as two lit and two dim. Empty draws nothing.
+    in property <string> icon-under: "";
     in property <string> label: "";
     in property <string> tooltip: "";
     in property <bool> active: false;
     in property <bool> attention: false;
     in property <bool> enabled: true;
     in property <bool> tooltip-above: true;
+    // Hang the tooltip from the indicator's right edge instead of centring it, for the one at the
+    // far right of a bar, whose centred tooltip would run off the screen.
+    in property <bool> tooltip-end: false;
     callback clicked();
     callback middle-clicked();
     callback scrolled(int);
@@ -138,6 +144,13 @@ export component YIndicator inherits Rectangle {
         // dot pinned to its upper right. (A Path cannot hold children, hence the box.)
         Rectangle {
             width: Theme.bar-icon-size;
+            if root.icon-under != "" : Icon {
+                commands: root.icon-under;
+                size: Theme.bar-icon-size;
+                tint: Theme.text-dim.with-alpha(0.45);
+                thickness: Theme.icon-stroke;
+                y: (parent.height - self.height) / 2;
+            }
             Icon {
                 commands: root.icon;
                 size: Theme.bar-icon-size;
@@ -174,7 +187,7 @@ export component YIndicator inherits Rectangle {
     }
 
     if root.tip-shown && root.tooltip != "" : Rectangle {
-        x: (parent.width - self.width) / 2;
+        x: root.tooltip-end ? parent.width + Theme.sp-2 - self.width : (parent.width - self.width) / 2;
         y: root.tooltip-above ? -self.height - Theme.sp-1 : parent.height + Theme.sp-1;
         width: tip-text.preferred-width + 2 * Theme.sp-3;
         height: tip-text.preferred-height + 2 * Theme.sp-1 + Theme.sp-1;

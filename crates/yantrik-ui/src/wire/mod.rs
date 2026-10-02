@@ -32,6 +32,7 @@ pub(crate) mod chat;
 mod clipboard;
 mod shell_overlays;
 mod cheat_sheet;
+pub mod network;
 pub mod dock;
 pub mod harness;
 pub mod i18n;
@@ -97,6 +98,8 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     shell_overlays::wire(ui, ctx);
     cheat_sheet::wire(ui);
     crate::power_status::wire(ui);
+    // The network mark and its popover, and the one reading every surface shows of the network.
+    network::wire(ui);
     lens::wire(ui, ctx);
     navigate::wire(ui, ctx);
     dock::wire(ui, ctx);

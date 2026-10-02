@@ -11,6 +11,8 @@ import { Theme, ThemeMode, ThemeOverrides, AccentPreset } from "theme.slint";
 import { Taskbar } from "components/taskbar.slint";
 import { StatusBar } from "components/status_bar.slint";
 import { ShellOverlays } from "components/shell_overlays.slint";
+import { NetworkState, NetworkRow } from "components/bar/network_state.slint";
+export { NetworkState, NetworkRow }
 import { BootScreen, BootStage } from "boot.slint";
 import { OnboardingScreen } from "onboarding.slint";
 import { InstallerScreen, InstallerDisk, KeyboardChoice } from "installer.slint";
@@ -300,7 +302,7 @@ export component App inherits Window {
     // nothing underneath moves.
     // The bar's three panels are the shell's and open over any screen, so they cover it on any
     // screen; the rest are the desktop's.
-    property <bool> mind-panel-covered: root.quick-settings-open || root.power-menu-open || root.clip-panel-open || root.cheat-sheet-open || root.battery-popover-open
+    property <bool> mind-panel-covered: root.quick-settings-open || root.power-menu-open || root.clip-panel-open || root.cheat-sheet-open || root.battery-popover-open || root.network-open
         || (root.current-screen == 1
             && (root.lens-open || root.app-grid-open || root.window-switcher-open || root.command-palette-open));
 
@@ -409,6 +411,9 @@ export component App inherits Window {
     // shell forward or the panel opens where nobody can see it (see `app-grid-opened`). The
     // clipboard also refreshes its entries here, once, instead of a timer watching the flag.
     callback shell-overlay-opened(string);
+    changed network-open => {
+        if (self.network-open) { self.shell-overlay-opened("network"); }
+    }
     changed quick-settings-open => {
         if (self.quick-settings-open) { self.shell-overlay-opened("quick-settings"); }
     }
@@ -522,7 +527,9 @@ export component App inherits Window {
     in-out property <bool> volume-available: false;
     in-out property <bool> volume-muted: false;
     in-out property <int> volume-level: 0;
-    callback toggle-wifi();
+    // The network popover under the bar's network mark, and where that mark is.
+    in-out property <bool> network-open: false;
+    in-out property <length> network-anchor-x: 0;
     callback brightness-changed(int);
     callback volume-changed(int);
     callback volume-mute-toggled();
@@ -2715,6 +2722,14 @@ export component App inherits Window {
             height: parent.height;
             y: 0;
             quick-settings-open <=> root.quick-settings-open;
+            network-open <=> root.network-open;
+            network-anchor-x: root.network-anchor-x;
+            // Settings > Network is category 3 of the settings sidebar.
+            network-settings => {
+                root.settings-category = 3;
+                root.current-screen = 7;
+                root.navigate(7);
+            }
             battery-available: root.battery-available;
             battery-level: root.battery-level;
             battery-charging: root.battery-charging;
@@ -2725,14 +2740,11 @@ export component App inherits Window {
             power-profile: root.power-profile;
             power-performance-offered: root.power-performance-offered;
             set-power-profile(p) => { root.set-power-profile(p); }
-            wifi-connected: root.wifi-connected;
-            wifi-ssid: root.sys-wifi-ssid;
             brightness-available: root.brightness-available;
             brightness-level <=> root.brightness-level;
             volume-available: root.volume-available;
             volume-muted: root.volume-muted;
             volume-level <=> root.volume-level;
-            toggle-wifi => { root.toggle-wifi(); }
             brightness-changed(val) => { root.brightness-changed(val); }
             volume-changed(val) => { root.volume-changed(val); }
             volume-mute-toggled => { root.volume-mute-toggled(); }
@@ -2769,6 +2781,7 @@ export component App inherits Window {
             battery-clicked(x) => {
                 root.battery-anchor-x = x;
                 // One panel at a time: the others hang from the same bar.
+                root.network-open = false;
                 root.quick-settings-open = false;
                 root.power-menu-open = false;
                 root.battery-popover-open = !root.battery-popover-open;
@@ -2803,8 +2816,19 @@ export component App inherits Window {
             anchor-clicked => { root.lens-open = !root.lens-open; root.open-lens(); }
             queue-clicked => { root.lens-open = true; root.open-lens(); }
             whisper-hint-clicked => { root.whisper-hint-clicked(); }
-            settings-tapped => { root.battery-popover-open = false; root.quick-settings-open = !root.quick-settings-open; }
-            power-pressed => { root.battery-popover-open = false; root.power-menu-open = !root.power-menu-open; }
+            // The network mark opens its own popover and puts the other panels away, so one
+            // bar panel is up at a time; the battery's and Quick Settings' doors do the same the
+            // other way.
+            network-tapped => {
+                root.network-open = !root.network-open;
+                root.battery-popover-open = false;
+                root.quick-settings-open = false;
+                root.power-menu-open = false;
+                root.clip-panel-open = false;
+            }
+            network-anchor-x <=> root.network-anchor-x;
+            settings-tapped => { root.network-open = false; root.battery-popover-open = false; root.quick-settings-open = !root.quick-settings-open; }
+            power-pressed => { root.network-open = false; root.battery-popover-open = false; root.power-menu-open = !root.power-menu-open; }
             // Handled here, the same way the desktop's own instance handles them. They are not
             // callbacks on this component -- `ai-privacy-clicked` and `active-mind-clicked` are
             // declared on DesktopScreen, and forwarding to a root callback of the same name was

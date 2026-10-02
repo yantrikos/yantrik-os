@@ -49,6 +49,7 @@ mod control;
 mod control_approvals;
 mod control_overlays;
 mod power_status;
+mod control_network;
 mod control_installer;
 mod control_levels;
 mod control_levels_actions;

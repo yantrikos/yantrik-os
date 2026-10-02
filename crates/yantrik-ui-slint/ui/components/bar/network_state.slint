@@ -1,0 +1,72 @@
+// What the shell knows about the network, for the bar's mark and its popover.
+//
+// Rust fills this from the one NetworkManager reading (`yantrik_os::network`), on its events and
+// not on a timer; nothing here is computed from a guess. The bar, the popover and the control
+// surface's `describe shell` all read that same reading, which is how they stay in agreement.
+//
+// There is deliberately no property here that holds a Wi-Fi password. The text a person types
+// lives only in the popover's own field, goes out through `connect(ssid, secret)` and is cleared
+// by the row that owns it; a property that outlived the attempt would be somewhere a password
+// could be read from.
+
+export struct NetworkRow {
+    ssid: string,
+    // 0 to 100, as NetworkManager reports it.
+    strength: int,
+    // 1 to 4 lit bars for `strength`.
+    bars: int,
+    secured: bool,
+    // A saved profile exists, so joining needs no password.
+    known: bool,
+    connected: bool,
+    // Needs a username and a certificate; the popover cannot join it with one field.
+    enterprise: bool,
+}
+
+export global NetworkState {
+    // `offline`, `wired`, `wifi` or `vpn`: which mark the bar draws.
+    in property <string> mark: "offline";
+    // Lit bars, 1 to 4, when `mark` is `wifi`.
+    in property <int> bars: 0;
+    // One line in words: the name, the state, the address.
+    in property <string> tooltip: "Offline";
+    // `wired`, `wifi` or `none`.
+    in property <string> kind: "none";
+    in property <bool> online: false;
+    in property <bool> connecting: false;
+    in property <string> ssid: "";
+    in property <string> ip: "";
+    in property <bool> vpn: false;
+    // Linked, but NetworkManager's check says the internet is out of reach, or a sign-in page
+    // is in the way.
+    in property <bool> no-internet: false;
+    in property <bool> portal: false;
+    // A Wi-Fi device exists. Without one there is no Wi-Fi row and no radio tile at all.
+    in property <bool> wifi-present: false;
+    in property <bool> radio-on: false;
+    in property <[NetworkRow]> networks: [];
+
+    // The row whose password field is open ("" for none). In-out because the popover opens and
+    // closes it, and so does the control surface when it asks the person to type at the machine.
+    in-out property <string> asking-ssid: "";
+    // A caller (a mind) asked for this network and the machine will not join it without a person:
+    // the row is marked "<requested-by> asked to join" and the bar's mark gets its attention dot.
+    // Nothing opens, focuses or replaces anything: the person clicks the row when they choose.
+    in-out property <string> requested-ssid: "";
+    in property <string> requested-by: "";
+    // The network being joined now, and why the last attempt failed, in words that never
+    // contain the password.
+    in property <string> joining-ssid: "";
+    in property <string> notice-ssid: "";
+    in property <string> notice: "";
+
+    // The popover opened: ask the radio to look for networks.
+    callback scan-requested();
+    // The Wi-Fi tile: the radio, on or off.
+    callback set-radio(bool);
+    // The connected row's button: leave the network. The radio is not touched.
+    callback disconnect();
+    // Join a network. `secret` is empty for an open or saved one.
+    callback connect(string, string);
+    callback settings-requested();
+}

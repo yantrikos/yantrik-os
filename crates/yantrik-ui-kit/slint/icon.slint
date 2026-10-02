@@ -37,6 +37,16 @@ export global Icons {
     out property <string> notes:    "M3.5 2.5H16.5V17.5H3.5Z M6.5 6.5H13.5 M6.5 10H13.5 M6.5 13.5H10.5";
     out property <string> monitor:  "M2.5 12L6 6L9 10.5L11.5 7.5L13.5 12L17.5 6";
     out property <string> network:  "M3 10A7 7 0 1 0 17 10A7 7 0 1 0 3 10Z M3 10H17 M10 3C7 6 7 14 10 17 M10 3C13 6 13 14 10 17";
+    // Signal bars for the bar's network mark: `signal-bars` is all four (drawn dim under the lit
+    // ones through YIndicator's `icon-under`), `signal-1..4` are the first n. Bars, not arcs, so
+    // 1 of 4 and 3 of 4 differ by a shape a person can count at 16px.
+    out property <string> signal-bars: "M4 16V12 M8 16V9 M12 16V6 M16 16V3";
+    out property <string> signal-1:    "M4 16V12";
+    out property <string> signal-2:    "M4 16V12 M8 16V9";
+    out property <string> signal-3:    "M4 16V12 M8 16V9 M12 16V6";
+    out property <string> signal-4:    "M4 16V12 M8 16V9 M12 16V6 M16 16V3";
+    // The globe, struck through: nothing is up.
+    out property <string> network-off: "M3 10A7 7 0 1 0 17 10A7 7 0 1 0 3 10Z M3 10H17 M10 3C7 6 7 14 10 17 M10 3C13 6 13 14 10 17 M3.5 3.5L16.5 16.5";
     out property <string> packages: "M10 2.5L17 6V14L10 17.5L3 14V6Z M3 6L10 9.5L17 6 M10 9.5V17.5";
     out property <string> music:    "M7.5 14.5V4.5L15.5 3V13 M3.5 14.5A2 2 0 1 0 7.5 14.5A2 2 0 1 0 3.5 14.5Z M11.5 13A2 2 0 1 0 15.5 13A2 2 0 1 0 11.5 13Z";
     out property <string> weather:  "M4.5 8A3 3 0 1 0 10.5 8A3 3 0 1 0 4.5 8Z M8 15.5H14.5A3 3 0 0 0 14.5 9.5A4.5 4.5 0 0 0 6.1 8.5";

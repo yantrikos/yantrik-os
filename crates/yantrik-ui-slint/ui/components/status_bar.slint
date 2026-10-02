@@ -13,6 +13,8 @@
 // No continuous animation. The thinking pulse is the only motion and it runs only while
 // the companion is actually thinking.
 
+import { NetworkIndicator } from "bar/network_indicator.slint";
+import { YIndicator } from "y_indicator.slint";
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icon.slint";
 import { YantrikMark } from "yantrik_mark.slint";
@@ -70,6 +72,10 @@ export component StatusBar inherits Rectangle {
     callback whisper-hint-clicked();
     callback notifications-clicked();
     callback settings-tapped();
+    // The network mark was pressed: toggle the network popover.
+    callback network-tapped();
+    // The network mark's centre, window coordinates, so the popover can hang from it.
+    in-out property <length> network-anchor-x: 0;
     callback power-pressed();
     callback ai-privacy-clicked();
     callback assistant-offline-clicked();
@@ -663,7 +669,19 @@ export component StatusBar inherits Rectangle {
                 }
             }
 
-            // Network + Battery → opens Quick Settings
+            // Network: its own indicator and its own click. It shared one TouchArea with the
+            // battery and both opened Quick Settings, so neither could open anything of its own.
+            // The click opens the network popover (`network-tapped`). Quick Settings has its own
+            // button at the far right, because on a machine with no battery the network mark was
+            // its only door.
+            NetworkIndicator {
+                clicked => { root.network-tapped(); }
+                // Where the popover hangs from: the app reads this off the bar.
+                changed anchor-x => { root.network-anchor-x = self.anchor-x; }
+                init => { root.network-anchor-x = self.anchor-x; }
+            }
+
+            // Battery → opens Quick Settings
             TouchArea {
                 height: Theme.status-bar-height;
                 mouse-cursor: pointer;
@@ -671,17 +689,6 @@ export component StatusBar inherits Rectangle {
 
                 HorizontalLayout {
                     spacing: Theme.sp-2;
-
-                    Icon {
-                        // The mark says which medium as well as whether: the
-                        // wireless arcs are wrong on a machine with no radio,
-                        // and the Network Manager window already draws the
-                        // globe for a wired connection.
-                        commands: root.network-medium == "wifi" ? Icons.wifi : Icons.network;
-                        size: 13px;
-                        tint: root.network-online ? Theme.color-success : Theme.text-dim;
-                        y: (parent.height - self.height) / 2;
-                    }
 
                     // Battery, only when the machine has one. Its own click opens its popover
                     // (the owner places it), so it is not part of the Quick Settings press.
@@ -725,6 +732,17 @@ export component StatusBar inherits Rectangle {
                 color: Theme.text-dim;
                 font-size: Theme.fs-caption;
                 vertical-alignment: center;
+            }
+
+            // Quick Settings: a visible door at the far right, on every machine. It opens exactly
+            // what the battery's press does (`settings-tapped`).
+            YIndicator {
+                icon: Icons.settings;
+                tooltip: "Quick Settings";
+                tooltip-above: false;
+                // The last thing on the bar: a centred tooltip would run off the screen.
+                tooltip-end: true;
+                clicked => { root.settings-tapped(); }
             }
         }
     }

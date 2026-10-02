@@ -1,5 +1,5 @@
-// The overlays the bar opens: Quick Settings, the power menu and the clipboard panel, and the
-// keyboard cheat sheet (Super+/).
+// The overlays the bar opens: the network popover, Quick Settings, the power menu and the
+// clipboard panel, and the keyboard cheat sheet (Super+/).
 //
 // They stood inside DesktopScreen, which is only on screen while the desktop is. The bar is the
 // shell's and is drawn above every screen, so its network, settings and power buttons toggled a
@@ -16,6 +16,8 @@ import { PowerMenu } from "power_menu.slint";
 import { ClipboardPanel, ClipboardEntryData } from "clipboard_panel.slint";
 import { CheatSheet, CheatRowData } from "cheat_sheet.slint";
 import { BatteryPopover } from "bar/battery_popover.slint";
+import { NetworkPopover } from "popovers/network_popover.slint";
+import { NetworkState } from "bar/network_state.slint";
 
 export component ShellOverlays inherits Rectangle {
     // Quick Settings
@@ -23,10 +25,6 @@ export component ShellOverlays inherits Rectangle {
     in property <bool> battery-available: false;
     in property <int> battery-level: 100;
     in property <bool> battery-charging: false;
-    in property <bool> wifi-connected: false;
-    // The network's name, for the tile. It once stood as an empty string here, so the tile never
-    // had a network to name.
-    in property <string> wifi-ssid: "";
     // The machine's real levels (wire/audio.rs, wire/backlight.rs): nothing invented, and a
     // row for hardware that is absent is not drawn.
     in property <bool> brightness-available: false;
@@ -34,7 +32,6 @@ export component ShellOverlays inherits Rectangle {
     in property <bool> volume-available: false;
     in property <bool> volume-muted: false;
     in-out property <int> volume-level: 0;
-    callback toggle-wifi();
     callback brightness-changed(int);
     callback volume-changed(int);
     callback volume-mute-toggled();
@@ -47,6 +44,12 @@ export component ShellOverlays inherits Rectangle {
     in property <string> power-profile: "";
     in property <bool> power-performance-offered: false;
     callback set-power-profile(string);
+    // Network popover: hangs from the bar's network mark. Its content is `NetworkState`, which
+    // the shell fills from NetworkManager; only where it hangs and whether it is open are the
+    // app's.
+    in-out property <bool> network-open: false;
+    in property <length> network-anchor-x: 0;
+    callback network-settings();
 
     // Power menu
     in-out property <bool> power-menu-open: false;
@@ -68,6 +71,14 @@ export component ShellOverlays inherits Rectangle {
     width: 100%;
     height: 100%;
 
+    NetworkPopover {
+        open: root.network-open;
+        anchor-x: root.network-anchor-x;
+        anchor-y: Theme.status-bar-height;
+        close-requested => { root.network-open = false; }
+        settings-requested => { root.network-open = false; root.network-settings(); }
+    }
+
     QuickSettings {
         width: 100%;
         height: 100%;
@@ -75,14 +86,17 @@ export component ShellOverlays inherits Rectangle {
         battery-available: root.battery-available;
         battery-level: root.battery-level;
         battery-charging: root.battery-charging;
-        wifi-connected: root.wifi-connected;
-        wifi-ssid: root.wifi-ssid;
         brightness-available: root.brightness-available;
+        // The tile is the Wi-Fi radio, from the same reading the popover shows.
+        wifi-present: NetworkState.wifi-present;
+        wifi-radio-on: NetworkState.radio-on;
+        wifi-connected: NetworkState.kind == "wifi" && NetworkState.online;
+        wifi-ssid: NetworkState.ssid;
         brightness-level <=> root.brightness-level;
         volume-available: root.volume-available;
         volume-muted: root.volume-muted;
         volume-level <=> root.volume-level;
-        toggle-wifi => { root.toggle-wifi(); }
+        toggle-wifi => { NetworkState.set-radio(!NetworkState.radio-on); }
         brightness-changed(val) => { root.brightness-changed(val); }
         volume-changed(val) => { root.volume-changed(val); }
         volume-mute-toggled => { root.volume-mute-toggled(); }

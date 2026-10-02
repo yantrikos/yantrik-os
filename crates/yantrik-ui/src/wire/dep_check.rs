@@ -12,7 +12,7 @@ static AVAILABLE: OnceLock<HashMap<&'static str, bool>> = OnceLock::new();
 /// Optional CLI tools that Yantrik apps may use.
 const OPTIONAL_DEPS: &[(&str, &str)] = &[
     ("mpv", "Media Player, Music Player"),
-    ("nmcli", "Network Manager, WiFi toggle"),
+    ("nmcli", "Network Manager command line (Settings and the minds' network tools; the bar talks to NetworkManager directly)"),
     ("brightnessctl", "Brightness control"),
     ("wpctl", "Volume control"),
     ("chromium", "Browser-based apps"),

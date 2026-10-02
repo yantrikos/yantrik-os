@@ -24,7 +24,8 @@ mod files;
 #[cfg(target_os = "linux")]
 mod idle;
 mod mock;
-mod network;
+pub mod network;
+pub mod network_model;
 mod processes;
 
 pub use events::{BatteryState, FileChangeKind, PowerProfileInfo, ProcessInfo, SystemEvent, SystemSnapshot};
@@ -33,6 +34,7 @@ pub use event_bus::{
     EventSource, EventStats, ToolOutcome, TraceId, YantrikEvent,
 };
 pub use entity_graph::{EntityGraph, ObjectKind, RelationKind, Relation, UniversalObject};
+pub use network_model::{AccessPoint, ConnectRequest, Connectivity, Mark, NetKind, NetState, NetworkSnapshot, WifiSecret};
 pub use observer::{SystemObserver, SystemObserverConfig};
 
 /// Whether the compositor is telling the desktop when the person leaves the seat (#412). Without

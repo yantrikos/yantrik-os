@@ -58,6 +58,9 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     // The pointer rests in the middle of the screen between steps. Left over a bar button it
     // lights the button, and a frame that differs by that highlight is not the one before.
     let park = || w.dispatch_event(slint::platform::WindowEvent::PointerMoved { position: slint::LogicalPosition::new(640.0, 420.0) });
+    // The bar's indicators fade their hover wash out over `dur-fast`; a frame taken before it has
+    // finished is not the frame that was there. Waited out where a frame is compared to an earlier one.
+    let settle = || std::thread::sleep(std::time::Duration::from_millis(250));
 
     let shut = |ui: &App| {
         ui.set_quick_settings_open(false);
@@ -103,6 +106,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         // The bar's button again, and the backdrop, are both ways out; take the button's.
         click(w, x_qs, 16.0);
         park();
+        settle();
         let back = draw();
         assert!(!ui.get_quick_settings_open(), "{name}: the same button closes it");
         assert_eq!(changed(&before, &back, width, (0, width as usize), (0, height as usize)), 0, "{name}: closed, the frame is the one that was there");
@@ -116,6 +120,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         save(&pm, &path(&format!("{name}-power")), width, height)?;
         click(w, x_pm, 16.0);
         park();
+        settle();
         let back = draw();
         assert!(!ui.get_power_menu_open(), "{name}: the power button closes the menu");
         assert_eq!(changed(&before, &back, width, (0, width as usize), (0, height as usize)), 0, "{name}: closed, the frame is the one that was there");
