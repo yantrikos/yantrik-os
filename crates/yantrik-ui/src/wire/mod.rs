@@ -11,6 +11,8 @@ mod about;
 pub mod audio;
 /// The brightness slider and the machine's real backlight.
 pub mod backlight;
+/// The volume / brightness / mic / Caps Lock display: what it says (the pill is the kit's YOsd).
+pub mod osd;
 // The Agents screen and every agent popped out into its own window.
 pub mod agents;
 pub mod runs_on_card;

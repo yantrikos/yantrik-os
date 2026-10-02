@@ -998,9 +998,6 @@ pub fn publish(
     let panel_ui = ui_for.clone();
     let desk_ui = ui_for.clone();
     let rule_ui = ui_for.clone();
-    let volume_ui = ui_for.clone();
-    let mute_ui = ui_for.clone();
-    let brightness_ui = ui_for.clone();
     let lock_ui = ui_for;
 
     let surface = ControlSurface::new("shell")
@@ -1921,61 +1918,6 @@ pub fn publish(
             },
         )
         .action(
-            // Quick Settings' volume slider, for a caller. Standard: it moves the machine's own
-            // output level, which the volume keys move too and which the person takes back with
-            // the same slider; nothing is stored by the shell. Settles on return: the answer is
-            // the volume read back from PipeWire, which can differ from the level asked for.
-            Action::new("set_volume", "Set the machine's output volume, 0 to 100 percent, on the default speaker")
-                .arg(Param::integer("level").describe("Percent, 0 to 100")),
-            move |args| {
-                let ui = volume_ui()?;
-                crate::control_levels::set_volume(
-                    args,
-                    yantrik_os::audio::set_volume,
-                    || {
-                        let now = yantrik_os::audio::read();
-                        crate::wire::audio::publish(&ui, now);
-                        now
-                    },
-                )
-            },
-        )
-        .action(
-            Action::new("set_mute", "Mute or unmute the machine's default speaker, keeping its volume")
-                .arg(Param::flag("muted").describe("true to mute, false to unmute")),
-            move |args| {
-                let ui = mute_ui()?;
-                crate::control_levels::set_mute(
-                    args,
-                    yantrik_os::audio::set_mute,
-                    || {
-                        let now = yantrik_os::audio::read();
-                        crate::wire::audio::publish(&ui, now);
-                        now
-                    },
-                )
-            },
-        )
-        .action(
-            // Refused, not pretended, on a machine with no backlight: a VM or a desktop monitor
-            // has none, and `describe` says so under `brightness.available`.
-            Action::new("set_brightness", "Set the screen's brightness, 1 to 100 percent, on a machine that has a backlight")
-                .arg(Param::integer("level").describe("Percent, 0 to 100; the panel is never set below 1 so the screen stays readable")),
-            move |args| {
-                let ui = brightness_ui()?;
-                crate::control_levels::set_brightness(
-                    args,
-                    ui.get_brightness_available(),
-                    yantrik_os::backlight::set,
-                    || {
-                        let now = yantrik_os::backlight::read();
-                        crate::wire::backlight::publish(&ui, now);
-                        now
-                    },
-                )
-            },
-        )
-        .action(
             // The battery popover's profile choice, for a caller. `standard`: it changes how
             // the machine trades speed for battery, which the person can undo with the same
             // choice and which the daemon itself resets (it drops to power-saver on its own
@@ -2078,6 +2020,8 @@ pub fn publish(
     let surface = crate::control_approvals::actions(surface, ui);
     // The bar's panels: open_quick_settings, open_power_menu, open_clipboard, open_cheat_sheet and their closes.
     let surface = crate::control_overlays::actions(surface, ui);
+    // The media keys' actions: set_volume, set_mute, set_brightness, set_mic_mute, show_caps_lock.
+    let surface = crate::control_levels_actions::actions(surface, ui);
     // An agent's commands, each in a terminal of its own in its pane — agent_run, agent_job,
     // agent_input, agent_kill. The agent comes from its token, never an argument. See
     // `control_agent_terminal` and design/agents-workspace-2026-09-23.md, decision 3.

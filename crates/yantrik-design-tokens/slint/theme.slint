@@ -379,9 +379,6 @@ export global Theme {
     out property <duration> dur-slow: 300ms;
     // A popover or other moving surface arriving: dur-fast, or nothing under reduce-motion.
     out property <duration> dur-pop: MotionPrefs.reduced ? 0ms : root.dur-fast;
-    // How long an on-screen display (volume, brightness, mic) stays up after the last change.
-    // One single-shot timer holds it; there is no repeating timer behind it.
-    out property <duration> dur-osd-hold: 1500ms;
     // How long the pointer rests on a bar indicator before its tooltip appears.
     out property <duration> dur-tooltip: 600ms;
     // The one curve for things that arrive: quick out of the blocks, long soft landing. Use it
@@ -442,8 +439,16 @@ export global Theme {
     out property <length> slider-halo: 28px;
     // Toggle tile (Wi-Fi, Bluetooth, Night light ...).
     out property <length> tile-h: 56px;
-    // On-screen display card (volume, brightness) and its width.
-    out property <length> osd-w: 280px;
+    // On-screen display (volume, brightness, mic, Caps Lock): a 240x64 pill, centred, 80px above
+    // the taskbar. Opaque charcoal in both modes, because it floats over whatever is on screen,
+    // a photograph or a white document, and has to read the same on either.
+    out property <length> osd-w: 240px;
+    out property <length> osd-h: 64px;
+    out property <length> osd-gap: 80px;
+    out property <color> osd-bg: #151a1e;
+    out property <color> osd-border: #ffffff1f;
+    out property <color> osd-text: #f4f6fa;
+    out property <color> osd-track: #ffffff26;
     // One-pixel edge of a control, and the stroke weights an icon is drawn with (regular beside
     // text, a touch heavier on a filled tile where it sits on the accent).
     out property <length> hairline: 1px;

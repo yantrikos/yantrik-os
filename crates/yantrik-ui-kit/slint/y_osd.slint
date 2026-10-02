@@ -1,0 +1,106 @@
+// YOsd — the on-screen display: what the volume, brightness, mic and Caps Lock keys answer with.
+//
+// Usage
+//   osd := YOsd { x: (parent.width - self.width) / 2; y: parent.height - Theme.taskbar-height - Theme.osd-gap - self.height; }
+//   osd.show(Icons.volume, true, 45, "45%", false);     // icon, has-bar, level 0..100, words, dimmed
+//   osd.show(Icons.caps-lock, false, 0, "Caps Lock on", false);
+//
+// The owner reads the machine AFTER the change and passes what it read; this draws that and
+// nothing else, so the number on screen is the number the machine has (a volume the audio server
+// capped at 80 shows 80, not the 95 that was asked for).
+//
+// It is a pill, not a window: it takes no focus and no pointer (there is no TouchArea or
+// FocusScope in it), so a key or click that lands where it is drawn goes to what is under it.
+//
+// Idle cost: nothing runs while it is hidden. `show` fades it in over `Theme.dur-pop` and starts
+// the hold, which is ONE single-shot timer that stops itself on its tick; pressing the key again
+// restarts that same timer, so a held key keeps the pill up and it goes 1.2 s after the last
+// press. The 1200ms is written here as a literal and not read from a token, because the kit's
+// `an_idle_window_stops_drawing` test reads every Timer's interval from its text and cannot
+// follow a token into another file. The fade out is the same animation as the fade in and ends
+// by itself.
+import { Theme } from "theme.slint";
+import { Icon } from "icon.slint";
+
+export component YOsd inherits Rectangle {
+    in-out property <string> icon: "";
+    in-out property <bool> has-bar: true;
+    in-out property <int> level: 0;
+    in-out property <string> words: "";
+    // Muted: the bar is drawn at the level kept, but quiet, so a muted 45% does not look like a
+    // sound at 45%.
+    in-out property <bool> dimmed: false;
+    out property <bool> shown: false;
+
+    public function show(icon: string, has-bar: bool, level: int, words: string, dimmed: bool) {
+        root.icon = icon;
+        root.has-bar = has-bar;
+        root.level = max(0, min(100, level));
+        root.words = words;
+        root.dimmed = dimmed;
+        root.shown = true;
+        hold.restart();
+    }
+
+    width: Theme.osd-w;
+    height: Theme.osd-h;
+    border-radius: Theme.r-xl;
+    background: Theme.osd-bg;
+    border-width: Theme.hairline;
+    border-color: Theme.osd-border;
+    opacity: root.shown ? 1 : 0;
+    // Hidden means not drawn at all, not drawn transparent.
+    visible: root.shown || self.opacity > 0;
+    animate opacity { duration: Theme.dur-pop; easing: Theme.ease-standard; }
+    accessible-role: text;
+    accessible-label: root.words;
+
+    hold := Timer {
+        interval: 1200ms;
+        running: root.shown;
+        triggered => { root.shown = false; }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.sp-4;
+        padding-right: Theme.sp-4;
+        spacing: Theme.sp-3;
+        alignment: start;
+
+        Icon {
+            commands: root.icon;
+            size: 22px;
+            tint: Theme.osd-text;
+            thickness: Theme.icon-stroke;
+            y: (root.height - self.height) / 2;
+        }
+
+        if root.has-bar : Rectangle {
+            horizontal-stretch: 1;
+            Rectangle {
+                y: (parent.height - self.height) / 2;
+                width: parent.width;
+                height: Theme.slider-track-h;
+                border-radius: self.height / 2;
+                background: Theme.osd-track;
+                Rectangle {
+                    width: parent.width * root.level / 100;
+                    border-radius: parent.border-radius;
+                    background: root.dimmed ? Theme.osd-track : Theme.osd-text;
+                }
+            }
+        }
+
+        Text {
+            text: root.words;
+            color: Theme.osd-text;
+            font-size: Theme.fs-body-strong;
+            font-weight: Theme.fw-body-strong;
+            horizontal-stretch: root.has-bar ? 0 : 1;
+            min-width: root.has-bar ? 44px : 0px;
+            horizontal-alignment: root.has-bar ? right : left;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}

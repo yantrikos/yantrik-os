@@ -1,13 +1,127 @@
-//! The volume and the backlight on the shell's control surface: what `describe shell` says
-//! about them, and the three actions that move them.
+//! The volume, the microphone and the backlight on the shell's control surface: what `describe
+//! shell` says about them, and the actions that move them, which are also what the media keys
+//! run (`yos act shell ...` in config/labwc/rc.xml).
 //!
-//! Whatever the slider in Quick Settings can do, a mind can ask for, and the answer is the
-//! machine's own reading taken after the change, not the value that was asked for: a volume
+//! Whatever the slider in Quick Settings can do, a key or a mind can ask for, and the answer is
+//! the machine's own reading taken after the change, not the value that was asked for: a volume
 //! the audio server refused, or a backlight the machine does not have, must not come back as
-//! done. The machine is reached through closures so the rules here are tested without one.
+//! done. The same reading is what the on-screen display shows, so the number a person sees is
+//! the number the machine has. The machine is reached through the small traits below so the
+//! rules here are tested without one.
+//!
+//! One way of doing it: `set_volume` and `set_brightness` take a `level` or a `step`,
+//! `set_mute` and `set_mic_mute` take `muted` or `toggle`. There are no separate "step" actions.
 
 use serde_json::{json, Value};
 use yantrik_os::audio::AudioState;
+
+/// How far one press of a volume or brightness key moves the level, in percent.
+pub const KEY_STEP: i64 = 5;
+
+/// The speaker, as the actions see it.
+pub trait Mixer {
+    fn read(&self) -> Option<AudioState>;
+    fn set_volume(&self, pct: u8) -> Result<(), String>;
+    fn set_mute(&self, muted: bool) -> Result<(), String>;
+}
+
+/// The microphone: only a mute, because the shell has no input level to show.
+pub trait Mic {
+    fn muted(&self) -> Option<bool>;
+    fn set_muted(&self, muted: bool) -> Result<(), String>;
+}
+
+/// The screen's backlight, if the machine has one.
+pub trait Backlight {
+    fn available(&self) -> bool;
+    fn read(&self) -> Option<u8>;
+    fn set(&self, pct: u8) -> Result<(), String>;
+}
+
+/// The real machine: PipeWire through `wpctl`, and sysfs / `brightnessctl` / logind.
+pub struct Machine;
+
+impl Mixer for Machine {
+    fn read(&self) -> Option<AudioState> {
+        yantrik_os::audio::read()
+    }
+    fn set_volume(&self, pct: u8) -> Result<(), String> {
+        yantrik_os::audio::set_volume(pct)
+    }
+    fn set_mute(&self, muted: bool) -> Result<(), String> {
+        yantrik_os::audio::set_mute(muted)
+    }
+}
+
+impl Mic for Machine {
+    fn muted(&self) -> Option<bool> {
+        yantrik_os::audio::read_mic_muted()
+    }
+    fn set_muted(&self, muted: bool) -> Result<(), String> {
+        yantrik_os::audio::set_mic_mute(muted)
+    }
+}
+
+impl Backlight for Machine {
+    fn available(&self) -> bool {
+        yantrik_os::backlight::available()
+    }
+    fn read(&self) -> Option<u8> {
+        yantrik_os::backlight::read()
+    }
+    fn set(&self, pct: u8) -> Result<(), String> {
+        yantrik_os::backlight::set(pct)
+    }
+}
+
+/// What a level action was asked to do: go to a level, or move by a step from where it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Change {
+    Level(u8),
+    Step(i8),
+}
+
+/// `level` (a whole percent, 0 to 100) or `step` (a whole number from -100 to 100, not 0), one
+/// of them. Neither is clamped: a caller that asked for 150 should be told that is not a level,
+/// not handed 100 and left to think it got what it asked.
+pub fn parse_change(args: &Value) -> Result<Change, String> {
+    match (args.get("level").filter(|v| !v.is_null()), args.get("step").filter(|v| !v.is_null())) {
+        (Some(_), Some(_)) => Err("give `level` or `step`, not both".into()),
+        (None, None) => Err("give `level` (0 to 100) to go to a level, or `step` (-100 to 100) to move by an amount".into()),
+        (Some(_), None) => parse_level(args).map(Change::Level),
+        (None, Some(step)) => {
+            let step = step.as_i64().ok_or("`step` must be a whole number from -100 to 100")?;
+            i8::try_from(step)
+                .ok()
+                .filter(|s| *s != 0 && (-100..=100).contains(s))
+                .map(Change::Step)
+                .ok_or_else(|| format!("`step` is {step}; it must be from -100 to 100 and not 0"))
+        }
+    }
+}
+
+/// The level a change lands on, given where the level is now. Steps stop at the ends.
+pub fn target(change: Change, current: u8) -> u8 {
+    match change {
+        Change::Level(l) => l,
+        Change::Step(s) => (i16::from(current) + i16::from(s)).clamp(0, 100) as u8,
+    }
+}
+
+/// `muted: true|false` or `toggle: true`, one of them, resolved against the current state.
+pub fn parse_mute(args: &Value, now_muted: impl FnOnce() -> Result<bool, String>) -> Result<bool, String> {
+    let muted = args.get("muted").filter(|v| !v.is_null());
+    let toggle = args.get("toggle").filter(|v| !v.is_null());
+    match (muted, toggle) {
+        (Some(_), Some(_)) => Err("give `muted` or `toggle`, not both".into()),
+        (Some(m), None) => m.as_bool().ok_or_else(|| "`muted` must be true or false".into()),
+        (None, Some(t)) => match t.as_bool() {
+            Some(true) => now_muted().map(|m| !m),
+            _ => Err("`toggle` must be true (leave it out to use `muted`)".into()),
+        },
+        (None, None) => Err("`muted` must be true or false, or `toggle` true to flip it".into()),
+    }
+}
 
 /// `level` as a percent: a whole number from 0 to 100. Not clamped: a caller that asked for 150
 /// should be told that is not a level, not handed 100 and left to think it got what it asked.
@@ -37,57 +151,137 @@ pub fn brightness_for_describe(available: bool, level: i32) -> Value {
     json!({ "available": available, "level": if available { json!(level) } else { Value::Null } })
 }
 
-fn audio_answer(state: AudioState) -> Value {
+pub fn audio_answer(state: AudioState) -> Value {
     json!({ "volume": state.volume_pct, "muted": state.muted })
 }
 
-/// `set_volume`: set it, then answer with what the machine now reads.
-pub fn set_volume(
-    args: &Value,
-    set: impl FnOnce(u8) -> Result<(), String>,
-    read: impl FnOnce() -> Option<AudioState>,
-) -> Result<Value, String> {
-    let level = parse_level(args)?;
-    set(level)?;
-    let now = read().ok_or("the volume was set, but the audio server did not answer when asked for it back")?;
-    Ok(audio_answer(now))
+/// `set_volume`: go to a level or step from the current one, then answer with what the machine
+/// now reads. A step up from a muted speaker unmutes it, as a volume key does on any desktop:
+/// pressing "louder" and hearing nothing is not an answer. A step down, or a level, leaves the
+/// mute as it was.
+pub fn set_volume(args: &Value, mixer: &impl Mixer) -> Result<AudioState, String> {
+    let change = parse_change(args)?;
+    let before = match change {
+        Change::Step(_) => Some(mixer.read().ok_or("the audio server did not answer, so there is no volume to step from")?),
+        Change::Level(_) => None,
+    };
+    mixer.set_volume(target(change, before.map_or(0, |s| s.volume_pct)))?;
+    if matches!(change, Change::Step(s) if s > 0) && before.is_some_and(|s| s.muted) {
+        mixer.set_mute(false)?;
+    }
+    mixer.read().ok_or_else(|| "the volume was set, but the audio server did not answer when asked for it back".into())
 }
 
-/// `set_mute`: mute or unmute, then answer with what the machine now reads.
-pub fn set_mute(
-    args: &Value,
-    set: impl FnOnce(bool) -> Result<(), String>,
-    read: impl FnOnce() -> Option<AudioState>,
-) -> Result<Value, String> {
-    let muted = args.get("muted").and_then(Value::as_bool).ok_or("`muted` must be true or false")?;
-    set(muted)?;
-    let now = read().ok_or("the mute was set, but the audio server did not answer when asked for it back")?;
-    Ok(audio_answer(now))
+/// `set_mute`: mute, unmute or toggle, then answer with what the machine now reads.
+pub fn set_mute(args: &Value, mixer: &impl Mixer) -> Result<AudioState, String> {
+    let muted = parse_mute(args, || {
+        mixer.read().map(|s| s.muted).ok_or_else(|| "the audio server did not answer, so there is no mute to toggle".to_string())
+    })?;
+    mixer.set_mute(muted)?;
+    mixer.read().ok_or_else(|| "the mute was set, but the audio server did not answer when asked for it back".into())
+}
+
+/// `set_mic_mute`: the same for the default microphone. Answers with whether it is muted now.
+pub fn set_mic_mute(args: &Value, mic: &impl Mic) -> Result<bool, String> {
+    let muted = parse_mute(args, || {
+        mic.muted().ok_or_else(|| "there is no microphone to ask, so there is no mute to toggle".to_string())
+    })?;
+    mic.set_muted(muted)?;
+    mic.muted().ok_or_else(|| "the mute was set, but the microphone could not be read back".into())
 }
 
 /// `set_brightness`: refuses plainly when the machine has no backlight (a VM, a desktop
-/// monitor), otherwise sets it and answers with the level the panel now reads.
-pub fn set_brightness(
-    args: &Value,
-    available: bool,
-    set: impl FnOnce(u8) -> Result<(), String>,
-    read: impl FnOnce() -> Option<u8>,
-) -> Result<Value, String> {
-    if !available {
+/// monitor), otherwise moves it and answers with the level the panel now reads.
+pub fn set_brightness(args: &Value, panel: &impl Backlight) -> Result<u8, String> {
+    if !panel.available() {
         return Err("this machine has no backlight, so there is no brightness to set (`describe shell` shows brightness.available: false)".into());
     }
-    let level = parse_level(args)?;
-    set(level)?;
-    let now = read().ok_or("the brightness was set, but the backlight could not be read back")?;
-    Ok(json!({ "available": true, "level": now }))
+    let change = parse_change(args)?;
+    let current = match change {
+        Change::Step(_) => panel.read().ok_or("the backlight could not be read, so there is no level to step from")?,
+        Change::Level(_) => 0,
+    };
+    panel.set(target(change, current))?;
+    panel.read().ok_or_else(|| "the brightness was set, but the backlight could not be read back".into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::{Cell, RefCell};
 
-    fn state(volume_pct: u8, muted: bool) -> Option<AudioState> {
-        Some(AudioState { volume_pct, muted })
+    /// A speaker that remembers what it was told, and can be made to cap or fail.
+    struct FakeMixer {
+        state: Cell<Option<AudioState>>,
+        cap: Option<u8>,
+        fail: bool,
+        calls: RefCell<Vec<String>>,
+    }
+    impl FakeMixer {
+        fn at(volume_pct: u8, muted: bool) -> Self {
+            Self { state: Cell::new(Some(AudioState { volume_pct, muted })), cap: None, fail: false, calls: RefCell::default() }
+        }
+        fn gone() -> Self {
+            Self { state: Cell::new(None), cap: None, fail: false, calls: RefCell::default() }
+        }
+    }
+    impl Mixer for FakeMixer {
+        fn read(&self) -> Option<AudioState> {
+            self.state.get()
+        }
+        fn set_volume(&self, pct: u8) -> Result<(), String> {
+            if self.fail {
+                return Err("wpctl could not be run".into());
+            }
+            self.calls.borrow_mut().push(format!("volume {pct}"));
+            let muted = self.state.get().is_some_and(|s| s.muted);
+            self.state.set(Some(AudioState { volume_pct: self.cap.map_or(pct, |c| pct.min(c)), muted }));
+            Ok(())
+        }
+        fn set_mute(&self, muted: bool) -> Result<(), String> {
+            self.calls.borrow_mut().push(format!("mute {muted}"));
+            let volume_pct = self.state.get().map_or(0, |s| s.volume_pct);
+            self.state.set(Some(AudioState { volume_pct, muted }));
+            Ok(())
+        }
+    }
+
+    struct FakeMic(Cell<Option<bool>>);
+    impl Mic for FakeMic {
+        fn muted(&self) -> Option<bool> {
+            self.0.get()
+        }
+        fn set_muted(&self, muted: bool) -> Result<(), String> {
+            self.0.set(Some(muted));
+            Ok(())
+        }
+    }
+
+    struct FakePanel {
+        level: Cell<Option<u8>>,
+        has: bool,
+        touched: Cell<bool>,
+    }
+    impl FakePanel {
+        fn at(level: u8) -> Self {
+            Self { level: Cell::new(Some(level)), has: true, touched: Cell::new(false) }
+        }
+        fn none() -> Self {
+            Self { level: Cell::new(None), has: false, touched: Cell::new(false) }
+        }
+    }
+    impl Backlight for FakePanel {
+        fn available(&self) -> bool {
+            self.has
+        }
+        fn read(&self) -> Option<u8> {
+            self.level.get()
+        }
+        fn set(&self, pct: u8) -> Result<(), String> {
+            self.touched.set(true);
+            self.level.set(Some(pct.max(1)));
+            Ok(())
+        }
     }
 
     #[test]
@@ -101,53 +295,105 @@ mod tests {
     }
 
     #[test]
+    fn a_change_is_a_level_or_a_step_and_never_both_or_neither() {
+        assert_eq!(parse_change(&json!({ "level": 30 })), Ok(Change::Level(30)));
+        assert_eq!(parse_change(&json!({ "step": 5 })), Ok(Change::Step(5)));
+        assert_eq!(parse_change(&json!({ "step": -5 })), Ok(Change::Step(-5)));
+        assert_eq!(parse_change(&json!({ "step": 5, "level": null })), Ok(Change::Step(5)), "null is left out");
+        for bad in [json!({}), json!({ "level": 30, "step": 5 }), json!({ "step": 0 }), json!({ "step": 101 }), json!({ "step": -101 }), json!({ "step": 2.5 }), json!({ "step": "up" })] {
+            assert!(parse_change(&bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_step_stops_at_the_ends_of_the_range() {
+        assert_eq!(target(Change::Step(5), 97), 100);
+        assert_eq!(target(Change::Step(-5), 3), 0);
+        assert_eq!(target(Change::Step(5), 40), 45);
+        assert_eq!(target(Change::Level(80), 10), 80);
+    }
+
+    #[test]
     fn set_volume_answers_with_what_the_machine_reads_not_what_was_asked() {
         // The audio server capped it: the answer says 80, and does not echo the 95 asked for.
-        let answer = set_volume(&json!({ "level": 95 }), |_| Ok(()), || state(80, false)).unwrap();
-        assert_eq!(answer, json!({ "volume": 80, "muted": false }));
+        let mixer = FakeMixer { cap: Some(80), ..FakeMixer::at(10, false) };
+        let state = set_volume(&json!({ "level": 95 }), &mixer).unwrap();
+        assert_eq!(audio_answer(state), json!({ "volume": 80, "muted": false }));
     }
 
     #[test]
-    fn set_volume_hands_the_level_to_the_machine_and_reports_its_refusal() {
-        let mut got = None;
-        set_volume(&json!({ "level": 30 }), |l| { got = Some(l); Ok(()) }, || state(30, false)).unwrap();
-        assert_eq!(got, Some(30));
-        let err = set_volume(&json!({ "level": 30 }), |_| Err("wpctl could not be run".into()), || state(30, false)).unwrap_err();
-        assert!(err.contains("wpctl"), "{err}");
-        // A bad level never reaches the machine.
-        let mut touched = false;
-        assert!(set_volume(&json!({ "level": 200 }), |_| { touched = true; Ok(()) }, || state(0, false)).is_err());
-        assert!(!touched);
+    fn a_volume_key_steps_from_where_the_machine_is() {
+        let mixer = FakeMixer::at(42, false);
+        assert_eq!(set_volume(&json!({ "step": 5 }), &mixer).unwrap().volume_pct, 47);
+        assert_eq!(set_volume(&json!({ "step": -5 }), &mixer).unwrap().volume_pct, 42);
+        assert_eq!(*mixer.calls.borrow(), ["volume 47", "volume 42"]);
     }
 
     #[test]
-    fn a_volume_that_cannot_be_read_back_is_not_reported_as_done() {
-        let err = set_volume(&json!({ "level": 30 }), |_| Ok(()), || None).unwrap_err();
+    fn louder_on_a_muted_speaker_unmutes_but_quieter_and_a_level_do_not() {
+        let mixer = FakeMixer::at(30, true);
+        let state = set_volume(&json!({ "step": 5 }), &mixer).unwrap();
+        assert_eq!((state.volume_pct, state.muted), (35, false), "the key made a sound possible");
+        let mixer = FakeMixer::at(30, true);
+        assert!(set_volume(&json!({ "step": -5 }), &mixer).unwrap().muted);
+        let mixer = FakeMixer::at(30, true);
+        assert!(set_volume(&json!({ "level": 50 }), &mixer).unwrap().muted, "a caller that set a level did not ask to unmute");
+    }
+
+    #[test]
+    fn set_volume_reports_the_machines_refusal_and_never_hands_it_a_bad_level() {
+        let mixer = FakeMixer { fail: true, ..FakeMixer::at(30, false) };
+        assert!(set_volume(&json!({ "level": 30 }), &mixer).unwrap_err().contains("wpctl"));
+        let mixer = FakeMixer::at(30, false);
+        assert!(set_volume(&json!({ "level": 200 }), &mixer).is_err());
+        assert!(mixer.calls.borrow().is_empty(), "a bad level never reached the machine");
+    }
+
+    #[test]
+    fn a_volume_that_cannot_be_read_is_not_reported_as_done_or_stepped_from_nothing() {
+        let mixer = FakeMixer::gone();
+        let err = set_volume(&json!({ "step": 5 }), &mixer).unwrap_err();
         assert!(err.contains("did not answer"), "{err}");
+        assert!(mixer.calls.borrow().is_empty(), "no volume was invented to step from");
     }
 
     #[test]
-    fn set_mute_wants_a_real_boolean_and_reads_the_result_back() {
-        let answer = set_mute(&json!({ "muted": true }), |m| { assert!(m); Ok(()) }, || state(45, true)).unwrap();
-        assert_eq!(answer, json!({ "volume": 45, "muted": true }));
-        assert!(set_mute(&json!({ "muted": "yes" }), |_| Ok(()), || state(45, true)).is_err());
-        assert!(set_mute(&json!({}), |_| Ok(()), || state(45, true)).is_err());
+    fn set_mute_mutes_unmutes_and_toggles_and_reads_the_result_back() {
+        let mixer = FakeMixer::at(45, false);
+        assert_eq!(audio_answer(set_mute(&json!({ "muted": true }), &mixer).unwrap()), json!({ "volume": 45, "muted": true }));
+        assert!(!set_mute(&json!({ "toggle": true }), &mixer).unwrap().muted, "toggle flips what the machine says now");
+        assert!(set_mute(&json!({ "toggle": true }), &mixer).unwrap().muted);
+        for bad in [json!({ "muted": "yes" }), json!({}), json!({ "muted": true, "toggle": true }), json!({ "toggle": false })] {
+            assert!(set_mute(&bad, &mixer).is_err(), "{bad}");
+        }
+        assert!(set_mute(&json!({ "toggle": true }), &FakeMixer::gone()).is_err(), "nothing to toggle");
+    }
+
+    #[test]
+    fn the_microphone_toggles_from_its_own_state() {
+        let mic = FakeMic(Cell::new(Some(false)));
+        assert_eq!(set_mic_mute(&json!({ "toggle": true }), &mic), Ok(true));
+        assert_eq!(set_mic_mute(&json!({ "toggle": true }), &mic), Ok(false));
+        assert_eq!(set_mic_mute(&json!({ "muted": true }), &mic), Ok(true));
+        assert!(set_mic_mute(&json!({ "toggle": true }), &FakeMic(Cell::new(None))).is_err(), "no microphone is not an unmuted one");
+        assert!(set_mic_mute(&json!({}), &mic).is_err());
     }
 
     #[test]
     fn set_brightness_refuses_clearly_without_a_backlight() {
-        let mut touched = false;
-        let err = set_brightness(&json!({ "level": 50 }), false, |_| { touched = true; Ok(()) }, || Some(50)).unwrap_err();
+        let panel = FakePanel::none();
+        let err = set_brightness(&json!({ "step": 5 }), &panel).unwrap_err();
         assert!(err.contains("no backlight"), "{err}");
-        assert!(!touched, "nothing was run against a machine with no backlight");
+        assert!(!panel.touched.get(), "nothing was run against a machine with no backlight");
     }
 
     #[test]
     fn set_brightness_answers_with_the_panels_own_reading() {
-        let answer = set_brightness(&json!({ "level": 1 }), true, |_| Ok(()), || Some(1)).unwrap();
-        assert_eq!(answer, json!({ "available": true, "level": 1 }));
-        assert!(set_brightness(&json!({ "level": 101 }), true, |_| Ok(()), || Some(100)).is_err());
-        assert!(set_brightness(&json!({ "level": 50 }), true, |_| Err("no route".into()), || Some(50)).is_err());
+        let panel = FakePanel::at(50);
+        assert_eq!(set_brightness(&json!({ "level": 1 }), &panel), Ok(1));
+        assert_eq!(set_brightness(&json!({ "step": 5 }), &panel), Ok(6));
+        assert_eq!(set_brightness(&json!({ "step": -5 }), &panel), Ok(1), "the panel's own floor, read back");
+        assert!(set_brightness(&json!({ "level": 101 }), &FakePanel::at(50)).is_err());
     }
 
     #[test]

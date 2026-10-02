@@ -274,40 +274,56 @@
     </keybind>
 
     <!-- ── Media and hardware keys ────────────────────────────────────────────────────── -->
+    <!--
+      Each key asks the shell, which changes the level with its own mixer / backlight module and
+      puts the on-screen display up with the value it read back (story 2.1). The `||` is the
+      same change made directly, with no display: where the shell cannot answer (not yet
+      started, or the screen locked, which refuses every action but one) the key still does what
+      it always did. Steps are 5 percent.
+
+      Caps_Lock is bound on release: pressing it still toggles the lock, because the compositor
+      updates the lock state before it looks for a binding, and by release the keyboard's LED
+      is what the shell reads. There is no direct fallback: with no shell there is nothing to show.
+    -->
     <!-- @help group="Shell" text="Volume up" -->
     <keybind key="XF86AudioRaiseVolume">
       <action name="Execute">
-        <command>wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+</command>
+        <command>sh -c '/opt/yantrik/bin/yos act shell set_volume step=5 || wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+'</command>
       </action>
     </keybind>
     <!-- @help group="Shell" text="Volume down" -->
     <keybind key="XF86AudioLowerVolume">
       <action name="Execute">
-        <command>wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-</command>
+        <command>sh -c '/opt/yantrik/bin/yos act shell set_volume step=-5 || wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-'</command>
       </action>
     </keybind>
     <!-- @help group="Shell" text="Mute or unmute the speakers" -->
     <keybind key="XF86AudioMute">
       <action name="Execute">
-        <command>wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle</command>
+        <command>sh -c '/opt/yantrik/bin/yos act shell set_mute toggle=true || wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle'</command>
       </action>
     </keybind>
     <!-- @help group="Shell" text="Mute or unmute the microphone" -->
     <keybind key="XF86AudioMicMute">
       <action name="Execute">
-        <command>wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle</command>
+        <command>sh -c '/opt/yantrik/bin/yos act shell set_mic_mute toggle=true || wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle'</command>
       </action>
     </keybind>
     <!-- @help group="Shell" text="Screen brighter" -->
     <keybind key="XF86MonBrightnessUp">
       <action name="Execute">
-        <command>brightnessctl set 5%+</command>
+        <command>sh -c '/opt/yantrik/bin/yos act shell set_brightness step=5 || brightnessctl set 5%+'</command>
       </action>
     </keybind>
     <!-- @help group="Shell" text="Screen dimmer" -->
     <keybind key="XF86MonBrightnessDown">
       <action name="Execute">
-        <command>brightnessctl set 5%-</command>
+        <command>sh -c '/opt/yantrik/bin/yos act shell set_brightness step=-5 || brightnessctl set 5%-'</command>
+      </action>
+    </keybind>
+    <keybind key="Caps_Lock" onRelease="yes">
+      <action name="Execute">
+        <command>/opt/yantrik/bin/yos act shell show_caps_lock</command>
       </action>
     </keybind>
 

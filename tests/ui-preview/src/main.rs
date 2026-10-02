@@ -24,6 +24,7 @@ mod kit_controls_tests;
 mod bar_overlays_tests;
 mod cheat_sheet_tests;
 mod qs_levels_tests;
+mod osd_tests;
 mod battery_tests;
 mod monitor_tests;
 mod weather_tests;
@@ -86,6 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-bar-overlays") { return bar_overlays_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-cheat-sheet") { return cheat_sheet_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-qs-levels") { return qs_levels_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-osd") { return osd_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-battery") { return battery_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-lens-answers") { return lens_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-approval-card") { return approval_tests::run(&window, output); }

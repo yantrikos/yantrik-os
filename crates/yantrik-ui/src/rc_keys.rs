@@ -212,6 +212,36 @@ fn every_yos_action_rc_xml_runs_is_published_by_the_shell() {
     assert!(seen >= 8, "found only {seen} `yos act shell` bindings; the scan is reading the wrong thing");
 }
 
+/// The media keys answer with the on-screen display, which only the shell can draw, so each one
+/// goes through `yos act shell` (and keeps a direct command behind `||` for when the shell is
+/// not there). Caps Lock is bound on release so that pressing it still toggles the lock.
+#[test]
+fn the_media_keys_and_caps_lock_go_through_the_shell() {
+    let rc = rc_xml();
+    let command_of = |key: &str| -> String {
+        let bind = rc
+            .split(&format!("<keybind key=\"{key}\""))
+            .nth(1)
+            .unwrap_or_else(|| panic!("rc.xml binds no {key}"));
+        let bind = bind.split("</keybind>").next().unwrap_or_default();
+        bind.split("<command>").nth(1).and_then(|c| c.split("</command>").next()).unwrap_or_default().to_string()
+    };
+    for (key, action) in [
+        ("XF86AudioRaiseVolume", "set_volume step=5"),
+        ("XF86AudioLowerVolume", "set_volume step=-5"),
+        ("XF86AudioMute", "set_mute toggle=true"),
+        ("XF86AudioMicMute", "set_mic_mute toggle=true"),
+        ("XF86MonBrightnessUp", "set_brightness step=5"),
+        ("XF86MonBrightnessDown", "set_brightness step=-5"),
+    ] {
+        let command = command_of(key);
+        assert!(command.contains(&format!("yos act shell {action}")), "{key} runs the shell's action: {command}");
+        assert!(command.contains("||"), "{key} still works with no shell: {command}");
+    }
+    assert!(rc.contains("<keybind key=\"Caps_Lock\" onRelease=\"yes\">"), "Caps Lock is bound on release");
+    assert!(command_of("Caps_Lock").contains("yos act shell show_caps_lock"));
+}
+
 /// `focus_window title=Mind View` that matched no window would do nothing and say nothing. Every
 /// title an rc.xml command asks for must be one the shell actually gives a window.
 #[test]

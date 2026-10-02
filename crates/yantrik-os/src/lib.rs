@@ -14,6 +14,7 @@ pub mod screenshot;
 /// The machine's volume (PipeWire, through wpctl) and its backlight (sysfs): what the shell's sliders read.
 pub mod audio;
 pub mod backlight;
+pub mod capslock;
 pub mod latest;
 
 mod battery;

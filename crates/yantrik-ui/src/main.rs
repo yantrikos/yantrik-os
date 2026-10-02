@@ -51,6 +51,7 @@ mod control_overlays;
 mod power_status;
 mod control_installer;
 mod control_levels;
+mod control_levels_actions;
 mod installer_rules;
 mod control_update;
 mod control_files;

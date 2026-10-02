@@ -18,6 +18,7 @@ use crossbeam_channel::Sender;
 use crate::events::SystemEvent;
 
 const DEFAULT_SINK: &str = "@DEFAULT_AUDIO_SINK@";
+const DEFAULT_SOURCE: &str = "@DEFAULT_AUDIO_SOURCE@";
 
 /// What the default output is doing right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,7 +90,31 @@ pub fn set_volume(pct: u8) -> Result<(), String> {
 
 /// Mute or unmute the default output.
 pub fn set_mute(muted: bool) -> Result<(), String> {
-    run_wpctl(&["set-mute".into(), DEFAULT_SINK.into(), if muted { "1" } else { "0" }.into()])
+    run_wpctl(&set_mute_args(DEFAULT_SINK, muted))
+}
+
+/// Whether the default input (the microphone) is muted, or `None` when there is no audio server
+/// or no input to ask. Same `wpctl get-volume` line as the output, so the same parser reads it;
+/// only the mute is kept, because the shell has no microphone level to show.
+pub fn read_mic_muted() -> Option<bool> {
+    let out = Command::new("wpctl")
+        .args(["get-volume", DEFAULT_SOURCE])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_get_volume(&String::from_utf8_lossy(&out.stdout)).map(|s| s.muted)
+}
+
+/// Mute or unmute the default input.
+pub fn set_mic_mute(muted: bool) -> Result<(), String> {
+    run_wpctl(&set_mute_args(DEFAULT_SOURCE, muted))
+}
+
+fn set_mute_args(target: &str, muted: bool) -> Vec<String> {
+    vec!["set-mute".into(), target.into(), if muted { "1" } else { "0" }.into()]
 }
 
 /// Whether one line of `pactl subscribe` is about an output: a sink changing (volume, mute) or
@@ -218,6 +243,18 @@ mod tests {
             ["set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", "45%"]
         );
         assert_eq!(set_volume_args(250).last().map(String::as_str), Some("100%"));
+    }
+
+    #[test]
+    fn the_microphone_is_muted_with_its_own_target_not_the_speakers() {
+        assert_eq!(set_mute_args(DEFAULT_SOURCE, true), ["set-mute", "@DEFAULT_AUDIO_SOURCE@", "1"]);
+        assert_eq!(set_mute_args(DEFAULT_SINK, false), ["set-mute", "@DEFAULT_AUDIO_SINK@", "0"]);
+    }
+
+    #[test]
+    fn a_microphone_reading_is_the_same_line_as_a_speakers() {
+        assert_eq!(parse_get_volume("Volume: 1.00 [MUTED]\n").map(|s| s.muted), Some(true));
+        assert_eq!(parse_get_volume("Volume: 1.00\n").map(|s| s.muted), Some(false));
     }
 
     #[test]
