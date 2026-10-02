@@ -2480,7 +2480,7 @@ mod rough_edges_tests {
         for drawn in [
             "more roles below",
             "roles-box.more-below",
-            "-roles-flick.viewport-y < roles-col.preferred-height - roles-box.shown-h - 2px",
+            "-roles-flick.viewport-y < roles-col.preferred-height - roles-box.shown-h - Theme.sp-half",
         ] {
             assert!(slint.contains(drawn), "{drawn:?} is not in agents_start.slint");
         }
