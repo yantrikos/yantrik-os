@@ -183,6 +183,13 @@ export global Theme {
     out property <color> amber-glow:        ThemeMode.dark ? #d4a57450 : #d4a57430;
     out property <color> amber-glow-strong: ThemeMode.dark ? #d4a574a0 : #d4a57460;
 
+    // ─── Mind teal ────────────────────────────────────────────────
+    // Marks a mind and its presence, and nothing else: not selection, not success, not the
+    // person's accent. Fixed, so a mind reads the same whichever accent preset is chosen
+    // (design/minds-surfaces-spec-2026-10-02.md, "Colour roles"). Amber, above, is the other
+    // half of the rule: a response from the person is pending.
+    out property <color> mind:              ThemeMode.dark ? #69c8bc : #1d7a70;
+
     // ─── Cyan palette ─────────────────────────────────────────────
     // The same crisp cyan as the default accent: most of what reads "cyan" here is the accent
     // written before AccentPreset existed, and the two must not drift apart.
@@ -305,6 +312,7 @@ export global Theme {
     out property <int>    fw-hero: 600;
     out property <length> fs-hero-sub: 17px;
     out property <int>    fw-hero-sub: 400;
+    out property <length> fs-page: 24px;         // A screen's own title: Agents, History
     out property <length> fs-display: 20px;      // Panel titles, major headers
     out property <int>    fw-display: 600;
     out property <length> fs-title-1: 18px;      // App titles, large section headers

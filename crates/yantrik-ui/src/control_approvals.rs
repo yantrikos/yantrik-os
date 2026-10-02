@@ -1603,18 +1603,21 @@ fn fingerprint(cards: &[Card], pane: &str) -> String {
     format!("{cards}|pane:{pane}")
 }
 
-/// The agent whose pane is on screen right now, or "" when no pane is: the Agents screen, in
-/// its list view, with an agent selected. That pane is where the agent's own card is answered,
+/// The agent whose pane is on screen right now, or "" when no pane is: the Agents screen with a
+/// run opened. That pane is where the agent's own card is answered,
 /// so the popup must not draw it a second time (#212).
 fn pane_agent(ui: &App) -> String {
     if ui.get_current_screen() != crate::wire::agents::SCREEN {
         return String::new();
     }
     let g = ui.global::<crate::AgentsState>();
-    if g.get_view() != "list" {
+    // A run opened over the workroom is the pane; the workroom's own pages are not, and a
+    // request on its shelf is answered in the popup until its run is opened.
+    if !g.get_detail_open() {
         return String::new();
     }
-    g.get_selected().to_string()
+    // A run of a chat is selected as `agent#n`; the card is the agent's.
+    crate::agents::RowKey::parse(&g.get_selected()).agent.0
 }
 
 /// Whether a card is answered in the pane on screen. The pane draws live buttons for exactly
@@ -2836,7 +2839,7 @@ mod control_approvals_tests {
         let src = src.split("#[cfg(test)]").next().unwrap();
         assert!(src.contains("!pane.is_empty() && card.verified.agent == pane"), "the popup matches the pane by the verified agent alone");
         assert!(src.contains("ui.get_current_screen() != crate::wire::agents::SCREEN"), "only the Agents screen has a pane");
-        assert!(src.contains("g.get_view() != \"list\""), "the map is not a pane: the session is not on screen");
+        assert!(src.contains("!g.get_detail_open()"), "the workroom's pages are not a pane: no session is on screen");
         let wire = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/wire/agents.rs")).unwrap();
         let wire = wire.split("#[cfg(test)]").next().unwrap();
         assert!(wire.contains("c.verified.agent == a.meta.id.0"), "the pane's live buttons are the same predicate");

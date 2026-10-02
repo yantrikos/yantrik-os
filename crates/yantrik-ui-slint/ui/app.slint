@@ -39,8 +39,7 @@ import { ProblemReportScreen, ProblemRow } from "problem_report.slint";
 // Agents (screen 34), and the window one agent pops out into. The window and the global it reads
 // are exported so the shell can create a window per agent and fill each one.
 import { AgentsScreen, AgentsState } from "agents.slint";
-export { AgentWindow, AgentsState, AgentTabData, AgentRowData, AgentRunData, AgentItemData, AgentHeaderData, AgentDetailsData, AgentMindData, AgentRoleData } from "agents.slint";
-export { RouteStopData } from "agents_route.slint";
+export { AgentWindow, AgentsState, AgentRunData, AgentItemData, AgentHeaderData, AgentDetailsData, AgentMindData, AgentRoleData, WorkNavData, DeskCardData, DecisionData, ResultData, ChangeRowData, RunFactData } from "agents.slint";
 // Recipes (screen 35): every recipe as its stages. The global is exported so the shell can fill it.
 import { RecipesScreen, RecipesState } from "recipes.slint";
 export { RecipesState, RecipeTabData, RecipeRowData, RecipeStageData, RecipeStepData } from "recipes.slint";
@@ -2926,11 +2925,10 @@ export component App inherits Window {
             toggle(open) => {
                 MindPanelState.set-expanded(root.current-screen == 1 ? "desktop" : "elsewhere", open);
             }
-            // Into the Agents screen with that agent selected, on the Active tab it is listed in.
+            // Into the Agents screen with that agent's run opened.
             open-agent(id) => {
                 root.current-screen = 34;
                 root.navigate(34);
-                AgentsState.select-tab("active");
                 AgentsState.select(id);
             }
             open-agents => {

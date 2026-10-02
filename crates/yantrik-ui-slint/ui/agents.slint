@@ -1,13 +1,16 @@
-// Agents — one pane per agent, with its work inside it (screen 34).
+// Agents — the workroom (screen 34), and one agent in a window of its own.
 //
-// One view over one list, filtered by state: Active · Needs you · Complete · All. Selecting a row
-// shows that agent's session in the middle — the person's prompts, the mind's text, and each tool
-// call as a card with its own output inside it — and its details on the right. Pop out opens the
-// same session in a window of its own (AgentWindow, below), drawn from the same store.
+// The screen is a workroom (design/minds-surfaces-spec-2026-10-02.md, section 2): a navigation
+// (Workroom · Needs you · History, then each mind), the decisions waiting on the person, a desk
+// for each mind at work, and — when a run is opened — its task detail: the changes recorded, an
+// activity timeline that reads like prose, and the run's details. Its overview pieces are in
+// agents_workroom.slint, agents_nav.slint and agents_task.slint, and the Start work sheet in
+// agents_start.slint; all are drawn from props.
 //
 // Everything here reads one global, AgentsState, which the shell fills from
-// crates/yantrik-ui/src/wire/agents.rs. A popped-out window has its own instance of the global, so
-// the same components draw the screen and every window. See design/agents-workspace-2026-09-23.md.
+// crates/yantrik-ui/src/wire/agents.rs and wire/agents_workroom.rs. A popped-out window has its
+// own instance of the global, so the same session components draw the screen's detail and every
+// window. See design/agents-workspace-2026-09-23.md for the session itself.
 
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "components/icon.slint";
@@ -17,28 +20,17 @@ import { YNoticeBar } from "components/notice_bar.slint";
 import { ToolCallData, ToolCallCard } from "components/tool_call.slint";
 import { ApprovalRequest, ApprovalCard } from "components/intent_lens.slint";
 import { QuestionCard } from "components/question_card.slint";
-import { RouteStopData, AgentsRoute } from "agents_route.slint";
 import { JumpToPresent } from "jump_to_present.slint";
-
-export struct AgentTabData {
-    id: string,        // active | needs_you | complete | all
-    label: string,
-    count: int,
-}
-
-export struct AgentRowData {
-    id: string,        // <harness>:<conversation>
-    mind: string,
-    title: string,     // the first prompt, cut
-    state: string,     // thinking | running_tool | waiting_for_you | idle | done | failed | harness_gone
-    label: string,     // "running a tool"
-    since: string,     // "2m" while it works, "21:02" once it is done
-    parent: string,    // the agent that started this one, if any
-    role: string,      // the catalog role it was started as ("Reviewer"), if any
-    origin: string,    // the recipe that handed it the work ("Council recipe"), if any
-    progress: string,  // while it works, the shell's own count: "14 calls · 3 failed · heard 20 s ago"
-    stuck: string,     // why the shell thinks it is stuck, when it does (#234)
-}
+import { YContextMenu } from "components/y_context_menu.slint";
+import {
+    WorkNavData, DeskCardData, DecisionData, ResultData, ChangeRowData, RunFactData, MindMark,
+    WorkroomOverview, NeedsPage, HistoryPage,
+} from "agents_workroom.slint";
+import { WorkNav } from "agents_nav.slint";
+import { ChangesLedger, RunDetails, ConfirmDialog } from "agents_task.slint";
+import { AgentMindData, AgentRoleData, StartSheet } from "agents_start.slint";
+export { WorkNavData, DeskCardData, DecisionData, ResultData, ChangeRowData, RunFactData } from "agents_workroom.slint";
+export { AgentMindData, AgentRoleData } from "agents_start.slint";
 
 // One run of same-looking cells in a command's terminal.
 export struct AgentRunData {
@@ -130,33 +122,9 @@ export struct AgentDetailsData {
     reach-patterns: string,
 }
 
-export struct AgentMindData {
-    id: string,
-    name: string,
-    detail: string,
-}
-
-// A role from the agent catalog, as New agent lists it.
-export struct AgentRoleData {
-    id: string,
-    name: string,
-    purpose: string,       // what it is for, in one line
-    reach: string,         // what it may touch
-    runs-on: string,       // the attached mind it would run on now; "" when none of its minds is
-    available: bool,
-}
-
 export global AgentsState {
-    // The list.
-    in-out property <[AgentTabData]> tabs: [];
-    in-out property <string> tab: "active";
-    in-out property <[AgentRowData]> rows: [];
-    // What the list says when this tab has no one in it — what is true of the other tabs
-    // ("Nothing running. 6 complete."). The shell's sentence (`empty_note`).
-    in-out property <string> empty-note: "";
+    // The run opened on the screen, or the one a window shows.
     in-out property <string> selected: "";
-    // Whether the pointer is over the list. Rows do not move under it.
-    in-out property <bool> list-hovered: false;
     // The agent shown: the selected one on the screen, the window's own in a popped-out window.
     in-out property <bool> has-agent: false;
     in-out property <AgentHeaderData> header;
@@ -178,25 +146,53 @@ export global AgentsState {
     in-out property <string> new-role: "";
     // What the last press came to, when it did not go as asked.
     in-out property <string> notice: "";
-    // Close, while work is running: the agent waiting for a yes.
-    in-out property <string> confirm-close: "";
-    // List, or Overview: the selected run as a route (Pranab, 27 September), drawn from what the
-    // shell works out in agents/route.rs.
-    // out by the shell for the size the map reports, from every agent, whatever the tab.
-    in-out property <string> view: "list";
-    in-out property <[RouteStopData]> route-stops: [];
-    in-out property <string> route-title: "";
-    in-out property <string> route-summary: "";
-    in-out property <bool> route-live: false;
-    in-out property <string> route-note: "";
+    // ── The workroom ──
+    // Which page: workroom | needs_you | history. A run opened over any of them is `detail-open`.
+    in-out property <string> section: "workroom";
+    in-out property <bool> detail-open: false;
+    // The mind the workroom is narrowed to (its harness id and its name), or "".
+    in-out property <string> mind-filter: "";
+    in-out property <string> mind-filter-name: "";
+    // The header's counts, as the shell words them: "2 working · 1 needs you".
+    in-out property <string> summary: "";
+    in-out property <int> needs-count: 0;
+    in-out property <int> request-minds: 0;
+    in-out property <int> runs-count: 0;
+    // The overview's own counts, which are the narrowed mind's when one is chosen: its requests
+    // and the minds they come from, and its finished runs.
+    in-out property <int> shelf-count: 0;
+    in-out property <int> shelf-minds: 0;
+    in-out property <int> view-runs: 0;
+    in-out property <[WorkNavData]> nav-minds: [];
+    in-out property <[DeskCardData]> desks: [];
+    // Every request waiting, oldest first, and the first three of them for the shelf.
+    in-out property <[DecisionData]> decisions: [];
+    in-out property <[DecisionData]> shelf: [];
+    in-out property <[ResultData]> recent: [];
+    in-out property <[ResultData]> history: [];
+    // The opened run: its state in the screen's vocabulary, the mode in force, the ledger and facts.
+    in-out property <string> detail-state: "";
+    in-out property <string> detail-label: "";
+    in-out property <string> detail-mode: "";
+    in-out property <[ChangeRowData]> changes: [];
+    in-out property <bool> changes-recorded: false;
+    in-out property <[RunFactData]> run-facts: [];
+    // A desk's "more" menu, by the desk's key and where it opened; and a Stop asked, not yet
+    // confirmed.
+    in-out property <string> menu-key: "";
+    in-out property <length> menu-x: 0;
+    in-out property <length> menu-y: 0;
+    in-out property <string> confirm-stop: "";
+    // The desktop's mode as a sentence, for Start work.
+    in-out property <string> mode-line: "";
 
-    callback select-tab(string);
+    callback show-section(string);
+    callback filter-mind(string);
+    callback back();
+    callback chat-with(string);
     callback select(string);
     callback pop-out(string);
     callback stop(string);
-    callback close(string);
-    callback close-confirmed(string);
-    callback close-cancelled();
     callback toggle(string, bool);
     callback open-all(string);
     callback pick-mind(string);
@@ -218,36 +214,6 @@ export global AgentsState {
     callback show-agent(string);
 }
 
-// List | Overview, beside New agent.
-component ViewSwitch inherits Rectangle {
-    height: 32px;
-    width: views.preferred-width;
-    border-radius: 8px;
-    border-width: 1px;
-    border-color: Theme.border-subtle;
-    views := HorizontalLayout {
-        padding: 2px;
-        spacing: 2px;
-        for view in [{ id: "list", label: "List" }, { id: "overview", label: "Overview" }] : Rectangle {
-            width: label.preferred-width + 20px;
-            border-radius: 6px;
-            background: AgentsState.view == view.id ? Theme.accent-glow : ta.has-hover ? Theme.hover-fill : transparent;
-            label := Text {
-                text: view.label;
-                color: AgentsState.view == view.id ? Theme.text-primary : Theme.text-secondary;
-                font-size: Theme.fs-caption;
-                font-weight: AgentsState.view == view.id ? 600 : 400;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-            ta := TouchArea {
-                mouse-cursor: pointer;
-                clicked => { AgentsState.view = view.id; }
-            }
-        }
-    }
-}
-
 component StateDot inherits Rectangle {
     in property <string> state;
     width: 8px;
@@ -258,96 +224,6 @@ component StateDot inherits Rectangle {
         : root.state == "done" ? Theme.color-success
         : root.state == "failed" ? Theme.color-danger
         : Theme.text-dim;
-}
-
-component TabChip inherits Rectangle {
-    in property <AgentTabData> tab;
-    in property <bool> active;
-    callback clicked;
-    width: chip.preferred-width;
-    height: 32px;
-    border-radius: 8px;
-    background: root.active ? Theme.accent-glow : ta.has-hover ? Theme.hover-fill : transparent;
-    ta := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
-    }
-    chip := HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
-        spacing: 6px;
-        Text {
-            text: root.tab.label;
-            color: root.active ? Theme.text-primary : Theme.text-secondary;
-            font-size: Theme.fs-caption;
-            font-weight: root.active ? 600 : 400;
-            vertical-alignment: center;
-        }
-        if root.tab.id != "all" : Text {
-            text: root.tab.count;
-            color: root.tab.id == "needs_you" && root.tab.count > 0 ? Theme.amber : Theme.text-dim;
-            font-size: Theme.fs-caption;
-            font-weight: 600;
-            vertical-alignment: center;
-        }
-    }
-}
-
-component AgentRow inherits Rectangle {
-    in property <AgentRowData> data;
-    in property <bool> selected;
-    callback clicked;
-    callback double-clicked;
-    height: 62px;
-    border-radius: 8px;
-    background: root.selected ? Theme.accent-glow : ta.has-hover ? Theme.hover-fill : transparent;
-    border-width: root.selected ? 1px : 0px;
-    border-color: Theme.accent;
-    ta := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
-        double-clicked => { root.double-clicked(); }
-    }
-    HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
-        spacing: 8px;
-        VerticalLayout {
-            padding-top: 9px;
-            alignment: start;
-            StateDot { state: root.data.state; }
-        }
-        VerticalLayout {
-            spacing: 1px;
-            alignment: center;
-            Text {
-                // "Council recipe → Reviewer · deepseek": a recipe's agent says whose it is.
-                text: (root.data.origin == "" ? "" : root.data.origin + " → ")
-                    + (root.data.role == "" ? root.data.mind : root.data.role + " · " + root.data.mind)
-                    + (root.data.parent == "" ? "" : " · started by " + root.data.parent);
-                color: Theme.text-primary;
-                font-size: Theme.fs-caption;
-                font-weight: 600;
-                overflow: elide;
-            }
-            Text {
-                text: root.data.title;
-                color: Theme.text-secondary;
-                font-size: Theme.fs-caption;
-                overflow: elide;
-            }
-            Text {
-                // Stuck says why, in place of the state: the one line a person scanning the list
-                // needs. Otherwise the state, how long, and the shell's own count of its calls.
-                text: root.data.stuck != "" ? "Stuck: " + root.data.stuck
-                    : (root.data.since == "" ? root.data.label : root.data.label + " · " + root.data.since)
-                      + (root.data.progress == "" ? "" : " · " + root.data.progress);
-                color: root.data.stuck != "" || root.data.state == "waiting_for_you" ? Theme.amber : Theme.text-dim;
-                font-size: Theme.fs-micro;
-                overflow: elide;
-            }
-        }
-    }
 }
 
 // A command's terminal, drawn from cells — the Terminal app's canvas, at card size. Only cells are
@@ -498,6 +374,50 @@ component ItemView inherits Rectangle {
                 }
             }
             TouchArea {
+                mouse-cursor: pointer;
+                clicked => { AgentsState.toggle(root.item.key, !root.item.expanded); }
+            }
+        }
+
+        // A run of calls, folded to one line a person reads; the calls are under it when open.
+        if root.item.kind == "group" : Rectangle {
+            height: 40px;
+            border-radius: Theme.r-md;
+            background: group-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+            accessible-role: button;
+            accessible-label: root.item.text;
+            accessible-expanded: root.item.expanded;
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 8px;
+                VerticalLayout {
+                    alignment: center;
+                    Icon {
+                        commands: root.item.expanded ? Icons.chevron-down : Icons.chevron-right;
+                        size: 14px;
+                        tint: Theme.text-secondary;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: root.item.text;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-caption;
+                        font-weight: 600;
+                        overflow: elide;
+                    }
+                    if root.item.explain != "" : Text {
+                        text: root.item.explain;
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-micro;
+                        overflow: elide;
+                    }
+                }
+            }
+            group-ta := TouchArea {
                 mouse-cursor: pointer;
                 clicked => { AgentsState.toggle(root.item.key, !root.item.expanded); }
             }
@@ -903,14 +823,6 @@ export component AgentDetailsColumn inherits Rectangle {
                 disabled: !AgentsState.header.can-stop;
                 clicked => { AgentsState.stop(AgentsState.header.id); }
             }
-            if !AgentsState.popped : YButton {
-                label: "Close";
-                icon-path: Icons.close;
-                variant: 2;
-                size: 0;
-                disabled: !AgentsState.has-agent;
-                clicked => { AgentsState.close(AgentsState.header.id); }
-            }
         }
     }
 }
@@ -924,462 +836,383 @@ component NoticeBar inherits YNoticeBar {
     dismissed => { AgentsState.dismiss-notice(); }
 }
 
-component MindChip inherits Rectangle {
-    in property <AgentMindData> mind;
-    in property <bool> chosen;
-    callback clicked;
-    width: chip.preferred-width;
-    height: 34px;
-    border-radius: 8px;
-    background: root.chosen ? Theme.accent-glow : ta.has-hover ? Theme.hover-fill : Theme.bg-input;
-    border-width: 1px;
-    border-color: root.chosen ? Theme.accent : Theme.border-default;
-    ta := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
-    }
-    chip := HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
-        Text {
-            text: root.mind.name;
-            color: Theme.text-primary;
-            font-size: Theme.fs-caption;
-            font-weight: root.chosen ? 600 : 400;
-            vertical-alignment: center;
+// One opened run: who and what, the changes recorded, what happened, and the run's details.
+//
+// The activity is the session's own items (ItemView), with consecutive calls folded into one line
+// by the shell (`group_calls`). An approval in it is the shell's own card, answered through the
+// same Allow and Deny the Lens uses.
+component TaskDetail inherits Rectangle {
+    flick := Flickable {
+        width: parent.width;
+        height: parent.height;
+        viewport-height: col.preferred-height;
+        // A Rectangle between the Flickable and the layout, as every scroller here has: a layout
+        // directly in a Flickable takes its own max-height as the Flickable's.
+        Rectangle {
+            width: flick.width;
+            height: col.preferred-height;
+            col := VerticalLayout {
+                padding: 24px;
+                spacing: 24px;
+                alignment: start;
+
+                VerticalLayout {
+                    spacing: 12px;
+                    Rectangle {
+                        height: 28px;
+                        accessible-role: button;
+                        accessible-label: "Back to the workroom";
+                        HorizontalLayout {
+                            spacing: 6px;
+                            alignment: start;
+                            VerticalLayout {
+                                alignment: center;
+                                Icon { commands: Icons.arrow-left; size: 14px; tint: Theme.text-secondary; }
+                            }
+                            Text {
+                                text: "Workroom";
+                                color: Theme.text-secondary;
+                                font-size: Theme.fs-body;
+                                vertical-alignment: center;
+                            }
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { AgentsState.back(); }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 16px;
+                        VerticalLayout {
+                            spacing: 8px;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: AgentsState.header.title;
+                                color: Theme.text-primary;
+                                font-size: Theme.fs-page;
+                                font-weight: 600;
+                                wrap: word-wrap;
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+                                height: 20px;
+                                VerticalLayout { alignment: center; MindMark { size: 16px; } }
+                                Text {
+                                    text: AgentsState.header.mind;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-body;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: "·";
+                                    color: Theme.text-dim;
+                                    font-size: Theme.fs-body;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: AgentsState.detail-label;
+                                    color: AgentsState.detail-state == "needs_you" ? Theme.amber : Theme.text-secondary;
+                                    font-size: Theme.fs-body;
+                                    vertical-alignment: center;
+                                }
+                                if AgentsState.detail-mode != "" : Text {
+                                    text: "·";
+                                    color: Theme.text-dim;
+                                    font-size: Theme.fs-body;
+                                    vertical-alignment: center;
+                                }
+                                if AgentsState.detail-mode != "" : Text {
+                                    text: "Mode: " + AgentsState.detail-mode;
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.fs-body;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: start;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                YButton {
+                                    label: "Chat";
+                                    icon-path: Icons.chat;
+                                    variant: 1;
+                                    size: 1;
+                                    clicked => { AgentsState.chat-with(AgentsState.header.id); }
+                                }
+                                // Pause and Resume are not here: no mind can be paused yet, and a
+                                // button that does nothing is the one thing this screen must not draw.
+                                YButton {
+                                    label: "Stop…";
+                                    icon-path: Icons.stop;
+                                    variant: 1;
+                                    size: 1;
+                                    disabled: !AgentsState.header.can-stop;
+                                    clicked => { AgentsState.confirm-stop = AgentsState.header.id; }
+                                }
+                            }
+                        }
+                    }
+                    if AgentsState.header.status != "" : Text {
+                        text: AgentsState.header.status;
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-caption;
+                        wrap: word-wrap;
+                    }
+                }
+
+                ChangesLedger {
+                    changes: AgentsState.changes;
+                    recorded: AgentsState.changes-recorded;
+                }
+
+                VerticalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: "Activity";
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-title-2;
+                        font-weight: 600;
+                    }
+                    if AgentsState.items.length == 0 : Text {
+                        text: "Nothing has happened in this run yet.";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-body;
+                    }
+                    VerticalLayout {
+                        spacing: 6px;
+                        for item in AgentsState.items : ItemView {
+                            item: item;
+                        }
+                    }
+                    // A word to the mind, to the agent this run belongs to.
+                    HorizontalLayout {
+                        spacing: 8px;
+                        composer := YInput {
+                            horizontal-stretch: 1;
+                            disabled: !AgentsState.header.can-send;
+                            placeholder: AgentsState.header.tell-hint != "" ? AgentsState.header.tell-hint
+                                : AgentsState.header.can-send ? "Tell " + AgentsState.header.mind + "…" : AgentsState.header.send-hint;
+                            accepted(text) => {
+                                AgentsState.send(AgentsState.header.id, text);
+                                self.value = "";
+                            }
+                        }
+                        YButton {
+                            label: "Send";
+                            icon-path: Icons.send;
+                            variant: 1;
+                            size: 1;
+                            disabled: !AgentsState.header.can-send;
+                            clicked => {
+                                AgentsState.send(AgentsState.header.id, composer.value);
+                                composer.value = "";
+                            }
+                        }
+                    }
+                }
+
+                RunDetails { facts: AgentsState.run-facts; }
+            }
         }
     }
 }
 
-// One role in New agent's list: its name, what it is for, and the mind it would run on now.
-component RoleRow inherits Rectangle {
-    in property <AgentRoleData> role;
-    in property <bool> chosen;
-    callback clicked;
-    height: 48px;
-    border-radius: 8px;
-    background: root.chosen ? Theme.accent-glow : ta.has-hover ? Theme.hover-fill : transparent;
-    border-width: root.chosen ? 1px : 0px;
-    border-color: Theme.accent;
-    ta := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
-    }
-    HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
-        spacing: 8px;
-        VerticalLayout {
-            alignment: center;
-            spacing: 1px;
-            horizontal-stretch: 1;
-            Text {
-                text: root.role.name;
-                color: Theme.text-primary;
-                font-size: Theme.fs-caption;
-                font-weight: 600;
-                overflow: elide;
-            }
-            Text {
-                text: root.role.purpose;
-                color: Theme.text-secondary;
-                font-size: Theme.fs-caption;
-                overflow: elide;
-            }
-        }
-        Text {
-            text: root.role.available ? "on " + root.role.runs-on : "no mind attached";
-            color: root.role.available ? Theme.text-dim : Theme.amber;
-            font-size: Theme.fs-micro;
-            vertical-alignment: center;
-        }
-    }
-}
-
-// The Agents screen: the tabs, the list, the selected agent's session and its details.
+// The Agents screen: a 64px header, a 248px navigation, and the page it points at.
 export component AgentsScreen inherits Rectangle {
     background: Theme.bg-surface;
 
     VerticalLayout {
-        padding: Theme.sp-4;
-        spacing: Theme.sp-3;
-
-        HorizontalLayout {
-            height: 34px;
-            spacing: 4px;
-            for tab in AgentsState.tabs : TabChip {
-                tab: tab;
-                active: tab.id == AgentsState.tab;
-                clicked => { AgentsState.select-tab(tab.id); }
-            }
-            Rectangle { horizontal-stretch: 1; }
-            ViewSwitch { }
-            YButton {
-                label: "New agent";
-                icon-path: Icons.plus;
-                variant: 0;
-                size: 0;
-                clicked => {
-                    AgentsState.new-error = "";
-                    AgentsState.new-open = true;
+        Rectangle {
+            height: 64px;
+            HorizontalLayout {
+                padding-left: 24px;
+                padding-right: 24px;
+                spacing: 12px;
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: "Agents";
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-page;
+                        font-weight: 600;
+                    }
+                    Text {
+                        text: AgentsState.summary;
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-caption;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    YButton {
+                        label: "History";
+                        icon-path: Icons.history;
+                        variant: 1;
+                        size: 1;
+                        clicked => { AgentsState.show-section("history"); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    YButton {
+                        label: "Start work";
+                        icon-path: Icons.plus;
+                        variant: 0;
+                        size: 1;
+                        clicked => {
+                            AgentsState.new-error = "";
+                            AgentsState.new-open = true;
+                        }
+                    }
                 }
             }
-            YButton {
-                label: "Pop out";
-                icon-path: Icons.window;
-                variant: 1;
-                size: 0;
-                disabled: !AgentsState.has-agent;
-                clicked => { AgentsState.pop-out(AgentsState.selected); }
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.separator;
             }
         }
 
         if AgentsState.notice != "" : NoticeBar { }
 
-        // The list and one session, with the Overview's route laid over the session when it is
-        // chosen. Over, not instead of: the session keeps its scroll, so going back finds it as left.
-        Rectangle {
-            vertical-stretch: 1;
-
-            HorizontalLayout {
-                spacing: Theme.sp-3;
-
-                Rectangle {
-                    width: 270px;
-                    border-radius: 12px;
-                    background: Theme.bg-card;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
-                    clip: true;
-                    list-area := TouchArea {
-                        VerticalLayout {
-                            padding: Theme.sp-2;
-                            spacing: 4px;
-                            if AgentsState.rows.length == 0 : Text {
-                                text: AgentsState.empty-note;
-                                color: Theme.text-secondary;
-                                font-size: Theme.fs-caption;
-                                wrap: word-wrap;
-                            }
-                            rows-flick := Flickable {
-                                vertical-stretch: 1;
-                                viewport-height: rows-col.preferred-height;
-                                // Not the layout directly, for the same reason as the session's.
-                                Rectangle {
-                                    width: rows-flick.width;
-                                    height: rows-col.preferred-height;
-                                    rows-col := VerticalLayout {
-                                        spacing: 4px;
-                                        for row in AgentsState.rows : AgentRow {
-                                            data: row;
-                                            selected: row.id == AgentsState.selected;
-                                            clicked => { AgentsState.select(row.id); }
-                                            double-clicked => { AgentsState.pop-out(row.id); }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                AgentSession {
-                    horizontal-stretch: 1;
-                }
-
-                AgentDetailsColumn {
-                    width: 250px;
-                }
+        HorizontalLayout {
+            WorkNav {
+                width: 248px;
+                section: AgentsState.section;
+                mind: AgentsState.mind-filter;
+                task: AgentsState.detail-open ? AgentsState.selected : "";
+                needs: AgentsState.needs-count;
+                runs: AgentsState.runs-count;
+                minds: AgentsState.nav-minds;
+                pick-section(id) => { AgentsState.show-section(id); }
+                pick-mind(id) => { AgentsState.filter-mind(id); }
+                pick-task(key) => { AgentsState.select(key); }
             }
 
-            // Over the session only: the list stays beside it, so another run is one press away,
-            // and the details stay too.
-            if AgentsState.view == "overview" : AgentsRoute {
-                x: 270px + Theme.sp-3;
-                width: parent.width - 270px - 250px - 2 * Theme.sp-3;
-                height: parent.height;
-                stops: AgentsState.route-stops;
-                title: AgentsState.route-title;
-                summary: AgentsState.route-summary;
-                live: AgentsState.route-live;
-                note: AgentsState.route-note;
-                // A branch is an agent of its own: its route, whatever tab it is under. Any other
-                // station opens its step in the session, unfolded.
-                pick(key, kind) => {
-                    if (kind == "branch") {
-                        AgentsState.select-tab("all");
-                        AgentsState.select(key);
-                    } else {
-                        AgentsState.view = "list";
-                        if (kind != "start") {
-                            AgentsState.toggle(key, true);
-                        }
+            Rectangle {
+                horizontal-stretch: 1;
+                if AgentsState.detail-open : TaskDetail {
+                    width: parent.width;
+                    height: parent.height;
+                }
+                if !AgentsState.detail-open && AgentsState.section == "workroom" : WorkroomOverview {
+                    width: parent.width;
+                    height: parent.height;
+                    decisions: AgentsState.shelf;
+                    requests: AgentsState.shelf-count;
+                    request-minds: AgentsState.shelf-minds;
+                    desks: AgentsState.desks;
+                    recent: AgentsState.recent;
+                    runs: AgentsState.view-runs;
+                    narrowed: AgentsState.mind-filter-name;
+                    open(key) => { AgentsState.select(key); }
+                    view-all-requests => { AgentsState.show-section("needs_you"); }
+                    view-history => { AgentsState.show-section("history"); }
+                    chat(mind) => { AgentsState.chat-with(mind); }
+                    more(key, x, y) => {
+                        AgentsState.menu-key = key;
+                        AgentsState.menu-x = x - root.absolute-position.x;
+                        AgentsState.menu-y = y - root.absolute-position.y;
                     }
+                }
+                if !AgentsState.detail-open && AgentsState.section == "needs_you" : NeedsPage {
+                    width: parent.width;
+                    height: parent.height;
+                    decisions: AgentsState.decisions;
+                    requests: AgentsState.needs-count;
+                    request-minds: AgentsState.request-minds;
+                    open(key) => { AgentsState.select(key); }
+                }
+                if !AgentsState.detail-open && AgentsState.section == "history" : HistoryPage {
+                    width: parent.width;
+                    height: parent.height;
+                    results: AgentsState.history;
+                    runs: AgentsState.runs-count;
+                    open(key) => { AgentsState.select(key); }
                 }
             }
         }
     }
 
-    // Tell the shell while the pointer is over the list, so a row that needs the person waits to
-    // move until it has gone.
-    property <bool> hovering: list-area.has-hover;
-    changed hovering => { AgentsState.list-hovered = self.hovering; }
-
-    // New agent: a mind and what it is to do — or, from the catalog, a role and its task.
-    if AgentsState.new-open : Rectangle {
-        background: #00000080;
-        TouchArea { }
-        Rectangle {
-            width: min(540px, parent.width - 48px);
-            height: dialog.preferred-height;
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            background: Theme.bg-elevated;
-            border-radius: 12px;
-            border-width: 1px;
-            border-color: Theme.border-strong;
-            dialog := VerticalLayout {
-                padding: 20px;
-                spacing: 12px;
-                Text {
-                    text: "New agent";
-                    color: Theme.text-primary;
-                    font-size: Theme.fs-headline;
-                    font-weight: 600;
-                }
-                // A mind of your choosing, or a role from the catalog.
-                HorizontalLayout {
-                    spacing: 6px;
-                    alignment: start;
-                    MindChip {
-                        mind: { id: "mind", name: "A mind", detail: "" };
-                        chosen: !AgentsState.new-from-catalog;
-                        clicked => {
-                            AgentsState.new-from-catalog = false;
-                            AgentsState.new-error = "";
-                            if (AgentsState.new-mind != "") {
-                                AgentsState.pick-mind(AgentsState.new-mind);
-                            } else {
-                                AgentsState.new-note = "";
-                                AgentsState.new-note-reach = "";
-                            }
-                        }
-                    }
-                    MindChip {
-                        mind: { id: "catalog", name: "From the catalog", detail: "" };
-                        chosen: AgentsState.new-from-catalog;
-                        clicked => {
-                            AgentsState.new-from-catalog = true;
-                            AgentsState.new-error = "";
-                            if (AgentsState.new-role != "") {
-                                AgentsState.pick-role(AgentsState.new-role);
-                            } else {
-                                AgentsState.new-note = "";
-                                AgentsState.new-note-reach = "";
-                            }
-                        }
-                    }
-                }
-                Text {
-                    text: AgentsState.new-from-catalog
-                        ? "Pick a role, and say what it is to do. It works in its own pane, within the role's reach."
-                        : AgentsState.minds.length == 0
-                        ? "No mind is attached right now. Start one in Settings → Harnesses, then come back."
-                        : "Pick a mind, and say what it is to do.";
-                    color: Theme.text-secondary;
-                    font-size: Theme.fs-caption;
-                    wrap: word-wrap;
-                }
-                if !AgentsState.new-from-catalog : HorizontalLayout {
-                    spacing: 6px;
-                    alignment: start;
-                    for mind in AgentsState.minds : MindChip {
-                        mind: mind;
-                        chosen: mind.id == AgentsState.new-mind;
-                        clicked => { AgentsState.pick-mind(mind.id); }
-                    }
-                }
-                // Every role is reachable: the list scrolls as it did, but now it says so while
-                // more is below the fold, and a thumb on the edge shows where in the list the
-                // window is (#212). The cue goes away at the bottom.
-                if AgentsState.new-from-catalog : roles-box := Rectangle {
-                    property <length> shown-h: min(AgentsState.roles.length * 50px, 250px);
-                    property <bool> more-below: roles-col.preferred-height - roles-box.shown-h > 2px
-                        && -roles-flick.viewport-y < roles-col.preferred-height - roles-box.shown-h - 2px;
-                    height: roles-box.shown-h + (roles-box.more-below ? 14px : 0px);
-                    roles-flick := Flickable {
-                        height: roles-box.shown-h;
-                        viewport-height: roles-col.preferred-height;
-                        Rectangle {
-                            width: roles-flick.width;
-                            height: roles-col.preferred-height;
-                            roles-col := VerticalLayout {
-                                spacing: 2px;
-                                for role in AgentsState.roles : RoleRow {
-                                    role: role;
-                                    chosen: role.id == AgentsState.new-role;
-                                    clicked => { AgentsState.pick-role(role.id); }
-                                }
-                            }
-                        }
-                    }
-                    if roles-col.preferred-height > roles-box.shown-h + 2px : Rectangle {
-                        x: roles-box.width - 4px;
-                        width: 3px;
-                        // How much of the list the window shows, and where in the list it is.
-                        height: max(20px, roles-box.shown-h * (roles-box.shown-h / roles-col.preferred-height));
-                        y: min(roles-box.shown-h - self.height,
-                               -roles-flick.viewport-y * (roles-box.shown-h / roles-col.preferred-height));
-                        border-radius: 2px;
-                        background: Theme.text-dim;
-                    }
-                    if roles-box.more-below : Text {
-                        y: roles-box.shown-h;
-                        height: 14px;
-                        text: "more roles below — scroll";
-                        color: Theme.text-dim;
-                        font-size: Theme.fs-micro;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-                if AgentsState.new-note != "" : note-box := Rectangle {
-                    property <bool> show-reach: false;
-                    height: note-col.preferred-height;
-                    note-col := VerticalLayout {
-                        spacing: 2px;
-                        Text {
-                            text: AgentsState.new-note;
-                            color: Theme.text-dim;
-                            font-size: Theme.fs-micro;
-                            wrap: word-wrap;
-                        }
-                        // The note says the reach in words; the patterns the words were made
-                        // from — the ones the doors enforce — are one click away (#212). Only
-                        // this line toggles, not the note around it.
-                        if AgentsState.new-note-reach != "" : Rectangle {
-                            height: reach-link.preferred-height;
-                            reach-link := Text {
-                                text: note-box.show-reach ? "hide the exact patterns" : "the exact patterns";
-                                color: Theme.accent;
-                                font-size: Theme.fs-micro;
-                            }
-                            TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => { note-box.show-reach = !note-box.show-reach; }
-                            }
-                        }
-                        if note-box.show-reach && AgentsState.new-note-reach != "" : Text {
-                            text: AgentsState.new-note-reach;
-                            color: Theme.text-secondary;
-                            font-family: Theme.font-mono;
-                            font-size: Theme.fs-micro;
-                            wrap: word-wrap;
-                        }
-                    }
-                }
-                Rectangle {
-                    height: 110px;
-                    border-radius: 8px;
-                    background: Theme.bg-input;
-                    border-width: 1px;
-                    border-color: prompt.has-focus ? Theme.accent-dim : Theme.border-default;
-                    prompt := TextInput {
-                        x: 10px;
-                        y: 8px;
-                        width: parent.width - 20px;
-                        height: parent.height - 16px;
-                        single-line: false;
-                        wrap: word-wrap;
-                        color: Theme.text-primary;
-                        font-size: Theme.fs-body;
-                    }
-                    if prompt.text == "" : Text {
-                        x: 10px;
-                        y: 8px;
-                        text: AgentsState.new-from-catalog
-                            ? "What is the task? — e.g. review the change in ~/src/app before I ship it"
-                            : "What should it do? — e.g. tidy the photos folder, duplicates into Trash";
-                        color: Theme.text-dim;
-                        font-size: Theme.fs-body;
-                    }
-                }
-                if AgentsState.new-error != "" : Text {
-                    text: AgentsState.new-error;
-                    color: Theme.color-danger;
-                    font-size: Theme.fs-caption;
-                    wrap: word-wrap;
-                }
-                HorizontalLayout {
-                    alignment: end;
-                    spacing: 8px;
-                    YButton {
-                        label: "Cancel";
-                        variant: 2;
-                        clicked => { AgentsState.new-open = false; }
-                    }
-                    YButton {
-                        label: "Start";
-                        icon-path: Icons.play;
-                        variant: 0;
-                        disabled: AgentsState.new-from-catalog ? AgentsState.new-role == "" : AgentsState.new-mind == "";
-                        clicked => {
-                            if (AgentsState.new-from-catalog) {
-                                AgentsState.start-role(AgentsState.new-role, prompt.text);
-                            } else {
-                                AgentsState.start(AgentsState.new-mind, prompt.text);
-                            }
-                        }
-                    }
-                }
+    // A desk's menu. Pause is not offered: nothing can pause a mind yet.
+    YContextMenu {
+        open: AgentsState.menu-key != "";
+        menu-x: AgentsState.menu-x;
+        menu-y: AgentsState.menu-y;
+        actions: [
+            { id: "activity", label: "View activity" },
+            { id: "changes", label: "View changes" },
+            { id: "stop", label: "Stop…", is-danger: true },
+        ];
+        action-clicked(id) => {
+            if (id == "stop") {
+                AgentsState.confirm-stop = AgentsState.menu-key;
+            } else {
+                AgentsState.select(AgentsState.menu-key);
             }
         }
+        close-menu => { AgentsState.menu-key = ""; }
     }
 
-    // Close, while the agent is still working: asked, never assumed.
-    if AgentsState.confirm-close != "" : Rectangle {
-        background: #00000080;
-        TouchArea { }
-        Rectangle {
-            width: min(440px, parent.width - 48px);
-            height: confirm.preferred-height;
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            background: Theme.bg-elevated;
-            border-radius: 12px;
-            border-width: 1px;
-            border-color: Theme.border-strong;
-            confirm := VerticalLayout {
-                padding: 20px;
-                spacing: 12px;
-                Text {
-                    text: "Close this agent?";
-                    color: Theme.text-primary;
-                    font-size: Theme.fs-headline;
-                    font-weight: 600;
+    // Start work: a mind and what it is to do — or, from the catalog, a role and its task.
+    if AgentsState.new-open : StartSheet {
+        minds: AgentsState.minds;
+        roles: AgentsState.roles;
+        mind: AgentsState.new-mind;
+        role: AgentsState.new-role;
+        from-catalog: AgentsState.new-from-catalog;
+        note: AgentsState.new-note;
+        note-reach: AgentsState.new-note-reach;
+        error: AgentsState.new-error;
+        mode-line: AgentsState.mode-line;
+        pick-mind(id) => { AgentsState.pick-mind(id); }
+        pick-role(id) => { AgentsState.pick-role(id); }
+        set-catalog(on) => {
+            AgentsState.new-from-catalog = on;
+            AgentsState.new-error = "";
+            if (on) {
+                if (AgentsState.new-role != "") {
+                    AgentsState.pick-role(AgentsState.new-role);
+                } else {
+                    AgentsState.new-note = "";
+                    AgentsState.new-note-reach = "";
                 }
-                Text {
-                    text: "It is still working. Closing stops it and takes it off the list, with its saved session.";
-                    color: Theme.text-secondary;
-                    font-size: Theme.fs-caption;
-                    wrap: word-wrap;
-                }
-                HorizontalLayout {
-                    alignment: end;
-                    spacing: 8px;
-                    YButton {
-                        label: "Keep it";
-                        variant: 1;
-                        clicked => { AgentsState.close-cancelled(); }
-                    }
-                    YButton {
-                        label: "Stop and close";
-                        variant: 3;
-                        clicked => { AgentsState.close-confirmed(AgentsState.confirm-close); }
-                    }
+            } else {
+                if (AgentsState.new-mind != "") {
+                    AgentsState.pick-mind(AgentsState.new-mind);
+                } else {
+                    AgentsState.new-note = "";
+                    AgentsState.new-note-reach = "";
                 }
             }
         }
+        submit(text) => {
+            if (AgentsState.new-from-catalog) {
+                AgentsState.start-role(AgentsState.new-role, text);
+            } else {
+                AgentsState.start(AgentsState.new-mind, text);
+            }
+        }
+        cancel => { AgentsState.new-open = false; }
+    }
+
+    // Stop, asked: never assumed. What it does is said, because it cannot be taken back.
+    if AgentsState.confirm-stop != "" : ConfirmDialog {
+        width: parent.width;
+        height: parent.height;
+        title: "Stop this work?";
+        body: "It ends the run: commands it is running are stopped, and any request waiting on you is withdrawn. What it already did is not undone. Its record stays here.";
+        confirm-label: "Stop";
+        cancel-label: "Keep working";
+        confirmed => {
+            AgentsState.stop(AgentsState.confirm-stop);
+            AgentsState.confirm-stop = "";
+        }
+        cancelled => { AgentsState.confirm-stop = ""; }
     }
 }
 

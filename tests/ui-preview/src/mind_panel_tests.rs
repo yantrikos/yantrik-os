@@ -109,8 +109,6 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         let a = ui.global::<AgentsState>();
         let l = log.clone();
         a.on_select(move |id| l.borrow_mut().push(format!("select:{id}")));
-        let l = log.clone();
-        a.on_select_tab(move |id| l.borrow_mut().push(format!("tab:{id}")));
         // The shell's own handler, minus the file: record it and show it.
         let weak = ui.as_weak();
         let l = log.clone();
@@ -166,8 +164,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         y += 4.;
     }
     assert_eq!(ui.get_current_screen(), 34, "a row went to the Agents screen; log {:?}", log.borrow());
-    assert!(log.borrow().contains(&"tab:active".to_string()), "on the Active tab: {:?}", log.borrow());
-    assert!(log.borrow().contains(&"select:deepseek:main".to_string()), "with the agent that needs the person selected: {:?}", log.borrow());
+    assert!(log.borrow().contains(&"select:deepseek:main".to_string()), "with the agent that needs the person opened: {:?}", log.borrow());
 
     // A recipe's row opens the Recipes screen with that recipe opened. Swept down past the agent
     // rows, which open Agents; the sweep goes back to the desktop after each of those.
@@ -262,6 +259,6 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     draw();
     save(&settle(), &path("unknown"), width, height)?;
     ui.hide()?;
-    println!("PASS: panel open on the desktop; an agent row opens it in Agents (Active tab, selected); a recipe row opens it in Recipes; the strip is on Agents and Files and opens the panel; the chevron folds it; light, agent-mode and unknown states rendered");
+    println!("PASS: panel open on the desktop; an agent row opens it in Agents (its run opened); a recipe row opens it in Recipes; the strip is on Agents and Files and opens the panel; the chevron folds it; light, agent-mode and unknown states rendered");
     Ok(())
 }
