@@ -20,3 +20,10 @@ Earlier fixes and tests are kept.
 | L7 panel stacking | Left | Cosmetic, in `control_overlays.rs`. A separate concern. | |
 | L8 non-UTF-8 SSIDs | Left | Fails safe. The fix means carrying raw bytes through the model, which is a separate change. | |
 | L9 `wifi_connect` tool takes a password | Left | Pre-existing, outside the diff. The review asks to track it separately. | |
+
+## What was run, and what was not
+
+* `cargo test -p yantrik-os --lib network`: 28 passed, 0 failed (21 before, 7 new here, 1 reworked).
+* `cargo test -p yantrik-ui --bin yantrik-ui network`: **not run.** `yantrik-ui-slint` was killed by the sandbox (SIGKILL, out of memory) while compiling. No other `yantrik-ui` code compiled either, so the edits in `control_network.rs` and `wire/network.rs`, and the new tests in them, are **unverified by the compiler**. I read the diff for types, moves and the source-scan tests' string matches. Please run the command above on a machine with about 14 GB of RAM before merging.
+* `cargo test -p yantrik-os` (whole crate) was not run in full; only the `network` filter was.
+* No preview or screenshot checks: no `.slint` file changed.
