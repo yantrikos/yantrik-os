@@ -306,7 +306,7 @@
     <!-- @help group="Shell" text="Mute or unmute the microphone" -->
     <keybind key="XF86AudioMicMute">
       <action name="Execute">
-        <command>sh -c '/opt/yantrik/bin/yos act shell set_mic_mute toggle=true || wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle'</command>
+        <command>sh -c 'if wpctl get-volume @DEFAULT_AUDIO_SOURCE@ | grep -q MUTED; then /opt/yantrik/bin/yos act shell set_mic_mute muted=false; else /opt/yantrik/bin/yos act shell mute_mic; fi || wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle'</command>
       </action>
     </keybind>
     <!-- @help group="Shell" text="Screen brighter" -->
@@ -321,6 +321,7 @@
         <command>sh -c '/opt/yantrik/bin/yos act shell set_brightness step=-5 || brightnessctl set 5%-'</command>
       </action>
     </keybind>
+    <!-- @help group="Shell" text="Show whether Caps Lock is on" -->
     <keybind key="Caps_Lock" onRelease="yes">
       <action name="Execute">
         <command>/opt/yantrik/bin/yos act shell show_caps_lock</command>
@@ -498,6 +499,17 @@
   </desktops>
 
   <windowRules>
+    <!--
+      The on-screen display (volume, brightness, mic, Caps Lock) is a window of its own, because
+      drawn in the shell's window it sat behind every app (review of #579). Always on top, no
+      title bar, not in the taskbar or Alt+Tab, and centred (labwc has no "a quarter up from
+      the bottom"; the pill's size is the Theme's). It cannot be kept from taking focus when it
+      maps, so the shell hands the keyboard straight back (wire/osd.rs).
+    -->
+    <windowRule title="Yantrik OSD" serverDecoration="no" skipTaskbar="yes" skipWindowSwitcher="yes">
+      <action name="ToggleAlwaysOnTop" />
+      <action name="MoveTo" x="center" y="center" />
+    </windowRule>
     <!-- The shell is the desktop itself: present on every workspace, never switched away from. -->
     <windowRule title="Yantrik OS">
       <action name="ToggleOmnipresent" />

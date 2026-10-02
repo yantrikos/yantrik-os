@@ -230,7 +230,6 @@ fn the_media_keys_and_caps_lock_go_through_the_shell() {
         ("XF86AudioRaiseVolume", "set_volume step=5"),
         ("XF86AudioLowerVolume", "set_volume step=-5"),
         ("XF86AudioMute", "set_mute toggle=true"),
-        ("XF86AudioMicMute", "set_mic_mute toggle=true"),
         ("XF86MonBrightnessUp", "set_brightness step=5"),
         ("XF86MonBrightnessDown", "set_brightness step=-5"),
     ] {
@@ -238,6 +237,11 @@ fn the_media_keys_and_caps_lock_go_through_the_shell() {
         assert!(command.contains(&format!("yos act shell {action}")), "{key} runs the shell's action: {command}");
         assert!(command.contains("||"), "{key} still works with no shell: {command}");
     }
+    // The mic key mutes through the standard `mute_mic` and unmutes through the sensitive
+    // `set_mic_mute muted=false`: the key must not reach `unmute` through a standard grade.
+    let mic = command_of("XF86AudioMicMute");
+    assert!(mic.contains("yos act shell mute_mic") && mic.contains("yos act shell set_mic_mute muted=false") && mic.contains("||"), "{mic}");
+    assert!(!mic.contains("toggle=true"), "a toggle cannot be graded as the unmute it may be: {mic}");
     assert!(rc.contains("<keybind key=\"Caps_Lock\" onRelease=\"yes\">"), "Caps Lock is bound on release");
     assert!(command_of("Caps_Lock").contains("yos act shell show_caps_lock"));
 }

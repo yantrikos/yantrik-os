@@ -69,6 +69,21 @@ fn set_volume_args(pct: u8) -> Vec<String> {
     ]
 }
 
+/// The argument vector for moving the volume by `step` percent in ONE wpctl call. wpctl applies
+/// the step to the level the server holds at that instant, so two key presses that overlap each
+/// move it twice; reading the level first and writing a target lost one of them (review of the
+/// on-screen display). `-l 1.0` is the ceiling on the way up, and wpctl stops at 0 on the way
+/// down by itself.
+fn step_volume_args(step: i8) -> Vec<String> {
+    let amount = format!("{}%{}", step.unsigned_abs(), if step < 0 { "-" } else { "+" });
+    let mut args: Vec<String> = vec!["set-volume".into()];
+    if step > 0 {
+        args.extend(["-l".to_string(), "1.0".to_string()]);
+    }
+    args.extend([DEFAULT_SINK.to_string(), amount]);
+    args
+}
+
 fn run_wpctl(args: &[String]) -> Result<(), String> {
     let out = Command::new("wpctl")
         .args(args)
@@ -86,6 +101,12 @@ fn run_wpctl(args: &[String]) -> Result<(), String> {
 /// Set the default output's volume, clamped to 0..=100.
 pub fn set_volume(pct: u8) -> Result<(), String> {
     run_wpctl(&set_volume_args(pct))
+}
+
+/// Move the volume of the default output by `step` percent, atomically (see
+/// [`step_volume_args`]).
+pub fn step_volume(step: i8) -> Result<(), String> {
+    run_wpctl(&step_volume_args(step))
 }
 
 /// Mute or unmute the default output.
@@ -265,5 +286,14 @@ mod tests {
         assert!(!is_output_event("Event 'new' on sink-input #120"));
         assert!(!is_output_event("Event 'remove' on sink-input #120"));
         assert!(!is_output_event("Event 'change' on card #2"));
+    }
+
+    #[test]
+    fn a_step_is_one_relative_wpctl_call_never_a_read_then_a_write() {
+        assert_eq!(
+            step_volume_args(5),
+            ["set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", "5%+"]
+        );
+        assert_eq!(step_volume_args(-5), ["set-volume", "@DEFAULT_AUDIO_SINK@", "5%-"]);
     }
 }

@@ -1,7 +1,8 @@
-//! The on-screen display, drawn by the whole shell (app.slint's `App`) for the volume and the
-//! brightness keys (story 2.1), then left alone to hide.
+//! The on-screen display, drawn in its own window (osd_window.slint's `OsdWindow`, which labwc
+//! keeps above app windows) for the volume and the brightness keys (story 2.1), then left alone
+//! to hide.
 //!
-//! Checks what a person would see: a 240x64 charcoal pill centred 80px above the taskbar, with
+//! Checks what a person would see: a 240x64 charcoal pill (the whole window), with
 //! the bar filled to the level it was given; a second key press inside the hold keeps it up (one
 //! timer, restarted); and once it has hidden the window asks for no redraws at all, which is the
 //! proof that nothing is left running behind it. Renders are `osd-volume.png`, `osd-brightness.png`,
@@ -19,9 +20,8 @@ fn save(pixels: &slint::SharedPixelBuffer<slint::Rgb8Pixel>, path: &str, width: 
 }
 
 pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let (width, height) = (1280u32, 800u32);
-    let ui = App::new()?;
-    ui.set_current_screen(1);
+    let (width, height) = (240u32, 64u32);
+    let ui = OsdWindow::new()?;
     ui.show()?;
     w.set_size(slint::PhysicalSize::new(width, height));
     let draw = || {
@@ -44,8 +44,8 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     let named = |name: &str| dir.with_file_name(name).to_string_lossy().into_owned();
     let at = |p: &slint::SharedPixelBuffer<slint::Rgb8Pixel>, x: usize, y: usize| p.as_slice()[y * width as usize + x];
 
-    // The pill: 240x64, centred, its bottom edge 80px above the taskbar.
-    let (pill_x, pill_y) = (520usize, 616usize);
+    // The pill is the whole window.
+    let (pill_x, pill_y) = (0usize, 0usize);
     let charcoal = slint::Rgb8Pixel { r: 0x15, g: 0x1a, b: 0x1e };
 
     let before = settle();
@@ -53,10 +53,8 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     ui.invoke_show_osd("volume".into(), true, 45, "45%".into(), false);
     let volume = settle();
     save(&volume, &named("osd-volume.png"), width, height)?;
-    assert_eq!(at(&volume, pill_x + 120, pill_y + 4), charcoal, "an opaque charcoal pill, centred 80px above the taskbar");
+    assert_eq!(at(&volume, pill_x + 120, pill_y + 4), charcoal, "an opaque charcoal pill");
     assert_ne!(at(&before, pill_x + 120, pill_y + 4), charcoal, "and nothing there before it");
-    assert_eq!(at(&volume, pill_x - 4, pill_y + 32), at(&before, pill_x - 4, pill_y + 32), "it is no wider than 240px");
-    assert_eq!(at(&volume, pill_x + 244, pill_y + 32), at(&before, pill_x + 244, pill_y + 32), "it is no wider than 240px");
 
     // The bar's fill ends where the level says: bright to the left of the 45% mark, track after.
     // The track runs between the icon and the number; find its fill's right edge on the row.

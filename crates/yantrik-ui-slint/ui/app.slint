@@ -35,7 +35,7 @@ import { PackageManager, PackageData, PendingAction } from "package_manager.slin
 import { DeviceDashboardScreen, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData } from "device_dashboard.slint";
 import { PermissionDashboardScreen, UserData, GroupData, PermFileData } from "permission_dashboard.slint";
 import { ToastBanner, ToastData, ToastActionData } from "components/toast_banner.slint";
-import { YOsd } from "components/y_osd.slint";
+export { OsdWindow } from "osd_window.slint";
 import { ProblemReportScreen, ProblemRow } from "problem_report.slint";
 // Agents (screen 34), and the window one agent pops out into. The window and the global it reads
 // are exported so the shell can create a window per agent and fill each one.
@@ -3135,14 +3135,6 @@ export component App inherits Window {
             toast-action(id, action) => { root.toast-action(id, action); }
         }
 
-        // The volume / brightness / mic / Caps Lock display. Drawn over every screen, above the
-        // toasts, and inert: it has no focus and no pointer handling (see y_osd.slint). Shown
-        // by `show-osd` below, which Rust calls with what the machine read back.
-        osd := YOsd {
-            x: (parent.width - self.width) / 2;
-            y: parent.height - Theme.taskbar-height - Theme.osd-gap - self.height;
-        }
-
         // Approval cards, over whatever screen is up.
         //
         // The Lens shows these in its conversation, which is the right home for them — but the
@@ -3382,21 +3374,6 @@ export component App inherits Window {
     /// five places, one of which is Rust setting the property directly.
     changed lens-open => {
         if (!root.lens-open) { global-keys.focus(); }
-    }
-
-    /// Show the on-screen display. `kind` names the glyph (volume, volume-off, brightness, mic,
-    /// mic-off, caps-lock; Rust cannot read the Icons global, so the paths stay here), `has-bar`
-    /// draws the level bar at `level` (0..100), `words` is the number or the sentence, `dimmed`
-    /// draws a muted level quiet. Called from Rust, after the change, with what the machine reads.
-    public function show-osd(kind: string, has-bar: bool, level: int, words: string, dimmed: bool) {
-        osd.show(
-            kind == "volume" ? Icons.volume
-            : kind == "volume-off" ? Icons.volume-off
-            : kind == "brightness" ? Icons.sun
-            : kind == "mic" ? Icons.mic
-            : kind == "mic-off" ? Icons.mic-off
-            : Icons.caps-lock,
-            has-bar, level, words, dimmed);
     }
 
     /// Give the shell's shortcut scope the keyboard, so there is a focus chain to deliver to.

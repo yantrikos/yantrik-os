@@ -82,6 +82,27 @@ pub fn set(pct: u8) -> Result<(), String> {
     set_via_logind(&device, pct)
 }
 
+/// The `brightnessctl` arguments that move the backlight by `step` percent in one call, never
+/// below the floor `set` keeps (`-n` is brightnessctl's minimum), so a held key cannot black the
+/// screen out. Atomic for the same reason as `audio::step_volume`.
+fn step_args(device: &str, step: i8) -> Vec<String> {
+    let amount = format!("{}%{}", step.unsigned_abs(), if step < 0 { "-" } else { "+" });
+    ["--device", device, "-n", "1", "set"].iter().map(|s| s.to_string()).chain([amount]).collect()
+}
+
+/// Move the backlight by `step` percent. `Ok(true)` when brightnessctl did it in one call;
+/// `Ok(false)` when it is not installed or refused, and the caller falls back to reading and
+/// setting (logind has no relative call).
+pub fn step(step: i8) -> Result<bool, String> {
+    let device = device_in(Path::new(SYSFS_ROOT)).ok_or("this machine has no backlight")?;
+    let via_ctl = Command::new("brightnessctl")
+        .args(step_args(&device.name, step))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    Ok(matches!(via_ctl, Ok(s) if s.success()))
+}
+
 fn set_via_logind(device: &Device, pct: u8) -> Result<(), String> {
     let connection = zbus::blocking::Connection::system().map_err(|e| format!("no system bus: {e}"))?;
     connection
@@ -99,6 +120,12 @@ fn set_via_logind(device: &Device, pct: u8) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_step_is_one_relative_brightnessctl_call_with_a_floor() {
+        assert_eq!(step_args("intel_backlight", 5), ["--device", "intel_backlight", "-n", "1", "set", "5%+"]);
+        assert_eq!(step_args("intel_backlight", -5).last().map(String::as_str), Some("5%-"));
+    }
 
     /// A fake `/sys/class/backlight` in a directory of its own.
     struct FakeSysfs(PathBuf);

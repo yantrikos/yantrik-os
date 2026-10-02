@@ -23,6 +23,9 @@ pub trait Mixer {
     fn read(&self) -> Option<AudioState>;
     fn set_volume(&self, pct: u8) -> Result<(), String>;
     fn set_mute(&self, muted: bool) -> Result<(), String>;
+    /// Move the volume by `step` percent in one relative call to the audio server, so two presses
+    /// that overlap both count.
+    fn step_volume(&self, step: i8) -> Result<(), String>;
 }
 
 /// The microphone: only a mute, because the shell has no input level to show.
@@ -36,6 +39,9 @@ pub trait Backlight {
     fn available(&self) -> bool;
     fn read(&self) -> Option<u8>;
     fn set(&self, pct: u8) -> Result<(), String>;
+    /// Move the level by `step` percent in one relative call where the machine has one. `false`
+    /// means it has none, and the caller reads and sets.
+    fn step(&self, step: i8) -> Result<bool, String>;
 }
 
 /// The real machine: PipeWire through `wpctl`, and sysfs / `brightnessctl` / logind.
@@ -50,6 +56,9 @@ impl Mixer for Machine {
     }
     fn set_mute(&self, muted: bool) -> Result<(), String> {
         yantrik_os::audio::set_mute(muted)
+    }
+    fn step_volume(&self, step: i8) -> Result<(), String> {
+        yantrik_os::audio::step_volume(step)
     }
 }
 
@@ -71,6 +80,9 @@ impl Backlight for Machine {
     }
     fn set(&self, pct: u8) -> Result<(), String> {
         yantrik_os::backlight::set(pct)
+    }
+    fn step(&self, step: i8) -> Result<bool, String> {
+        yantrik_os::backlight::step(step)
     }
 }
 
@@ -160,14 +172,16 @@ pub fn audio_answer(state: AudioState) -> Value {
 /// pressing "louder" and hearing nothing is not an answer. A step down, or a level, leaves the
 /// mute as it was.
 pub fn set_volume(args: &Value, mixer: &impl Mixer) -> Result<AudioState, String> {
-    let change = parse_change(args)?;
-    let before = match change {
-        Change::Step(_) => Some(mixer.read().ok_or("the audio server did not answer, so there is no volume to step from")?),
-        Change::Level(_) => None,
-    };
-    mixer.set_volume(target(change, before.map_or(0, |s| s.volume_pct)))?;
-    if matches!(change, Change::Step(s) if s > 0) && before.is_some_and(|s| s.muted) {
-        mixer.set_mute(false)?;
+    match parse_change(args)? {
+        Change::Level(level) => mixer.set_volume(level)?,
+        // One relative call, not a read and a write: see `Mixer::step_volume`. Unmuting on the
+        // way up is idempotent, so it needs no read of the mute first either.
+        Change::Step(step) => {
+            mixer.step_volume(step)?;
+            if step > 0 {
+                mixer.set_mute(false)?;
+            }
+        }
     }
     mixer.read().ok_or_else(|| "the volume was set, but the audio server did not answer when asked for it back".into())
 }
@@ -196,12 +210,17 @@ pub fn set_brightness(args: &Value, panel: &impl Backlight) -> Result<u8, String
     if !panel.available() {
         return Err("this machine has no backlight, so there is no brightness to set (`describe shell` shows brightness.available: false)".into());
     }
-    let change = parse_change(args)?;
-    let current = match change {
-        Change::Step(_) => panel.read().ok_or("the backlight could not be read, so there is no level to step from")?,
-        Change::Level(_) => 0,
-    };
-    panel.set(target(change, current))?;
+    match parse_change(args)? {
+        Change::Level(level) => panel.set(level)?,
+        Change::Step(step) => {
+            // One relative call where the machine has one. Without (logind only), a read and a
+            // write is all there is, and a lost step on a held key is the cost.
+            if !panel.step(step)? {
+                let current = panel.read().ok_or("the backlight could not be read, so there is no level to step from")?;
+                panel.set(target(Change::Step(step), current))?;
+            }
+        }
+    }
     panel.read().ok_or_else(|| "the brightness was set, but the backlight could not be read back".into())
 }
 
@@ -238,6 +257,16 @@ mod tests {
             self.state.set(Some(AudioState { volume_pct: self.cap.map_or(pct, |c| pct.min(c)), muted }));
             Ok(())
         }
+        fn step_volume(&self, step: i8) -> Result<(), String> {
+            if self.fail {
+                return Err("wpctl could not be run".into());
+            }
+            let s = self.state.get().ok_or("the audio server did not answer")?;
+            self.calls.borrow_mut().push(format!("step {step}"));
+            let volume_pct = (i16::from(s.volume_pct) + i16::from(step)).clamp(0, 100) as u8;
+            self.state.set(Some(AudioState { volume_pct, muted: s.muted }));
+            Ok(())
+        }
         fn set_mute(&self, muted: bool) -> Result<(), String> {
             self.calls.borrow_mut().push(format!("mute {muted}"));
             let volume_pct = self.state.get().map_or(0, |s| s.volume_pct);
@@ -261,13 +290,15 @@ mod tests {
         level: Cell<Option<u8>>,
         has: bool,
         touched: Cell<bool>,
+        relative: bool,
+        steps: RefCell<Vec<i8>>,
     }
     impl FakePanel {
         fn at(level: u8) -> Self {
-            Self { level: Cell::new(Some(level)), has: true, touched: Cell::new(false) }
+            Self { level: Cell::new(Some(level)), has: true, touched: Cell::new(false), relative: true, steps: RefCell::default() }
         }
         fn none() -> Self {
-            Self { level: Cell::new(None), has: false, touched: Cell::new(false) }
+            Self { level: Cell::new(None), has: false, touched: Cell::new(false), relative: true, steps: RefCell::default() }
         }
     }
     impl Backlight for FakePanel {
@@ -281,6 +312,16 @@ mod tests {
             self.touched.set(true);
             self.level.set(Some(pct.max(1)));
             Ok(())
+        }
+        fn step(&self, step: i8) -> Result<bool, String> {
+            if !self.relative {
+                return Ok(false);
+            }
+            self.touched.set(true);
+            self.steps.borrow_mut().push(step);
+            let now = i16::from(self.level.get().unwrap_or(0)) + i16::from(step);
+            self.level.set(Some(now.clamp(1, 100) as u8));
+            Ok(true)
         }
     }
 
@@ -326,7 +367,28 @@ mod tests {
         let mixer = FakeMixer::at(42, false);
         assert_eq!(set_volume(&json!({ "step": 5 }), &mixer).unwrap().volume_pct, 47);
         assert_eq!(set_volume(&json!({ "step": -5 }), &mixer).unwrap().volume_pct, 42);
-        assert_eq!(*mixer.calls.borrow(), ["volume 47", "volume 42"]);
+        // A step is a relative call, never a write of a target computed from an earlier read:
+        // two presses that overlapped used to read the same level and lose one (review #579).
+        assert_eq!(*mixer.calls.borrow(), ["step 5", "mute false", "step -5"]);
+    }
+
+    #[test]
+    fn a_step_never_reads_the_level_it_would_have_stepped_from() {
+        // The server holds a level the caller has no reading of: an atomic step still lands.
+        let mixer = FakeMixer::at(42, false);
+        mixer.state.set(Some(AudioState { volume_pct: 42, muted: false }));
+        set_volume(&json!({ "step": -5 }), &mixer).unwrap();
+        assert!(mixer.calls.borrow().iter().all(|c| !c.starts_with("volume ")), "no absolute write for a step");
+    }
+
+    #[test]
+    fn a_brightness_step_is_relative_where_the_machine_can_and_read_then_set_where_it_cannot() {
+        let panel = FakePanel::at(50);
+        assert_eq!(set_brightness(&json!({ "step": 5 }), &panel), Ok(55));
+        assert_eq!(*panel.steps.borrow(), [5]);
+        let panel = FakePanel { relative: false, ..FakePanel::at(50) };
+        assert_eq!(set_brightness(&json!({ "step": -5 }), &panel), Ok(45));
+        assert!(panel.steps.borrow().is_empty());
     }
 
     #[test]

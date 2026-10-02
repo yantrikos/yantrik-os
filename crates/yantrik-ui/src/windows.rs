@@ -13,6 +13,11 @@ use std::time::{Duration, Instant};
 /// and has to recognise it to avoid recording the shell as the window to hand the screen back to.
 pub(crate) const SHELL_WINDOW_TITLE: &str = "Yantrik OS";
 
+/// The on-screen display's own window (wire/osd.rs). It is a toplevel to the compositor, so it
+/// shows in `wlrctl toplevel list` while it is up; the taskbar, Alt+Tab and "which window is in
+/// front" must never offer or name it.
+pub(crate) const OSD_WINDOW_TITLE: &str = "Yantrik OSD";
+
 /// A running window on the desktop.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowEntry {
@@ -689,6 +694,7 @@ fn wlrctl_windows() -> Vec<WindowEntry> {
         // desktop's own "open windows" list both offered to switch you to the desktop you are
         // already looking at.
         .filter(|line| split_toplevel_line(line).0 != SHELL_WINDOW_TITLE)
+        .filter(|line| split_toplevel_line(line).0 != OSD_WINDOW_TITLE)
         .map(toplevel_entry)
         .collect()
 }
@@ -710,6 +716,17 @@ pub(crate) fn front_now() -> Option<String> {
     match activation_now() {
         Activation::Window(title) => Some(title),
         _ => None,
+    }
+}
+
+/// The window that has the keyboard right now, by the title `present` takes: an app window, or
+/// the shell. `None` when the compositor cannot say. The on-screen display asks before it appears
+/// and gives focus back afterwards. Spawns a process: never on the UI thread.
+pub(crate) fn focus_to_restore() -> Option<String> {
+    match activation_now() {
+        Activation::Window(title) => Some(title),
+        Activation::Shell => Some(SHELL_WINDOW_TITLE.to_string()),
+        Activation::Unknown => None,
     }
 }
 
@@ -746,7 +763,7 @@ fn activation(text: &str) -> Activation {
         // The person is looking at the desktop, or one of its screens. No app window is in front.
         return Activation::Shell;
     }
-    if title.is_empty() {
+    if title.is_empty() || title == OSD_WINDOW_TITLE {
         return Activation::Unknown;
     }
     Activation::Window(title)

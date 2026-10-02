@@ -1,0 +1,42 @@
+// The on-screen display's own window.
+//
+// The pill used to be drawn inside the shell's window, which sits behind every app window, so
+// nobody saw it while an app was open (review of #579). It is a window of its own instead, kept
+// above the others by the labwc windowRule for this title (config/labwc/rc.xml) — the same way
+// the shell is made omnipresent — and the shell shows and hides it (wire/osd.rs).
+//
+// It is exactly the pill: no frame, a transparent background for the rounded corners, and
+// nothing in it takes a pointer or a key, so one aimed at it is not caught.
+import { Theme } from "theme.slint";
+import { YOsd } from "components/y_osd.slint";
+import { Icons } from "components/icon.slint";
+
+export component OsdWindow inherits Window {
+    // Must equal windows::OSD_WINDOW_TITLE and the windowRule's title in rc.xml.
+    title: "Yantrik OSD";
+    no-frame: true;
+    background: transparent;
+    default-font-family: Theme.font-ui;
+    width: Theme.osd-w;
+    height: Theme.osd-h;
+
+    osd := YOsd {
+        x: 0px;
+        y: 0px;
+    }
+
+    /// `kind` picks the icon (volume, volume-off, brightness, mic, mic-off, caps-lock; Rust cannot
+    /// read the Icons global, so the paths stay here), `has-bar` draws the level bar at `level`
+    /// (0..100), `words` is the number or the sentence, `dimmed` draws a muted level quiet.
+    /// Called from Rust, after the change, with what the machine reads.
+    public function show-osd(kind: string, has-bar: bool, level: int, words: string, dimmed: bool) {
+        osd.show(
+            kind == "volume" ? Icons.volume
+            : kind == "volume-off" ? Icons.volume-off
+            : kind == "brightness" ? Icons.sun
+            : kind == "mic" ? Icons.mic
+            : kind == "mic-off" ? Icons.mic-off
+            : Icons.caps-lock,
+            has-bar, level, words, dimmed);
+    }
+}

@@ -36,9 +36,44 @@ pub fn read() -> Option<bool> {
     read_in(Path::new(SYSFS_ROOT))
 }
 
+/// How long after the key's release the LED gets to catch up before it is read. The compositor
+/// toggles the lock on the press and tells the keyboard, and the kernel then updates the sysfs
+/// brightness: the `yos` round trip from a release binding can beat that, which made the pill
+/// say "off" for a lock that had just gone on (review of #579). One wait, not a poll.
+pub const SETTLE: std::time::Duration = std::time::Duration::from_millis(60);
+
+/// Read the LED after giving it [`SETTLE`] to follow the key. Blocks for that long, so only a
+/// worker calls it. `settle` and `read` are parameters so the order is testable: the read must
+/// come after the wait, never before.
+pub fn read_after(settle: impl FnOnce(), read: impl FnOnce() -> Option<bool>) -> Option<bool> {
+    settle();
+    read()
+}
+
+/// [`read`], once the LED has had [`SETTLE`] to follow the key.
+pub fn read_settled() -> Option<bool> {
+    read_after(|| std::thread::sleep(SETTLE), read)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_led_is_read_only_after_the_settle_never_before() {
+        let log = std::cell::RefCell::new(Vec::new());
+        let got = read_after(|| log.borrow_mut().push("settle"), || {
+            log.borrow_mut().push("read");
+            Some(true)
+        });
+        assert_eq!(got, Some(true));
+        assert_eq!(*log.borrow(), ["settle", "read"], "a read before the settle sees the old state");
+    }
+
+    #[test]
+    fn the_settle_is_short_enough_for_a_key_press_and_long_enough_for_a_kernel_led_update() {
+        assert!(SETTLE >= std::time::Duration::from_millis(30) && SETTLE <= std::time::Duration::from_millis(150));
+    }
 
     /// A fake `/sys/class/leds` in a directory of its own.
     struct FakeLeds(std::path::PathBuf);

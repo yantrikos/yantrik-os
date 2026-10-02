@@ -2020,7 +2020,7 @@ pub fn publish(
     let surface = crate::control_approvals::actions(surface, ui);
     // The bar's panels: open_quick_settings, open_power_menu, open_clipboard, open_cheat_sheet and their closes.
     let surface = crate::control_overlays::actions(surface, ui);
-    // The media keys' actions: set_volume, set_mute, set_brightness, set_mic_mute, show_caps_lock.
+    // The media keys' actions: set_volume, set_mute, set_brightness, set_mic_mute, mute_mic, show_caps_lock.
     let surface = crate::control_levels_actions::actions(surface, ui);
     // An agent's commands, each in a terminal of its own in its pane — agent_run, agent_job,
     // agent_input, agent_kill. The agent comes from its token, never an argument. See
