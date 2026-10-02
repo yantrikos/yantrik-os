@@ -1240,13 +1240,10 @@ export component IntentLens inherits Rectangle {
         // Same panel, two jobs, two treatments.
         //
         // Chat v2: the conversation is one opaque charcoal panel with a 1px border, which is what
-        // a surface holding paragraphs and a decision should be. The gradient is the search
-        // rows' glass and is kept for them.
-        background: root.chat-mode ? Theme.chat-panel : @linear-gradient(180deg,
-            Theme.bg-deep.transparentize(9%) 0%,
-            Theme.bg-deep.transparentize(12%) 50%,
-            Theme.bg-deep.transparentize(9%) 100%
-        );
+        // a surface holding paragraphs and a decision should be. The search rows keep their
+        // 10% glass, as a solid fill: the panel is rounded now, and a rounded element with a
+        // gradient fill draws square corners under the software renderer (#172).
+        background: root.chat-mode ? Theme.chat-panel : Theme.bg-deep.transparentize(10%);
         border-width: root.chat-mode ? 1px : 0px;
         border-color: Theme.chat-border;
 
