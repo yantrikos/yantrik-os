@@ -1,11 +1,12 @@
-//! The bar's three panels, operable as data: Quick Settings, the power menu, the clipboard.
+//! The bar's panels, operable as data: Quick Settings, the power menu, the clipboard, and the
+//! keyboard cheat sheet (Super+/).
 //!
 //! A person opens them by pressing the bar's network, settings and power buttons or Super+V, and
 //! they open over whatever screen is up. A mind can ask for the same panels, so what a pointer
 //! can do it can do too, and `describe shell` says which one is on the screen so nothing has to
-//! be photographed to find out (`quick_settings`, `power_menu`, `clipboard_panel`).
+//! be photographed to find out (`quick_settings`, `power_menu`, `clipboard_panel`, `cheat_sheet`).
 //!
-//! All six actions are `safe`. Opening the power menu does not power anything off: it shows the
+//! All eight actions are `safe`. Opening the power menu does not power anything off: it shows the
 //! menu, and choosing an entry in it is a separate act that is the person's. Nothing here is
 //! chosen, sent, pasted or written; a panel is shown or put away.
 //!
@@ -34,16 +35,18 @@ enum Panel {
     QuickSettings,
     PowerMenu,
     Clipboard,
+    CheatSheet,
 }
 
 impl Panel {
-    const ALL: [Panel; 3] = [Panel::QuickSettings, Panel::PowerMenu, Panel::Clipboard];
+    const ALL: [Panel; 4] = [Panel::QuickSettings, Panel::PowerMenu, Panel::Clipboard, Panel::CheatSheet];
 
     fn name(self) -> &'static str {
         match self {
             Panel::QuickSettings => "quick settings",
             Panel::PowerMenu => "power menu",
             Panel::Clipboard => "clipboard panel",
+            Panel::CheatSheet => "cheat sheet",
         }
     }
 
@@ -52,6 +55,7 @@ impl Panel {
             Panel::QuickSettings => ui.get_quick_settings_open(),
             Panel::PowerMenu => ui.get_power_menu_open(),
             Panel::Clipboard => ui.get_clip_panel_open(),
+            Panel::CheatSheet => ui.get_cheat_sheet_open(),
         }
     }
 
@@ -60,6 +64,7 @@ impl Panel {
             Panel::QuickSettings => ui.set_quick_settings_open(open),
             Panel::PowerMenu => ui.set_power_menu_open(open),
             Panel::Clipboard => ui.set_clip_panel_open(open),
+            Panel::CheatSheet => ui.set_cheat_sheet_open(open),
         }
     }
 }
@@ -85,6 +90,7 @@ fn open_panel(ui: &App, panel: Panel) -> Result<serde_json::Value, String> {
         Panel::QuickSettings => crate::card_watch::hold_windows("open_quick_settings")?,
         Panel::PowerMenu => crate::card_watch::hold_windows("open_power_menu")?,
         Panel::Clipboard => crate::card_watch::hold_windows("open_clipboard")?,
+        Panel::CheatSheet => crate::card_watch::hold_windows("open_cheat_sheet")?,
     }
     let screen = ui.get_current_screen();
     if !bar_is_drawn(screen) {
@@ -136,7 +142,7 @@ fn close_panel(ui: &App, panel: Panel) -> serde_json::Value {
     })
 }
 
-/// Add the six panel actions to the shell's surface.
+/// Add the eight panel actions to the shell's surface.
 pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
     // Each action carries its own literal name, so the control tests that read the source for
     // `Action::new("name"` find them; the handlers are the same two functions.
@@ -157,6 +163,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
     let (open_qs, close_qs) = handlers(Panel::QuickSettings);
     let (open_pm, close_pm) = handlers(Panel::PowerMenu);
     let (open_cb, close_cb) = handlers(Panel::Clipboard);
+    let (open_cs, close_cs) = handlers(Panel::CheatSheet);
 
     surface
         .action(
@@ -216,6 +223,26 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             .risk("safe"),
             close_cb,
         )
+        .action(
+            Action::new(
+                "open_cheat_sheet",
+                "Show the keyboard cheat sheet: every key the desktop binds, grouped as Windows, \
+                 Snap, Workspaces, Shell, Minds and Capture, over whatever screen is up, and bring \
+                 the shell in front of any app window. It is read from the compositor's own key \
+                 file, so it lists exactly the keys that work. `describe shell` says whether it is \
+                 open, under `cheat_sheet`.",
+            )
+            .risk("safe"),
+            open_cs,
+        )
+        .action(
+            Action::new(
+                "close_cheat_sheet",
+                "Put away the keyboard cheat sheet. It changes nothing else.",
+            )
+            .risk("safe"),
+            close_cs,
+        )
 }
 
 #[cfg(test)]
@@ -273,9 +300,9 @@ mod tests {
         assert_eq!(on_lock["open"], false, "a flag set under the lock screen is not a panel anyone sees");
     }
 
-    /// All six are `safe`: they show or put away a panel and nothing else.
+    /// All eight are `safe`: they show or put away a panel and nothing else.
     #[test]
-    fn all_six_are_published_and_safe() {
+    fn all_eight_are_published_and_safe() {
         for name in [
             "open_quick_settings",
             "close_quick_settings",
@@ -283,6 +310,8 @@ mod tests {
             "close_power_menu",
             "open_clipboard",
             "close_clipboard",
+            "open_cheat_sheet",
+            "close_cheat_sheet",
         ] {
             assert!(declaration(name).contains(".risk(\"safe\")"), "`{name}` must be graded safe");
         }
@@ -315,6 +344,7 @@ mod tests {
             ("open_quick_settings", "open_qs"),
             ("open_power_menu", "open_pm"),
             ("open_clipboard", "open_cb"),
+            ("open_cheat_sheet", "open_cs"),
         ] {
             assert!(declaration(name).contains(opener), "`{name}` must use its own opener `{opener}`");
         }
@@ -322,7 +352,7 @@ mod tests {
 
     /// Opening one puts the others away, so the answer and `describe` are unambiguous.
     #[test]
-    fn opening_one_panel_puts_the_other_two_away() {
+    fn opening_one_panel_puts_the_others_away() {
         let body = function("open_panel");
         assert!(body.contains("other.set(ui, false)"), "the other panels are closed. As written:\n{body}");
     }
@@ -337,10 +367,10 @@ mod tests {
 
     /// The shell publishes each panel's state, so a mind reads it rather than photographing.
     #[test]
-    fn describe_shell_publishes_the_three_panels() {
+    fn describe_shell_publishes_the_four_panels() {
         let control = include_str!("control.rs");
         let control: String = control.split("#[cfg(test)]").next().unwrap().split_whitespace().collect();
-        for key in ["quick_settings", "power_menu", "clipboard_panel"] {
+        for key in ["quick_settings", "power_menu", "clipboard_panel", "cheat_sheet"] {
             assert!(
                 control.contains(&format!(".with(\"{key}\",crate::control_overlays::panel_for_describe(")),
                 "describe shell must publish `{key}`"
@@ -348,7 +378,7 @@ mod tests {
         }
         assert!(
             control.contains("crate::control_overlays::actions(surface,ui)"),
-            "the six actions must be added to the shell's surface"
+            "the eight actions must be added to the shell's surface"
         );
     }
 }

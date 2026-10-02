@@ -1,4 +1,5 @@
-// The overlays the bar opens: Quick Settings, the power menu and the clipboard panel.
+// The overlays the bar opens: Quick Settings, the power menu and the clipboard panel, and the
+// keyboard cheat sheet (Super+/).
 //
 // They stood inside DesktopScreen, which is only on screen while the desktop is. The bar is the
 // shell's and is drawn above every screen, so its network, settings and power buttons toggled a
@@ -13,6 +14,7 @@ import { Theme } from "theme.slint";
 import { QuickSettings } from "quick_settings.slint";
 import { PowerMenu } from "power_menu.slint";
 import { ClipboardPanel, ClipboardEntryData } from "clipboard_panel.slint";
+import { CheatSheet, CheatRowData } from "cheat_sheet.slint";
 import { BatteryPopover } from "bar/battery_popover.slint";
 
 export component ShellOverlays inherits Rectangle {
@@ -56,6 +58,12 @@ export component ShellOverlays inherits Rectangle {
     in-out property <string> clip-search-query: "";
     callback clipboard-paste(int);
     callback clipboard-search(string);
+
+    // Keyboard cheat sheet
+    in-out property <bool> cheat-sheet-open: false;
+    in property <[CheatRowData]> cheat-sheet-rows: [];
+    in-out property <string> cheat-sheet-query: "";
+    callback cheat-sheet-search(string);
 
     width: 100%;
     height: 100%;
@@ -118,5 +126,15 @@ export component ShellOverlays inherits Rectangle {
         paste-entry(idx) => { root.clipboard-paste(idx); }
         search-changed(query) => { root.clipboard-search(query); }
         close => { root.clip-panel-open = false; }
+    }
+
+    CheatSheet {
+        width: 100%;
+        height: 100%;
+        is-open <=> root.cheat-sheet-open;
+        rows: root.cheat-sheet-rows;
+        search-query <=> root.cheat-sheet-query;
+        search-changed(query) => { root.cheat-sheet-search(query); }
+        close => { root.cheat-sheet-open = false; }
     }
 }

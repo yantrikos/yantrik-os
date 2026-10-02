@@ -267,6 +267,12 @@ export global Theme {
     // surface it edges, so the surface has an outline in dark mode and a crisp rim in light
     // mode. New with bright-and-sharp.
     out property <color> border-card:       ThemeMode.dark ? #ffffff1f : #00000017;
+    // The solid charcoal of a panel that must read cleanly over any wallpaper: opaque, so
+    // nothing behind it shows through the text. The key cheat sheet is the first; a key cap is a
+    // small raised chip on it.
+    out property <color> panel-solid:       ThemeMode.dark ? #151a1e : #ffffff;
+    out property <color> keycap-fill:       ThemeMode.dark ? #1f262c : #eef1f5;
+    out property <color> keycap-border:     ThemeMode.dark ? #ffffff24 : #0000001f;
     out property <color> separator:         ThemeMode.dark ? #ffffff0e : #0000000f;
     out property <color> hover-fill:        ThemeMode.dark ? #ffffff0a : #0000000a;
     out property <color> hover-fill-strong: ThemeMode.dark ? #ffffff14 : #00000012;

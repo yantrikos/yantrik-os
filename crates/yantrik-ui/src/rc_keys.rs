@@ -19,18 +19,7 @@ fn rc_xml() -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
 }
 
-/// A shortcut in one canonical spelling: modifiers in a fixed order, then the key, lowercase.
-/// "Super K", "Super+K" and labwc's "W-k" all become "super+k".
-fn canonical(modifiers: &BTreeSet<&'static str>, key: &str) -> String {
-    let mut out: Vec<String> = ["super", "ctrl", "alt", "shift"]
-        .iter()
-        .filter(|m| modifiers.contains(*m))
-        .map(|m| m.to_string())
-        .collect();
-    let key = key.to_lowercase();
-    out.push(if key == "esc" { "escape".to_string() } else { key });
-    out.join("+")
-}
+use crate::cheat_sheet::canonical;
 
 fn modifier_word(word: &str) -> Option<&'static str> {
     match word.to_lowercase().as_str() {
@@ -90,42 +79,10 @@ fn shortcuts_in(text: &str) -> Vec<String> {
     found
 }
 
-/// Every `key="..."` rc.xml binds, canonical. Comments are cut out first, so a key that is
-/// only talked about (the reserved Super+N and Super+/) does not count as bound.
-fn bound_keys(rc: &str) -> BTreeSet<String> {
-    let mut stripped = String::new();
-    let mut rest = rc;
-    while let Some(open) = rest.find("<!--") {
-        stripped.push_str(&rest[..open]);
-        match rest[open..].find("-->") {
-            Some(close) => rest = &rest[open + close + 3..],
-            None => {
-                rest = "";
-                break;
-            }
-        }
-    }
-    stripped.push_str(rest);
-
-    let mut out = BTreeSet::new();
-    for part in stripped.split("<keybind key=\"").skip(1) {
-        let Some(end) = part.find('"') else { continue };
-        let spec = &part[..end];
-        let mut pieces: Vec<&str> = spec.split('-').collect();
-        let key = pieces.pop().unwrap_or_default();
-        let mut modifiers = BTreeSet::new();
-        for m in pieces {
-            match m {
-                "W" => modifiers.insert("super"),
-                "C" => modifiers.insert("ctrl"),
-                "A" => modifiers.insert("alt"),
-                "S" => modifiers.insert("shift"),
-                other => panic!("rc.xml binds {spec}: unknown modifier {other:?}"),
-            };
-        }
-        out.insert(canonical(&modifiers, key));
-    }
-    out
+/// Every `key="..."` rc.xml binds, canonical. Read by the cheat sheet's parser, the only one, so
+/// a key that is only talked about in a comment (the reserved Super+N) does not count as bound.
+pub(crate) fn bound_keys(rc: &str) -> BTreeSet<String> {
+    crate::cheat_sheet::keybinds(rc).into_iter().map(|k| k.canonical).collect()
 }
 
 /// The text of every string literal on a line of Slint, with `//` comments cut off.

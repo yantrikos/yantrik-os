@@ -96,27 +96,35 @@
   -->
   <keyboard>
     <!-- ── Windows ────────────────────────────────────────────────────────────────────── -->
+    <!-- @help group="Windows" text="Switch to the next window" -->
     <keybind key="A-Tab">
       <action name="NextWindow" />
     </keybind>
+    <!-- @help group="Windows" text="Switch to the previous window" -->
     <keybind key="A-S-Tab">
       <action name="PreviousWindow" />
     </keybind>
+    <!-- @help group="Windows" text="Close the window" -->
     <keybind key="A-F4">
       <action name="Close" />
     </keybind>
+    <!-- @help group="Windows" text="Maximize or restore the window" -->
     <keybind key="W-Up">
       <action name="ToggleMaximize" />
     </keybind>
+    <!-- @help group="Windows" text="Minimize the window" -->
     <keybind key="W-Down">
       <action name="Iconify" />
     </keybind>
+    <!-- @help group="Windows" text="Snap the window to the left half" -->
     <keybind key="W-Left">
       <action name="SnapToEdge" direction="left" />
     </keybind>
+    <!-- @help group="Windows" text="Snap the window to the right half" -->
     <keybind key="W-Right">
       <action name="SnapToEdge" direction="right" />
     </keybind>
+    <!-- @help group="Windows" text="Full screen on or off" -->
     <keybind key="F11">
       <action name="ToggleFullscreen" />
     </keybind>
@@ -130,73 +138,93 @@
       The same layouts are on every window's menu (menu.xml, "Snap") and dragging a window with
       Super held shows them all. The regions are named in <regions> at the end of this file.
     -->
+    <!-- @help group="Snap" text="Left half" -->
     <keybind key="W-A-Left">
       <action name="SnapToRegion" region="left-half" />
     </keybind>
+    <!-- @help group="Snap" text="Right half" -->
     <keybind key="W-A-Right">
       <action name="SnapToRegion" region="right-half" />
     </keybind>
+    <!-- @help group="Snap" text="Top half" -->
     <keybind key="W-A-Up">
       <action name="SnapToRegion" region="top-half" />
     </keybind>
+    <!-- @help group="Snap" text="Bottom half" -->
     <keybind key="W-A-Down">
       <action name="SnapToRegion" region="bottom-half" />
     </keybind>
+    <!-- @help group="Snap" text="Top-left corner" -->
     <keybind key="W-A-u">
       <action name="SnapToRegion" region="top-left" />
     </keybind>
+    <!-- @help group="Snap" text="Top-right corner" -->
     <keybind key="W-A-i">
       <action name="SnapToRegion" region="top-right" />
     </keybind>
+    <!-- @help group="Snap" text="Bottom-left corner" -->
     <keybind key="W-A-j">
       <action name="SnapToRegion" region="bottom-left" />
     </keybind>
+    <!-- @help group="Snap" text="Bottom-right corner" -->
     <keybind key="W-A-k">
       <action name="SnapToRegion" region="bottom-right" />
     </keybind>
+    <!-- @help group="Snap" text="Left third" -->
     <keybind key="W-A-d">
       <action name="SnapToRegion" region="left-third" />
     </keybind>
+    <!-- @help group="Snap" text="Middle third" -->
     <keybind key="W-A-f">
       <action name="SnapToRegion" region="center-third" />
     </keybind>
+    <!-- @help group="Snap" text="Right third" -->
     <keybind key="W-A-g">
       <action name="SnapToRegion" region="right-third" />
     </keybind>
+    <!-- @help group="Snap" text="Left two thirds" -->
     <keybind key="W-A-e">
       <action name="SnapToRegion" region="left-two-thirds" />
     </keybind>
+    <!-- @help group="Snap" text="Right two thirds" -->
     <keybind key="W-A-t">
       <action name="SnapToRegion" region="right-two-thirds" />
     </keybind>
+    <!-- @help group="Snap" text="Centre the window" -->
     <keybind key="W-A-c">
       <action name="SnapToRegion" region="center" />
     </keybind>
+    <!-- @help group="Snap" text="Maximize or restore the window" -->
     <keybind key="W-A-Return">
       <action name="ToggleMaximize" />
     </keybind>
 
     <!-- ── The shell, through its own control surface ──────────────────────────────────── -->
+    <!-- @help group="Shell" text="Lock the screen" -->
     <keybind key="W-l">
       <action name="Execute">
         <command>/opt/yantrik/bin/yos act shell lock</command>
       </action>
     </keybind>
+    <!-- @help group="Shell" text="Open Files" -->
     <keybind key="W-e">
       <action name="Execute">
         <command>/opt/yantrik/bin/yos act shell show_screen screen=files</command>
       </action>
     </keybind>
+    <!-- @help group="Shell" text="Open Settings" -->
     <keybind key="W-i">
       <action name="Execute">
         <command>/opt/yantrik/bin/yos act shell show_screen screen=settings</command>
       </action>
     </keybind>
+    <!-- @help group="Shell" text="Show the desktop, then bring the windows back" -->
     <keybind key="W-d">
       <action name="Execute">
         <command>/opt/yantrik/bin/yos act shell show_desktop</command>
       </action>
     </keybind>
+    <!-- @help group="Shell" text="Open a terminal" -->
     <keybind key="C-A-t">
       <action name="Execute">
         <command>/opt/yantrik/bin/yos act shell open_app name=terminal</command>
@@ -219,6 +247,7 @@
       this desktop reserves for itself — the same reason Super+E and Super+L are here — so this
       adds a way in without taking one away.
     -->
+    <!-- @help group="Minds" text="Ask your minds anything" -->
     <keybind key="W-k">
       <action name="Execute">
         <command>/opt/yantrik/bin/yos act shell open_lens</command>
@@ -231,11 +260,13 @@
       region selector; without it the second binding does nothing, so it ships in the package
       set beside grim rather than being assumed.
     -->
+    <!-- @help group="Capture" text="Screenshot of the whole screen" -->
     <keybind key="Print">
       <action name="Execute">
         <command>sh -c 'mkdir -p ~/Pictures &amp;&amp; grim ~/Pictures/Screenshot-$(date +%Y%m%d-%H%M%S).png'</command>
       </action>
     </keybind>
+    <!-- @help group="Capture" text="Screenshot of a region you drag" -->
     <keybind key="W-S-s">
       <action name="Execute">
         <command>sh -c 'mkdir -p ~/Pictures &amp;&amp; grim -g "$(slurp)" ~/Pictures/Screenshot-$(date +%Y%m%d-%H%M%S).png'</command>
@@ -243,31 +274,37 @@
     </keybind>
 
     <!-- ── Media and hardware keys ────────────────────────────────────────────────────── -->
+    <!-- @help group="Shell" text="Volume up" -->
     <keybind key="XF86AudioRaiseVolume">
       <action name="Execute">
         <command>wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+</command>
       </action>
     </keybind>
+    <!-- @help group="Shell" text="Volume down" -->
     <keybind key="XF86AudioLowerVolume">
       <action name="Execute">
         <command>wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-</command>
       </action>
     </keybind>
+    <!-- @help group="Shell" text="Mute or unmute the speakers" -->
     <keybind key="XF86AudioMute">
       <action name="Execute">
         <command>wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle</command>
       </action>
     </keybind>
+    <!-- @help group="Shell" text="Mute or unmute the microphone" -->
     <keybind key="XF86AudioMicMute">
       <action name="Execute">
         <command>wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle</command>
       </action>
     </keybind>
+    <!-- @help group="Shell" text="Screen brighter" -->
     <keybind key="XF86MonBrightnessUp">
       <action name="Execute">
         <command>brightnessctl set 5%+</command>
       </action>
     </keybind>
+    <!-- @help group="Shell" text="Screen dimmer" -->
     <keybind key="XF86MonBrightnessDown">
       <action name="Execute">
         <command>brightnessctl set 5%-</command>
@@ -281,33 +318,43 @@
       own window — desktop, taskbar, status bar — is on every one (the windowRule below), so a
       workspace holds apps, never a desktop without its taskbar.
     -->
+    <!-- @help group="Workspaces" text="Go to workspace 1" -->
     <keybind key="W-1">
       <action name="GoToDesktop" to="1" />
     </keybind>
+    <!-- @help group="Workspaces" text="Send the window to workspace 1" -->
     <keybind key="W-S-1">
       <action name="SendToDesktop" to="1" follow="no" />
     </keybind>
+    <!-- @help group="Workspaces" text="Go to workspace 2" -->
     <keybind key="W-2">
       <action name="GoToDesktop" to="2" />
     </keybind>
+    <!-- @help group="Workspaces" text="Send the window to workspace 2" -->
     <keybind key="W-S-2">
       <action name="SendToDesktop" to="2" follow="no" />
     </keybind>
+    <!-- @help group="Workspaces" text="Go to workspace 3" -->
     <keybind key="W-3">
       <action name="GoToDesktop" to="3" />
     </keybind>
+    <!-- @help group="Workspaces" text="Send the window to workspace 3" -->
     <keybind key="W-S-3">
       <action name="SendToDesktop" to="3" follow="no" />
     </keybind>
+    <!-- @help group="Workspaces" text="Go to workspace 4" -->
     <keybind key="W-4">
       <action name="GoToDesktop" to="4" />
     </keybind>
+    <!-- @help group="Workspaces" text="Send the window to workspace 4" -->
     <keybind key="W-S-4">
       <action name="SendToDesktop" to="4" follow="no" />
     </keybind>
+    <!-- @help group="Workspaces" text="Go to the previous workspace" -->
     <keybind key="W-C-Left">
       <action name="GoToDesktop" to="left" wrap="yes" />
     </keybind>
+    <!-- @help group="Workspaces" text="Go to the next workspace" -->
     <keybind key="W-C-Right">
       <action name="GoToDesktop" to="right" wrap="yes" />
     </keybind>
@@ -316,6 +363,7 @@
       The launcher from anywhere (#402). Like Super+K, a compositor binding, so it works with
       another app in front; the shell's own keys only work while its window has the keyboard.
     -->
+    <!-- @help group="Shell" text="Open the app launcher" -->
     <keybind key="W-space">
       <action name="Execute">
         <command>/opt/yantrik/bin/yos act shell show_screen screen=launchpad</command>
@@ -345,29 +393,44 @@
       Super+D stays "show desktop" above, the convention on GNOME and Windows. Do Not Disturb
       has no key: it is in Quick Settings and the Today popover.
 
-      RESERVED, not bound yet, because nothing exists for them to open:
+      Super+/ opens the key cheat sheet (open_cheat_sheet). The sheet is generated from this
+      file, never written by hand: the comment just before each keybind says what it does and
+      which section it is drawn in (Windows, Snap, Workspaces, Shell, Minds or Capture), in the
+      form crates/yantrik-ui/src/cheat_sheet.rs documents. A keybind without one fails that
+      file's tests, so a new key says what it does or does not land.
+
+      RESERVED, not bound yet, because nothing exists for it to open:
         Super+N   Today        (UI/UX overhaul story 3.1)
-        Super+/   key cheat sheet (story 4.2)
-      Leave both free for those stories.
+      Leave it free for that story.
     -->
+    <!-- @help group="Shell" text="Clipboard history" -->
     <keybind key="W-v">
       <action name="Execute">
         <command>/opt/yantrik/bin/yos act shell open_clipboard</command>
       </action>
     </keybind>
+    <!-- @help group="Shell" text="Quick Settings" -->
     <keybind key="W-a">
       <action name="Execute">
         <command>/opt/yantrik/bin/yos act shell open_quick_settings</command>
       </action>
     </keybind>
+    <!-- @help group="Shell" text="Power menu" -->
     <keybind key="W-Escape">
       <action name="Execute">
         <command>/opt/yantrik/bin/yos act shell open_power_menu</command>
       </action>
     </keybind>
+    <!-- @help group="Minds" text="Show Mind View, the minds' own desktop" -->
     <keybind key="W-S-v">
       <action name="Execute">
         <command>/opt/yantrik/bin/yos act shell focus_window title="Mind View"</command>
+      </action>
+    </keybind>
+    <!-- @help group="Shell" text="Show this list of keys" -->
+    <keybind key="W-slash">
+      <action name="Execute">
+        <command>/opt/yantrik/bin/yos act shell open_cheat_sheet</command>
       </action>
     </keybind>
   </keyboard>

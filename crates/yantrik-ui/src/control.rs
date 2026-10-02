@@ -960,6 +960,7 @@ pub fn publish(
                 .with("quick_settings", crate::control_overlays::panel_for_describe(ui.get_quick_settings_open(), screen, "close_quick_settings"))
                 .with("power_menu", crate::control_overlays::panel_for_describe(ui.get_power_menu_open(), screen, "close_power_menu"))
                 .with("clipboard_panel", crate::control_overlays::panel_for_describe(ui.get_clip_panel_open(), screen, "close_clipboard"))
+                .with("cheat_sheet", crate::control_overlays::panel_for_describe(ui.get_cheat_sheet_open(), screen, "close_cheat_sheet"))
                 // The mode menu over the status bar's chip, for the same reason again:
                 // `show_mind_audit` opens it, and a caller that opened it has to be able to see
                 // that it is still there and put it away (`close_mind_menu`) (#184).
@@ -2075,7 +2076,7 @@ pub fn publish(
     // decision is a button in the Lens. See `control_approvals` for why that split is the
     // whole point.
     let surface = crate::control_approvals::actions(surface, ui);
-    // The bar's panels: open_quick_settings, open_power_menu, open_clipboard and their closes.
+    // The bar's panels: open_quick_settings, open_power_menu, open_clipboard, open_cheat_sheet and their closes.
     let surface = crate::control_overlays::actions(surface, ui);
     // An agent's commands, each in a terminal of its own in its pane — agent_run, agent_job,
     // agent_input, agent_kill. The agent comes from its token, never an argument. See

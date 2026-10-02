@@ -34,6 +34,7 @@ run target/ui-validation/taskbar-menu.png 1280 800 verify-taskbar-menu
 run target/ui-validation/cards-waiting.png 1280 800 verify-cards-waiting
 run target/ui-validation/kit-controls.png 880 460 verify-kit-controls
 run target/ui-validation/bar-overlays.png 1280 800 verify-bar-overlays
+run target/ui-validation/cheat-sheet.png 1280 800 verify-cheat-sheet
 run target/ui-validation/qs-levels.png 1280 800 verify-qs-levels
 run target/ui-validation/battery.png 1280 800 verify-battery
 run target/ui-validation/lens-answers.png 640 800 verify-lens-answers

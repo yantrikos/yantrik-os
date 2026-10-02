@@ -1,4 +1,4 @@
-//! The bar's panels (Quick Settings, the power menu, the clipboard) opening.
+//! The bar's panels (Quick Settings, the power menu, the clipboard, the cheat sheet) opening.
 //!
 //! They open from the bar, from keybinds and from the control surface, and the one place all
 //! three arrive is the `changed` hook in app.slint that fires `shell-overlay-opened`. Two things
@@ -28,6 +28,11 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         if kind == "clipboard" {
             if let Some(ui) = weak.upgrade() {
                 super::clipboard::refresh_on_open(&ui, &clip);
+            }
+        }
+        if kind == "cheat-sheet" {
+            if let Some(ui) = weak.upgrade() {
+                super::cheat_sheet::refresh_on_open(&ui);
             }
         }
     });

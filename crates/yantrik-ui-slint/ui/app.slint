@@ -56,6 +56,7 @@ export { ProviderGroup, AccountRow, AccountMeter, AddChoice }
 import { WhisperCardItem } from "components/whisper_card.slint";
 import { BriefSection } from "components/morning_brief.slint";
 import { ClipboardEntryData } from "components/clipboard_panel.slint";
+import { CheatRowData } from "components/cheat_sheet.slint";
 import { AppGridItem } from "components/app_grid.slint";
 import { WindowItem } from "components/window_switcher.slint";
 import { DockItem } from "components/app_dock.slint";
@@ -72,7 +73,7 @@ import { YMenuAction, YContextMenu } from "components/y_context_menu.slint";
 import { Icons } from "components/icon.slint";
 import { Tr } from "translations.slint";
 
-export { HarnessData, HarnessRowData, Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, ToolCallData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, ApprovalRequest, QuestionRequest, MindRule, MindAuditEntry, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, NotifActionData, ProcessData, ClipboardEntryData, AppGridItem, CategoryItem, ServiceItem, WindowItem, DockItem, ToastData, ToastActionData, PackageData, PendingAction, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction, ProblemRow }
+export { HarnessData, HarnessRowData, Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, ToolCallData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, ApprovalRequest, QuestionRequest, MindRule, MindAuditEntry, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, NotifActionData, ProcessData, ClipboardEntryData, CheatRowData, AppGridItem, CategoryItem, ServiceItem, WindowItem, DockItem, ToastData, ToastActionData, PackageData, PendingAction, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction, ProblemRow }
 
 export component App inherits Window {
     default-font-family: Theme.font-ui;
@@ -297,7 +298,7 @@ export component App inherits Window {
     // nothing underneath moves.
     // The bar's three panels are the shell's and open over any screen, so they cover it on any
     // screen; the rest are the desktop's.
-    property <bool> mind-panel-covered: root.quick-settings-open || root.power-menu-open || root.clip-panel-open || root.battery-popover-open
+    property <bool> mind-panel-covered: root.quick-settings-open || root.power-menu-open || root.clip-panel-open || root.cheat-sheet-open || root.battery-popover-open
         || (root.current-screen == 1
             && (root.lens-open || root.app-grid-open || root.window-switcher-open || root.command-palette-open));
 
@@ -399,7 +400,8 @@ export component App inherits Window {
     callback morning-brief-dismissed();
     callback morning-brief-section-action(string);
 
-    // Fired when one of the bar's panels opens: "quick-settings", "power-menu" or "clipboard".
+    // Fired when one of the bar's panels opens: "quick-settings", "power-menu", "clipboard" or
+    // "cheat-sheet".
     // The panels are part of the shell's own window, which sits behind an app window that is in
     // front of it, so an open from the bar, a keybind or the control surface has to bring the
     // shell forward or the panel opens where nobody can see it (see `app-grid-opened`). The
@@ -417,6 +419,15 @@ export component App inherits Window {
     changed clip-panel-open => {
         if (self.clip-panel-open) { self.shell-overlay-opened("clipboard"); }
     }
+    changed cheat-sheet-open => {
+        if (self.cheat-sheet-open) { self.shell-overlay-opened("cheat-sheet"); }
+    }
+
+    // Keyboard cheat sheet (Super+/): rows generated from rc.xml, filtered by the search box.
+    in-out property <bool> cheat-sheet-open: false;
+    in property <[CheatRowData]> cheat-sheet-rows: [];
+    in-out property <string> cheat-sheet-query: "";
+    callback cheat-sheet-search(string);
 
     // Clipboard panel state
     in-out property <bool> clip-panel-open: false;
@@ -2713,6 +2724,10 @@ export component App inherits Window {
             clip-search-query <=> root.clip-search-query;
             clipboard-paste(idx) => { root.clipboard-paste(idx); }
             clipboard-search(query) => { root.clipboard-search(query); }
+            cheat-sheet-open <=> root.cheat-sheet-open;
+            cheat-sheet-rows: root.cheat-sheet-rows;
+            cheat-sheet-query <=> root.cheat-sheet-query;
+            cheat-sheet-search(query) => { root.cheat-sheet-search(query); }
         }
 
         if current-screen != 0 && current-screen != 2 && current-screen != 3 && current-screen != 32 : StatusBar {
