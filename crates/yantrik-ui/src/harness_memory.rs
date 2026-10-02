@@ -3,8 +3,14 @@
 //! Installing Hermes from this desktop was meant to give Hermes the memory Yantrik Mind keeps, so
 //! the two remember the same person, and not a second memory of them in ~/.hermes. A manifest says
 //! `memory: yantrikdb` for a harness built that way, and the person's Install click on its row,
-//! once the install has worked, grants it ordinary recall, remember and believe, saved where the person's grants are saved, so
-//! the shell's baseline holds it and a later edit behind the shell's back cannot widen it.
+//! once the install has worked, grants it ordinary recall, remember and believe, saved where the
+//! person's grants are saved, so the shell's baseline holds it and a later edit behind the shell's
+//! back cannot widen it.
+//!
+//! A harness the grants file names with nothing granted (`"hermes": {}`) is one the person took
+//! the memory away from, and installing it again does not give it back: a reinstall is not the
+//! person changing their mind about its memory. No entry at all is a harness nobody has decided
+//! about yet, which Install may grant.
 //!
 //! Only the click does this. The control surface's `install_harness` runs the same install and
 //! grants nothing: a mind able to install another mind must not be able to hand it the person's
@@ -20,9 +26,28 @@ use crate::memory_grants::{self, Grants, Store};
 /// What the row and `describe shell` say about a harness that has the machine's memory.
 pub const SHARED: &str = "Memory: YantrikDB (shared with Yantrik Mind)";
 
+/// What the person's Install did about a harness's memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// Its manifest does not say its memory is the machine's.
+    NotAsked,
+    Granted,
+    /// The person had taken it away, and it stays taken away.
+    KeptRevoked,
+}
+
+/// Whether the person has taken `id`'s memory away: an entry for it that grants nothing.
+pub fn revoked(store: &Store, id: &str) -> bool {
+    store.minds.get(id).is_some_and(|grants| !grants.any())
+}
+
 /// The grants after the person's Install click: ordinary recall, remember and believe on, and
-/// whatever else the person chose for this harness left as it was.
+/// whatever else the person chose for this harness left as it was. Unchanged for a harness the
+/// person took the memory away from.
 pub fn with_install_grant(mut store: Store, id: &str) -> Store {
+    if revoked(&store, id) {
+        return store;
+    }
     let ordinary = Grants::ordinary();
     let grants = store.minds.entry(id.to_string()).or_default();
     grants.recall_ordinary = ordinary.recall_ordinary;
@@ -32,10 +57,10 @@ pub fn with_install_grant(mut store: Store, id: &str) -> Store {
 }
 
 /// Grant `manifest`'s harness the machine's memory, for the person's own Install click and for
-/// nothing else. `Ok(false)` for a harness whose manifest does not ask for it.
-pub fn grant_on_persons_install(manifest: &Manifest) -> Result<bool, String> {
+/// nothing else.
+pub fn grant_on_persons_install(manifest: &Manifest) -> Result<Outcome, String> {
     if manifest.memory != Memory::Yantrikdb {
-        return Ok(false);
+        return Ok(Outcome::NotAsked);
     }
     // These two have grants of their own by being what they are. A manifest that borrows one of
     // their names is not either of them, and writing its grant under that name would change what
@@ -43,9 +68,21 @@ pub fn grant_on_persons_install(manifest: &Manifest) -> Result<bool, String> {
     if [memory_grants::FIRST_PARTY_MIND, memory_grants::COMPANION].contains(&manifest.id.as_str()) {
         return Err(format!("`{}` is not an id a harness can be granted memory under", manifest.id));
     }
-    memory_grants::update(|store| *store = with_install_grant(std::mem::take(store), &manifest.id))?;
-    tracing::info!(harness = %manifest.id, "The person's Install gave this harness ordinary memory grants (#447)");
-    Ok(true)
+    let mut outcome = Outcome::Granted;
+    memory_grants::update(|store| {
+        if revoked(store, &manifest.id) {
+            outcome = Outcome::KeptRevoked;
+        }
+        *store = with_install_grant(std::mem::take(store), &manifest.id);
+    })?;
+    match outcome {
+        Outcome::KeptRevoked => tracing::info!(
+            harness = %manifest.id,
+            "Installed again; its memory stays taken away, as the person left it (#447)"
+        ),
+        _ => tracing::info!(harness = %manifest.id, "The person's Install gave this harness ordinary memory grants (#447)"),
+    }
+    Ok(outcome)
 }
 
 /// The harnesses the person's grants give some use of their memory, as third parties: what each
@@ -55,6 +92,16 @@ pub fn granted_minds() -> Vec<String> {
     granted_in(memory_grants::load().as_ref())
 }
 
+/// [`granted_minds`], and the harnesses the person took the memory away from, from one read.
+pub fn decided_minds() -> (Vec<String>, Vec<String>) {
+    let store = memory_grants::load();
+    let revoked = store
+        .as_ref()
+        .map(|store| store.minds.keys().filter(|id| revoked(store, id)).cloned().collect())
+        .unwrap_or_default();
+    (granted_in(store.as_ref()), revoked)
+}
+
 fn granted_in(store: Option<&Store>) -> Vec<String> {
     store
         .map(|store| store.minds.keys().filter(|id| store.grants_for(id, false).any()).cloned().collect())
@@ -62,11 +109,15 @@ fn granted_in(store: Option<&Store>) -> Vec<String> {
 }
 
 /// The row's line about memory. Empty for a harness that keeps its own. `installed` is whether
-/// it is past installing, `granted` whether the person's grants give it anything now.
-pub fn line(memory: Memory, installed: bool, granted: bool) -> String {
+/// it is past installing, `granted` whether the person's grants give it anything now, `revoked`
+/// whether the person took it away.
+pub fn line(memory: Memory, installed: bool, granted: bool, revoked: bool) -> String {
     match (memory, granted, installed) {
         (Memory::Own, _, _) => String::new(),
         (Memory::Yantrikdb, true, _) => SHARED.to_string(),
+        (Memory::Yantrikdb, false, _) if revoked => {
+            "Memory: none. You took YantrikDB away from it, and installing it again does not give it back".to_string()
+        }
         // Said before the click, so the person knows what Install will do with their memory.
         (Memory::Yantrikdb, false, false) => "Memory: Install gives it YantrikDB, shared with Yantrik Mind".to_string(),
         // Installed some other way, or the grant was taken away since.
@@ -111,9 +162,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let file = dir.join("memory-grants.json");
         let _using = memory_grants::test_file::using(file.clone());
-        assert_eq!(grant_on_persons_install(&hermes(Memory::Own)), Ok(false));
+        assert_eq!(grant_on_persons_install(&hermes(Memory::Own)), Ok(Outcome::NotAsked));
         assert!(!file.exists());
-        assert_eq!(grant_on_persons_install(&hermes(Memory::Yantrikdb)), Ok(true));
+        assert_eq!(grant_on_persons_install(&hermes(Memory::Yantrikdb)), Ok(Outcome::Granted));
         assert_eq!(granted_minds(), ["hermes"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -143,11 +194,41 @@ mod tests {
 
     #[test]
     fn the_row_says_where_its_memory_is_in_plain_words() {
-        assert_eq!(line(Memory::Own, true, true), "");
-        assert_eq!(line(Memory::Yantrikdb, true, true), "Memory: YantrikDB (shared with Yantrik Mind)");
-        assert_eq!(line(Memory::Yantrikdb, false, true), SHARED, "granted already, as during a reinstall");
-        assert!(line(Memory::Yantrikdb, false, false).starts_with("Memory: Install gives it YantrikDB"));
-        assert!(line(Memory::Yantrikdb, true, false).starts_with("Memory: not granted YantrikDB"));
+        assert_eq!(line(Memory::Own, true, true, false), "");
+        assert_eq!(line(Memory::Yantrikdb, true, true, false), "Memory: YantrikDB (shared with Yantrik Mind)");
+        assert_eq!(line(Memory::Yantrikdb, false, true, false), SHARED, "granted already, as during a reinstall");
+        assert!(line(Memory::Yantrikdb, false, false, false).starts_with("Memory: Install gives it YantrikDB"));
+        assert!(line(Memory::Yantrikdb, true, false, false).starts_with("Memory: not granted YantrikDB"));
+        // Taken away: said so, before a reinstall as well as after, so Install is not read as
+        // giving it back.
+        for installed in [true, false] {
+            let said = line(Memory::Yantrikdb, installed, false, true);
+            assert!(said.contains("You took YantrikDB away") && said.contains("does not give it back"), "{said}");
+        }
+    }
+
+    #[test]
+    fn a_reinstall_does_not_give_back_memory_the_person_took_away() {
+        let mut store = Store::default();
+        store.minds.insert("hermes".into(), Grants::default());
+        let after = with_install_grant(store.clone(), "hermes");
+        assert_eq!(after, store, "an explicit empty entry is a revocation and is kept");
+        // No entry at all is nobody having decided, which Install may grant.
+        assert!(with_install_grant(Store::default(), "hermes").grants_for("hermes", false).any());
+    }
+
+    #[test]
+    fn installing_again_after_a_revocation_writes_no_grant_and_says_so() {
+        let dir = std::env::temp_dir().join(format!("yantrik-hm-revoked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("memory-grants.json");
+        std::fs::write(&file, r#"{"minds":{"hermes":{}}}"#).unwrap();
+        let _using = memory_grants::test_file::using(file.clone());
+        assert_eq!(grant_on_persons_install(&hermes(Memory::Yantrikdb)), Ok(Outcome::KeptRevoked));
+        assert!(granted_minds().is_empty());
+        assert_eq!(decided_minds(), (vec![], vec!["hermes".to_string()]));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

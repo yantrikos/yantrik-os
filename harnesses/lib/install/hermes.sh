@@ -73,7 +73,7 @@ say "giving Hermes's desktop platform the desktop's tools in $config"
 # the package), and it is installed from a pinned reference into the Python Hermes runs on.
 # Not `hermes plugins install`: that clones whatever the repository's default branch holds today.
 # In `yantrik` mode the provider presents, on every call, the credential the desktop hands Hermes
-# with each turn (YANTRIK_MEMORY_CREDENTIAL and YANTRIK_MEMORY_URL, set by adapter.py); the
+# with each turn (registered with it in Hermes's process by adapter.py, never in the environment); the
 # desktop grants it once the install the person pressed has worked, never for one a mind asked for.
 # v0.28.0, the release with `yantrik` mode (yantrikos/yantrikdb-hermes-plugin#93), by commit: a
 # tag can be moved and a commit cannot. Moved on by hand, with the review of what changed.
@@ -85,14 +85,26 @@ command -v git >/dev/null 2>&1 || fail "the YantrikDB memory provider is fetched
 say "installing the YantrikDB memory provider into Hermes"
 # Hermes's own installer makes its environment with uv, which leaves pip out of it, and puts uv
 # in ~/.local/bin, which common.sh has put on PATH.
+# Nothing is resolved from PyPI. The provider's own dependencies come from a lock of exact
+# versions with their hashes, and a download that does not match is refused; the provider comes
+# from its commit with no dependencies of its own resolved; and requests is Hermes's own, from
+# Hermes's locked environment. A git URL cannot be hash-checked, so the two are separate calls.
+lock="$(dirname "$0")/yantrikdb-hermes-plugin.lock"
+[ -f "$lock" ] || fail "no $lock to install the memory provider's dependencies from"
 uv=$(command -v uv || true)
 if [ -n "$uv" ]; then
-    "$uv" pip install --python "$hermes_python" "$YANTRIKDB_PLUGIN" </dev/null \
+    "$uv" pip install --python "$hermes_python" --require-hashes --no-deps -r "$lock" </dev/null \
+        || fail "the memory provider's dependencies did not install, or did not match their hashes"
+    "$uv" pip install --python "$hermes_python" --no-deps "$YANTRIKDB_PLUGIN" </dev/null \
         || fail "the YantrikDB memory provider did not install"
 else
-    "$hermes_python" -m pip install "$YANTRIKDB_PLUGIN" </dev/null \
+    "$hermes_python" -m pip install --require-hashes --no-deps -r "$lock" </dev/null \
+        || fail "the memory provider's dependencies did not install, or did not match their hashes"
+    "$hermes_python" -m pip install --no-deps "$YANTRIKDB_PLUGIN" </dev/null \
         || fail "the YantrikDB memory provider did not install (and there is no uv to try)"
 fi
+"$hermes_python" -c "import requests, yantrikdb, yantrikdb_hermes_plugin" </dev/null \
+    || fail "the YantrikDB memory provider is installed but does not import in Hermes's Python"
 # `--force` replaces the shim an earlier install left, which is the package's own and nothing of
 # the person's. Its "next steps" are not shown: they suggest YANTRIKDB_MODE=embedded, the
 # separate memory this install exists to avoid.
@@ -142,6 +154,12 @@ env_default YANTRIK_ALLOW_ALL_USERS true >/dev/null
 
 # Hermes's gateway as the person's own user service, started now and at every login: nothing
 # else loads the plugin. `--if-missing` leaves one that is already there alone.
+# Once more now that the memory provider is in: whatever it or anything else installed above
+# brought as a plugin toolset is marked seen for the desktop platform too, so Hermes does not turn
+# it on there by itself. The same edit, so this changes nothing a first pass already settled.
+"$hermes_python" "$(dirname "$0")/hermes_config.py" apply "$config" >/dev/null \
+    || fail "could not hold Hermes's desktop platform to the desktop's tools; see $config"
+
 hermes gateway install --if-missing --start-now --start-on-login </dev/null \
     || fail "Hermes would not install its gateway service"
 systemctl --user restart hermes-gateway || fail "Hermes's gateway would not start"

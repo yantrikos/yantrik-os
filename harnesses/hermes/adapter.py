@@ -11,7 +11,8 @@ Hermes keeps it. Nothing here reads or passes any of it to the OS, and the socke
 field that could carry it. Its memory is the one exception, in the other direction: on this machine
 it is the person's YantrikDB, the memory Yantrik Mind keeps, and each turn of a Hermes the person
 granted it brings the credential Hermes's YantrikDB provider presents to the memory server. This
-file puts it where the provider reads it, and takes it away with the turn that no longer brings it.
+file registers it with the provider, in this process and for the turn's gateway session alone, and
+clears it with the turn that no longer brings it.
 
 Two things differ from a chat app, and both come from the desktop thinking in turns:
 
@@ -115,8 +116,12 @@ class YantrikAdapter(BasePlatformAdapter):
         self._tasks: list[asyncio.Task] = []
         self._owner = os.environ.get("USER") or getpass.getuser() or OWNER_ID
         self._said_no_desktop = False
-        # Whether the last turn carried a memory credential, so a change is logged once.
+        # Whether the last turn carried a memory credential, so a change is logged once; the
+        # gateway sessions one was registered for, so losing the desktop clears each; and whether
+        # a missing memory provider has been said, so it is said once.
         self._carried_memory: Optional[bool] = None
+        self._memory_sessions: set[str] = set()
+        self._said_no_registry = False
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────────────────────
 
@@ -155,7 +160,7 @@ class YantrikAdapter(BasePlatformAdapter):
             except desktop.HarnessError:
                 pass
         self._session = None
-        desktop.carry_memory({})
+        self._forget_memory()
         self._mark_disconnected()
 
     async def _call(self, method: str, params: Dict[str, Any], timeout: float = 10.0) -> Any:
@@ -205,7 +210,7 @@ class YantrikAdapter(BasePlatformAdapter):
                     self._session = None
                     # The credential named an agent of that session; whatever attaches next is
                     # handed its own with its first turn.
-                    desktop.carry_memory({})
+                    self._forget_memory()
                     for turn in self._ledger.open_turns():
                         self._ledger.close(turn.turn_id)
                     await asyncio.sleep(RETRY_SECONDS)
@@ -269,18 +274,6 @@ class YantrikAdapter(BasePlatformAdapter):
     async def _on_turn(self, assignment: Dict[str, Any]) -> None:
         turn_id = str(assignment["turn_id"])
         text = str(assignment.get("text") or "")
-        # Before the gateway sees the message, so the memory provider's prefetch for this turn
-        # already presents this turn's credential, or none when the grant was taken away.
-        carried = desktop.carry_memory(assignment)
-        if carried != self._carried_memory:
-            # Whether, never what: the credential is never written to a log.
-            logger.info(
-                "[yantrik] %s",
-                "turns now carry a credential for the machine's memory"
-                if carried
-                else "turns carry no credential for the machine's memory",
-            )
-            self._carried_memory = carried
         source = self.build_source(
             chat_id=CHAT_ID,
             chat_name="Yantrik desktop",
@@ -302,6 +295,9 @@ class YantrikAdapter(BasePlatformAdapter):
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
         turn.session_key = session_key
+        # Before the gateway sees the message, so the memory provider's prefetch for this turn
+        # already presents this turn's credential, or none when the grant was taken away.
+        self._carry_memory(assignment, session_key)
 
         try:
             if session_key in self._active_sessions:
@@ -313,6 +309,52 @@ class YantrikAdapter(BasePlatformAdapter):
             await self._finish(turn_id, error=f"Hermes could not take this message: {exc}")
             return
         asyncio.create_task(self._watch_pickup(turn_id))
+
+    def _carry_memory(self, assignment: Dict[str, Any], session_key: str) -> None:
+        """Register this turn's memory credential with the YantrikDB provider, in this process.
+
+        Never through the environment: the gateway runs every platform in one process, and what
+        is in its environment is every platform's and every subprocess's to read.
+        """
+        register = desktop.find_registry()
+        if register is None:
+            if not self._said_no_registry:
+                logger.info("[yantrik] no YantrikDB memory provider to hand turns' memory credentials to")
+                self._said_no_registry = True
+            return
+        self._said_no_registry = False
+        try:
+            carried = desktop.carry_memory(assignment, session_key, register)
+        except Exception as exc:
+            # The kind only: the provider's own message could quote what it was given.
+            logger.warning("[yantrik] the memory provider would not take this turn's credential (%s)", type(exc).__name__)
+            return
+        if carried:
+            self._memory_sessions.add(session_key)
+        else:
+            self._memory_sessions.discard(session_key)
+        if carried != self._carried_memory:
+            # Whether, never what: the credential is never written to a log.
+            logger.info(
+                "[yantrik] %s",
+                "turns now carry a credential for the machine's memory"
+                if carried
+                else "turns carry no credential for the machine's memory",
+            )
+            self._carried_memory = carried
+
+    def _forget_memory(self) -> None:
+        """Clear every credential registered for a session of the desktop that is gone."""
+        sessions, self._memory_sessions = self._memory_sessions, set()
+        self._carried_memory = None
+        register = desktop.find_registry() if sessions else None
+        if register is None:
+            return
+        for session_key in sessions:
+            try:
+                desktop.carry_memory({}, session_key, register)
+            except Exception as exc:
+                logger.warning("[yantrik] the memory provider would not clear a credential (%s)", type(exc).__name__)
 
     async def _while_busy(self, event: MessageEvent, turn: desktop.Turn, session_key: str) -> None:
         """A message that arrived while Hermes is working on an earlier one."""

@@ -292,6 +292,9 @@ pub struct Machine {
     /// The harnesses the person's memory grants give something, as third parties. Read fresh with
     /// the jobs rather than cached, so the row says so the moment Install grants it.
     pub memory_granted: Vec<String>,
+    /// The harnesses the person took the memory away from, so the row says a reinstall will not
+    /// give it back.
+    pub memory_revoked: Vec<String>,
 }
 
 // ── The states a row can be in ──────────────────────────────────────
@@ -597,6 +600,7 @@ fn from_manifest(machine: &Machine, manifest: &Manifest, attached: Option<&Entry
             manifest.memory,
             !matches!(state, State::NotInstalled | State::Installing),
             machine.memory_granted.contains(&manifest.id),
+            machine.memory_revoked.contains(&manifest.id),
         ),
         unit: manifest.unit.clone(),
         docs: if manifest.docs.is_empty() {
@@ -854,7 +858,7 @@ pub fn machine(jobs: HashMap<String, JobView>) -> Machine {
         }
     };
     machine.jobs = jobs;
-    machine.memory_granted = crate::harness_memory::granted_minds();
+    (machine.memory_granted, machine.memory_revoked) = crate::harness_memory::decided_minds();
     machine
 }
 
@@ -879,6 +883,7 @@ fn gather() -> Machine {
         manifests,
         jobs: HashMap::new(),
         memory_granted: Vec::new(),
+        memory_revoked: Vec::new(),
     }
 }
 
@@ -939,6 +944,7 @@ mod tests {
                 units: HashMap::new(),
                 jobs: HashMap::new(),
                 memory_granted: Vec::new(),
+                memory_revoked: Vec::new(),
             }
         }
     }
@@ -1094,10 +1100,11 @@ requires:
         machine.memory_granted = vec!["hermes".into()];
         let after = rows(&machine, &[builtin(), entry("hermes", false)]);
         assert_eq!(row(&after, "hermes").memory_line, "Memory: YantrikDB (shared with Yantrik Mind)");
-        // Taken away again: the row stops claiming it.
+        // Taken away again: the row stops claiming it, and says a reinstall will not undo that.
         machine.memory_granted.clear();
+        machine.memory_revoked = vec!["hermes".into()];
         let revoked = rows(&machine, &[builtin(), entry("hermes", false)]);
-        assert!(row(&revoked, "hermes").memory_line.starts_with("Memory: not granted"));
+        assert!(row(&revoked, "hermes").memory_line.contains("does not give it back"));
         // A harness that keeps its own memory says nothing about it.
         fixture.harness("pi", PI);
         assert_eq!(row(&rows(&fixture.machine(), &[builtin()]), "pi").memory_line, "");

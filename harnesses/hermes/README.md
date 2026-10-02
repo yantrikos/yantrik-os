@@ -43,11 +43,17 @@ Hermes arrives with a `terminal`, `file`, `code_execution`, `browser` and `web` 
 desktop they are a second, **ungraded** route to everything the apps already offer, and each
 `terminal` call stops on Hermes's own approval — which reaches the person as a paragraph to answer
 with `/approve`, five minutes at a time. The first long job given to it spent most of its life
-waiting on those. *Install* sets this in `~/.hermes/config.yaml` for you, keeping every other key
-and a copy of the file as it was (`config.yaml.before-yantrik-desktop`), and fails if it reads the
-file back and finds any of those five toolsets on the desktop platform
-(`harnesses/lib/install/hermes_config.py`). `hermes tools` does not know plugin platforms and
-`hermes config set` cannot write a list, so by hand it is:
+waiting on those. *Install* sets this in `~/.hermes/config.yaml` for you
+(`harnesses/lib/install/hermes_config.py`), keeping every other key and a copy of the file as it
+was (`config.yaml.before-yantrik-desktop`). The list is an allowlist, and the install fails unless
+Hermes's own resolver gives the desktop platform nothing outside it. That check matters because
+Hermes adds to a platform's list when it resolves it: a plugin toolset the platform has not seen is
+on by default, and every enabled MCP server is added unless the platform names the ones it wants.
+So the install also marks every plugin toolset Hermes knows as seen for the platform, adds the
+`yantrik_os` MCP server when it is missing (naming it is what makes Hermes keep every other server
+off), and turns `skills.inline_shell` off. It does not use Hermes's `no_mcp`, which drops the
+servers a platform names as well, `yantrik_os` with them. `hermes tools` does not know plugin
+platforms and `hermes config set` cannot write a list, so by hand it is:
 
 ```yaml
 platform_toolsets:
@@ -60,22 +66,34 @@ delegation:
 
 `harness.yaml` says `memory: yantrikdb`. Pressing *Install* on the row does three things for it:
 
-- the installer puts the YantrikDB memory provider into Hermes, sets `memory.provider` to it,
-  writes `YANTRIKDB_MODE=yantrik` into `~/.hermes/.env` (only when it is not set there already),
-  and turns off Hermes's own `MEMORY.md` and `USER.md`;
+- the installer puts the YantrikDB memory provider into Hermes (from a commit, its dependencies
+  from a lock of exact versions and hashes), sets `memory.provider` to it, writes
+  `YANTRIKDB_MODE=yantrik` into `~/.hermes/.env` (only when it is not set there already), and turns
+  off Hermes's own `MEMORY.md` and `USER.md`, which a provider runs beside rather than replaces;
 - once the install has worked, and not before, the desktop grants Hermes ordinary recall,
-  remember and believe in
-  `~/.config/yantrik/memory-grants.json`. Never health, finance or household memory, and
-  credentials are never a grant;
-- from Hermes's next turn, each turn carries a credential for the memory server, which this
-  plugin puts in `YANTRIK_MEMORY_CREDENTIAL` and `YANTRIK_MEMORY_URL` for the provider. A turn
-  without one removes both, so a grant taken away stops working at the next turn.
+  remember and believe in `~/.config/yantrik/memory-grants.json`. Never health, finance or
+  household memory, and credentials are never a grant;
+- from Hermes's next turn, each turn carries a credential for the memory server. This plugin
+  registers it with the provider inside Hermes's process, for that turn's gateway session alone,
+  and never puts it in the environment: the gateway serves every platform from one process, and
+  what is in its environment is every platform's, and every command's they start. A turn without
+  one clears it, so a grant taken away stops working at the next turn.
 
 The Minds row then reads *Memory: YantrikDB (shared with Yantrik Mind)*. Only the person's own
 click grants it: an agent that asks for the install through `install_harness` gets Hermes
-installed and grants it nothing. There is no button to take the grant back yet. Until there is,
-remove `hermes` from `~/.config/yantrik/memory-grants.json`; the desktop keeps a narrowing made
-there, and ignores a widening it did not make.
+installed and grants it nothing.
+
+There is no button to take the grant back yet. Until there is, set `"hermes": {}` in
+`~/.config/yantrik/memory-grants.json`. An entry that grants nothing is a revocation: installing
+Hermes again does not give the memory back, and the row says so. (Removing the entry instead
+means nobody has decided, and the next Install grants it again.) The desktop keeps a narrowing
+made in that file, and ignores a widening it did not make.
+
+**What this does not protect against.** The id a harness attaches under is its own word, so any
+process running as the person can attach as `hermes` and be handed Hermes's credential with its
+turns. That is the known limit of minds that run as the person (#411): per-mind grants hold
+against a mind that plays by the desktop's rules, not against another of the person's own
+processes, until each mind runs under an account of its own.
 
 ## Turning it off
 

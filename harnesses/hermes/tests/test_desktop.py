@@ -82,65 +82,92 @@ class LedgerTests(unittest.TestCase):
 
 CREDENTIAL = "mem-" + "ab" * 32
 URL = "unix:/run/yantrik-mind/1000/memory.sock"
+SESSION = "agent:main:yantrik:dm:desktop"
+
+
+class Registry:
+    """The provider's in-process registry as the adapter sees it: every call, in order."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, session_key, credential, url):
+        self.calls.append((session_key, credential, url))
 
 
 class MemoryCredentialTests(unittest.TestCase):
-    """What the YantrikDB provider reads on every call (#447), set from the turn Hermes is on."""
+    """What the YantrikDB provider is handed for a gateway session (#447), from the turn Hermes is on."""
 
-    def test_a_granted_turn_hands_the_provider_its_credential_and_where_to_present_it(self):
-        env = {}
-        self.assertTrue(desktop.carry_memory({"turn_id": 1, "memory_credential": CREDENTIAL, "memory_url": URL}, env))
-        self.assertEqual(env, {"YANTRIK_MEMORY_CREDENTIAL": CREDENTIAL, "YANTRIK_MEMORY_URL": URL})
+    def setUp(self):
+        self.env_before = dict(os.environ)
 
-    def test_a_turn_without_one_takes_the_last_one_away_so_a_revoked_grant_stops_working(self):
-        env = {}
-        desktop.carry_memory({"memory_credential": CREDENTIAL, "memory_url": URL}, env)
-        self.assertFalse(desktop.carry_memory({"turn_id": 2, "text": "hi"}, env))
-        self.assertEqual(env, {}, "nothing from the granted turn is left behind")
+    def tearDown(self):
+        # Every test here also proves nothing reached the process environment, which every
+        # platform the gateway serves, and every command their tools start, can read.
+        self.assertEqual(dict(os.environ), self.env_before, "the credential went into the environment")
+
+    def test_a_granted_turn_registers_its_credential_and_address_for_its_session_alone(self):
+        registry = Registry()
+        turn = {"turn_id": 1, "memory_credential": CREDENTIAL, "memory_url": URL}
+        self.assertTrue(desktop.carry_memory(turn, SESSION, registry))
+        self.assertEqual(registry.calls, [(SESSION, CREDENTIAL, URL)])
+
+    def test_a_turn_without_one_clears_it_so_a_revoked_grant_stops_working(self):
+        registry = Registry()
+        desktop.carry_memory({"memory_credential": CREDENTIAL, "memory_url": URL}, SESSION, registry)
+        self.assertFalse(desktop.carry_memory({"turn_id": 2, "text": "hi"}, SESSION, registry))
+        self.assertEqual(registry.calls[-1], (SESSION, None, None))
         # An empty one, or one that is not a string, is none at all.
-        desktop.carry_memory({"memory_credential": CREDENTIAL, "memory_url": URL}, env)
-        self.assertFalse(desktop.carry_memory({"memory_credential": "", "memory_url": URL}, env))
-        self.assertEqual(env, {})
-        self.assertFalse(desktop.carry_memory({"memory_credential": ["mem-x"]}, env))
-        self.assertEqual(env, {})
+        self.assertFalse(desktop.carry_memory({"memory_credential": "", "memory_url": URL}, SESSION, registry))
+        self.assertFalse(desktop.carry_memory({"memory_credential": ["mem-x"]}, SESSION, registry))
+        self.assertEqual(registry.calls[-2:], [(SESSION, None, None)] * 2)
 
-    def test_a_credential_with_nowhere_to_go_does_not_reuse_an_old_address(self):
-        env = {}
-        desktop.carry_memory({"memory_credential": CREDENTIAL, "memory_url": URL}, env)
-        self.assertTrue(desktop.carry_memory({"memory_credential": CREDENTIAL}, env))
-        self.assertEqual(env, {"YANTRIK_MEMORY_CREDENTIAL": CREDENTIAL})
+    def test_a_credential_with_nowhere_to_go_is_still_handed_over_with_no_address(self):
+        registry = Registry()
+        self.assertTrue(desktop.carry_memory({"memory_credential": CREDENTIAL}, SESSION, registry))
+        self.assertEqual(registry.calls, [(SESSION, CREDENTIAL, None)])
 
-    def test_the_process_environment_is_the_default_because_the_provider_reads_it_there(self):
-        saved = {k: os.environ.get(k) for k in ("YANTRIK_MEMORY_CREDENTIAL", "YANTRIK_MEMORY_URL")}
-        try:
-            desktop.carry_memory({"memory_credential": CREDENTIAL, "memory_url": URL})
-            self.assertEqual(os.environ["YANTRIK_MEMORY_CREDENTIAL"], CREDENTIAL)
-            desktop.carry_memory({})
-            self.assertNotIn("YANTRIK_MEMORY_CREDENTIAL", os.environ)
-            self.assertNotIn("YANTRIK_MEMORY_URL", os.environ)
-        finally:
-            for key, value in saved.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
+    def test_the_registry_is_found_lazily_and_its_absence_is_none_not_an_error(self):
+        import types
+
+        calls = []
+        module = types.SimpleNamespace(**{desktop.REGISTRY_FUNCTION: lambda *a: calls.append(a)})
+
+        def has_it(name):
+            self.assertEqual(name, desktop.REGISTRY_MODULE)
+            return module
+
+        def missing(name):
+            raise ImportError(name)
+
+        found = desktop.find_registry(has_it)
+        found("s", None, None)
+        self.assertEqual(calls, [("s", None, None)])
+        self.assertIsNone(desktop.find_registry(missing), "no provider: no registry, and no crash")
+        self.assertIsNone(desktop.find_registry(lambda name: types.SimpleNamespace()), "an older provider")
 
     def test_the_credential_is_never_logged_or_returned(self):
         import logging
 
         with self.assertNoLogs(level=logging.DEBUG):
-            got = desktop.carry_memory({"memory_credential": CREDENTIAL, "memory_url": URL}, {})
+            got = desktop.carry_memory({"memory_credential": CREDENTIAL, "memory_url": URL}, SESSION, Registry())
         self.assertIs(got, True)
 
-    def test_the_adapter_says_whether_a_turn_carried_memory_and_never_what(self):
-        # The adapter needs Hermes to import, so its log lines are read as source: the one place
-        # it speaks of the credential names the fact, never the value.
+    def test_the_adapter_hands_the_credential_to_the_registry_and_never_to_the_environment(self):
+        # The adapter needs Hermes to import, so it is read as source. The gateway is one process
+        # for every platform: an environment variable was every platform's credential.
         source = (Path(__file__).resolve().parents[1] / "adapter.py").read_text(encoding="utf-8")
-        self.assertIn("desktop.carry_memory(assignment)", source)
+        self.assertIn("desktop.carry_memory(assignment, session_key, register)", source)
+        self.assertIn("desktop.find_registry()", source)
+        self.assertNotIn("YANTRIK_MEMORY_CREDENTIAL", source)
+        self.assertNotIn("YANTRIK_MEMORY_URL", source)
         for line in source.splitlines():
             if "logger." in line:
+                self.assertNotIn("credential)", line)
                 self.assertNotIn("memory_credential", line)
-                self.assertNotIn("MEMORY_CREDENTIAL", line)
+                self.assertNotIn("str(exc)", line, "a provider's message could quote what it was given")
+        desktop_source = (Path(__file__).resolve().parents[1] / "desktop.py").read_text(encoding="utf-8")
+        self.assertNotIn("environ[", desktop_source)
 
 
 class FakeDesktop:

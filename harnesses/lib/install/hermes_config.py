@@ -1,39 +1,52 @@
-"""Give Hermes's `yantrik` platform the desktop's tools and not Hermes's own: hermes_config.py apply|check CONFIG
+"""Give Hermes's `yantrik` platform the desktop's tools and nothing of Hermes's own: hermes_config.py apply|check CONFIG
 
-Run by hermes.sh with Hermes's own Python, which has PyYAML, against the file `hermes config path`
-names. `hermes config set` cannot write this: it turns every value into a string, a number or a
-boolean, never a list. `hermes tools` does not know plugin platforms at all.
+Run by hermes.sh with Hermes's own Python, which has PyYAML and Hermes's own modules, against the
+file `hermes config path` names. `hermes config set` cannot write this: it turns every value into a
+string, a number or a boolean, never a list. `hermes tools` does not know plugin platforms at all.
 
 Why it matters. Hermes arrives with `terminal`, `file`, `code_execution`, `browser` and `web`
 toolsets of its own. On this desktop they are a second, ungraded route to everything the apps
 offer: a live machine was found running Hermes's own `terminal` as the person, past every shell
-approval, drawing windows on the person's desktop. With `platform_toolsets.yantrik` set, the
-desktop platform gets only what is listed here, and the desktop's own tools come through
-`yantrik_os`, graded like any agent's.
+approval, drawing windows on the person's desktop. So the desktop platform is held to an
+allowlist, and the desktop's own tools come through the `yantrik_os` MCP server, graded like any
+agent's.
+
+A list in the file is not the whole answer, because Hermes adds to it when it resolves a
+platform: a plugin toolset the platform has not "seen" is on by default, a composite toolset
+expands, and every enabled MCP server is added unless the platform names the ones it wants. So:
+
+- the platform names `yantrik_os`, which makes Hermes treat MCP servers as an allowlist of that
+  one. Not Hermes's `no_mcp`: with it, Hermes drops every MCP server the platform names, the
+  desktop's own included, and the platform would have no desktop tools at all;
+- every plugin toolset Hermes knows now is marked seen for the platform, so none is on by default;
+- `skills.inline_shell` is off: with it, a skill's text can run shell commands as it loads;
+- `check` asks Hermes's own resolver which toolsets the platform really gets, and fails on
+  anything outside the allowlist.
 
 `apply` keeps every other key in the file as it was. The file is backed up once, beside itself,
 before the first change this script makes to it, and written whole through a temporary file, so a
 failure leaves the old file in place. Comments in it are not kept: Hermes's own `config set` drops
 them the same way.
-
-`check` reads the file back and exits non-zero, saying why, if the platform is missing its list or
-has any of Hermes's own toolsets in it.
 """
 
 import os
 import sys
 
-# What harnesses/hermes/README.md asks for, and what the desktop platform is given.
-YANTRIK_TOOLSETS = ["skills", "todo", "memory", "session_search", "clarify", "delegation", "yantrik_os"]
-# Hermes's own routes around the desktop. None of them may be on the desktop platform.
-FORBIDDEN = ("terminal", "file", "code_execution", "browser", "web")
+PLATFORM = "yantrik"
+# What harnesses/hermes/README.md asks for: all the desktop platform may have, and what it is given.
+ALLOWED = ["skills", "todo", "memory", "session_search", "clarify", "delegation", "yantrik_os"]
+YANTRIK_OS = "yantrik_os"
+# The desktop's tools, as an MCP server, when the person has not configured it already. The bridge
+# may hold a call for 270 seconds while a person answers a card (README.md, "an MCP client must
+# allow os_act up to 270 seconds").
+YANTRIK_OS_SERVER = {"command": "/opt/yantrik/bin/yos-mcp", "timeout": 300}
 # A research sub-agent that may take 50 turns will take 50.
 DELEGATION_MAX_ITERATIONS = 25
 BACKUP_SUFFIX = ".before-yantrik-desktop"
 
 
 class ConfigError(Exception):
-    """The file is not something this can safely change."""
+    """The file is not something this can safely change, or Hermes could not be asked."""
 
 
 def _read(path):
@@ -64,12 +77,40 @@ def _section(data, key, path):
     return value
 
 
-def apply(path):
-    """Set the desktop platform's toolsets and the delegation limit in the file at `path`."""
+def hermes_plugin_toolsets():
+    """Every plugin toolset this Hermes knows, from Hermes itself."""
+    try:
+        from hermes_cli.tools_config import _get_plugin_toolset_keys
+    except Exception as exc:
+        raise ConfigError("cannot ask Hermes which plugin toolsets it has: %s" % exc)
+    return sorted(str(k) for k in _get_plugin_toolset_keys())
+
+
+def hermes_resolver():
+    """Hermes's own answer to which toolsets a platform gets, as the gateway asks it."""
+    try:
+        from hermes_cli.tools_config import _get_platform_tools
+    except Exception as exc:
+        raise ConfigError("cannot ask Hermes which toolsets the desktop platform gets: %s" % exc)
+    return _get_platform_tools
+
+
+def apply(path, plugin_toolsets=()):
+    """Hold the desktop platform to the allowlist in the file at `path`."""
     import yaml
 
     data, text = _read(path)
-    _section(data, "platform_toolsets", path)["yantrik"] = list(YANTRIK_TOOLSETS)
+    _section(data, "platform_toolsets", path)[PLATFORM] = list(ALLOWED)
+    # Seen, so Hermes's resolver treats each as chosen-off rather than new-and-on.
+    known = _section(data, "known_plugin_toolsets", path)
+    seen = known.get(PLATFORM)
+    if seen is not None and not isinstance(seen, list):
+        raise ConfigError("`known_plugin_toolsets.%s` in %s is not a list; not touching it" % (PLATFORM, path))
+    known[PLATFORM] = sorted({str(t) for t in (seen or [])} | {str(t) for t in plugin_toolsets})
+    servers = _section(data, "mcp_servers", path)
+    if YANTRIK_OS not in servers:
+        servers[YANTRIK_OS] = dict(YANTRIK_OS_SERVER)
+    _section(data, "skills", path)["inline_shell"] = False
     _section(data, "delegation", path)["max_iterations"] = DELEGATION_MAX_ITERATIONS
 
     directory = os.path.dirname(os.path.abspath(path))
@@ -96,32 +137,52 @@ def apply(path):
 
 
 def toolsets(path):
-    """The desktop platform's toolsets in the file at `path`, or None when it has no list."""
+    """The desktop platform's list in the file at `path`, or None when it has none."""
     data, _ = _read(path)
     platforms = data.get("platform_toolsets")
-    found = platforms.get("yantrik") if isinstance(platforms, dict) else None
+    found = platforms.get(PLATFORM) if isinstance(platforms, dict) else None
     return [str(t) for t in found] if isinstance(found, list) else None
 
 
-def problems(path):
-    """What is wrong with the desktop platform's toolsets in the file at `path`, if anything."""
-    found = toolsets(path)
-    if found is None:
-        return ["platform_toolsets.yantrik is not set, so the desktop platform gets every toolset Hermes has"]
-    own = [t for t in found if t in FORBIDDEN]
-    if own:
-        return ["platform_toolsets.yantrik still has Hermes's own %s" % ", ".join(own)]
-    return []
+def problems(path, resolve):
+    """Everything that gives the desktop platform more than the allowlist, as sentences.
+
+    `resolve(config, platform)` is Hermes's `_get_platform_tools`; tests hand in their own.
+    """
+    data, _ = _read(path)
+    wrong = []
+    listed = toolsets(path)
+    if listed is None:
+        wrong.append("platform_toolsets.%s is not set, so the desktop platform gets every toolset Hermes has" % PLATFORM)
+    else:
+        extra = [t for t in listed if t not in ALLOWED]
+        if extra:
+            wrong.append("platform_toolsets.%s lists %s, which the desktop platform may not have" % (PLATFORM, ", ".join(extra)))
+    skills = data.get("skills")
+    if isinstance(skills, dict) and skills.get("inline_shell"):
+        wrong.append("skills.inline_shell is on, so a skill can run shell commands as it loads")
+    # What the gateway will really hand the platform, from the same raw file it reads.
+    try:
+        effective = {str(t) for t in resolve(data, PLATFORM)}
+    except ConfigError:
+        raise
+    except Exception as exc:
+        raise ConfigError("Hermes could not resolve the desktop platform's toolsets: %s" % exc)
+    extra = sorted(effective - set(ALLOWED))
+    if extra:
+        wrong.append("Hermes resolves the desktop platform to %s as well, which it may not have" % ", ".join(extra))
+    return wrong
 
 
-def main(argv):
+def main(argv, plugin_toolsets=hermes_plugin_toolsets, resolver=hermes_resolver):
     if len(argv) != 3 or argv[1] not in ("apply", "check"):
         print("usage: hermes_config.py apply|check CONFIG", file=sys.stderr)
         return 2
+    path = argv[2]
     try:
         if argv[1] == "apply":
-            apply(argv[2])
-        wrong = problems(argv[2])
+            apply(path, plugin_toolsets())
+        wrong = problems(path, resolver())
     except (ConfigError, OSError) as exc:
         print(exc, file=sys.stderr)
         return 1
@@ -129,7 +190,7 @@ def main(argv):
         print(line, file=sys.stderr)
     if wrong:
         return 1
-    print("Hermes's desktop platform has only: %s" % ", ".join(toolsets(argv[2])))
+    print("Hermes's desktop platform has only: %s" % ", ".join(toolsets(path)))
     return 0
 
 

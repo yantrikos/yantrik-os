@@ -10,6 +10,7 @@ what the person typed, and streams the answer back.
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import socket
@@ -17,7 +18,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 ATTACH = "harness.attach"
 POLL = "harness.poll"
@@ -31,21 +32,37 @@ class HarnessError(Exception):
     """The desktop refused a call, or could not be reached."""
 
 
-# Where Hermes's YantrikDB memory provider, in its `yantrik` mode, reads the credential to present
-# to the machine's memory server and where that server is, on every call it makes.
-MEMORY_CREDENTIAL = "YANTRIK_MEMORY_CREDENTIAL"
-MEMORY_URL = "YANTRIK_MEMORY_URL"
+# Where Hermes's YantrikDB memory provider keeps, in this process's memory, the credential each
+# gateway session presents to the machine's memory server. Never the process environment: the
+# gateway serves every platform from one process, and an environment variable would be read by
+# Telegram's sessions and by every command any platform's tools start.
+# TODO(registry): the exact module and function, from the plugin release that adds them.
+REGISTRY_MODULE = "yantrikdb_hermes_plugin.yantrik_memory"
+REGISTRY_FUNCTION = "set_desktop_credential"
 
 
-def carry_memory(assignment: Dict[str, Any], environ=os.environ) -> bool:
-    """Hand the YantrikDB provider this turn's memory credential, or take away the last one.
+def find_registry(import_module=importlib.import_module) -> Optional[Callable[..., Any]]:
+    """The provider's `set(session_key, credential, url)`, or None when this Hermes has none.
+
+    Looked up when it is needed, not at import: the provider is a separate package, installed
+    beside Hermes, and a Hermes without it still runs the desktop platform, with no memory.
+    """
+    try:
+        registry = getattr(import_module(REGISTRY_MODULE), REGISTRY_FUNCTION)
+    except (ImportError, AttributeError):
+        return None
+    return registry if callable(registry) else None
+
+
+def carry_memory(assignment: Dict[str, Any], session_key: str, register: Callable[..., Any]) -> bool:
+    """Hand the YantrikDB provider this turn's memory credential for `session_key`, or take it away.
 
     The desktop puts a credential on every turn of a mind the person granted some use of their
     memory (#447), and none on a turn of a mind with no grant. So a turn without one is a grant
-    taken away, and what an earlier turn left in the environment is removed rather than kept: a
-    revoked grant has to stop working at the next turn, not when Hermes next restarts. The memory
-    server asks the desktop about each credential as well, so a stale one would be refused there;
-    this is so Hermes never presents one.
+    taken away, and what an earlier turn registered is cleared rather than kept: a revoked grant
+    has to stop working at the next turn, not when Hermes next restarts. The memory server asks
+    the desktop about each credential as well, so a stale one would be refused there; this is so
+    Hermes never presents one.
 
     Returns whether the turn carried one. The credential itself is never returned, printed or
     logged.
@@ -53,16 +70,11 @@ def carry_memory(assignment: Dict[str, Any], environ=os.environ) -> bool:
     credential = assignment.get("memory_credential")
     url = assignment.get("memory_url")
     if not isinstance(credential, str) or not credential:
-        environ.pop(MEMORY_CREDENTIAL, None)
-        environ.pop(MEMORY_URL, None)
+        register(session_key, None, None)
         return False
-    environ[MEMORY_CREDENTIAL] = credential
-    # A credential with nowhere to present it is still set, so the provider can say why it has
-    # no memory rather than finding nothing; a URL from an earlier turn is not reused with it.
-    if isinstance(url, str) and url:
-        environ[MEMORY_URL] = url
-    else:
-        environ.pop(MEMORY_URL, None)
+    # A credential with nowhere to present it is still handed over, so the provider can say why it
+    # has no memory rather than finding nothing.
+    register(session_key, credential, url if isinstance(url, str) and url else None)
     return True
 
 
