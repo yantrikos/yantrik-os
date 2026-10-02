@@ -209,7 +209,9 @@ environment — never on the command line — and offers the agent's terminal as
 The same token decides which agent's pane an approval card is drawn in (`request_approval` puts
 it on `Verified.agent`, and the card names it), and who is asking for `new_agent` (sensitive),
 `send_to_agent` and `stop_agent` (standard), and `read_agent` and `show_agent` (safe) —
-`control_agents.rs`. A call with no token is the person's; one whose token is not believed is
+`control_agents.rs`. The Agents workroom's pages are `show_workroom` (safe), read back under `workroom`
+in `describe shell`: the counts and each mind's state for any reader, the desks and the requests
+waiting for the person's own — `control_workroom.rs`. A call with no token is the person's; one whose token is not believed is
 refused. `consume_approval` binds a spend to the asking agent (#182): a caller that carries a
 token spends only the grants asked for it, whichever door the spend comes through. A Rust app
 forwarding a spend sends the pid the kernel stamped on the call its token arrived in as
@@ -303,7 +305,7 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | shell | `answer_recipe`, `pause_recipe`, `resume_recipe`, `cancel_recipe` | standard | steering a run already started |
 | shell | `new_agent`, `hand_off` | sensitive | starts an agent, with what that costs and whatever reach the role carries |
 | shell | `send_to_agent`, `stop_agent` | standard | talking to, or stopping, an agent the person started |
-| shell | `read_agent`, `show_agent` | safe | reads and showings |
+| shell | `read_agent`, `show_agent`, `show_workroom` | safe | reads and showings; `show_workroom` changes the Agents page and nothing about any agent, and is held while an approval card waits |
 | shell | `agent_run`, `agent_input` | sensitive | arbitrary commands; typing into a live shell |
 | shell | `agent_job`, `agent_kill` | standard | reading a job's state; ending a job the caller's token owns |
 | shell | `request_approval`, `approval_status`, `consume_approval`, `set_mind_mode`, `record_unasked_action`, `show_mind_audit`, `close_mind_menu` | safe | the approval machinery itself, which must never act; `set_mind_mode` refuses every loosening, so it can only tighten |
