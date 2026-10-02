@@ -12,6 +12,9 @@
 # AIG's own model (bonsai2-27b) leads no longer: on this machine it could not fill a tool's named
 # parameters, and repeated the same bare string to the desktop seven times over two runs.
 #
+# NVIDIA NIM is given to the Mind too (mind-env.sh) but leads nothing until YM_PRIMARY_BRAIN says
+# nim:nvidia/nemotron-3-super-120b-a12b.
+#
 # Each provider's key, in the Mind's settings, is the instance key the AIG lane already carries:
 # the gate checks it and puts the real key on.
 set -eu

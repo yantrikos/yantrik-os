@@ -13,15 +13,17 @@ cp "$f" "$f.before-cloud"
 # the old one.
 sed '/^# The cloud providers, through the gate/d; /^YM_LOCAL_ROLE=/d; /^YM_PRIMARY_BRAIN=/d;
      /^YM_PROVIDER_BASE_URL_OLLAMA_CLOUD=/d; /^YM_PROVIDER_BASE_URL_NANOGPT=/d;
-     /^OLLAMA_CLOUD_KEY=/d; /^NANOGPT_KEY=/d' "$f" > "$f.new"
+     /^YM_PROVIDER_BASE_URL_NIM=/d; /^OLLAMA_CLOUD_KEY=/d; /^NANOGPT_KEY=/d; /^NIM_KEY=/d' "$f" > "$f.new"
 cat >> "$f.new" <<EOF
 # The cloud providers, through the gate (deploy/live/gate-models/point-mind.sh).
 YM_LOCAL_ROLE=fallback
 YM_PRIMARY_BRAIN=ollama-cloud:kimi-k3
 YM_PROVIDER_BASE_URL_OLLAMA_CLOUD=$url/ollama-cloud/v1
 YM_PROVIDER_BASE_URL_NANOGPT=$url/nanogpt/api/v1
+YM_PROVIDER_BASE_URL_NIM=$url/nim/v1
 OLLAMA_CLOUD_KEY=$key
 NANOGPT_KEY=$key
+NIM_KEY=$key
 EOF
 mv "$f.new" "$f"
 echo "the Mind's settings name the gate for both cloud providers"

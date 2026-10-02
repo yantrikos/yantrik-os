@@ -13,6 +13,9 @@ const RULES = {
     'ollama-cloud': { models: ['kimi-k3', 'deepseek-v4.1-flash'], daily: 1500 },
     // The subscription Pranab's own Mind calls first: the instance's fallback, and kept small.
     'nanogpt': { models: ['deepseek/deepseek-v4-pro-cheaper'], daily: 100 },
+    // NVIDIA NIM: one model, the one the Mind's catalogue defaults to, and a count as small as
+    // NanoGPT's: a loop on the live machine must not run down a key that is Pranab's.
+    'nim': { models: ['nvidia/nemotron-3-super-120b-a12b'], daily: 100 },
 };
 
 // What the Mind's OpenAI-compatible backend sends (yantrik-ml generic_openai.rs). Anything else

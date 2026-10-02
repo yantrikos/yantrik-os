@@ -1,9 +1,9 @@
 #!/bin/sh
-# Give the live instance's Mind two cloud providers, Ollama Cloud and NanoGPT, through the gate
+# Give the live instance's Mind three cloud providers, Ollama Cloud, NanoGPT and NVIDIA NIM, through the gate
 # (VM 560), beside the AIG route it already has. Run on node2 as root, from this directory, with
-# the two keys on stdin as KEY=value lines; they go straight into the gate (root, 600) and are
+# the keys on stdin as KEY=value lines; they go straight into the gate (root, 600) and are
 # never written on node2 or printed:
-#   grep -E '^(OLLAMA_CLOUD_KEY|NANOGPT_KEY)=' keys.env | ssh root@node2 'cd …/gate-models && sh setup-models.sh'
+#   grep -E '^(OLLAMA_CLOUD_KEY|NANOGPT_KEY|NIM_KEY)=' keys.env | ssh root@node2 'cd …/gate-models && sh setup-models.sh'
 # VM defaults to 560. Needs gate-setup.sh's model proxy in place, and must be run again after
 # gate-setup.sh, which rewrites live-model.conf without this directory's include. Run it again
 # to change a key; a run nginx refuses puts back everything it touched.
@@ -19,10 +19,12 @@ keys=$(tr -d '\r')
 value() { printf '%s\n' "$keys" | sed -n "s/^$1=\([A-Za-z0-9._-]\{20,200\}\)\$/\1/p" | head -n 1; }
 ollama=$(value OLLAMA_CLOUD_KEY)
 nano=$(value NANOGPT_KEY)
+# A NIM key is `nvapi-` and base64url, about 70 characters in all; anything else is refused, not trimmed.
+nim=$(printf '%s\n' "$keys" | sed -n 's/^NIM_KEY=\(nvapi-[A-Za-z0-9_-]\{40,90\}\)$/\1/p' | head -n 1)
 # The keys are written into nginx's configuration, so anything outside that character set (a
 # quote, a semicolon, a newline) is refused here rather than allowed to become a directive.
-[ -n "$ollama" ] || [ -n "$nano" ] \
-    || { echo "stdin needs OLLAMA_CLOUD_KEY= and/or NANOGPT_KEY= lines, each 20-200 of [A-Za-z0-9._-]" >&2; exit 1; }
+[ -n "$ollama" ] || [ -n "$nano" ] || [ -n "$nim" ] \
+    || { echo "stdin needs OLLAMA_CLOUD_KEY= or NANOGPT_KEY= (each 20-200 of [A-Za-z0-9._-]) and/or NIM_KEY= (nvapi- then 40-90 of [A-Za-z0-9_-]) lines" >&2; exit 1; }
 # A provider left out keeps the key the gate already has (pick-keys.py sends only what it finds),
 # but one the gate has never had cannot be left out.
 keep() {
@@ -32,6 +34,7 @@ keep() {
 }
 [ -n "$ollama" ] || keep ollama-cloud
 [ -n "$nano" ] || keep nanogpt
+[ -n "$nim" ] || keep nim
 
 # Everything this run may change, kept first, so a refused configuration goes back to exactly
 # what was there, the previous working routes and keys included.
@@ -47,7 +50,7 @@ umask 077
 rm -rf /etc/live-gate/before-cloud
 install -d -m 700 /etc/live-gate/before-cloud /etc/nginx/live-routes /etc/nginx/njs
 for f in /etc/nginx/conf.d/live-model.conf /etc/nginx/conf.d/live-cloud.conf /etc/nginx/live-routes/cloud.conf \
-         /etc/nginx/njs/live_models.js /etc/live-gate/ollama-cloud.auth /etc/live-gate/nanogpt.auth; do
+         /etc/nginx/njs/live_models.js /etc/live-gate/ollama-cloud.auth /etc/live-gate/nanogpt.auth /etc/live-gate/nim.auth; do
   if [ -e "$f" ]; then cp -p "$f" "/etc/live-gate/before-cloud/$(echo "$f" | tr / _)"; fi
 done
 echo kept' < /dev/null
@@ -57,6 +60,7 @@ echo kept' < /dev/null
 auth() { printf 'proxy_set_header Authorization "Bearer %s";\n' "$1"; }
 [ -z "$ollama" ] || auth "$ollama" | guest 'set -e; umask 077; cat > /etc/live-gate/ollama-cloud.auth.new; mv /etc/live-gate/ollama-cloud.auth.new /etc/live-gate/ollama-cloud.auth'
 [ -z "$nano" ] || auth "$nano" | guest 'set -e; umask 077; cat > /etc/live-gate/nanogpt.auth.new; mv /etc/live-gate/nanogpt.auth.new /etc/live-gate/nanogpt.auth'
+[ -z "$nim" ] || auth "$nim" | guest 'set -e; umask 077; cat > /etc/live-gate/nim.auth.new; mv /etc/live-gate/nim.auth.new /etc/live-gate/nim.auth'
 guest 'set -e; umask 077; cat > /etc/nginx/njs/live_models.js.new; mv /etc/nginx/njs/live_models.js.new /etc/nginx/njs/live_models.js' < live_models.js
 
 # The routes, with the instance key filled in on the gate itself (by awk reading the key file,
@@ -73,6 +77,7 @@ cat > /etc/nginx/conf.d/live-cloud.conf <<EOF
 # live-gate (deploy/live/gate-models): rates, daily counts and the filter of the cloud routes.
 limit_req_zone \$server_addr zone=live_ollama_cloud:1m rate=30r/m;
 limit_req_zone \$server_addr zone=live_nanogpt:1m rate=10r/m;
+limit_req_zone \$server_addr zone=live_nim:1m rate=10r/m;
 js_shared_dict_zone zone=live_budget:64k type=number timeout=3d state=/var/lib/nginx/live_budget.json;
 js_import live from /etc/nginx/njs/live_models.js;
 EOF
@@ -84,7 +89,7 @@ chmod 600 /etc/nginx/conf.d/live-model.conf
 if ! grep -q "include /etc/nginx/live-routes/" /etc/nginx/conf.d/live-model.conf || ! nginx -t 2>/dev/null; then
   nginx -t 2>&1 | tail -3 || true
   for f in /etc/nginx/conf.d/live-model.conf /etc/nginx/conf.d/live-cloud.conf /etc/nginx/live-routes/cloud.conf \
-           /etc/nginx/njs/live_models.js /etc/live-gate/ollama-cloud.auth /etc/live-gate/nanogpt.auth; do
+           /etc/nginx/njs/live_models.js /etc/live-gate/ollama-cloud.auth /etc/live-gate/nanogpt.auth /etc/live-gate/nim.auth; do
     kept="/etc/live-gate/before-cloud/$(echo "$f" | tr / _)"
     if [ -e "$kept" ]; then cp -p "$kept" "$f"; else rm -f "$f"; fi
   done
@@ -93,4 +98,4 @@ if ! grep -q "include /etc/nginx/live-routes/" /etc/nginx/conf.d/live-model.conf
   exit 1
 fi
 systemctl reload nginx
-echo "cloud routes live: /ollama-cloud/v1/chat/completions, /nanogpt/api/v1/chat/completions"' < routes.conf
+echo "cloud routes live: /ollama-cloud/v1/chat/completions, /nanogpt/api/v1/chat/completions, /nim/v1/chat/completions"' < routes.conf
