@@ -35,3 +35,9 @@ Branch `ui/batch-1`, from `origin/main` (after #573, #586, #577, #578, #579, #58
 ## Notes for review
 - #583 turned `Theme.accent` blue. #584's workroom still uses `Theme.accent` for links and two highlights (agents.slint); the spec wants teal for minds. Not changed here (one concern per PR).
 - The `review/pr-58*` author reports from the source branches came in with the merges and should not land on main.
+
+## Tests (run on the integrated branch; CARGO_BUILD_JOBS=1, CARGO_PROFILE_DEV_DEBUG=0, CARGO_INCREMENTAL=0, 12 GB swapfile)
+- `cargo test -p yantrik-ui-kit`: 15 passed, 0 failed (includes `an_idle_window_stops_drawing::*` and the `consent_buttons_are_pointer_only` source scans). One test needed a fix after the merge: it looked for the mind-colour mark in `intent_lens.slint`, but Chat v2 moved the header to `chat_chrome.slint`.
+- `cargo test -p yantrik-ui --bin yantrik-ui`: 1155 passed, 1 failed, 1 ignored. The failure is `harness_install::tests::a_coloured_installer_reaches_the_row_as_plain_text`: the log has an extra leading `nvm` line, which this sandbox's shell profile prints. `harness_install.rs` is not changed by this batch; I did not run the test on plain main to confirm it fails there too.
+- Not run: `tests/ui-preview` scenes (`validate.sh`, including `verify-chat`, `verify-approval-pointer-only`, `verify-dock`, `verify-alt-tab`) and `cargo test --workspace`. No rendered PNGs were looked at.
+- Sandbox setup needed: apt packages libspeechd-dev, libclang-dev, libasound2-dev and other `-dev` libraries.
