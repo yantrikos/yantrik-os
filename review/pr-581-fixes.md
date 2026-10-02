@@ -43,12 +43,19 @@ not running. Nothing about Alt+Tab goes through `yos` any more.
 
 `cargo test -p yantrik-ui --bin yantrik-ui` (CARGO_BUILD_JOBS=1, CARGO_PROFILE_DEV_DEBUG=0, a 12 GB swapfile after the first build was OOM-killed): **1020 passed, 1 failed, 1 ignored**. The one failure, `harness_install::tests::a_coloured_installer_reaches_the_row_as_plain_text`, is this sandbox's shell printing `nvm` before the installer's output (`left: "nvm\n✓ uv ready"`); it is in code this PR does not touch. The 20 new or rewritten tests here (`alt_tab` 10 incl. 2 new, `control_switcher` 11, `toplevel_watch` 1 unchanged) all pass: `cargo test ... -- alt_tab control_switcher toplevel_watch` gives 31 passed, 0 failed.
 
+## Preview
+
+`cargo run --manifest-path tests/ui-preview/Cargo.toml --profile fast -- target/ui-validation/alt-tab.png 1280 800 verify-alt-tab`
+passes all its assertions, including the new one that Escape still reaches the card after a click on a page
+arrow. Looking at the PNG (`alt-tab-20.png`) caught a bug the assertions did not: the first version of the
+arrows had no size, so they filled the card and drew one chevron in the middle; they are now 28px compact
+icon buttons at the card's two corners. The narrow (700 px) scene was not rendered.
+
 ## Not verified / left out
 
 - No real labwc here: the themerc/`windowSwitcher` look, `allWorkspaces`, and `activate(id)` against a
   live compositor are unexercised. The OSD keys are labwc 0.7+; an older labwc ignores ones it does not know.
 - `activate(id)` queues a `zwlr_foreign_toplevel_handle_v1.activate` on the stream's connection; its
   success is "the request was queued for a window still listed", not "focus moved".
-- Card idle redraws (`verify-idle` style) were not added; the card has no timers or animations, and the
-  preview run below only checks behaviour.
+- Card idle redraws (`verify-idle` style) were not added; the card has no timers or animations.
 - Mind View scope, workspace in the footer and previews are still not built (findings 7 and 8).

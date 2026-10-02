@@ -213,6 +213,8 @@ export component AltTab inherits Rectangle {
             if root.pages > 1 : YIconButton {
                 x: Theme.sp-4;
                 y: parent.height - Theme.sp-4 - root.pager-h;
+                width: root.pager-h;
+                height: root.pager-h;
                 variant: 2;
                 label: "Previous page";
                 icon-path: Icons.chevron-left;
@@ -221,6 +223,8 @@ export component AltTab inherits Rectangle {
             if root.pages > 1 : YIconButton {
                 x: parent.width - Theme.sp-4 - root.pager-h;
                 y: parent.height - Theme.sp-4 - root.pager-h;
+                width: root.pager-h;
+                height: root.pager-h;
                 variant: 2;
                 label: "Next page";
                 icon-path: Icons.chevron-right;
