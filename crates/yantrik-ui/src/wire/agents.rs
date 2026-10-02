@@ -629,6 +629,17 @@ fn publish_lens(g: &AgentsState, s: &Store) {
     }
 }
 
+/// The latest status line of the active mind's open turn, for `describe shell`; empty when it has
+/// no turn running.
+pub fn latest_status() -> String {
+    let active = crate::wire::harness::host()
+        .map(|h| h.active_id())
+        .unwrap_or_else(|| crate::wire::harness::BUILTIN_ID.to_string());
+    crate::agents::store()
+        .read(|s| s.agent(&feed::main_agent(&active)).filter(|a| a.open_turn().is_some()).map(|a| a.status.trim().to_string()))
+        .unwrap_or_default()
+}
+
 fn work_card(w: &lens_work::Work) -> WorkCardData {
     WorkCardData {
         run: w.run.as_str().into(),

@@ -1182,6 +1182,11 @@ fn apply(agent: &mut Agent, event: &Event, provenance: Provenance, now: u64) -> 
                 }
             }
             turn.items.push(Item::Card(card));
+            // A status line is what the mind says between calls; the call now running says more.
+            // A question it asked keeps its line, because that is what the person must answer.
+            if agent.state != State::WaitingForYou {
+                agent.status.clear();
+            }
             if !matches!(agent.state, State::WaitingForYou | State::HarnessGone) {
                 set_state(agent, State::RunningTool, now);
             }
@@ -1761,6 +1766,21 @@ mod tests {
         assert_eq!(agent.state, State::WaitingForYou);
         assert_eq!(agent.status, "asks: Delete 3 old installers?");
         assert!(agent.pending_approvals.is_empty(), "a question is not an OS approval and never goes to the gate");
+    }
+
+    #[test]
+    fn a_status_replaces_the_last_one_and_a_tool_start_overrides_it() {
+        let (mut s, _) = store();
+        let pi = id("pi:main");
+        s.open_turn(&pi, "look into it");
+        let status = |t: &str| Event::Status { text: t.into() };
+        s.event(&pi, &status("Grounding from memory…"), Provenance::Reported);
+        assert_eq!(s.agent(&pi).unwrap().status, "Grounding from memory…");
+        s.event(&pi, &status("Thinking… (30 s)"), Provenance::Reported);
+        assert_eq!(s.agent(&pi).unwrap().status, "Thinking… (30 s)", "replaced, never appended");
+        let start = Event::ToolStart { call: "c1".into(), name: "os_act".into(), target: String::new(), args: serde_json::Value::Null };
+        s.event(&pi, &start, Provenance::Reported);
+        assert_eq!(s.agent(&pi).unwrap().status, "", "a call in progress is the activity now");
     }
 
     #[test]

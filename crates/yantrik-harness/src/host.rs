@@ -99,12 +99,61 @@ struct Flight {
     tx: Option<Sender<Chunk>>,
     /// When the desktop stopped waiting.
     abandoned: Option<Instant>,
+    /// Why the desktop stopped waiting, for the one log line a drop gets.
+    gone: Gone,
+    /// Whether that line has been written for this turn.
+    drop_logged: bool,
+    /// What the harness said after nobody was listening, kept (capped) so the answer is not lost
+    /// silently: see [`Host::with_late_answer`]. Never logged.
+    late: String,
     calls: HashMap<String, Call>,
+}
+
+/// Why a turn's chunks have nowhere to go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Gone {
+    /// The person stopped the agent.
+    Stopped,
+    /// The person said something to it, which ended the turn.
+    Interrupted,
+    /// The panel stopped listening: New chat, a mind switch, or the window closed.
+    NoListener,
+}
+
+impl Gone {
+    fn words(self) -> &'static str {
+        match self {
+            Gone::Stopped => "stopped",
+            Gone::Interrupted => "interrupted to say something",
+            Gone::NoListener => "no listener (new chat, mind switch or panel closed)",
+        }
+    }
+}
+
+/// How much of a late answer is kept for the person to find.
+const MAX_LATE_BYTES: usize = 16 * 1024;
+
+/// An answer that arrived after the person had left the chat it was for.
+#[derive(Clone, Debug)]
+pub struct LateAnswer {
+    pub harness: String,
+    pub turn_id: u64,
+    pub conversation: String,
+    /// What the harness said, in full up to a cap.
+    pub text: String,
 }
 
 impl Flight {
     fn new(conversation: String, tx: Sender<Chunk>) -> Flight {
-        Flight { conversation, tx: Some(tx), abandoned: None, calls: HashMap::new() }
+        Flight {
+            conversation,
+            tx: Some(tx),
+            abandoned: None,
+            gone: Gone::NoListener,
+            drop_logged: false,
+            late: String::new(),
+            calls: HashMap::new(),
+        }
     }
 
     /// Whether the next turn in this conversation still has to wait for this one.
@@ -152,6 +201,14 @@ impl Flight {
         }
     }
 
+    /// Say once per turn that what the harness sends is being dropped, and why. The log carries
+    /// the harness, the turn and the reason, never what was said.
+    fn log_drop(&mut self, harness: &str, turn_id: u64) {
+        if !std::mem::replace(&mut self.drop_logged, true) {
+            tracing::info!(harness, turn = turn_id, why = self.gone.words(), "the desktop is not waiting for this turn; what it sends is dropped");
+        }
+    }
+
     /// Finish the turn for whoever asked: every call still open ends *interrupted*, in the order
     /// the calls started, then the failure if there is one, then the channel closes. Once.
     fn settle(&mut self, failure: Option<String>) {
@@ -179,6 +236,11 @@ impl Flight {
     /// Stop waiting for this turn: it is settled for the reader now and stays here, holding its
     /// conversation, until the harness closes it or [`STOP_GRACE`] passes.
     fn abandon(&mut self, failure: Option<String>) {
+        self.gone = match failure.as_deref() {
+            Some(STOPPED) => Gone::Stopped,
+            Some(INTERRUPTED_TO_TELL) => Gone::Interrupted,
+            _ => Gone::NoListener,
+        };
         self.settle(failure);
         if self.abandoned.is_none() {
             self.abandoned = Some(Instant::now());
@@ -563,6 +625,8 @@ pub struct Host {
     /// Why no turn goes to any mind right now, when something paused them all: the person's
     /// Private mode. See [`Host::pause`].
     paused: Arc<std::sync::RwLock<Option<String>>>,
+    /// Told when an answer finishes for a chat the person had left. See [`Host::with_late_answer`].
+    late_answer: Option<Arc<dyn Fn(LateAnswer) + Send + Sync>>,
 }
 
 /// How the host decides who carries a memory credential, and how it digests one. The decision
@@ -599,7 +663,17 @@ impl Host {
             runs: None,
             memory: None,
             paused: Arc::new(std::sync::RwLock::new(None)),
+            late_answer: None,
         }
+    }
+
+    /// The same host, telling `hook` once when a turn ends well after the person had left its chat
+    /// (New chat, a mind switch, a closed panel), with what it said. The shell raises a
+    /// notification, so an answer is never lost without a word. A turn the person stopped is not
+    /// reported: they asked for it to end.
+    pub fn with_late_answer(mut self, hook: impl Fn(LateAnswer) + Send + Sync + 'static) -> Host {
+        self.late_answer = Some(Arc::new(hook));
+        self
     }
 
     /// Stop every turn to every mind, built-in included, saying `why` to whoever asks (`Some`), or
@@ -1707,6 +1781,13 @@ impl Host {
         let Some(tx) = &flight.tx else {
             // Stopped, or nobody is listening: the harness should stop working on it. Its next
             // call on this turn — this one — is where it learns that.
+            flight.log_drop(&harness.announced.id, turn_id);
+            // An answer for a chat the person left is kept to be told of at the end, not lost.
+            if flight.gone == Gone::NoListener && flight.late.len() < MAX_LATE_BYTES {
+                let room = MAX_LATE_BYTES - flight.late.len();
+                let cut = (0..=delta.len().min(room)).rev().find(|i| delta.is_char_boundary(*i)).unwrap_or(0);
+                flight.late.push_str(&delta[..cut]);
+            }
             return Ok(serde_json::json!({ "dropped": true }));
         };
         // An empty delta is a heartbeat: the call has already refreshed this session's presence,
@@ -1715,9 +1796,12 @@ impl Host {
             return Ok(serde_json::json!({}));
         }
         self.record("text", turn_id, |s| s.append(turn_id, "text", &serde_json::json!({ "delta": delta })));
-        if tx.send(Chunk::Text(delta)).is_err() {
-            // The panel stopped listening — the person closed it or asked something else.
+        if tx.send(Chunk::Text(delta.clone())).is_err() {
+            // The panel stopped listening — the person closed it or asked something else. This
+            // chunk is the first thing it missed.
             flight.abandon(None);
+            flight.log_drop(&harness.announced.id, turn_id);
+            flight.late.push_str(&delta);
             return Ok(serde_json::json!({ "dropped": true }));
         }
         Ok(serde_json::json!({}))
@@ -1747,6 +1831,7 @@ impl Host {
         };
         if flight.tx.is_none() {
             counts.late += 1;
+            flight.log_drop(&who, turn_id);
             return Ok(serde_json::json!({ "dropped": true }));
         }
 
@@ -1808,6 +1893,7 @@ impl Host {
         let tx = flight.tx.as_ref().expect("checked above");
         if tx.send(Chunk::Event(event)).is_err() {
             flight.abandon(None);
+            flight.log_drop(&who, turn_id);
             return Ok(serde_json::json!({ "dropped": true }));
         }
         counts.accepted += 1;
@@ -1828,6 +1914,19 @@ impl Host {
         };
         harness.remember_finished(turn_id);
         let abandoned = flight.tx.is_none();
+        let harness_id = harness.announced.id.clone();
+        if abandoned {
+            // A harness that closes a turn nobody waited for is a drop even if it never sent text.
+            flight.log_drop(&harness_id, turn_id);
+        }
+        // What it said to nobody, when the person simply left (not stopped it) and it ended well.
+        let late = (abandoned && failure.is_none() && flight.gone == Gone::NoListener && !flight.late.trim().is_empty())
+            .then(|| LateAnswer {
+                harness: harness_id,
+                turn_id,
+                conversation: flight.conversation.clone(),
+                text: std::mem::take(&mut flight.late),
+            });
         if !abandoned {
             if let Some(agent) = harness.agents.get_mut(&flight.conversation) {
                 agent.last = Some(match &failure {
@@ -1852,6 +1951,10 @@ impl Host {
             }
         }
         flight.settle(failure);
+        drop(state);
+        if let (Some(late), Some(hook)) = (late, &self.late_answer) {
+            hook(late);
+        }
         Ok(if abandoned { serde_json::json!({ "dropped": true }) } else { serde_json::json!({}) })
     }
 
@@ -3278,6 +3381,87 @@ mod tests {
         assert_eq!(host.agent_for_token(&token), None);
         let err = host.send_to(&agent, Turn::new("still there?")).unwrap_err();
         assert!(err.contains("no agent") && err.contains(&agent.to_string()), "{err}");
+    }
+
+    /// Counts the info lines of the drop and records their fields, never the text.
+    struct DropLog(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+    impl tracing::Subscriber for DropLog {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            struct V(String);
+            impl tracing::field::Visit for V {
+                fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
+                    self.0.push_str(&format!("{}={v:?} ", f.name()));
+                }
+            }
+            let mut v = V(String::new());
+            event.record(&mut v);
+            if *event.metadata().level() == tracing::Level::INFO && v.0.contains("not waiting") {
+                self.0.lock().unwrap().push(v.0);
+            }
+        }
+    }
+
+    #[test]
+    fn a_turn_the_desktop_stopped_waiting_for_logs_its_drop_once_with_why_and_never_the_text() {
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let host = host_with_nothing();
+        let (session, agent, turn_id, _answer) = turn_in_flight(&host);
+        assert!(host.stop_agent(&agent));
+        tracing::subscriber::with_default(DropLog(lines.clone()), || {
+            for text in ["secret one", "secret two"] {
+                let r = host
+                    .handle(protocol::CHUNK, &json!({ "session": session, "turn_id": turn_id, "delta": text }))
+                    .unwrap();
+                assert_eq!(r, json!({ "dropped": true }));
+            }
+            assert_eq!(complete(&host, &session, turn_id), json!({ "dropped": true }));
+        });
+        let lines = lines.lock().unwrap();
+        assert_eq!(lines.len(), 1, "one line per turn: {lines:?}");
+        assert!(lines[0].contains("pi") && lines[0].contains(&format!("turn={turn_id}")), "{}", lines[0]);
+        assert!(lines[0].contains("stopped"), "{}", lines[0]);
+        assert!(!lines[0].contains("secret"), "the text is never logged: {}", lines[0]);
+    }
+
+    #[test]
+    fn an_answer_that_arrives_after_the_chat_was_left_is_handed_on_not_lost() {
+        let told = std::sync::Arc::new(Mutex::new(Vec::<LateAnswer>::new()));
+        let sink = told.clone();
+        let host = host_with_nothing().with_late_answer(move |late| sink.lock().unwrap().push(late));
+        let (session, _agent, turn_id, answer) = turn_in_flight(&host);
+        // New chat: the desktop drops its listener, and the harness keeps working.
+        drop(answer);
+        for part in ["It took ", "a while."] {
+            host.handle(protocol::CHUNK, &json!({ "session": session, "turn_id": turn_id, "delta": part })).unwrap();
+        }
+        assert!(told.lock().unwrap().is_empty(), "nothing is said before the turn ends");
+        complete(&host, &session, turn_id);
+        let told = told.lock().unwrap();
+        assert_eq!(told.len(), 1);
+        assert_eq!((told[0].harness.as_str(), told[0].turn_id), ("pi", turn_id));
+        assert!(told[0].text.ends_with("a while."), "{:?}", told[0].text);
+    }
+
+    #[test]
+    fn a_turn_the_person_stopped_is_not_announced_as_a_late_answer() {
+        let told = std::sync::Arc::new(Mutex::new(Vec::<LateAnswer>::new()));
+        let sink = told.clone();
+        let host = host_with_nothing().with_late_answer(move |late| sink.lock().unwrap().push(late));
+        let (session, agent, turn_id, _answer) = turn_in_flight(&host);
+        assert!(host.stop_agent(&agent));
+        host.handle(protocol::CHUNK, &json!({ "session": session, "turn_id": turn_id, "delta": "too late" })).unwrap();
+        complete(&host, &session, turn_id);
+        assert!(told.lock().unwrap().is_empty());
     }
 
     #[test]

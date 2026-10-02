@@ -118,6 +118,20 @@ fn open_runs() -> Option<Arc<yantrik_harness::run_store::RunStore>> {
     }
 }
 
+/// "<Mind> answered after you left: <first 80 characters>". The notification is the desktop's own
+/// words around what the mind said, so the quoted start is clipped and marked as a quote.
+fn late_answer_notice(late: &yantrik_harness::LateAnswer) -> yantrik_app_runtime::notify::Notification {
+    use yantrik_app_runtime::notify::{Level, Notification};
+    let flat: String = late.text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut start: String = flat.chars().take(80).collect();
+    if flat.chars().count() > 80 {
+        start.push('\u{2026}');
+    }
+    Notification::new("Yantrik", format!("{} answered after you left: {start}", late.harness))
+        .body("It finished after the chat it was for was closed, so the answer is shown here instead.")
+        .urgency(Level::Normal)
+}
+
 pub fn wire(ui: &App, ctx: &AppContext) {
     // The memory grants read once as the shell starts, so their baseline is set now rather than
     // at the first question from the memory server, which may be hours away: until then a grant
@@ -154,6 +168,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let owner = std::fs::symlink_metadata(&socket).ok().map(|m| m.uid());
         owner.is_some_and(yantrik_ipc_transport::mind_door::is_mind).then(|| format!("unix:{socket}"))
     });
+    // An answer that finishes after the person left its chat is told as a notification: the chat
+    // is gone, and the text must not vanish without a word.
+    let host = host.with_late_answer(|late| yantrik_app_runtime::notify::send(late_answer_notice(&late)));
     let _ = HOST.set(host.clone());
 
     // The agent terminal's side of agents (design/agents-workspace-2026-09-23.md, decision 3):
@@ -869,5 +886,23 @@ mod tests {
         // An id the registry does not hold gets `set_active`'s sentence — the list of what is
         // attached — not a row's.
         assert_eq!(row_refusal(&pi_machine(None), &host.list(), "hermes"), None);
+    }
+}
+
+#[cfg(test)]
+mod late_answer_tests {
+    use super::*;
+
+    #[test]
+    fn a_late_answer_is_told_with_the_mind_and_the_first_80_characters() {
+        let late = yantrik_harness::LateAnswer {
+            harness: "pi".into(),
+            turn_id: 7,
+            conversation: "main".into(),
+            text: format!("The  answer\n{}", "x".repeat(200)),
+        };
+        let said = format!("{:?}", late_answer_notice(&late));
+        assert!(said.contains("pi answered after you left: The answer"), "{said}");
+        assert!(!said.contains(&"x".repeat(81)), "clipped: {said}");
     }
 }
