@@ -74,7 +74,8 @@ component DockBtn inherits Rectangle {
     callback secondary();
     callback attention(bool);
     callback wheel(int);
-    callback escape();
+    // True when it put something away; false lets Escape reach the shell (it closes menus there).
+    callback escape() -> bool;
 
     width: Theme.dock-button;
     height: Theme.dock-button;
@@ -149,7 +150,7 @@ component DockBtn inherits Rectangle {
         width: 100%; height: 100%;
         changed has-focus => { if (!self.has-focus) { self.pointer-focus = false; } }
         key-pressed(e) => {
-            if (e.text == Key.Escape) { root.escape(); return accept; }
+            if (e.text == Key.Escape && root.escape()) { return accept; }
             if (e.text == Key.Return || e.text == " ") { root.clicked(); return accept; }
             if (e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift)) { root.secondary(); return accept; }
             reject
@@ -449,7 +450,10 @@ export component GroundedDock inherits Rectangle {
                 }
                 attention(on) => { root.attend(on, b.app-id, b.label, b.windows, self.anchor-x); }
                 wheel(n) => { root.page-by(n); }
-                escape => { root.close-list(); }
+                escape => {
+                    if (root.list-shown) { root.close-list(); return true; }
+                    return false;
+                }
                 AppTile {
                     size: Theme.dock-icon;
                     app-id: b.icon-id;
