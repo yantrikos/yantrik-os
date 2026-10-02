@@ -1,6 +1,6 @@
 # The minds' surfaces: chat, agents, an overloaded dock, Alt+Tab (2026-10-02)
 
-These are the specs for four surfaces: the chat and the Agents workroom (the parts of the OS that are its signature), the dock when it is full, and the window switcher. GPT‑6 Astra wrote them at Pranab's request. The renders are on the "Yantrik Shell 10×" canvas (https://claude.ai/artifact/FCLLZf6pgNfegzjsAY8TAU), on the boards Chat, Agents, Dock overloaded and Alt+Tab. The visual direction Pranab chose is the GPT render: a photographic wallpaper, solid charcoal, and a slim icons-only dock grounded on the bottom edge like the macOS Dock (Pranab, 2 Oct: grounded, not floating, so running apps get the whole screen above it). See `ui-review-gpt6-astra-2026-10-02.md` for the rules underneath.
+These are the specs for four surfaces: the chat and the Agents workroom (the parts of the OS that are its signature), the dock when it is full, and the window switcher. GPT‑6 Astra wrote them at Pranab's request. The renders are on the "Yantrik Shell 10×" canvas (https://claude.ai/artifact/FCLLZf6pgNfegzjsAY8TAU), on the boards Chat, Agents, Dock overloaded and Alt+Tab. The visual direction Pranab chose is the GPT render: a photographic wallpaper, solid charcoal, and a slim floating dock. See `ui-review-gpt6-astra-2026-10-02.md` for the rules underneath.
 
 ## Core idea
 Chat and Agents are two views of the same work:
@@ -14,19 +14,11 @@ The object that connects them is the **work card**: a run's mind, state, desk pr
 - **Tokens:**
   - text #F2F4F5, secondary #A8B0B6;
   - panels #151A1E, bars and insets #101417;
-  - tiles and controls on a panel #1E252B, with a 1px #2C343B border, so they stand out from it;
   - borders 1px #343B41;
-  - the system accent, soft blue #8FB4E3; mind teal #69C8BC; needs-you amber #E7B567; folders #9DBDE5; destructive red #E5484D;
+  - mind teal #69C8BC, needs-you amber #E7B567, folders #9DBDE5;
   - 16px radii, a 2px white focus ring.
 - **Type:** Barlow. Body 15/22, reading text 16/24, labels 13/18, nothing essential below 12px.
-- **Colour roles** (Pranab, 2 Oct: the buttons all looked alike, and the tiles disappeared into the panels):
-  - **Soft blue is the one system accent.** It marks what is ON (an active toggle tile is filled blue with dark text and icon; a slider's filled part and knob) and the PRIMARY action (a filled blue button with a dark label).
-  - **Buttons have three kinds:** primary (filled blue, one per group at most), secondary (an outline: transparent, 1px #4A535B, white label) and destructive (filled red, only for what cannot be undone: delete, erase, power off).
-  - **Approval cards** fill "Approve once" as the primary, but it is never focused when the card appears and Enter never presses it. The look shows which button is the action; it never chooses for the person.
-  - **Teal** identifies minds and their presence, nothing else: not a selection, success or app colour.
-  - **Amber** means a person's response is pending, nothing else.
-  - **Selections** in shell surfaces (Alt+Tab, lists, the dock) use a neutral raised fill plus a white keyline. Inside apps, the current location (a sidebar row) may use the accent at 18%.
-- **App icons** are one set: full-colour rounded-square tiles with a simple white glyph, the same in the dock, the launcher and Alt+Tab. An app with its own brand icon is shown in a tile of that style. No mix of line icons and filled art in the dock, and no teal tile except a mind's.
+- **Colour roles:** teal identifies minds and their presence. It is not a selection or success colour. Amber means a person's response is pending, nothing else. Selections use a neutral raised fill plus a white keyline.
 - **One state vocabulary, everywhere:** Queued · Working · Needs you · Paused · Finished · Stopped · Couldn't finish · Connection lost.
   - "Finished · 3 file changes recorded" is allowed; "Everything is fixed" is not.
   - Unobservable work reads "Last update 10:42".
@@ -113,13 +105,10 @@ The object that connects them is the **work card**: a run's mind, state, desk pr
 **Left out:** the List/Overview toggle, Tasks as a separate inbox, always-visible billing, scores, avatars, fake progress, and simulated thinking.
 
 ## 3. The dock, overloaded
-**Base: grounded like the macOS Dock, not floating**
-- Centred and as wide as its buttons, growing as apps open, up to min(880px, viewport − 32px); past that it pages (see Overflow).
-- Its bottom edge is flush with the screen's bottom edge. The top corners have a 16px radius and the bottom corners are square. #101417 with a 1px neutral border on the top and sides.
-- 48px tall, with 4px padding: 40×40 buttons, 24px icons and 4px gaps.
-- It reserves exactly 48px across the whole screen width (its exclusive zone), so a maximised window ends at the dock's top edge and never sits under it. The wallpaper shows only beside the dock.
-- Hovering a button for 500ms shows its name in a small opaque label 8px above it; the window list (below) replaces the label for apps with several windows.
-- A fullscreen app covers the dock. Popovers above it (the window list, Apps) open 8px above its top edge.
+**Base**
+- Centred, 48px tall, 12px off the bottom, 16px radius, #101417 with a neutral border, 4px padding.
+- 40×40 buttons with 24px icons and 4px gaps.
+- Maximum width: min(880px, viewport − 32px).
 
 **Order**
 - Apps | pinned and running apps | divider | Yantrik Mind.

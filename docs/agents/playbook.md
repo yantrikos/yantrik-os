@@ -13,7 +13,7 @@ A reviewer compared its UI with Omarchy and called it "really really bad". The d
   - a photographic wallpaper;
   - solid charcoal surfaces (#151A1E panels, #101417 bars) with 1px neutral borders and 16px radii;
   - white line icons and Barlow type;
-  - a slim icons-only dock grounded on the bottom edge like the macOS Dock (not floating): centred, as wide as its icons, and maximised apps end above it.
+  - a slim floating icons-only dock.
 
 **The bar for "done":**
 - A person sees the difference in the first minute.
