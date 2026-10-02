@@ -19,4 +19,7 @@ Security: this PR changes the approval buttons. The review is `review/pr-583-rev
 | 16 | Empty Trash secondary | Toolbar button is destructive (variant 3). |
 
 ## What was run
-See the final message of the run for exact counts. Anything not run is listed there.
+- `cargo test -p yantrik-ui-kit`: 8 consent tests pass (plus the 7 existing, 15 in all; run in full before the last edit to the kit, the 8 re-run after).
+- `cargo test -p yantrik-ui --bin yantrik-ui` (12GB swap, one job, no debuginfo): 997 passed, 1 failed, 1 ignored. The one failure is `harness_install::tests::a_coloured_installer_reaches_the_row_as_plain_text` (ANSI stripping leaves "nvm\n" in front of the line). This PR changes no Rust in `crates/yantrik-ui`, so it is not from this change; I did not build main to confirm.
+- Preview, rendered and looked at: `verify-approval-pointer-only` (new), `verify-colour-system`, `verify-approval-card`, `verify-cards-waiting`: all PASS. `verify-kit-controls` and `verify-idle` were not run.
+- Not done: removing `pointer-only` from the real card and watching the rendered test fail (a 19 minute rebuild); the source scan was mutation-checked instead. The AT-SPI default action itself cannot be driven from the preview, so it is covered by the source scan only.
