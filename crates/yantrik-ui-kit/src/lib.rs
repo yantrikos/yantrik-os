@@ -852,9 +852,11 @@ mod consent_buttons_are_pointer_only {
     fn a_minds_thinking_dot_and_mark_are_teal_not_the_shell_accent() {
         let agents = read("crates/yantrik-ui-slint/ui/agents.slint");
         assert!(agents.contains("\"running_tool\" ? Theme.cyan"), "the thinking dot is the mind colour");
-        let lens = read("crates/yantrik-ui-slint/ui/components/intent_lens.slint");
-        let at = lens.find("commands: Icons.companion;").unwrap();
-        assert!(lens[at..at + 120].contains("tint: Theme.cyan"), "the companion mark is the mind colour");
+        // The conversation header moved to chat_chrome.slint with Chat v2 (#580), which tints
+        // the mark with its own mind token rather than the shell accent.
+        let chrome = read("crates/yantrik-ui-slint/ui/components/chat_chrome.slint");
+        let at = chrome.find("commands: Icons.companion;").unwrap();
+        assert!(chrome[at..at + 120].contains("tint: Theme.chat-mind"), "the companion mark is the mind colour");
     }
 
     /// `is-flagged ? 1 : 1` made a flagged and an unflagged email look the same.
