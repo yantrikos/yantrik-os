@@ -125,14 +125,12 @@ component DockBtn inherits Rectangle {
 
     // A mind needs the person. The one amber thing in the dock.
     if root.needs-you : Rectangle {
-        x: parent.width - self.width - 3px;
-        y: 3px;
+        x: parent.width - self.width - 2px;
+        y: 2px;
         width: Theme.dock-dot;
         height: Theme.dock-dot;
         border-radius: Theme.dock-dot / 2;
         background: Theme.needs-you;
-        border-width: 1px;
-        border-color: Theme.dock-bar;
     }
 
     // Keyboard focus ring: 2px white, on the button, not the tile inside it.
