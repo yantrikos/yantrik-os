@@ -7,6 +7,7 @@ import { Theme } from "theme.slint";
 import { ScrollView, LineEdit } from "std-widgets.slint";
 import { RibbonToolButton, RibbonToolButtonWide, RibbonSeparator, RibbonTabButton, RibbonQuickAction, RibbonGroupLabel, RibbonColorButton, RibbonDropdown } from "components/app_ribbon.slint";
 import { Icons } from "components/icon.slint";
+import { YButton } from "components/y_button.slint";
 import { AppHeader } from "components/app_header.slint";
 import { AppColor, AppIdentity } from "components/app_color.slint";
 
@@ -896,21 +897,12 @@ export component SpreadsheetScreen inherits Rectangle {
                             }
                         }
 
-                        Rectangle {
+                        YButton {
                             visible: root.active-comment != "";
-                            height: 28px;
-                            border-radius: 4px;
-                            background: del-cmt-ta.has-hover ? Theme.color-danger : Theme.color-danger.transparentize(20%);
-
-                            del-cmt-ta := TouchArea { clicked => { root.delete-comment(); } }
-
-                            Text {
-                                text: "Delete";
-                                color: white;
-                                font-size: Theme.fs-caption;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                            label: "Delete";
+                            variant: 3;
+                            size: 0;
+                            clicked => { root.delete-comment(); }
                         }
                     }
 

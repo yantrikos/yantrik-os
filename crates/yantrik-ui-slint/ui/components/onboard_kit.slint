@@ -5,38 +5,32 @@
 // screens that are meant to look like one flow start to drift.
 
 import { Theme } from "theme.slint";
+import { YButton } from "y_button.slint";
 
 // ── Pill button ───────────────────────────────────────────────────
+//
+// Not a button of its own any more: the kit's YButton in the shell's three kinds, kept under
+// this name so the first-run screens' call sites did not have to move. `quiet` is the secondary
+// action beside a primary one (Back, Try it first); `destructive` is for the step that erases
+// something (the installer's "Erase disk and install").
 
 export component PillButton inherits Rectangle {
     in property <string> label;
     in property <bool> enabled: true;
-    // The secondary action beside a primary one (Back, Try it first): drawn without the fill,
-    // so the one button that moves the person forward is the one that stands out.
     in property <bool> quiet: false;
+    in property <bool> destructive: false;
     callback clicked();
 
     width: 160px;
     height: 42px;
-    border-radius: 21px;
-    background: !enabled || quiet ? transparent : touch.has-hover ? Theme.cyan-glow-strong : Theme.cyan-glow;
-    border-width: 1px;
-    border-color: !enabled ? Theme.border-subtle : quiet ? Theme.border-default : Theme.cyan;
-    opacity: enabled ? 1.0 : 0.4;
-    animate opacity { duration: Theme.dur-normal; }
 
-    Text {
-        text: label;
-        color: !enabled ? Theme.text-dim : quiet ? Theme.text-secondary : Theme.cyan;
-        font-size: Theme.fs-body;
-        font-weight: 600;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-
-    touch := TouchArea {
-        enabled: root.enabled;
-        mouse-cursor: pointer;
+    YButton {
+        width: parent.width;
+        height: parent.height;
+        size: 2;
+        label: root.label;
+        variant: root.destructive ? 3 : root.quiet ? 1 : 0;
+        disabled: !root.enabled;
         clicked => { root.clicked(); }
     }
 }

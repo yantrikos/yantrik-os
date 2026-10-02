@@ -82,7 +82,7 @@ export component WindowSwitcher inherits Rectangle {
                     border-radius: 12px;
                     background: is-hovered ? Theme.bg-selected : Theme.bg-card;
                     border-width: is-hovered ? 1px : 0;
-                    border-color: Theme.cyan-dim;
+                    border-color: Theme.focus-ring;
 
                     animate background { duration: 100ms; }
 
@@ -94,7 +94,7 @@ export component WindowSwitcher inherits Rectangle {
                         // Icon
                         Text {
                             text: win.icon-char;
-                            color: is-hovered ? Theme.cyan : Theme.text-secondary;
+                            color: is-hovered ? Theme.text-primary : Theme.text-secondary;
                             font-size: Theme.fs-display;
                             font-weight: 700;
                             horizontal-alignment: center;

@@ -347,7 +347,7 @@ export component MusicPlayerScreen inherits Rectangle {
                         Rectangle { horizontal-stretch: 1; }
                         YIconButton {
                             icon-path: Icons.close;
-                            variant: 2;
+                            variant: 1;
                             clicked => {
                                 root.ai-panel-open = false;
                                 root.ai-dismiss();
@@ -1937,7 +1937,7 @@ export component MusicPlayerScreen inherits Rectangle {
 
                     YButton {
                         label: "Cancel";
-                        variant: 2;
+                        variant: 1;
                         size: 0;
                         clicked => { root.show-add-playlist-dialog = false; }
                     }
@@ -1995,7 +1995,7 @@ export component MusicPlayerScreen inherits Rectangle {
                     }
                     YIconButton {
                         icon-path: Icons.close;
-                        variant: 2;
+                        variant: 1;
                         clicked => { root.show-scan-folders-dialog = false; }
                     }
                 }

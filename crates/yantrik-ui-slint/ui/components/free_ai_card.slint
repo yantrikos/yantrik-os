@@ -124,7 +124,7 @@ component ProviderRow inherits VerticalLayout {
         }
         if root.item.state == "skipped" : YButton {
             label: "Undo skip";
-            variant: 2;
+            variant: 1;
             size: 0;
             clicked => { FreeAiState.unskip(root.item.id); }
         }
@@ -154,7 +154,7 @@ component ProviderRow inherits VerticalLayout {
                 if root.item.values.length > 1 : Line { text: (i + 1) + ". " + v.label + ": " + v.where; horizontal-stretch: 1; }
                 YButton {
                     label: v.done ? v.label + " is in" : (root.item.values.length > 1 ? "Paste " + v.label : "Paste key from clipboard");
-                    variant: v.done ? 2 : 0;
+                    variant: v.done ? 1 : 0;
                     size: 0;
                     disabled: v.done || root.vault-locked;
                     clicked => { FreeAiState.paste(v.id); }
@@ -185,13 +185,13 @@ component ProviderRow inherits VerticalLayout {
                 Text { text: "Use in the pool"; color: Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; }
                 YButton { label: root.item.on ? "On" : "Off"; variant: root.item.on ? 0 : 1; size: 0; clicked => { FreeAiState.toggle(root.item.id); } }
             }
-            if root.item.state == "ready" : YButton { label: "Replace key"; variant: 2; size: 0; clicked => { FreeAiState.replace(root.item.id); } }
-            if root.item.state == "ready" || root.item.state == "off" : YButton { label: "Remove key…"; variant: 2; size: 0; clicked => { FreeAiState.remove(root.item.id); } }
+            if root.item.state == "ready" : YButton { label: "Replace key"; variant: 1; size: 0; clicked => { FreeAiState.replace(root.item.id); } }
+            if root.item.state == "ready" || root.item.state == "off" : YButton { label: "Remove key…"; variant: 1; size: 0; clicked => { FreeAiState.remove(root.item.id); } }
             if root.item.state == "confirm-remove" : YButton { label: "Cancel"; variant: 1; size: 0; clicked => { FreeAiState.cancel-remove(root.item.id); } }
             if root.item.state == "confirm-remove" : YButton { label: "Remove key"; variant: 3; size: 0; clicked => { FreeAiState.confirm-remove(root.item.id); } }
             if root.item.state == "not-set-up" || root.item.state == "sign-up-opened" || root.item.state == "waiting" || root.item.state == "rejected" : YButton {
                 label: "Skip";
-                variant: 2;
+                variant: 1;
                 size: 0;
                 clicked => { FreeAiState.skip(root.item.id); }
             }
@@ -263,7 +263,7 @@ export component FreeAiCard inherits Rectangle {
             }
             YButton {
                 label: FreeAiState.expanded ? "Show fewer" : "Show all " + FreeAiState.rows.length;
-                variant: 2;
+                variant: 1;
                 size: 1;
                 clicked => { FreeAiState.set-expanded(!FreeAiState.expanded); }
             }

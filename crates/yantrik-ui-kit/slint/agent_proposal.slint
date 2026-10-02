@@ -166,7 +166,7 @@ export component AgentProposalCard inherits Rectangle {
             if root.data.impact != "" : YButton {
                 label: "Dismiss";
                 size: 0;
-                variant: 2;
+                variant: 1;
                 clicked => { root.dismiss(); }
             }
             if root.data.impact != "" : YButton {
@@ -181,7 +181,7 @@ export component AgentProposalCard inherits Rectangle {
             if root.data.impact == "" : YButton {
                 label: root.data.verb != "" ? root.data.verb : "Close";
                 size: 0;
-                variant: 2;
+                variant: 1;
                 clicked => { root.dismiss(); }
             }
         }

@@ -27,7 +27,7 @@
 //             whichever has focus. Right arrow on the body opens details, like the chevron.
 //             The ring shows for keyboard focus only, not after a click.
 //
-// States: off, off+hover, pressed, on (accent fill, dark text), on+hover, keyboard focus (ring),
+// States: off (the tile fill with its border), off+hover, pressed, on (accent fill, dark text), on+hover, keyboard focus (ring),
 // disabled (dimmed, inert). Accessible role switch with checked state; the chevron is a button.
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icon.slint";
@@ -67,7 +67,7 @@ export component YToggleTile inherits Rectangle {
     background: root.on ? Theme.accent : Theme.tile-off;
     animate background { duration: Theme.dur-fast; }
     border-width: Theme.hairline;
-    border-color: root.on ? transparent : Theme.border-card;
+    border-color: root.on ? transparent : Theme.tile-border;
 
     function activate-body() { if (root.enabled) { root.toggled(); } }
     function activate-chevron() { if (root.enabled && root.split) { root.details-requested(); } }

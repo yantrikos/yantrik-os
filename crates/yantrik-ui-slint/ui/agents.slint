@@ -906,7 +906,7 @@ export component AgentDetailsColumn inherits Rectangle {
             if !AgentsState.popped : YButton {
                 label: "Close";
                 icon-path: Icons.close;
-                variant: 2;
+                variant: 1;
                 size: 0;
                 disabled: !AgentsState.has-agent;
                 clicked => { AgentsState.close(AgentsState.header.id); }
@@ -1315,7 +1315,7 @@ export component AgentsScreen inherits Rectangle {
                     spacing: 8px;
                     YButton {
                         label: "Cancel";
-                        variant: 2;
+                        variant: 1;
                         clicked => { AgentsState.new-open = false; }
                     }
                     YButton {

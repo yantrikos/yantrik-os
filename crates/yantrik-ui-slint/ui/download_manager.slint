@@ -176,7 +176,7 @@ export component DownloadManagerScreen inherits Rectangle {
                         Rectangle { horizontal-stretch: 1; }
                         YIconButton {
                             icon-path: Icons.close;
-                            variant: 2;
+                            variant: 1;
                             clicked => {
                                 root.ai-panel-open = false;
                                 root.ai-dismiss();
@@ -262,7 +262,7 @@ export component DownloadManagerScreen inherits Rectangle {
                     // Cancel
                     YIconButton {
                         icon-path: Icons.close;
-                        variant: 2;
+                        variant: 1;
                         clicked => {
                             root.add-url-open = false;
                             root.add-url-text = "";

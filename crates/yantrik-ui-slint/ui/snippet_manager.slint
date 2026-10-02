@@ -4,6 +4,7 @@
 
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "components/icon.slint";
+import { YButton } from "components/y_button.slint";
 import { AppHeader } from "components/app_header.slint";
 import { AgentRail, AgentContextItem, AgentSuggestion } from "components/agent_rail.slint";
 import { AgentProposalCard, AgentProposal } from "components/agent_proposal.slint";
@@ -985,26 +986,11 @@ export component SnippetManagerScreen inherits Rectangle {
                     Rectangle { horizontal-stretch: 1; }
 
                     // Delete button
-                    Rectangle {
+                    YButton {
+                        label: "Delete";
+                        variant: 3;
                         width: 100px;
-                        height: 38px;
-                        background: del-ta.has-hover ? Theme.color-danger.brighter(20%) : Theme.color-danger;
-                        border-radius: Theme.radius-pill;
-
-                        Text {
-                            text: "Delete";
-                            font-size: Theme.font-body;
-                            color: Theme.text-on-accent;
-                            font-weight: 600;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-
-                        del-ta := TouchArea {
-                            clicked => {
-                                root.snip-delete(root.detail-id);
-                            }
-                        }
+                        clicked => { root.snip-delete(root.detail-id); }
                     }
                 }
 

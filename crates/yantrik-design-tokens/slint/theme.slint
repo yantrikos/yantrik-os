@@ -19,7 +19,7 @@ export global ThemeMode {
 }
 
 // Accent color presets — index selects which accent palette is active.
-// 0 = cyan (default), 1 = amber, 2 = purple, 3 = green, 4 = pink
+// 0 = soft blue (default), 1 = amber, 2 = purple, 3 = green, 4 = pink
 //
 // Crisp, not louder (desk-and-mind, "bright and sharp"). Each preset keeps its hue and gains
 // saturation: the old cyan #4ecdc4 sat at 56% saturation, which on a near-black ground reads as
@@ -30,42 +30,42 @@ export global AccentPreset {
 
     // Resolved accent colors — reactive to index + dark mode.
     out property <color> accent:
-        index == 0 ? (ThemeMode.dark ? #38d8cd : #08747e)   // teal-cyan
+        index == 0 ? (ThemeMode.dark ? #8fb4e3 : #2b64a8)   // soft blue, the system accent
       : index == 1 ? (ThemeMode.dark ? #f2b73e : #8f6512)   // amber
       : index == 2 ? (ThemeMode.dark ? #b98aef : #7338b4)   // purple
       : index == 3 ? (ThemeMode.dark ? #5ede78 : #1f7d30)   // green
       :               (ThemeMode.dark ? #f27aa0 : #bd3563);  // pink
 
     out property <color> accent-light:
-        index == 0 ? (ThemeMode.dark ? #74e6de : #3aa9b4)
+        index == 0 ? (ThemeMode.dark ? #a9c5ec : #4a82c2)
       : index == 1 ? (ThemeMode.dark ? #f6cd75 : #b88838)
       : index == 2 ? (ThemeMode.dark ? #d0a8f6 : #9060c8)
       : index == 3 ? (ThemeMode.dark ? #8eeba2 : #48a858)
       :               (ThemeMode.dark ? #f69cbb : #d06080);
 
     out property <color> accent-dim:
-        index == 0 ? (ThemeMode.dark ? #1fa89b : #80c8d0)
+        index == 0 ? (ThemeMode.dark ? #6f95c4 : #9dbbe0)
       : index == 1 ? (ThemeMode.dark ? #a87c28 : #c8a860)
       : index == 2 ? (ThemeMode.dark ? #7c4fae : #b090d0)
       : index == 3 ? (ThemeMode.dark ? #33854a : #80c090)
       :               (ThemeMode.dark ? #aa4570 : #d898b0);
 
     out property <color> accent-glow:
-        index == 0 ? (ThemeMode.dark ? #38d8cd40 : #08747e30)
+        index == 0 ? (ThemeMode.dark ? #8fb4e340 : #2b64a830)
       : index == 1 ? (ThemeMode.dark ? #f2b73e40 : #8f651230)
       : index == 2 ? (ThemeMode.dark ? #b98aef40 : #7338b430)
       : index == 3 ? (ThemeMode.dark ? #5ede7840 : #1f7d3030)
       :               (ThemeMode.dark ? #f27aa040 : #bd356330);
 
     out property <color> accent-glow-strong:
-        index == 0 ? (ThemeMode.dark ? #38d8cd70 : #08747e50)
+        index == 0 ? (ThemeMode.dark ? #8fb4e370 : #2b64a850)
       : index == 1 ? (ThemeMode.dark ? #f2b73e70 : #8f651250)
       : index == 2 ? (ThemeMode.dark ? #b98aef70 : #7338b450)
       : index == 3 ? (ThemeMode.dark ? #5ede7870 : #1f7d3050)
       :               (ThemeMode.dark ? #f27aa070 : #bd356350);
 
     out property <color> tint:
-        index == 0 ? (ThemeMode.dark ? #38d8cd1c : #08747e17)
+        index == 0 ? (ThemeMode.dark ? #8fb4e31c : #2b64a817)
       : index == 1 ? (ThemeMode.dark ? #f2b73e1c : #8f651217)
       : index == 2 ? (ThemeMode.dark ? #b98aef1c : #7338b417)
       : index == 3 ? (ThemeMode.dark ? #5ede781c : #1f7d3017)
@@ -214,6 +214,13 @@ export global Theme {
     out property <color> color-success:      ThemeMode.dark ? #26a69a : #2e7d32;
     out property <color> color-success-dim:  ThemeMode.dark ? #26a69a28 : #2e7d3220;
     out property <color> color-danger:       ThemeMode.dark ? #ef9a9a : #c62828;
+    // The destructive button's fill: the one red, for what cannot be undone (delete, erase,
+    // power off). A filled button, so it is a stronger red than color-danger, which is a text
+    // and badge colour. White label on it in both themes.
+    out property <color> destructive:        #e5484d;
+    out property <color> text-on-destructive: #ffffff;
+    out property <color> destructive-hover:  #ec6064;
+    out property <color> destructive-pressed: #c93a3f;
     out property <color> color-danger-dim:   ThemeMode.dark ? #ef9a9a28 : #c6282820;
     // The close button's hover fill, with white on it. Deliberately the same in both themes:
     // it is not a surface that adapts, it is the one colour in the OS that means "this
@@ -228,7 +235,7 @@ export global Theme {
     out property <color> color-purple-dim:   ThemeMode.dark ? #b084e028 : #7840b020;
 
     // Text on colored backgrounds (accent buttons, status badges)
-    out property <color> text-on-accent: ThemeMode.dark ? #101820 : #ffffff;
+    out property <color> text-on-accent: ThemeMode.dark ? #0e1215 : #ffffff;
     out property <color> accent-button-hover: ThemeMode.dark ? Theme.accent-light : Theme.accent.darker(8%);
     out property <color> accent-button-pressed: ThemeMode.dark ? Theme.accent-dim : Theme.accent.darker(16%);
 
@@ -461,15 +468,20 @@ export global Theme {
     out property <color> focus-ring: ThemeMode.dark ? #f4f6fa : #0e1116;
     // The groove behind a slider fill. Stronger than border-strong so an empty track still reads
     // on a popover (bg-elevated) in both themes.
-    out property <color> track-bg: ThemeMode.dark ? #ffffff26 : #00000026;
+    out property <color> track-bg: ThemeMode.dark ? #343b41 : #00000026;
     // The slider thumb: the one near-white surface in the kit, so it reads as a thing you hold.
     out property <color> knob: ThemeMode.dark ? #f4f6fa : #ffffff;
     out property <color> knob-border: ThemeMode.dark ? #00000040 : #00000030;
-    // A toggle tile that is off: a quiet fill that works on any surface because it is
-    // translucent, then a step stronger on hover and press.
-    out property <color> tile-off:         ThemeMode.dark ? #ffffff0f : #0000000d;
-    out property <color> tile-off-hover:   ThemeMode.dark ? #ffffff1a : #00000017;
-    out property <color> tile-off-pressed: ThemeMode.dark ? #ffffff26 : #00000024;
+    // A toggle tile that is off, then a step lighter on hover and press (neutral steps, not new
+    // colours).
+    // (Pranab, 2 Oct: tiles disappeared into the panels.) An opaque tile one step lighter than
+    // the #151A1E panel it sits on, with its own 1px border, so it stands out from the panel.
+    out property <color> tile-off:         ThemeMode.dark ? #1e252b : #e6eaef;
+    out property <color> tile-off-hover:   ThemeMode.dark ? #262e35 : #dce1e7;
+    out property <color> tile-off-pressed: ThemeMode.dark ? #2d363e : #d2d8df;
+    out property <color> tile-border:      ThemeMode.dark ? #2c343b : #c5ccd4;
+    // Secondary button: transparent with this outline and a white label.
+    out property <color> outline-border:   ThemeMode.dark ? #4a535b : #8a949e;
 
     // ─── Result type colors ───────────────────────────────────────
     out property <color> color-do:        ThemeMode.dark ? #d4a574 : #8a6030;
