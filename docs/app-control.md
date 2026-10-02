@@ -209,9 +209,7 @@ environment — never on the command line — and offers the agent's terminal as
 The same token decides which agent's pane an approval card is drawn in (`request_approval` puts
 it on `Verified.agent`, and the card names it), and who is asking for `new_agent` (sensitive),
 `send_to_agent` and `stop_agent` (standard), and `read_agent` and `show_agent` (safe) —
-`control_agents.rs`. The Agents workroom's pages are `show_workroom` (safe), read back under `workroom`
-in `describe shell`: the counts and each mind's state for any reader, the desks and the requests
-waiting for the person's own — `control_workroom.rs`. A call with no token is the person's; one whose token is not believed is
+`control_agents.rs`. A call with no token is the person's; one whose token is not believed is
 refused. `consume_approval` binds a spend to the asking agent (#182): a caller that carries a
 token spends only the grants asked for it, whichever door the spend comes through. A Rust app
 forwarding a spend sends the pid the kernel stamped on the call its token arrived in as
@@ -223,6 +221,11 @@ another's grant, but code running as the person's own user can copy or exec a bi
 a name and forward a pid it chose — the same-user limit #154 describes. Python SDK spends
 (Blender, LibreOffice) do not forward the token and are unbound, as are spends that carry no
 token at all.
+
+The Agents workroom's pages are `show_workroom` (safe), read back under `workroom` in `describe
+shell`: the counts and each mind's state for any reader, the desks and the requests waiting for the
+person's own — `control_workroom.rs`. The answer says what the screen shows after the call and adds
+a `note` when that is not what was asked.
 
 `shell.run_recipe {recipe, inputs?}` starts a recipe — a formation among them, whose Agent steps
 hand work to catalog roles through `hand_off` (see [harness.md](harness.md), Formations). It is

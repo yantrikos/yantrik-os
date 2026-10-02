@@ -71,6 +71,36 @@ fn asked(args: &Value, minds: &[(String, String)]) -> Result<Asked, String> {
     Ok(Asked { page, mind: Some(mind.to_string()) })
 }
 
+/// What the screen says after the call, and a `note` for anything that is not as asked: a page or
+/// narrowing the screen did not take, a screen that is not showing, a shell still behind another
+/// window. The caller reads the answer, not a guess that it worked.
+fn read_back(asked: &Asked, page: &str, narrowed: &str, on_screen: bool, raised: bool) -> Value {
+    let narrowed = Some(narrowed.to_string()).filter(|m| !m.is_empty());
+    let mut notes: Vec<String> = Vec::new();
+    // A mind's narrowing is the workroom page whatever page was asked.
+    if asked.mind.is_none() && page != asked.page {
+        notes.push(format!("the screen is on `{page}`, not `{}`", asked.page));
+    }
+    if asked.mind != narrowed && !(asked.mind.is_none() && asked.page != "workroom") {
+        notes.push(format!(
+            "asked to narrow to {}, but the screen is narrowed to {}",
+            asked.mind.as_deref().unwrap_or("no mind"),
+            narrowed.as_deref().unwrap_or("no mind")
+        ));
+    }
+    if !on_screen {
+        notes.push("the Agents screen is not the one showing".to_string());
+    }
+    if !raised {
+        notes.push("the shell could not be brought in front of the window covering it".to_string());
+    }
+    let mut out = json!({ "page": page, "narrowed_to": narrowed, "on_screen": on_screen, "raised": raised });
+    if !notes.is_empty() {
+        out["note"] = notes.join("; ").into();
+    }
+    out
+}
+
 pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
     let ui = ui.as_weak();
     surface.action(spec(), move |args| {
@@ -88,12 +118,13 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
         ui.invoke_navigate(crate::wire::agents::SCREEN);
         let raised = crate::windows::raise_shell().is_ok();
         // The observed state, read back off the screen, not an `accepted: true`.
-        Ok(json!({
-            "page": g.get_section().as_str(),
-            "narrowed_to": Some(g.get_mind_filter().to_string()).filter(|m| !m.is_empty()),
-            "on_screen": ui.get_current_screen() == crate::wire::agents::SCREEN,
-            "raised": raised,
-        }))
+        Ok(read_back(
+            &asked,
+            g.get_section().as_str(),
+            &g.get_mind_filter(),
+            ui.get_current_screen() == crate::wire::agents::SCREEN,
+            raised,
+        ))
     })
 }
 
@@ -162,5 +193,24 @@ mod tests {
         }
         assert!(control.contains("crate::control_workroom::actions("), "show_workroom is registered");
         assert!(control.contains("crate::wire::agents::workroom_for_describe("), "describe shell reads the workroom");
+    }
+
+    /// Review of #584, finding 6: a narrowing the screen ignored, or a raise that failed, is in the
+    /// answer and not only in the state it reports.
+    #[test]
+    fn the_answer_says_when_the_screen_is_not_as_asked() {
+        let asked_hermes = Asked { page: "workroom", mind: Some("hermes".into()) };
+        let ok = read_back(&asked_hermes, "workroom", "hermes", true, true);
+        assert!(ok.get("note").is_none(), "{ok}");
+        assert_eq!(ok["narrowed_to"], "hermes");
+        let ignored = read_back(&asked_hermes, "workroom", "", true, true);
+        assert!(ignored["note"].as_str().unwrap().contains("narrowed to no mind"), "{ignored}");
+        let history = Asked { page: "history", mind: None };
+        assert!(read_back(&history, "history", "", true, true).get("note").is_none());
+        assert!(read_back(&history, "workroom", "", true, true)["note"].as_str().unwrap().contains("not `history`"));
+        let behind = read_back(&history, "history", "", true, false);
+        assert_eq!(behind["raised"], false);
+        assert!(behind["note"].as_str().unwrap().contains("brought in front"), "{behind}");
+        assert!(read_back(&history, "history", "", false, true)["note"].as_str().unwrap().contains("not the one showing"));
     }
 }
