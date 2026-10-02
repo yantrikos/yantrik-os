@@ -12,5 +12,5 @@ Rebased on `origin/main` (one conflict, in `config/labwc/rc.xml`'s media-key com
 
 ## Not verified
 - **Nothing was seen on a machine.** Whether labwc accepts the rule exactly as written, keeps the window above a maximised app, and where `MoveTo x="center" y="center"` puts it, needs a real labwc. Placement is the screen centre (labwc has no relative y); the old "80px above the taskbar" spot is gone. The brief refocus of the previous window after the pill maps is also untested on labwc.
-- `tests/ui-preview/src/osd_tests.rs` was rewritten to draw `OsdWindow`; see the run notes in the final report for whether it was built.
+- `tests/ui-preview/src/osd_tests.rs` was rewritten to draw `OsdWindow` but NOT built or run (the ui-preview crate needs its own full Slint build, which the sandbox disk could not hold). `cargo test -p yantrik-ui --bin yantrik-ui` 1016 passed, 1 failed: `harness_install::tests::a_coloured_installer_reaches_the_row_as_plain_text`, which prints an extra `nvm` line from this sandbox's shell, not touched by this change.
 - NITs 1, 2 and 4 left as they were.
