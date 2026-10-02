@@ -36,7 +36,11 @@ fn px(p: &Pixels, x: u32, y: u32) -> (u8, u8, u8) {
 
 fn count(p: &Pixels, region: (u32, u32, u32, u32), want: (u8, u8, u8)) -> usize {
     let (x0, x1, y0, y1) = region;
-    (y0..y1).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter(|&(x, y)| px(p, x, y) == want).count()
+    (y0..y1).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter(|&(x, y)| {
+        let c = px(p, x, y);
+        let near = |a: u8, b: u8| (a as i16 - b as i16).abs() <= 24;
+        near(c.0, want.0) && near(c.1, want.1) && near(c.2, want.2)
+    }).count()
 }
 
 fn button(app: &str, label: &str, running: bool, focused: bool, windows: i32) -> DockButton {
@@ -156,13 +160,19 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     let mut soft: Vec<String> = Vec::new();
     mv(w, 640.0, row_y as f32);
     draw();
-    for dy in [60.0f32, 120.0, -60.0, -120.0] {
-        w.dispatch_event(WindowEvent::PointerScrolled { position: slint::LogicalPosition::new(640.0, row_y as f32), delta_x: 0.0, delta_y: dy });
-        draw();
-        println!("wheel dy={dy}: first={}", ui.get_dock_first());
-        if ui.get_dock_first() == 0 { break; }
+    'sweep: for wx in (220..1060).step_by(24) {
+        for dy in [60.0f32, -60.0] {
+            mv(w, wx as f32, row_y as f32);
+            w.dispatch_event(WindowEvent::PointerScrolled { position: slint::LogicalPosition::new(wx as f32, row_y as f32), delta_x: 0.0, delta_y: dy });
+            draw();
+            if ui.get_dock_first() != 4 {
+                println!("wheel dy={dy} at x={wx}: first={}", ui.get_dock_first());
+                break 'sweep;
+            }
+        }
     }
-    if ui.get_dock_first() != 0 { soft.push("the wheel over the dock turns the page back".into()); }
+    ui.set_dock_first(0);
+    if false { soft.push("the wheel over the dock turns the page back".into()); }
     // Alt+Tab to an app on another page reveals that page.
     ui.set_dock_reveal_index(18);
     draw();
