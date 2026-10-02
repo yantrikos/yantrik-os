@@ -66,7 +66,7 @@ component DockBtn inherits Rectangle {
     in property <bool> needs-you: false;
     in property <string> name: "";
     // The pointer is resting on it, or the keyboard is. Both want the label and the list.
-    out property <bool> attended: touch.has-hover || keys.has-focus;
+    out property <bool> attended: touch.has-hover || (keys.has-focus && !keys.pointer-focus);
     // Window coordinates of its centre. From the TouchArea inside, not this element: Slint adds a
     // layout child's own offset twice when asked for its absolute position.
     out property <length> anchor-x: touch.absolute-position.x + root.width / 2;
@@ -74,6 +74,7 @@ component DockBtn inherits Rectangle {
     callback secondary();
     callback attention(bool);
     callback wheel(int);
+    callback escape();
 
     width: Theme.dock-button;
     height: Theme.dock-button;
@@ -150,6 +151,7 @@ component DockBtn inherits Rectangle {
         width: 100%; height: 100%;
         changed has-focus => { if (!self.has-focus) { self.pointer-focus = false; } }
         key-pressed(e) => {
+            if (e.text == Key.Escape) { root.escape(); return accept; }
             if (e.text == Key.Return || e.text == " ") { root.clicked(); return accept; }
             if (e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift)) { root.secondary(); return accept; }
             reject
@@ -234,6 +236,12 @@ export component GroundedDock inherits Rectangle {
     property <int> before: root.start;
     property <int> after: Math.max(0, root.buttons.length - root.start - root.cap);
 
+    // A model replaced under a resting pointer destroys the button it was on without it ever
+    // saying the pointer left; the label would hang there with nothing under it.
+    changed buttons => {
+        root.over-id = "";
+        root.label-shown = false;
+    }
     function page-to(at: int) {
         root.first = Math.max(0, Math.min(at, root.buttons.length - root.cap));
     }
@@ -443,6 +451,7 @@ export component GroundedDock inherits Rectangle {
                 }
                 attention(on) => { root.attend(on, b.app-id, b.label, b.windows, self.anchor-x); }
                 wheel(n) => { root.page-by(n); }
+                escape => { root.close-list(); }
                 AppTile {
                     size: Theme.dock-icon;
                     app-id: b.icon-id;
@@ -667,15 +676,6 @@ export component GroundedDock inherits Rectangle {
                     }
                 }
             }
-        }
-    }
-
-    // Escape puts the list away. Declared last so it is not under anything; it takes focus only
-    // while the list is up.
-    if root.list-shown : FocusScope {
-        key-pressed(e) => {
-            if (e.text == Key.Escape) { root.close-list(); return accept; }
-            reject
         }
     }
 }

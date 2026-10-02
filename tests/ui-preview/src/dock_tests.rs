@@ -147,7 +147,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     let width = r - l + 3;
     assert!((860..=880).contains(&width), "the dock stops growing at 880px: {width}px");
     save(&paged, &out("dock-paged.png"))?;
-    let next_x = l + 1 + 4 + 44 + 16 * 44 + 16 + 1;
+    let next_x = l + 1 + 4 + 44 + 36 + 16 * 44 + 16 + 1; // Apps, the back page button, sixteen apps
     click(w, next_x as f32, row_y as f32);
     let page_two = draw();
     assert_eq!(ui.get_dock_first(), 4, "the last page is full: it starts at 4, not 16");
