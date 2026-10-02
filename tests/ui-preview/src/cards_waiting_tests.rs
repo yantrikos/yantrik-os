@@ -1,4 +1,4 @@
-//! The taskbar's Chat button says when cards are waiting, counting every card and not only the
+//! The dock's Yantrik Mind button shows an amber dot when cards are waiting, counting every card and not only the
 //! one on screen. Before, it counted `pending-approvals`, which holds just the card the Lens
 //! shows, so a card waiting in the Agents pane left the button plain while the person looked
 //! for it (561, 2 Oct 2026). The shell now sets `cards-pending` from the approvals store
@@ -31,10 +31,10 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         }
         pixels
     };
-    // The Chat button sits at the bar's right end; the taskbar is the bottom 40px.
+    // The mind button sits at the dock's right end; the dock is the bottom 48px, centred.
     let bar_changed = |a: &slint::SharedPixelBuffer<slint::Rgb8Pixel>, b: &slint::SharedPixelBuffer<slint::Rgb8Pixel>| {
-        (height as usize - 44..height as usize)
-            .flat_map(|y| (width as usize / 2..width as usize).map(move |x| y * width as usize + x))
+        (height as usize - 48..height as usize)
+            .flat_map(|y| (width as usize / 2 - 100..width as usize / 2 + 100).map(move |x| y * width as usize + x))
             .filter(|&i| a.as_slice()[i] != b.as_slice()[i])
             .count()
     };
@@ -46,20 +46,20 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     ui.set_cards_pending(1);
     let one = draw();
     let changed = bar_changed(&none, &one);
-    assert!(changed > 400, "one waiting card turns the Chat button amber and says so: only {changed} pixels changed");
+    assert!(changed > 10, "one waiting card puts the amber dot on the mind button: only {changed} pixels changed");
     save(&one, output, width, height)?;
 
     ui.set_cards_pending(3);
     let three = draw();
-    assert!(bar_changed(&one, &three) > 20, "the count follows the number of cards");
+    assert_eq!(bar_changed(&one, &three), 0, "the dot says a mind is waiting on the person, not how many: the count is in the top bar's chip");
     save(&three, &output.replace(".png", "-three.png"), width, height)?;
 
     // Answered: the button is itself again, drawn exactly as before.
     ui.set_cards_pending(0);
     let after = draw();
-    assert_eq!(bar_changed(&none, &after), 0, "with no card waiting the button is plain again");
+    assert_eq!(bar_changed(&none, &after), 0, "with no card waiting the mind button is plain again");
 
     ui.hide()?;
-    println!("PASS: the Chat button turns amber and counts cards waiting anywhere, including a card the Lens is not showing, and goes back to plain when none waits");
+    println!("PASS: the mind button shows an amber dot for a card waiting anywhere, including a card the Lens is not showing, and goes back to plain when none waits");
     Ok(())
 }

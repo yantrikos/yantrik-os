@@ -735,6 +735,10 @@ pub fn publish(
                 // it reads everything else off, rather than knowing which file to trust.
                 .with("version", yantrik_version::version())
                 .with("windows", serde_json::Value::Array(open))
+                // The grounded dock as drawn: its buttons in order (app, running, windows,
+                // focused), which page of them is showing, and whether a mind is waiting on the
+                // person (the amber dot). What a pointer reads off the bar, a mind reads here.
+                .with("dock", crate::wire::dock_bar::for_describe(&ui))
                 // Which of them the person is looking at. The list's order is not that answer —
                 // the registry's launches come first. `desktop_in_front` is true for the desktop
                 // itself (or one of its screens), false for an app window, null when the

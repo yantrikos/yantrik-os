@@ -8,7 +8,7 @@
 // The AI IS the shell — Intent Lens is the primary interaction.
 
 import { Theme, ThemeMode, ThemeOverrides, AccentPreset } from "theme.slint";
-import { Taskbar } from "components/taskbar.slint";
+import { GroundedDock, DockButton, DockWindow } from "components/grounded_dock.slint";
 import { StatusBar } from "components/status_bar.slint";
 import { ShellOverlays } from "components/shell_overlays.slint";
 import { BootScreen, BootStage } from "boot.slint";
@@ -73,7 +73,7 @@ import { YMenuAction, YContextMenu } from "components/y_context_menu.slint";
 import { Icons } from "components/icon.slint";
 import { Tr } from "translations.slint";
 
-export { HarnessData, HarnessRowData, Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, ToolCallData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, ApprovalRequest, QuestionRequest, MindRule, MindAuditEntry, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, NotifActionData, ProcessData, ClipboardEntryData, CheatRowData, AppGridItem, CategoryItem, ServiceItem, WindowItem, DockItem, ToastData, ToastActionData, PackageData, PendingAction, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction, ProblemRow }
+export { HarnessData, HarnessRowData, Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, ToolCallData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, ApprovalRequest, QuestionRequest, MindRule, MindAuditEntry, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, NotifActionData, ProcessData, ClipboardEntryData, CheatRowData, AppGridItem, CategoryItem, ServiceItem, WindowItem, DockItem, DockButton, DockWindow, ToastData, ToastActionData, PackageData, PendingAction, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction, ProblemRow }
 
 export component App inherits Window {
     default-font-family: Theme.font-ui;
@@ -468,6 +468,13 @@ export component App inherits Window {
     // `shell` control action that runs it, so the menu is a second VIEW of one surface and not
     // a second path. Drawn at the end of this file, over everything, like the desktop's own
     // menu is over its screen.
+    // The grounded dock's model (dock_model.rs): this page's worth of buttons is the dock's own
+    // business, so Rust hands over ALL of them and the windows of every app in them.
+    in property <[DockButton]> dock-buttons: [];
+    in property <[DockWindow]> dock-windows: [];
+    in property <int> dock-reveal-index: -1;
+    in-out property <int> dock-first: 0;
+    in-out property <int> dock-capacity: 0;
     in-out property <bool> taskbar-menu-open: false;
     in-out property <[YMenuAction]> taskbar-menu-actions: [];
     in-out property <string> taskbar-menu-title: "";
@@ -2824,20 +2831,25 @@ export component App inherits Window {
             // bottom edge that slid up a row of square tiles bearing LETTERS — ">_", "W", "F",
             // "@", "N" — from a hardcoded list that had drifted out of step with the real pinned
             // apps. It was the old design, and it was at the APP level, so it appeared on every
-            // screen. The real Taskbar lived inside DesktopScreen, so it appeared on exactly one.
+            // screen. The old taskbar lived inside DesktopScreen, so it appeared on exactly one.
             //
             // The result is what you saw: on the desktop, the designed taskbar; the moment you
             // opened anything, that taskbar went away with the desktop and brushing the bottom of
             // the screen produced a different dock, in a different visual language, listing
             // different apps.
             //
-            // One Taskbar, here, above every screen. Same component, same icons, same window
+            // One dock, here, above every screen. Same component, same icons, same window
             // entries, always in the same place — which is the whole of what "consistent" means
             // for the one strip a person's eye returns to all day.
-            Taskbar {
-                y: parent.height - self.height;
+            GroundedDock {
+                y: 0;
                 width: 100%;
-                windows: root.window-list;
+                height: parent.height;
+                buttons: root.dock-buttons;
+                windows: root.dock-windows;
+                reveal-index: root.dock-reveal-index;
+                first <=> root.dock-first;
+                capacity-changed(n) => { root.dock-capacity = n; }
                 minimized-screen: root.minimized-screen;
                 minimized-title: root.minimized-title;
                 minimized-app-id: root.minimized-app-id;
@@ -2847,9 +2859,8 @@ export component App inherits Window {
                     root.minimized-screen = 0;
                 }
                 launcher-label: Tr.dock-apps;
-                companion-count: root.whisper-hint-count;
                 companion-online: root.companion-online;
-                companion-status: root.companion-status;
+                launch-app(app-id) => { root.launch-app(app-id); }
                 // The launcher is drawn on the desktop screen and nowhere else, so from Files,
                 // Recipes or any other screen this button flipped a property nothing drew (#219).
                 // Opening it goes to the desktop first, as open_lens does, and puts the Lens
@@ -2874,7 +2885,6 @@ export component App inherits Window {
                 // other screen this used to open nothing a person could see; it goes to the
                 // desktop first, as Apps does (#219, #241). The shell's handler for the Lens
                 // opening brings the window forward over whatever app is in front.
-                chat-with: root.active-harness-name;
                 cards-waiting: root.cards-pending;
                 open-companion => {
                     if (!root.lens-open) {

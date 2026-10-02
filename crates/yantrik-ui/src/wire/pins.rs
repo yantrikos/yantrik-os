@@ -89,7 +89,7 @@ pub fn toggle(app_id: &str) -> bool {
 ///
 /// This was the whole of START: the hardcoded list the poll rebuilt. It is now only a label
 /// table — which apps appear is the pinned list's business.
-fn builtin_label(tr: &Tr, id: &str) -> Option<SharedString> {
+pub(super) fn builtin_label(tr: &Tr, id: &str) -> Option<SharedString> {
     Some(match id {
         "terminal" => tr.get_dock_terminal(),
         "browser" => tr.get_dock_browser(),
@@ -111,7 +111,7 @@ fn builtin_label(tr: &Tr, id: &str) -> Option<SharedString> {
 }
 
 /// "download-manager" → "Download Manager", for an app nothing else could name.
-fn humanise(id: &str) -> String {
+pub(super) fn humanise(id: &str) -> String {
     id.split(['-', '_', '.'])
         .filter(|w| !w.is_empty())
         .map(|w| {
@@ -176,6 +176,8 @@ pub fn publish(ui: &App, installed: &[DesktopEntry]) {
     if let Some(model) = crate::models::changed(ui.get_dock_items(), items) {
         ui.set_dock_items(model);
     }
+    // A pin made or unmade is a button made or unmade in the dock, now, not on the next poll.
+    super::dock_bar::publish(ui, installed);
 }
 
 #[cfg(test)]

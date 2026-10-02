@@ -52,13 +52,13 @@
     labwc documents <margin> for exactly this case ("a workaround for clients such as panels that
     do NOT support the wlr-layer-shell protocol"). New, maximized and tiled windows keep out of
     these strips. The numbers are the real heights: Theme.status-bar-height is 32px
-    (crates/yantrik-design-tokens/slint/theme.slint) and the taskbar is 40px
-    (crates/yantrik-ui-slint/ui/components/taskbar.slint). If either changes, change these.
+    (crates/yantrik-design-tokens/slint/theme.slint) and the grounded dock is 48px
+    (crates/yantrik-ui-slint/ui/components/grounded_dock.slint; Theme.taskbar-height). If either changes, change these.
 
     The proper fix is for the panel to speak layer-shell and declare its own exclusive zone; this
     is the honest workaround until it does, and it is the one labwc recommends.
   -->
-  <margin top="32" bottom="40" left="0" right="0" />
+  <margin top="32" bottom="48" left="0" right="0" />
 
   <!-- Focus follows the click, not the pointer: an agent moving the pointer must not change
        which window receives what the person types next. -->
