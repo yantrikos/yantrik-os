@@ -2060,6 +2060,7 @@ mod tests {
             status: crate::approvals::Status::Pending,
             record: String::new(),
             decided_at: String::new(),
+            session: false,
             age_secs: 4,
         }
     }

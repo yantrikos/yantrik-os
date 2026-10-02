@@ -164,6 +164,57 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     assert_eq!((ui.get_allowed(), ui.get_denied()), (0, 0), "Enter must not answer an approval");
     assert_eq!(ui.get_sends(), 0, "Enter in an empty composer sends nothing");
 
+    // ── 1b. The card does not move under the pointer (review of #580) ──
+    //
+    // The work strip comes and goes while a request waits, and the reply box grows as a person
+    // types. Neither may move the card or resize it, so the rows the card is drawn in are the
+    // same pixels in every state.
+    let card_rows = |p: &Pixels| -> Vec<slint::Rgb8Pixel> {
+        let from = (112 * W + PANEL_X as u32) as usize;
+        (0..230usize)
+            .flat_map(|row| p.as_slice()[from + row * W as usize..from + row * W as usize + 440].to_vec())
+            .collect()
+    };
+    let with_strip = card_rows(&waiting);
+    ui.set_strip(WorkCardData::default());
+    ui.set_live_runs(0);
+    ui.set_waiting_runs(0);
+    assert!(
+        card_rows(&settle(w)) == with_strip,
+        "the card is drawn in the same place with and without the work strip"
+    );
+    key(w, "a");
+    for _ in 0..6 {
+        shift_enter(w);
+    }
+    assert!(
+        card_rows(&settle(w)) == with_strip,
+        "the card is drawn in the same place while the reply box grows"
+    );
+    for _ in 0..8 {
+        key(w, Key::Backspace);
+    }
+    settle(w);
+    ui.set_strip(work("needs-you", "Needs you", "Waiting for your answer", true, false));
+    ui.set_live_runs(1);
+    ui.set_waiting_runs(1);
+
+    // ── 1c. Sensitive and standard requests do not look alike ──
+    let mut standard = approval("", "", "");
+    standard.grade = "standard".into();
+    ui.set_approvals(ModelRc::new(VecModel::from(vec![standard])));
+    let standard_card = settle(w);
+    save(&standard_card, &named(output, "approval-standard"))?;
+    let mut dangerous = approval("", "", "");
+    dangerous.grade = "dangerous".into();
+    ui.set_approvals(ModelRc::new(VecModel::from(vec![dangerous])));
+    let dangerous_card = settle(w);
+    assert!(differ(&waiting, &standard_card) > 300, "a standard request is not drawn like a sensitive one");
+    assert!(differ(&waiting, &dangerous_card) > 300, "nor is a dangerous one");
+    assert!(differ(&standard_card, &dangerous_card) > 300, "and the three are three");
+    ui.set_approvals(ModelRc::new(VecModel::from(vec![approval("", "", "")])));
+    settle(w);
+
     // ── 2. The same request, once resolved: one collapsed line ──
     ui.set_approvals(ModelRc::new(VecModel::from(vec![approval(
         "allowed",
@@ -179,7 +230,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     assert!(differ(&waiting, &resolved) > 2000, "a resolved approval draws differently from a waiting one");
     // "View action" opens the run of the agent that asked. Found by clicking where a person would.
     let mut opened = false;
-    'scan: for y in (360..700).step_by(4) {
+    'scan: for y in (100..700).step_by(4) {
         for x in (PANEL_X as i32 + 150..PANEL_X as i32 + 420).step_by(16) {
             ui.set_opened_run("".into());
             crate::click(w, x as f32, y as f32);
@@ -190,6 +241,17 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         }
     }
     assert!(opened, "\"View action\" on a resolved approval opens the agent that asked");
+    // The line names the action and how long the grant lasts: a session rule reads differently
+    // from a one-off (review of #580).
+    let once = settle(w);
+    let mut session = approval("allowed", "Allowed for this session: files.move \u{2014} 10:42", "10:42");
+    session.session = true;
+    ui.set_approvals(ModelRc::new(VecModel::from(vec![session])));
+    let for_session = settle(w);
+    save(&for_session, &named(output, "approved-session"))?;
+    assert!(differ(&once, &for_session) > 50, "\"(this session)\" is drawn where \"(once)\" was");
+    let card = include_str!("../../../crates/yantrik-ui-slint/ui/components/intent_lens.slint");
+    assert!(card.contains("(this session)") && card.contains("(once)") && card.contains("root.data.app + \".\" + root.data.action"));
     assert_eq!((ui.get_allowed(), ui.get_denied()), (0, 0), "and pressing it answers nothing");
 
     // ── 3. The empty state, and a starter that fills the composer without sending ──

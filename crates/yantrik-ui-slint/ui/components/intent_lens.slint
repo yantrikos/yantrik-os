@@ -113,6 +113,9 @@ export struct ApprovalRequest {
     record: string,         // the one line that stays in the conversation afterwards
     age-text: string,       // "94s left", while waiting
     decided-at: string,     // "10:42" once decided: the resolved line's time
+    // Once allowed: whether it was "for this session" (a standing rule) rather than once. The
+    // resolved line says which, because the two are different promises.
+    session: bool,
 }
 
 // One request, or — once it has been answered — the line it leaves behind.
@@ -149,6 +152,18 @@ export component ApprovalCard inherits Rectangle {
     callback view-action();
 
     property <bool> waiting: root.data.decision == "";
+
+    // How hard to look, said by the card's edge before a word is read: a `dangerous` request is
+    // red, a `sensitive` one amber with its name on the heading, and a `standard` one neutral
+    // (it is still a question that waits for the person, and the heading says so). When every
+    // request was amber the grade was only in the small print and the cue was gone (review of
+    // #580). Tokens only, so the colour system can restyle them.
+    property <color> grade-edge: root.data.grade == "dangerous" ? Theme.color-danger
+        : root.data.grade == "sensitive" ? Theme.chat-needs-you : Theme.chat-border;
+    property <color> grade-ink: root.data.grade == "dangerous" ? Theme.color-danger
+        : root.data.grade == "sensitive" ? Theme.chat-needs-you : Theme.chat-text;
+    property <string> grade-label: root.data.grade == "dangerous" ? "Dangerous"
+        : root.data.grade == "sensitive" ? "Sensitive" : "";
 
     // ── The card fits the panel it is drawn in, or it does not answer (#218) ──
     //
@@ -208,8 +223,8 @@ export component ApprovalCard inherits Rectangle {
             font-size: Theme.fs-caption;
             vertical-alignment: center;
             wrap: no-wrap;
-            overflow: elide;
             horizontal-stretch: root.data.decision == "expired" ? 1 : 0;
+            overflow: root.data.decision == "expired" ? elide : clip;
         }
         if root.data.decision != "expired" && root.data.decided-at != "" : Text {
             text: "\u{00b7} " + root.data.decided-at;
@@ -218,7 +233,21 @@ export component ApprovalCard inherits Rectangle {
             vertical-alignment: center;
             wrap: no-wrap;
         }
-        if root.data.decision != "expired" && root.data.decided-at == "" : Text {
+        // Which action, and for how long. A standing "for this session" rule and a one-off both
+        // read "Approved by you · 10:42" before, so a person scrolling back could not tell that
+        // a rule still stood or what it covered (review of #580). The end of the line is what
+        // gets elided in a narrow panel, never these facts: they are the line's own stretch.
+        if root.data.decision != "expired" && root.data.app != "" : Text {
+            text: "\u{00b7} " + root.data.app + "." + root.data.action
+                + (root.data.decision == "allowed" ? (root.data.session ? " (this session)" : " (once)") : "");
+            color: Theme.chat-text-2;
+            font-size: Theme.fs-caption;
+            vertical-alignment: center;
+            wrap: no-wrap;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        if root.data.decision != "expired" && root.data.app == "" && root.data.decided-at == "" : Text {
             text: "\u{00b7} " + root.data.record;
             color: Theme.chat-text-2;
             font-size: Theme.fs-caption;
@@ -248,10 +277,8 @@ export component ApprovalCard inherits Rectangle {
         // something that cannot be undone must not have another window's words showing through it.
         background: Theme.chat-bar;
         border-width: 1px;
-        // A request is a person's answer being waited on, so its edge is the needs-you amber. The
-        // one grade that is worse than that keeps its own colour, so the thing that changes how
-        // hard you should look is still visible before you start reading.
-        border-color: root.data.grade == "dangerous" ? Theme.color-danger : Theme.chat-needs-you;
+        // The edge carries the grade (`grade-edge` above).
+        border-color: root.grade-edge;
         drop-shadow-blur: 18px;
         drop-shadow-color: Theme.overlay-shadow;
         // The promise to the panel: never taller than it was told it may be. What yields is the
@@ -287,12 +314,25 @@ export component ApprovalCard inherits Rectangle {
             //
             // Four fixed single-line rows rather than anything that wraps, so the card's height
             // stays arithmetic — see the geometry table in design/approvals-2026-09-21.md.
-            Text {
-                text: "Approval needed";
-                color: Theme.chat-needs-you;
-                font-size: Theme.fs-body-strong;
-                font-weight: 600;
-                wrap: no-wrap;
+            HorizontalLayout {
+                spacing: Theme.sp-2;
+                Text {
+                    text: "Approval needed";
+                    color: root.grade-ink;
+                    font-size: Theme.fs-body-strong;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    wrap: no-wrap;
+                }
+                if root.grade-label != "" : Text {
+                    text: "\u{00b7} " + root.grade-label;
+                    color: root.grade-ink;
+                    font-size: Theme.fs-body-strong;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    wrap: no-wrap;
+                }
+                Rectangle { horizontal-stretch: 1; }
             }
             HorizontalLayout {
                 spacing: Theme.sp-2;
@@ -301,7 +341,7 @@ export component ApprovalCard inherits Rectangle {
                     width: 6px; height: 6px;
                     y: 5px;
                     border-radius: 3px;
-                    background: Theme.chat-needs-you;
+                    background: root.grade-ink;
                 }
                 Text {
                     text: root.data.requester;
@@ -2067,6 +2107,65 @@ export component IntentLens inherits Rectangle {
                     }
                 }
 
+                // Approval cards and their records, pinned under the header, above the conversation.
+                //
+                // Here rather than interleaved in the transcript because a request is not a
+                // message: it arrives while the person is reading, it has to stay put while they
+                // decide, and a card that scrolls away with the transcript is a card that gets
+                // missed.
+                //
+                // Under the header and not above the reply box, which is where it was, because
+                // everything between this block and the bottom of the panel changes while a
+                // person is aiming at a button: the current-work strip appears when a run goes
+                // live (which is when requests arrive) and the reply box grows as they type, and
+                // each moved the card by 48px or more between the press and the release of a
+                // click (review of #580). The only thing above the card now is the header, which
+                // is one fixed height, so the card's top edge is a constant of the panel, and its
+                // height limit below reserves the worst case for what is under it, so its bottom
+                // edge — where the buttons are — is one too.
+                if root.approvals.length > 0 : VerticalLayout {
+                    spacing: Theme.sp-1;
+                    padding-top: Theme.sp-2;
+                    padding-bottom: Theme.sp-2;
+                    padding-left: Theme.sp-2;
+                    padding-right: Theme.sp-2;
+
+                    for item[idx] in root.approvals : ApprovalCard {
+                        data: item;
+                        // The tallest the card may be and still leave the panel showing
+                        // everything else it owes: the header, the transcript sliver below and
+                        // the strip and reply box under that — the reply box was what went off the
+                        // bottom edge in #218, with the card's buttons a 3px sliver above it. The
+                        // panel is the window between the two bars, less its margins; from it go
+                        // the header, the composer at its tallest, the
+                        // current-work strip, the transcript's floor, this
+                        // block's padding with its "N more waiting" line (40px), and one row
+                        // (32px) per decided record sharing this block with the card. The floor
+                        // keeps a card's identity rows and buttons on any panel tall enough to
+                        // hold them at all.
+                        //
+                        // The composer and the strip are counted at their LARGEST, whether or
+                        // not they are drawn now: a limit that read their current heights would
+                        // resize the card, and move its buttons, when either changed.
+                        height-limit: max(240px, root.panel-height - Theme.chat-header-height
+                            - composer.bar-height-max - Theme.chat-strip-height
+                            - root.transcript-min - 40px - 32px * root.approvals.length);
+                        allow => { root.approval-allow(item.id); }
+                        allow-session => { root.approval-allow-session(item.id); }
+                        deny => { root.approval-deny(item.id); }
+                        view-action => { root.open-run(item.agent); }
+                    }
+
+                    if root.approvals-waiting > 0 : Text {
+                        text: root.approvals-waiting + " more waiting — this one first";
+                        color: Theme.chat-text-2;
+                        font-size: Theme.fs-micro;
+                        horizontal-alignment: center;
+                        wrap: no-wrap;
+                        overflow: elide;
+                    }
+                }
+
                 // The conversation — fills the panel's height, down to `transcript-min` while a
                 // card is waiting (see the property at the top of the component). It follows the
                 // newest line only while the person is at the bottom; scrolled up, it stays put
@@ -2129,51 +2228,6 @@ export component IntentLens inherits Rectangle {
                         prompt: q.prompt;
                         options: q.options;
                         answered(a) => { root.question-answer(q.agent, q.request, a); }
-                    }
-                }
-
-                // Approval cards and their records, between the conversation and the reply box.
-                //
-                // Here rather than interleaved in the transcript above because a request is not a
-                // message: it arrives while the person is reading, it has to stay put while they
-                // decide, and a card that scrolls away with the transcript is a card that gets
-                // missed. It reads as the newest thing in the conversation, which is what it is.
-                if root.approvals.length > 0 : VerticalLayout {
-                    spacing: Theme.sp-1;
-                    padding-top: Theme.sp-2;
-                    padding-bottom: Theme.sp-2;
-                    padding-left: Theme.sp-2;
-                    padding-right: Theme.sp-2;
-
-                    for item[idx] in root.approvals : ApprovalCard {
-                        data: item;
-                        // The tallest the card may be and still leave the panel showing
-                        // everything else it owes: the header, the transcript sliver above and
-                        // the strip and reply box below — the reply box was what went off the
-                        // bottom edge in #218, with the card's buttons a 3px sliver above it. The
-                        // panel is the window between the two bars, less its margins; from it go
-                        // the header, the composer at whatever height it has grown to, the
-                        // current-work strip when it is drawn, the transcript's floor, this
-                        // block's padding with its "N more waiting" line (40px), and one row
-                        // (32px) per decided record sharing this block with the card. The floor
-                        // keeps a card's identity rows and buttons on any panel tall enough to
-                        // hold them at all.
-                        height-limit: max(240px, root.panel-height - Theme.chat-header-height
-                            - composer.bar-height - (root.strip-shown ? Theme.chat-strip-height : 0px)
-                            - root.transcript-min - 40px - 32px * root.approvals.length);
-                        allow => { root.approval-allow(item.id); }
-                        allow-session => { root.approval-allow-session(item.id); }
-                        deny => { root.approval-deny(item.id); }
-                        view-action => { root.open-run(item.agent); }
-                    }
-
-                    if root.approvals-waiting > 0 : Text {
-                        text: root.approvals-waiting + " more waiting — this one first";
-                        color: Theme.chat-text-2;
-                        font-size: Theme.fs-micro;
-                        horizontal-alignment: center;
-                        wrap: no-wrap;
-                        overflow: elide;
                     }
                 }
 

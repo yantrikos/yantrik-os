@@ -24,6 +24,9 @@ export component ChatComposer inherits Rectangle {
     out property <bool> focused: input.has-focus;
     // The bar's own height, which the panel's arithmetic subtracts.
     out property <length> bar-height: max(112px, min(200px, input.preferred-height + 14px) + 72px);
+    // The tallest `bar-height` gets: the field's 200px cap plus the 72px around it. The approval
+    // card's height limit reads this and not `bar-height`, so typing cannot resize the card.
+    out property <length> bar-height-max: 272px;
 
     callback send(string);
     callback mic();

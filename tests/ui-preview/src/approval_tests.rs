@@ -68,6 +68,7 @@ fn card(summary: &str) -> ApprovalRequest {
         record: "".into(),
         age_text: "94s left".into(),
         decided_at: "".into(),
+        session: false,
     }
 }
 

@@ -1746,6 +1746,7 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
         .into(),
         record: card.record.into(),
         decided_at: card.decided_at.into(),
+        session: card.session,
         age_text: if card.status == Status::Pending {
             let left = approvals::REQUEST_TTL.as_secs().saturating_sub(card.age_secs);
             format!("{left}s left").into()
@@ -2597,6 +2598,7 @@ mod control_approvals_tests {
                 status: Status::Pending,
                 record: String::new(),
                 decided_at: String::new(),
+                session: false,
                 age_secs: 3,
             }
         };
@@ -2797,6 +2799,7 @@ mod control_approvals_tests {
                 status,
                 record: String::new(),
                 decided_at: String::new(),
+                session: false,
                 age_secs: 3,
             }
         }
@@ -3268,6 +3271,7 @@ mod target_line_tests {
             status: Status::Pending,
             record: String::new(),
             decided_at: String::new(),
+            session: false,
             age_secs: 12,
         });
         assert_eq!(row.target.as_str(), line.as_str());

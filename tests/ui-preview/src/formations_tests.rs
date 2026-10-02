@@ -324,6 +324,7 @@ fn agents_row_and_card(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Bo
         record: "".into(),
         age_text: "110s left".into(),
         decided_at: "".into(),
+        session: false,
     };
     let item = |kind: &str, key: &str, text: &str| AgentItemData { kind: kind.into(), key: key.into(), text: text.into(), ..Default::default() };
     g.set_items(ModelRc::new(VecModel::from(vec![

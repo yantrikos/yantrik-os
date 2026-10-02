@@ -596,6 +596,9 @@ pub struct Card {
     /// Wall-clock `HH:MM` it was decided at, for the resolved line's "Approved by you · 10:42".
     /// Empty while pending, and for one that was never answered.
     pub decided_at: String,
+    /// Allowed with "Allow for this session" rather than once. Display only: the resolved
+    /// line says which promise was made. Nothing reads it to decide anything.
+    pub session: bool,
     pub age_secs: u64,
 }
 
@@ -1131,6 +1134,7 @@ impl Store {
                 } else {
                     record.decided_at.clone()
                 },
+                session: record.session,
                 age_secs: now.duration_since(record.created).as_secs(),
             };
             if status == Status::Pending {
@@ -2178,6 +2182,13 @@ mod approvals_tests {
 
         let card = store.cards(now).into_iter().find(|c| c.id == id).unwrap();
         assert_eq!(card.record, "Allowed for this session: calendar.delete_event — 12:03");
+        // The card carries which it was, for the resolved line's "(this session)" (review of
+        // #580), and a one-off does not.
+        assert!(card.session, "a session grant is marked as one");
+        let mut once = Store::new();
+        let once_id = ask(&mut once, now);
+        once.grant(&once_id, now, "12:03").unwrap();
+        assert!(!once.cards(now).into_iter().find(|c| c.id == once_id).unwrap().session);
 
         // And it is still one grant, for these arguments, once — the standing part lives in
         // `mind_mode`, not in the store.
