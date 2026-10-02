@@ -36,19 +36,21 @@ class HarnessError(Exception):
 # gateway session presents to the machine's memory server. Never the process environment: the
 # gateway serves every platform from one process, and an environment variable would be read by
 # Telegram's sessions and by every command any platform's tools start.
-# TODO(registry): the exact module and function, from the plugin release that adds them.
 REGISTRY_MODULE = "yantrikdb_hermes_plugin.yantrik_memory"
+# set_desktop_credential(session_key, credential | None, memory_url | None = None): None revokes.
 REGISTRY_FUNCTION = "set_desktop_credential"
+# clear_desktop_credentials(): every session's, when the desktop is lost or the adapter stops.
+CLEAR_FUNCTION = "clear_desktop_credentials"
 
 
-def find_registry(import_module=importlib.import_module) -> Optional[Callable[..., Any]]:
-    """The provider's `set(session_key, credential, url)`, or None when this Hermes has none.
+def find_registry(import_module=importlib.import_module, name: str = REGISTRY_FUNCTION) -> Optional[Callable[..., Any]]:
+    """One of the provider's registry functions, or None when this Hermes has no such provider.
 
     Looked up when it is needed, not at import: the provider is a separate package, installed
     beside Hermes, and a Hermes without it still runs the desktop platform, with no memory.
     """
     try:
-        registry = getattr(import_module(REGISTRY_MODULE), REGISTRY_FUNCTION)
+        registry = getattr(import_module(REGISTRY_MODULE), name)
     except (ImportError, AttributeError):
         return None
     return registry if callable(registry) else None

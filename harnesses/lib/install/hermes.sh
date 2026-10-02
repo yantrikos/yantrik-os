@@ -75,9 +75,9 @@ say "giving Hermes's desktop platform the desktop's tools in $config"
 # In `yantrik` mode the provider presents, on every call, the credential the desktop hands Hermes
 # with each turn (registered with it in Hermes's process by adapter.py, never in the environment); the
 # desktop grants it once the install the person pressed has worked, never for one a mind asked for.
-# v0.28.0, the release with `yantrik` mode (yantrikos/yantrikdb-hermes-plugin#93), by commit: a
+# v0.28.0 with `yantrik` mode and its in-process credential registry, by commit: a
 # tag can be moved and a commit cannot. Moved on by hand, with the review of what changed.
-YANTRIKDB_PLUGIN="yantrikdb-hermes-plugin @ git+https://github.com/yantrikos/yantrikdb-hermes-plugin@e3ad889d1890cfe04057641051da30e7d6a35d74"
+YANTRIKDB_PLUGIN="yantrikdb-hermes-plugin @ git+https://github.com/yantrikos/yantrikdb-hermes-plugin@5c1abc5548ef50905b89e21527f66ee009f8bd17"
 # Hermes picks a memory provider by its directory in ~/.hermes/plugins, which this package names.
 MEMORY_PROVIDER=yantrikdb
 

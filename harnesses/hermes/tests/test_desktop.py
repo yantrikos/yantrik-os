@@ -145,6 +145,43 @@ class MemoryCredentialTests(unittest.TestCase):
         self.assertEqual(calls, [("s", None, None)])
         self.assertIsNone(desktop.find_registry(missing), "no provider: no registry, and no crash")
         self.assertIsNone(desktop.find_registry(lambda name: types.SimpleNamespace()), "an older provider")
+        self.assertIsNone(desktop.find_registry(has_it, name=desktop.CLEAR_FUNCTION), "only what it has")
+
+    def test_the_names_are_the_providers_own_package_not_the_engines(self):
+        # `yantrikdb` is the engine; the registry is in the Hermes plugin's package.
+        self.assertEqual(desktop.REGISTRY_MODULE, "yantrikdb_hermes_plugin.yantrik_memory")
+        self.assertEqual(desktop.REGISTRY_FUNCTION, "set_desktop_credential")
+        self.assertEqual(desktop.CLEAR_FUNCTION, "clear_desktop_credentials")
+
+    def test_a_refused_address_reaches_the_caller_without_anything_registered_first(self):
+        def refusing(session_key, credential, url=None):
+            raise ValueError("memory_url must be loopback http:// or unix:/abs/path")
+
+        with self.assertRaises(ValueError):
+            desktop.carry_memory({"memory_credential": CREDENTIAL, "memory_url": "http://example.com/mcp"},
+                                 SESSION, refusing)
+
+    def test_the_real_provider_takes_exactly_these_calls(self):
+        # Against the pinned plugin wherever it can be imported (it needs its engine, which CI
+        # does not install): our call shapes, its refusal of an address that is not loopback, and
+        # nothing put in the environment.
+        try:
+            from yantrikdb_hermes_plugin import yantrik_memory
+        except Exception as exc:
+            self.skipTest("yantrikdb_hermes_plugin is not importable here: %s" % exc)
+        register = desktop.find_registry()
+        clear = desktop.find_registry(name=desktop.CLEAR_FUNCTION)
+        self.assertIsNotNone(register)
+        self.assertIsNotNone(clear)
+        try:
+            self.assertTrue(desktop.carry_memory({"memory_credential": CREDENTIAL, "memory_url": URL}, SESSION, register))
+            self.assertFalse(desktop.carry_memory({}, SESSION, register))
+            with self.assertRaises(ValueError) as refused:
+                desktop.carry_memory({"memory_credential": CREDENTIAL, "memory_url": "http://example.com/mcp"},
+                                     SESSION, register)
+            self.assertNotIn(CREDENTIAL, str(refused.exception), "the provider's refusal quotes no credential")
+        finally:
+            clear()
 
     def test_the_credential_is_never_logged_or_returned(self):
         import logging
@@ -159,6 +196,10 @@ class MemoryCredentialTests(unittest.TestCase):
         source = (Path(__file__).resolve().parents[1] / "adapter.py").read_text(encoding="utf-8")
         self.assertIn("desktop.carry_memory(assignment, session_key, register)", source)
         self.assertIn("desktop.find_registry()", source)
+        # Keyed by the gateway's own session key, which is what it hands the memory provider, and
+        # cleared all at once when the desktop goes.
+        self.assertIn('"_session_key_for_source"', source)
+        self.assertIn("name=desktop.CLEAR_FUNCTION", source)
         self.assertNotIn("YANTRIK_MEMORY_CREDENTIAL", source)
         self.assertNotIn("YANTRIK_MEMORY_URL", source)
         for line in source.splitlines():

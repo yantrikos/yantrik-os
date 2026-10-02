@@ -116,11 +116,9 @@ class YantrikAdapter(BasePlatformAdapter):
         self._tasks: list[asyncio.Task] = []
         self._owner = os.environ.get("USER") or getpass.getuser() or OWNER_ID
         self._said_no_desktop = False
-        # Whether the last turn carried a memory credential, so a change is logged once; the
-        # gateway sessions one was registered for, so losing the desktop clears each; and whether
-        # a missing memory provider has been said, so it is said once.
+        # Whether the last turn carried a memory credential, so a change is logged once; and
+        # whether a missing memory provider has been said, so it is said once.
         self._carried_memory: Optional[bool] = None
-        self._memory_sessions: set[str] = set()
         self._said_no_registry = False
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────────────────────
@@ -289,11 +287,7 @@ class YantrikAdapter(BasePlatformAdapter):
             timestamp=datetime.now(timezone.utc),
         )
         turn = self._ledger.open(turn_id, CHAT_ID, text)
-        session_key = build_session_key(
-            source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-        )
+        session_key = self._gateway_session_key(source)
         turn.session_key = session_key
         # Before the gateway sees the message, so the memory provider's prefetch for this turn
         # already presents this turn's credential, or none when the grant was taken away.
@@ -310,6 +304,38 @@ class YantrikAdapter(BasePlatformAdapter):
             return
         asyncio.create_task(self._watch_pickup(turn_id))
 
+    def _gateway_session_key(self, source) -> str:
+        """The gateway's own session key for the desktop's chat, `agent:main:yantrik:dm:desktop`.
+
+        The key the gateway keys its sessions by, and so the one it hands the memory provider: a
+        credential registered under any other key is one the provider never finds. Asked of the
+        gateway itself where it can be reached (its `_session_key_for_source`, which honours its
+        session store and config), and otherwise built the way the gateway builds it.
+        """
+        for owner in (self, getattr(self._message_handler, "__self__", None)):
+            resolve = getattr(owner, "_session_key_for_source", None)
+            if callable(resolve):
+                try:
+                    key = resolve(source)
+                    if isinstance(key, str) and key:
+                        return key
+                except Exception:
+                    pass
+        store = getattr(self, "_session_store", None)
+        generate = getattr(store, "_generate_session_key", None)
+        if callable(generate):
+            try:
+                key = generate(source)
+                if isinstance(key, str) and key:
+                    return key
+            except Exception:
+                pass
+        return build_session_key(
+            source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+        )
+
     def _carry_memory(self, assignment: Dict[str, Any], session_key: str) -> None:
         """Register this turn's memory credential with the YantrikDB provider, in this process.
 
@@ -325,14 +351,17 @@ class YantrikAdapter(BasePlatformAdapter):
         self._said_no_registry = False
         try:
             carried = desktop.carry_memory(assignment, session_key, register)
+        except ValueError:
+            # The provider refuses an address that is not loopback http:// or unix:/an/absolute
+            # path, and clears the session as it does. Neither the address nor the credential
+            # is repeated here.
+            logger.warning("[yantrik] the memory provider refused this turn's memory address; this turn has no memory")
+            self._carried_memory = None
+            return
         except Exception as exc:
             # The kind only: the provider's own message could quote what it was given.
             logger.warning("[yantrik] the memory provider would not take this turn's credential (%s)", type(exc).__name__)
             return
-        if carried:
-            self._memory_sessions.add(session_key)
-        else:
-            self._memory_sessions.discard(session_key)
         if carried != self._carried_memory:
             # Whether, never what: the credential is never written to a log.
             logger.info(
@@ -344,17 +373,15 @@ class YantrikAdapter(BasePlatformAdapter):
             self._carried_memory = carried
 
     def _forget_memory(self) -> None:
-        """Clear every credential registered for a session of the desktop that is gone."""
-        sessions, self._memory_sessions = self._memory_sessions, set()
+        """Take back every credential the provider holds for the desktop, which is gone or going."""
         self._carried_memory = None
-        register = desktop.find_registry() if sessions else None
-        if register is None:
+        clear = desktop.find_registry(name=desktop.CLEAR_FUNCTION)
+        if clear is None:
             return
-        for session_key in sessions:
-            try:
-                desktop.carry_memory({}, session_key, register)
-            except Exception as exc:
-                logger.warning("[yantrik] the memory provider would not clear a credential (%s)", type(exc).__name__)
+        try:
+            clear()
+        except Exception as exc:
+            logger.warning("[yantrik] the memory provider would not take its credentials back (%s)", type(exc).__name__)
 
     async def _while_busy(self, event: MessageEvent, turn: desktop.Turn, session_key: str) -> None:
         """A message that arrived while Hermes is working on an earlier one."""
