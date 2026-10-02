@@ -344,7 +344,9 @@ fn install_clicked(roots: &[std::path::PathBuf], id: &str) -> Result<String, Str
     // only after a success, so there is none of this run's to roll back.
     let id = manifest.id.clone();
     let failed = (manifest.memory == harness_catalogue::Memory::Yantrikdb)
-        .then(|| Box::new(move || drop(crate::harness_memory::withdraw_live(host(), &id))) as crate::harness_install::Failed);
+        .then(|| Box::new(move || {
+            let _ = crate::harness_memory::withdraw_live(host(), &id);
+        }) as crate::harness_install::Failed);
     crate::harness_install::install_then_or(&manifest, grant, failed)
 }
 
