@@ -6,13 +6,9 @@ way its Telegram adapter makes it a Telegram bot: the gateway runs the agent, it
 approvals and its memory exactly as it always does, and this file carries text between the gateway
 and the desktop's chat.
 
-Everything that makes Hermes Hermes — the model, the endpoint, the keys — stays in ~/.hermes, where
-Hermes keeps it. Nothing here reads or passes any of it to the OS, and the socket protocol has no
-field that could carry it. Its memory is the one exception, in the other direction: on this machine
-it is the person's YantrikDB, the memory Yantrik Mind keeps, and each turn of a Hermes the person
-granted it brings the credential Hermes's YantrikDB provider presents to the memory server. This
-file registers it with the provider, in this process and for the turn's gateway session alone, and
-clears it with the turn that no longer brings it.
+Everything that makes Hermes Hermes — the model, the endpoint, the keys, the memory provider —
+stays in ~/.hermes, where Hermes keeps it. Nothing here reads or passes any of it to the OS, and the
+socket protocol has no field that could carry it.
 
 Two things differ from a chat app, and both come from the desktop thinking in turns:
 
@@ -44,7 +40,7 @@ from gateway.platforms.base import (
 )
 from gateway.session import build_session_key
 
-from . import desktop, guard
+from . import desktop
 
 logger = logging.getLogger(__name__)
 
@@ -116,16 +112,6 @@ class YantrikAdapter(BasePlatformAdapter):
         self._tasks: list[asyncio.Task] = []
         self._owner = os.environ.get("USER") or getpass.getuser() or OWNER_ID
         self._said_no_desktop = False
-        # Whether the last turn carried a memory credential, so a change is logged once; and
-        # whether a missing memory provider has been said, so it is said once.
-        self._carried_memory: Optional[bool] = None
-        self._said_no_registry = False
-        # Every gateway session key a credential was registered under, so a revoke reaches each.
-        self._memory_keys: set = set()
-        # Why this adapter will not attach, said once; empty when it may.
-        self._refusal: Optional[str] = None
-        self._said_refusal: Optional[str] = None
-        self._said_key_mismatch = False
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────────────────────
 
@@ -142,15 +128,6 @@ class YantrikAdapter(BasePlatformAdapter):
             task.cancel()
         if stale:
             await asyncio.gather(*stale, return_exceptions=True)
-        if not is_reconnect:
-            # Gateway start: re-assert the desktop platform's allowlist and the desktop's own MCP
-            # server, which `hermes update` or a plugin installed since may have changed. A
-            # widened one is not attached to. See guard.py.
-            self._refusal = await asyncio.to_thread(guard.start)
-            self._said_refusal = self._refusal
-            if self._refusal:
-                logger.error("[yantrik] not attaching to the desktop: %s", self._refusal)
-            guard.decide(self._refusal)
         self._tasks = [
             asyncio.create_task(self._run(), name="yantrik-poll"),
             asyncio.create_task(self._heartbeat(), name="yantrik-heartbeat"),
@@ -173,7 +150,6 @@ class YantrikAdapter(BasePlatformAdapter):
             except desktop.HarnessError:
                 pass
         self._session = None
-        self._forget_memory()
         self._mark_disconnected()
 
     async def _call(self, method: str, params: Dict[str, Any], timeout: float = 10.0) -> Any:
@@ -182,17 +158,6 @@ class YantrikAdapter(BasePlatformAdapter):
         return await asyncio.to_thread(desktop.call, self._address, method, params, timeout)
 
     async def _attach(self) -> bool:
-        # Asked at every attach, not only at start: the file may have been widened since, and
-        # what is refused here is said on the desktop's own row.
-        # The refusal made at start stands until the gateway restarts: that gateway may have read
-        # the widened file. One found here is lifted when the file is put right.
-        reason = self._refusal or await asyncio.to_thread(guard.check)
-        if reason != self._said_refusal:
-            if reason:
-                logger.error("[yantrik] not attaching to the desktop: %s", reason)
-            self._said_refusal = reason
-        if not guard.decide(reason):
-            return False
         address = desktop.socket_path()
         if not address:
             if not self._said_no_desktop:
@@ -232,17 +197,10 @@ class YantrikAdapter(BasePlatformAdapter):
                     # failed on its side; attach again and carry on.
                     logger.warning("[yantrik] lost the desktop (%s); attaching again", exc)
                     self._session = None
-                    # The credential named an agent of that session; whatever attaches next is
-                    # handed its own with its first turn.
-                    self._forget_memory()
                     for turn in self._ledger.open_turns():
                         self._ledger.close(turn.turn_id)
                     await asyncio.sleep(RETRY_SECONDS)
                     continue
-                if isinstance(got, dict) and got.get(desktop.MEMORY_REVOKED):
-                    # The person took Hermes's memory away, or it is being removed: every
-                    # credential held for any session is void now, not at its next turn.
-                    self._revoke_memory()
                 if isinstance(got, dict) and got.get("turn_id") is not None:
                     asyncio.create_task(self._on_turn(got))
                     continue
@@ -317,18 +275,15 @@ class YantrikAdapter(BasePlatformAdapter):
             timestamp=datetime.now(timezone.utc),
         )
         turn = self._ledger.open(turn_id, CHAT_ID, text)
-        session_key, agreed = self._gateway_session_key(source)
+        session_key = build_session_key(
+            source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+        )
         turn.session_key = session_key
-        busy = session_key in self._active_sessions
-        if not busy:
-            # Before the gateway sees the message, so the memory provider's prefetch for this turn
-            # already presents this turn's credential, or none when the grant was taken away. Not
-            # for a message that only queues behind a running turn: its credential would replace
-            # the one the running turn is presenting, under the same key.
-            self._carry_memory(assignment, session_key if agreed else "")
 
         try:
-            if busy:
+            if session_key in self._active_sessions:
                 await self._while_busy(event, turn, session_key)
                 return
             await self.handle_message(event)
@@ -337,109 +292,6 @@ class YantrikAdapter(BasePlatformAdapter):
             await self._finish(turn_id, error=f"Hermes could not take this message: {exc}")
             return
         asyncio.create_task(self._watch_pickup(turn_id))
-
-    def _gateway_session_key(self, source) -> "tuple[str, bool]":
-        """The gateway's session key for the desktop's chat, `agent:main:yantrik:dm:desktop`.
-
-        One path, `desktop.session_key`: the gateway's own `build_session_key` with this
-        platform's settings, the same inputs every time. Then checked against the gateway's own
-        answer where it can be asked (its `_session_key_for_source`): a key that differs is one
-        the memory provider would never be asked about, or worse, one another session's turn
-        could be. It is said once, and the turn gets no memory. Answers `(key, agreed)`.
-        """
-        key = desktop.session_key(source, self.config.extra, build_session_key)
-        for owner in (self, getattr(self._message_handler, "__self__", None)):
-            resolve = getattr(owner, "_session_key_for_source", None)
-            if not callable(resolve):
-                continue
-            try:
-                theirs = resolve(source)
-            except Exception:
-                continue
-            if isinstance(theirs, str) and theirs and theirs != key:
-                if not self._said_key_mismatch:
-                    logger.error("[yantrik] the gateway keys the desktop's session differently than this adapter; turns have no memory")
-                    self._said_key_mismatch = True
-                return key, False
-            break
-        return key, True
-
-    def _carry_memory(self, assignment: Dict[str, Any], session_key: str) -> None:
-        """Register this turn's memory credential with the YantrikDB provider, in this process.
-
-        Never through the environment: the gateway runs every platform in one process, and what
-        is in its environment is every platform's and every subprocess's to read.
-
-        Fails closed. Whatever goes wrong, the session ends holding no credential: a failure that
-        left an earlier turn's registered would let a turn after a revoke present the old one.
-        """
-        register = desktop.find_registry()
-        if register is None:
-            if not self._said_no_registry:
-                logger.info("[yantrik] no YantrikDB memory provider to hand turns' memory credentials to")
-                self._said_no_registry = True
-            return
-        self._said_no_registry = False
-        if not session_key:
-            # No trustworthy key (the gateway's differs from ours): nothing is registered, and
-            # whatever any session holds is taken back.
-            self._revoke_memory()
-            return
-        self._memory_keys.add(session_key)
-        try:
-            carried = desktop.carry_memory(assignment, session_key, register)
-        except ValueError:
-            # The address is not loopback http:// or unix:/an/absolute path, and the session was
-            # cleared as it was refused. Neither the address nor the credential is repeated here.
-            logger.warning("[yantrik] this turn's memory address was refused; this turn has no memory")
-            self._carried_memory = None
-            return
-        except Exception as exc:
-            # The kind only: the provider's own message could quote what it was given.
-            logger.warning("[yantrik] the memory provider would not take this turn's credential (%s)", type(exc).__name__)
-            self._carried_memory = None
-            # Clear this session's, in a call of its own: the failed one may have left it set.
-            if desktop.revoke_all({session_key}, register, None):
-                # Even that failed: take back everything the provider holds.
-                self._forget_memory()
-            return
-        if carried != self._carried_memory:
-            # Whether, never what: the credential is never written to a log.
-            logger.info(
-                "[yantrik] %s",
-                "turns now carry a credential for the machine's memory"
-                if carried
-                else "turns carry no credential for the machine's memory",
-            )
-            self._carried_memory = carried
-
-    def _revoke_memory(self) -> None:
-        """The person took the memory away: void the credential of every session, now.
-
-        `set_desktop_credential(key, None)` for each key this adapter ever registered one under,
-        then the provider's clear-everything where it has one. Failures are counted, not quoted.
-        """
-        keys, self._memory_keys = set(self._memory_keys), set()
-        self._carried_memory = None
-        failed = desktop.revoke_all(
-            keys, desktop.find_registry(), desktop.find_registry(name=desktop.CLEAR_FUNCTION)
-        )
-        if failed:
-            logger.warning("[yantrik] some memory credentials could not be taken back (%s)", ", ".join(sorted(set(failed))))
-        else:
-            logger.info("[yantrik] the desktop revoked Hermes's memory; every credential was taken back")
-
-    def _forget_memory(self) -> None:
-        """Take back every credential the provider holds for the desktop, which is gone or going."""
-        self._carried_memory = None
-        self._memory_keys = set()
-        clear = desktop.find_registry(name=desktop.CLEAR_FUNCTION)
-        if clear is None:
-            return
-        try:
-            clear()
-        except Exception as exc:
-            logger.warning("[yantrik] the memory provider would not take its credentials back (%s)", type(exc).__name__)
 
     async def _while_busy(self, event: MessageEvent, turn: desktop.Turn, session_key: str) -> None:
         """A message that arrived while Hermes is working on an earlier one."""
@@ -624,8 +476,7 @@ def register(ctx) -> None:
     # The desktop's socket lives in a directory the OS creates at mode 0700, so only processes
     # already running as the machine's owner can reach it. Whoever is typing there is that person;
     # there is no one to pair with and no one else to keep out.
-    if os.environ.get("YANTRIK_HARNESS", "").strip().lower() in ("", "off") or os.environ["YANTRIK_HARNESS"].strip().startswith(("unix:", "/")):
-        os.environ.setdefault("YANTRIK_ALLOW_ALL_USERS", "true")
+    os.environ.setdefault("YANTRIK_ALLOW_ALL_USERS", "true")
     # The desktop has one conversation, so it is home. Without a home, the gateway opens the first
     # answer on a new machine with a paragraph asking the person to type /sethome.
     os.environ.setdefault("YANTRIK_HOME_CHANNEL", CHAT_ID)

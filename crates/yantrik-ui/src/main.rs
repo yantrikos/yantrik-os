@@ -89,7 +89,6 @@ mod fileops;
 // What minds this machine could have, before any of them is running.
 mod harness_catalogue;
 mod harness_install;
-mod harness_memory;
 mod config_store;
 mod models;
 mod focus;

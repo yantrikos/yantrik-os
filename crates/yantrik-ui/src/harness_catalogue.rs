@@ -98,30 +98,10 @@ pub struct Manifest {
     /// harness keeps its own settings, and this is its own way of asking for them.
     #[serde(default)]
     pub configure: Option<Configure>,
-    /// Where its memory lives. `yantrikdb` says the machine's own YantrikDB is its memory, the one
-    /// Yantrik Mind keeps: the person's Install click grants it ordinary recall, remember and
-    /// believe (crate::harness_memory), and the harness reads and writes there instead of keeping
-    /// a store of its own. Left out, it keeps its own memory wherever it always has.
-    #[serde(default)]
-    pub memory: Memory,
     /// The directory this was read from. Not in the file; filled in by [`read_manifest`] so
     /// `file:` needs and `{dir}` in an install command resolve without a second lookup.
     #[serde(skip)]
     pub dir: PathBuf,
-}
-
-/// Where a harness keeps its memory, as its manifest says.
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum Memory {
-    /// The machine's YantrikDB, shared with Yantrik Mind.
-    Yantrikdb,
-    /// Its own, wherever it keeps it. Also what a word this desktop does not know reads as: a
-    /// manifest from a newer image must not be refused whole, and only `yantrikdb` is ever
-    /// granted anything.
-    #[default]
-    #[serde(other)]
-    Own,
 }
 
 /// One thing that has to exist. Exactly one of the three fields is set.
@@ -289,16 +269,6 @@ pub struct Machine {
     pub units: HashMap<String, Unit>,
     /// Keyed by harness id.
     pub jobs: HashMap<String, JobView>,
-    /// The harnesses the person's memory grants give something, as third parties. Read fresh with
-    /// the jobs rather than cached, so the row says so the moment Install grants it.
-    pub memory_granted: Vec<String>,
-    /// The harnesses the person took the memory away from, so the row says a reinstall will not
-    /// give it back.
-    pub memory_revoked: Vec<String>,
-    /// Harnesses that refused to attach, and why, in their own words: a harness that holds itself
-    /// to a rule (Hermes's allowlist, #574) says here that it is not attached because it broke it.
-    /// Read fresh with the jobs, from `~/.config/yantrik/refused/<id>`.
-    pub refused: HashMap<String, String>,
 }
 
 // ── The states a row can be in ──────────────────────────────────────
@@ -392,9 +362,6 @@ pub struct Row {
     pub can_assign_provider: bool,
     /// It was given one here, and Revert would put its own file back.
     pub can_revert_provider: bool,
-    /// Where its memory is, for a harness whose manifest says (crate::harness_memory::line).
-    /// Empty for one that keeps its own.
-    pub memory_line: String,
     pub unit: String,
     /// Where to read more. A path, because it is a file on this machine.
     pub docs: String,
@@ -433,7 +400,6 @@ pub fn rows(machine: &Machine, minds: &[Entry]) -> Vec<Row> {
             provider_line: String::new(),
             can_assign_provider: false,
             can_revert_provider: false,
-            memory_line: String::new(),
             unit: String::new(),
             docs: String::new(),
         });
@@ -473,7 +439,6 @@ pub fn rows(machine: &Machine, minds: &[Entry]) -> Vec<Row> {
             provider_line: String::new(),
             can_assign_provider: false,
             can_revert_provider: false,
-            memory_line: String::new(),
             unit: String::new(),
             docs: String::new(),
         });
@@ -487,9 +452,6 @@ fn from_manifest(machine: &Machine, manifest: &Manifest, attached: Option<&Entry
     let unit = machine.units.get(&manifest.unit).cloned().unwrap_or_default();
     let dir = manifest.dir.as_path();
 
-    // Only said while it is not attached: a harness that is attached is working, whatever a file
-    // left from an earlier start says.
-    let refusal = attached.is_none().then(|| machine.refused.get(&manifest.id)).flatten();
     let missing_require = manifest.requires.iter().find(|n| !n.met(machine, dir));
     let missing_setup = manifest.setup.iter().find(|n| !n.met(machine, dir));
 
@@ -506,8 +468,6 @@ fn from_manifest(machine: &Machine, manifest: &Manifest, attached: Option<&Entry
             JobKind::Install => State::Installing,
             JobKind::Start => State::Starting,
         }
-    } else if refusal.is_some() {
-        State::Failed
     } else if missing_require.is_some() {
         State::NotInstalled
     } else if missing_setup.is_some() {
@@ -557,10 +517,7 @@ fn from_manifest(machine: &Machine, manifest: &Manifest, attached: Option<&Entry
                 format!("{} is not installed as a user unit yet", manifest.unit)
             }
         }
-        State::Failed => match refusal {
-            Some(why) => why.clone(),
-            None => format!("{} started and gave up", manifest.unit),
-        },
+        State::Failed => format!("{} started and gave up", manifest.unit),
         State::Attached | State::Answering => String::new(),
     };
 
@@ -608,12 +565,6 @@ fn from_manifest(machine: &Machine, manifest: &Manifest, attached: Option<&Entry
             Some(c) if !busy && !matches!(state, State::NotInstalled | State::Installing) => c.label.clone(),
             _ => String::new(),
         },
-        memory_line: crate::harness_memory::line(
-            manifest.memory,
-            !matches!(state, State::NotInstalled | State::Installing),
-            machine.memory_granted.contains(&manifest.id),
-            machine.memory_revoked.contains(&manifest.id),
-        ),
         unit: manifest.unit.clone(),
         docs: if manifest.docs.is_empty() {
             String::new()
@@ -861,37 +812,17 @@ pub fn machine(jobs: HashMap<String, JobView>) -> Machine {
     static LAST: std::sync::Mutex<Option<(std::time::Instant, Machine)>> =
         std::sync::Mutex::new(None);
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-    let mut machine = match last.as_ref() {
-        Some((at, cached)) if at.elapsed() < CACHE => cached.clone(),
-        _ => {
-            let machine = gather();
-            *last = Some((std::time::Instant::now(), machine.clone()));
-            machine
-        }
-    };
-    machine.jobs = jobs;
-    (machine.memory_granted, machine.memory_revoked) = crate::harness_memory::decided_minds();
-    machine.refused = read_refused(&machine.config_dir);
-    machine
-}
-
-/// What each harness that refused to attach said, from `<config_dir>/refused/<id>`: one line each.
-/// Only files named like a harness id are read, and only a line's worth of text is kept.
-pub fn read_refused(config_dir: &Path) -> HashMap<String, String> {
-    let mut found = HashMap::new();
-    let Ok(entries) = std::fs::read_dir(config_dir.join("refused")) else { return found };
-    for entry in entries.flatten() {
-        let id = entry.file_name().to_string_lossy().into_owned();
-        if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(entry.path()) else { continue };
-        let line: String = text.lines().next().unwrap_or("").chars().take(300).collect();
-        if !line.trim().is_empty() {
-            found.insert(id, line.trim().to_string());
+    if let Some((at, cached)) = last.as_ref() {
+        if at.elapsed() < CACHE {
+            let mut machine = cached.clone();
+            machine.jobs = jobs;
+            return machine;
         }
     }
-    found
+    let mut machine = gather();
+    *last = Some((std::time::Instant::now(), machine.clone()));
+    machine.jobs = jobs;
+    machine
 }
 
 fn gather() -> Machine {
@@ -914,9 +845,6 @@ fn gather() -> Machine {
         units: read_units(&units),
         manifests,
         jobs: HashMap::new(),
-        memory_granted: Vec::new(),
-        memory_revoked: Vec::new(),
-        refused: HashMap::new(),
     }
 }
 
@@ -976,9 +904,6 @@ mod tests {
                 path_dirs: vec![self.root.join("bin")],
                 units: HashMap::new(),
                 jobs: HashMap::new(),
-                memory_granted: Vec::new(),
-                memory_revoked: Vec::new(),
-                refused: HashMap::new(),
             }
         }
     }
@@ -1085,92 +1010,6 @@ setup:
         assert!(hermes.command.starts_with("hermes model"), "{}", hermes.command);
         assert!(hermes.command.contains("restart hermes-gateway"), "the running gateway must pick it up");
         assert!(manifests["openclaw"].configure.as_ref().unwrap().command.contains("openclaw onboard"));
-    }
-
-    #[test]
-    fn a_manifest_says_whether_its_memory_is_the_machines_and_an_unknown_word_grants_nothing() {
-        let read = |text: &str| serde_yaml::from_str::<Manifest>(text).unwrap().memory;
-        assert_eq!(read("id: hermes
-memory: yantrikdb
-"), Memory::Yantrikdb);
-        assert_eq!(read("id: pi
-"), Memory::Own, "said nothing: its own");
-        assert_eq!(read("id: pi
-memory: own
-"), Memory::Own);
-        // A word from a newer image is not a reason to lose the whole row, nor to grant anything.
-        assert_eq!(read("id: pi
-memory: honcho
-"), Memory::Own);
-    }
-
-    #[test]
-    fn hermes_ships_saying_its_memory_is_the_machines_and_the_others_keep_their_own() {
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../harnesses");
-        if !repo.exists() {
-            return;
-        }
-        let manifests = read_manifests(&[repo]);
-        assert_eq!(manifests["hermes"].memory, Memory::Yantrikdb, "that was the whole point");
-        for id in ["pi", "deepseek", "openclaw"] {
-            assert_eq!(manifests[id].memory, Memory::Own, "{id} was never built to use it");
-        }
-    }
-
-    /// Hermes refuses to attach to a desktop whose platform it found widened (security review
-    /// round 4, F1), and says so where the person looks: its own row, not a log nobody reads.
-    #[test]
-    fn a_harness_that_refused_to_attach_says_why_on_its_row_until_it_attaches() {
-        let fixture = Fixture::new("refused");
-        fixture.harness("hermes", "id: hermes\nrequires:\n  - binary: hermes\n    why: Hermes itself\n");
-        fixture.program("hermes");
-        std::fs::create_dir_all(fixture.root.join("home/.config/yantrik/refused")).unwrap();
-        std::fs::write(
-            fixture.root.join("home/.config/yantrik/refused/hermes"),
-            "Hermes's desktop tools had been widened (terminal). They are restored; restart its gateway\nsecond line\n",
-        )
-        .unwrap();
-        std::fs::write(fixture.root.join("home/.config/yantrik/refused/not a id"), "x").unwrap();
-        let mut machine = fixture.machine();
-        machine.refused = read_refused(&machine.config_dir);
-        assert_eq!(machine.refused.len(), 1, "one line, only for a harness-shaped name: {:?}", machine.refused);
-        let refused = rows(&machine, &[builtin()]);
-        let hermes = row(&refused, "hermes");
-        assert_eq!(hermes.state, State::Failed);
-        assert!(hermes.need.contains("widened (terminal)") && !hermes.need.contains("second line"), "{}", hermes.need);
-        // Attached: it is working, whatever an old file says.
-        let attached = rows(&machine, &[builtin(), entry("hermes", false)]);
-        assert_eq!(row(&attached, "hermes").state, State::Attached);
-        assert!(row(&attached, "hermes").need.is_empty());
-        // No file, no refusal.
-        assert_eq!(row(&rows(&fixture.machine(), &[builtin()]), "hermes").state, State::Ready);
-    }
-
-    #[test]
-    fn the_row_says_hermes_shares_the_minds_memory_once_the_person_granted_it() {
-        let manifest = "id: hermes
-memory: yantrikdb
-requires:
-  - binary: hermes
-    why: Hermes itself
-";
-        let fixture = Fixture::new("memory-line");
-        fixture.harness("hermes", manifest);
-        let before = rows(&fixture.machine(), &[builtin()]);
-        assert!(row(&before, "hermes").memory_line.starts_with("Memory: Install gives it YantrikDB"));
-        fixture.program("hermes");
-        let mut machine = fixture.machine();
-        machine.memory_granted = vec!["hermes".into()];
-        let after = rows(&machine, &[builtin(), entry("hermes", false)]);
-        assert_eq!(row(&after, "hermes").memory_line, "Memory: YantrikDB (shared with Yantrik Mind)");
-        // Taken away again: the row stops claiming it, and says a reinstall will not undo that.
-        machine.memory_granted.clear();
-        machine.memory_revoked = vec!["hermes".into()];
-        let revoked = rows(&machine, &[builtin(), entry("hermes", false)]);
-        assert!(row(&revoked, "hermes").memory_line.contains("does not give it back"));
-        // A harness that keeps its own memory says nothing about it.
-        fixture.harness("pi", PI);
-        assert_eq!(row(&rows(&fixture.machine(), &[builtin()]), "pi").memory_line, "");
     }
 
     #[test]

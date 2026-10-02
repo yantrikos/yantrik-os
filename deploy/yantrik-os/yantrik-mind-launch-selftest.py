@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Selftest for yantrik-mind-launch: how it reads the Mind's settings, the two names it gives
-the Mind when the settings leave them out, and the person uid it never takes from them.
-Run: python3 deploy/yantrik-os/yantrik-mind-launch-selftest.py"""
+"""Selftest for yantrik-mind-launch: how it reads the Mind's settings, and the two names it gives
+the Mind when the settings leave them out. Run: python3 deploy/yantrik-os/yantrik-mind-launch-selftest.py"""
 import importlib.machinery
 import importlib.util
 import os
@@ -83,58 +82,6 @@ class FillDefaults(unittest.TestCase):
         env = self.filled({}, passwd="")
         self.assertNotIn("YM_OPERATOR", env)
         self.assertEqual(env["YM_MIND_NAME"], "Yantrik Mind")
-
-
-class PersonUid(unittest.TestCase):
-    """Whose shell vouches for memory credentials (#447). Without it every `mem-` bearer is a 401."""
-
-    PERSON = "yantrik:x:1000:1000:Yantrik Live:/home/yantrik:/bin/bash\n"
-
-    def uid(self, env, unit_set="", passwd=PERSON):
-        with Passwd(SYSTEM + passwd) as p:
-            return launch.person_uid(env, unit_set, p), env
-
-    def test_the_one_person_is_who_vouches(self):
-        why, env = self.uid({})
-        self.assertIsNone(why)
-        self.assertEqual(env["YANTRIK_PERSON_UID"], "1000")
-
-    def test_the_settings_file_can_never_choose_who_vouches(self):
-        # Read from the file into env by setdefault, as main() does, and still not believed: the
-        # mind account writes that file, and would otherwise pick whose shell answers for it.
-        why, env = self.uid({"YANTRIK_PERSON_UID": "0"})
-        self.assertIsNone(why)
-        self.assertEqual(env["YANTRIK_PERSON_UID"], "1000")
-        why, env = self.uid({"YANTRIK_PERSON_UID": "1000"}, passwd="")
-        self.assertNotIn("YANTRIK_PERSON_UID", env, "a file's value survives no person either")
-
-    def test_the_units_own_value_wins_over_the_one_person(self):
-        why, env = self.uid({"YANTRIK_PERSON_UID": "1001"}, unit_set="1002")
-        self.assertIsNone(why)
-        self.assertEqual(env["YANTRIK_PERSON_UID"], "1002")
-
-    def test_no_person_or_several_leaves_it_unset_and_says_why_in_one_line(self):
-        why, env = self.uid({}, passwd="")
-        self.assertNotIn("YANTRIK_PERSON_UID", env)
-        self.assertIn("no person's account", why)
-        why, env = self.uid({}, passwd=self.PERSON + "ravi:x:1001:1001:Ravi:/home/ravi:/bin/bash\n")
-        self.assertNotIn("YANTRIK_PERSON_UID", env)
-        self.assertIn("2 people's accounts", why)
-        self.assertNotIn("\n", why)
-
-    def test_an_unreadable_passwd_is_no_guess(self):
-        env = {}
-        why = launch.person_uid(env, "", "/nonexistent/passwd")
-        self.assertNotIn("YANTRIK_PERSON_UID", env)
-        self.assertIn("cannot be read", why)
-
-    def test_the_uid_and_the_operator_name_come_from_the_same_person(self):
-        # One lookup for both, so the Mind cannot greet one person and vouch through another.
-        with Passwd(SYSTEM + "svc:x:1001:1001:Svc:/:/usr/sbin/nologin\n" + self.PERSON) as p:
-            env = {}
-            launch.fill_defaults(env, p)
-            launch.person_uid(env, "", p)
-        self.assertEqual((env["YM_OPERATOR"], env["YANTRIK_PERSON_UID"]), ("Yantrik Live", "1000"))
 
 
 class Parse(unittest.TestCase):

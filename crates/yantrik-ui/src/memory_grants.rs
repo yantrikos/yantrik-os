@@ -3,9 +3,7 @@
 //!
 //! The person decides; nothing here widens by itself. A mind with no entry of its own gets the
 //! defaults for what it is: the first-party Yantrik Mind and the shell's companion recall and keep
-//! ordinary memories, every other mind gets nothing until the person enables it (pressing Install
-//! on a harness whose manifest says its memory is the machine's, crate::harness_memory, is one
-//! way; a mind asking for the same install is not). Health and
+//! ordinary memories, every other mind gets nothing until the person enables it. Health and
 //! finance are separate grants, household memory another, and credentials are never a grant at
 //! all.
 //!
@@ -233,18 +231,6 @@ impl Keeper {
         Some(settled)
     }
 
-    /// Change the choices at `path` and save them, read and written under the one lock, so a save
-    /// made in between is not lost. Refused, with nothing written, when the file cannot be
-    /// trusted: saving over it would replace whatever the person had revoked with the defaults and
-    /// this one change.
-    fn update_at(&mut self, path: &Path, change: impl FnOnce(&mut Store)) -> Result<(), String> {
-        let mut store = self
-            .load_from(path)
-            .ok_or_else(|| format!("{} cannot be read as grants, so nothing was changed in it", path.display()))?;
-        change(&mut store);
-        self.save_to(path, &store)
-    }
-
     /// Replace the file at `path` whole with `store`, and make it the baseline.
     fn save_to(&mut self, path: &Path, store: &Store) -> Result<(), String> {
         let dir = path.parent().ok_or("the memory grants file has no folder")?;
@@ -301,51 +287,10 @@ fn read(path: &Path) -> Result<Option<String>, String> {
     Ok(Some(text))
 }
 
-#[cfg(not(test))]
 fn path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     let home = PathBuf::from(home);
     home.is_absolute().then(|| home.join(".config/yantrik/memory-grants.json"))
-}
-
-/// In a test, never the real home's grants: only the file the test named, or none.
-#[cfg(test)]
-fn path() -> Option<PathBuf> {
-    test_file::current()
-}
-
-/// The grants file a test is using, one test at a time, for code that reaches it through
-/// [`load`] and [`update`] rather than a path of its own.
-#[cfg(test)]
-pub(crate) mod test_file {
-    use std::path::PathBuf;
-    use std::sync::{Mutex, MutexGuard};
-
-    static FILE: Mutex<Option<PathBuf>> = Mutex::new(None);
-    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
-
-    /// Held for as long as a test uses `path` as the person's grants file.
-    pub struct Using(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-    pub fn using(path: PathBuf) -> Using {
-        let turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-        *FILE.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
-        // As a shell that has just started: nothing read yet, so nothing to compare with.
-        let mut keeper = super::KEEPER.lock().unwrap_or_else(|e| e.into_inner());
-        keeper.baseline = None;
-        keeper.warned.clear();
-        Using(turn)
-    }
-
-    impl Drop for Using {
-        fn drop(&mut self) {
-            *FILE.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        }
-    }
-
-    pub(super) fn current() -> Option<PathBuf> {
-        FILE.lock().unwrap_or_else(|e| e.into_inner()).clone()
-    }
 }
 
 /// The person's choices as saved, with any widening the shell did not make taken out. `None`
@@ -364,14 +309,6 @@ pub fn load() -> Option<Store> {
 pub fn save(store: &Store) -> Result<(), String> {
     let path = path().ok_or("there is no home directory to keep memory grants in")?;
     KEEPER.lock().unwrap_or_else(|e| e.into_inner()).save_to(&path, store)
-}
-
-/// Change the person's choices and save them, as [`save`] does, from what the file says now.
-/// Refused, with nothing written, when the file cannot be trusted. The next turn any mind takes
-/// is judged by what this saved: the host asks [`load`] at every hand-over, so nothing restarts.
-pub fn update(change: impl FnOnce(&mut Store)) -> Result<(), String> {
-    let path = path().ok_or("there is no home directory to keep memory grants in")?;
-    KEEPER.lock().unwrap_or_else(|e| e.into_inner()).update_at(&path, change)
 }
 
 /// Whether a mind is handed a memory credential with its turns (#447): whether the person's
@@ -624,45 +561,6 @@ mod tests {
     }
 
     #[test]
-    fn a_change_is_made_to_what_the_file_says_now_and_believed_afterwards() {
-        let dir = scratch("update");
-        let path = dir.join("memory-grants.json");
-        let mut keeper = fresh();
-        let mut first = Store::default();
-        first.minds.insert("pi".into(), Grants { remember: true, ..Grants::default() });
-        keeper.save_to(&path, &first).unwrap();
-        keeper
-            .update_at(&path, |store| {
-                store.minds.insert("hermes".into(), Grants::ordinary());
-            })
-            .unwrap();
-        let read = fresh().load_from(&path).unwrap();
-        assert_eq!(read.grants_for("pi", false).names(), ["remember"], "what was there is kept");
-        assert_eq!(read.grants_for("hermes", false), Grants::ordinary());
-        // The shell made it, so it is the baseline and not a widening to be ignored.
-        assert!(keeper.load_from(&path).unwrap().grants_for("hermes", false).any());
-        assert!(keeper.warned.is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_change_to_a_file_that_cannot_be_trusted_writes_nothing() {
-        // Saving over a damaged file would put the defaults back in place of every revocation
-        // the person had made, with one grant added on top.
-        let dir = scratch("update-damaged");
-        let path = dir.join("memory-grants.json");
-        std::fs::write(&path, "{ not json").unwrap();
-        let err = fresh()
-            .update_at(&path, |store| {
-                store.minds.insert("hermes".into(), Grants::ordinary());
-            })
-            .unwrap_err();
-        assert!(err.contains("nothing was changed"), "{err}");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     fn the_first_read_after_start_has_nothing_to_compare_with_and_takes_the_file() {
         // The documented limit: a shell that has saved nothing yet believes what it finds.
         let dir = scratch("first");
@@ -749,22 +647,6 @@ mod tests {
             let mut store = Store::default();
             store.minds.insert(FIRST_PARTY_MIND.into(), Grants::ordinary());
             assert_eq!(ask(caller(MIND_UID), &digest, Some(&borrowed), Some(store)), Ok(Value::Null));
-        }
-
-        /// Revocation (security review round 4, F2): once the host withdraws a mind's credentials the
-        /// shell stops vouching for them, even while a grant still stands in the file the shell
-        /// was handed. (That the mind is told on its next poll is host.rs's test.)
-        #[test]
-        fn a_withdrawn_credential_is_no_longer_vouched_for_and_the_mind_is_told() {
-            let (host, digest) = host_with("pi", person());
-            let grants = || {
-                let mut store = Store::default();
-                store.minds.insert("pi".into(), Grants::ordinary());
-                Some(store)
-            };
-            assert_eq!(ask(caller(MIND_UID), &digest, Some(&host), grants()).unwrap()["mind"], "pi");
-            assert_eq!(host.revoke_memory_credentials("pi").len(), 1);
-            assert_eq!(ask(caller(MIND_UID), &digest, Some(&host), grants()), Ok(Value::Null));
         }
 
         #[test]

@@ -16,7 +16,7 @@ Seven methods on the `harness` socket, all spoken by the harness:
 harness.attach   {id, name, detail?, tools?, memory?, conversations?}  → {session}
 harness.poll     {session}              → {turn_id, text, context, conversation, agent_token, origin?} | {}
                                           … either may also carry cancelled: [turn_id], ended: [conversation],
-                                            answers: [{turn_id, request_id, answer}], memory_revoked: true
+                                            answers: [{turn_id, request_id, answer}]
 harness.chunk    {session, turn_id, delta}             → {}
 harness.event    {session, turn_id, event}             → {}      (optional — see below)
 harness.complete {session, turn_id}                    → {}
@@ -29,10 +29,6 @@ Attach, then loop: ask for a turn, stream the answer back in pieces, say you are
 a real harness replaces is the function that produces the answer. `harness.event`,
 `conversations`, `conversation`, `agent_token`, `cancelled`, `ended`, `answers` and `origin` are all
 optional to use: a harness that knows none of them works exactly as it always did.
-
-`memory_revoked: true` on a poll, once, means the person took this harness's memory away (or removed
-it): every memory credential it holds, for any session, is void now. Drop them all; do not wait for
-the next turn to arrive without one.
 
 A turn may carry `origin`, where the person asked it from (design/channels-2026-09-29.md):
 `{"channel": "lens"|"telegram"|"signal"|…, "remote": bool, "person", "carries": ["text","voice","photo"],
@@ -411,12 +407,8 @@ systemctl --user restart hermes-gateway    # or however Hermes is started
 yos act shell use_harness id=hermes        # once it appears in the picker
 ```
 
-Hermes keeps its model, endpoint and keys in `~/.hermes`, as it always has. The plugin reads none
-of it except the model name, which it passes as the `detail` the picker shows. Its memory is the
-machine's YantrikDB, shared with Yantrik Mind: its manifest says `memory: yantrikdb`, the person's
-Install click grants it ordinary recall, remember and believe, and the plugin hands each turn's
-`memory_credential` and `memory_url` to Hermes's YantrikDB provider
-([harnesses/hermes/README.md](../harnesses/hermes/README.md#memory)).
+Hermes keeps its model, endpoint, keys and memory in `~/.hermes`, as it always has. The plugin
+reads none of it except the model name, which it passes as the `detail` the picker shows.
 
 **Give the desktop platform the desktop's tools, not Hermes's own.** Hermes arrives with a
 `terminal`, `file`, `code_execution`, `browser` and `web` toolset of its own. On this desktop

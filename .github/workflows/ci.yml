@@ -186,12 +186,6 @@ jobs:
       - name: The attachable harnesses close every turn exactly once
         run: python3 -m unittest discover -s harnesses/tests -v
 
-      # Hermes's half that needs no Hermes: the socket, the turn ledger, and the memory credential
-      # each turn hands the YantrikDB provider, set from the turn and taken away by a turn without
-      # one. The contract test beside them skips here; it needs Hermes's own runtime.
-      - name: Hermes's bridge carries a turn's memory credential and drops a revoked one
-        run: python3 -m unittest discover -s harnesses/hermes/tests -v
-
       # The Blender control surface's tests: the addon that answers for somebody else's
       # program, driven against a fake `bpy`. Stdlib-only, no Blender and no display needed,
       # like everything above. Among them is one vector the Rust side asserts too — the

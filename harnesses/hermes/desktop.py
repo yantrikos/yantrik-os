@@ -10,16 +10,14 @@ what the person typed, and streams the answer back.
 
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import socket
 import threading
 import time
-from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 ATTACH = "harness.attach"
 POLL = "harness.poll"
@@ -27,159 +25,10 @@ CHUNK = "harness.chunk"
 COMPLETE = "harness.complete"
 FAIL = "harness.fail"
 DETACH = "harness.detach"
-# On a poll reply: the person took this harness's memory away; every credential it holds is void.
-MEMORY_REVOKED = "memory_revoked"
 
 
 class HarnessError(Exception):
     """The desktop refused a call, or could not be reached."""
-
-
-# Where Hermes's YantrikDB memory provider keeps, in this process's memory, the credential each
-# gateway session presents to the machine's memory server. Never the process environment: the
-# gateway serves every platform from one process, and an environment variable would be read by
-# Telegram's sessions and by every command any platform's tools start.
-REGISTRY_MODULE = "yantrikdb_hermes_plugin.yantrik_memory"
-# set_desktop_credential(session_key, credential | None, memory_url | None = None): None revokes.
-REGISTRY_FUNCTION = "set_desktop_credential"
-# clear_desktop_credentials(): every session's, when the desktop is lost or the adapter stops.
-CLEAR_FUNCTION = "clear_desktop_credentials"
-
-
-def find_registry(import_module=importlib.import_module, name: str = REGISTRY_FUNCTION) -> Optional[Callable[..., Any]]:
-    """One of the provider's registry functions, or None when this Hermes has no such provider.
-
-    Looked up when it is needed, not at import: the provider is a separate package, installed
-    beside Hermes, and a Hermes without it still runs the desktop platform, with no memory.
-    """
-    try:
-        registry = getattr(import_module(REGISTRY_MODULE), name)
-    except (ImportError, AttributeError):
-        return None
-    return registry if callable(registry) else None
-
-
-LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
-
-
-def valid_memory_url(url: Any) -> bool:
-    """Whether `url` is somewhere the machine's own memory can be: loopback http:// or unix:/abs.
-
-    The same rule the provider enforces, held here too: a credential must never leave the host,
-    and a provider that drifted from this rule (a new pin, a bug) must not be the only thing that
-    says so. Parsed, never matched by prefix: `http://127.0.0.1.evil.example` and
-    `http://127.0.0.1@evil.example` both start like loopback.
-    """
-    if not isinstance(url, str) or not url or url != url.strip():
-        return False
-    if url.startswith("unix:"):
-        path = url[len("unix:"):]
-        return path.startswith("/") and "\0" not in path and ".." not in path.split("/")
-    try:
-        parts = urlsplit(url)
-        host = parts.hostname
-        parts.port  # noqa: B018 - raises on a malformed port
-    except ValueError:
-        return False
-    return parts.scheme == "http" and parts.username is None and parts.password is None and host in LOOPBACK_HOSTS
-
-
-def carry_memory(assignment: Dict[str, Any], session_key: str, register: Callable[..., Any]) -> bool:
-    """Hand the YantrikDB provider this turn's memory credential for `session_key`, or take it away.
-
-    The desktop puts a credential on every turn of a mind the person granted some use of their
-    memory (#447), and none on a turn of a mind with no grant. So a turn without one is a grant
-    taken away, and what an earlier turn registered is cleared rather than kept: a revoked grant
-    has to stop working at the next turn, not when Hermes next restarts. The memory server asks
-    the desktop about each credential as well, so a stale one would be refused there; this is so
-    Hermes never presents one.
-
-    An address that is not loopback or a unix socket is refused here, before the provider sees it:
-    the session is cleared and ValueError is raised, naming neither the address nor the credential.
-
-    Returns whether the turn carried one. The credential itself is never returned, printed or
-    logged.
-    """
-    credential = assignment.get("memory_credential")
-    url = assignment.get("memory_url")
-    if not isinstance(credential, str) or not credential:
-        register(session_key, None, None)
-        return False
-    if isinstance(url, str) and url and not valid_memory_url(url):
-        register(session_key, None, None)
-        raise ValueError("memory_url must be loopback http:// or unix:/abs/path")
-    # A credential with nowhere to present it is still handed over, so the provider can say why it
-    # has no memory rather than finding nothing.
-    register(session_key, credential, url if isinstance(url, str) and url else None)
-    return True
-
-
-def revoke_all(
-    keys: "set[str] | list[str]",
-    register: Optional[Callable[..., Any]],
-    clear: Optional[Callable[..., Any]] = None,
-) -> List[str]:
-    """Take back the credential of every session in `keys`, and everything else the provider holds.
-
-    What the desktop's `memory_revoked` on a poll asks for. One failing call does not stop the
-    rest: each key is tried, then `clear`. Returns the exception kinds that were seen, never a
-    message, which could quote what it was given.
-    """
-    failed: List[str] = []
-    for key in sorted(keys):
-        if register is None:
-            break
-        try:
-            register(key, None, None)
-        except Exception as exc:
-            failed.append(type(exc).__name__)
-    if clear is not None:
-        try:
-            clear()
-        except Exception as exc:
-            failed.append(type(exc).__name__)
-    return failed
-
-
-def session_key(source: Any, extra: Dict[str, Any], build: Callable[..., str]) -> str:
-    """The one key a desktop turn's credential is registered under.
-
-    One deterministic path: the gateway's own `build_session_key` with the platform's own settings.
-    Never a guess that falls back to another one, and never a shared constant: two sessions are
-    two keys. Whether it is the key the gateway really uses is checked by the caller against the
-    gateway's own answer, and a disagreement is no memory rather than a wrong key.
-    """
-    return build(
-        source,
-        group_sessions_per_user=extra.get("group_sessions_per_user", True),
-        thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
-    )
-
-
-def refusal_path(harness_id: str = "hermes") -> Path:
-    """Where a harness that refused to attach says why, for the desktop's row to show.
-
-    The shell reads `~/.config/yantrik/refused/<id>` (crates/yantrik-ui/src/harness_catalogue.rs).
-    """
-    base = os.environ.get("XDG_CONFIG_HOME", "").strip() or str(Path.home() / ".config")
-    return Path(base) / "yantrik" / "refused" / harness_id
-
-
-def say_refused(reason: str, harness_id: str = "hermes") -> None:
-    """Leave the reason this harness will not attach where the desktop's row shows it."""
-    path = refusal_path(harness_id)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        path.write_text(" ".join(reason.split())[:300] + "\n", encoding="utf-8")
-    except OSError:
-        pass
-
-
-def clear_refused(harness_id: str = "hermes") -> None:
-    try:
-        refusal_path(harness_id).unlink()
-    except OSError:
-        pass
 
 
 def socket_path() -> Optional[str]:
