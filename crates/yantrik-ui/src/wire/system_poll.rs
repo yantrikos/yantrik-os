@@ -311,6 +311,8 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 if let Some(model) = crate::models::changed(ui.get_window_list(), win_items) {
         ui.set_window_list(model);
     }
+                // The dock groups the same list by app. After it, so both read one snapshot.
+                super::dock_bar::publish(&ui, &catalogue.get());
             }
         }
 

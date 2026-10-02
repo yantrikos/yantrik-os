@@ -1,0 +1,702 @@
+// GroundedDock — the one bar along the bottom of the screen (design/minds-surfaces-spec §3).
+//
+// Grounded like the macOS Dock, not floating: centred, exactly as wide as its buttons, its bottom
+// edge on the screen's bottom edge, 16px round on the top corners and square below. The compositor
+// keeps maximised windows above it (config/labwc/rc.xml reserves Theme.taskbar-height, 48px).
+//
+//   [Apps] │ pinned and running apps … │ [Yantrik Mind]
+//
+// It replaced the taskbar, which grew a labelled entry per window. A dock grows by one icon per
+// APP, however many windows it has: a count on the icon says there are several and the list that
+// opens over it names them.
+//
+// State is drawn in the fewest ways that stay readable, none of them colourful:
+//   running      a static 3px white marker under the icon
+//   focused      a neutral raised fill
+//   2+ windows   a small neutral numeral
+//   a mind needs the person    a 6px amber dot on the mind button; amber means nothing else
+// No bounce, no magnification, no hover animation: this is looked at hundreds of times a day.
+//
+// Overflow never shrinks an icon. Past min(880px, window - 32px) the middle pages, with 32px
+// buttons that say how many apps are out of sight ("› +6"); the wheel pages too.
+//
+// The model is built in Rust (dock_model.rs): who is pinned, who is running, who is in front. This
+// file only draws it, and reports presses by the same names the taskbar used, so the shell's
+// handlers (app.slint, wire/window_switcher.rs) and the control surface did not change.
+//
+// Hover and the window list survive a refresh: Rust updates a button's row in place while the apps
+// are the same (models::update), so a terminal's title changing under a resting pointer does not
+// clear the label or close a list the person is reading. Only a changed set of apps clears them.
+//
+// Idle: the three Timers below run only while a pointer rests on a button or the list is waiting
+// to close, and each stops itself. At rest nothing ticks and nothing animates.
+
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
+import { AppTile } from "app_tile.slint";
+import { YWheelArea } from "y_wheel.slint";
+
+// One button of the middle of the dock: an app, pinned or running or both.
+export struct DockButton {
+    app-id: string,
+    label: string,
+    // What to draw (the launcher's own tile): the shell's glyph id, or a real icon from the theme.
+    icon-id: string,
+    has-icon: bool,
+    icon: image,
+    pinned: bool,
+    running: bool,
+    // The window in front belongs to this app.
+    focused: bool,
+    windows: int,
+    // The title of its first window: what a click activates when there is exactly one.
+    title: string,
+}
+
+// One window of an app, for the list that opens over its button.
+export struct DockWindow {
+    app-id: string,
+    title: string,
+    // Empty where the compositor does not say; the row then shows no workspace at all.
+    workspace: string,
+    current: bool,
+}
+
+// A dock button: the same plate under the Apps button, an app and the mind, so state looks alike.
+component DockBtn inherits Rectangle {
+    in property <bool> focused: false;
+    in property <bool> running: false;
+    in property <int> windows: 0;
+    in property <bool> needs-you: false;
+    in property <string> name: "";
+    // The pointer is resting on it, or the keyboard is. Both want the label and the list.
+    out property <bool> attended: touch.has-hover || (keys.has-focus && !keys.pointer-focus);
+    // Window coordinates of its centre. From the TouchArea inside, not this element: Slint adds a
+    // layout child's own offset twice when asked for its absolute position.
+    out property <length> anchor-x: touch.absolute-position.x + root.width / 2;
+    callback clicked();
+    callback secondary();
+    callback attention(bool);
+    callback wheel(int);
+    // True when it put something away; false lets Escape reach the shell (it closes menus there).
+    callback escape() -> bool;
+
+    width: Theme.dock-button;
+    height: Theme.dock-button;
+    border-radius: Theme.r-md;
+    background: root.focused ? Theme.dock-raised
+              : touch.has-hover ? Theme.dock-raised.with-alpha(0.6)
+              : transparent;
+    border-width: root.focused ? 1px : 0px;
+    border-color: Theme.dock-raised-line;
+
+    accessible-role: button;
+    accessible-label: root.name;
+    accessible-action-default => { root.clicked(); }
+
+    changed attended => { root.attention(self.attended); }
+
+    @children
+
+    // Running: static, white, under the icon.
+    if root.running : Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - Theme.dock-marker-h - 1px;
+        width: Theme.dock-marker-w;
+        height: Theme.dock-marker-h;
+        border-radius: Theme.dock-marker-h / 2;
+        background: Theme.dock-marker;
+    }
+
+    // Several windows: a neutral numeral on a small opaque plate, so it reads on any tile.
+    if root.windows > 1 : Rectangle {
+        x: parent.width - self.width - 1px;
+        y: 1px;
+        width: max(Theme.dock-numeral, num.preferred-width + 6px);
+        height: Theme.dock-numeral;
+        border-radius: Theme.dock-numeral / 2;
+        background: Theme.dock-bar;
+        border-width: 1px;
+        border-color: Theme.dock-raised-line;
+        num := Text {
+            text: root.windows;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-micro;
+            font-weight: 600;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    // A mind needs the person. The one amber thing in the dock.
+    if root.needs-you : Rectangle {
+        x: parent.width - self.width - 2px;
+        y: 2px;
+        width: Theme.dock-dot;
+        height: Theme.dock-dot;
+        border-radius: Theme.dock-dot / 2;
+        background: Theme.needs-you;
+    }
+
+    // Keyboard focus ring: 2px white, on the button, not the tile inside it.
+    if keys.has-focus && !keys.pointer-focus : Rectangle {
+        width: 100%; height: 100%;
+        border-radius: Theme.r-md;
+        border-width: 2px;
+        border-color: Theme.text-primary;
+    }
+
+    // The pairing file_browser.slint's sidebar uses: a FocusScope for the keyboard half UNDER the
+    // TouchArea for the pointer half, which hands it focus when pressed.
+    keys := FocusScope {
+        // A press focuses it too, and a ring after a click would be noise; only Tab earns one.
+        property <bool> pointer-focus: false;
+        width: 100%; height: 100%;
+        changed has-focus => { if (!self.has-focus) { self.pointer-focus = false; } }
+        key-pressed(e) => {
+            if (e.text == Key.Escape && root.escape()) { return accept; }
+            if (e.text == Key.Return || e.text == " ") { root.clicked(); return accept; }
+            if (e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift)) { root.secondary(); return accept; }
+            reject
+        }
+    }
+
+    touch := YWheelArea {
+        width: 100%; height: 100%;
+        mouse-cursor: pointer;
+        wheel(n) => { root.wheel(n); }
+        clicked => {
+            keys.pointer-focus = true;
+            keys.focus();
+            root.clicked();
+        }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                keys.focus();
+                root.secondary();
+            }
+        }
+    }
+}
+
+export component GroundedDock inherits Rectangle {
+    // ── The model ──
+    in property <[DockButton]> buttons: [];
+    // Every window of every app in `buttons`, for the list.
+    in property <[DockWindow]> windows: [];
+    // Index in `buttons` to bring into view (the app Alt+Tab reached), or -1.
+    in property <int> reveal-index: -1;
+    // The page the middle is on: the index of its first button. The dock clamps it; Rust reads it
+    // for `describe shell`.
+    in-out property <int> first: 0;
+    // How many buttons fit at once, reported so Rust describes the same page the person sees.
+    out property <int> capacity: root.paged ? root.paged-cap : root.buttons.length;
+
+    // ── The shell's own screens put away ──
+    //
+    // Settings, Files and the rest are screens inside this process, not toplevels, so the
+    // compositor never lists them. Minimising one used to leave no way back but the launcher;
+    // it keeps a button here until it is restored.
+    in property <int> minimized-screen: 0;
+    in property <string> minimized-title: "";
+    in property <string> minimized-app-id: "";
+    callback restore-screen();
+
+    in property <string> launcher-label: "Apps";
+    in property <string> mind-label: "Yantrik Mind";
+    // Cards waiting for the person, from every mind (card_watch.rs). Any: the amber dot.
+    in property <int> cards-waiting: 0;
+    in property <bool> companion-online: true;
+
+    callback capacity-changed(int);
+    changed capacity => { root.capacity-changed(self.capacity); }
+
+    callback open-launcher();
+    callback launch-app(string);
+    callback activate-window(string);
+    callback open-companion();
+    callback show-desktop();
+    // A right-click, or the Menu key, on a running app's button: (title, app-id, x, y) of its
+    // front window, at the button's corner, for the shell's window menu (#232).
+    callback window-menu(string, string, length, length);
+
+    // ── Geometry: the dock is as wide as its buttons, up to a limit, then it pages ──
+    //
+    // Width of everything but the middle: the Apps and mind buttons, the divider, two gaps. Each
+    // middle button, and the minimised screen's, costs one button and one gap.
+    property <length> max-body: min(Theme.dock-max-w, root.width - Theme.dock-side-margin);
+    property <length> slot: Theme.dock-button + Theme.dock-gap;
+    property <length> fixed-w: 2 * Theme.dock-button + 1px + 2 * Theme.dock-gap;
+    property <int> extra: root.minimized-screen != 0 ? 1 : 0;
+    property <length> room: root.max-body - 2 * Theme.dock-pad - root.fixed-w;
+    property <int> fit-all: Math.max(0, Math.floor(root.room / root.slot) - root.extra);
+    property <bool> paged: root.buttons.length > root.fit-all;
+    // With paging, both page buttons are reserved whether or not they are lit, so the dock does
+    // not change width as pages turn.
+    property <int> paged-cap: Math.max(1, Math.floor((root.room - 2 * (Theme.dock-pager-w + Theme.dock-gap)) / root.slot) - root.extra);
+    property <int> cap: root.paged ? root.paged-cap : root.buttons.length;
+    property <int> start: root.paged ? Math.max(0, Math.min(root.first, root.buttons.length - root.cap)) : 0;
+    property <int> before: root.start;
+    property <int> after: Math.max(0, root.buttons.length - root.start - root.cap);
+
+    // A model replaced under a resting pointer destroys the button it was on without it ever
+    // saying the pointer left; the label would hang there with nothing under it.
+    changed buttons => {
+        root.over-id = "";
+        root.label-shown = false;
+    }
+    function page-to(at: int) {
+        root.first = Math.max(0, Math.min(at, root.buttons.length - root.cap));
+    }
+    function page-by(steps: int) {
+        // The wheel: scrolling down (negative) moves on, as it does down any list.
+        if (root.paged) { root.page-to(root.start - steps * root.cap); }
+    }
+    changed reveal-index => {
+        if (root.paged && root.reveal-index >= 0) {
+            if (root.reveal-index < root.start || root.reveal-index >= root.start + root.cap) {
+                root.page-to(Math.floor(root.reveal-index / root.cap) * root.cap);
+            }
+        }
+    }
+
+    // ── Hover label and window list ──
+    property <string> over-id: "";
+    property <string> over-name: "";
+    property <int> over-windows: 0;
+    property <length> over-x: 0;
+    property <bool> label-shown: false;
+    // The list: which app it is for, and whether it is up. `list-held` is a click: it stays until
+    // the pointer goes elsewhere or Escape, instead of vanishing when the pointer leaves.
+    property <bool> list-shown: false;
+    property <bool> list-held: false;
+    property <string> list-app: "";
+    property <string> list-name: "";
+    property <length> list-x: 0;
+    property <bool> over-list: false;
+    property <bool> over-row: false;
+    property <int> list-count: 0;
+    // An app whose list a click has just put away does not get it back for resting there.
+    property <string> dismissed: "";
+
+    function attend(on: bool, id: string, name: string, wins: int, x: length) {
+        if (on) {
+            root.over-id = id;
+            root.over-name = name;
+            root.over-windows = wins;
+            root.over-x = x;
+            // A list already up follows the pointer to the next app.
+            if (root.list-shown && wins > 1) { root.open-list(id, name, wins, x, false); }
+        } else if (root.over-id == id) {
+            root.over-id = "";
+            root.label-shown = false;
+            root.dismissed = "";
+        }
+    }
+    function open-list(id: string, name: string, wins: int, x: length, held: bool) {
+        root.list-app = id;
+        root.list-name = name;
+        root.list-count = wins;
+        root.list-x = x;
+        root.list-held = held;
+        root.list-shown = true;
+        root.label-shown = false;
+    }
+    function close-list() {
+        root.dismissed = root.over-id;
+        root.list-shown = false;
+        root.list-held = false;
+    }
+
+    // Name label: one single-shot delay. It runs only while a pointer rests on a button and the
+    // label is not up yet, and stops itself on its first tick.
+    Timer {
+        // 500ms, written out: the idle-window test reads a Timer's rate from its text.
+        interval: 500ms;
+        running: root.over-id != "" && !root.label-shown && !root.list-shown;
+        triggered => { root.label-shown = true; }
+    }
+    // The window list: 250ms of rest on an app that has several windows.
+    Timer {
+        interval: 250ms;
+        running: root.over-id != "" && root.over-windows > 1 && !root.list-shown && root.dismissed != root.over-id;
+        triggered => { root.open-list(root.over-id, root.over-name, root.over-windows, root.over-x, false); }
+    }
+    // A list opened by hovering goes away a moment after the pointer has left both the button and
+    // the list, so crossing the 8px between them does not close it.
+    Timer {
+        interval: 200ms;
+        running: root.list-shown && !root.list-held && root.over-id == "" && !root.over-list && !root.over-row;
+        triggered => { root.close-list(); }
+    }
+
+    // ── The bar ──
+    //
+    // `clip` is the trick that squares the bottom corners: a rounded rectangle taller than the
+    // visible strip, cut off at the screen's edge, leaves round top corners, square bottom ones,
+    // and no border along the bottom.
+    bar := Rectangle {
+        width: body.preferred-width + 2 * Theme.dock-pad;
+        height: Theme.taskbar-height;
+        x: (parent.width - self.width) / 2;
+        y: parent.height - self.height;
+        clip: true;
+
+        // The wheel pages over the whole bar, not only over an app button: this sits under
+        // everything, so the gaps, the divider and the page buttons (plain TouchAreas, which do
+        // not take scroll events) fall through to it. A DockBtn's own YWheelArea ACCEPTS every
+        // scroll that lands on it, so each one below forwards `wheel` too; one that did not would
+        // swallow the wheel over the Apps and mind buttons (#585 review: "responds at one position").
+        wheel-bar := YWheelArea {
+            width: 100%; height: 100%;
+            wheel(n) => { root.page-by(n); }
+        }
+
+        Rectangle {
+            y: 0;
+            width: 100%;
+            height: parent.height + Theme.r-xl;
+            border-radius: Theme.r-xl;
+            background: Theme.dock-bar;
+            border-width: 1px;
+            border-color: Theme.dock-border;
+        }
+
+        body := HorizontalLayout {
+            x: Theme.dock-pad;
+            y: Theme.dock-pad;
+            height: Theme.dock-button;
+            spacing: Theme.dock-gap;
+
+            // ── Apps ──
+            DockBtn {
+                name: root.launcher-label;
+                clicked => { root.close-list(); root.open-launcher(); }
+                wheel(n) => { root.page-by(n); }
+                attention(on) => { root.attend(on, "launchpad", root.launcher-label, 0, self.anchor-x); }
+                AppTile {
+                    size: Theme.dock-icon;
+                    app-id: "launchpad";
+                    glyph: Icons.apps;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+
+            // ── A shell screen put away ──
+            if root.minimized-screen != 0 : DockBtn {
+                name: root.minimized-title;
+                running: true;
+                clicked => { root.close-list(); root.restore-screen(); }
+                wheel(n) => { root.page-by(n); }
+                attention(on) => { root.attend(on, "minimized", root.minimized-title, 0, self.anchor-x); }
+                AppTile {
+                    size: Theme.dock-icon;
+                    app-id: root.minimized-app-id;
+                    glyph: Icons.app-or-window(root.minimized-app-id);
+                    dimmed: true;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+
+            // ── Page back ──
+            if root.paged : Rectangle {
+                width: Theme.dock-pager-w;
+                back := TouchArea {
+                    enabled: root.before > 0;
+                    mouse-cursor: pointer;
+                    clicked => { root.close-list(); root.page-to(root.start - root.cap); }
+                }
+                Rectangle {
+                    width: 100%; height: 100%;
+                    border-radius: Theme.r-md;
+                    background: back.has-hover && root.before > 0 ? Theme.dock-raised : transparent;
+                    opacity: root.before > 0 ? 1.0 : 0.35;
+                    Text {
+                        text: root.before > 0 ? "‹ +" + root.before : "‹";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-micro;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+                accessible-role: button;
+                accessible-label: "Earlier apps";
+            }
+
+            // ── Pinned and running apps ──
+            //
+            // Only this page's buttons take room. A `for` cannot hold an `if`, so every button has
+            // a slot of its own: 44px (the button and its trailing gap) on this page, 0px off it, in
+            // a layout with no spacing of its own. The last slot's gap hangs off the end.
+            if root.buttons.length > 0 : HorizontalLayout {
+                width: Math.max(0, Math.min(root.cap, root.buttons.length - root.start)) * root.slot - Theme.dock-gap;
+                spacing: 0px;
+                for b[i] in root.buttons : Rectangle {
+                    property <bool> on-page: i >= root.start && i < root.start + root.cap;
+                    width: self.on-page ? root.slot : 0px;
+                    if self.on-page : DockBtn {
+                name: b.windows > 1 ? b.label + ", " + b.windows + " windows" : b.label;
+                focused: b.focused;
+                running: b.running;
+                windows: b.windows;
+                clicked => {
+                    // One answer for every state of an app, so the dock never has a dead button:
+                    // not open → open it; one window → bring it forward (or put it away if it is in
+                    // front, which the shell decides); several → name them.
+                    if (b.windows == 0) {
+                        root.close-list();
+                        root.launch-app(b.app-id);
+                    } else if (b.windows == 1) {
+                        root.close-list();
+                        root.activate-window(b.title);
+                    } else if (root.list-shown && root.list-app == b.app-id) {
+                        root.close-list();
+                    } else {
+                        root.open-list(b.app-id, b.label, b.windows, self.anchor-x, true);
+                    }
+                }
+                secondary => {
+                    if (b.windows > 0) {
+                        root.window-menu(b.title, b.app-id, self.anchor-x - Theme.dock-button / 2, bar.y);
+                    }
+                }
+                attention(on) => { root.attend(on, b.app-id, b.label, b.windows, self.anchor-x); }
+                wheel(n) => { root.page-by(n); }
+                escape => {
+                    if (root.list-shown) { root.close-list(); return true; }
+                    return false;
+                }
+                AppTile {
+                    size: Theme.dock-icon;
+                    app-id: b.icon-id;
+                    glyph: Icons.app-or-window(b.icon-id);
+                    has-icon: b.has-icon;
+                    icon: b.icon;
+                    hovered: parent.attended;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+                }
+            }
+
+            // ── Page on ──
+            if root.paged : Rectangle {
+                width: Theme.dock-pager-w;
+                next := TouchArea {
+                    enabled: root.after > 0;
+                    mouse-cursor: pointer;
+                    clicked => { root.close-list(); root.page-to(root.start + root.cap); }
+                }
+                Rectangle {
+                    width: 100%; height: 100%;
+                    border-radius: Theme.r-md;
+                    background: next.has-hover && root.after > 0 ? Theme.dock-raised : transparent;
+                    opacity: root.after > 0 ? 1.0 : 0.35;
+                    Text {
+                        text: root.after > 0 ? "› +" + root.after : "›";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-micro;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+                accessible-role: button;
+                accessible-label: "Later apps";
+            }
+
+            // ── Divider ──
+            Rectangle {
+                width: 1px;
+                Rectangle {
+                    y: Theme.dock-divider-inset;
+                    width: 1px;
+                    height: parent.height - 2 * Theme.dock-divider-inset;
+                    background: Theme.dock-border;
+                }
+            }
+
+            // ── Yantrik Mind ──
+            DockBtn {
+                name: root.cards-waiting > 0 ? root.mind-label + ", " + root.cards-waiting + " waiting for you" : root.mind-label;
+                needs-you: root.cards-waiting > 0;
+                clicked => { root.close-list(); root.open-companion(); }
+                wheel(n) => { root.page-by(n); }
+                attention(on) => { root.attend(on, "mind", root.cards-waiting > 0 ? root.mind-label + " — " + root.cards-waiting + " waiting for you" : root.mind-label, 0, self.anchor-x); }
+                // The mind's own tile: teal, the one place teal appears in the dock. A mind that
+                // cannot be reached is a grey tile rather than a teal one that lies.
+                Rectangle {
+                    width: Theme.dock-icon;
+                    height: Theme.dock-icon;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: Theme.dock-icon * Theme.dock-tile-radius-ratio;
+                    background: root.companion-online ? Theme.mind-teal : Theme.dock-raised-line;
+                    Icon {
+                        commands: Icons.companion;
+                        size: Theme.dock-icon * Theme.dock-mind-glyph-ratio;
+                        tint: Theme.mind-teal-ink;
+                        thickness: 1.8px;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Show desktop ──
+    //
+    // The bottom-right corner, where a pointer thrown at the edge lands: every app window away and
+    // the desktop shown, and pressed again, the same windows back (#241). The dock no longer spans
+    // the screen, so the corner is its own strip, as wide as it was and as tall as the dock.
+    desk := TouchArea {
+        x: parent.width - self.width;
+        y: parent.height - Theme.taskbar-height;
+        width: Theme.dock-desk-strip;
+        height: Theme.taskbar-height;
+        mouse-cursor: pointer;
+        clicked => { root.close-list(); root.show-desktop(); }
+    }
+
+    // ── Name label ──
+    //
+    // Small, opaque, 8px above the dock. Not for an app whose window list is up: the list names it.
+    if root.label-shown && !root.list-shown && root.over-name != "" : Rectangle {
+        width: lbl.preferred-width + 2 * Theme.sp-3;
+        height: Theme.dock-label-h;
+        x: max(8px, min(root.over-x - self.width / 2, root.width - self.width - 8px));
+        y: bar.y - Theme.dock-label-gap - self.height;
+        border-radius: Theme.r-md;
+        background: Theme.dock-popover;
+        border-width: 1px;
+        border-color: Theme.dock-border;
+        lbl := Text {
+            text: root.over-name;
+            color: Theme.text-primary;
+            font-size: Theme.fs-caption;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    // ── The window list ──
+    //
+    // 320px wide, at most 400px tall, 8px above the dock: the app's name and its window count,
+    // then 56px rows (title, workspace, a mark on the one in front). A click activates a window.
+    // Closing is left out: this lists, it does not manage.
+    if root.list-shown : TouchArea {
+        // Clicking anywhere else puts it away. Under the panel, over the rest of the screen.
+        width: parent.width;
+        height: parent.height - Theme.taskbar-height;
+        clicked => { root.close-list(); }
+    }
+    if root.list-shown : panel := Rectangle {
+        property <length> head-h: Theme.dock-list-head;
+        property <length> body-h: min(Theme.dock-list-max-h - self.head-h, root.list-count * Theme.dock-list-row);
+        width: Theme.dock-list-w;
+        height: self.head-h + self.body-h;
+        x: max(8px, min(root.list-x - self.width / 2, root.width - self.width - 8px));
+        y: bar.y - Theme.dock-label-gap - self.height;
+        border-radius: Theme.r-xl;
+        background: Theme.dock-popover;
+        border-width: 1px;
+        border-color: Theme.dock-border;
+        clip: true;
+
+        accessible-role: list;
+        accessible-label: root.list-name + " windows";
+
+        // The panel is also what keeps the pointer "over the list" while it is inside.
+        pt := TouchArea {
+            width: 100%; height: 100%;
+            changed has-hover => { root.over-list = self.has-hover; }
+        }
+
+        HorizontalLayout {
+            y: 0px;
+            width: 100%;
+            height: panel.head-h;
+            padding-left: Theme.sp-3;
+            padding-right: Theme.sp-3;
+            spacing: Theme.sp-2;
+            Text {
+                text: root.list-name;
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+                font-weight: 600;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Text {
+                text: root.list-count == 1 ? "1 window" : root.list-count + " windows";
+                color: Theme.text-secondary;
+                font-size: Theme.fs-caption;
+                vertical-alignment: center;
+                horizontal-alignment: right;
+            }
+        }
+        Rectangle { y: panel.head-h - 1px; height: 1px; width: 100%; background: Theme.dock-border; }
+
+        Flickable {
+            y: panel.head-h;
+            width: 100%;
+            height: panel.body-h;
+            viewport-height: root.list-count * Theme.dock-list-row;
+            VerticalLayout {
+                for w in root.windows : row := Rectangle {
+                    // Rows are the windows of the app the list is for; the others take no room.
+                    height: w.app-id == root.list-app ? Theme.dock-list-row : 0px;
+                    visible: w.app-id == root.list-app;
+                    background: rt.has-hover ? Theme.dock-raised : w.current ? Theme.dock-raised.with-alpha(0.5) : transparent;
+                    accessible-role: button;
+                    accessible-label: w.title;
+                    accessible-action-default => { root.close-list(); root.activate-window(w.title); }
+
+                    HorizontalLayout {
+                        padding-left: Theme.sp-3;
+                        padding-right: Theme.sp-3;
+                        spacing: Theme.sp-2;
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 2px;
+                            Text {
+                                text: w.title;
+                                color: Theme.text-primary;
+                                font-size: Theme.fs-body;
+                                overflow: elide;
+                                wrap: no-wrap;
+                            }
+                            if w.workspace != "" : Text {
+                                text: w.workspace;
+                                color: Theme.text-secondary;
+                                font-size: Theme.fs-caption;
+                                overflow: elide;
+                            }
+                        }
+                        // The one in front: a neutral check, not an accent.
+                        if w.current : Icon {
+                            commands: Icons.check;
+                            size: Theme.dock-check;
+                            tint: Theme.text-secondary;
+                            thickness: 1.8px;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+                    rt := TouchArea {
+                        mouse-cursor: pointer;
+                        // A row covers the panel's own hover area, so it keeps the list up itself.
+                        changed has-hover => { root.over-row = self.has-hover; }
+                        clicked => { root.close-list(); root.activate-window(w.title); }
+                    }
+                }
+            }
+        }
+    }
+}

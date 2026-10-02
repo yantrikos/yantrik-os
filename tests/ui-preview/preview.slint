@@ -3,7 +3,7 @@ import { Theme, ThemeMode } from "theme.slint";
 import { DesktopHome } from "components/desktop_home.slint";
 import { DesktopScreen } from "desktop.slint";
 import { AppGrid, AppGridItem } from "components/app_grid.slint";
-import { Taskbar } from "components/taskbar.slint";
+import { GroundedDock } from "components/grounded_dock.slint";
 import { StatusBar } from "components/status_bar.slint";
 import { AppHeader } from "app_header.slint";
 import { YButton } from "y_button.slint";
@@ -126,9 +126,12 @@ export component Preview inherits Window {
             }
         }
     }
-    if root.scene == "" : Taskbar {
-        y: parent.height - self.height;
-        windows: [ { title: "Ideas for a quieter workspace", app-id: "notes" }, { title: "Terminal", app-id: "terminal" } ];
+    if root.scene == "" : GroundedDock {
+        height: parent.height;
+        buttons: [
+            { app-id: "notes", label: "Notes", icon-id: "notes", pinned: true, running: true, focused: true, windows: 1, title: "Ideas for a quieter workspace" },
+            { app-id: "terminal", label: "Terminal", icon-id: "terminal", pinned: true, running: true, windows: 1, title: "Terminal" }
+        ];
         open-launcher => { root.launcher-open = true; }
     }
     AppGrid {

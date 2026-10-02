@@ -22,15 +22,21 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     let (width, height) = (1280u32, 800u32);
     let ui = App::new()?;
     ui.set_current_screen(1);
-    let win = |title: &str, app_id: &str| WindowItem {
-        title: title.into(),
+    let app = |title: &str, app_id: &str, focused: bool| DockButton {
         app_id: app_id.into(),
-        icon_char: title.chars().next().unwrap_or('W').to_string().into(),
-        subtitle: "".into(),
+        label: app_id.into(),
+        icon_id: app_id.into(),
+        has_icon: false,
+        icon: Default::default(),
+        pinned: false,
+        running: true,
+        focused,
+        windows: 1,
+        title: title.into(),
     };
-    ui.set_window_list(ModelRc::new(VecModel::from(vec![
-        win("Notes: Handover", "notes"),
-        win("Blender: (Unsaved) - Blender 4.3.2", "blender"),
+    ui.set_dock_buttons(ModelRc::new(VecModel::from(vec![
+        app("Notes: Handover", "notes", true),
+        app("Blender: (Unsaved) - Blender 4.3.2", "blender", false),
     ])));
 
     let log: Rc<RefCell<Vec<String>>> = Rc::default();
@@ -80,16 +86,16 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     };
     draw();
 
-    let taskbar_y = height as f32 - 20.0;
+    let taskbar_y = height as f32 - 24.0;
 
-    // A right press along the bar finds the first window entry: the menu opens for the window
+    // A right press along the dock finds the first window button: the menu opens for the window
     // pressed. Swept, as the Apps button is found in its test, so a change of padding does not
     // break this — but starting past the Apps button and the gap after it: a right press on bare
     // bar is the desktop's to answer (its right-click TouchArea reaches under the taskbar), and
     // that second menu opening under this one would muddy what the render shows.
     let before = draw();
     let mut entry_x = None;
-    for x in (100..700).step_by(6) {
+    for x in (556..740).step_by(4) {
         right_click(w, x as f32, taskbar_y);
         draw();
         if ui.get_taskbar_menu_open() {
@@ -168,8 +174,8 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     // right until the menu that opens is Blender's.
     let mut second_x = None;
     let mut x = entry_x as i32;
-    while x < 900 {
-        x += 6;
+    while x < 760 {
+        x += 4;
         if ui.get_taskbar_menu_open() {
             key(w, Key::Escape.into());
             draw();

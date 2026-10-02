@@ -146,7 +146,10 @@ mod trail;
 // What protects the credential vault on this machine, and the honest answer when nothing does.
 mod vault_unlock;
 mod voice;
+mod dock_model;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
+// It guards `windows`, the next line, and only it: a `mod` added between this comment and
+// `mod windows;` would take the attribute and leave `windows` bare (#585 B1).
 #[allow(dead_code)]
 mod windows;
 mod wire;

@@ -31,6 +31,7 @@ run target/ui-validation/providers-in-use.png 1280 2400 verify-providers-in-use
 run target/ui-validation/unused.png 1280 800 verify-screen-controls
 run target/ui-validation/apps-button.png 1280 800 verify-apps-button
 run target/ui-validation/taskbar-menu.png 1280 800 verify-taskbar-menu
+run target/ui-validation/dock.png 1280 800 verify-dock
 run target/ui-validation/cards-waiting.png 1280 800 verify-cards-waiting
 run target/ui-validation/kit-controls.png 880 460 verify-kit-controls
 run target/ui-validation/colour-system.png 720 360 verify-colour-system

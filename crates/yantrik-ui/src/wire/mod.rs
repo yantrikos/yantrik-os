@@ -34,6 +34,8 @@ mod shell_overlays;
 mod cheat_sheet;
 pub mod network;
 pub mod dock;
+/// The grounded dock's buttons and window list, published from the window list.
+pub mod dock_bar;
 pub mod harness;
 pub mod i18n;
 mod lens;
