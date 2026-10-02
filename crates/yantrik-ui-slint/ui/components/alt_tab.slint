@@ -1,0 +1,258 @@
+// Window overview (Super+Tab; Alt+Tab is labwc's own) — one centred opaque card of the open windows, 8 to a page.
+//
+// Selection, order and paging all live in Rust (`alt_tab.rs`), so a pointer, a key and a
+// `yos act shell` call move the same state; this file draws what Rust hands it and reports
+// what the person pressed. Opaque, with no dimming layer: the windows behind stay readable.
+//
+// There are no live previews. The compositor streams window titles and focus, not pixels, and
+// the shell has no capture path for one toplevel, so every cell shows its app's icon on a
+// neutral tile and says so. A tile never pretends to be the window.
+
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
+import { YIconButton } from "y_button.slint";
+
+export struct SwitcherCell {
+    title: string,
+    app-id: string,
+    app-name: string,
+}
+
+component SwitcherCellView inherits Rectangle {
+    in property <SwitcherCell> cell;
+    in property <bool> selected;
+    callback pointer-moved();
+    callback activated();
+
+    // 224 wide where the card has room (preview 208×117, cell 224×166); a card that is narrower
+    // than three or two of those narrows the cells and keeps the preview's 16:9.
+    in property <length> cell-width: Theme.sw-cell-w;
+    property <length> preview-width: root.cell-width - 2 * Theme.sp-2;
+    property <length> preview-height: root.preview-width * 9 / 16;
+    width: root.cell-width;
+    height: Theme.sp-2 + root.preview-height + Theme.sw-footer-h;
+    border-radius: Theme.r-lg;
+    background: root.selected ? Theme.bg-elevated : transparent;
+    // The outline is drawn inside the cell, so a selected cell never overlaps its neighbour.
+    border-width: root.selected ? Theme.focus-ring-width : 0px;
+    border-color: Theme.text-primary;
+
+    // The preview slot: 208×117, 16:9.
+    Rectangle {
+        x: Theme.sp-2;
+        y: Theme.sp-2;
+        width: root.preview-width;
+        height: root.preview-height;
+        border-radius: Theme.r-md;
+        background: Theme.bg-card;
+        border-width: Theme.hairline;
+        border-color: Theme.border-subtle;
+
+        VerticalLayout {
+            alignment: center;
+            spacing: Theme.sp-2;
+            Icon {
+                commands: Icons.app-or-window(root.cell.app-id);
+                tint: Theme.text-secondary;
+                size: Theme.sw-icon-lg;
+                thickness: Theme.icon-stroke;
+                x: (parent.width - self.width) / 2;
+            }
+            Text {
+                text: "Preview unavailable";
+                color: Theme.text-dim;
+                font-size: Theme.fs-micro;
+                horizontal-alignment: center;
+            }
+        }
+    }
+
+    // Footer: 18px icon, then the app's name.
+    Icon {
+        x: Theme.sp-4;
+        y: Theme.sp-2 + root.preview-height + Theme.sp-4;
+        commands: Icons.app-or-window(root.cell.app-id);
+        tint: Theme.text-primary;
+        size: Theme.sw-icon-sm;
+        thickness: Theme.icon-stroke;
+    }
+    Text {
+        x: Theme.sp-4 + Theme.sw-icon-sm + Theme.sp-2;
+        y: Theme.sp-2 + root.preview-height;
+        width: parent.width - (Theme.sp-4 + Theme.sw-icon-sm + Theme.sp-2) - Theme.sp-3;
+        height: Theme.sw-footer-h;
+        text: root.cell.app-name;
+        color: Theme.text-primary;
+        font-size: Theme.fs-caption;
+        font-weight: Theme.fw-headline;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    TouchArea {
+        // A move, not a hover: the pointer sitting where the card opened must not override the
+        // keyboard's selection, and `has-hover` is true from the first frame.
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.move) { root.pointer-moved(); }
+        }
+        clicked => { root.activated(); }
+    }
+}
+
+export component AltTab inherits Rectangle {
+    in property <bool> is-open: false;
+    in property <[SwitcherCell]> cells: [];
+    // Index within `cells` (the current page), or -1.
+    in property <int> selected: -1;
+    in property <string> status: "";
+    in property <string> plate: "";
+    in property <int> page: 0;
+    in property <int> pages: 1;
+
+    // direction ∈ next, previous, left, right, up, down, page-next, page-prev; the second
+    // argument is the column count the card is drawn with, so up and down mean what the person
+    // sees.
+    callback navigate(string, int);
+    callback hover(int);
+    callback activate(int);
+    callback cancel();
+
+    width: 100%;
+    height: 100%;
+    visible: root.is-open;
+
+    // The pager row under the grid: a compact icon button's height.
+    property <length> pager-h: Theme.h-compact;
+    property <int> columns: root.width < Theme.sw-cols-2-below ? 2 : root.width < Theme.sw-cols-3-below ? 3 : 4;
+    property <length> card-width: min(Theme.sw-card-max-w, root.width - 2 * Theme.sp-7);
+    property <int> rows: max(1, (root.cells.length + root.columns - 1) / root.columns);
+    property <length> cell-width: min(Theme.sw-cell-w, (root.card-width - 2 * Theme.sp-4 - (root.columns - 1) * Theme.sp-3) / root.columns);
+    property <length> cell-height: Theme.sp-2 + (root.cell-width - 2 * Theme.sp-2) * 9 / 16 + Theme.sw-footer-h;
+    property <length> grid-width: root.columns * root.cell-width + (root.columns - 1) * Theme.sp-3;
+    property <length> card-height: Theme.sp-4 + root.rows * root.cell-height + (root.rows - 1) * Theme.sp-3 + Theme.sp-3 + root.pager-h + Theme.sp-4;
+    // The card and its plate, centred together.
+    property <length> block-top: (root.height - (root.card-height + Theme.sp-2 + Theme.sw-plate-h)) / 2;
+
+    if root.is-open : FocusScope {
+        width: 100%;
+        height: 100%;
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if (event.text == Key.Escape) { root.cancel(); return accept; }
+            if (event.text == Key.Return) { root.activate(-1); return accept; }
+            if (event.text == Key.Tab) { root.navigate("next", root.columns); return accept; }
+            if (event.text == Key.Backtab) { root.navigate("previous", root.columns); return accept; }
+            if (event.text == Key.LeftArrow) { root.navigate("left", root.columns); return accept; }
+            if (event.text == Key.RightArrow) { root.navigate("right", root.columns); return accept; }
+            if (event.text == Key.UpArrow) { root.navigate("up", root.columns); return accept; }
+            if (event.text == Key.DownArrow) { root.navigate("down", root.columns); return accept; }
+            if (event.text == Key.PageDown) { root.navigate("page-next", root.columns); return accept; }
+            if (event.text == Key.PageUp) { root.navigate("page-prev", root.columns); return accept; }
+            return reject;
+        }
+
+        // The keys sit on the ancestor of everything below, so a key the page buttons do not use
+        // (after a click on one, which takes the focus) still reaches the switcher.
+
+        // Outside the card: a click puts the switcher away and changes nothing.
+        if root.is-open : TouchArea {
+            width: 100%;
+            height: 100%;
+            clicked => { root.cancel(); }
+        }
+
+        if root.is-open : Rectangle {
+            x: (root.width - root.card-width) / 2;
+            y: root.block-top;
+            width: root.card-width;
+            height: root.card-height;
+            background: Theme.bg-surface;
+            border-radius: Theme.r-xl;
+            border-width: Theme.hairline;
+            border-color: Theme.border-strong;
+
+            // Absorbs clicks and the wheel; the wheel pages.
+            TouchArea {
+                scroll-event(e) => {
+                    if (e.delta-y < 0) { root.navigate("page-next", root.columns); return accept; }
+                    if (e.delta-y > 0) { root.navigate("page-prev", root.columns); return accept; }
+                    return reject;
+                }
+            }
+
+            if root.cells.length == 0 : Text {
+                text: "No windows open";
+                color: Theme.text-dim;
+                font-size: Theme.fs-body;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            for cell[i] in root.cells : SwitcherCellView {
+                x: (parent.width - root.grid-width) / 2 + Math.mod(i, root.columns) * (root.cell-width + Theme.sp-3);
+                y: Theme.sp-4 + Math.floor(i / root.columns) * (root.cell-height + Theme.sp-3);
+                cell-width: root.cell-width;
+                cell: cell;
+                selected: i == root.selected;
+                pointer-moved => { root.hover(i); }
+                activated => { root.activate(i); }
+            }
+
+            // "9–16 of 37 windows · Page 2 of 5", with the page arrows when there is another page.
+            Text {
+                x: Theme.sp-4 + (root.pages > 1 ? root.pager-h + Theme.sp-2 : 0px);
+                y: parent.height - Theme.sp-4 - root.pager-h;
+                width: parent.width - 2 * Theme.sp-4 - (root.pages > 1 ? 2 * (root.pager-h + Theme.sp-2) : 0px);
+                height: root.pager-h;
+                text: root.status;
+                color: Theme.text-dim;
+                font-size: Theme.fs-caption;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            if root.pages > 1 : YIconButton {
+                x: Theme.sp-4;
+                y: parent.height - Theme.sp-4 - root.pager-h;
+                width: root.pager-h;
+                height: root.pager-h;
+                variant: 2;
+                label: "Previous page";
+                icon-path: Icons.chevron-left;
+                clicked => { root.navigate("page-prev", root.columns); }
+            }
+            if root.pages > 1 : YIconButton {
+                x: parent.width - Theme.sp-4 - root.pager-h;
+                y: parent.height - Theme.sp-4 - root.pager-h;
+                width: root.pager-h;
+                height: root.pager-h;
+                variant: 2;
+                label: "Next page";
+                icon-path: Icons.chevron-right;
+                clicked => { root.navigate("page-next", root.columns); }
+            }
+        }
+
+        // The selected window's full title, on a plate of its own under the card.
+        if root.is-open && root.plate != "" : Rectangle {
+            property <length> plate-width: min(Theme.sw-plate-max-w, root.card-width);
+            x: (root.width - self.plate-width) / 2;
+            y: root.block-top + root.card-height + Theme.sp-2;
+            width: self.plate-width;
+            height: Theme.sw-plate-h;
+            background: Theme.bg-surface;
+            border-radius: Theme.r-lg;
+            border-width: Theme.hairline;
+            border-color: Theme.border-strong;
+            Text {
+                x: Theme.sp-4;
+                width: parent.width - 2 * Theme.sp-4;
+                text: root.plate;
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+    }
+}

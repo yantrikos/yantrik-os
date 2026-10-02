@@ -62,7 +62,8 @@ import { BriefSection } from "components/morning_brief.slint";
 import { ClipboardEntryData } from "components/clipboard_panel.slint";
 import { CheatRowData } from "components/cheat_sheet.slint";
 import { AppGridItem } from "components/app_grid.slint";
-import { WindowItem } from "components/window_switcher.slint";
+import { WindowItem } from "components/window_item.slint";
+import { AltTab, SwitcherCell } from "components/alt_tab.slint";
 import { DockItem } from "components/app_dock.slint";
 import { CategoryItem } from "components/app_grid.slint";
 // The mind panel: shell furniture at the right edge, instantiated below beside the taskbar.
@@ -77,7 +78,7 @@ import { YMenuAction, YContextMenu } from "components/y_context_menu.slint";
 import { Icons } from "components/icon.slint";
 import { Tr } from "translations.slint";
 
-export { HarnessData, HarnessRowData, Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, ToolCallData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, ApprovalRequest, QuestionRequest, MindRule, MindAuditEntry, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, NotifActionData, ProcessData, ClipboardEntryData, CheatRowData, AppGridItem, CategoryItem, ServiceItem, WindowItem, DockItem, DockButton, DockWindow, ToastData, ToastActionData, PackageData, PendingAction, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction, ProblemRow, WorkCardData }
+export { HarnessData, HarnessRowData, Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, ToolCallData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, ApprovalRequest, QuestionRequest, MindRule, MindAuditEntry, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, NotifActionData, ProcessData, ClipboardEntryData, CheatRowData, AppGridItem, CategoryItem, ServiceItem, WindowItem, SwitcherCell, DockItem, DockButton, DockWindow, ToastData, ToastActionData, PackageData, PendingAction, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction, ProblemRow, WorkCardData }
 
 export component App inherits Window {
     default-font-family: Theme.font-ui;
@@ -302,9 +303,9 @@ export component App inherits Window {
     // nothing underneath moves.
     // The bar's three panels are the shell's and open over any screen, so they cover it on any
     // screen; the rest are the desktop's.
-    property <bool> mind-panel-covered: root.quick-settings-open || root.power-menu-open || root.clip-panel-open || root.cheat-sheet-open || root.battery-popover-open || root.network-open
+    property <bool> mind-panel-covered: root.quick-settings-open || root.power-menu-open || root.clip-panel-open || root.cheat-sheet-open || root.battery-popover-open || root.network-open || root.alt-tab-open
         || (root.current-screen == 1
-            && (root.lens-open || root.app-grid-open || root.window-switcher-open || root.command-palette-open));
+            && (root.lens-open || root.app-grid-open || root.command-palette-open));
 
     // Desktop state
     in property <[UrgeCardData]> urges: [];
@@ -461,8 +462,20 @@ export component App inherits Window {
     callback grid-toggle-pin(string);
     callback grid-search-apps(string);
 
-    // Window switcher state
-    in-out property <bool> window-switcher-open: false;
+    // Window overview (Super+Tab; Alt+Tab is labwc's own): Rust owns the order, the selection and the paging (alt_tab.rs) and hands
+    // over the page being shown.
+    in-out property <bool> alt-tab-open: false;
+    in property <[SwitcherCell]> alt-tab-cells: [];
+    in property <int> alt-tab-selected: -1;
+    in property <string> alt-tab-status: "";
+    in property <string> alt-tab-plate: "";
+    in property <int> alt-tab-page: 0;
+    in property <int> alt-tab-pages: 1;
+    callback alt-tab-navigate(string, int);
+    callback alt-tab-hover(int);
+    callback alt-tab-activate(int);
+    callback alt-tab-cancel();
+
     in property <[WindowItem]> window-list: [];
     callback switch-window(string);
     // A taskbar entry pressed. Not `switch-window`: the entry of the window in front puts it
@@ -1639,10 +1652,7 @@ export component App inherits Window {
             grid-launch-app(app-id) => { root.grid-launch-app(app-id); }
             grid-toggle-pin(app-id) => { root.grid-toggle-pin(app-id); }
             grid-search-apps(query) => { root.grid-search-apps(query); }
-            // Window switcher
-            window-switcher-open <=> root.window-switcher-open;
             window-list: root.window-list;
-            switch-window(title) => { root.switch-window(title); }
             // Command Palette
             command-palette-open <=> root.command-palette-open;
             command-palette-filtered: root.command-palette-filtered;
@@ -3410,6 +3420,22 @@ export component App inherits Window {
             close-menu => { root.taskbar-menu-open = false; }
         }
 
+        // The window overview, over every screen: a switcher that only drew on the desktop would be
+        // unreachable from Files or Settings, where the shell is in front too.
+        AltTab {
+            is-open: root.alt-tab-open;
+            cells: root.alt-tab-cells;
+            selected: root.alt-tab-selected;
+            status: root.alt-tab-status;
+            plate: root.alt-tab-plate;
+            page: root.alt-tab-page;
+            pages: root.alt-tab-pages;
+            navigate(direction, columns) => { root.alt-tab-navigate(direction, columns); }
+            hover(i) => { root.alt-tab-hover(i); }
+            activate(i) => { root.alt-tab-activate(i); }
+            cancel => { root.alt-tab-cancel(); }
+        }
+
             // Debug: navigate to screen from Rust
             // Set debug-target-screen from Rust, then call debug-navigate()
             // to switch to that screen (useful for automated screenshots).
@@ -3427,6 +3453,11 @@ export component App inherits Window {
     /// five places, one of which is Rust setting the property directly.
     changed lens-open => {
         if (!root.lens-open) { global-keys.focus(); }
+    }
+
+    /// Same for the switcher: its own scope held the keys and goes away with it.
+    changed alt-tab-open => {
+        if (!root.alt-tab-open) { global-keys.focus(); }
     }
 
     /// Give the shell's shortcut scope the keyboard, so there is a focus chain to deliver to.

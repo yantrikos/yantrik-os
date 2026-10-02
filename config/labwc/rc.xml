@@ -42,6 +42,14 @@
   </theme>
 
   <!--
+    The Alt+Tab list, drawn by labwc and themed in the themerc (osd.* keys: charcoal card, neutral
+    border, white selection ring). No thumbnails and no outlines: labwc would have to activate or
+    outline each window to draw them, and a plain row of titles costs nothing to show. Every
+    workspace is listed, so a window is never unreachable from the keyboard.
+  -->
+  <windowSwitcher show="yes" preview="no" outlines="no" allWorkspaces="yes" />
+
+  <!--
     Keep the shell's own furniture visible.
 
     The status bar and the dock are drawn by yantrik-ui, which is one ordinary fullscreen window
@@ -96,6 +104,15 @@
   -->
   <keyboard>
     <!-- ── Windows ────────────────────────────────────────────────────────────────────── -->
+    <!--
+      Alt+Tab is labwc's own cycling and stays that way: hold Alt, tap Tab, release Alt to switch.
+      labwc does it in the compositor, so it works when the shell is busy, hung, held by an
+      approval card or not running at all. An earlier change handed Alt+Tab to the shell
+      (`yos act shell open_switcher`), which lost release-to-switch and left no key at all
+      whenever the shell could not answer; the shell's card is Super+Tab below, a separate
+      overview that never stands in for this. The list's look is <windowSwitcher> and the
+      themerc's `osd.*` block.
+    -->
     <!-- @help group="Windows" text="Switch to the next window" -->
     <keybind key="A-Tab">
       <action name="NextWindow" />
@@ -103,6 +120,14 @@
     <!-- @help group="Windows" text="Switch to the previous window" -->
     <keybind key="A-S-Tab">
       <action name="PreviousWindow" />
+    </keybind>
+    <!-- @help group="Windows" text="Open the window overview" -->
+    <keybind key="W-Tab">
+      <action name="Execute"><command>/opt/yantrik/bin/yos act shell open_switcher</command></action>
+    </keybind>
+    <!-- @help group="Windows" text="Open the window overview, oldest first" -->
+    <keybind key="W-S-Tab">
+      <action name="Execute"><command>/opt/yantrik/bin/yos act shell open_switcher direction=back</command></action>
     </keybind>
     <!-- @help group="Windows" text="Close the window" -->
     <keybind key="A-F4">

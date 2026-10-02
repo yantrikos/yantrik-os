@@ -59,9 +59,16 @@ menu.items.active.text.color: #0c0c14
 menu.border.color: #2a2a3c
 menu.border.width: 1
 
-# ── On-screen display (window switcher) ─────────────────────────────
-osd.bg.color: #161622
-osd.border.color: #2a2a3c
+# ── On-screen display (Alt+Tab) ─────────────────────────────────────
+# The shell's card colours: a solid charcoal panel, a neutral edge, and a white ring on the
+# window the release will switch to. No teal: teal is for minds, and this is a list of windows.
+osd.bg.color: #151A1E
+osd.border.color: #2a3036
 osd.border.width: 1
-osd.label.text.color: #e8eaef
-osd.window-switcher.item.active.border.color: #4ecdc4
+osd.label.text.color: #f4f6fa
+osd.window-switcher.padding: 16
+osd.window-switcher.item.padding.x: 12
+osd.window-switcher.item.padding.y: 8
+osd.window-switcher.item.active.bg.color: #232a30
+osd.window-switcher.item.active.border.width: 2
+osd.window-switcher.item.active.border.color: #ffffff

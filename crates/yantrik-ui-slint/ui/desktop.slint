@@ -35,7 +35,7 @@ import { MessageData } from "components/message_bubble.slint";
 import { UrgeCardData, GlanceCard } from "components/glance_card.slint";
 import { WhisperCardStack, WhisperCardItem } from "components/whisper_card.slint";
 import { AppGrid, AppGridItem, CategoryItem } from "components/app_grid.slint";
-import { WindowSwitcher, WindowItem } from "components/window_switcher.slint";
+import { WindowItem } from "components/window_item.slint";
 import { CommandPalette, CommandItem } from "components/command_palette.slint";
 import { MorningBriefCard, BriefSection } from "components/morning_brief.slint";
 
@@ -157,10 +157,8 @@ export component DesktopScreen inherits Rectangle {
     callback grid-toggle-pin(string);
     callback grid-search-apps(string);
 
-    // Window switcher
-    in-out property <bool> window-switcher-open: false;
+    // Open windows, for the taskbar
     in property <[WindowItem]> window-list: [];
-    callback switch-window(string);
 
     // Command Palette (Ctrl+Shift+P)
     in-out property <bool> command-palette-open: false;
@@ -908,16 +906,6 @@ export component DesktopScreen inherits Rectangle {
         power-action(action) => { root.power-action(action); }
         close => { root.app-grid-open = false; }
         search-changed(query) => { root.grid-search-apps(query); }
-    }
-
-    // ── Layer 2.54: Window switcher overlay ──
-    WindowSwitcher {
-        width: 100%;
-        height: 100%;
-        is-open <=> root.window-switcher-open;
-        windows: root.window-list;
-        switch-window(title) => { root.switch-window(title); }
-        close => { root.window-switcher-open = false; }
     }
 
     // ── Layer 2.56: Command Palette overlay ──

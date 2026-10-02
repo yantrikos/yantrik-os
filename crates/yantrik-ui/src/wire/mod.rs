@@ -110,6 +110,7 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     backlight::wire(ui, ctx);
     app_grid::wire(ui, ctx);
     window_switcher::wire(ui, ctx);
+    crate::control_switcher::wire(ui);
     show_desktop::wire(ui);
     voice_mode::wire(ui, ctx);
     settings::wire(ui, ctx);
