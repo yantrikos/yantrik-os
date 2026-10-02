@@ -252,7 +252,9 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     save(&needs, &out("dock-needs-you.png"))?;
     let dot = count_within(&needs, zone, AMBER, 24);
     assert!((12..=40).contains(&dot), "one 6px amber dot on the mind button: {dot} pixels");
-    assert_eq!(count_within(&needs, (0, mind - 30, 752, 800), AMBER, 24) + count_within(&needs, (mind + 30, W, 752, 800), AMBER, 24), 0, "and nowhere else in the dock");
+    // (The Notes tile is itself a yellow-orange, so "nowhere else" means nothing new elsewhere.)
+    let elsewhere = |p: &Pixels| count_within(p, (0, mind - 30, 752, 800), AMBER, 24) + count_within(p, (mind + 30, W, 752, 800), AMBER, 24);
+    assert_eq!(elsewhere(&needs), elsewhere(&calm), "and nothing else in the dock turned amber");
     save(&needs, &out("dock-needs-you.png"))?;
     ui.set_cards_pending(0);
     assert_eq!(count_within(&draw(), zone, AMBER, 24), 0, "answered: the dot goes");
