@@ -446,6 +446,54 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             },
         )
         .action(
+            // `safe` as `set_mind_mode` is: switching it ON only removes power (an "ask" becomes a
+            // "refuse"), and switching it OFF is refused to a mind and to any account but the
+            // person's own or root (`never_ask::may_switch_off`). Named without a word the
+            // mode-loosening scan looks for, because it cannot loosen anything for a mind.
+            Action::new(
+                "set_approvals_off_for_test",
+                "Test runs only. While on, any action that would put an approval card in front of \
+                 the person is refused at once and nothing is shown to them; actions that need no \
+                 approval run as before. It ends by itself after `minutes` (default 30, at most \
+                 240). Anyone may switch it on; only the person's own account or root can switch \
+                 it off before then.",
+            )
+            .risk("safe")
+            .arg(Param::one_of("state", &["on", "off"]))
+            .arg(Param::integer("minutes").describe("How long it stays on if nobody ends it. Default 30, at most 240").optional()),
+            move |args| {
+                let wanted = required(args, "state")?;
+                match wanted.as_str() {
+                    "on" => {
+                        let minutes = args.get("minutes").and_then(|m| m.as_u64());
+                        let set_for = crate::never_ask::switch_on(minutes);
+                        Ok(serde_json::json!({
+                            "state": "on",
+                            "expires_in_minutes": set_for,
+                            "note": "approvals are refused, and nothing is shown to the person, until this ends.",
+                        }))
+                    }
+                    "off" => {
+                        let caller = yantrik_app_runtime::control::caller();
+                        let mind_account = caller
+                            .as_ref()
+                            .is_some_and(|c| yantrik_ipc_transport::mind_door::is_mind(c.uid));
+                        let by_a_mind = yantrik_app_runtime::control::agent_is_calling()
+                            || crate::mind_view::requester_now() != crate::mind_view::Requester::Person;
+                        crate::never_ask::may_switch_off(
+                            caller.as_ref().map(|c| c.uid),
+                            own_uid(),
+                            mind_account,
+                            by_a_mind,
+                        )?;
+                        crate::never_ask::switch_off();
+                        Ok(serde_json::json!({"state": "off", "note": "approvals work as the mode says again."}))
+                    }
+                    other => Err(format!("`{other}` is not a state; use `on` or `off`")),
+                }
+            },
+        )
+        .action(
             // `safe` for the narrowest possible reason: it writes a line down. It authorises
             // nothing, it unlocks nothing, and a caller that lies to it has lied in a log rather
             // than gained anything — which is why it is the bridge that calls it, immediately
@@ -1228,7 +1276,7 @@ fn who_is_calling(claimed: &str) -> approvals::Verified {
 
 /// This process's own uid, for the comparison above. `libc` is not a dependency of this crate
 /// and does not need to become one: the shell's own runtime directory is owned by it.
-fn own_uid() -> u32 {
+pub(crate) fn own_uid() -> u32 {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;

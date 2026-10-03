@@ -788,6 +788,9 @@ pub fn publish(
                 // and makes the run/ask/refuse decision from it, so one `describe shell` answers
                 // every question an `os_act` has to ask before it runs.
                 .with("mind_mode", crate::control_approvals::mind_mode_for_describe())
+                // Whether a test run has approvals off: every request that would raise a card is
+                // refused and nothing is shown. Ends by itself; see `never_ask`.
+                .with("approvals_off_for_test", crate::never_ask::snapshot())
                 // And what it has already done unasked. A mode that stops the asking has to
                 // replace the cards with something, or `auto` is only a quieter way of not
                 // knowing. See `mind_mode`'s audit section.

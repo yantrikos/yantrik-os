@@ -1223,7 +1223,27 @@ pub fn request(
     asked: Asked<'_>,
     args: serde_json::Value,
 ) -> Result<Requested, String> {
-    locked().raise(requester, verified, asked, args, Instant::now(), &hhmm())
+    request_in(&mut locked(), crate::never_ask::refusal(), requester, verified, asked, args, Instant::now(), &hhmm())
+}
+
+/// [`request`] on a given store, with the test-run refusal passed in. The refusal comes first,
+/// before anything is stored or drawn: every card on this machine is made by this one door, so
+/// "approvals are off during a test run" cannot be missed by a new caller (`never_ask`).
+#[allow(clippy::too_many_arguments)]
+fn request_in(
+    store: &mut Store,
+    off_for_test: Option<String>,
+    requester: &str,
+    verified: Verified,
+    asked: Asked<'_>,
+    args: serde_json::Value,
+    now: Instant,
+    at: &str,
+) -> Result<Requested, String> {
+    if let Some(why) = off_for_test {
+        return Err(why);
+    }
+    store.raise(requester, verified, asked, args, now, at)
 }
 
 pub fn status(id: &str) -> Option<Status> {
@@ -1356,6 +1376,32 @@ mod approvals_tests {
             )
             .expect("a first request is accepted")
             .id
+    }
+
+    /// The gate's test run: a request that would have raised a card is refused at once, and the
+    /// store holds no card for it afterwards. The same request without the flag raises one.
+    #[test]
+    fn approvals_off_for_a_test_run_refuses_and_raises_no_card() {
+        let now = Instant::now();
+        let asked = || Asked {
+            app: "shell",
+            action: "agent_run",
+            grade: "sensitive",
+            purpose: "Run an agent.",
+            published: "Run an agent.",
+            target: "",
+            explained: "",
+        };
+        let mut store = Store::new();
+        let off = Some(crate::never_ask::REFUSED.to_string());
+        let err = request_in(&mut store, off, "pi 0.9", Verified::default(), asked(), serde_json::json!({}), now, "12:03")
+            .expect_err("refused");
+        assert!(err.contains("approvals are off during a test run"), "{err}");
+        assert!(store.pending(now).is_empty(), "no card was created");
+
+        let raised = request_in(&mut store, None, "pi 0.9", Verified::default(), asked(), serde_json::json!({}), now, "12:03")
+            .expect("without the flag the behaviour is unchanged");
+        assert_eq!(store.pending(now).len(), 1, "{:?}", raised.id);
     }
 
     #[test]

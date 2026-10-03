@@ -73,6 +73,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 from importlib.machinery import SourceFileLoader
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -1511,6 +1512,22 @@ with tempfile.TemporaryDirectory() as d:
     refusal = module.guard_act({"app": "calendar", "action": "delete_event"})[0]
     check("a reason with words in it is kept as it was", refusal.endswith("yos: calendar timed out after 5s"),
           refusal)
+
+    # 16c. An action the app does not have: the app answered, so the refusal says it has no such
+    # action and lists the real ones, instead of blaming how the OS grades it (a mind that called
+    # editor.new_note was told the grade "could not be read" and had nothing to correct).
+    module, state = case(tmp, "no-such-action")
+    described = ("editor  (open)\n"
+                 "  act: new()  [standard, settles on return]\n       Start a new document.\n"
+                 "  act: set_content(text)  [standard, settles on return]\n       Put text in.\n"
+                 "  act: save_as(path)  [sensitive, settles on return]\n       Save it.\n")
+    module.yos = lambda args, timeout=None: types.SimpleNamespace(returncode=0, stdout=described, stderr="")
+    for wrong in ("new_note", "new_file"):
+        refusal = module.guard_act({"app": "editor", "action": wrong})[0]
+        check("editor.%s is refused as an action the app does not have" % wrong,
+              refusal.startswith("editor has no action %s; its actions are: new, set_content, save_as" % wrong)
+              and "could not be read" not in refusal and "grades" not in refusal, refusal)
+    check("and nothing was acted on", not read(state).get("acted"), read(state))
 
     module, state = case(tmp, "nomode-standard", no_mode=True)
     text, is_error = act(module, "calendar", "add_event", {"title": "X", "date": "2026-10-02"})

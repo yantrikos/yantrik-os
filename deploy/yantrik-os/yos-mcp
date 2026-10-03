@@ -1606,6 +1606,29 @@ def ungraded_because(app, action, why=None):
     return seen.get((app, action), "")
 
 
+def actions_of(app, names=None):
+    """Remember, or recall, the actions `app` really has, as its own describe listed them."""
+    seen = getattr(_LOCAL, "actions", None)
+    if seen is None:
+        seen = _LOCAL.actions = {}
+    if names is not None:
+        seen[app] = list(names)
+    return seen.get(app, [])
+
+
+def no_such_action(app, action):
+    """What a mind is told for an action the app does not have, or None when that is not the case.
+
+    A mind that called `editor.new_note` (no such action) was told "how the OS grades it could not
+    be read", which blames the OS and gives it nothing to correct. The app answered; it has no
+    action of that name. Say so, and list the ones it has, so the model can pick one."""
+    names = actions_of(app)
+    if not names or action in names:
+        return None
+    return ("%s has no action %s; its actions are: %s. Nothing was run — call one of those "
+            "(os_describe %s shows what each takes)." % (app, action, ", ".join(names), app))
+
+
 def action_detail(app, action):
     """How the OS grades one of its own actions, and what the app says the action is for.
 
@@ -1655,6 +1678,10 @@ def action_detail(app, action):
         ungraded_because(app, action,
                          "%s is open and offers no action called %s. It offers: %s"
                          % (app, action, ", ".join(offered)))
+        if action not in offered:
+            # Kept as a list, not only as words: `guard_act` says it as what it is, a name that
+            # is not one of the app's actions, and not as a grade it failed to read.
+            actions_of(app, offered)
     else:
         # A describe that answers and lists no actions at all is not an app with nothing to
         # offer: it is the SERVICE of the same name answering for a window that is shut. `yos`
@@ -2189,6 +2216,9 @@ def guard_act(args):
         # reached one as "…could not be read: yos:" (yantrik-mind, 2026-09-27).
         if not re.sub(r"^\s*yos:\s*", "", why or "").strip(" .:-\n\t"):
             why = ""
+        unknown = no_such_action(app, action)
+        if unknown:
+            return unknown, None, None, None
         if "is not open" in why:
             return ("%s is not open, so %s was not run — nothing is wrong with the request. "
                     "Open it with os_act on shell: open_app name=%s (os_apps lists the exact "

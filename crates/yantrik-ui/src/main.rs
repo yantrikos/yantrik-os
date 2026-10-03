@@ -108,6 +108,7 @@ mod memory_grants;
 mod markdown;
 /// What the mind may do without being asked: plan / ask / auto / bypass / bypass_all. See its module doc.
 mod mind_mode;
+mod never_ask;
 /// The right edge of every screen: the answering mind, what is at work, what it did.
 mod mind_panel;
 /// A desktop of the mind's own, inside one window: where the apps a mind opens are drawn (#239).

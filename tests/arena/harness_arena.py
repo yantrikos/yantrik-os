@@ -24,6 +24,7 @@ import os
 import random
 import re
 import shutil
+import signal
 import string
 import subprocess
 import sys
@@ -921,7 +922,46 @@ def task_list(spec):
     return out
 
 
+# How long the shell keeps approvals off if this run dies before it can say so. The shell ends it by
+# itself at that deadline, so a crashed arena cannot leave the machine refusing every approval.
+APPROVALS_OFF_MINUTES = 90
+
+
+class ApprovalsOff:
+    """Approvals are off for the whole run, and back on after it, on every way out.
+
+    A gate must never put a card in front of the person logged in on the test machine: a task's
+    `shell.agent_run` once raised one, nobody answered, and it sat there for about 110 s. While this
+    is on the shell REFUSES whatever would have asked (it can never turn an ask into an allow), with
+    a reason the mind can read, and grades are unchanged. If the shell cannot say it is on, the run
+    does not start. SIGTERM is turned into a normal exit so the `finally` runs; a SIGKILL cannot be
+    caught, and the shell's own deadline covers it."""
+
+    def __enter__(self):
+        yos("act", "shell", "set_approvals_off_for_test", "state=on", f"minutes={APPROVALS_OFF_MINUTES}")
+        state = (describe("shell") or {}).get("approvals_off_for_test") or {}
+        if not state.get("on"):
+            raise SystemExit("this desktop cannot turn approvals off for a test run "
+                             "(shell.approvals_off_for_test is not on), and a run would put cards in front of "
+                             "the person; not starting. Update the shell first.")
+        self._previous = signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+        return self
+
+    def __exit__(self, *exc):
+        signal.signal(signal.SIGTERM, self._previous)
+        out = yos("act", "shell", "set_approvals_off_for_test", "state=off")
+        if (describe("shell") or {}).get("approvals_off_for_test", {}).get("on"):
+            print(f"!! approvals are still off after the run ({out.strip()[:120]}); the shell ends that by "
+                  f"itself within {APPROVALS_OFF_MINUTES} minutes", flush=True)
+        return False
+
+
 def main():
+    with ApprovalsOff():
+        return run_main()
+
+
+def run_main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--minds", default="")
     ap.add_argument("--tasks", default=",".join(FROZEN),
