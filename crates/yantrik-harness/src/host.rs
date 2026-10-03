@@ -144,6 +144,16 @@ pub struct LateAnswer {
 }
 
 impl Flight {
+    /// Keeps `delta` for a late answer, up to [`MAX_LATE_BYTES`] in all, cut on a char boundary.
+    fn keep_late(&mut self, delta: &str) {
+        if self.late.len() >= MAX_LATE_BYTES {
+            return;
+        }
+        let room = MAX_LATE_BYTES - self.late.len();
+        let cut = (0..=delta.len().min(room)).rev().find(|i| delta.is_char_boundary(*i)).unwrap_or(0);
+        self.late.push_str(&delta[..cut]);
+    }
+
     fn new(conversation: String, tx: Sender<Chunk>) -> Flight {
         Flight {
             conversation,
@@ -1783,10 +1793,8 @@ impl Host {
             // call on this turn — this one — is where it learns that.
             flight.log_drop(&harness.announced.id, turn_id);
             // An answer for a chat the person left is kept to be told of at the end, not lost.
-            if flight.gone == Gone::NoListener && flight.late.len() < MAX_LATE_BYTES {
-                let room = MAX_LATE_BYTES - flight.late.len();
-                let cut = (0..=delta.len().min(room)).rev().find(|i| delta.is_char_boundary(*i)).unwrap_or(0);
-                flight.late.push_str(&delta[..cut]);
+            if flight.gone == Gone::NoListener {
+                flight.keep_late(&delta);
             }
             return Ok(serde_json::json!({ "dropped": true }));
         };
@@ -1801,7 +1809,7 @@ impl Host {
             // chunk is the first thing it missed.
             flight.abandon(None);
             flight.log_drop(&harness.announced.id, turn_id);
-            flight.late.push_str(&delta);
+            flight.keep_late(&delta);
             return Ok(serde_json::json!({ "dropped": true }));
         }
         Ok(serde_json::json!({}))
@@ -3450,6 +3458,16 @@ mod tests {
         assert_eq!(told.len(), 1);
         assert_eq!((told[0].harness.as_str(), told[0].turn_id), ("pi", turn_id));
         assert!(told[0].text.ends_with("a while."), "{:?}", told[0].text);
+    }
+
+    #[test]
+    fn the_late_buffer_is_capped_on_a_char_boundary_whichever_path_fills_it() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut flight = Flight::new("main".into(), tx);
+        flight.keep_late(&"é".repeat(MAX_LATE_BYTES));
+        assert!(flight.late.len() <= MAX_LATE_BYTES && flight.late.len() >= MAX_LATE_BYTES - 1);
+        flight.keep_late("more");
+        assert!(flight.late.len() <= MAX_LATE_BYTES);
     }
 
     #[test]

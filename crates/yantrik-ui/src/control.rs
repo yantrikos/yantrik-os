@@ -727,7 +727,12 @@ pub fn publish(
                 .with("conversation", serde_json::Value::Array(conversation))
                 // What the answering mind says it is doing now ("Thinking… (60 s)"), while its
                 // turn runs; empty otherwise. The chat's work card shows the same line.
-                .with("conversation_status", crate::wire::agents::latest_status())
+                // Withheld from an agent caller with the conversation: the status line is the
+                // person's chat in miniature. Flattened and clipped so it cannot bloat `describe`.
+                .with(
+                    "conversation_status",
+                    if agent_reading { String::new() } else { crate::wire::agents::status_for_describe(&crate::wire::agents::latest_status()) },
+                )
                 // True when the conversation above was withheld: the chat is the person's, and an
                 // agent reads its own session with `read_agent`.
                 .with("conversation_private", agent_reading)
@@ -3442,5 +3447,18 @@ mod power_profile_tests {
         let src = source();
         assert!(src.contains("crate::power_status::battery_for_describe("), "describe's `battery` comes from power_status");
         assert!(src.contains("\"power_profile\","), "describe has a top-level `power_profile`, battery or not");
+    }
+
+#[cfg(test)]
+mod status_gate_tests {
+    /// The mind's status line is the person's chat in miniature: `describe shell` withholds it
+    /// from an agent caller exactly as it withholds the conversation (#587 review).
+    #[test]
+    fn the_conversation_status_is_withheld_from_an_agent_caller() {
+        let src = include_str!("control.rs");
+        let at = src.find(".with(\n                    \"conversation_status\"").expect("conversation_status field");
+        let field = &src[at..at + 260];
+        assert!(field.contains("if agent_reading { String::new() }"), "{field}");
+        assert!(field.contains("status_for_describe"), "{field}");
     }
 }

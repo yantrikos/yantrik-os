@@ -441,7 +441,7 @@ const IMITATED: [&str; 7] = [
 /// Arabic letter mark, the Mongolian vowel separator, zero-width space to right-to-left mark,
 /// the embeddings and overrides, word joiner to the invisible operators and the isolates, the
 /// byte-order mark, the interlinear annotation marks, and the tag characters.
-fn is_format_char(c: char) -> bool {
+pub(crate) fn is_format_char(c: char) -> bool {
     matches!(
         c as u32,
         0x00AD
