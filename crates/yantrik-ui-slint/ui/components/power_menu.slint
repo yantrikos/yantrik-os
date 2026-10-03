@@ -1,185 +1,183 @@
-// Power Menu — overlay modal for system power actions.
-// Lock, Suspend, Restart, Shut Down.
-// Follows the QuickSettings overlay pattern (backdrop + centered card).
-
+// The power popover: what the bar's power mark opens.
+//
+//   Lock, Log out, Suspend, Hibernate (only where logind offers it), Restart, Shut down.
+//
+// Lock, Suspend and Hibernate act at once: nothing is lost. Log out, Restart and Shut down end
+// every program in the session, so each asks first: a confirmation with a red button, a ten
+// second countdown, and, when minds are working, who would be stopped. The countdown does not
+// run out into the action. It runs out into "never mind": nothing happens if the person walked
+// away, which is the same promise the approval cards make ("nothing runs if it expires").
+//
+// Focus lands on the safe button of the confirmation, never the red one, so Enter on arrival
+// cancels. The red button is pressed by a click, or by Tab and then Enter.
+//
+// The number of minds working is the Agents store's own count (`power-minds-working`, set by
+// Rust whenever the popover opens or a confirmation starts), not a guess: with none working the
+// sentence is not shown at all.
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icon.slint";
+import { YPopover } from "y_popover.slint";
+import { YButton } from "y_button.slint";
 
-export component PowerMenu inherits Rectangle {
-    in-out property <bool> is-open: false;
+// One row of the list.
+component PowerRow inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <bool> danger: false;
+    callback activated();
 
+    property <bool> hovered: ta.has-hover;
+    height: 40px;
+    border-radius: Theme.r-md;
+    background: root.hovered || keys.has-focus ? Theme.hover-fill : transparent;
+    animate background { duration: Theme.dur-fast; }
+    border-width: keys.has-focus ? Theme.focus-ring-width : 0px;
+    border-color: Theme.focus-ring;
+
+    keys := FocusScope {
+        accessible-role: button;
+        accessible-label: root.label;
+        accessible-action-default => { root.activated(); }
+        key-pressed(event) => {
+            if ((event.text == " " || event.text == "\n") && !event.repeat) { root.activated(); return accept; }
+            reject
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.activated(); }
+    }
+    HorizontalLayout {
+        padding-left: Theme.sp-3;
+        padding-right: Theme.sp-3;
+        spacing: Theme.sp-3;
+        Icon {
+            commands: root.icon;
+            size: Theme.sp-5;
+            tint: root.danger ? Theme.destructive : Theme.text-secondary;
+            y: (parent.height - self.height) / 2;
+        }
+        Text {
+            text: root.label;
+            color: root.danger ? Theme.destructive : Theme.text-primary;
+            font-size: Theme.fs-body;
+            font-weight: root.danger ? Theme.fw-body-strong : 400;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component PowerMenu inherits YPopover {
+    // Hibernate is drawn only when logind offers it.
+    in property <bool> can-hibernate: false;
+    // How many minds are working, from the Agents store.
+    in property <int> minds-working: 0;
+    // Asked when the popover opens and when a confirmation starts: refresh the two numbers above.
+    callback refresh();
+    // One of lock, logout, suspend, hibernate, restart, shutdown. Only called for a confirmed
+    // logout, restart or shutdown.
     callback power-action(string);
-    callback close();
+    // Stop the minds' work before going down? Not a separate act: choosing the red button is
+    // choosing that. Kept as words on the button so the choice is visible.
 
-    width: 100%;
-    height: 100%;
+    label: "Power";
+    content-spacing: Theme.sp-1;
 
-    // Backdrop (click to close)
-    if root.is-open : TouchArea {
-        width: 100%;
-        height: 100%;
-        clicked => { root.is-open = false; root.close(); }
+    // "" shows the list; "logout", "restart" or "shutdown" shows that confirmation.
+    in-out property <string> pending: "";
+    // Seconds left to confirm.
+    in-out property <int> remaining: 10;
+    property <string> verb: root.pending == "logout" ? "Log out" : root.pending == "restart" ? "Restart" : "Shut down";
+    property <string> stop-label: root.minds-working > 0 ? "Stop them and " + root.verb.to-lowercase() : root.verb;
+    property <string> minds-words: root.minds-working == 1 ? "1 mind is working" : root.minds-working + " minds are working";
 
-        Rectangle {
-            width: 100%;
-            height: 100%;
-            background: Theme.overlay-backdrop;
+    changed open => {
+        if (self.open) {
+            self.pending = "";
+            self.refresh();
         }
     }
 
-    // Centered card
-    if root.is-open : Rectangle {
-        x: (parent.width - 320px) / 2;
-        y: (parent.height - card-layout.preferred-height) / 2;
-        width: 320px;
-        height: card-layout.preferred-height;
-        background: Theme.bg-elevated;
-        border-radius: 16px;
-        border-width: 1px;
-        border-color: Theme.border-subtle;
-        drop-shadow-blur: 24px;
-        drop-shadow-color: Theme.overlay-shadow;
+    // Cancel, or an expiry, takes the confirmation's buttons away with the focus on them. Put
+    // it back on the panel so Esc and Tab keep working from the list.
+    changed pending => {
+        if (self.pending == "" && self.open) { self.focus-panel(); }
+    }
 
-        // Block click-through
-        TouchArea { width: 100%; height: 100%; }
+    function ask(what: string) {
+        root.pending = what;
+        root.remaining = 10;
+        root.refresh();
+    }
+    function done(what: string) {
+        root.power-action(what);
+        root.close-requested();
+    }
 
-        card-layout := VerticalLayout {
-            padding: 16px;
-            spacing: 4px;
+    // The confirmation's clock: one tick a second, only while a confirmation is up. At zero it
+    // goes back to the list; it never performs the act.
+    Timer {
+        interval: 1s;
+        running: root.open && root.pending != "";
+        triggered => {
+            root.remaining -= 1;
+            if (root.remaining <= 0) { root.pending = ""; }
+        }
+    }
 
-            // Header
-            Text {
-                text: "Power";
-                color: Theme.text-primary;
-                font-size: Theme.font-title;
-                font-weight: 500;
-                horizontal-alignment: center;
+    // ── The list ──
+    if root.pending == "" : VerticalLayout {
+        spacing: Theme.sp-1;
+        PowerRow { icon: Icons.lock; label: "Lock"; activated => { root.done("lock"); } }
+        PowerRow { icon: Icons.logout; label: "Log out"; activated => { root.ask("logout"); } }
+        PowerRow { icon: Icons.moon; label: "Suspend"; activated => { root.done("suspend"); } }
+        if root.can-hibernate : PowerRow { icon: Icons.disk; label: "Hibernate"; activated => { root.done("hibernate"); } }
+        Rectangle { height: Theme.hairline; background: Theme.separator; }
+        PowerRow { icon: Icons.refresh; label: "Restart"; activated => { root.ask("restart"); } }
+        PowerRow { icon: Icons.power; label: "Shut down"; danger: true; activated => { root.ask("shutdown"); } }
+    }
+
+    // ── The confirmation ──
+    if root.pending != "" : VerticalLayout {
+        spacing: Theme.sp-3;
+        Text {
+            text: root.verb + " now?";
+            color: Theme.text-primary;
+            font-size: Theme.fs-title-2;
+            font-weight: Theme.fw-body-strong;
+        }
+        if root.minds-working > 0 : Text {
+            text: root.minds-words + ". " + root.verb + " stops them, and anything they have not finished is lost.";
+            color: Theme.text-primary;
+            font-size: Theme.fs-body;
+            wrap: word-wrap;
+        }
+        Text {
+            text: "Open programs close. Save what you need first.";
+            color: Theme.text-secondary;
+            font-size: Theme.fs-body;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: Theme.sp-2;
+            alignment: end;
+            YButton {
+                variant: 1;
+                label: root.minds-working > 0 ? "Finish first" : "Cancel";
+                clicked => { root.pending = ""; }
+                // Focus starts on the safe button: Enter on arrival cancels.
+                init => { self.focus-button(); }
             }
-
-            Rectangle { height: 8px; }
-
-            // Lock
-            TouchArea {
-                height: 48px;
-                clicked => { root.power-action("lock"); root.is-open = false; root.close(); }
-
-                Rectangle {
-                    width: 100%; height: 100%;
-                    border-radius: 10px;
-                    background: parent.has-hover ? Theme.hover-fill : transparent;
-
-                    HorizontalLayout {
-                        padding-left: 16px;
-                        spacing: 14px;
-
-                        Icon {
-                            commands: Icons.lock;
-                            size: 18px;
-                            tint: Theme.text-secondary;
-                            y: (parent.height - self.height) / 2;
-                        }
-                        Text {
-                            text: "Lock";
-                            color: Theme.text-primary;
-                            font-size: Theme.font-body;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
+            YButton {
+                variant: 3;
+                label: root.stop-label;
+                clicked => { root.done(root.pending); }
             }
-
-            // Suspend
-            TouchArea {
-                height: 48px;
-                clicked => { root.power-action("suspend"); root.is-open = false; root.close(); }
-
-                Rectangle {
-                    width: 100%; height: 100%;
-                    border-radius: 10px;
-                    background: parent.has-hover ? Theme.hover-fill : transparent;
-
-                    HorizontalLayout {
-                        padding-left: 16px;
-                        spacing: 14px;
-
-                        Icon {
-                            commands: Icons.moon;
-                            size: 18px;
-                            tint: Theme.text-secondary;
-                            y: (parent.height - self.height) / 2;
-                        }
-                        Text {
-                            text: "Suspend";
-                            color: Theme.text-primary;
-                            font-size: Theme.font-body;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-            }
-
-            Rectangle { height: 1px; background: Theme.separator; }
-
-            // Restart
-            TouchArea {
-                height: 48px;
-                clicked => { root.power-action("restart"); root.is-open = false; root.close(); }
-
-                Rectangle {
-                    width: 100%; height: 100%;
-                    border-radius: 10px;
-                    background: parent.has-hover ? Theme.hover-fill : transparent;
-
-                    HorizontalLayout {
-                        padding-left: 16px;
-                        spacing: 14px;
-
-                        Icon {
-                            commands: Icons.refresh;
-                            size: 18px;
-                            tint: Theme.text-secondary;
-                            y: (parent.height - self.height) / 2;
-                        }
-                        Text {
-                            text: "Restart";
-                            color: Theme.text-primary;
-                            font-size: Theme.font-body;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-            }
-
-            // Shut Down (destructive)
-            TouchArea {
-                height: 48px;
-                clicked => { root.power-action("shutdown"); root.is-open = false; root.close(); }
-
-                Rectangle {
-                    width: 100%; height: 100%;
-                    border-radius: 10px;
-                    background: parent.has-hover ? Theme.hover-fill : transparent;
-
-                    HorizontalLayout {
-                        padding-left: 16px;
-                        spacing: 14px;
-
-                        Icon {
-                            commands: Icons.power;
-                            size: 18px;
-                            tint: Theme.destructive;
-                            y: (parent.height - self.height) / 2;
-                        }
-                        Text {
-                            text: "Shut Down";
-                            color: Theme.destructive;
-                            font-size: Theme.font-body;
-                            font-weight: 500;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-            }
+        }
+        Text {
+            text: "Expires in " + root.remaining + " s · nothing happens if it expires";
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
         }
     }
 }

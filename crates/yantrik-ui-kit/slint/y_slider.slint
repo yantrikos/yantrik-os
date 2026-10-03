@@ -46,6 +46,10 @@ export component YSlider inherits Rectangle {
     // An Icons path. Empty draws nothing and gives the track the room.
     in property <string> icon: "";
     callback changed(int);
+    // The slider has keyboard focus: for an owner that tracks where focus is.
+    out property <bool> focused: keys.has-focus;
+    // Put keyboard focus on the slider, for an owner that moves focus itself.
+    public function focus-slider() { keys.focus(); }
     // Where the track and the thumb centre are, relative to this control: for an owner that has
     // to line something up with the thumb, and for the preview check that the thumb is where the
     // value says.

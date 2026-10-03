@@ -458,9 +458,17 @@ export component App inherits Window {
     callback clipboard-paste(int);
     callback clipboard-search(string);
 
-    // Power menu state
+    // Power popover state. It hangs from the right edge, under Quick Settings' mark (the bar has
+    // no power mark of its own since the top bar followed render 01); Rust sets the other two when
+    // the popover opens (`power-refresh`): whether logind would hibernate, and how many minds are
+    // working, from the Agents store.
     in-out property <bool> power-menu-open: false;
+    in property <bool> power-can-hibernate: false;
+    in property <int> power-minds-working: 0;
+    callback power-refresh();
     callback power-action(string);
+    // Quick Settings' Screenshot: the whole screen, like the Print key.
+    callback take-screenshot();
 
     // App grid state
     in-out property <bool> app-grid-open: false;
@@ -2791,7 +2799,29 @@ export component App inherits Window {
             volume-changed(val) => { root.volume-changed(val); }
             volume-mute-toggled => { root.volume-mute-toggled(); }
             power-menu-open <=> root.power-menu-open;
+            power-can-hibernate: root.power-can-hibernate;
+            power-minds-working: root.power-minds-working;
+            power-refresh => { root.power-refresh(); }
             power-action(action) => { root.power-action(action); }
+            mind-mode: root.mind-mode;
+            mind-mode-label: root.mind-mode-label;
+            private-mode: root.private-mode;
+            mind-view-on: root.mind-view-on;
+            mind-mode-chosen(m) => { root.mind-mode-chosen(m); }
+            // The chevron on the Mind mode tile opens the same menu the bar's chip does.
+            mind-mode-details => {
+                root.mind-menu-open = true;
+                root.minds-panel-open = false;
+                root.mind-menu-confirming = false;
+                root.mind-menu-audit-open = false;
+            }
+            mind-private-chosen(on) => { root.mind-private-chosen(on); }
+            mind-view-chosen(on) => { root.mind-view-chosen(on); }
+            dark-on: root.settings-dark-mode;
+            toggle-dark => { root.toggle-dark-mode(); }
+            take-screenshot => { root.take-screenshot(); }
+            open-settings => { root.current-screen = 7; root.navigate(7); }
+            lock-screen => { root.lock-screen(); }
             clip-panel-open <=> root.clip-panel-open;
             clip-panel-entries: root.clip-panel-entries;
             clip-search-query <=> root.clip-search-query;
@@ -2882,6 +2912,7 @@ export component App inherits Window {
                 root.network-open = false;
                 root.battery-popover-open = false;
                 root.today-open = false;
+                root.power-menu-open = false;
                 root.quick-settings-open = !root.quick-settings-open;
             }
             // The "minds can't reach" notice goes to Minds, which lists what is attached (#367).

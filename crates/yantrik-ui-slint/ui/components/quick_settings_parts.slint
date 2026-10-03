@@ -1,0 +1,92 @@
+// The three kinds of thing Quick Settings holds, each a kit control that knows its slot.
+//
+// Quick Settings moves focus with the arrow keys, and the kit controls do not know about each
+// other, so each is wrapped in a slot: the panel says which slot is current (`cursor`), the slot
+// takes focus when it becomes the current one, and tells the panel when focus arrives by Tab or a
+// click so the cursor never points at a control the person has already left.
+import { Theme } from "theme.slint";
+import { YToggleTile } from "y_toggle_tile.slint";
+import { YSlider } from "y_slider.slint";
+import { YIndicator } from "y_indicator.slint";
+
+export component QsTile inherits Rectangle {
+    in property <int> slot;
+    in property <int> cursor;
+    in property <string> icon;
+    in property <string> title;
+    in property <string> subtitle;
+    in property <bool> on: false;
+    in property <bool> split: false;
+    callback toggled();
+    callback details-requested();
+    callback focus-arrived(int);
+
+    property <bool> current: root.cursor == root.slot;
+    changed current => { if (self.current) { tile.focus-body(); } }
+
+    height: Theme.tile-h;
+    tile := YToggleTile {
+        width: 100%;
+        height: 100%;
+        icon: root.icon;
+        title: root.title;
+        subtitle: root.subtitle;
+        on: root.on;
+        split: root.split;
+        // The arrow keys move between tiles here; the chevron is reached with Tab.
+        right-opens-details: false;
+        toggled => { root.toggled(); }
+        details-requested => { root.details-requested(); }
+        changed focused => { if (self.focused) { root.focus-arrived(root.slot); } }
+    }
+}
+
+export component QsSlider inherits Rectangle {
+    in property <int> slot;
+    in property <int> cursor;
+    in property <string> label;
+    in property <string> icon;
+    in property <int> value;
+    callback changed(int);
+    callback focus-arrived(int);
+
+    property <bool> current: root.cursor == root.slot;
+    changed current => { if (self.current) { bar.focus-slider(); } }
+
+    height: Theme.h-regular;
+    bar := YSlider {
+        width: 100%;
+        height: 100%;
+        label: root.label;
+        icon: root.icon;
+        value: root.value;
+        show-value: true;
+        value-suffix: "%";
+        changed(v) => { root.changed(v); }
+        changed focused => { if (self.focused) { root.focus-arrived(root.slot); } }
+    }
+}
+
+export component QsFooterButton inherits Rectangle {
+    in property <int> slot;
+    in property <int> cursor;
+    in property <string> icon;
+    in property <string> label;
+    callback clicked();
+    callback focus-arrived(int);
+
+    property <bool> current: root.cursor == root.slot;
+    changed current => { if (self.current) { button.focus-indicator(); } }
+
+    width: Theme.h-regular;
+    height: Theme.h-regular;
+    button := YIndicator {
+        width: 100%;
+        height: 100%;
+        icon: root.icon;
+        tooltip: root.label;
+        tooltip-end: root.slot == 13;
+        clicked => { root.clicked(); }
+        changed focused => { if (self.focused) { root.focus-arrived(root.slot); } }
+    }
+}

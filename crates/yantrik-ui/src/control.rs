@@ -985,6 +985,9 @@ pub fn publish(
                 ))
                 .with("quick_settings", crate::control_overlays::panel_for_describe(ui.get_quick_settings_open(), screen, "close_quick_settings"))
                 .with("power_menu", crate::control_overlays::panel_for_describe(ui.get_power_menu_open(), screen, "close_power_menu"))
+                // What the power popover offers right now: Hibernate only where logind does, and
+                // how many minds a restart would stop.
+                .with("power", crate::control_power::for_describe(&ui))
                 .with("clipboard_panel", crate::control_overlays::panel_for_describe(ui.get_clip_panel_open(), screen, "close_clipboard"))
                 .with("cheat_sheet", crate::control_overlays::panel_for_describe(ui.get_cheat_sheet_open(), screen, "close_cheat_sheet"))
                 // The window overview (Super+Tab): whether it is up and what it has selected.
@@ -2084,6 +2087,8 @@ pub fn publish(
     // The network mark's popover as data: set_wifi, disconnect_network, connect_wifi. See
     // `control_network`, which also says why no action there takes a password.
     let surface = crate::control_network::actions(surface, ui);
+    // Suspend, hibernate, log out, restart and shut down: the power popover's acts, graded.
+    let surface = crate::control_power::actions(surface, ui);
     // The window overview (Super+Tab): open_switcher, switcher_move, switcher_commit, switcher_cancel.
     let surface = crate::control_switcher::actions(surface, ui);
     // An agent's commands, each in a terminal of its own in its pane — agent_run, agent_job,

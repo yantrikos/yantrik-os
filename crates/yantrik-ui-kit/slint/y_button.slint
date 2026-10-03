@@ -39,6 +39,8 @@ export component YButton inherits Rectangle {
     // used to be the accessibility action, which is closed here on purpose.
     in property <bool> pointer-only: false;
     callback clicked();
+    // Put keyboard focus on the button, for an owner that decides where focus starts.
+    public function focus-button() { keyboard.focus(); }
     forward-focus: keyboard;
     accessible-role: button;
     accessible-label: root.label;

@@ -47,6 +47,9 @@ export component YPopover inherits Rectangle {
     in property <string> label: "";
     in property <length> content-spacing: Theme.sp-3;
     callback close-requested();
+    // A key the content did not use, before Esc is looked at: for a panel that moves focus with
+    // the arrow keys. Return accept to say it was used. Unhandled, it answers reject.
+    callback key-unhandled(KeyEvent) -> EventResult;
 
     out property <length> panel-x: Math.max(Theme.popover-margin,
         Math.min(root.anchor-x - root.panel-width / 2, root.screen-width - root.panel-width - Theme.popover-margin));
@@ -86,7 +89,9 @@ export component YPopover inherits Rectangle {
         height: root.panel-h;
         opacity: root.t;
         border-radius: Theme.popover-radius;
-        background: Theme.bg-elevated;
+        // The charcoal panel the colour system draws every popover on; the tiles and sliders
+        // inside are made to stand out from exactly this (#151A1E).
+        background: Theme.panel-solid;
         border-width: Theme.hairline;
         border-color: Theme.border-card;
         drop-shadow-blur: Theme.shadow-lg-blur;
@@ -104,7 +109,7 @@ export component YPopover inherits Rectangle {
             enabled: root.open;
             key-pressed(event) => {
                 if (event.text == Key.Escape) { root.close-requested(); return accept; }
-                reject
+                root.key-unhandled(event)
             }
 
             layout := VerticalLayout {

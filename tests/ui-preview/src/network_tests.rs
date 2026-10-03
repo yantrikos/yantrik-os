@@ -184,8 +184,9 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         draw();
     }
 
-    // Quick Settings on the wired VM: no Wi-Fi tile. VM 520 showed "WiFi, Disconnected, Tap to
-    // connect" there while it was wired and online, which is a reading nobody had taken.
+    // Quick Settings on the wired VM: a Wired tile, no Wi-Fi switch. VM 520 showed "WiFi,
+    // Disconnected, Tap to connect" there while it was wired and online, which is a reading
+    // nobody had taken.
     ui.set_quick_settings_open(true);
     park();
     let qs_vm = draw();
@@ -195,8 +196,9 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     park();
     let qs_with_radio = draw();
     assert!(
-        changed(&qs_vm, &qs_with_radio, (450, 830), (50, 130)) > 2_000,
-        "with a Wi-Fi device the tile is drawn at the top of Quick Settings; without one there is none"
+        // The network tile, first of the machine's tiles in the panel hanging from the right.
+        changed(&qs_vm, &qs_with_radio, (920, 1090), (216, 272)) > 2_000,
+        "with a Wi-Fi device the network tile is the lit Wi-Fi switch; without one it is the plain Wired tile"
     );
     save(&qs_with_radio, &path("laptop-quick-settings"))?;
     g.set_wifi_present(false);

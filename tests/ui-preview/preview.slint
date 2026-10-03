@@ -470,6 +470,8 @@ export component AgentsProbe inherits Window {
 // so this is app.slint's App — every screen, the status bar, the taskbar and the panel — filled
 // with fixture data by src/mind_panel_tests.rs. Callbacks are recorded there, never acted on.
 export { App } from "app.slint";
+// The volume and brightness pill, in its own window: osd_tests.rs draws it.
+export { OsdWindow } from "osd_window.slint";
 export { NetworkState, NetworkRow } from "components/bar/network_state.slint";
 export { OsdWindow } from "osd_window.slint";
 export { TodayState, TodayEvent } from "components/bar/today_state.slint";

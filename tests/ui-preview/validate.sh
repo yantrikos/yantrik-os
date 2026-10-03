@@ -39,7 +39,7 @@ run target/ui-validation/kit-controls.png 880 460 verify-kit-controls
 run target/ui-validation/colour-system.png 720 360 verify-colour-system
 run target/ui-validation/bar-overlays.png 1280 800 verify-bar-overlays
 run target/ui-validation/cheat-sheet.png 1280 800 verify-cheat-sheet
-run target/ui-validation/qs-levels.png 1280 800 verify-qs-levels
+run target/ui-validation/quick-settings.png 1280 800 verify-quick-settings
 run target/ui-validation/osd.png 1280 800 verify-osd
 run target/ui-validation/battery.png 1280 800 verify-battery
 run target/ui-validation/network.png 1280 800 verify-network

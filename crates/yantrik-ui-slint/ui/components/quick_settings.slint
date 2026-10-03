@@ -1,387 +1,321 @@
-// Quick Settings — glassmorphic slide-down panel.
-// Holographic WiFi toggle, glowing sliders, battery visualization.
-
+// Quick Settings, right-anchored under the bar's settings mark.
+//
+// Laid out like the reference render (design/renders/01): the minds first (Mind mode, Private,
+// Mind View), then the machine (network, Do Not Disturb, Dark style, Power mode, Bluetooth), the
+// two sliders, and a footer (battery, Screenshot, Settings, Lock, Power). Every control is a kit
+// control: YToggleTile for the tiles (a split tile's body and its chevron are separate targets),
+// YSlider for the levels, YIndicator for the footer.
+//
+// Nothing is invented. A control for hardware or a service that is not there is not drawn, and the
+// rest close up: a VM has no battery and no backlight, so it has neither the battery text nor the
+// brightness slider; a machine with no power-profiles-daemon has no Power mode tile; Bluetooth is
+// drawn only when `bluetooth-present` says an adapter exists (nothing sets it yet: the Bluetooth
+// story, PR 2.3, wires it).
+//
+// Each tile's subtitle is the true state in words, taken from the same properties the bar and the
+// settings read. A tile's `on` is the real state; pressing says `toggled` and the owner changes the
+// real thing, so the tile can never show a state the machine is not in.
+//
+// Keyboard. Arrow keys move between controls (Down and Right go on, Up and Left go back), Space or
+// Enter presses the focused one, Esc closes. A split tile's chevron is reached with Tab. A slider
+// uses the arrows for its own level, so Tab leaves it. Opening starts with nothing focused; the
+// first arrow lands on the first control.
 import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
+import { YPopover } from "y_popover.slint";
+import { QsTile, QsSlider, QsFooterButton } from "quick_settings_parts.slint";
 
-export component QuickSettings inherits Rectangle {
-    in-out property <bool> is-open: false;
-    in property <bool> battery-available: false;
-    in property <int> battery-level: 100;
-    in property <bool> battery-charging: false;
-    in property <bool> wifi-connected: false;
-    // Whether there is a Wi-Fi device at all, and whether its radio is on. Neither is
-    // `wifi-connected`, which says a network is joined.
+export component QuickSettings inherits YPopover {
+    // Minds
+    in property <string> mind-mode: "ask";
+    in property <string> mind-mode-label: "Ask";
+    in property <bool> private-mode: false;
+    in property <bool> mind-view-on: true;
+    callback mind-mode-chosen(string);
+    callback mind-mode-details();
+    callback private-chosen(bool);
+    callback mind-view-chosen(bool);
+
+    // Network: a Wi-Fi tile where there is a Wi-Fi device, otherwise a Wired tile for a live
+    // cable, otherwise nothing.
     in property <bool> wifi-present: false;
     in property <bool> wifi-radio-on: false;
+    in property <bool> wifi-connected: false;
     in property <string> wifi-ssid: "";
-    // The machine's real levels. A row for hardware that is not there (a VM has no backlight,
-    // a box may have no audio server) is not drawn at all, rather than drawn with a made-up value.
+    in property <bool> wired-online: false;
+    callback toggle-wifi();
+    callback network-details();
+
+    // The machine
+    in property <bool> dnd-on: false;
+    in property <bool> dark-on: true;
+    // "" when there is no power-profiles-daemon.
+    in property <string> power-profile: "";
+    in property <bool> power-performance-offered: false;
+    in property <bool> bluetooth-present: false;
+    in property <bool> bluetooth-on: false;
+    callback toggle-dnd();
+    callback toggle-dark();
+    callback power-profile-chosen(string);
+    callback toggle-bluetooth();
+    callback bluetooth-details();
+
+    // The machine's real levels. A row for hardware that is not there is not drawn.
     in property <bool> brightness-available: false;
     in-out property <int> brightness-level: 0;
     in property <bool> volume-available: false;
     in property <bool> volume-muted: false;
     in-out property <int> volume-level: 0;
-
-    callback toggle-wifi();
     callback brightness-changed(int);
     callback volume-changed(int);
     callback volume-mute-toggled();
-    callback close();
 
-    width: 100%;
-    height: 100%;
+    // Footer
+    in property <bool> battery-available: false;
+    in property <int> battery-level: 100;
+    in property <bool> battery-charging: false;
+    callback screenshot();
+    callback settings();
+    callback lock();
+    callback power();
 
-    // Backdrop (click to close)
-    if root.is-open : TouchArea {
-        width: 100%;
-        height: 100%;
-        clicked => { root.is-open = false; root.close(); }
+    label: "Quick Settings";
+    content-spacing: Theme.sp-3;
 
+    // ── Which control is current (the arrow keys' cursor) ──
+    // Slots: 0 Mind mode, 1 Private, 2 Mind View, 3 network, 4 Do Not Disturb, 5 Dark style,
+    // 6 Power mode, 7 Bluetooth, 8 volume, 9 brightness, 10 Screenshot, 11 Settings, 12 Lock, 13 Power.
+    in-out property <int> cursor: -1;
+    changed open => { if (self.open) { self.cursor = -1; } }
+
+    property <bool> net-shown: root.wifi-present || root.wired-online;
+    property <bool> power-mode-shown: root.power-profile != "";
+    pure function present(i: int) -> bool {
+        i == 3 ? root.net-shown
+        : i == 6 ? root.power-mode-shown
+        : i == 7 ? root.bluetooth-present
+        : i == 8 ? root.volume-available
+        : i == 9 ? root.brightness-available
+        : true
+    }
+    // Slint has no loops: the next and previous present slot are an unrolled chain.
+    pure function next-from(c: int) -> int {
+        (c + (1)) >= 0 && (c + (1)) < 14 && root.present(c + (1)) ? c + (1) : (c + (2)) >= 0 && (c + (2)) < 14 && root.present(c + (2)) ? c + (2) : (c + (3)) >= 0 && (c + (3)) < 14 && root.present(c + (3)) ? c + (3) : (c + (4)) >= 0 && (c + (4)) < 14 && root.present(c + (4)) ? c + (4) : (c + (5)) >= 0 && (c + (5)) < 14 && root.present(c + (5)) ? c + (5) : (c + (6)) >= 0 && (c + (6)) < 14 && root.present(c + (6)) ? c + (6) : (c + (7)) >= 0 && (c + (7)) < 14 && root.present(c + (7)) ? c + (7) : (c + (8)) >= 0 && (c + (8)) < 14 && root.present(c + (8)) ? c + (8) : (c + (9)) >= 0 && (c + (9)) < 14 && root.present(c + (9)) ? c + (9) : (c + (10)) >= 0 && (c + (10)) < 14 && root.present(c + (10)) ? c + (10) : (c + (11)) >= 0 && (c + (11)) < 14 && root.present(c + (11)) ? c + (11) : (c + (12)) >= 0 && (c + (12)) < 14 && root.present(c + (12)) ? c + (12) : (c + (13)) >= 0 && (c + (13)) < 14 && root.present(c + (13)) ? c + (13) : (c + (14)) >= 0 && (c + (14)) < 14 && root.present(c + (14)) ? c + (14) : c
+    }
+    pure function prev-from(c: int) -> int {
+        (c + (-1)) >= 0 && (c + (-1)) < 14 && root.present(c + (-1)) ? c + (-1) : (c + (-2)) >= 0 && (c + (-2)) < 14 && root.present(c + (-2)) ? c + (-2) : (c + (-3)) >= 0 && (c + (-3)) < 14 && root.present(c + (-3)) ? c + (-3) : (c + (-4)) >= 0 && (c + (-4)) < 14 && root.present(c + (-4)) ? c + (-4) : (c + (-5)) >= 0 && (c + (-5)) < 14 && root.present(c + (-5)) ? c + (-5) : (c + (-6)) >= 0 && (c + (-6)) < 14 && root.present(c + (-6)) ? c + (-6) : (c + (-7)) >= 0 && (c + (-7)) < 14 && root.present(c + (-7)) ? c + (-7) : (c + (-8)) >= 0 && (c + (-8)) < 14 && root.present(c + (-8)) ? c + (-8) : (c + (-9)) >= 0 && (c + (-9)) < 14 && root.present(c + (-9)) ? c + (-9) : (c + (-10)) >= 0 && (c + (-10)) < 14 && root.present(c + (-10)) ? c + (-10) : (c + (-11)) >= 0 && (c + (-11)) < 14 && root.present(c + (-11)) ? c + (-11) : (c + (-12)) >= 0 && (c + (-12)) < 14 && root.present(c + (-12)) ? c + (-12) : (c + (-13)) >= 0 && (c + (-13)) < 14 && root.present(c + (-13)) ? c + (-13) : (c + (-14)) >= 0 && (c + (-14)) < 14 && root.present(c + (-14)) ? c + (-14) : c
+    }
+    key-unhandled(event) => {
+        if (!root.open) { return reject; }
+        if (event.text == Key.DownArrow || event.text == Key.RightArrow) { root.cursor = root.next-from(root.cursor); return accept; }
+        if (event.text == Key.UpArrow || event.text == Key.LeftArrow) { root.cursor = root.prev-from(root.cursor); return accept; }
+        reject
+    }
+
+    // ── Words ──
+    property <string> mode-words: root.mind-mode-label;
+    property <string> wifi-words: !root.wifi-radio-on ? "Off" : root.wifi-connected && root.wifi-ssid != "" ? root.wifi-ssid : "Not connected";
+    property <string> profile-words: root.power-profile == "power-saver" ? "Power saver"
+        : root.power-profile == "performance" ? "Performance" : "Balanced";
+    // Balanced is the daemon's ordinary state; the tile is lit when the person has moved off it.
+    property <string> next-profile: root.power-profile == "balanced" ? "power-saver"
+        : root.power-profile == "power-saver" && root.power-performance-offered ? "performance" : "balanced";
+
+    // Private's tile is this wide and Mind mode's takes the rest of the row.
+    property <length> private-w: 136px;
+
+    // ── Minds ──
+    HorizontalLayout {
+        height: Theme.sp-4;
+        spacing: Theme.sp-2;
+        // Teal is the minds' colour and nothing else's (the colour roles in the minds spec).
         Rectangle {
-            width: 100%;
-            height: 100%;
-            background: Theme.overlay-backdrop;
+            width: Theme.sp-2 - 2px;
+            height: self.width;
+            y: (parent.height - self.height) / 2;
+            border-radius: self.width / 2;
+            background: Theme.cyan;
+        }
+        Text {
+            text: "Minds";
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            font-weight: Theme.fw-body-strong;
+            vertical-alignment: center;
+        }
+    }
+    Rectangle {
+        height: 2 * Theme.tile-h + Theme.sp-2;
+        // Mind mode's name and its chevron need more room than Private's, so the pair is 184 and
+        // the rest, not half and half.
+        QsTile {
+            slot: 0; cursor: root.cursor;
+            x: 0; y: 0; width: parent.width - self.x - Theme.sp-2 - root.private-w;
+            icon: Icons.spark;
+            title: "Mind mode";
+            subtitle: root.mode-words;
+            // Lit when the minds may only look. The body steps between Plan and Ask, never
+            // upward; the chevron opens the full choice (Auto and the bypasses need their own
+            // confirmation there).
+            on: root.mind-mode == "plan";
+            split: true;
+            toggled => { root.mind-mode-chosen(root.mind-mode == "plan" ? "ask" : "plan"); }
+            details-requested => { root.mind-mode-details(); }
+            focus-arrived(s) => { root.cursor = s; }
+        }
+        QsTile {
+            slot: 1; cursor: root.cursor;
+            x: parent.width - self.width; y: 0; width: root.private-w;
+            icon: Icons.shield;
+            title: "Private";
+            subtitle: root.private-mode ? "Minds off" : "Off";
+            on: root.private-mode;
+            toggled => { root.private-chosen(!root.private-mode); }
+            focus-arrived(s) => { root.cursor = s; }
+        }
+        QsTile {
+            slot: 2; cursor: root.cursor;
+            x: 0; y: Theme.tile-h + Theme.sp-2; width: parent.width;
+            icon: Icons.eye;
+            title: "Mind View";
+            subtitle: root.mind-view-on ? "Minds' apps open in their own view" : "Minds' apps open on this desktop";
+            on: root.mind-view-on;
+            toggled => { root.mind-view-chosen(!root.mind-view-on); }
+            focus-arrived(s) => { root.cursor = s; }
         }
     }
 
-    // Panel — glassmorphic, slides down from status bar
-    if root.is-open : Rectangle {
-        x: (parent.width - 380px) / 2;
-        y: Theme.status-bar-height;
-        width: 380px;
-        height: qs-content.preferred-height;
-        border-radius: 0px;
-        border-bottom-left-radius: 20px;
-        border-bottom-right-radius: 20px;
-        clip: true;
+    // ── The machine: a two-column flow that closes up around what is absent ──
+    property <int> i-net: 0;
+    property <int> i-dnd: root.net-shown ? 1 : 0;
+    property <int> i-dark: root.i-dnd + 1;
+    property <int> i-power: root.i-dark + 1;
+    property <int> i-bt: root.i-power + (root.power-mode-shown ? 1 : 0);
+    property <int> flow-count: root.i-bt + (root.bluetooth-present ? 1 : 0);
+    property <int> flow-rows: Math.floor((root.flow-count + 1) / 2);
+    Rectangle {
+        height: root.flow-rows * Theme.tile-h + (root.flow-rows - 1) * Theme.sp-2;
+        property <length> col-w: (self.width - Theme.sp-2) / 2;
+        pure function col-x(i: int) -> length { mod(i, 2) == 0 ? 0px : self.col-w + Theme.sp-2 }
+        pure function row-y(i: int) -> length { Math.floor(i / 2) * (Theme.tile-h + Theme.sp-2) }
 
-        // Glass background. Slint's software renderer (GPU-less machines, VM 520) paints a gradient
-        // fill as a square inside the rounded border (#172), so a rounded panel's fill is solid.
-        background: Theme.bg-deep.transparentize(19%);
+        if root.net-shown : QsTile {
+            slot: 3; cursor: root.cursor;
+            x: parent.col-x(root.i-net); y: parent.row-y(root.i-net); width: parent.col-w;
+            icon: root.wifi-present ? Icons.wifi : Icons.network;
+            title: root.wifi-present ? "Wi-Fi" : "Wired";
+            subtitle: root.wifi-present ? root.wifi-words : "Connected";
+            on: root.wifi-present && root.wifi-radio-on;
+            split: true;
+            // A cable has no switch: its body opens the same list as its chevron.
+            toggled => { if (root.wifi-present) { root.toggle-wifi(); } else { root.network-details(); } }
+            details-requested => { root.network-details(); }
+            focus-arrived(s) => { root.cursor = s; }
+        }
+        QsTile {
+            slot: 4; cursor: root.cursor;
+            x: parent.col-x(root.i-dnd); y: parent.row-y(root.i-dnd); width: parent.col-w;
+            icon: Icons.moon;
+            title: "Do Not Disturb";
+            subtitle: root.dnd-on ? "On" : "Off";
+            on: root.dnd-on;
+            toggled => { root.toggle-dnd(); }
+            focus-arrived(s) => { root.cursor = s; }
+        }
+        QsTile {
+            slot: 5; cursor: root.cursor;
+            x: parent.col-x(root.i-dark); y: parent.row-y(root.i-dark); width: parent.col-w;
+            icon: Icons.contrast;
+            title: "Dark style";
+            subtitle: root.dark-on ? "On" : "Off";
+            on: root.dark-on;
+            toggled => { root.toggle-dark(); }
+            focus-arrived(s) => { root.cursor = s; }
+        }
+        if root.power-mode-shown : QsTile {
+            slot: 6; cursor: root.cursor;
+            x: parent.col-x(root.i-power); y: parent.row-y(root.i-power); width: parent.col-w;
+            icon: Icons.bolt;
+            title: "Power mode";
+            subtitle: root.profile-words;
+            on: root.power-profile != "balanced";
+            toggled => { root.power-profile-chosen(root.next-profile); }
+            focus-arrived(s) => { root.cursor = s; }
+        }
+        if root.bluetooth-present : QsTile {
+            slot: 7; cursor: root.cursor;
+            x: parent.col-x(root.i-bt); y: parent.row-y(root.i-bt); width: parent.col-w;
+            icon: Icons.bluetooth;
+            title: "Bluetooth";
+            subtitle: root.bluetooth-on ? "On" : "Off";
+            on: root.bluetooth-on;
+            split: true;
+            toggled => { root.toggle-bluetooth(); }
+            details-requested => { root.bluetooth-details(); }
+            focus-arrived(s) => { root.cursor = s; }
+        }
+    }
 
-        // Glass border
-        border-width: 1px;
-        border-color: @linear-gradient(180deg,
-            Theme.border-strong 0%,
-            Theme.separator 100%
-        );
-
-        drop-shadow-blur: 32px;
-        drop-shadow-color: Theme.overlay-backdrop;
-
-        // Bottom holographic edge
-        Rectangle {
-            y: parent.height - 1px;
+    // ── Levels ──
+    if root.volume-available : Rectangle {
+        height: Theme.h-regular;
+        QsSlider {
+            slot: 8; cursor: root.cursor;
             width: 100%;
-            height: 1px;
-            background: @linear-gradient(90deg,
-                transparent 10%,
-                Theme.cyan-glow 50%,
-                transparent 90%
-            );
-            opacity: 0.4;
+            label: "Volume";
+            icon: root.volume-muted ? Icons.volume-off : Icons.volume;
+            value: root.volume-level;
+            changed(v) => { root.volume-level = v; root.volume-changed(v); }
+            focus-arrived(s) => { root.cursor = s; }
         }
+        // The speaker mutes, as the media key does. Over the slider's icon only: the track starts
+        // to its right.
+        TouchArea {
+            x: 0; y: 0;
+            width: Theme.bar-icon-size + Theme.sp-2;
+            height: parent.height;
+            mouse-cursor: pointer;
+            accessible-role: button;
+            accessible-label: root.volume-muted ? "Unmute" : "Mute";
+            accessible-action-default => { root.volume-mute-toggled(); }
+            clicked => { root.volume-mute-toggled(); }
+        }
+    }
+    if root.brightness-available : QsSlider {
+        slot: 9; cursor: root.cursor;
+        label: "Brightness";
+        icon: Icons.sun;
+        value: root.brightness-level;
+        changed(v) => { root.brightness-level = v; root.brightness-changed(v); }
+        focus-arrived(s) => { root.cursor = s; }
+    }
 
-        qs-content := VerticalLayout {
-            padding: 20px;
-            spacing: 16px;
-
-            // -- Wi-Fi radio --
-            // The tile is the radio, and says so: pressing it switches Wi-Fi on or off, the same
-            // act as the network popover's Wi-Fi tile (`NetworkState.set-radio`). It used to run
-            // `nmcli radio wifi off` while its caption promised a disconnect. Leaving a network is
-            // the popover's Disconnect button. Drawn only where there is a Wi-Fi device: a
-            // switch for hardware that is not there is a lie (the wired VM has none).
-            if root.wifi-present : HorizontalLayout {
-                spacing: 14px;
-
-                TouchArea {
-                    width: 68px;
-                    height: 56px;
-                    clicked => { root.toggle-wifi(); }
-
-                    Rectangle {
-                        width: 100%;
-                        height: 100%;
-                        border-radius: 14px;
-                        // Solid: a gradient fill on a rounded tile draws square corners under
-                        // the software renderer (#172).
-                        background: root.wifi-radio-on ? Theme.tint-cyan : Theme.bg-deep;
-                        border-width: 1px;
-                        border-color: root.wifi-radio-on ? Theme.cyan-dim : Theme.separator;
-                        drop-shadow-blur: root.wifi-radio-on ? 8px : 0;
-                        drop-shadow-color: Theme.cyan-glow;
-
-                        VerticalLayout {
-                            alignment: center;
-                            spacing: 3px;
-
-                            // WiFi icon (concentric arcs)
-                            Rectangle {
-                                width: 22px; height: 18px;
-                                x: (parent.width - 22px) / 2;
-                                background: transparent;
-
-                                Rectangle {
-                                    x: 3px; y: 0;
-                                    width: 16px; height: 16px;
-                                    border-radius: 8px;
-                                    border-width: 2px;
-                                    border-color: root.wifi-radio-on ? Theme.cyan : Theme.text-dim;
-                                    background: transparent;
-                                    opacity: root.wifi-radio-on ? 0.8 : 0.3;
-                                }
-                                Rectangle {
-                                    x: 6px; y: 5px;
-                                    width: 10px; height: 10px;
-                                    border-radius: 5px;
-                                    border-width: 2px;
-                                    border-color: root.wifi-radio-on ? Theme.cyan : Theme.text-dim;
-                                    background: transparent;
-                                    opacity: root.wifi-radio-on ? 0.6 : 0.2;
-                                }
-                                Rectangle {
-                                    x: 9px; y: 11px;
-                                    width: 4px; height: 4px;
-                                    border-radius: 2px;
-                                    background: root.wifi-radio-on ? Theme.cyan : Theme.text-dim;
-                                    drop-shadow-blur: root.wifi-radio-on ? 4px : 0;
-                                    drop-shadow-color: Theme.cyan-glow;
-                                }
-                            }
-                            Text {
-                                text: "WiFi";
-                                color: root.wifi-radio-on ? Theme.text-primary : Theme.text-dim;
-                                font-size: Theme.fs-micro;
-                                font-weight: 600;
-                                horizontal-alignment: center;
-                            }
-                        }
-                    }
-                }
-
-                VerticalLayout {
-                    alignment: center;
-                    horizontal-stretch: 1;
-
-                    Text {
-                        text: !root.wifi-radio-on ? "Wi-Fi is off"
-                            : root.wifi-connected ? (root.wifi-ssid != "" ? root.wifi-ssid : "Connected")
-                            : "Not connected";
-                        color: Theme.text-primary;
-                        font-size: Theme.font-body;
-                    }
-                    Text {
-                        text: root.wifi-radio-on ? "Tap to turn Wi-Fi off" : "Tap to turn Wi-Fi on";
-                        color: Theme.text-dim;
-                        font-size: Theme.fs-micro;
-                    }
-                }
+    // ── Footer ──
+    Rectangle { height: Theme.hairline; background: Theme.separator; }
+    HorizontalLayout {
+        height: Theme.h-regular;
+        spacing: Theme.sp-1;
+        if root.battery-available : HorizontalLayout {
+            horizontal-stretch: 1;
+            spacing: Theme.sp-2;
+            alignment: start;
+            Icon {
+                commands: Icons.battery;
+                size: Theme.bar-icon-size;
+                tint: Theme.text-secondary;
+                y: (parent.height - self.height) / 2;
             }
-
-            if root.wifi-present : Rectangle { height: 1px; background: Theme.separator; }
-
-            // -- Brightness slider --
-            if root.brightness-available : VerticalLayout {
-                spacing: 8px;
-
-                HorizontalLayout {
-                    Text {
-                        text: "Brightness";
-                        color: Theme.text-secondary;
-                        font-size: Theme.font-small;
-                        horizontal-stretch: 1;
-                        vertical-alignment: center;
-                    }
-                    Text {
-                        text: root.brightness-level + "%";
-                        color: Theme.amber;
-                        font-size: Theme.font-small;
-                        font-weight: 600;
-                    }
-                }
-
-                TouchArea {
-                    width: 100%;
-                    height: 28px;
-                    moved => {
-                        if self.pressed {
-                            root.brightness-level = max(5, min(100,
-                                Math.round(self.mouse-x / self.width * 100)));
-                            root.brightness-changed(root.brightness-level);
-                        }
-                    }
-                    clicked => {
-                        root.brightness-level = max(5, min(100,
-                            Math.round(self.mouse-x / self.width * 100)));
-                        root.brightness-changed(root.brightness-level);
-                    }
-
-                    Rectangle {
-                        y: (parent.height - 6px) / 2;
-                        width: 100%;
-                        height: 6px;
-                        border-radius: 3px;
-                        background: Theme.bg-deep.transparentize(96%);
-
-                        Rectangle {
-                            width: max(0px, parent.width * root.brightness-level / 100);
-                            height: 100%;
-                            border-radius: 3px;
-                            // Solid: a gradient fill on a rounded bar draws square ends under the
-                            // software renderer (#172).
-                            background: Theme.amber;
-                            drop-shadow-blur: 4px;
-                            drop-shadow-color: Theme.amber-glow;
-                        }
-
-                        Rectangle {
-                            x: max(0px, min(parent.width - 16px,
-                                parent.width * root.brightness-level / 100 - 8px));
-                            y: -5px;
-                            width: 16px;
-                            height: 16px;
-                            border-radius: 8px;
-                            background: Theme.amber;
-                            border-width: 2px;
-                            border-color: Theme.amber-light;
-                            drop-shadow-blur: 8px;
-                            drop-shadow-color: Theme.amber-glow;
-                        }
-                    }
-                }
-            }
-
-            // -- Volume slider --
-            if root.volume-available : VerticalLayout {
-                spacing: 8px;
-
-                HorizontalLayout {
-                    Text {
-                        text: "Volume";
-                        color: Theme.text-secondary;
-                        font-size: Theme.font-small;
-                        horizontal-stretch: 1;
-                        vertical-alignment: center;
-                    }
-                    // The level, or "Muted"; pressing it mutes and unmutes.
-                    Rectangle {
-                        width: 56px;
-                        Text {
-                            width: 100%;
-                            horizontal-alignment: right;
-                            text: root.volume-muted ? "Muted" : root.volume-level + "%";
-                            color: root.volume-muted ? Theme.text-dim : Theme.cyan;
-                            font-size: Theme.font-small;
-                            font-weight: 600;
-                        }
-                        TouchArea {
-                            clicked => { root.volume-mute-toggled(); }
-                        }
-                    }
-                }
-
-                TouchArea {
-                    width: 100%;
-                    height: 28px;
-                    moved => {
-                        if self.pressed {
-                            root.volume-level = max(0, min(100,
-                                Math.round(self.mouse-x / self.width * 100)));
-                            root.volume-changed(root.volume-level);
-                        }
-                    }
-                    clicked => {
-                        root.volume-level = max(0, min(100,
-                            Math.round(self.mouse-x / self.width * 100)));
-                        root.volume-changed(root.volume-level);
-                    }
-
-                    Rectangle {
-                        y: (parent.height - 6px) / 2;
-                        width: 100%;
-                        height: 6px;
-                        border-radius: 3px;
-                        background: Theme.bg-deep.transparentize(96%);
-
-                        Rectangle {
-                            width: max(0px, parent.width * root.volume-level / 100);
-                            height: 100%;
-                            border-radius: 3px;
-                            // Solid: a gradient fill on a rounded bar draws square ends under the
-                            // software renderer (#172).
-                            background: Theme.cyan;
-                            drop-shadow-blur: 4px;
-                            drop-shadow-color: Theme.cyan-glow;
-                        }
-
-                        Rectangle {
-                            x: max(0px, min(parent.width - 16px,
-                                parent.width * root.volume-level / 100 - 8px));
-                            y: -5px;
-                            width: 16px;
-                            height: 16px;
-                            border-radius: 8px;
-                            background: Theme.cyan;
-                            border-width: 2px;
-                            border-color: Theme.cyan-light;
-                            drop-shadow-blur: 8px;
-                            drop-shadow-color: Theme.cyan-glow;
-                        }
-                    }
-                }
-            }
-
-            Rectangle { height: 1px; background: Theme.separator; }
-
-            // -- Battery info — holographic (hidden when no battery) --
-            HorizontalLayout {
-                visible: root.battery-available;
-                spacing: 10px;
-
-                // Battery icon with glow fill
-                Rectangle {
-                    width: 32px;
-                    height: 16px;
-                    y: (parent.height - 16px) / 2;
-                    border-radius: 4px;
-                    border-width: 1px;
-                    border-color: root.battery-level <= 20 ? Theme.color-emotional : Theme.text-dim;
-
-                    Rectangle {
-                        x: 2px; y: 2px;
-                        width: max(0px, (parent.width - 6px) * root.battery-level / 100);
-                        height: parent.height - 6px;
-                        border-radius: 2px;
-                        background: root.battery-charging ? Theme.cyan :
-                                    root.battery-level <= 20 ? Theme.color-emotional :
-                                    root.battery-level <= 50 ? Theme.amber : Theme.cyan;
-                        drop-shadow-blur: 4px;
-                        drop-shadow-color: root.battery-charging ? Theme.cyan-glow :
-                                           root.battery-level <= 20 ? Theme.color-emotional.transparentize(75%) :
-                                           Theme.amber-glow;
-                    }
-
-                    Rectangle {
-                        x: parent.width;
-                        y: 4px;
-                        width: 2px;
-                        height: parent.height - 8px;
-                        border-radius: 1px;
-                        background: Theme.text-dim;
-                        opacity: 0.5;
-                    }
-                }
-
-                Text {
-                    text: root.battery-level + "%" +
-                          (root.battery-charging ? " \u{2014} Charging" : "");
-                    color: root.battery-level <= 20 ? Theme.color-emotional : Theme.text-primary;
-                    font-size: Theme.font-body;
-                    horizontal-stretch: 1;
-                    vertical-alignment: center;
-                }
+            Text {
+                text: root.battery-level + "%" + (root.battery-charging ? " · Charging" : "");
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+                vertical-alignment: center;
             }
         }
+        if !root.battery-available : Rectangle { horizontal-stretch: 1; }
+        QsFooterButton { slot: 10; cursor: root.cursor; icon: Icons.screenshot; label: "Screenshot"; clicked => { root.screenshot(); } focus-arrived(s) => { root.cursor = s; } }
+        QsFooterButton { slot: 11; cursor: root.cursor; icon: Icons.settings; label: "Settings"; clicked => { root.settings(); } focus-arrived(s) => { root.cursor = s; } }
+        QsFooterButton { slot: 12; cursor: root.cursor; icon: Icons.lock; label: "Lock"; clicked => { root.lock(); } focus-arrived(s) => { root.cursor = s; } }
+        QsFooterButton { slot: 13; cursor: root.cursor; icon: Icons.power; label: "Power"; clicked => { root.power(); } focus-arrived(s) => { root.cursor = s; } }
     }
 }

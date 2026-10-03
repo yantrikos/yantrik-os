@@ -20,6 +20,8 @@ pub mod latest;
 mod battery;
 mod battery_sysfs;
 pub mod power_profile;
+/// What logind offers on this machine (Hibernate), for the power menu.
+pub mod login1;
 mod files;
 #[cfg(target_os = "linux")]
 mod idle;

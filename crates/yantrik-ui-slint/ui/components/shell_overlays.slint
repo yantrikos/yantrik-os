@@ -1,5 +1,5 @@
 // The overlays the bar opens: the network popover, Today (the clock's), Quick Settings, the power
-// menu and the clipboard panel, and the keyboard cheat sheet (Super+/).
+// popover and the clipboard panel, and the keyboard cheat sheet (Super+/).
 //
 // They stood inside DesktopScreen, which is only on screen while the desktop is. The bar is the
 // shell's and is drawn above every screen, so its network, settings and power buttons toggled a
@@ -36,6 +36,23 @@ export component ShellOverlays inherits Rectangle {
     callback brightness-changed(int);
     callback volume-changed(int);
     callback volume-mute-toggled();
+    // The minds' tiles: the mode, Private, and where a mind's apps open. All of them are the
+    // app's own state and callbacks, the same ones the bar's mode chip and Settings use.
+    in property <string> mind-mode: "ask";
+    in property <string> mind-mode-label: "Ask";
+    in property <bool> private-mode: false;
+    in property <bool> mind-view-on: true;
+    callback mind-mode-chosen(string);
+    callback mind-mode-details();
+    callback mind-private-chosen(bool);
+    callback mind-view-chosen(bool);
+    // The machine's tiles. Do Not Disturb is Today's own `dnd-mode` and `toggle-dnd-mode`.
+    in property <bool> dark-on: true;
+    callback toggle-dark();
+    // The footer.
+    callback take-screenshot();
+    callback open-settings();
+    callback lock-screen();
 
     // Battery popover: level, state, time and the power profile, under the bar's battery.
     in-out property <bool> battery-popover-open: false;
@@ -61,8 +78,11 @@ export component ShellOverlays inherits Rectangle {
     callback notification-tapped(string);
     callback notification-action(string, string);
 
-    // Power menu
+    // Power popover: hangs from the right edge, where Quick Settings does.
     in-out property <bool> power-menu-open: false;
+    in property <bool> power-can-hibernate: false;
+    in property <int> power-minds-working: 0;
+    callback power-refresh();
     callback power-action(string);
 
     // Clipboard panel
@@ -103,27 +123,57 @@ export component ShellOverlays inherits Rectangle {
     }
 
     QuickSettings {
-        width: 100%;
-        height: 100%;
-        is-open <=> root.quick-settings-open;
-        battery-available: root.battery-available;
-        battery-level: root.battery-level;
-        battery-charging: root.battery-charging;
-        brightness-available: root.brightness-available;
-        // The tile is the Wi-Fi radio, from the same reading the popover shows.
+        open: root.quick-settings-open;
+        // Right-anchored: the panel hangs from the far right of the bar and is clamped inside
+        // the screen, so any anchor past the right edge lands it against the margin.
+        anchor-x: root.width;
+        anchor-y: Theme.status-bar-height;
+        close-requested => { root.quick-settings-open = false; }
+
+        mind-mode: root.mind-mode;
+        mind-mode-label: root.mind-mode-label;
+        private-mode: root.private-mode;
+        mind-view-on: root.mind-view-on;
+        mind-mode-chosen(m) => { root.mind-mode-chosen(m); }
+        mind-mode-details => { root.quick-settings-open = false; root.mind-mode-details(); }
+        private-chosen(on) => { root.mind-private-chosen(on); }
+        mind-view-chosen(on) => { root.mind-view-chosen(on); }
+
+        // The Wi-Fi tile is the radio, from the same reading the network popover shows; its
+        // chevron opens that popover in place of this panel.
         wifi-present: NetworkState.wifi-present;
         wifi-radio-on: NetworkState.radio-on;
         wifi-connected: NetworkState.kind == "wifi" && NetworkState.online;
         wifi-ssid: NetworkState.ssid;
+        wired-online: NetworkState.kind == "wired" && NetworkState.online;
+        toggle-wifi => { NetworkState.set-radio(!NetworkState.radio-on); }
+        network-details => { root.quick-settings-open = false; root.network-open = true; }
+
+        dnd-on: root.dnd-mode;
+        dark-on: root.dark-on;
+        power-profile: root.power-profile;
+        power-performance-offered: root.power-performance-offered;
+        toggle-dnd => { root.toggle-dnd-mode(); }
+        toggle-dark => { root.toggle-dark(); }
+        power-profile-chosen(p) => { root.set-power-profile(p); }
+
+        brightness-available: root.brightness-available;
         brightness-level <=> root.brightness-level;
         volume-available: root.volume-available;
         volume-muted: root.volume-muted;
         volume-level <=> root.volume-level;
-        toggle-wifi => { NetworkState.set-radio(!NetworkState.radio-on); }
         brightness-changed(val) => { root.brightness-changed(val); }
         volume-changed(val) => { root.volume-changed(val); }
         volume-mute-toggled => { root.volume-mute-toggled(); }
-        close => { root.quick-settings-open = false; }
+
+        battery-available: root.battery-available;
+        battery-level: root.battery-level;
+        battery-charging: root.battery-charging;
+        // Put away first, so the capture does not photograph the panel it was pressed on.
+        screenshot => { root.quick-settings-open = false; root.take-screenshot(); }
+        settings => { root.quick-settings-open = false; root.open-settings(); }
+        lock => { root.quick-settings-open = false; root.lock-screen(); }
+        power => { root.quick-settings-open = false; root.power-menu-open = true; }
     }
 
     BatteryPopover {
@@ -147,11 +197,14 @@ export component ShellOverlays inherits Rectangle {
     }
 
     PowerMenu {
-        width: 100%;
-        height: 100%;
-        is-open <=> root.power-menu-open;
+        open: root.power-menu-open;
+        anchor-x: root.width;
+        anchor-y: Theme.status-bar-height;
+        can-hibernate: root.power-can-hibernate;
+        minds-working: root.power-minds-working;
+        refresh => { root.power-refresh(); }
         power-action(action) => { root.power-action(action); }
-        close => { root.power-menu-open = false; }
+        close-requested => { root.power-menu-open = false; }
     }
 
     ClipboardPanel {

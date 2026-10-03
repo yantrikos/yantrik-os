@@ -95,11 +95,11 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         let before = draw();
         let path = |what: &str| output.replace(".png", &format!("-{what}.png"));
 
-        // Quick Settings, by the bar's own button. Its panel hangs 380px wide from the bar,
-        // centred.
+        // Quick Settings, by the bar's own button. Its panel hangs 360px wide from the bar's
+        // right edge.
         let x_qs = press_bar_for(&ui, screen, &|ui| ui.get_quick_settings_open());
         let qs = draw();
-        let panel = changed(&before, &qs, width, (460, 820), (40, 300));
+        let panel = changed(&before, &qs, width, (900, 1280), (36, 300));
         assert!(panel > 20_000, "{name}: Quick Settings is drawn over the screen: only {panel} pixels changed");
         assert_eq!(ui.get_current_screen(), screen, "{name}: opening it does not leave the screen");
         save(&qs, &path(name), width, height)?;
@@ -116,7 +116,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         ui.set_power_menu_open(true);
         park();
         let pm = draw();
-        let card = changed(&before, &pm, width, (440, 840), (200, 600));
+        let card = changed(&before, &pm, width, (900, 1280), (36, 300));
         assert!(card > 20_000, "{name}: the power menu is drawn over the screen: only {card} pixels changed");
         save(&pm, &path(&format!("{name}-power")), width, height)?;
         ui.set_power_menu_open(false);

@@ -24,7 +24,8 @@
 // Input
 //   pointer   click the body to toggle; click the chevron half for details.
 //   keyboard  Tab stops on the body, then (when split) on the chevron. Space/Enter activate
-//             whichever has focus. Right arrow on the body opens details, like the chevron.
+//             whichever has focus. Right arrow on the body opens details, like the chevron
+//             (`right-opens-details: false` leaves the arrow to the owner).
 //             The ring shows for keyboard focus only, not after a click.
 //
 // States: off (the tile fill with its border), off+hover, pressed, on (accent fill, dark text), on+hover, keyboard focus (ring),
@@ -39,8 +40,15 @@ export component YToggleTile inherits Rectangle {
     in property <bool> on: false;
     in property <bool> enabled: true;
     in property <bool> split: false;
+    // Right arrow on the body opens the details, like the chevron. A panel that moves focus with
+    // the arrow keys (Quick Settings) turns it off so Right means "next tile" there too.
+    in property <bool> right-opens-details: true;
+    // Either half has keyboard focus: for an owner that tracks where focus is.
+    out property <bool> focused: body-keys.has-focus || chevron-keys.has-focus;
     callback toggled();
     callback details-requested();
+    // Put keyboard focus on the body, for an owner that moves focus itself.
+    public function focus-body() { body-keys.focus(); }
 
     forward-focus: body-keys;
     accessible-role: none;
@@ -94,7 +102,7 @@ export component YToggleTile inherits Rectangle {
             key-pressed(event) => {
                 root.pointer-focus = false;
                 if ((event.text == " " || event.text == "\n") && !event.repeat) { root.activate-body(); return accept; }
-                if (event.text == Key.RightArrow && root.split) { root.activate-chevron(); return accept; }
+                if (event.text == Key.RightArrow && root.split && root.right-opens-details) { root.activate-chevron(); return accept; }
                 reject
             }
         }

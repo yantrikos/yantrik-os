@@ -61,6 +61,10 @@ export component YIndicator inherits Rectangle {
     out property <length> anchor-x: area.absolute-position.x + root.width / 2;
     out property <length> anchor-top: area.absolute-position.y;
     out property <length> anchor-bottom: area.absolute-position.y + root.height;
+    // Keyboard focus is on it: for an owner that tracks where focus is.
+    out property <bool> focused: keys.has-focus;
+    // Put keyboard focus on the indicator, for an owner that moves focus itself.
+    public function focus-indicator() { keys.focus(); }
 
     forward-focus: keys;
     accessible-role: button;

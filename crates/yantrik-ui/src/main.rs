@@ -52,6 +52,7 @@ mod control_switcher;
 mod alt_tab;
 mod power_status;
 mod control_network;
+mod control_power;
 mod control_installer;
 mod control_levels;
 mod control_levels_actions;

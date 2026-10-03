@@ -211,6 +211,9 @@ pub struct Working {
     pub running: usize,
     pub needs_you: usize,
     pub more: usize,
+    /// How many different minds those agents belong to: two runs of pi are one mind at work.
+    /// The power menu says "2 minds are working" from this, not from `running`.
+    pub minds: usize,
 }
 
 /// The agents at work in `store`: thinking, running a tool, waiting for the person, or with a
@@ -241,7 +244,10 @@ pub fn working(store: &Store, now: u64, cap: usize) -> Working {
             since: for_how_long(now.saturating_sub(a.since)),
         })
         .collect();
-    Working { more: at_work.len() - rows.len(), running: at_work.len(), needs_you, rows }
+    let mut names: Vec<String> = at_work.iter().map(|a| a.meta.mind.trim().to_lowercase()).collect();
+    names.sort();
+    names.dedup();
+    Working { more: at_work.len() - rows.len(), running: at_work.len(), needs_you, minds: names.len(), rows }
 }
 
 /// "just now", "40s", "2m", "1h 5m" — the Agents screen's words for how long a state has held.
@@ -961,6 +967,8 @@ mod tests {
         assert_eq!(w.running, 7);
         assert_eq!(w.more, 3);
         assert_eq!(w.rows[0].id, "deepseek:main", "the one waiting on the person is never pushed off the list");
+        // Seven agents at work, but two minds: deepseek, and pi six times over.
+        assert_eq!(w.minds, 2, "pi's seven runs are one mind, deepseek is the other");
     }
 
     #[test]

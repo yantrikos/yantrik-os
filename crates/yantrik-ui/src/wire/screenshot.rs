@@ -5,13 +5,21 @@
 use crate::app_context::AppContext;
 use crate::App;
 
-/// Wire screenshot callbacks. Currently no Slint callbacks to register,
-/// but follows the wire module pattern for future UI integration
-/// (e.g. a screenshot button in quick settings).
-pub fn wire(_ui: &App, _ctx: &AppContext) {
-    // Palette-driven — capture is triggered through the public `take_screenshot()` below.
-    //
-    // If a Slint callback is added later (e.g. `on_take_screenshot`), wire it here.
+/// How long Quick Settings' Screenshot waits after the panel is put away: its fade is 120 ms and
+/// a capture that started inside it would photograph the panel it was pressed on.
+const PANEL_FADE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Wire the screenshot callbacks. The palette calls `take_screenshot()` directly; Quick Settings'
+/// Screenshot is a Slint callback, the whole screen like the Print key.
+pub fn wire(ui: &App, _ctx: &AppContext) {
+    let weak = ui.as_weak();
+    ui.on_take_screenshot(move || {
+        let weak = weak.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(PANEL_FADE);
+            take_screenshot(weak, yantrik_os::screenshot::CaptureMode::FullScreen);
+        });
+    });
 }
 
 /// Take a screenshot and show a toast notification in the UI.
