@@ -49,7 +49,7 @@ Changed: `app_grid.slint` (rewritten), `desktop_home.slint`, `desktop.slint`, `w
 Run on a 4-core, 15 GB box with a 12 GB swapfile, `CARGO_BUILD_JOBS=2-3`, `CARGO_PROFILE_DEV_DEBUG=0`; no OOM.
 
 - `cargo test -p yantrik-ui-kit`: 15 passed, 0 failed.
-- `cargo test -p yantrik-ui --bin yantrik-ui`: **1160 passed, 1 failed, 1 ignored.** The one failure, `harness_install::tests::a_coloured_installer_reaches_the_row_as_plain_text`, gets `"nvm\n✓ uv ready"` for `"✓ uv ready"`: the login shell the job runs prints `nvm` from this sandbox's profile. That file is untouched here; I did not run it on a clean `main` to confirm.
+- `cargo test -p yantrik-ui --bin yantrik-ui`: **1193 passed, 1 failed, 1 ignored** (after rebasing onto main at a47437a) The one failure, `harness_install::tests::a_coloured_installer_reaches_the_row_as_plain_text`, gets `"nvm\n✓ uv ready"` for `"✓ uv ready"`: the login shell the job runs prints `nvm` from this sandbox's profile. That file is untouched here; I did not run it on a clean `main` to confirm.
   - One test needed updating for the move: `lens::tests::the_ask_bar_hints_say_the_key_rc_xml_binds_to_open_lens` scanned `desktop.slint` for "Super K"; the chip now lives only in `desktop_home.slint`.
   - New tests: `wire::launcher` (matching, describe shape, Running reads only the dock's rows, the dock refresh updates the launcher), and `open_launcher` asks `hold_windows` first.
 - ui-preview (`cargo run --manifest-path tests/ui-preview/Cargo.toml --profile fast -- … <scene>`), all PASS: `verify-launcher-scenes` (new), `verify-launcher`, `verify-apps-button`, `verify-dock`, `verify-screen-controls` (28 screen/state pairs), `verify-apps`, `verify-mind-panel`.
