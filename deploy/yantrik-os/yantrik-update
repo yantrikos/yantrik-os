@@ -1084,9 +1084,14 @@ start_shell() {
 # a script replaced the same way keeps the old text in memory, so both are findable. They are
 # named, not killed: an open note or a conversation is not this script's to end.
 stale_processes() {
-  local pid exe cmd name out="" started installed
+  local pid exe cmd name out="" started installed users
   installed="$(stat -c %Y "$BUILD_FILE" 2>/dev/null || echo 0)"
-  for pid in $(pgrep -u "$(id -u)" 2>/dev/null); do
+  # The desktop's account as well as this one: run as root (the About screen's sudo rule, or an
+  # operator's `qm guest exec`), `pgrep -u 0` saw none of the person's apps, and on VM 520 Calendar,
+  # Notes and Weather ran days-old builds through several "healthy" updates with nothing said.
+  users="$(id -u)"
+  case "$(id -u)" in 0) local owner; owner="$(desktop_owner)"; [ -n "$owner" ] && users="$users,$(id -u "$owner" 2>/dev/null || echo 0)" ;; esac
+  for pid in $(pgrep -u "$users" 2>/dev/null); do
     exe="$(readlink "/proc/$pid/exe" 2>/dev/null)" || continue
     case "$exe" in
       "$BIN_DIR"/*" (deleted)")
@@ -1105,7 +1110,32 @@ stale_processes() {
   printf '%s' "$out" | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/^ *//; s/ *$//'
 }
 
+# A system service still running a binary this update replaced is restarted by its unit: on VM 520
+# the minds' egress filter ran a two-day-old build because nothing here restarted it, while the
+# BUILD file said the machine was current. Only units under system.slice, only ones whose main
+# binary is in our bin dir, and never the Mind's own unit, whose restart would cut a turn in
+# flight (it is installed and restarted by `install-mind`). Prints what it restarted.
+restart_stale_services() {
+  [ "$(id -u)" = 0 ] || return 0
+  local d pid exe unit done="" own
+  # Never this script's own unit: when the About screen's helper runs the update from a service
+  # whose binary was just replaced, restarting that unit would kill the update half way.
+  own="$(sed -n 's#^0::/system.slice/\([^/]*\.service\)$#\1#p' /proc/$$/cgroup 2>/dev/null)"
+  for d in /proc/[0-9]*; do
+    pid="${d#/proc/}"
+    exe="$(readlink "/proc/$pid/exe" 2>/dev/null)" || continue
+    case "$exe" in "$BIN_DIR"/*" (deleted)") ;; *) continue ;; esac
+    unit="$(sed -n 's#^0::/system.slice/\([^/]*\.service\)$#\1#p' "/proc/$pid/cgroup" 2>/dev/null)"
+    [ -n "$unit" ] || continue
+    case "$unit" in yantrik-mind*|"$own") continue ;; esac
+    case " $done " in *" $unit "*) continue ;; esac
+    if systemctl restart "$unit" 2>/dev/null; then done="$done $unit"; else warn "could not restart $unit, which still runs the previous build"; fi
+  done
+  [ -z "$done" ] || info "restarted on the new build:$done"
+}
+
 report_stale() {
+  restart_stale_services
   local stale; stale="$(stale_processes)"
   [ -n "$stale" ] || return 0
   warn "still running the previous build until they are reopened: $stale"
