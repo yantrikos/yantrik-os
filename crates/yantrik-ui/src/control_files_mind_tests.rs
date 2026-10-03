@@ -43,7 +43,8 @@ fn a_mind_opens_folders_in_the_home_and_nowhere_else() {
         ("~/.ssh", " is protected"),
         ("Trash", " is not_a_path"),
         ("~/notes.txt", " is not a folder"),
-        ("~/Nowhere", "there is no folder at ~/Nowhere"),
+        // The refusal names the call that makes it: told only "no folder", a mind on VM 520 never made one.
+        ("~/Nowhere", "call files_new_folder with name \"~/Nowhere\" (missing parent folders are made too)"),
     ] {
         refused_because(open(asked), why, asked);
     }

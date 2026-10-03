@@ -64,20 +64,37 @@ fn make_here(
     folder: bool,
 ) -> Result<serde_json::Value, String> {
     let ui = weak.upgrade().ok_or_else(|| "the shell is gone".to_string())?;
-    mind::here(&ui.get_file_browser_path())?;
     let name = args["name"].as_str().unwrap_or_default().to_string();
     if name.is_empty() {
         return Err("`name` is empty".into());
     }
+    let nested = crate::control_files_create::is_nested(&name);
+    if nested && !folder {
+        return Err(format!(
+            "`{name}` has folders in it; make the folder first with files_new_folder, then create the file there"
+        ));
+    }
+    // A `~/…` path does not depend on the folder on screen; anything else is made inside it, which
+    // a mind must be allowed to see. A nested path's levels are each judged on the worker, where
+    // they exist one after another (`make_nested_checked`).
+    if !name.starts_with("~/") {
+        mind::here(&ui.get_file_browser_path())?;
+    }
     ensure_files_screen(&ui);
-    mind::may_make(&ui.get_file_browser_path(), &name)?;
+    if !nested {
+        mind::may_make(&ui.get_file_browser_path(), &name)?;
+    }
     let dir = crate::filebrowser::expand_home(&ui.get_file_browser_path());
     let weak = ui.as_weak();
     // Who is asking is known here; the worker may not be able to tell, so it is carried in.
     let mind = mind::a_mind_is_calling();
     let work = move || {
         let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
-        let answer = crate::control_files_create::make_checked(&dir, &name, folder, mind, &home)?;
+        let answer = if nested {
+            crate::control_files_create::make_nested_checked(&dir, &name, mind, &home)?
+        } else {
+            crate::control_files_create::make_checked(&dir, &name, folder, mind, &home)?
+        };
         if answer.get("created").is_some() {
             let _ = weak.upgrade_in_event_loop(|ui| ui.invoke_file_refresh());
         }
@@ -126,8 +143,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
 
     let surface = surface
         .action(
-            Action::new("files_go", "Open the Files screen at an absolute path").defers()
-                .arg(Param::text("path").describe("An absolute directory path, e.g. /home/user or /tmp")),
+            Action::new("files_go", "Open Files at a folder; answers what is in it")
+                .arg(Param::text("path").describe("An absolute directory path, e.g. /home/user or ~/Documents")),
             move |args| {
                 let ui = up(&for_go)?;
                 let path = args["path"].as_str().unwrap_or_default().to_string();
@@ -135,9 +152,35 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     return Err("`path` is empty".into());
                 }
                 mind::may_open(&path)?;
-                ensure_files_screen(&ui);
-                ui.invoke_file_navigate_to_path(path.clone().into());
-                Ok(serde_json::json!({ "requested_path": path, "now": where_now(&ui) }))
+                // The folder is read on the worker and the answer is what it holds, settled. Before,
+                // the answer was "requested" and unsettled, with nothing about the folder; on VM 520 a
+                // mind, unsure it had arrived, went to the same folder five more times and made nothing.
+                let weak = ui.as_weak();
+                // Who is asking is known here; the worker may not be able to tell, so it is carried in.
+                let for_mind = mind::a_mind_is_calling();
+                let work = move || {
+                    // Checked again on what the path is now, links resolved: the listing names what is
+                    // inside, and a folder swapped for a link since the check above would otherwise be
+                    // read wherever it now leads.
+                    if for_mind {
+                        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+                        let home = std::fs::canonicalize(&home).unwrap_or(home);
+                        let full = crate::filebrowser::expand_home(&path);
+                        if let Ok(resolved) = std::fs::canonicalize(&full) {
+                            mind::open_verdict(&resolved.to_string_lossy(), &home)?;
+                        }
+                    }
+                    let listing = crate::control_files_create::listing(&path)?;
+                    let go = path.clone();
+                    let _ = weak.upgrade_in_event_loop(move |ui| {
+                        ensure_files_screen(&ui);
+                        ui.invoke_file_navigate_to_path(go.into());
+                    });
+                    Ok(listing)
+                };
+                yantrik_app_runtime::control::answer_later(work)
+                    .map(|()| serde_json::json!({ "answering": "off the UI thread" }))
+                    .or_else(|work| work())
             },
         )
         .action(
@@ -227,10 +270,10 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
         .action(
             Action::new(
                 "files_new_folder",
-                "Create a folder in the current directory. Answers `created` (this call made it) or \
-                 `existed` (already there, nothing changed), with the absolute path and its `kind`",
+                "Create a folder here, or a nested path (a/b, ~/a/b) making missing parents; answers \
+                 `created` or `existed`, plus `made_parents`",
             )
-            .arg(Param::text("name").describe("The new folder's name")),
+            .arg(Param::text("name").describe("A name, or a/b, or ~/a/b")),
             move |args| make_here(&for_folder, args, true),
         )
         .action(

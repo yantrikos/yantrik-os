@@ -194,12 +194,26 @@ pub fn open_verdict(path: &str, home: &Path) -> Result<(), String> {
     match (&answer["exists"], answer["kind"].as_str()) {
         (serde_json::Value::Bool(true), Some("directory")) => Ok(()),
         (serde_json::Value::Bool(true), _) => Err(format!("{path} is not a folder")),
-        (serde_json::Value::Bool(false), _) => Err(format!("there is no folder at {path}")),
+        (serde_json::Value::Bool(false), _) => Err(no_folder_at(path, home)),
         _ => Err(format!(
             "a mind's Files stays in the person's home, outside its protected places; {path} is {}",
             answer["reason"].as_str().unwrap_or("not one it may open")
         )),
     }
+}
+
+/// "There is no folder at X", with the call that makes it. On VM 520 a mind told only that the folder
+/// was missing went back to the parent, again and again, and never made it.
+pub fn no_folder_at(path: &str, home: &Path) -> String {
+    let full = crate::filebrowser::expand_home(path);
+    let named = match full.strip_prefix(home) {
+        Ok(rest) if !rest.as_os_str().is_empty() => format!("~/{}", rest.display()),
+        _ => path.to_string(),
+    };
+    format!(
+        "there is no folder at {path}; to make it, call files_new_folder with name \"{named}\" \
+         (missing parent folders are made too)"
+    )
 }
 
 /// [`here`] with `home` given. The refusal does not name the folder: which folder the person
