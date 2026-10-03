@@ -5,4 +5,5 @@
 - SHOULD-FIX 3: the duplicate `files_new_folder`/`files_new_file` row in docs/app-control.md is merged into the Files row.
 - Grades: neither action sets `.risk(..)`, before or after; both stay at the default `standard`. `grade_tests` pins that deferring never regrades, the default is `standard`, and neither action declares a risk.
 - NIT 1: an entry that vanished after EEXIST now answers `kind: unknown`.
+- Tests: harness 111 passed; yantrik-ui bin 1165 passed, 1 failed (`harness_install::tests::a_coloured_installer_reaches_the_row_as_plain_text`, environmental: the sandbox shell prints "nvm"; file untouched by this PR).
 - Not done: NIT 2 (the settled test still scans source).
