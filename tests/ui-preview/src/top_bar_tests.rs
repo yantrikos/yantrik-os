@@ -364,11 +364,11 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     'sweep: for y in (300..790).step_by(4) {
         for x in (480..800).step_by(10) {
             click(w, x as f32, y as f32);
-            if actions.borrow().iter().any(|(id, a)| id == "2" && a == "restart") { hit = true; break 'sweep; }
+            if actions.borrow().iter().any(|(id, a)| id == "1" && a == "snooze") { hit = true; break 'sweep; }
             if !ui.get_today_open() { ui.set_today_open(true); draw(w, width, height); }
         }
     }
-    assert!(hit, "pressing 'Restart now' on the update notification sends (2, restart)");
+    assert!(hit, "pressing Snooze on the first notification sends (1, snooze); the rest are a scroll away");
 
     // All notifications: the footer goes to the notification centre.
     ui.set_today_open(true);
