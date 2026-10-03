@@ -3448,6 +3448,7 @@ mod power_profile_tests {
         assert!(src.contains("crate::power_status::battery_for_describe("), "describe's `battery` comes from power_status");
         assert!(src.contains("\"power_profile\","), "describe has a top-level `power_profile`, battery or not");
     }
+}
 
 #[cfg(test)]
 mod status_gate_tests {
