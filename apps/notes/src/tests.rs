@@ -464,6 +464,10 @@ fn every_action_says_what_it_does(published: &[(Action, Handler)]) {
             spec.permission
         );
     }
+    // A pure read is `safe`: a mind is handed a safe read's whole answer, and anything graded
+    // higher is cut short in its work log, which hides the very text the read was for.
+    let (spec, _) = published.iter().find(|(s, _)| s.name == "read_notes").unwrap();
+    assert_eq!(spec.permission, "safe", "`read_notes` only reads; it must be graded `safe`");
 }
 
 /// "Create a note titled Groceries listing milk, eggs and bread" — in one call.

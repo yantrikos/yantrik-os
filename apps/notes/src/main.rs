@@ -1386,7 +1386,11 @@ fn surface(ui: &NotesApp, s: &State) -> Vec<(Action, Handler)> {
                  outside the Trash.",
             )
             .optional(),
-        ),
+        )
+        // A read that opens nothing and moves no view. Left at the default grade, a mind's work
+        // log cut its answer at 900 characters, so on VM 520 the model saw the envelope and none
+        // of the notes, and asked eight more times without writing the file it was asked for.
+        .risk("safe"),
         |_ui, s, args| Ok(read_notes(&s.borrow().notes, &given(args, "query"))),
     );
 
