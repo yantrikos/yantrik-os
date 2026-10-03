@@ -81,7 +81,10 @@ fn check_launchable(name: &str, installed: &[crate::apps::DesktopEntry]) -> Resu
 /// Both doors end here — `open_app name=launchpad`, because that is what the listing says opens
 /// it, and `show_screen screen=launchpad`, because a listing that called it a screen taught
 /// every caller to try that next.
-fn open_launcher(ui: &crate::App) -> serde_json::Value {
+fn open_launcher(ui: &crate::App) -> Result<serde_json::Value, String> {
+    // The launcher is drawn over whatever is on the screen, so it waits for a decision card like
+    // every other thing that comes over the shell (card_watch).
+    crate::card_watch::hold_windows("open_launcher")?;
     // Through the dock's own arm, so there is one account of how the launcher opens.
     ui.invoke_launch_app("launchpad".into());
     let mut answer = serde_json::json!({
@@ -101,7 +104,7 @@ fn open_launcher(ui: &crate::App) -> serde_json::Value {
             .into();
         }
     }
-    answer
+    Ok(answer)
 }
 
 /// Name to `current-screen` id, and the ids are the ones `app.slint` actually renders.
@@ -976,7 +979,7 @@ pub fn publish(
                 // The launcher, for the same reason. `open_app name=launchpad` opened it under
                 // whatever window was in front, and nothing a caller could read said it was
                 // open at all: `failed_launches` was empty because nothing had failed.
-                .with("launcher", serde_json::json!({ "open": ui.get_app_grid_open() }))
+                .with("launcher", crate::wire::launcher::for_describe(&ui))
                 // The bar's three panels, which open over any screen: whether each is on the
                 // screen, and the action that puts it away. See `control_overlays`.
                 .with("today", crate::control_overlays::panel_for_describe(ui.get_today_open(), screen, "close_today"))
@@ -1113,7 +1116,7 @@ pub fn publish(
                     crate::wire::dock::route(&name),
                     Some(crate::wire::dock::Launch::Launchpad)
                 ) {
-                    let mut answer = open_launcher(&ui);
+                    let mut answer = open_launcher(&ui)?;
                     answer["launching"] = name.into();
                     return Ok(answer);
                 }
@@ -1683,7 +1686,7 @@ pub fn publish(
                 // desktop, so this is where a caller who read that arrives — and was refused
                 // with a list the name is not on. Taken here, the same way `open_app` takes it.
                 if want == "launchpad" {
-                    let mut answer = open_launcher(&ui);
+                    let mut answer = open_launcher(&ui)?;
                     answer["showing"] = "launchpad".into();
                     return Ok(answer);
                 }
@@ -2508,6 +2511,8 @@ mod window_action_tests {
         let from = src.find("fn open_launcher(").expect("the shell no longer has `open_launcher`");
         let body = &src[from..];
         let body = &body[..body.find("\n}\n").unwrap_or(body.len())];
+        let held = body.find("card_watch::hold_windows(\"open_launcher\")").expect("`open_launcher` asks hold_windows first");
+        assert!(held < body.find("invoke_launch_app(").unwrap(), "hold_windows comes before the grid opens");
         assert!(
             body.contains("invoke_launch_app("),
             "`open_launcher` must open the grid through the dock's own arm, so there is one \

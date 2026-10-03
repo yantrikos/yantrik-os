@@ -23,6 +23,8 @@ pub mod runs_on_card;
 // The Recipes screen: every recipe as its stages, live.
 pub mod recipes;
 mod app_grid;
+/// The launcher's search and its Running section.
+pub mod launcher;
 pub mod dep_check;
 mod callbacks;
 pub(crate) mod files;

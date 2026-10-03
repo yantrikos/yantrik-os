@@ -67,7 +67,6 @@ import { AppGridItem } from "components/app_grid.slint";
 import { WindowItem } from "components/window_item.slint";
 import { AltTab, SwitcherCell } from "components/alt_tab.slint";
 import { DockItem } from "components/app_dock.slint";
-import { CategoryItem } from "components/app_grid.slint";
 // The mind panel: shell furniture at the right edge, instantiated below beside the taskbar.
 import { ServiceItem, MindPanel, MindPanelState, MindPanelNow, MindPanelAgent, MindPanelRecipe, MindPanelAct } from "components/mind_panel.slint";
 export { MindPanelState, MindPanelNow, MindPanelAgent, MindPanelRecipe, MindPanelAct }
@@ -80,7 +79,7 @@ import { YMenuAction, YContextMenu } from "components/y_context_menu.slint";
 import { Icons } from "components/icon.slint";
 import { Tr } from "translations.slint";
 
-export { HarnessData, HarnessRowData, Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, ToolCallData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, ApprovalRequest, QuestionRequest, MindRule, MindAuditEntry, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, NotifActionData, ProcessData, ClipboardEntryData, CheatRowData, AppGridItem, CategoryItem, ServiceItem, WindowItem, SwitcherCell, DockItem, DockButton, DockWindow, ToastData, ToastActionData, PackageData, PendingAction, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction, ProblemRow, WorkCardData }
+export { HarnessData, HarnessRowData, Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, ToolCallData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, ApprovalRequest, QuestionRequest, MindRule, MindAuditEntry, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, NotifActionData, ProcessData, ClipboardEntryData, CheatRowData, AppGridItem, ServiceItem, WindowItem, SwitcherCell, DockItem, DockButton, DockWindow, ToastData, ToastActionData, PackageData, PendingAction, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction, ProblemRow, WorkCardData }
 
 export component App inherits Window {
     default-font-family: Theme.font-ui;
@@ -472,6 +471,10 @@ export component App inherits Window {
         if (self.app-grid-open) { self.app-grid-opened(); }
     }
     in property <[AppGridItem]> grid-apps: [];
+    // The launcher's Running section: the dock's rows for apps that have a window, filtered by
+    // what is typed. `grid-query` is that text, set by Rust so `describe shell` can read it.
+    in property <[DockButton]> grid-running: [];
+    in property <string> grid-query: "";
     callback grid-launch-app(string);
     callback grid-toggle-pin(string);
     callback grid-search-apps(string);
@@ -550,9 +553,6 @@ export component App inherits Window {
     in property <string> bar-disk-text: "";
     in property <[ServiceItem]> services: [];
     // Launcher categories
-    in property <[CategoryItem]> grid-categories: [];
-    in-out property <string> grid-active-category: "all";
-    callback grid-category-selected(string);
 
     // Quick Settings state
     in-out property <bool> quick-settings-open: false;
@@ -1560,9 +1560,6 @@ export component App inherits Window {
             // The room the mind panel takes at the right edge (see `mind-panel-reserve`).
             right-inset: root.mind-panel-reserve;
             date-text: root.date-text;
-            grid-categories: root.grid-categories;
-            grid-active-category: root.grid-active-category;
-            grid-category-selected(id) => { root.grid-category-selected(id); }
             // Status bar
             clock-text: root.clock-text;
             companion-status: root.companion-status;
@@ -1665,6 +1662,7 @@ export component App inherits Window {
             // App grid
             app-grid-open <=> root.app-grid-open;
             grid-apps: root.grid-apps;
+            grid-running: root.grid-running;
             grid-launch-app(app-id) => { root.grid-launch-app(app-id); }
             grid-toggle-pin(app-id) => { root.grid-toggle-pin(app-id); }
             grid-search-apps(query) => { root.grid-search-apps(query); }
@@ -1725,7 +1723,7 @@ export component App inherits Window {
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
 
             BondScreen {
-                show-window-controls: root.window-maximized;
+                show-window-controls: true;
                 maximized: root.window-maximized;
                 minimize => {
                     root.minimized-screen = 4;
@@ -1775,7 +1773,7 @@ export component App inherits Window {
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
 
             PersonalityScreen {
-                show-window-controls: root.window-maximized;
+                show-window-controls: true;
                 maximized: root.window-maximized;
                 minimize => {
                     root.minimized-screen = 5;
@@ -1830,7 +1828,7 @@ export component App inherits Window {
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
 
             MemoryBrowser {
-                show-window-controls: root.window-maximized;
+                show-window-controls: true;
                 maximized: root.window-maximized;
                 minimize => {
                     root.minimized-screen = 6;
@@ -1883,7 +1881,7 @@ export component App inherits Window {
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
 
             SettingsScreen {
-                show-window-controls: root.window-maximized;
+                show-window-controls: true;
                 maximized: root.window-maximized;
                 minimize => {
                     root.minimized-screen = 7;
@@ -2107,7 +2105,7 @@ export component App inherits Window {
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
 
             FileBrowser {
-                show-window-controls: root.window-maximized;
+                show-window-controls: true;
                 maximized: root.window-maximized;
                 minimize => {
                     root.minimized-screen = 8;
@@ -2237,7 +2235,7 @@ export component App inherits Window {
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
 
             NotificationCenter {
-                show-window-controls: root.window-maximized;
+                show-window-controls: true;
                 maximized: root.window-maximized;
                 minimize => {
                     root.minimized-screen = 9;
@@ -2296,7 +2294,7 @@ export component App inherits Window {
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
 
             SystemDashboard {
-                show-window-controls: root.window-maximized;
+                show-window-controls: true;
                 maximized: root.window-maximized;
                 minimize => {
                     root.minimized-screen = 10;
@@ -2366,7 +2364,7 @@ export component App inherits Window {
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
 
             AboutScreen {
-                show-window-controls: root.window-maximized;
+                show-window-controls: true;
                 maximized: root.window-maximized;
                 minimize => {
                     root.minimized-screen = 16;
@@ -2418,6 +2416,7 @@ export component App inherits Window {
         // Calendar
         // Package Manager
         if current-screen == 21 : WindowFrame {
+            content-has-controls: true;
             x: root.window-maximized ? 0px : root.window-x;
             y: root.window-maximized ? Theme.status-bar-height : root.window-y;
             width: root.window-maximized ? parent.width - root.mind-panel-reserve : root.window-w;
@@ -2444,6 +2443,19 @@ export component App inherits Window {
 
             PackageManager {
                 width: 100%; height: 100%;
+                show-window-controls: true;
+                maximized: root.window-maximized;
+                minimize => {
+                    root.minimized-screen = 21;
+                    root.minimized-title = Tr.title-packages;
+                    root.minimized-app-id = "packages";
+                    root.current-screen = 1; root.navigate(1);
+                }
+                toggle-maximize => { root.window-maximized = !root.window-maximized; }
+                close-window => {
+                    if (root.minimized-screen == 21) { root.minimized-screen = 0; }
+                    root.current-screen = 1; root.navigate(1);
+                }
                 packages: root.pkg-packages;
                 is-loading: root.pkg-is-loading;
                 status-text: root.pkg-status-text;
@@ -2494,6 +2506,7 @@ export component App inherits Window {
         // Container Manager
         // Device Dashboard
         if current-screen == 27 : WindowFrame {
+            content-has-controls: true;
             x: root.window-maximized ? 0px : root.window-x;
             y: root.window-maximized ? Theme.status-bar-height : root.window-y;
             width: root.window-maximized ? parent.width - root.mind-panel-reserve : root.window-w;
@@ -2520,6 +2533,19 @@ export component App inherits Window {
 
             DeviceDashboardScreen {
                 width: 100%; height: 100%;
+                show-window-controls: true;
+                maximized: root.window-maximized;
+                minimize => {
+                    root.minimized-screen = 27;
+                    root.minimized-title = Tr.title-devices;
+                    root.minimized-app-id = "devices";
+                    root.current-screen = 1; root.navigate(1);
+                }
+                toggle-maximize => { root.window-maximized = !root.window-maximized; }
+                close-window => {
+                    if (root.minimized-screen == 27) { root.minimized-screen = 0; }
+                    root.current-screen = 1; root.navigate(1);
+                }
                 active-tab <=> root.dev-active-tab;
                 usb-devices: root.dev-usb-devices;
                 usb-selected-index <=> root.dev-usb-selected-index;
@@ -2556,6 +2582,7 @@ export component App inherits Window {
 
         // Permission Dashboard
         if current-screen == 28 : WindowFrame {
+            content-has-controls: true;
             x: root.window-maximized ? 0px : root.window-x;
             y: root.window-maximized ? Theme.status-bar-height : root.window-y;
             width: root.window-maximized ? parent.width - root.mind-panel-reserve : root.window-w;
@@ -2582,6 +2609,19 @@ export component App inherits Window {
 
             PermissionDashboardScreen {
                 width: 100%; height: 100%;
+                show-window-controls: true;
+                maximized: root.window-maximized;
+                minimize => {
+                    root.minimized-screen = 28;
+                    root.minimized-title = Tr.title-permissions;
+                    root.minimized-app-id = "permissions";
+                    root.current-screen = 1; root.navigate(1);
+                }
+                toggle-maximize => { root.window-maximized = !root.window-maximized; }
+                close-window => {
+                    if (root.minimized-screen == 28) { root.minimized-screen = 0; }
+                    root.current-screen = 1; root.navigate(1);
+                }
                 active-tab <=> root.perm-active-tab;
                 perm-users: root.perm-users;
                 perm-groups: root.perm-groups;

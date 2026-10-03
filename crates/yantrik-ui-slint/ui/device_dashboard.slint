@@ -3,6 +3,7 @@
 import { Theme } from "theme.slint";
 import { AppIdentity } from "components/app_color.slint";
 import { Icon, Icons } from "components/icon.slint";
+import { WindowControls } from "window_controls.slint";
 
 // ── Data structs ──
 
@@ -837,6 +838,15 @@ export component DeviceDashboardScreen inherits Rectangle {
     // it is: AppIdentity is otherwise left holding whichever app was opened before it.
     init => { AppIdentity.id = "devices"; }
 
+    // The window's own buttons, carried in this screen's header row now that its WindowFrame no
+    // longer draws a bar above it (content-has-controls). Without them this screen, hosted
+    // restored or maximised, would have no minimise, restore or close at all.
+    in property <bool> show-window-controls: false;
+    in property <bool> maximized: true;
+    callback minimize();
+    callback toggle-maximize();
+    callback close-window();
+
     background: Theme.bg-deep;
 
     // Active tab: 0=USB, 1=PCI, 2=Input, 3=Storage, 4=Display
@@ -1009,7 +1019,15 @@ export component DeviceDashboardScreen inherits Rectangle {
                     vertical-alignment: center;
                 }
 
-                Rectangle { width: Theme.sp-4; }
+                if !root.show-window-controls : Rectangle { width: Theme.sp-4; }
+
+                if root.show-window-controls : WindowControls {
+                    bar-height: 48px;
+                    maximized: root.maximized;
+                    minimize => { root.minimize(); }
+                    toggle-maximize => { root.toggle-maximize(); }
+                    close => { root.close-window(); }
+                }
             }
         }
 

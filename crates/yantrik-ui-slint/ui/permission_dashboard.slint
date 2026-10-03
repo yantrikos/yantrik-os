@@ -3,6 +3,7 @@
 import { Theme } from "theme.slint";
 import { AppIdentity } from "components/app_color.slint";
 import { Icon, Icons } from "components/icon.slint";
+import { WindowControls } from "window_controls.slint";
 
 // ── Data structs ──
 
@@ -545,6 +546,15 @@ export component PermissionDashboardScreen inherits Rectangle {
     // it is: AppIdentity is otherwise left holding whichever app was opened before it.
     init => { AppIdentity.id = "permissions"; }
 
+    // The window's own buttons, carried in this screen's header row now that its WindowFrame no
+    // longer draws a bar above it (content-has-controls). Without them this screen, hosted
+    // restored or maximised, would have no minimise, restore or close at all.
+    in property <bool> show-window-controls: false;
+    in property <bool> maximized: true;
+    callback minimize();
+    callback toggle-maximize();
+    callback close-window();
+
     background: Theme.bg-deep;
 
     // Active tab: 0=Users & Groups, 1=SUID/SGID Files, 2=World-Writable
@@ -618,6 +628,33 @@ export component PermissionDashboardScreen inherits Rectangle {
 
     VerticalLayout {
         spacing: 0px;
+
+        // ── The window's bar ──
+        // This screen has no title row of its own, so now that the frame draws no bar above it
+        // (content-has-controls) this thin row is its bar: the name, and the window's buttons.
+        // The frame's drag strip lies under it, so its empty space still moves the window.
+        if root.show-window-controls : Rectangle {
+            height: 36px;
+            background: Theme.bg-surface;
+            HorizontalLayout {
+                padding-left: Theme.sp-4;
+                Text {
+                    text: "Permissions";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-body;
+                    font-weight: 500;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                WindowControls {
+                    bar-height: 36px;
+                    maximized: root.maximized;
+                    minimize => { root.minimize(); }
+                    toggle-maximize => { root.toggle-maximize(); }
+                    close => { root.close-window(); }
+                }
+            }
+        }
 
         // ── Risk summary cards + scan controls ──
         Rectangle {

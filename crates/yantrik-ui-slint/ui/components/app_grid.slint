@@ -1,15 +1,27 @@
-// App Grid — the launcher. Everything installed lives here, behind the taskbar's Apps button.
+// App Grid — the launcher. The one place every app is listed, behind the dock's Apps button
+// and Super+Space (design/minds-surfaces-spec §3).
 //
-// Search on top, categories down the left, a grid of everything on the right. Every tile carries
-// a pin: this is the one place every app is listed, so it is the one place a pin can always be
-// made or undone, and what is pinned is what START shows. The categories
-// come straight from the freedesktop `Categories=` field the scanner already reads, so a new
-// .desktop file files itself. Icons are real where the icon theme has one and a stroke glyph
-// for the app's category where it does not — a labelled shape, never a letter in a box.
+// An opaque centred panel. The search field has the keyboard when it opens. Two sections:
+//   Running    the apps that have a window, with how many (the same snapshot the dock draws from)
+//   All apps   everything installed
+// Both are grids of the dock's own tile (AppTile, full colour, rounded square), only bigger, so
+// Files is the same blue square here as on the dock. Typing filters both; Enter opens the top
+// match; the arrows move; Esc closes. An app a mind opened is never in Running: the model is the
+// person's window list, which leaves those out.
+//
+// Every All-apps tile carries a pin: this is the one place every app is listed, so it is the one
+// place a pin can always be made or undone, and what is pinned is what START shows. Icons are
+// real where the icon theme has one and a stroke glyph for the app's category where it does not
+// — a labelled shape, never a letter in a box.
+//
+// There used to be a category rail beside the grid. Search finds an app faster than a rail does
+// and a second filter that composed with the first had its own bugs, so the rail went; the
+// freedesktop category still picks the glyph of an app with no icon.
 
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icon.slint";
 import { AppTile } from "app_tile.slint";
+import { DockButton } from "grounded_dock.slint";
 
 // One power button in the launcher's footer; the footer names it on hover.
 component PowerButton inherits TouchArea {
@@ -46,22 +58,122 @@ export struct AppGridItem {
     pinnable: bool,      // false for the launcher itself, which already has a button
 }
 
-export struct CategoryItem {
-    id: string,
-    name: string,
-    count: int,
+// One tile of the launcher: the dock's AppTile at launcher size, the name under it, and a
+// numeral when the app has several windows. The two grids share it so a running app and the
+// same app under All apps look like one thing.
+component LauncherCell inherits Rectangle {
+    in property <string> name;
+    in property <string> icon-id;
+    in property <string> glyph;
+    in property <bool> has-icon: false;
+    in property <image> icon;
+    in property <bool> selected: false;
+    in property <int> windows: 0;
+    in property <bool> pinnable: false;
+    in property <bool> pinned: false;
+    callback clicked();
+    callback toggle-pin();
+
+    border-radius: Theme.r-md;
+    background: root.selected ? Theme.dock-raised : touch.has-hover ? Theme.hover-fill : transparent;
+    border-width: root.selected ? 1px : 0px;
+    border-color: Theme.focus-ring;
+    accessible-role: button;
+    accessible-label: root.windows > 1 ? root.name + ", " + root.windows + " windows" : root.name;
+    accessible-action-default => { root.clicked(); }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 7px;
+        padding: 8px;
+
+        HorizontalLayout {
+            alignment: center;
+            AppTile {
+                size: 48px;
+                app-id: root.icon-id;
+                glyph: root.glyph;
+                has-icon: root.has-icon;
+                icon: root.icon;
+                hovered: touch.has-hover;
+            }
+        }
+        Text {
+            text: root.name;
+            color: Theme.text-primary;
+            font-size: Theme.fs-caption;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    // Several windows: the dock's neutral numeral, on the tile's corner.
+    if root.windows > 1 : Rectangle {
+        x: parent.width / 2 + 12px;
+        y: 4px;
+        width: max(Theme.dock-numeral, num.preferred-width + 6px);
+        height: Theme.dock-numeral;
+        border-radius: Theme.dock-numeral / 2;
+        background: Theme.dock-bar;
+        border-width: 1px;
+        border-color: Theme.dock-raised-line;
+        num := Text {
+            text: root.windows;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-micro;
+            font-weight: 600;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    // A badge on the icon's corner, shown on hover so forty tiles are not forty buttons, and
+    // always once pinned, so the grid answers "which of these are on my desktop" at a glance.
+    // It sits ON the icon (centre + 12px starts it inside the 48px tile's right edge), not at
+    // the cell's corner, where it read as belonging to the next tile. Declared last so it takes
+    // the click: pinning must not also launch the app and close the launcher.
+    pin-hit := TouchArea {
+        x: parent.width / 2 + 14px;
+        y: 3px;
+        width: 22px;
+        height: 22px;
+        visible: root.pinnable && (touch.has-hover || pin-hit.has-hover || root.pinned);
+        mouse-cursor: pointer;
+        clicked => { root.toggle-pin(); }
+
+        Rectangle {
+            width: 100%; height: 100%;
+            border-radius: self.width / 2;
+            background: pin-hit.has-hover ? Theme.bg-elevated : Theme.panel-solid;
+            border-width: 1px;
+            border-color: root.pinned ? Theme.accent.transparentize(40%) : Theme.border-strong;
+            Icon {
+                commands: Icons.pushpin;
+                size: 12px;
+                thickness: 1.7px;
+                tint: root.pinned ? Theme.accent : pin-hit.has-hover ? Theme.text-primary : Theme.text-dim;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+        }
+    }
 }
 
 export component AppGrid inherits Rectangle {
     in-out property <bool> is-open: false;
+    // All apps, already filtered by the search (wire/app_grid.rs).
     in property <[AppGridItem]> apps: [];
-    in property <[CategoryItem]> categories: [];
-    in property <string> active-category: "all";
+    // Running apps, already filtered: the dock's rows for the apps that have a window.
+    in property <[DockButton]> running: [];
 
     callback launch-app(string);
     callback close();
     callback search-changed(string);
-    callback category-selected(string);
     callback toggle-pin(string);
     // Lock, sleep, restart, shut down: where every other desktop keeps them, in the launcher.
     callback power-action(string);
@@ -69,17 +181,80 @@ export component AppGrid inherits Rectangle {
     width: 100%;
     height: 100%;
 
-    property <int> columns: max(1, min(5, floor((root.width - root.rail-w - 72px) / (root.cell-w + root.cell-gap))));
-    property <length> cell-w: 118px;
-    property <length> cell-h: 106px;
+    property <length> cell-w: 104px;
+    property <length> cell-h: 100px;
     property <length> cell-gap: 6px;
-    property <length> rail-w: root.width < 700px ? 136px : 176px;
+    property <length> head-h: 30px;
+    property <length> section-gap: 10px;
+    property <length> panel-w: min(root.width - 64px, 760px);
+    property <int> columns: max(1, floor((root.panel-w - 40px + root.cell-gap) / (root.cell-w + root.cell-gap)));
     property <length> grid-w: root.columns * root.cell-w + (root.columns - 1) * root.cell-gap;
-    property <length> panel-w: root.rail-w + root.grid-w + 16px * 3;
+    property <int> run-count: root.running.length;
+    property <int> total: root.running.length + root.apps.length;
+    property <length> run-h: root.run-count == 0 ? 0px
+        : root.head-h + ceil(root.run-count / root.columns) * (root.cell-h + root.cell-gap) + root.section-gap;
+    property <length> apps-top: root.run-h;
+    property <length> content-h: root.apps-top + root.head-h + ceil(root.apps.length / root.columns) * (root.cell-h + root.cell-gap) + 8px;
     property <int> selected-index: 0;
+    // The panel is a fixed frame; the list is what is left of it under the search row and over the footer.
+    property <length> panel-h: min(root.height - 80px, 640px);
+    property <length> list-h: root.panel-h - 60px - 36px;
+    property <length> scroll-y: 0px;
 
-    changed apps => { root.selected-index = 0; }
-    changed is-open => { if root.is-open { root.selected-index = 0; } }
+    changed apps => { root.selected-index = 0; root.scroll-y = 0px; }
+    changed running => { root.selected-index = min(root.selected-index, max(0, root.total - 1)); }
+    changed is-open => { if root.is-open { root.selected-index = 0; root.scroll-y = 0px; } }
+    changed selected-index => { root.reveal(); }
+
+    // The top of the selected tile, in the scrolled content.
+    pure function top-of(idx: int) -> length {
+        return idx < root.run-count
+            ? root.head-h + floor(idx / root.columns) * (root.cell-h + root.cell-gap)
+            : root.apps-top + root.head-h + floor((idx - root.run-count) / root.columns) * (root.cell-h + root.cell-gap);
+    }
+
+    // Keep the selected tile in view: the arrows can walk off the bottom of a long list.
+    function reveal() {
+        if (root.total == 0) { return; }
+        // The header of the first tile's section is part of what scrolls to the top with it.
+        if (root.top-of(root.selected-index) < -root.scroll-y + root.head-h) {
+            root.scroll-y = min(0px, -(root.top-of(root.selected-index) - root.head-h));
+        } else if (root.top-of(root.selected-index) + root.cell-h > -root.scroll-y + root.list-h) {
+            root.scroll-y = -(root.top-of(root.selected-index) + root.cell-h - root.list-h + 8px);
+        }
+    }
+
+    function open-selected() {
+        if (root.total == 0) { return; }
+        if (root.selected-index < root.run-count) {
+            root.launch-app(root.running[root.selected-index].app-id);
+        } else {
+            root.launch-app(root.apps[root.selected-index - root.run-count].app-id);
+        }
+        root.is-open = false;
+        root.close();
+    }
+
+    // Down and up cross from Running into All apps by column, not by index: the two sections
+    // have rows of their own, and a linear step would land on whatever happened to be next.
+    function step-down() {
+        let sel = root.selected-index;
+        if (sel < root.run-count && sel + root.columns >= root.run-count) {
+            if (root.apps.length > 0) { root.selected-index = root.run-count + min(mod(sel, root.columns), root.apps.length - 1); }
+        } else {
+            root.selected-index = min(root.total - 1, sel + root.columns);
+        }
+    }
+    function step-up() {
+        let sel = root.selected-index;
+        if (sel >= root.run-count && sel - root.columns < root.run-count) {
+            if (root.run-count > 0) {
+                root.selected-index = min(root.run-count - 1, floor((root.run-count - 1) / root.columns) * root.columns + mod(sel - root.run-count, root.columns));
+            }
+        } else {
+            root.selected-index = max(0, sel - root.columns);
+        }
+    }
 
     // Backdrop (click to close)
     if root.is-open : TouchArea {
@@ -90,39 +265,33 @@ export component AppGrid inherits Rectangle {
     }
 
     if root.is-open : Rectangle {
-        // A fixed frame, deliberately.
-        //
-        // This used to be sized from the number of apps currently showing, so picking a category
-        // changed the row count, which changed the height, which re-centred the panel — the
-        // launcher jumped and resized under the pointer every time you filtered it, and the icon
-        // you were reaching for moved. The grid inside already scrolls; only its contents should
-        // change when you filter, never the frame around them.
-        property <length> panel-h: min(parent.height - 80px, 620px);
+        // A fixed frame, deliberately. It used to be sized from the number of apps showing, so
+        // filtering changed the row count, which re-centred the panel: the launcher jumped under
+        // the pointer and the icon you were reaching for moved. Only the contents change.
         x: (parent.width - root.panel-w) / 2;
-        y: (parent.height - self.panel-h) / 2;
+        y: (parent.height - root.panel-h) / 2;
         width: root.panel-w;
-        height: self.panel-h;
-        background: Theme.bg-card;
+        height: root.panel-h;
+        background: Theme.panel-solid;
         border-radius: Theme.r-xl;
         border-width: 1px;
-        border-color: Theme.glass-border-strong;
+        border-color: Theme.border-card;
         clip: true;
 
         // Block click-through to the backdrop
         TouchArea { width: 100%; height: 100%; }
 
         FocusScope {
-            // Keep typing in search while arrow keys select a result.
+            // Keep typing in search while the arrow keys move the selection.
             capture-key-pressed(event) => {
                 if (event.text == Key.Escape) { root.is-open = false; root.close(); return accept; }
-                if (event.text == Key.Tab && root.apps.length == 0) { return accept; }
-                if (root.apps.length > 0) {
-                    if (event.text == Key.Tab) { root.selected-index = mod(root.selected-index + (event.modifiers.shift ? root.apps.length - 1 : 1), root.apps.length); return accept; }
-                    if (event.text == Key.RightArrow && search-input.text == "") { root.selected-index = min(root.apps.length - 1, root.selected-index + 1); return accept; }
-                    if (event.text == Key.LeftArrow && search-input.text == "") { root.selected-index = max(0, root.selected-index - 1); return accept; }
-                    if (event.text == Key.DownArrow) { root.selected-index = min(root.apps.length - 1, root.selected-index + root.columns); return accept; }
-                    if (event.text == Key.UpArrow) { root.selected-index = max(0, root.selected-index - root.columns); return accept; }
-                    if (event.text == "\n") { root.launch-app(root.apps[root.selected-index].app-id); root.is-open = false; root.close(); return accept; }
+                if (root.total > 0) {
+                    if (event.text == Key.Tab) { root.selected-index = mod(root.selected-index + (event.modifiers.shift ? root.total - 1 : 1), root.total); return accept; }
+                    if (event.text == Key.RightArrow) { root.selected-index = min(root.total - 1, root.selected-index + 1); return accept; }
+                    if (event.text == Key.LeftArrow) { root.selected-index = max(0, root.selected-index - 1); return accept; }
+                    if (event.text == Key.DownArrow) { root.step-down(); return accept; }
+                    if (event.text == Key.UpArrow) { root.step-up(); return accept; }
+                    if (event.text == "\n") { root.open-selected(); return accept; }
                 }
                 reject
             }
@@ -132,20 +301,20 @@ export component AppGrid inherits Rectangle {
 
             // ── Search ──
             Rectangle {
-                height: 68px;
+                height: 60px;
                 background: transparent;
                 Rectangle { y: parent.height - 1px; width: 100%; height: 1px; background: Theme.separator; }
 
                 HorizontalLayout {
-                    padding-left: 18px;
-                    padding-right: 14px;
+                    padding-left: 20px;
+                    padding-right: 16px;
                     spacing: Theme.sp-3;
 
                     Icon {
                         commands: Icons.search;
                         size: 16px;
                         thickness: 1.7px;
-                        tint: search-input.has-focus ? Theme.accent : Theme.text-dim;
+                        tint: search-input.has-focus ? Theme.text-primary : Theme.text-dim;
                         y: (parent.height - self.height) / 2;
                     }
                     search-input := TextInput {
@@ -162,7 +331,9 @@ export component AppGrid inherits Rectangle {
                         height: 20px;
                         y: (parent.height - 20px) / 2;
                         border-radius: Theme.r-xs;
-                        background: Theme.hover-fill;
+                        background: Theme.keycap-fill;
+                        border-width: 1px;
+                        border-color: Theme.keycap-border;
                         esc := Text {
                             text: "esc";
                             color: Theme.text-dim;
@@ -174,221 +345,109 @@ export component AppGrid inherits Rectangle {
                 }
 
                 if search-input.text == "" : Text {
-                    x: 18px + 16px + Theme.sp-3;
+                    x: 20px + 16px + Theme.sp-3;
                     height: 100%;
-                    text: "Find an app…";
+                    text: "Find an app or a running window…";
                     color: Theme.text-dim;
                     font-size: Theme.fs-body;
                     vertical-alignment: center;
                 }
             }
 
-            HorizontalLayout {
+            Flickable {
                 vertical-stretch: 1;
-                spacing: 0;
+                viewport-y <=> root.scroll-y;
+                viewport-width: self.width;
+                viewport-height: root.content-h;
 
-                // ── Categories ──
+                // Centred: the grid is as wide as its columns, not the panel.
                 Rectangle {
-                    width: root.rail-w;
-                    background: Theme.glass-panel;
-                    Rectangle { x: parent.width - 1px; width: 1px; height: 100%; background: Theme.separator; }
+                    x: (parent.width - root.grid-w) / 2;
+                    width: root.grid-w;
+                    height: root.content-h;
 
-                    VerticalLayout {
-                        padding: 10px;
-                        spacing: 1px;
-                        alignment: start;
-
-                        for c in root.categories : cat := TouchArea {
-                            height: 36px;
-                            mouse-cursor: pointer;
-                            property <bool> active: c.id == root.active-category;
-                            clicked => { root.category-selected(c.id); }
-
-                            Rectangle {
-                                width: 100%; height: 100%;
-                                border-radius: Theme.r-md;
-                                background: cat.active ? Theme.tint-accent
-                                          : cat.has-hover ? Theme.hover-fill
-                                          : transparent;
-                                HorizontalLayout {
-                                    padding-left: 10px;
-                                    padding-right: 10px;
-                                    spacing: 8px;
-                                    Text {
-                                        text: c.name;
-                                        color: cat.active ? Theme.accent : Theme.text-secondary;
-                                        font-size: Theme.font-label;
-                                        font-weight: cat.active ? 500 : 400;
-                                        vertical-alignment: center;
-                                        horizontal-stretch: 1;
-                                    }
-                                    Text {
-                                        text: c.count;
-                                        color: Theme.text-dim;
-                                        font-size: Theme.fs-micro;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                        }
+                    if root.run-count > 0 : Text {
+                        y: 0px;
+                        height: root.head-h;
+                        text: "RUNNING";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-micro;
+                        font-weight: Theme.fw-micro;
+                        letter-spacing: 1px;
+                        vertical-alignment: bottom;
                     }
-                }
-
-                // ── Grid ──
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    padding: 16px;
-                    spacing: 10px;
-
-                    if root.apps.length == 0 : VerticalLayout {
-                        vertical-stretch: 1;
-                        alignment: center;
-                        spacing: Theme.sp-2;
-                        Text {
-                            text: "Nothing matches";
-                            color: Theme.text-secondary;
-                            font-size: Theme.fs-headline;
-                            font-weight: Theme.fw-headline;
-                            horizontal-alignment: center;
-                        }
-                        Text {
-                            text: "Try another word, or a different category.";
-                            color: Theme.text-dim;
-                            font-size: Theme.fs-caption;
-                            horizontal-alignment: center;
-                        }
+                    for app[idx] in root.running : LauncherCell {
+                        x: mod(idx, root.columns) * (root.cell-w + root.cell-gap);
+                        y: root.head-h + floor(idx / root.columns) * (root.cell-h + root.cell-gap);
+                        width: root.cell-w;
+                        height: root.cell-h;
+                        name: app.label;
+                        icon-id: app.icon-id;
+                        glyph: Icons.app-or-window(app.icon-id);
+                        has-icon: app.has-icon;
+                        icon: app.icon;
+                        windows: app.windows;
+                        selected: idx == root.selected-index;
+                        clicked => { root.launch-app(app.app-id); root.is-open = false; root.close(); }
                     }
 
-                    if root.apps.length > 0 : Flickable {
-                        vertical-stretch: 1;
-                        viewport-width: self.width;
-                        viewport-height: ceil(root.apps.length / root.columns) * (root.cell-h + root.cell-gap);
-                        // Selection stays visible even when the result list is longer than a page.
-                        viewport-y: -max(0px, min(self.viewport-height - self.height,
-                            floor(root.selected-index / root.columns) * (root.cell-h + root.cell-gap) - self.height + root.cell-h + root.cell-gap));
+                    Text {
+                        y: root.apps-top;
+                        height: root.head-h;
+                        text: "ALL APPS";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-micro;
+                        font-weight: Theme.fw-micro;
+                        letter-spacing: 1px;
+                        vertical-alignment: bottom;
+                    }
+                    for app[idx] in root.apps : LauncherCell {
+                        x: mod(idx, root.columns) * (root.cell-w + root.cell-gap);
+                        y: root.apps-top + root.head-h + floor(idx / root.columns) * (root.cell-h + root.cell-gap);
+                        width: root.cell-w;
+                        height: root.cell-h;
+                        name: app.name;
+                        icon-id: app.icon-id;
+                        glyph: Icons.app-or-category(app.icon-id, app.category);
+                        has-icon: app.has-icon;
+                        icon: app.icon;
+                        pinnable: app.pinnable;
+                        pinned: app.pinned;
+                        selected: root.run-count + idx == root.selected-index;
+                        clicked => { root.launch-app(app.app-id); root.is-open = false; root.close(); }
+                        toggle-pin => { root.toggle-pin(app.app-id); }
+                    }
 
-                        for app[idx] in root.apps : cell := TouchArea {
-                            x: Math.mod(idx, root.columns) * (root.cell-w + root.cell-gap);
-                            y: Math.floor(idx / root.columns) * (root.cell-h + root.cell-gap);
-                            width: root.cell-w;
-                            height: root.cell-h;
-                            mouse-cursor: pointer;
-                            accessible-role: button;
-                            accessible-label: app.name;
-                            accessible-action-default => { root.launch-app(app.app-id); root.is-open = false; root.close(); }
-                            clicked => {
-                                root.launch-app(app.app-id);
-                                root.is-open = false;
-                                root.close();
-                            }
-
-                            Rectangle {
-                                width: 100%; height: 100%;
-                                border-radius: Theme.r-md;
-                                background: idx == root.selected-index ? Theme.tint-accent : cell.has-hover ? Theme.hover-fill : transparent;
-                                border-width: 1px;
-                                border-color: idx == root.selected-index ? Theme.accent.transparentize(55%) : transparent;
-
-                                VerticalLayout {
-                                    alignment: center;
-                                    spacing: 7px;
-                                    padding: 8px;
-
-                                    // The app's own tile, the same object the desktop's workspace
-                                    // row and the taskbar draw (AppTile). These were all
-                                    // Theme.text-secondary once — thirty-three applications in
-                                    // one grey — and then a faint tint with a coloured stroke,
-                                    // which still read as grey squares at a glance.
-                                    HorizontalLayout {
-                                        alignment: center;
-                                        AppTile {
-                                            size: 44px;
-                                            app-id: app.icon-id;
-                                            glyph: Icons.app-or-category(app.icon-id, app.category);
-                                            has-icon: app.has-icon;
-                                            icon: app.icon;
-                                            hovered: cell.has-hover;
-                                        }
-                                    }
-
-                                    Text {
-                                        text: app.name;
-                                        color: Theme.text-primary;
-                                        font-size: Theme.fs-caption;
-                                        horizontal-alignment: center;
-                                        overflow: elide;
-                                    }
-                                }
-
-                                // ── Pin ──
-                                //
-                                // A badge on the icon's corner, the way Windows marks a pinned tile and
-                                // macOS badges a Dock icon. Shown on hover so forty tiles are not forty
-                                // buttons, and always shown once pinned, so the grid answers "which of
-                                // these are on my desktop" at a glance.
-                                //
-                                // On the ICON, not the cell. It first sat at the cell's top-right, which
-                                // is 40px from the icon and 6px from the next tile — so Calendar's pin
-                                // read as belonging to Chromium, and Chromium's to Containers. A badge
-                                // that could be anybody's is not a badge.
-                                //
-                                // Placed from the cell's centre because the icon box is centred: the box
-                                // is 44px wide, so its right edge is centre + 22px, and a 22px badge
-                                // starting at centre + 12px straddles that corner. Vertically the tile's
-                                // content is centred in 96px, which puts the box's top edge at ~14px.
-                                //
-                                // Declared after the tile's content, so it sits on top and takes the
-                                // click: pinning must not also launch the app and close the grid.
-                                pin-hit := TouchArea {
-                                    x: parent.width / 2 + 12px;
-                                    y: 3px;
-                                    width: 22px;
-                                    height: 22px;
-                                    visible: app.pinnable && (cell.has-hover || app.pinned);
-                                    mouse-cursor: pointer;
-                                    clicked => { root.toggle-pin(app.app-id); }
-
-                                    Rectangle {
-                                        width: 100%; height: 100%;
-                                        border-radius: self.width / 2;
-                                        // Opaque, with an edge, so it reads as sitting ON the icon box
-                                        // rather than as a smudge beside it.
-                                        background: pin-hit.has-hover ? Theme.bg-elevated : Theme.bg-card;
-                                        border-width: 1px;
-                                        border-color: app.pinned ? Theme.accent.transparentize(40%)
-                                                    : Theme.border-strong;
-                                        Icon {
-                                            commands: Icons.pushpin;
-                                            size: 12px;
-                                            thickness: 1.7px;
-                                            tint: app.pinned ? Theme.accent
-                                                : pin-hit.has-hover ? Theme.text-primary
-                                                : Theme.text-dim;
-                                            x: (parent.width - self.width) / 2;
-                                            y: (parent.height - self.height) / 2;
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    if root.total == 0 : Text {
+                        y: root.head-h + 30px;
+                        width: 100%;
+                        text: "No app or window matches. Try another word.";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-body;
+                        horizontal-alignment: center;
                     }
                 }
             }
+
             Rectangle {
-                height: 34px;
-                background: Theme.glass-panel;
+                height: 36px;
+                background: Theme.bg-surface;
+                // The panel's clip does not round what it clips under the software renderer, so
+                // the footer rounds its own bottom corners to match.
+                border-bottom-left-radius: Theme.r-xl;
+                border-bottom-right-radius: Theme.r-xl;
                 HorizontalLayout {
                     padding-left: 20px; padding-right: 12px;
                     spacing: 4px;
                     footer-text := Text {
                         property <string> power-hint: lock-btn.has-hover ? "Lock the screen" : sleep-btn.has-hover ? "Sleep" : restart-btn.has-hover ? "Restart" : shutdown-btn.has-hover ? "Shut down" : "";
-                        text: self.power-hint != "" ? self.power-hint : root.apps.length + " applications";
+                        text: self.power-hint != "" ? self.power-hint : root.apps.length == 1 ? "1 app" : root.apps.length + " apps";
                         font-size: Theme.fs-caption;
                         color: self.power-hint != "" ? Theme.text-primary : Theme.text-secondary;
                         vertical-alignment: center;
                         horizontal-stretch: 1;
                     }
-                    Text { text: "Tab / ↑ ↓  Select     Enter  Open     Esc  Close"; font-size: Theme.fs-caption; color: Theme.text-secondary; vertical-alignment: center; }
+                    Text { text: "Arrows  Move     Enter  Open     Esc  Close"; font-size: Theme.fs-caption; color: Theme.text-secondary; vertical-alignment: center; }
                     Rectangle { width: 14px; }
                     lock-btn := PowerButton {
                         icon: Icons.lock; label: "Lock";

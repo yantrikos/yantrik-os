@@ -23,18 +23,17 @@
 import { Theme, ThemeMode } from "theme.slint";
 import { ParticleField } from "components/particle_field.slint";
 import { DesktopHome } from "components/desktop_home.slint";
+import { DockButton } from "components/grounded_dock.slint";
 import { StatusBar } from "components/status_bar.slint";
 import { DockItem } from "components/app_dock.slint";
 import { Icon, Icons } from "components/icon.slint";
-import { AppColor } from "components/app_color.slint";
-import { AppTile } from "app_tile.slint";
 import { IntentLens, LensResult, ApprovalRequest } from "components/intent_lens.slint";
 import { WorkCardData } from "components/work_card.slint";
 import { QuestionRequest } from "components/question_card.slint";
 import { MessageData } from "components/message_bubble.slint";
-import { UrgeCardData, GlanceCard } from "components/glance_card.slint";
+import { UrgeCardData } from "components/glance_card.slint";
 import { WhisperCardStack, WhisperCardItem } from "components/whisper_card.slint";
-import { AppGrid, AppGridItem, CategoryItem } from "components/app_grid.slint";
+import { AppGrid, AppGridItem } from "components/app_grid.slint";
 import { WindowItem } from "components/window_item.slint";
 import { CommandPalette, CommandItem } from "components/command_palette.slint";
 import { MorningBriefCard, BriefSection } from "components/morning_brief.slint";
@@ -56,9 +55,6 @@ export component DesktopScreen inherits Rectangle {
     // measure itself against the rail measures against this instead.
     in property <length> right-inset: 0px;
     // Launcher categories
-    in property <[CategoryItem]> grid-categories: [];
-    in property <string> grid-active-category: "all";
-    callback grid-category-selected(string);
 
     // Companion state
     in property <bool> is-thinking: false;
@@ -153,6 +149,7 @@ export component DesktopScreen inherits Rectangle {
     // App grid
     in-out property <bool> app-grid-open: false;
     in property <[AppGridItem]> grid-apps: [];
+    in property <[DockButton]> grid-running: [];
     callback grid-launch-app(string);
     callback grid-toggle-pin(string);
     callback grid-search-apps(string);
@@ -201,9 +198,6 @@ export component DesktopScreen inherits Rectangle {
     // Every entry dispatches through `launch-app`, the same callback the desktop icons and the
     // dock already use, so the menu cannot drift away from what clicking an icon does and needs
     // no wiring of its own on the Rust side.
-    // How much room the hero takes at the top of the centre column. One number, because the
-    // ask bar and the column below it both have to start under it.
-    property <length> hero-h: 84px;
     // The work rail yields to the working area on laptop and compact displays.
     property <bool> show-work-rail: root.width >= 1360px && (root.active-project != "" || root.lens-recents.length > 0);
     // The centre column: 860 wide, centred in what the mind panel leaves; or, beside the work
@@ -341,19 +335,27 @@ export component DesktopScreen inherits Rectangle {
             }
         }
 
-        // Everyday mode shares the same real launch and history callbacks as the Lens.
-        if !root.agent-mode && !root.focus-mode : DesktopHome {
+        // The one desktop home. Everyday and agent mode are the same component with a flag: they
+        // used to be two designs (a different search field, different pin tiles, different
+        // spacing; the agent one lived here, 380 lines of it). Agent mode only adds what the mind
+        // proposes and the day-one card, and sits in the centre column the work rail leaves.
+        if !root.focus-mode : DesktopHome {
             // Centred in what the mind panel leaves, not under it.
-            x: (parent.width - root.right-inset - self.width) / 2;
-            y: parent.height < 720px ? 24px : 56px;
-            width: min(760px, parent.width - root.right-inset - 48px);
+            x: root.agent-mode ? root.content-left : (parent.width - root.right-inset - self.width) / 2;
+            y: root.agent-mode ? Theme.sp-4 + 4px : (parent.height < 720px ? 24px : 56px);
+            width: root.agent-mode ? max(0px, parent.width - root.content-left - root.content-right)
+                                   : min(760px, parent.width - root.right-inset - 48px);
             height: max(0px, parent.height - self.y - Theme.taskbar-height - 24px);
+            agent-mode: root.agent-mode;
             greeting: root.greeting-text;
             date: root.date-text;
             mind-name: root.active-harness-name;
             online: root.companion-online;
             pins: root.dock-items;
             recents: root.lens-recents;
+            urges: root.urges;
+            has-windows: root.window-list.length > 0;
+            send-message(text) => { root.send-message(text); }
             search => { root.lens-open = true; root.open-lens(); }
             all-apps => { root.app-grid-open = true; }
             launch(id) => { root.launch-app(id); }
@@ -492,341 +494,6 @@ export component DesktopScreen inherits Rectangle {
             }
         }
 
-        // -- The hero --
-        //
-        // The largest text on this desktop used to be 16px, which is a section heading, so the
-        // screen had no focal point at all: an ask bar, three labelled groups and a wallpaper,
-        // every one of them competing at the same weight. Mac and Windows both give the first
-        // surface you see one thing said large with nothing near it, and that is most of why
-        // their desktops read as calm rather than as a form.
-        //
-        // It says the greeting and the date, which is all it is allowed to say: those are the
-        // two facts that are true on a machine which has never been used, so this cannot become
-        // another panel that is empty on day one.
-        if root.agent-mode && !root.focus-mode : VerticalLayout {
-            x: root.content-left;
-            y: Theme.sp-4 + 4px;
-            width: max(0px, parent.width - root.content-left - root.content-right);
-            height: root.hero-h - 8px;
-            spacing: 2px;
-            alignment: start;
-
-            Text {
-                text: root.greeting-text;
-                color: Theme.text-primary;
-                font-size: Theme.fs-hero;
-                font-weight: Theme.fw-hero;
-                overflow: elide;
-            }
-            Text {
-                text: root.date-text;
-                color: Theme.text-secondary;
-                font-size: Theme.fs-hero-sub;
-                font-weight: Theme.fw-hero-sub;
-                overflow: elide;
-            }
-        }
-
-        // ── Ask bar (top of the content area, hidden in focus mode) ──
-        // The Lens is the primary interaction; it should look like one, not like an orb
-        // to be discovered. Clicking opens the same overlay the orb used to.
-        if root.agent-mode && !root.focus-mode : TouchArea {
-            x: root.content-left;
-            y: Theme.sp-4 + root.hero-h;
-            width: max(0px, parent.width - root.content-left - root.content-right);
-            height: 38px;
-            mouse-cursor: pointer;
-            clicked => { root.lens-open = true; root.open-lens(); }
-
-            Rectangle {
-                width: 100%; height: 100%;
-                border-radius: Theme.r-md;
-                background: Theme.bg-input;
-                border-width: 1px;
-                border-color: parent.has-hover ? Theme.accent-dim : Theme.border-strong;
-
-                HorizontalLayout {
-                    padding-left: 13px; padding-right: 10px;
-                    spacing: Theme.sp-3;
-                    Icon { commands: Icons.search; size: 15px; tint: Theme.text-dim; thickness: 1.7px; y: (parent.height - self.height) / 2; }
-                    Text {
-                        text: "Ask, search, or run anything";
-                        color: Theme.text-dim;
-                        font-size: Theme.fs-body;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                    }
-                    // The chip names the compositor's binding — Super+K in config/labwc/rc.xml
-                    // runs `yos act shell open_lens` — because that is the key that works from
-                    // inside any app. The shell's own Ctrl+K only arrives while the desktop
-                    // holds the keyboard; advertising that one sent people to a shortcut that
-                    // typed a literal "k" into their terminal. A test at the end of yantrik-ui's
-                    // lens.rs keeps this copy and rc.xml on the same key.
-                    Rectangle {
-                        width: kbd.preferred-width + 12px;
-                        height: 20px;
-                        y: (parent.height - 20px) / 2;
-                        border-radius: 4px;
-                        background: Theme.hover-fill;
-                        kbd := Text {
-                            text: "Super K";
-                            color: Theme.text-dim;
-                            font-size: Theme.fs-micro;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-            }
-        }
-
-        // ── The centre: what the mind has, what is open, what you can start ──
-        //
-        // This was empty. Three quarters of an "AI at the core" desktop was bare wallpaper
-        // between an ask bar and a taskbar, which is a strange thing for an OS whose entire
-        // claim is that something is thinking in it.
-        //
-        // Everything here is data the shell already holds, and every section disappears when it
-        // has nothing — a fresh machine genuinely has no suggestions, and inventing some would
-        // be the confident lie this codebase keeps having to remove. What a fresh machine gets
-        // instead is the one card at the bottom, which is true on day one and gone by day two.
-        if root.agent-mode && !root.focus-mode : Flickable {
-            x: root.content-left;
-            y: Theme.sp-4 + root.hero-h + 38px + Theme.sp-4;
-            width: max(0px, parent.width - root.content-left - root.content-right);
-            height: parent.height - Theme.taskbar-height - (Theme.sp-4 + root.hero-h + 38px + Theme.sp-4) - Theme.sp-4;
-            // Both, or the column lays itself out at its own preferred width and the cards sit
-            // in a narrow ribbon down the middle of the space they were supposed to fill.
-            viewport-width: self.width;
-            viewport-height: centre-column.preferred-height;
-
-            centre-column := VerticalLayout {
-                width: parent.width;
-                height: self.preferred-height;
-                spacing: Theme.sp-4;
-                alignment: start;
-
-                // What the mind is proposing. GlanceCard has existed in the kit since the
-                // instincts landed and had never once been placed on a screen.
-                if root.urges.length > 0 : VerticalLayout {
-                    spacing: Theme.sp-2;
-                    Text {
-                        text: "SUGGESTIONS";
-                        color: Theme.text-dim;
-                        font-size: Theme.fs-micro;
-                        font-weight: Theme.fw-micro;
-                        letter-spacing: 1px;
-                    }
-                    // Tapping one sends it to the mind — the suggestion IS a message it
-                    // proposed saying to itself, so the honest action is to say it.
-                    for u in root.urges : GlanceCard {
-                        data: u;
-                        tapped(msg) => { root.send-message(msg); }
-                    }
-                }
-
-                // ── Pinned ──
-                //
-                // Your shortcuts, and only yours.
-                //
-                // This row showed every app the shell had a hardcoded label for — sixteen of them,
-                // including a tile for the Apps launcher whose button sits in the corner of this
-                // same screen — while the launcher showed them all again and the taskbar showed the
-                // first six a third time. It is now the pinned list: what you chose, in the order
-                // you chose it. Everything else is one click away under "All apps", which is also
-                // where pins are made.
-                //
-                // An OPEN section used to sit above this, listing the running windows. The taskbar
-                // lists exactly those, and is on screen everywhere this card is not; two lists of
-                // the same windows on one screen was the other half of the duplication.
-                VerticalLayout {
-                    spacing: Theme.sp-2;
-
-                    HorizontalLayout {
-                        height: 22px;
-                        Text {
-                            text: "PINNED";
-                            color: Theme.text-dim;
-                            font-size: Theme.fs-micro;
-                            font-weight: Theme.fw-micro;
-                            letter-spacing: 1px;
-                            vertical-alignment: center;
-                            horizontal-stretch: 1;
-                        }
-                        all-apps := TouchArea {
-                            width: all-apps-row.preferred-width;
-                            mouse-cursor: pointer;
-                            clicked => { root.app-grid-open = true; }
-
-                            Rectangle {
-                                width: 100%; height: 100%;
-                                border-radius: Theme.r-sm;
-                                background: all-apps.has-hover ? Theme.hover-fill : transparent;
-
-                                all-apps-row := HorizontalLayout {
-                                    padding-left: 8px;
-                                    padding-right: 6px;
-                                    spacing: 3px;
-                                    alignment: center;
-                                    Text {
-                                        text: "All apps";
-                                        color: all-apps.has-hover ? Theme.text-primary : Theme.text-secondary;
-                                        font-size: Theme.fs-caption;
-                                        vertical-alignment: center;
-                                    }
-                                    Icon {
-                                        commands: Icons.chevron-right;
-                                        size: 12px;
-                                        thickness: 1.7px;
-                                        tint: all-apps.has-hover ? Theme.text-primary : Theme.text-secondary;
-                                        y: (parent.height - self.height) / 2;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    pin-card := Rectangle {
-                        height: 96px;
-                        border-radius: Theme.r-lg;
-                        background: Theme.glass-card;
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
-                        clip: true;
-
-                        // A tile is a tile. The old row divided its width by however many apps it
-                        // held, so icons were a different size on every machine and shifted whenever
-                        // the list changed; a shortcut should stay where you left it.
-                        property <length> tile-w: 88px;
-
-                        // Nothing pinned is a state a person can reach on purpose, so it says what
-                        // to do rather than drawing an empty card.
-                        if root.dock-items.length == 0 : HorizontalLayout {
-                            padding-left: Theme.sp-4;
-                            padding-right: Theme.sp-4;
-                            spacing: Theme.sp-3;
-                            Icon {
-                                commands: Icons.pushpin;
-                                size: 18px;
-                                tint: Theme.text-dim;
-                                y: (parent.height - self.height) / 2;
-                            }
-                            Text {
-                                text: "Nothing pinned yet. Open All apps and pin what you use.";
-                                color: Theme.text-secondary;
-                                font-size: Theme.fs-caption;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                                wrap: word-wrap;
-                            }
-                        }
-
-                        if root.dock-items.length > 0 : Flickable {
-                            width: 100%;
-                            height: 100%;
-                            viewport-width: Math.max(self.width,
-                                root.dock-items.length * pin-card.tile-w + Theme.sp-3 * 2);
-                            viewport-height: self.height;
-
-                            HorizontalLayout {
-                                padding: Theme.sp-3;
-                                spacing: 0px;
-                                alignment: start;
-
-                                for item in root.dock-items : tile := TouchArea {
-                                    width: pin-card.tile-w;
-                                    mouse-cursor: pointer;
-                                    clicked => { root.launch-app(item.app-id); }
-                                    // Right-click unpins, as it does on every desktop that has pins.
-                                    // A convenience rather than the way in: the pin on each tile in
-                                    // All apps is the visible control, and it can undo this.
-                                    pointer-event(ev) => {
-                                        if ev.button == PointerEventButton.right
-                                            && ev.kind == PointerEventKind.up {
-                                            root.grid-toggle-pin(item.app-id);
-                                        }
-                                    }
-
-                                    Rectangle {
-                                        width: 100%; height: 100%;
-                                        border-radius: Theme.r-md;
-                                        background: tile.has-hover ? Theme.hover-fill : transparent;
-
-                                        VerticalLayout {
-                                            padding-top: 9px;
-                                            spacing: 6px;
-                                            alignment: start;
-
-                                            // desk-look: the app's own tile, as in the launcher,
-                                            // the workspace row and the taskbar.
-                                            HorizontalLayout {
-                                                alignment: center;
-                                                AppTile {
-                                                    size: 30px;
-                                                    app-id: item.icon-id;
-                                                    glyph: Icons.app-or-window(item.icon-id);
-                                                    has-icon: item.has-icon;
-                                                    icon: item.icon;
-                                                    hovered: tile.has-hover;
-                                                }
-                                            }
-                                            Text {
-                                                text: item.label;
-                                                color: tile.has-hover ? Theme.text-primary : Theme.text-secondary;
-                                                font-size: Theme.fs-caption;
-                                                horizontal-alignment: center;
-                                                overflow: elide;
-                                            }
-                                            // Running. The taskbar used to carry this mark under its
-                                            // pins; the pins live here now, so the mark does too.
-                                            HorizontalLayout {
-                                                alignment: center;
-                                                Rectangle {
-                                                    width: 12px;
-                                                    height: 3px;
-                                                    border-radius: 1.5px;
-                                                    background: item.is-running ? Theme.accent : transparent;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Day one. Gone the moment any of the above has content, which is the only
-                // honest way to fill a screen on a machine that has not been used yet.
-                if root.urges.length == 0 && root.window-list.length == 0 : Rectangle {
-                    height: day-one.preferred-height;
-                    border-radius: Theme.r-lg;
-                    background: Theme.glass-card;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
-                    day-one := VerticalLayout {
-                        padding: Theme.sp-4;
-                        spacing: Theme.sp-2;
-                        alignment: start;
-                        Text {
-                            text: "Ready when you are";
-                            color: Theme.text-primary;
-                            font-size: Theme.fs-headline;
-                            font-weight: Theme.fw-headline;
-                        }
-                        Text {
-                            // No direction words. This said "open an app below" and the apps moved above it; copy
-                            // that points at a place on the screen is copy the layout will make wrong.
-                            text: "Open a pinned app to get started, or press Super K to ask a question, find a file, or run a command.";
-                            color: Theme.text-secondary;
-                            font-size: Theme.fs-body;
-                            wrap: word-wrap;
-                        }
-                    }
-                }
-            }
-        }
-
         // ── Focus Overlay (Workspace Morph) ──
         if root.focus-mode : VerticalLayout {
             alignment: center;
@@ -898,9 +565,7 @@ export component DesktopScreen inherits Rectangle {
         height: 100%;
         is-open <=> root.app-grid-open;
         apps: root.grid-apps;
-        categories: root.grid-categories;
-        active-category: root.grid-active-category;
-        category-selected(id) => { root.grid-category-selected(id); }
+        running: root.grid-running;
         launch-app(app-id) => { root.grid-launch-app(app-id); }
         toggle-pin(app-id) => { root.grid-toggle-pin(app-id); }
         power-action(action) => { root.power-action(action); }

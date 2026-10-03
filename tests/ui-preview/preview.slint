@@ -136,8 +136,6 @@ export component Preview inherits Window {
     }
     AppGrid {
         is-open <=> root.launcher-open;
-        categories: [{id: "all", name: "All apps", count: 12}, {id: "office", name: "Productivity", count: 4}, {id: "system", name: "System", count: 3}];
-        active-category: "all";
         apps: root.empty-launcher ? [] : self.sample-apps;
         property <[AppGridItem]> sample-apps: [
             {app-id: "files", icon-id: "files", name: "Files", pinned: true, pinnable: true},
@@ -916,3 +914,7 @@ export component FreeAiProbe inherits Window {
 }
 
 export { ColourSystemProbe } from "colour_system_probe.slint";
+
+// The on-screen display (src/osd_tests.rs drives it in its own window). It was missing here, which
+// stopped the whole preview crate from compiling on main.
+export { OsdWindow } from "osd_window.slint";

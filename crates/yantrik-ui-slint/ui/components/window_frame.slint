@@ -55,6 +55,33 @@ component ResizeHandle inherits TouchArea {
     }
 }
 
+// Moves the window by what it covers. The frame's own title bar covers it, and so does the strip
+// over the top of a screen whose own header is the bar (content-has-controls).
+component FrameDrag inherits TouchArea {
+    in property <bool> maximized: false;
+    in-out property <length> win-x;
+    in-out property <length> win-y;
+
+    property <length> press-mx;
+    property <length> press-my;
+
+    mouse-cursor: root.maximized ? default : move;
+
+    pointer-event(event) => {
+        if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+            press-mx = self.mouse-x;
+            press-my = self.mouse-y;
+        }
+    }
+
+    moved => {
+        if self.pressed && !root.maximized {
+            root.win-x += self.mouse-x - press-mx;
+            root.win-y += self.mouse-y - press-my;
+        }
+    }
+}
+
 export component WindowFrame inherits Rectangle {
     in property <string> title: "";
     in property <string> icon-char: "";
@@ -123,7 +150,11 @@ export component WindowFrame inherits Rectangle {
         // The frame's `clip: true` does not round what it clips under the software renderer, so
         // the bar rounds its own top corners to match the frame's, and its fill is solid for the
         // same reason as the frame's (#172).
-        if !root.is-maximized || !root.content-has-controls : Rectangle {
+        //
+        // Restored or maximised, a screen whose own header carries the window's buttons
+        // (content-has-controls) gets no bar from here. Drawing one when restored put the frame's
+        // bar above the screen's header: two bars on every floating window.
+        if !root.content-has-controls : Rectangle {
             height: 36px;
             border-top-left-radius: root.is-maximized ? 0px : 12px;
             border-top-right-radius: root.is-maximized ? 0px : 12px;
@@ -144,27 +175,12 @@ export component WindowFrame inherits Rectangle {
             }
 
             // Drag TouchArea — covers entire title bar, behind buttons
-            title-drag := TouchArea {
+            FrameDrag {
                 width: 100%;
                 height: 100%;
-                mouse-cursor: root.is-maximized ? default : move;
-
-                property <length> press-mx;
-                property <length> press-my;
-
-                pointer-event(event) => {
-                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
-                        press-mx = self.mouse-x;
-                        press-my = self.mouse-y;
-                    }
-                }
-
-                moved => {
-                    if self.pressed && !root.is-maximized {
-                        root.win-x += self.mouse-x - press-mx;
-                        root.win-y += self.mouse-y - press-my;
-                    }
-                }
+                maximized: root.is-maximized;
+                win-x <=> root.win-x;
+                win-y <=> root.win-y;
             }
 
             // Visual layout on top of drag area
@@ -182,7 +198,6 @@ export component WindowFrame inherits Rectangle {
                     spacing: 8px;
                     alignment: start;
                     horizontal-stretch: 1;
-                    visible: !root.is-maximized || !root.content-has-controls;
 
                     if root.icon-char != "" || root.icon-path != "" : Rectangle {
                         width: 22px;
@@ -236,7 +251,7 @@ export component WindowFrame inherits Rectangle {
         }
 
         // Separator — holographic edge
-        Rectangle {
+        if !root.content-has-controls : Rectangle {
             height: 1px;
             background: @linear-gradient(90deg,
                 transparent 5%,
@@ -253,6 +268,20 @@ export component WindowFrame inherits Rectangle {
             vertical-stretch: 1;
             clip: true;
             background: Theme.bg-deep.transparentize(15%);
+
+            // The header of a screen that carries its own window buttons is the window's bar, and
+            // nothing else lets you move the window by it. This strip sits UNDER the content, so
+            // the header's buttons and fields still take their own presses and only its empty
+            // space moves the window; a double-click maximises or restores, as on any title bar.
+            if root.content-has-controls : FrameDrag {
+                width: 100%;
+                height: Theme.h-app-header;
+                maximized: root.is-maximized;
+                win-x <=> root.win-x;
+                win-y <=> root.win-y;
+                double-clicked => { root.is-maximized = !root.is-maximized; }
+            }
+
             @children
         }
     }

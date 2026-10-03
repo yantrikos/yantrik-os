@@ -1637,12 +1637,9 @@ mod tests {
             panic!("rc.xml binds open_lens to {binding}, which has no on-screen spelling")
         });
 
-        // Every place the desktop shows the shortcut: the ask bar chip and the day-one card in
-        // agent mode (desktop.slint), and the ask bar chip on the everyday desktop.
-        for file in [
-            "crates/yantrik-ui-slint/ui/desktop.slint",
-            "crates/yantrik-ui-slint/ui/components/desktop_home.slint",
-        ] {
+        // Every place the desktop shows the shortcut: the ask bar chip and the day-one card, both
+        // in the one desktop home (desktop_home.slint, everyday and agent mode alike).
+        for file in ["crates/yantrik-ui-slint/ui/components/desktop_home.slint"] {
             let slint = std::fs::read_to_string(root.join(file))
                 .unwrap_or_else(|e| panic!("{file} is in the repository: {e}"));
             assert!(

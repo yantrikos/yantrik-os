@@ -1,18 +1,31 @@
-// The everyday desktop: a quiet place to start, with real pins and recent items.
+// The desktop's home: a quiet place to start, with real pins and recent items.
+//
+// There is one. It had a twin for agent mode, drawn inside desktop.slint with its own search
+// field, its own pin tiles and its own spacing; `agent-mode` now only decides which sections this
+// shows. Agent mode adds what the mind is proposing and, on a machine nobody has used, a card that
+// says what to do first; it leaves out the recent files and the mind's status line, which the
+// work rail and the mind panel already say beside it.
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icon.slint";
 import { AppTile } from "app_tile.slint";
 import { DockItem } from "app_dock.slint";
 import { LensResult } from "intent_lens.slint";
 import { YButton } from "y_button.slint";
+import { UrgeCardData, GlanceCard } from "glance_card.slint";
 
 export component DesktopHome inherits Rectangle {
+    // The machine's desk rather than a person's: adds suggestions, drops recents and the mind line.
+    in property <bool> agent-mode: false;
     in property <string> greeting;
     in property <string> date;
     in property <string> mind-name;
     in property <bool> online;
     in property <[DockItem]> pins;
     in property <[LensResult]> recents;
+    in property <[UrgeCardData]> urges: [];
+    // Any window is open (agent mode's day-one card goes once there is something to see).
+    in property <bool> has-windows: false;
+    callback send-message(string);
     callback search();
     callback all-apps();
     callback launch(string);
@@ -49,7 +62,7 @@ export component DesktopHome inherits Rectangle {
                     color: Theme.text-primary;
                     overflow: elide;
                 }
-                Text {
+                if !root.agent-mode : Text {
                     text: "A little clarity. Room for everything you do.";
                     font-size: Theme.fs-body;
                     color: Theme.text-secondary;
@@ -89,6 +102,23 @@ export component DesktopHome inherits Rectangle {
                         border-width: 1px; border-color: Theme.border-strong;
                         Text { text: "Super K"; font-size: Theme.fs-caption; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
                     }
+                }
+            }
+
+            // What the mind is proposing. Tapping one sends it to the mind: the suggestion IS a
+            // message the mind proposed saying to itself, so the honest action is to say it.
+            if root.agent-mode && root.urges.length > 0 : VerticalLayout {
+                spacing: 8px;
+                Text {
+                    text: "SUGGESTIONS";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-micro;
+                    font-weight: Theme.fw-micro;
+                    letter-spacing: 1px;
+                }
+                for u in root.urges : GlanceCard {
+                    data: u;
+                    tapped(msg) => { root.send-message(msg); }
                 }
             }
 
@@ -154,7 +184,7 @@ export component DesktopHome inherits Rectangle {
                 }
             }
 
-            if root.recents.length > 0 : Rectangle {
+            if !root.agent-mode && root.recents.length > 0 : Rectangle {
                 height: recent-body.preferred-height;
                 background: Theme.glass-panel;
                 border-radius: Theme.r-xl;
@@ -189,7 +219,27 @@ export component DesktopHome inherits Rectangle {
                 }
             }
 
-            HorizontalLayout {
+            // Nothing to show on a machine that has never been used, so say what to do first:
+            // true on day one and gone by day two.
+            if root.agent-mode && root.urges.length == 0 && !root.has-windows : Rectangle {
+                height: day-one.preferred-height;
+                background: Theme.glass-panel;
+                border-radius: Theme.r-xl;
+                border-width: 1px;
+                border-color: Theme.glass-border;
+                day-one := VerticalLayout {
+                    padding: 20px;
+                    spacing: 8px;
+                    alignment: start;
+                    Text { text: "Ready when you are"; color: Theme.text-primary; font-size: Theme.fs-headline; font-weight: 600; }
+                    Text {
+                        text: "Open a pinned app to get started, or press Super K to ask a question, find a file, or run a command.";
+                        color: Theme.text-secondary; font-size: Theme.fs-body; wrap: word-wrap;
+                    }
+                }
+            }
+
+            if !root.agent-mode : HorizontalLayout {
                 spacing: 10px;
                 Rectangle { width: 6px; height: 6px; border-radius: 3px; y: (parent.height - self.height) / 2; background: root.online ? Theme.accent : Theme.text-dim; }
                 Text {

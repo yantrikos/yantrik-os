@@ -178,23 +178,8 @@ pub fn category_id(categories: &str) -> &'static str {
     "utility"
 }
 
-/// Human label for a category id.
-pub fn category_label(id: &str) -> &'static str {
-    CATEGORY_TABLE
-        .iter()
-        .find(|(_, cid)| *cid == id)
-        .map(|(main, _)| match *main {
-            "Network" => "Internet",
-            "AudioVideo" => "Media",
-            "Game" => "Games",
-            "Utility" => "Utilities",
-            other => other,
-        })
-        .unwrap_or("Utilities")
-}
-
 /// (freedesktop main category, launcher id), in resolution priority order.
-/// Kept as a table so the id order — which is also the rail's display order — lives in one place.
+/// Kept as a table so the resolution order lives in one place.
 pub const CATEGORY_TABLE: &[(&str, &str)] = &[
     ("Development", "development"),
     ("Office", "office"),
@@ -222,13 +207,6 @@ mod tests {
     fn unknown_and_empty_file_under_utility() {
         assert_eq!(category_id(""), "utility");
         assert_eq!(category_id("Wine;Emulator;"), "utility");
-    }
-
-    #[test]
-    fn labels_are_friendly_where_freedesktop_names_are_not() {
-        assert_eq!(category_label("network"), "Internet");
-        assert_eq!(category_label("audiovideo"), "Media");
-        assert_eq!(category_label("development"), "Development");
     }
 
     #[test]

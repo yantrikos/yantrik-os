@@ -7,6 +7,8 @@
 import { Theme } from "theme.slint";
 import { AppIdentity } from "components/app_color.slint";
 import { Icon, Icons } from "components/icon.slint";
+import { WindowControls } from "window_controls.slint";
+import { YButton } from "y_button.slint";
 import { ListView, LineEdit } from "std-widgets.slint";
 
 export struct PackageData {
@@ -33,6 +35,15 @@ export component PackageManager inherits Rectangle {
     // This screen draws its own header rather than AppHeader, so it has to say what
     // it is: AppIdentity is otherwise left holding whichever app was opened before it.
     init => { AppIdentity.id = "packages"; }
+
+    // The window's own buttons, carried in this screen's header row now that its WindowFrame no
+    // longer draws a bar above it (content-has-controls). Without them this screen, hosted
+    // restored or maximised, would have no minimise, restore or close at all.
+    in property <bool> show-window-controls: false;
+    in property <bool> maximized: true;
+    callback minimize();
+    callback toggle-maximize();
+    callback close-window();
 
     background: transparent;
 
@@ -91,9 +102,12 @@ export component PackageManager inherits Rectangle {
 
             HorizontalLayout {
                 padding-left: 16px;
-                padding-right: 16px;
+                padding-right: root.show-window-controls ? 0px : 16px;
                 spacing: 10px;
-                alignment: center;
+                // Stretch, so the search field takes the spare width and the window's buttons sit
+                // in the corner. It was `center`, which packs everything in the middle and ignores
+                // the field's stretch.
+                alignment: stretch;
 
                 // Search bar
                 Rectangle {
@@ -311,25 +325,24 @@ export component PackageManager inherits Rectangle {
                     }
                 }
 
-                // Upgrade All button (shown when upgradable > 0)
-                if root.upgradable-count > 0 : Rectangle {
-                    width: 108px;
-                    height: 36px;
-                    background: upgrade-all-ta.has-hover ? Theme.color-success.brighter(20%) : Theme.color-success;
-                    border-radius: Theme.radius-pill;
+                // Upgrade All (shown when upgradable > 0): the screen's one primary action, drawn as the
+                // colour system's primary kind. It was a green pill of its own.
+                if root.upgradable-count > 0 : YButton {
+                    label: "Upgrade All";
+                    size: 1;
+                    y: (parent.height - self.height) / 2;
+                    clicked => { root.upgrade-all(); }
+                }
 
-                    Text {
-                        text: "Upgrade All";
-                        font-size: Theme.font-small;
-                        color: Theme.text-on-accent;
-                        font-weight: 600;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
+                // A gap before the buttons, which run flush to the corner.
+                if root.show-window-controls : Rectangle { width: 6px; }
 
-                    upgrade-all-ta := TouchArea {
-                        clicked => { root.upgrade-all(); }
-                    }
+                if root.show-window-controls : WindowControls {
+                    bar-height: 52px;
+                    maximized: root.maximized;
+                    minimize => { root.minimize(); }
+                    toggle-maximize => { root.toggle-maximize(); }
+                    close => { root.close-window(); }
                 }
             }
         }

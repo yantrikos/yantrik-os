@@ -15,6 +15,7 @@ mod recipes_tests;
 mod formations_tests;
 mod screen_controls_tests;
 mod apps_button_tests;
+mod launcher_tests;
 mod lens_tests;
 mod chat_tests;
 mod approval_tests;
@@ -85,6 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-formations") { return formations_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-lens-agents") { return agents_tests::run_lens(&window, output); }
     if args.iter().any(|a| a == "verify-screen-controls") { return screen_controls_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-launcher-scenes") { return launcher_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-apps-button") { return apps_button_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-dock") { return dock_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-alt-tab") { return alt_tab_tests::run(&window, output, width, height); }

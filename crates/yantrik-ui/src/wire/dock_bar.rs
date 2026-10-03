@@ -131,6 +131,8 @@ pub fn publish(ui: &App, installed: &[DesktopEntry]) {
         ui.set_dock_windows(model);
     }
     ui.set_dock_reveal_index(reveal);
+    // The launcher's Running section reads these rows, so an app that opens while it is up shows.
+    super::launcher::refresh_running(ui);
 }
 
 /// What `describe shell` says about the dock: its buttons in order, and the page being shown.
