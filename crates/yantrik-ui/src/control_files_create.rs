@@ -45,6 +45,9 @@ pub fn parts(name: &str, home: &Path) -> Result<(Option<PathBuf>, Vec<String>), 
     if name.contains('\0') {
         return Err("a folder name cannot hold a NUL".into());
     }
+    if name == "~" || name.starts_with("~/") && name[2..].trim_start_matches('/').is_empty() {
+        return Err(format!("`{name}` names no folder; give ~/… with a name after it"));
+    }
     let (start, rest) = match name.strip_prefix("~/") {
         Some(rest) => (Some(home.to_path_buf()), rest),
         None => (None, name),
@@ -84,7 +87,7 @@ fn make_path(base: &Path, name: &str, mind: bool, home: &Path) -> Result<Value, 
             Ok(()) if last => {
                 return Ok(json!({ "created": shown, "made_parents": parents, "kind": "directory" }));
             }
-            Ok(()) => parents.push(shown),
+            Ok(()) => parents.push(shown.clone()),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 let meta = std::fs::symlink_metadata(&next);
                 let is_dir = std::fs::metadata(&next).is_ok_and(|m| m.is_dir());
