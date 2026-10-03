@@ -70,7 +70,12 @@ fn make_here(
         return Err("`name` is empty".into());
     }
     ensure_files_screen(&ui);
-    mind::may_make(&ui.get_file_browser_path(), &name)?;
+    if folder {
+        // A nested or ~/ path is judged part by part on the worker; here only its shape.
+        crate::control_files_create::parts(&name, std::path::Path::new("/"))?;
+    } else {
+        mind::may_make(&ui.get_file_browser_path(), &name)?;
+    }
     let dir = crate::filebrowser::expand_home(&ui.get_file_browser_path());
     let weak = ui.as_weak();
     // Who is asking is known here; the worker may not be able to tell, so it is carried in.
@@ -81,6 +86,30 @@ fn make_here(
         if answer.get("created").is_some() {
             let _ = weak.upgrade_in_event_loop(|ui| ui.invoke_file_refresh());
         }
+        Ok(answer)
+    };
+    yantrik_app_runtime::control::answer_later(work)
+        .map(|()| serde_json::json!({ "answering": "off the UI thread" }))
+        .or_else(|work| work())
+}
+
+/// `files_go`: the listing is read on the worker and the answer is what is there, settled. The
+/// screen follows once the folder is known to exist, so a refused go leaves it where it was.
+fn go_here(weak: &slint::Weak<App>, args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let ui = weak.upgrade().ok_or_else(|| "the shell is gone".to_string())?;
+    let path = args["path"].as_str().unwrap_or_default().to_string();
+    if path.is_empty() {
+        return Err("`path` is empty".into());
+    }
+    let weak = ui.as_weak();
+    let mind = mind::a_mind_is_calling();
+    let work = move || {
+        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+        let answer = crate::control_files_go::look(&path, mind, &home)?;
+        let _ = weak.upgrade_in_event_loop(move |ui| {
+            ensure_files_screen(&ui);
+            ui.invoke_file_navigate_to_path(path.into());
+        });
         Ok(answer)
     };
     yantrik_app_runtime::control::answer_later(work)
@@ -126,19 +155,12 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
 
     let surface = surface
         .action(
-            Action::new("files_go", "Open the Files screen at an absolute path").defers()
-                .arg(Param::text("path").describe("An absolute directory path, e.g. /home/user or /tmp")),
-            move |args| {
-                let ui = up(&for_go)?;
-                let path = args["path"].as_str().unwrap_or_default().to_string();
-                if path.is_empty() {
-                    return Err("`path` is empty".into());
-                }
-                mind::may_open(&path)?;
-                ensure_files_screen(&ui);
-                ui.invoke_file_navigate_to_path(path.clone().into());
-                Ok(serde_json::json!({ "requested_path": path, "now": where_now(&ui) }))
-            },
+            Action::new(
+                "files_go",
+                "Open Files at a folder. Answers `path`, `entries`, `first` names (folders end /), `more`; a missing folder says how to make it",
+            )
+            .arg(Param::text("path").describe("An absolute directory path or ~/…, e.g. /home/user or ~/Documents")),
+            move |args| go_here(&for_go, args),
         )
         .action(
             Action::new("files_enter", "Enter a subdirectory of the current one by name").defers()
@@ -227,10 +249,9 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
         .action(
             Action::new(
                 "files_new_folder",
-                "Create a folder in the current directory. Answers `created` (this call made it) or \
-                 `existed` (already there, nothing changed), with the absolute path and its `kind`",
+                "Create a folder; missing parents are made too. Answers `created` + `made_parents`, or `existed`",
             )
-            .arg(Param::text("name").describe("The new folder's name")),
+            .arg(Param::text("name").describe("A name, a nested path like a/b/c in the current folder, or ~/… in the home")),
             move |args| make_here(&for_folder, args, true),
         )
         .action(
