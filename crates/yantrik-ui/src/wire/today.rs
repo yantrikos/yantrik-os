@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use chrono::{Datelike, Local, NaiveDate};
 use slint::{ComponentHandle, ModelRc, VecModel};
-use yantrik_ipc_contracts::calendar::{method, month_grid, CalendarEvent, EventsParams};
+use yantrik_ipc_contracts::calendar::{method, month_grid, CalendarEvent, EventsParams, WeekStart};
 
 use crate::{App, CalendarDay, TodayEvent, TodayState};
 
@@ -41,7 +41,9 @@ pub(super) fn refresh_on_open(ui: &App) {
     state.set_weekday(now.format("%A").to_string().into());
     state.set_date_line(now.format("%-d %B %Y").to_string().into());
     state.set_month_title(now.format("%B %Y").to_string().into());
-    state.set_days(days_model(today, &[]));
+    let first = week_start();
+    state.set_week_starts_monday(first == WeekStart::Monday);
+    state.set_days(days_model(today, &[], first));
     state.set_events_state("loading".into());
     state.set_events(ModelRc::default());
 
@@ -56,7 +58,7 @@ pub(super) fn refresh_on_open(ui: &App) {
             let state = ui.global::<TodayState>();
             match answer {
                 Ok(events) => {
-                    state.set_days(days_model(today, &events));
+                    state.set_days(days_model(today, &events, first));
                     state.set_events(ModelRc::new(VecModel::from(
                         todays_events(&events, today)
                             .into_iter()
@@ -98,14 +100,21 @@ fn month_last(day: NaiveDate) -> NaiveDate {
     NaiveDate::from_ymd_opt(y, m, 1).and_then(|d| d.pred_opt()).unwrap_or(day)
 }
 
+/// The first day of the week: the settings file's `week_start`, else the locale's. Read where the
+/// grid is built, because it is one small file and the panel opens on a click, not on a timer.
+fn week_start() -> WeekStart {
+    let text = std::fs::read_to_string(yantrik_app_runtime::theme::settings_path()).unwrap_or_default();
+    WeekStart::system(&text)
+}
+
 /// The grid for `today`'s month, with a dot under each day that has an event starting on it.
-fn days_model(today: NaiveDate, events: &[CalendarEvent]) -> ModelRc<CalendarDay> {
+fn days_model(today: NaiveDate, events: &[CalendarEvent], first: WeekStart) -> ModelRc<CalendarDay> {
     let counts = |d: u32| {
         let prefix = format!("{:04}-{:02}-{:02}", today.year(), today.month(), d);
         events.iter().filter(|e| e.start.starts_with(&prefix)).count() as i32
     };
     ModelRc::new(VecModel::from(
-        month_grid(today.year(), today.month(), &counts, Some(today))
+        month_grid(today.year(), today.month(), &counts, Some(today), first)
             .into_iter()
             .map(|c| CalendarDay {
                 day_number: c.day as i32,
@@ -196,11 +205,22 @@ mod tests {
     #[test]
     fn the_grid_dots_the_days_events_start_on() {
         let events = [event("Stand-up", "2026-10-02T09:30:00", "2026-10-02T09:45:00", false)];
-        let model = days_model(oct2(), &events);
+        let model = days_model(oct2(), &events, WeekStart::Sunday);
         let cells: Vec<CalendarDay> = slint::Model::iter(&model).collect();
         let with: Vec<i32> = cells.iter().filter(|c| c.has_events).map(|c| c.day_number).collect();
         assert_eq!(with, [2]);
         assert_eq!(cells.iter().filter(|c| c.is_today).count(), 1);
+    }
+
+    /// The Today grid takes the same week start as the Calendar app: 1 October 2026 is a
+    /// Thursday, column 3 when the week starts on Monday and column 4 when it starts on Sunday.
+    #[test]
+    fn the_grid_starts_its_weeks_where_the_calendar_does() {
+        let first_col = |first| {
+            let model = days_model(oct2(), &[], first);
+            slint::Model::iter(&model).position(|c| c.day_number == 1).unwrap()
+        };
+        assert_eq!((first_col(WeekStart::Sunday), first_col(WeekStart::Monday)), (4, 3));
     }
 
     #[test]

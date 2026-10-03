@@ -12,12 +12,14 @@
 //! a desktop or a service -- `tests/calendar-core` includes this file directly. `main.rs` converts
 //! these plain structs into `CalendarTimeEvent` rows and nothing else.
 //!
-//! The week starts on Sunday. That is not a preference: the month grid's own header row in
-//! `calendar.slint` reads Sun..Sat and the contract's `month_grid` fills it with
-//! `num_days_from_sunday`, so a week view starting anywhere else would put the same date in two
-//! different columns in two views of the same calendar.
+//! The week starts on the day `WeekStart` says (the settings file, then the locale). The month
+//! grid, the week view and `show_date` all take the same value: a week view starting on one day
+//! while the month grid's header started on another would put the same date in two different
+//! columns of the same calendar, and a week view fixed to Sunday could not show a mind the
+//! Monday-to-Sunday week it asked for.
 
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+pub use yantrik_ipc_contracts::calendar::WeekStart;
 
 /// Which of the three views the screen is showing. Mirrors `view-mode` in `calendar.slint`,
 /// where the value is an untyped int.
@@ -118,7 +120,7 @@ pub enum Named {
 /// Everything the week view draws, for one week.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WeekView {
-    /// The Sunday the week starts on.
+    /// The day the week starts on.
     pub start: NaiveDate,
     /// The Saturday it ends on, inclusive.
     pub end: NaiveDate,
@@ -184,14 +186,14 @@ pub fn last_day_of_month(year: i32, month: u32) -> u32 {
         .unwrap_or(30)
 }
 
-/// The Sunday on or before `date`.
-pub fn week_start(date: NaiveDate) -> NaiveDate {
-    date - Duration::days(date.weekday().num_days_from_sunday() as i64)
+/// The first day of the week containing `date`.
+pub fn week_start(date: NaiveDate, first: WeekStart) -> NaiveDate {
+    first.week_start_of(date)
 }
 
-/// The Sunday and the Saturday of the week containing `date`, both inclusive.
-pub fn week_bounds(date: NaiveDate) -> (NaiveDate, NaiveDate) {
-    let start = week_start(date);
+/// The first and last day of the week containing `date`, both inclusive.
+pub fn week_bounds(date: NaiveDate, first: WeekStart) -> (NaiveDate, NaiveDate) {
+    let start = week_start(date, first);
     (start, start + Duration::days(6))
 }
 
@@ -221,6 +223,7 @@ pub fn visible_range(
     month: u32,
     view: ViewMode,
     selected_day: i32,
+    week: WeekStart,
 ) -> (NaiveDate, NaiveDate) {
     let first = NaiveDate::from_ymd_opt(year, month, 1)
         .unwrap_or_else(|| selected_date(year, month, 1));
@@ -229,7 +232,7 @@ pub fn visible_range(
     match view {
         ViewMode::Month => (first, last),
         ViewMode::Week => {
-            let start = week_start(selected_date(year, month, selected_day));
+            let start = week_start(selected_date(year, month, selected_day), week);
             (first.min(start), last.max(start + Duration::days(6)))
         }
         ViewMode::Day => {
@@ -575,12 +578,12 @@ fn ordered(mut events: Vec<TimeEvent>) -> Vec<TimeEvent> {
     events
 }
 
-/// The week containing `selected`, Sunday through Saturday.
+/// The week containing `selected`, seven days from the first day of the week.
 ///
 /// Events outside it are not in the result at all: the columns are the week, and something on the
 /// following Monday has nowhere to go.
-pub fn week_view(events: &[SourceEvent], selected: NaiveDate) -> WeekView {
-    let (start, end) = week_bounds(selected);
+pub fn week_view(events: &[SourceEvent], selected: NaiveDate, first: WeekStart) -> WeekView {
+    let (start, end) = week_bounds(selected, first);
 
     let mut blocks = Vec::new();
     let mut all_day: Vec<Vec<String>> = vec![Vec::new(); 7];
@@ -641,4 +644,60 @@ pub fn day_view(events: &[SourceEvent], selected: NaiveDate) -> DayView {
     }
 
     DayView { date: selected, title, events: ordered(blocks), all_day }
+}
+
+/// The most days `events_between` will answer for. A mind planning a week or a month fits; a
+/// request for a year is a mistake, and the service would be listing every file for it.
+pub const MAX_RANGE_DAYS: i64 = 62;
+
+/// Read `from` and `to` of `events_between`: ISO dates, inclusive, `to` not before `from`, at most
+/// [`MAX_RANGE_DAYS`] days in all.
+pub fn parse_range(from: &str, to: &str) -> Result<(NaiveDate, NaiveDate), String> {
+    let date = |name: &str, text: &str| {
+        NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d")
+            .map_err(|_| format!("`{name}` should look like 2026-09-28, not `{text}`"))
+    };
+    let (from, to) = (date("from", from)?, date("to", to)?);
+    if to < from {
+        return Err(format!("`to` ({to}) is before `from` ({from})"));
+    }
+    let days = (to - from).num_days() + 1;
+    if days > MAX_RANGE_DAYS {
+        return Err(format!(
+            "{days} days is too many: ask for at most {MAX_RANGE_DAYS} days at a time"
+        ));
+    }
+    Ok((from, to))
+}
+
+/// The events that fall in `from..=to`, as `{date, start, end, title, location}`, by start time.
+///
+/// An event is in the range when its start day is. (An event that began before `from` and runs
+/// into it is not listed: the same rule `fetch_events_in_range`'s callers use to count a day.)
+/// `location` is `null` when the event has none. This reads what it is given and touches no view:
+/// a mind reading a range must not have to steer the grid to do it.
+pub fn events_between(
+    events: &[yantrik_ipc_contracts::calendar::CalendarEvent],
+    from: NaiveDate,
+    to: NaiveDate,
+) -> Vec<serde_json::Value> {
+    let mut hits: Vec<(NaiveDate, &yantrik_ipc_contracts::calendar::CalendarEvent)> = events
+        .iter()
+        .filter_map(|e| {
+            let day = e.start.get(..10).and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())?;
+            (from..=to).contains(&day).then_some((day, e))
+        })
+        .collect();
+    hits.sort_by(|a, b| (a.0, &a.1.start).cmp(&(b.0, &b.1.start)));
+    hits.into_iter()
+        .map(|(day, e)| {
+            serde_json::json!({
+                "date": day.to_string(),
+                "start": e.start,
+                "end": e.end,
+                "title": e.title,
+                "location": e.location,
+            })
+        })
+        .collect()
 }

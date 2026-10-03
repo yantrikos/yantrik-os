@@ -39,9 +39,13 @@ export component MonthGrid inherits VerticalLayout {
     // band under every shorter month.
     property <int> month-rows: root.days.length > 35 && root.days[35].day-number > 0 ? 6 : 5;
 
-    property <[string]> headers: root.compact
-        ? ["S", "M", "T", "W", "T", "F", "S"]
-        : ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    // The first column's weekday. Rust fills `days` with the same week start (the contract's
+    // `month_grid`), so the header over a column and the dates under it cannot disagree.
+    in property <bool> monday-first: false;
+
+    property <[string]> headers: root.monday-first
+        ? (root.compact ? ["M", "T", "W", "T", "F", "S", "S"] : ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])
+        : (root.compact ? ["S", "M", "T", "W", "T", "F", "S"] : ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]);
 
     spacing: 2px;
 

@@ -56,6 +56,7 @@ export component CalendarApp inherits AppWindow {
     // ── Week view ──
     in property <[CalendarTimeEvent]> week-events <=> cal.week-events;
     in property <[string]> week-day-labels <=> cal.week-day-labels;
+    in property <bool> week-starts-monday <=> cal.week-starts-monday;
     in property <int> current-hour <=> cal.current-hour;
     in property <int> current-minute <=> cal.current-minute;
 

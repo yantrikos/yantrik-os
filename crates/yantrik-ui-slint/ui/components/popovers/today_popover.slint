@@ -68,6 +68,7 @@ export component TodayPopover inherits YPopover {
         }
         MonthGrid {
             days: TodayState.days;
+            monday-first: TodayState.week-starts-monday;
             compact: true;
             clickable: false;
             cell-min-height: Theme.today-cell-h;

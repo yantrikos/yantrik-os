@@ -21,6 +21,8 @@ export global TodayState {
     // "October 2026".
     in property <string> month-title: "";
     in property <[CalendarDay]> days: [];
+    // Whether the first column of `days` is Monday (the same week start the Calendar app uses).
+    in property <bool> week-starts-monday: false;
     // loading | ok | unavailable
     in property <string> events-state: "loading";
     in property <[TodayEvent]> events: [];

@@ -143,6 +143,9 @@ fn set_clock(ui: &CalendarApp) {
 struct CalState {
     year: i32,
     month: u32,
+    /// The first day of the week, read once at start: the settings file's `week_start`, else the
+    /// locale. The month grid, the week view and `show_date` all read this one value.
+    week_start: views::WeekStart,
     events: Vec<CalEvent>,
     /// The date range `events` was read for, or `None` when the last read failed and the next
     /// redraw should ask again rather than show an empty calendar for the life of the process.
@@ -205,17 +208,7 @@ fn fetch_events_in_range(
     from: chrono::NaiveDate,
     to: chrono::NaiveDate,
 ) -> Result<Vec<CalEvent>, String> {
-    let client = service::client("calendar")?;
-    let params = EventsParams {
-        start_date: format!("{}T00:00:00", from.format("%Y-%m-%d")),
-        end_date: format!("{}T23:59:59", to.format("%Y-%m-%d")),
-    };
-    let result = client
-        .call(method::EVENTS, serde_json::to_value(params).map_err(|e| e.to_string())?)
-        .map_err(|e| e.message)?;
-    let svc_events: Vec<yantrik_ipc_contracts::calendar::CalendarEvent> =
-        serde_json::from_value(result).map_err(|e| e.to_string())?;
-
+    let svc_events = fetch_service_events(from, to)?;
     Ok(svc_events.iter().enumerate().map(|(i, e)| CalEvent {
         id: e.id.clone(),
         title: e.title.clone(),
@@ -226,6 +219,23 @@ fn fetch_events_in_range(
         creator: e.creator.clone(),
         color_index: i,
     }).collect())
+}
+
+/// The store's events for `from..=to`, as the service sent them (with `location`, which the
+/// window's own `CalEvent` has no use for). `events_between` reads these directly.
+fn fetch_service_events(
+    from: chrono::NaiveDate,
+    to: chrono::NaiveDate,
+) -> Result<Vec<yantrik_ipc_contracts::calendar::CalendarEvent>, String> {
+    let client = service::client("calendar")?;
+    let params = EventsParams {
+        start_date: format!("{}T00:00:00", from.format("%Y-%m-%d")),
+        end_date: format!("{}T23:59:59", to.format("%Y-%m-%d")),
+    };
+    let result = client
+        .call(method::EVENTS, serde_json::to_value(params).map_err(|e| e.to_string())?)
+        .map_err(|e| e.message)?;
+    serde_json::from_value(result).map_err(|e| e.to_string())
 }
 
 /// Everything stored on one day, read now rather than taken off the screen.
@@ -374,7 +384,13 @@ fn today() -> (i32, u32, u32) {
 
 use chrono::{Datelike, Timelike};
 
-fn build_month_grid(year: i32, month: u32, events: &[CalEvent], today_day: Option<u32>) -> Vec<CalendarDay> {
+fn build_month_grid(
+    year: i32,
+    month: u32,
+    events: &[CalEvent],
+    today_day: Option<u32>,
+    week_start: views::WeekStart,
+) -> Vec<CalendarDay> {
     // The grid itself is the contract's `month_grid`, shared with the shell's Today panel: two
     // copies of "which column does the 1st land in" is how two calendars end up disagreeing.
     let today = today_day.and_then(|d| chrono::NaiveDate::from_ymd_opt(year, month, d));
@@ -382,7 +398,7 @@ fn build_month_grid(year: i32, month: u32, events: &[CalEvent], today_day: Optio
         let prefix = format!("{:04}-{:02}-{:02}", year, month, d);
         events.iter().filter(|e| e.start.starts_with(&prefix)).count() as i32
     };
-    yantrik_ipc_contracts::calendar::month_grid(year, month, &counts, today)
+    yantrik_ipc_contracts::calendar::month_grid(year, month, &counts, today, week_start)
         .into_iter()
         .map(|c| CalendarDay {
             day_number: c.day as i32,
@@ -558,7 +574,9 @@ fn render(ui: &CalendarApp, state: &Rc<RefCell<CalState>>) {
         s.month,
         &s.events,
         today_day,
+        s.week_start,
     ))));
+    ui.set_week_starts_monday(s.week_start == views::WeekStart::Monday);
     ui.set_events_today(ModelRc::new(VecModel::from(events_for_day(
         &s.events, s.year, s.month, day,
     ))));
@@ -568,7 +586,7 @@ fn render(ui: &CalendarApp, state: &Rc<RefCell<CalState>>) {
     let source = source_events(&s.events);
     let selected = views::selected_date(s.year, s.month, day);
 
-    let week = views::week_view(&source, selected);
+    let week = views::week_view(&source, selected, s.week_start);
     let labels: Vec<SharedString> =
         week.labels.iter().map(|l| SharedString::from(l.as_str())).collect();
     ui.set_week_day_labels(ModelRc::new(VecModel::from(labels)));
@@ -583,6 +601,27 @@ fn render(ui: &CalendarApp, state: &Rc<RefCell<CalState>>) {
     refresh_agent_rail(ui);
 }
 
+/// The week's first day on this machine: `week_start: monday | sunday` in the shell's settings
+/// file, else the locale's (`LC_ALL`, `LC_TIME`, `LANG`), else Sunday.
+fn week_start_setting() -> views::WeekStart {
+    let text = std::fs::read_to_string(yantrik_app_runtime::theme::settings_path()).unwrap_or_default();
+    views::WeekStart::system(&text)
+}
+
+/// `events_between`, as published. A function so a test can read the grade the surface will
+/// carry: this is a read, and a mind reading must not need a standard grant or move the window.
+fn events_between_action() -> yantrik_app_runtime::control::Action {
+    use yantrik_app_runtime::control::{Action, Param};
+    Action::new(
+        "events_between",
+        "List the events from one date to another, inclusive, up to 62 days, read from the \
+         calendar store whatever the window is showing. Each has date, start, end, title and location",
+    )
+    .arg(Param::text("from").describe("First day, YYYY-MM-DD"))
+    .arg(Param::text("to").describe("Last day, YYYY-MM-DD, at most 62 days after `from`"))
+    .risk("safe")
+}
+
 /// The dates the views on screen need.
 fn visible_range(
     ui: &CalendarApp,
@@ -594,6 +633,7 @@ fn visible_range(
         s.month,
         ViewMode::from_index(ui.get_view_mode()),
         ui.get_selected_day(),
+        s.week_start,
     )
 }
 
@@ -1091,7 +1131,7 @@ fn update_through_service(
 }
 
 fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
-    use yantrik_app_runtime::control::{Action, App, Param, View};
+    use yantrik_app_runtime::control::{answer_later, Action, App, Param, View};
 
     let describe = {
         let weak = app.as_weak();
@@ -1130,7 +1170,7 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
             let s = st.borrow();
             let view = ViewMode::from_index(ui.get_view_mode());
             let selected = views::selected_date(s.year, s.month, day);
-            let (week_start, week_end) = views::week_bounds(selected);
+            let (week_start, week_end) = views::week_bounds(selected, s.week_start);
 
             let today: Vec<serde_json::Value> = events_on_day(&s.events, s.year, s.month, day)
                 .into_iter()
@@ -1165,7 +1205,7 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
             // now answer as themselves: the week says its range and what each of its seven days
             // holds; the day says its date and its events in order.
             let source = source_events(&s.events);
-            let week = views::week_view(&source, selected);
+            let week = views::week_view(&source, selected, s.week_start);
             let day_view = views::day_view(&source, selected);
 
             let summary = match view {
@@ -1219,6 +1259,10 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                 // sensitive, so learning the day raised an approval card (#207).
                 .with("today", views::today_line(chrono::Local::now().date_naive()))
                 .with("view", view.as_str())
+                // The first column of the month grid and the week view, so a caller asking for
+                // "the week of Monday 28 September" knows what the window's week is. To read a
+                // range without caring, use `events_between`.
+                .with("week_starts_on", s.week_start.as_str())
                 .with("events_on_selected_day", serde_json::Value::Array(today))
                 .with("naming", serde_json::Value::Object(naming))
                 .with("days_with_events", serde_json::Value::Array(busy))
@@ -1332,11 +1376,44 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                     .filter_map(|i| model.row_data(i))
                     .map(|e| e.title.to_string())
                     .collect();
+                // The week the date is in, on this window's week start: in the week view that is
+                // what is now on screen, and the date is in it.
+                let (week_start, week_end) = {
+                    let s = date_state.borrow();
+                    views::week_bounds(views::selected_date(s.year, s.month, ui.get_selected_day()), s.week_start)
+                };
                 Ok(serde_json::json!({
                     "showing": ui.get_month_title().to_string(),
                     "date": date,
+                    "week_start": week_start.to_string(),
+                    "week_end": week_end.to_string(),
                     "events": titles,
                 }))
+            },
+        )
+        .action(
+            // A read: it asks the store, not the grid, so a mind never has to steer the view
+            // (`set_view`, `show_date`) to see a range. On 28 Sep - 4 Oct a mind could not get the
+            // Monday week out of a Sunday-first view and gave up without writing its plan.
+            events_between_action(),
+            move |args| {
+                let from = args["from"].as_str().unwrap_or_default();
+                let to = args["to"].as_str().unwrap_or_default();
+                let (from, to) = views::parse_range(from, to)?;
+                // The socket call runs on the RPC side, not the UI thread.
+                let work = move || {
+                    let events = fetch_service_events(from, to)?;
+                    let listed = views::events_between(&events, from, to);
+                    Ok(serde_json::json!({
+                        "from": from.to_string(),
+                        "to": to.to_string(),
+                        "count": listed.len(),
+                        "events": listed,
+                    }))
+                };
+                answer_later(work)
+                    .map(|()| serde_json::json!("replaced by the work's own answer"))
+                    .or_else(|work| work())
             },
         )
         .action(
@@ -1651,11 +1728,10 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                 Ok(match ViewMode::from_index(mode) {
                     ViewMode::Week => {
                         let s = view_state.borrow();
-                        let (start, end) = views::week_bounds(views::selected_date(
-                            s.year,
-                            s.month,
-                            ui.get_selected_day(),
-                        ));
+                        let (start, end) = views::week_bounds(
+                            views::selected_date(s.year, s.month, ui.get_selected_day()),
+                            s.week_start,
+                        );
                         serde_json::json!({
                             "view": "week",
                             "week_start": start.to_string(),
@@ -1692,6 +1768,7 @@ fn wire(app: &CalendarApp) -> slint::Timer {
     let state = Rc::new(RefCell::new(CalState {
         year: ty,
         month: tm,
+        week_start: week_start_setting(),
         events: Vec::new(),
         range: None,
         revision: None,
@@ -2085,5 +2162,16 @@ mod tests {
         assert_eq!(ymd("2026-09-32"), None);
         assert_eq!(ymd("30 Sep"), None, "not a date: the window stays where it is");
         assert_eq!(ymd(""), None);
+    }
+
+    /// A mind could not read "the week of Monday 28 September" because the only way to a range
+    /// was to steer a Sunday-first view. Reading is not that view's job, and it is safe: nothing
+    /// is changed and nothing is shown.
+    #[test]
+    fn events_between_is_a_safe_read() {
+        let spec = events_between_action();
+        assert_eq!(spec.permission, "safe");
+        assert!(spec.description.contains("62 days"));
+        assert_eq!(spec.params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["from", "to"]);
     }
 }

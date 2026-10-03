@@ -1,6 +1,6 @@
 //! Calendar service contract — event CRUD, sync, scheduling.
 
-use chrono::{Datelike, NaiveDate, NaiveDateTime};
+use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 use crate::email::ServiceError;
 
@@ -281,19 +281,120 @@ pub struct DayCell {
     pub is_current_month: bool,
 }
 
-/// The 42 cells of a Sunday-first month grid: blanks (`day == 0`) before the 1st and after the
-/// last day, then the days, so a cell's row is `index / 7` and its column `index % 7`.
+/// The first day of the week.
+///
+/// One type for every surface that draws or reads a week: the Calendar app's week view, the month
+/// grid it shares with Today, `show_date`, and `events_between`'s callers all have to put the same
+/// date in the same column. The week view was fixed to Sunday while a mind asked for "Monday 28
+/// September to Sunday 4 October", so it could never be shown the range it was asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WeekStart {
+    #[default]
+    Sunday,
+    Monday,
+}
+
+/// Territories whose week starts on Sunday (CLDR's firstDay data). Every other territory starts
+/// on Monday, which is what glibc's locales say for them too.
+const SUNDAY_TERRITORIES: &[&str] = &[
+    "AG", "AS", "BD", "BR", "BS", "BT", "BW", "BZ", "CA", "CO", "DM", "DO", "ET", "GT", "GU", "HK",
+    "HN", "ID", "IL", "IN", "JM", "JP", "KE", "KH", "KR", "LA", "MH", "MM", "MO", "MT", "MX", "MZ",
+    "NI", "NP", "PA", "PE", "PH", "PK", "PR", "PT", "PY", "SA", "SG", "SV", "TH", "TT", "TW", "UM",
+    "US", "VE", "VI", "WS", "YE", "ZA", "ZW",
+];
+
+impl WeekStart {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WeekStart::Sunday => "sunday",
+            WeekStart::Monday => "monday",
+        }
+    }
+
+    /// `monday` or `sunday`, any case. `auto`, empty and anything else is `None`: follow the locale.
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim().trim_matches('"').trim_matches('\'').to_ascii_lowercase().as_str() {
+            "monday" | "mon" => Some(WeekStart::Monday),
+            "sunday" | "sun" => Some(WeekStart::Sunday),
+            _ => None,
+        }
+    }
+
+    /// What a locale name such as `de_DE.UTF-8` or `en_US` says. A name with no territory (`C`,
+    /// `POSIX`, `en`) says nothing, so it keeps the default, Sunday.
+    pub fn from_locale(locale: &str) -> Self {
+        let name = locale.split(['.', '@']).next().unwrap_or("");
+        match name.split_once('_') {
+            Some((_, territory)) if !SUNDAY_TERRITORIES.contains(&territory.to_ascii_uppercase().as_str()) => {
+                WeekStart::Monday
+            }
+            _ => WeekStart::Sunday,
+        }
+    }
+
+    /// The setting wins; with none, the locale of the time formats (`LC_ALL`, then `LC_TIME`, then
+    /// `LANG`, the order libc reads them in).
+    pub fn resolve(setting: Option<&str>, lc_all: &str, lc_time: &str, lang: &str) -> Self {
+        if let Some(chosen) = setting.and_then(Self::parse) {
+            return chosen;
+        }
+        let locale = [lc_all, lc_time, lang].into_iter().find(|v| !v.is_empty()).unwrap_or("");
+        Self::from_locale(locale)
+    }
+
+    /// The `week_start:` line of the shell's settings text, if there is one.
+    pub fn setting_in(settings_text: &str) -> Option<String> {
+        settings_text.lines().find_map(|line| {
+            let (key, value) = line.trim().split_once(':')?;
+            (key.trim() == "week_start").then(|| value.trim().to_string())
+        })
+    }
+
+    /// From the settings text and the process environment: what this machine's week starts on.
+    pub fn system(settings_text: &str) -> Self {
+        let env = |k: &str| std::env::var(k).unwrap_or_default();
+        Self::resolve(
+            Self::setting_in(settings_text).as_deref(),
+            &env("LC_ALL"),
+            &env("LC_TIME"),
+            &env("LANG"),
+        )
+    }
+
+    /// 0 for the first column of the week.
+    pub fn column_of(self, date: NaiveDate) -> u32 {
+        match self {
+            WeekStart::Sunday => date.weekday().num_days_from_sunday(),
+            WeekStart::Monday => date.weekday().num_days_from_monday(),
+        }
+    }
+
+    /// The first day of the week containing `date`.
+    pub fn week_start_of(self, date: NaiveDate) -> NaiveDate {
+        date - Duration::days(self.column_of(date) as i64)
+    }
+}
+
+/// The 42 cells of a month grid whose first column is `week_start`: blanks (`day == 0`) before
+/// the 1st and after the last day, then the days, so a cell's row is `index / 7` and its column
+/// `index % 7`.
 ///
 /// One function for every surface that draws a month: the Calendar app's month view and the
 /// shell's Today panel both used to need it, and the second copy would have been the one that
 /// disagreed about which weekday a month starts on. `events_on` answers how many events a day
 /// holds; `today` is the date to mark. A month that does not exist gives all blanks.
-pub fn month_grid(year: i32, month: u32, events_on: &dyn Fn(u32) -> i32, today: Option<NaiveDate>) -> Vec<DayCell> {
+pub fn month_grid(
+    year: i32,
+    month: u32,
+    events_on: &dyn Fn(u32) -> i32,
+    today: Option<NaiveDate>,
+    week_start: WeekStart,
+) -> Vec<DayCell> {
     let blank = || DayCell { year, month, day: 0, event_count: 0, is_today: false, is_current_month: false };
     let Some(first) = NaiveDate::from_ymd_opt(year, month, 1) else {
         return (0..42).map(|_| blank()).collect();
     };
-    let lead = first.weekday().num_days_from_sunday() as usize;
+    let lead = week_start.column_of(first) as usize;
     let last = (28..=31).rev().find(|d| NaiveDate::from_ymd_opt(year, month, *d).is_some()).unwrap_or(28);
     let mut cells: Vec<DayCell> = (0..lead).map(|_| blank()).collect();
     for day in 1..=last {
@@ -336,7 +437,7 @@ mod tests {
     /// Sunday-first week. The Calendar app drew its weekday header from the same assumption.
     #[test]
     fn a_month_starts_in_the_column_of_its_weekday() {
-        let cells = month_grid(2026, 10, &|_| 0, None);
+        let cells = month_grid(2026, 10, &|_| 0, None, WeekStart::Sunday);
         assert_eq!(cells.len(), 42);
         assert_eq!(day(&cells, 1), 4, "Thursday is column 4 with Sunday first");
         assert_eq!(day(&cells, 31) % 7, 6, "31 October 2026 is a Saturday");
@@ -346,7 +447,7 @@ mod tests {
 
     #[test]
     fn leap_february_has_twenty_nine_days_and_a_common_one_twenty_eight() {
-        let days = |y| month_grid(y, 2, &|_| 0, None).iter().filter(|c| c.day > 0).count();
+        let days = |y| month_grid(y, 2, &|_| 0, None, WeekStart::Sunday).iter().filter(|c| c.day > 0).count();
         assert_eq!((days(2028), days(2026)), (29, 28));
     }
 
@@ -354,14 +455,38 @@ mod tests {
     #[test]
     fn today_is_marked_once_and_events_are_counted_per_day() {
         let today = NaiveDate::from_ymd_opt(2026, 10, 2);
-        let cells = month_grid(2026, 10, &|d| if d == 2 { 3 } else { 0 }, today);
+        let cells = month_grid(2026, 10, &|d| if d == 2 { 3 } else { 0 }, today, WeekStart::Sunday);
         assert_eq!(cells.iter().filter(|c| c.is_today).count(), 1);
         assert_eq!(cells[day(&cells, 2)].event_count, 3);
-        assert!(month_grid(2026, 11, &|_| 0, today).iter().all(|c| !c.is_today), "another month marks nothing");
+        assert!(month_grid(2026, 11, &|_| 0, today, WeekStart::Sunday).iter().all(|c| !c.is_today), "another month marks nothing");
+    }
+
+    /// The grid agrees with the week start: 1 October 2026 is a Thursday, so it is column 3 of a
+    /// Monday-first week and the first column holds a Monday in every row.
+    #[test]
+    fn the_grid_follows_the_week_start() {
+        let cells = month_grid(2026, 10, &|_| 0, None, WeekStart::Monday);
+        assert_eq!(day(&cells, 1), 3, "Thursday is column 3 with Monday first");
+        assert_eq!(day(&cells, 5) % 7, 0, "5 October 2026 is a Monday, first column");
+        assert_eq!(day(&cells, 31) % 7, 5, "31 October 2026 is a Saturday, column 5");
+    }
+
+    #[test]
+    fn the_week_start_comes_from_the_setting_then_the_locale() {
+        use WeekStart::*;
+        assert_eq!(WeekStart::resolve(None, "", "", "en_US.UTF-8"), Sunday);
+        assert_eq!(WeekStart::resolve(None, "", "", "de_DE.UTF-8"), Monday);
+        assert_eq!(WeekStart::resolve(None, "", "en_GB.UTF-8", "en_US.UTF-8"), Monday, "LC_TIME beats LANG");
+        assert_eq!(WeekStart::resolve(None, "en_US", "en_GB", "de_DE"), Sunday, "LC_ALL beats both");
+        assert_eq!(WeekStart::resolve(None, "", "", "C"), Sunday, "no territory keeps the default");
+        assert_eq!(WeekStart::resolve(Some("monday"), "", "", "en_US.UTF-8"), Monday, "the setting wins");
+        assert_eq!(WeekStart::resolve(Some("auto"), "", "", "de_DE"), Monday, "auto follows the locale");
+        assert_eq!(WeekStart::setting_in("dark_mode: true\nweek_start: \"Monday\"\n").as_deref(), Some("\"Monday\""));
+        assert_eq!(WeekStart::system("week_start: sunday\n"), Sunday);
     }
 
     #[test]
     fn a_month_that_does_not_exist_is_all_blanks() {
-        assert!(month_grid(2026, 13, &|_| 1, None).iter().all(|c| c.day == 0 && c.event_count == 0));
+        assert!(month_grid(2026, 13, &|_| 1, None, WeekStart::Sunday).iter().all(|c| c.day == 0 && c.event_count == 0));
     }
 }

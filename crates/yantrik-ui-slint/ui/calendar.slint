@@ -98,6 +98,8 @@ export component CalendarScreen inherits Rectangle {
     // Week view data
     in property <[CalendarTimeEvent]> week-events: [];
     in property <[string]> week-day-labels: [];
+    // Whether the month grid's first column is Monday; the week view's own labels come from Rust.
+    in property <bool> week-starts-monday: false;
 
     // Where "now" is on the hour grid.
     //
@@ -329,6 +331,7 @@ export component CalendarScreen inherits Rectangle {
                 // ═══════════════════════════════════════
                 if root.view-mode == 0 : MonthGrid {
                     days: root.days;
+                    monday-first: root.week-starts-monday;
                     cell-min-height: 56px;
                     accent: AppIdentity.accent;
                     tint: AppIdentity.tint;

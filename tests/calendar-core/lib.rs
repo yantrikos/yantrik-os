@@ -1146,6 +1146,7 @@ mod view_tests {
         added_clock, all_day_bounds, day_view, last_day_of_month, name_event, named_on,
         naming_index, rescheduled, selected_date, start_and_end, timezone_label, today_line,
         visible_range, week_bounds, week_view, EventRef, NAMING_CAP, Named, SourceEvent, ViewMode,
+        WeekStart, events_between, parse_range, MAX_RANGE_DAYS,
     };
     use chrono::NaiveDate;
 
@@ -1184,8 +1185,8 @@ mod view_tests {
         // 2026-09-22 is a Tuesday, so the third column of a week that starts on Sunday.
         let week = week_view(
             &[event("Standup", "2026-09-22T09:30:00", "2026-09-22T09:45:00")],
-            date(2026, 9, 22),
-        );
+            date(2026, 9, 22), WeekStart::Sunday,
+);
         assert_eq!(week.events.len(), 1);
         let block = &week.events[0];
         assert_eq!(block.day_index, 2);
@@ -1197,8 +1198,8 @@ mod view_tests {
     fn a_blocks_height_is_the_minutes_between_its_start_and_its_end() {
         let week = week_view(
             &[event("Review", "2026-09-22T14:00:00", "2026-09-22T15:30:00")],
-            date(2026, 9, 22),
-        );
+            date(2026, 9, 22), WeekStart::Sunday,
+);
         assert_eq!(week.events[0].duration_min, 90);
     }
 
@@ -1223,8 +1224,8 @@ mod view_tests {
     fn an_event_running_past_midnight_is_clipped_at_the_day_and_continued_on_the_next() {
         let week = week_view(
             &[event("Deploy window", "2026-09-22T22:00:00", "2026-09-23T01:00:00")],
-            date(2026, 9, 22),
-        );
+            date(2026, 9, 22), WeekStart::Sunday,
+);
         assert_eq!(week.events.len(), 2, "one block per day it covers");
 
         let tuesday = &week.events[0];
@@ -1253,8 +1254,8 @@ mod view_tests {
     fn an_event_ending_exactly_at_midnight_does_not_leave_an_empty_block_on_the_next_day() {
         let week = week_view(
             &[event("Evening", "2026-09-22T22:00:00", "2026-09-23T00:00:00")],
-            date(2026, 9, 22),
-        );
+            date(2026, 9, 22), WeekStart::Sunday,
+);
         assert_eq!(week.events.len(), 1);
         assert_eq!(week.events[0].duration_min, 120);
     }
@@ -1268,14 +1269,14 @@ mod view_tests {
             event("Next week", "2026-09-29T09:00:00", "2026-09-29T10:00:00"),
             event("Last week", "2026-09-15T09:00:00", "2026-09-15T10:00:00"),
         ];
-        let week = week_view(&events, date(2026, 9, 22));
+        let week = week_view(&events, date(2026, 9, 22), WeekStart::Sunday);
         let titles: Vec<&str> = week.events.iter().map(|e| e.title.as_str()).collect();
         assert_eq!(titles, ["This week"]);
     }
 
     #[test]
     fn an_all_day_event_is_not_given_an_hour_it_never_had() {
-        let week = week_view(&[all_day("Company holiday", "2026-09-23")], date(2026, 9, 22));
+        let week = week_view(&[all_day("Company holiday", "2026-09-23")], date(2026, 9, 22), WeekStart::Sunday);
         assert!(week.events.is_empty(), "nothing on the hour grid");
         assert_eq!(week.all_day[3], ["Company holiday"]);
         // The column header is the only place on a grid of hours that can say so.
@@ -1296,7 +1297,7 @@ mod view_tests {
             event("Empty", "", ""),
             event("Real", "2026-09-22T11:00:00", "2026-09-22T12:00:00"),
         ];
-        let week = week_view(&events, date(2026, 9, 22));
+        let week = week_view(&events, date(2026, 9, 22), WeekStart::Sunday);
         let titles: Vec<&str> = week.events.iter().map(|e| e.title.as_str()).collect();
         assert_eq!(titles, ["Real"]);
 
@@ -1310,17 +1311,99 @@ mod view_tests {
     fn the_week_starts_on_sunday_because_the_month_grid_does() {
         // calendar.slint draws Sun..Sat over the month, so a date's column has to be the same
         // number in both views or the same day is in two places.
-        let (start, end) = week_bounds(date(2026, 9, 22));
+        let (start, end) = week_bounds(date(2026, 9, 22), WeekStart::Sunday);
         assert_eq!(start, date(2026, 9, 20));
         assert_eq!(end, date(2026, 9, 26));
 
         // A Sunday is the start of its own week, not the end of the one before.
-        assert_eq!(week_bounds(date(2026, 9, 20)).0, date(2026, 9, 20));
+        assert_eq!(week_bounds(date(2026, 9, 20), WeekStart::Sunday).0, date(2026, 9, 20));
+    }
+
+    /// The bug on VM 520: a mind asked for the week Monday 28 September to Sunday 4 October, and
+    /// the only week view started on Sunday, so it always showed 27 Sep - 3 Oct.
+    #[test]
+    fn a_monday_week_runs_monday_to_sunday_and_shows_the_range_a_mind_asked_for() {
+        let (start, end) = week_bounds(date(2026, 9, 28), WeekStart::Monday);
+        assert_eq!((start, end), (date(2026, 9, 28), date(2026, 10, 4)));
+        // A Sunday is the last day of its week, not the first of the next.
+        assert_eq!(week_bounds(date(2026, 10, 4), WeekStart::Monday).0, date(2026, 9, 28));
+        // The same date, on a Sunday week, is the 27th to the 3rd: the setting changes the answer.
+        assert_eq!(week_bounds(date(2026, 9, 28), WeekStart::Sunday).0, date(2026, 9, 27));
+
+        let week = week_view(&[], date(2026, 9, 30), WeekStart::Monday);
+        assert_eq!(
+            week.labels,
+            ["Mon 28", "Tue 29", "Wed 30", "Thu 1", "Fri 2", "Sat 3", "Sun 4"]
+        );
+        // And the store is asked for the days that week needs.
+        let (from, to) = visible_range(2026, 9, ViewMode::Week, 30, WeekStart::Monday);
+        assert_eq!((from, to), (date(2026, 9, 1), date(2026, 10, 4)));
+    }
+
+    #[test]
+    fn an_event_lands_in_the_column_of_its_weekday_whichever_day_the_week_starts_on() {
+        let events = [event("Standup", "2026-09-28T09:00:00", "2026-09-28T09:30:00")];
+        let column = |first| week_view(&events, date(2026, 9, 28), first).events[0].day_index;
+        assert_eq!((column(WeekStart::Sunday), column(WeekStart::Monday)), (1, 0));
+    }
+
+    // -- events_between ----------------------------------------------
+
+    fn listed_event(title: &str, start: &str, location: Option<&str>) -> yantrik_ipc_contracts::calendar::CalendarEvent {
+        yantrik_ipc_contracts::calendar::CalendarEvent {
+            id: title.into(),
+            calendar_id: "default".into(),
+            title: title.into(),
+            description: String::new(),
+            start: start.into(),
+            end: start.replace("T09", "T10"),
+            location: location.map(str::to_string),
+            is_all_day: false,
+            attendees: Vec::new(),
+            recurrence: None,
+            remote_id: None,
+            creator: None,
+            reminder_minutes: 10,
+        }
+    }
+
+    #[test]
+    fn events_between_returns_exactly_the_in_range_events_across_a_month_boundary() {
+        let events = [
+            listed_event("Before", "2026-09-27T09:00:00", None),
+            listed_event("October one", "2026-10-01T09:00:00", Some("Room 4")),
+            listed_event("Last of September", "2026-09-30T09:00:00", None),
+            listed_event("First day", "2026-09-28T09:00:00", None),
+            listed_event("Last day", "2026-10-04T09:00:00", None),
+            listed_event("After", "2026-10-05T09:00:00", None),
+        ];
+        let listed = events_between(&events, date(2026, 9, 28), date(2026, 10, 4));
+        let titles: Vec<&str> = listed.iter().map(|e| e["title"].as_str().unwrap()).collect();
+        assert_eq!(titles, ["First day", "Last of September", "October one", "Last day"]);
+        assert_eq!(listed[2]["date"], "2026-10-01");
+        assert_eq!(listed[2]["start"], "2026-10-01T09:00:00");
+        assert_eq!(listed[2]["end"], "2026-10-01T10:00:00");
+        assert_eq!(listed[2]["location"], "Room 4");
+        assert!(listed[0]["location"].is_null());
+        assert!(events_between(&events, date(2026, 11, 1), date(2026, 11, 2)).is_empty());
+    }
+
+    #[test]
+    fn events_between_refuses_a_range_over_62_days_or_a_backwards_or_unreadable_one() {
+        assert_eq!(MAX_RANGE_DAYS, 62);
+        // 62 days inclusive is the most: 1 Sep to 2 Nov.
+        assert!(parse_range("2026-09-01", "2026-11-01").is_ok());
+        let err = parse_range("2026-09-01", "2026-11-02").unwrap_err();
+        assert!(err.contains("63 days") && err.contains("62"), "{err}");
+        assert!(parse_range("2026-10-04", "2026-09-28").unwrap_err().contains("before"));
+        assert!(parse_range("2026-09-28", "2026-09-28").is_ok(), "one day is a range");
+        assert!(parse_range("28 Sep", "2026-10-04").unwrap_err().contains("`from`"));
+        assert!(parse_range("2026-09-28", "").unwrap_err().contains("`to`"));
     }
 
     #[test]
     fn the_column_headers_read_as_the_dates_of_the_week() {
-        let week = week_view(&[], date(2026, 9, 22));
+        let week = week_view(&[], date(2026, 9, 22), WeekStart::Sunday);
         assert_eq!(
             week.labels,
             ["Sun 20", "Mon 21", "Tue 22", "Wed 23", "Thu 24", "Fri 25", "Sat 26"]
@@ -1336,7 +1419,7 @@ mod view_tests {
             event("September", "2026-09-29T09:00:00", "2026-09-29T10:00:00"),
             event("October", "2026-10-01T09:00:00", "2026-10-01T10:00:00"),
         ];
-        let week = week_view(&events, date(2026, 10, 1));
+        let week = week_view(&events, date(2026, 10, 1), WeekStart::Sunday);
         let placed: Vec<(&str, i32)> =
             week.events.iter().map(|e| (e.title.as_str(), e.day_index)).collect();
         assert_eq!(placed, [("September", 2), ("October", 4)]);
@@ -1346,18 +1429,18 @@ mod view_tests {
     fn the_week_view_asks_the_store_for_the_days_the_week_needs_not_just_the_month() {
         // The app fetched exactly the month on screen, so the September half of this week was
         // never read and the week drew four empty columns without saying why.
-        let (from, to) = visible_range(2026, 10, ViewMode::Week, 1);
+        let (from, to) = visible_range(2026, 10, ViewMode::Week, 1, WeekStart::Sunday);
         assert_eq!(from, date(2026, 9, 27), "back to the Sunday the week starts on");
         assert_eq!(to, date(2026, 10, 31), "and still the whole month for the month grid");
 
         // The last week of a month reaches the other way.
-        let (from, to) = visible_range(2026, 9, ViewMode::Week, 30);
+        let (from, to) = visible_range(2026, 9, ViewMode::Week, 30, WeekStart::Sunday);
         assert_eq!(from, date(2026, 9, 1));
         assert_eq!(to, date(2026, 10, 3));
 
         // The month view asks for the month and no more.
         assert_eq!(
-            visible_range(2026, 9, ViewMode::Month, 22),
+            visible_range(2026, 9, ViewMode::Month, 22, WeekStart::Sunday),
             (date(2026, 9, 1), date(2026, 9, 30))
         );
     }
@@ -1664,7 +1747,7 @@ mod view_tests {
             is_all_day: true,
             color_index: 0,
         };
-        let week = week_view(&[event], date(2026, 9, 22));
+        let week = week_view(&[event], date(2026, 9, 22), WeekStart::Sunday);
         assert!(week.events.is_empty(), "an all-day event is not on the hour grid");
         assert_eq!(week.all_day[2], vec!["Conference".to_string()], "Tuesday's column");
     }
