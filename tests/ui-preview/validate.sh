@@ -38,6 +38,7 @@ run target/ui-validation/alt-tab-narrow.png 700 700 verify-alt-tab
 run target/ui-validation/cards-waiting.png 1280 800 verify-cards-waiting
 run target/ui-validation/kit-controls.png 880 460 verify-kit-controls
 run target/ui-validation/colour-system.png 720 360 verify-colour-system
+run target/ui-validation/icons.png 720 400 verify-icons
 run target/ui-validation/bar-overlays.png 1280 800 verify-bar-overlays
 run target/ui-validation/cheat-sheet.png 1280 800 verify-cheat-sheet
 run target/ui-validation/quick-settings.png 1280 800 verify-quick-settings

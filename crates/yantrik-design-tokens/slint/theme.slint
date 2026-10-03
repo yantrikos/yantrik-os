@@ -447,7 +447,8 @@ export global Theme {
     out property <length> dock-button: 40px;
     out property <length> dock-pad: 4px;
     out property <length> dock-gap: 4px;
-    out property <length> dock-icon: 24px;       // the tile inside a button: spec §3, "40×40 buttons with 24px icons"
+    out property <length> dock-icon: 32px;       // the tile inside a 40px button; its glyph is 20px, whole pixels (AppTile).
+                                                 // Spec §3 says "24px icons": a 24px tile left a 13px glyph, which read as a blob.
     out property <length> dock-pager-w: 32px;
     out property <length> dock-max-w: 880px;     // min(this, viewport - dock-side-margin)
     out property <length> dock-side-margin: 32px;

@@ -8,8 +8,8 @@
 // on every desktop a person has used, and it is what lets the colour do its job: you find
 // Files by its blue before you have read the word.
 //
-// The shape scales: the corner is a fraction of the size, not a token, because a 20px taskbar
-// tile and a 46px desktop tile have to be the same shape and one length cannot give both.
+// The shape scales: the corner is a fraction of the size, not a token, because a 32px dock
+// tile and a 48px desktop tile have to be the same shape and one length cannot give both.
 //
 // Three cases, decided here once:
 //   * our app, known to AppColor: the solid tile, the glyph in the colour that reads on it;
@@ -54,20 +54,30 @@ export component AppTile inherits Rectangle {
     border-color: root.coloured ? (ThemeMode.dark ? #ffffff30 : #00000024) : Theme.border-card;
     opacity: root.dimmed ? 0.7 : 1.0;
 
+    // Whole pixels, always. The glyphs are drawn on a 20-unit grid with their lines on the
+    // half-unit, so they land on the pixel grid at 20px and blur at any fraction of it; and a
+    // glyph centred at a fractional offset smears every edge it has. On VM 520 (3 October) the
+    // dock drew 13px glyphs at 0.6x and the desktop 24.8px ones at 1.24x with 2px strokes, and
+    // Pranab called the icons "not crisp but blunt". Small tiles get the exact 20px glyph; larger
+    // ones half their size, rounded; strokes are 1.5px everywhere, which reads as a line rather
+    // than a blob at every size the shell uses.
+    property <length> glyph-size: root.size <= 36px ? 20px : round(root.size / 2 / 1px) * 1px;
+    property <length> image-size: round(root.size * 0.66 / 1px) * 1px;
+
     if root.has-icon : Image {
         source: root.icon;
-        width: root.size * 0.66;
-        height: root.size * 0.66;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
+        width: root.image-size;
+        height: root.image-size;
+        x: round((parent.width - self.width) / 2 / 1px) * 1px;
+        y: round((parent.height - self.height) / 2 / 1px) * 1px;
         image-fit: contain;
     }
     if !root.has-icon : Icon {
         commands: root.glyph;
-        size: root.size * 0.54;
+        size: root.glyph-size;
         tint: root.coloured ? AppColor.on-tile(root.hue) : Theme.text-secondary;
-        thickness: root.size <= 24px ? 1.5px : root.size < 34px ? 1.8px : 2px;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
+        thickness: 1.5px;
+        x: round((parent.width - self.width) / 2 / 1px) * 1px;
+        y: round((parent.height - self.height) / 2 / 1px) * 1px;
     }
 }

@@ -1,0 +1,58 @@
+// Icon crispness probe: the same six app glyphs at the sizes the shell draws them today and at
+// sizes where the 20-unit glyph grid lands on whole pixels. Rendered by `verify-icons`.
+import { Theme } from "theme.slint";
+import { Icons, Icon } from "components/icon.slint";
+import { AppColor } from "components/app_color.slint";
+
+component Tile inherits Rectangle {
+    in property <string> app;
+    in property <length> tile;
+    in property <length> glyph;
+    in property <length> stroke;
+    in property <bool> snap;
+    width: tile; height: tile;
+    border-radius: tile * 0.26;
+    background: AppColor.tile-for-app(app);
+    border-width: 1px;
+    border-color: #ffffff30;
+    Icon {
+        commands: Icons.app-or-window(root.app);
+        size: root.glyph;
+        thickness: root.stroke;
+        tint: AppColor.on-tile(AppColor.hue-for-app(root.app));
+        x: root.snap ? round((parent.width - self.width) / 2 / 1px) * 1px : (parent.width - self.width) / 2;
+        y: root.snap ? round((parent.height - self.height) / 2 / 1px) * 1px : (parent.height - self.height) / 2;
+    }
+}
+
+component Row inherits Rectangle {
+    in property <string> label;
+    in property <length> tile;
+    in property <length> glyph;
+    in property <length> stroke;
+    in property <bool> snap;
+    height: 64px;
+    Text { x: 12px; y: (parent.height - self.height) / 2; text: root.label; color: Theme.text-secondary; font-size: 12px; }
+    HorizontalLayout {
+        x: 300px; spacing: 20px; alignment: start;
+        for app in ["files", "browser", "terminal", "notes", "email", "calendar"] : VerticalLayout {
+            alignment: center;
+            Tile { app: app; tile: root.tile; glyph: root.glyph; stroke: root.stroke; snap: root.snap; }
+        }
+    }
+}
+
+export component IconProbe inherits Window {
+    width: 720px;
+    height: 400px;
+    background: Theme.bg-deep;
+    VerticalLayout {
+        padding: 8px;
+        Row { label: "A  dock today: 24 tile, 13 glyph, 1.5"; tile: 24px; glyph: 24px * 0.54; stroke: 1.5px; snap: false; }
+        Row { label: "B  dock: 32 tile, 20 glyph, 1.5, snapped"; tile: 32px; glyph: 20px; stroke: 1.5px; snap: true; }
+        Row { label: "C  workspace today: 46, 24.8, 2"; tile: 46px; glyph: 46px * 0.54; stroke: 2px; snap: false; }
+        Row { label: "D  workspace: 46, 20, 1.5, snapped"; tile: 46px; glyph: 20px; stroke: 1.5px; snap: true; }
+        Row { label: "E  workspace: 48, 24, 1.5, snapped"; tile: 48px; glyph: 24px; stroke: 1.5px; snap: true; }
+        Row { label: "F  workspace: 44, 20, 1.25, snapped"; tile: 44px; glyph: 20px; stroke: 1.25px; snap: true; }
+    }
+}
