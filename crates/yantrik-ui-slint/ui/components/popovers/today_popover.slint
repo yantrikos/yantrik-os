@@ -9,7 +9,7 @@
 // surface write: the tile says `dnd-toggled` and the owner flips the real thing.
 //
 // It centres under the clock, and the body between the switch and the footer scrolls rather than
-// letting the panel run off a short screen.
+// letting the panel run off a short screen or down over the dock.
 import { Theme } from "theme.slint";
 import { Icons } from "../icon.slint";
 import { YPopover } from "../y_popover.slint";
@@ -34,7 +34,7 @@ export component TodayPopover inherits YPopover {
     // Everything that does not scroll, so the body can take what is left of the screen.
     property <length> fixed-h: head.preferred-height + dnd-tile.height + month-block.preferred-height
         + foot.height + 4 * Theme.sp-3 + 2 * Theme.sp-4;
-    property <length> body-room: root.screen-height - root.anchor-y - Theme.popover-gap - Theme.popover-margin - root.fixed-h;
+    property <length> body-room: root.screen-height - root.anchor-y - Theme.popover-gap - Theme.popover-margin - Theme.taskbar-height - Theme.popover-margin - root.fixed-h;
 
     head := VerticalLayout {
         Text {
