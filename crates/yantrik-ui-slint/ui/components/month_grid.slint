@@ -1,0 +1,160 @@
+// MonthGrid — the weekday header and the month of day cells, Sunday first.
+//
+// One grid for every surface that draws a month: the Calendar app's month view and the shell's
+// Today panel. It was inline in calendar.slint; Today would have needed a second copy, and two
+// grids are two places for "which column is Thursday" to go wrong. The data is
+// `yantrik_ipc_contracts::calendar::month_grid`, which both Rust sides use.
+//
+// The Calendar app sizes it to the whole pane (`cell-min-height` 56px, the numeral and the event
+// dots in the corner of a roomy cell); Today asks for `compact` and gets a short cell with the
+// numeral centred and one dot under it. Colours default to the accent and are overridden by the
+// app that has an identity colour of its own.
+//
+// A cell is only a button when the owner says so (`clickable`): a grid whose days do nothing must
+// not show a pointer over them.
+
+import { Theme } from "theme.slint";
+
+export struct CalendarDay {
+    day-number: int,         // 1-31, 0 = empty cell
+    is-today: bool,
+    is-selected: bool,
+    is-current-month: bool,
+    has-events: bool,
+    event-count: int,
+}
+
+export component MonthGrid inherits VerticalLayout {
+    in property <[CalendarDay]> days: [];
+    in property <length> cell-min-height: 56px;
+    in property <bool> compact: false;
+    in property <bool> clickable: true;
+    in property <color> accent: Theme.accent;
+    in property <color> tint: Theme.tint-accent;
+    // The ink on a filled "today" disc.
+    in property <color> accent-ink: Theme.bg-deep;
+    callback day-clicked(int);
+
+    // A month needs 6 rows only when it spills past cell 35; drawing 6 regardless left an empty
+    // band under every shorter month.
+    property <int> month-rows: root.days.length > 35 && root.days[35].day-number > 0 ? 6 : 5;
+
+    property <[string]> headers: root.compact
+        ? ["S", "M", "T", "W", "T", "F", "S"]
+        : ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+    spacing: 2px;
+
+    // Day-of-week headers
+    HorizontalLayout {
+        spacing: 2px;
+
+        for header in root.headers : Rectangle {
+            height: root.compact ? 24px : 32px;
+
+            // Compact: the header sits over the column's centre, where the numeral is. Roomy:
+            // the same box the date numeral gets (x:6, width:22), so the header is on the
+            // column's own axis and not ~38px to its right.
+            Text {
+                x: root.compact ? 0px : 6px;
+                width: root.compact ? parent.width : 22px;
+                height: 100%;
+                text: header;
+                color: Theme.text-dim;
+                font-size: Theme.fs-micro;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    // Rows share the pane height; a cell never drops below `cell-min-height`.
+    VerticalLayout {
+        spacing: 2px;
+        vertical-stretch: 1;
+
+        for row in root.month-rows : HorizontalLayout {
+            spacing: 2px;
+
+            for col in 7 : Rectangle {
+                property <int> cell-idx: row * 7 + col;
+                property <CalendarDay> cell-day: root.days.length > cell-idx
+                    ? root.days[cell-idx]
+                    : { day-number: 0, is-today: false, is-selected: false, is-current-month: false, has-events: false, event-count: 0 };
+
+                min-height: root.cell-min-height;
+                border-radius: Theme.r-sm;
+                // Days of this month sit on a faint surface so the month reads as a grid; days
+                // spilling in from the neighbouring months do not. bg-surface, not bg-surface at
+                // 55% opacity: over the page background that landed five values from it, which
+                // is to say invisible.
+                background: cell-day.is-selected ? root.tint
+                    : cell-day.is-current-month && !root.compact ? Theme.bg-surface
+                    : transparent;
+                border-width: cell-day.is-selected ? 1px : 0;
+                border-color: cell-day.is-selected ? Theme.accent-dim : transparent;
+
+                if cell-day.day-number > 0 && root.clickable : TouchArea {
+                    clicked => { root.day-clicked(cell-day.day-number); }
+                    mouse-cursor: pointer;
+                }
+
+                // The cell's contents are positioned, not laid out: a layout child reports a
+                // preferred width upward, and that made cells with a date shrink to their content
+                // while empty cells ate the rest of the row -- the columns stopped lining up with
+                // the weekday header. A Rectangle does not size to its children, so the row stays
+                // even.
+                //
+                // Date: top-left in a roomy cell, centred in a compact one. Today is a filled
+                // disc: the day you look for first should not have to be read.
+                if cell-day.day-number > 0 : Rectangle {
+                    x: root.compact ? (parent.width - self.width) / 2 : 6px;
+                    y: root.compact ? (parent.height - self.height) / 2 - 2px : 6px;
+                    width: root.compact ? 24px : 22px;
+                    height: root.compact ? 22px : 20px;
+                    border-radius: Theme.r-sm;
+                    background: cell-day.is-today ? root.accent : transparent;
+
+                    Text {
+                        text: cell-day.day-number;
+                        color: cell-day.is-today ? root.accent-ink
+                            : cell-day.is-selected ? root.accent
+                            : cell-day.is-current-month ? Theme.text-secondary
+                            : Theme.text-dim.transparentize(30%);
+                        font-size: Theme.fs-caption;
+                        font-weight: cell-day.is-today ? 700 : cell-day.is-current-month ? 500 : 400;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // What is on that day
+                if cell-day.has-events : HorizontalLayout {
+                    x: root.compact ? 0px : 9px;
+                    y: root.compact ? parent.height - 7px : 32px;
+                    width: root.compact ? parent.width : parent.width - 18px;
+                    height: 6px;
+                    alignment: root.compact ? center : start;
+                    spacing: 3px;
+
+                    Rectangle {
+                        width: 5px; height: 5px;
+                        border-radius: 2.5px;
+                        background: root.accent;
+                    }
+                    if cell-day.event-count > 1 && !root.compact : Rectangle {
+                        width: 5px; height: 5px;
+                        border-radius: 2.5px;
+                        background: Theme.amber;
+                    }
+                    if cell-day.event-count > 2 && !root.compact : Rectangle {
+                        width: 5px; height: 5px;
+                        border-radius: 2.5px;
+                        background: Theme.color-purple;
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,177 @@
+// TodayPopover — what hangs under the clock: the date, a month, today's events, the newest
+// notifications, and a Do Not Disturb switch.
+//
+// The month is the Calendar app's own grid (`MonthGrid`), compact, with a dot under a day that has
+// events; its days are not buttons here, because nothing opens from one. The events are the calendar
+// store's, and the panel says "Calendar didn't answer" when it did not, rather than "No events". The
+// notifications are the notification store's five newest with their senders' buttons. DND is a
+// YToggleTile in the accent when on, and it is the same setting the Settings page and the control
+// surface write: the tile says `dnd-toggled` and the owner flips the real thing.
+//
+// It centres under the clock, and the body between the switch and the footer scrolls rather than
+// letting the panel run off a short screen.
+import { Theme } from "theme.slint";
+import { Icons } from "../icon.slint";
+import { YPopover } from "../y_popover.slint";
+import { YToggleTile } from "../y_toggle_tile.slint";
+import { MonthGrid } from "../month_grid.slint";
+import { TodayState } from "../bar/today_state.slint";
+import { TodayNotification } from "today_notification.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export component TodayPopover inherits YPopover {
+    in property <bool> dnd: false;
+    in property <int> unread: 0;
+    callback dnd-toggled();
+    callback all-notifications();
+    callback notification-tapped(string);
+    callback notification-action(string, string);
+
+    label: "Today";
+    panel-width: Theme.today-width;
+    content-spacing: Theme.sp-3;
+
+    // Everything that does not scroll, so the body can take what is left of the screen.
+    property <length> fixed-h: head.preferred-height + dnd-tile.height + month-block.preferred-height
+        + foot.height + 4 * Theme.sp-3 + 2 * Theme.sp-4;
+    property <length> body-room: root.screen-height - root.anchor-y - Theme.popover-gap - Theme.popover-margin - root.fixed-h;
+
+    head := VerticalLayout {
+        Text {
+            text: TodayState.weekday;
+            color: Theme.text-primary;
+            font-size: Theme.fs-title-1;
+            font-weight: Theme.fw-title-1;
+        }
+        Text {
+            text: TodayState.date-line;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+        }
+    }
+
+    dnd-tile := YToggleTile {
+        icon: Icons.moon;
+        title: "Do Not Disturb";
+        subtitle: root.dnd ? "On · only critical ones pop up" : "Off";
+        on: root.dnd;
+        toggled => { root.dnd-toggled(); }
+    }
+
+    month-block := VerticalLayout {
+        spacing: Theme.sp-1;
+        Text {
+            text: TodayState.month-title;
+            color: Theme.text-primary;
+            font-size: Theme.fs-headline;
+            font-weight: Theme.fw-headline;
+        }
+        MonthGrid {
+            days: TodayState.days;
+            compact: true;
+            clickable: false;
+            cell-min-height: Theme.today-cell-h;
+        }
+    }
+
+    ScrollView {
+        height: min(body.preferred-height, max(root.body-room, 96px));
+        viewport-height: body.preferred-height;
+
+        body := VerticalLayout {
+            width: parent.width;
+            spacing: Theme.sp-2;
+
+            Text {
+                text: "TODAY";
+                color: Theme.text-dim;
+                font-size: Theme.fs-micro;
+                font-weight: Theme.fw-micro;
+                letter-spacing: 0.5px;
+            }
+            if TodayState.events-state == "loading" : Text {
+                text: "Reading the calendar…";
+                color: Theme.text-secondary;
+                font-size: Theme.fs-body;
+            }
+            if TodayState.events-state == "unavailable" : Text {
+                text: "The calendar didn't answer, so today's events can't be shown.";
+                color: Theme.text-secondary;
+                font-size: Theme.fs-body;
+                wrap: word-wrap;
+            }
+            if TodayState.events-state == "ok" && TodayState.events.length == 0 : Text {
+                text: "No events today";
+                color: Theme.text-secondary;
+                font-size: Theme.fs-body;
+            }
+            for ev in TodayState.events : HorizontalLayout {
+                spacing: Theme.sp-3;
+                padding-left: Theme.sp-3;
+                Text {
+                    text: ev.time-text;
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-caption;
+                    width: 96px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: ev.title;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-body;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+            }
+
+            Text {
+                text: "NOTIFICATIONS";
+                color: Theme.text-dim;
+                font-size: Theme.fs-micro;
+                font-weight: Theme.fw-micro;
+                letter-spacing: 0.5px;
+            }
+            if TodayState.notifications.length == 0 : Text {
+                text: "No notifications";
+                color: Theme.text-secondary;
+                font-size: Theme.fs-body;
+            }
+            for n in TodayState.notifications : TodayNotification {
+                note: n;
+                tapped(id) => { root.notification-tapped(id); }
+                action(id, action-id) => { root.notification-action(id, action-id); }
+            }
+        }
+    }
+
+    foot := Rectangle {
+        height: Theme.h-regular;
+        border-radius: Theme.r-md;
+        background: foot-ta.has-hover ? Theme.hover-fill : transparent;
+        accessible-role: button;
+        accessible-label: "All notifications";
+
+        foot-ta := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.all-notifications(); }
+        }
+        HorizontalLayout {
+            padding-left: Theme.sp-3;
+            padding-right: Theme.sp-3;
+            Text {
+                text: root.unread > 0 ? "All notifications · " + root.unread + " unread" : "All notifications";
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+                font-weight: Theme.fw-body-strong;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: "›";
+                color: Theme.text-secondary;
+                font-size: Theme.fs-title-2;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

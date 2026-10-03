@@ -1,38 +1,85 @@
-// StatusBar — the whole machine on one 32px line.
+// StatusBar — the top bar, as in render 01: 36px, opaque, one calm line.
 //
-// 3-zone layout: Left (AI dot + project) | Center (AI context lane) | Right (load, model,
-// network, badges, power, clock+date).
+//   left    the Yantrik mark, then ONE Minds chip ("● Minds · 2 need you")
+//   centre  the clock, centred on the SCREEN
+//   right   the mind-mode chip, then the machine's indicators (do-not-disturb when on, network,
+//           sound, battery) and Quick Settings, one 18px line-icon family with 8px between
 //
-// Two rules this file follows that its predecessor did not:
-//   1. No emoji. Every glyph is a stroke Icon, so it scales, recolours, and does not depend
-//      on whichever emoji font the host happens to have.
-//   2. Nothing below 11px. The old bar set its most important labels at 8px and 9px, which
-//      reads as decoration rather than information. A status bar is read in a glance from
-//      arm's length; Theme.fs-micro (11px) is the floor.
+// What used to be here and is not: the CPU and memory readouts (Settings and the System monitor
+// have them), the companion's thinking dot and the word "Yantrik", the project pill, the provider
+// and active-mind chips, the whisper and queue counts, the unread badge and the INC and DND text
+// badges, and the power button (Super+Escape and the command palette open the power menu). Every
+// one of them drew something on a bar whose only job is "the time, the minds, the machine".
 //
-// No continuous animation. The thinking pulse is the only motion and it runs only while
-// the companion is actually thinking.
-
-import { NetworkIndicator } from "bar/network_indicator.slint";
+// Two things stay that are not in the render, because the render is the healthy desktop: the red
+// notices for "no model is answering" and "a mind cannot reach this machine" draw only while that
+// is true. A bar that said "Minds" in calm teal over a dead assistant would be a lie.
+//
+// No timers. The clock text arrives from Rust once a minute; nothing here moves.
 import { YIndicator } from "y_indicator.slint";
 import { Theme } from "theme.slint";
-import { Icon, Icons } from "icon.slint";
+import { Icons } from "icon.slint";
 import { YantrikMark } from "yantrik_mark.slint";
+import { NetworkIndicator } from "bar/network_indicator.slint";
 import { BatteryIndicator } from "bar/battery_indicator.slint";
-import { FreeAiState } from "free_ai_card.slint";
+import { SoundIndicator } from "bar/sound_indicator.slint";
+import { MindsChip } from "bar/minds_chip.slint";
+import { ModeChip } from "bar/mode_chip.slint";
+import { NoticeChip } from "bar/notice_chip.slint";
+import { BarClock } from "bar/bar_clock.slint";
+
+// A layout cell that keeps its child its own height and centres it on the bar. A bare child of the
+// bar's HorizontalLayout is stretched to the bar's height, and a 24px chip became a 36px slab.
+component BarSlot inherits VerticalLayout {
+    alignment: center;
+    @children
+}
 
 export component StatusBar inherits Rectangle {
+    // "14:32" and "Fri 2 Oct": Rust sets both on the minute.
     in property <string> clock-text: "00:00";
     in property <string> date-text: "";
-    in property <string> companion-status: "idle";       // idle, thinking, listening
-    in property <bool> companion-online: true;
-    // #30: the one visible line about an assistant with no model. Non-empty only while
-    // the backend is unreachable; the chip's click goes to Settings → AI. Set from Rust
+    in property <bool> today-open: false;
+    callback clock-clicked();
+
+    // The minds: how many have an unresolved request, and how many requests that is.
+    in property <int> minds-needing: 0;
+    in property <int> minds-requests: 0;
+    callback minds-clicked();
+    callback anchor-clicked();
+
+    // #30: the one visible line about an assistant with no model. Non-empty only while the
+    // backend is unreachable; its click goes to Settings → AI. Set from Rust
     // (`assistant_offline_notice` in bridge.rs), cleared when a model answers again.
     in property <string> assistant-offline-notice: "";
+    callback assistant-offline-clicked();
     // Set while another process holds the harness socket (#367): no mind can attach here.
     in property <string> minds-notice: "";
     callback minds-notice-clicked();
+
+    // What the minds may do unasked: plan | ask | auto | bypass | bypass_all. The label carries the
+    // countdown during either bypass. See components/mind_mode_menu.slint.
+    in property <string> mind-mode: "ask";
+    in property <string> mind-mode-label: "Ask";
+    in property <bool> private-mode: false;
+    callback mind-mode-clicked();
+
+    // Do Not Disturb: a moon, only while it is on, and a click turns it off.
+    in property <bool> dnd-enabled: false;
+    callback dnd-clicked();
+
+    in property <bool> network-online: false;
+    in property <string> network-medium: "";
+    // The network mark's centre, window coordinates, so the popover can hang from it.
+    in-out property <length> network-anchor-x: 0;
+    callback network-tapped();
+
+    in property <bool> volume-available: false;
+    in property <bool> volume-muted: false;
+    in property <int> volume-level: 0;
+    callback volume-changed(int);
+    callback volume-mute-toggled();
+
     in property <bool> battery-available: false;
     in property <int> battery-level: 100;
     in property <string> battery-state: "unknown";
@@ -41,709 +88,130 @@ export component StatusBar inherits Rectangle {
     in property <bool> battery-popover-open: false;
     /// The battery's centre on the bar, so the shell can hang its popover under it.
     callback battery-clicked(length);
-    /// Whether anything is up, and over what. Not `wifi-connected`: the bar's
-    /// one network mark meant "am I online", and drawing it from the wireless
-    /// flag dimmed it on a wired machine that was online the whole time.
-    in property <bool> network-online: false;
-    in property <string> network-medium: "";
-    in property <int> pending-count: 0;
-    in property <int> whisper-hint-count: 0;
-    // Unread notifications, from the one notification store. The status bar is the only thing
-    // on screen from every app, so it is where "something happened while you were elsewhere"
-    // has to be visible.
-    in property <int> notification-unread: 0;
-    in property <bool> incognito-enabled: false;
-    in property <bool> dnd-enabled: false;
-    in property <string> active-project: "";
-    // V61 — AI privacy indicator
-    in property <string> ai-privacy-mode: "local";       // "local", "cloud", "hybrid"
-    in property <string> ai-provider-label: "";
-    /// True when an attached mind is answering rather than the built-in companion.
-    in property <bool> harness-driving: false;
-    in property <string> ai-fallback-banner: "";
-    // V63 — AI context lane
-    in property <string> ai-context-text: "";
-    // Load readout — set from Rust on every observer poll, regardless of screen
-    in property <int> cpu-percent: 0;
-    in property <string> mem-text: "";
 
-    callback anchor-clicked();
-    callback queue-clicked();
-    callback whisper-hint-clicked();
-    callback notifications-clicked();
     callback settings-tapped();
-    // The network mark was pressed: toggle the network popover.
-    callback network-tapped();
-    // The network mark's centre, window coordinates, so the popover can hang from it.
-    in-out property <length> network-anchor-x: 0;
-    callback power-pressed();
-    callback ai-privacy-clicked();
-    callback assistant-offline-clicked();
-
-    // Which mind is answering. Empty or "companion" means the built-in one.
-    in property <string> active-harness-id: "";
-    in property <string> active-harness-name: "";
-    callback active-mind-clicked();
-
-    // What that mind may do without being asked: plan | ask | auto | bypass | bypass_all. The
-    // label carries the countdown during either bypass ("Bypass 43m", "Full bypass 43m"). See
-    // components/mind_mode_menu.slint.
-    in property <string> mind-mode: "ask";
-    in property <string> mind-mode-label: "Ask";
-    // Either bypass: both are red on the chip, because both are "it is not asking you".
-    property <bool> in-bypass: root.mind-mode == "bypass" || root.mind-mode == "bypass_all";
-    // Private mode: the Mind is off whatever the mode says, and the chip says that instead.
-    in property <bool> private-mode: false;
-    callback mind-mode-clicked();
 
     height: Theme.status-bar-height;
-    // Glass, not paint. This bar is drawn over the wallpaper on every screen, and an
-    // opaque fill turned the top 32px of the desktop into a lid.
-    background: Theme.glass-panel;
+    // Opaque. The glass this bar had turned the top of the desktop into a lid over the wallpaper
+    // and let a window's title show through it.
+    background: Theme.bar-bg;
 
-    // Bottom border — single subtle line
     Rectangle {
-        y: parent.height - 1px;
+        y: parent.height - Theme.hairline;
         width: 100%;
-        height: 1px;
-        background: Theme.separator;
+        height: Theme.hairline;
+        background: Theme.bar-border;
     }
 
+    // ── Left ──
     HorizontalLayout {
         padding-left: Theme.sp-3;
         padding-right: Theme.sp-3;
+        spacing: Theme.bar-gap;
+        alignment: start;
 
-        // ── LEFT ZONE: AI dot + Project context ──
-        HorizontalLayout {
-            horizontal-stretch: 1;
-            spacing: Theme.sp-3;
-            alignment: start;
-
-            // ── The mark ──
-            //
-            // The bar said "Yantrik" in 14px semibold beside a 6px dot, and that was the whole
-            // of the brand on the one surface drawn over every screen this OS has. The mark
-            // goes first, at 20px in a 32px bar, which is where the eye starts on a status bar
-            // and where every other desktop puts the thing that names the machine.
-            //
-            // Order is mark, dot, word — not mark, word, dot — because the dot is the
-            // companion's state and it belongs against the name it is the state OF, exactly
-            // where it already was. Nothing about the dot changes: same size, same colours,
-            // same 24px TouchArea opening the anchor. Reading "Yantrik" now costs one glyph
-            // less of work, because the shape in front of it already said it.
-            //
-            // Cost to the layout: ~32px (mark + one sp-3) added to the left zone. All three
-            // zones carry horizontal-stretch: 1, so the centre lane is positioned by the
-            // stretch and not by the left zone's content — it does not move. The left zone
-            // itself only ever held a dot, a word and an optional project chip, so there is
-            // room at every width the bar supports.
+        // The mark opens the Lens, where the dot beside it used to.
+        Rectangle {
+            width: Theme.h-regular;
             YantrikMark {
                 mark-size: 20px;
+                x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
             }
-
-            // AI status dot — 6px, state-coloured; the only thing on the bar that ever moves
             TouchArea {
-                width: 24px;
-                height: Theme.status-bar-height;
                 mouse-cursor: pointer;
                 clicked => { root.anchor-clicked(); }
-
-                Rectangle {
-                    x: (parent.width - 6px) / 2;
-                    y: (parent.height - 6px) / 2;
-                    width: 6px;
-                    height: 6px;
-                    border-radius: 3px;
-                    background: !root.companion-online ? Theme.color-danger
-                              : root.companion-status == "thinking" ? Theme.accent
-                              : root.companion-status == "listening" ? Theme.accent-light
-                              : Theme.text-dim;
-
-                    // The dot breathes while a mind is working. This is what that cost.
-                    //
-                    // It was an `animate ai-pulse-opacity { duration: 2000ms; }` with a 2000ms
-                    // Timer flipping that same opacity between 0.5 and 1.0. Each tick restarted
-                    // the animation exactly as it finished, so it was never not animating — and
-                    // a window with an animation in flight redraws at the display's rate, which
-                    // on this shell is a full-screen repaint costing ~96ms of CPU. For a 6px dot.
-                    //
-                    // Measured headless on this markup, a mind thinking and the Intent Lens
-                    // CLOSED: 236 frames a second before, 5 after. On the machine that was
-                    // `yantrik-ui` at 83% of a core with labwc at 20% beside it, for as long as a
-                    // job took, against 2.0% four minutes later with the mind idle (#68).
-                    //
-                    // Stepping the phase draws the same breath: ten steps through a two-second
-                    // cycle, five frames a second, and nothing in flight between them.
-                    opacity: root.companion-status == "thinking" ? ai-pulse-opacity : 1.0;
-                    property <float> ai-pulse-phase: 0;
-                    property <float> ai-pulse-opacity: 0.55
-                        + 0.45 * sin(ai-pulse-phase * 6.2832 * 1rad);
-                    Timer {
-                        interval: 200ms;
-                        running: root.companion-status == "thinking";
-                        triggered => {
-                            parent.ai-pulse-phase = mod(parent.ai-pulse-phase + 0.1, 1.0);
-                        }
-                    }
-
-                    animate background { duration: Theme.dur-normal; }
-                }
             }
-
-            Text { text: "Yantrik"; font-size: Theme.fs-body; font-weight: 600; color: Theme.text-primary; vertical-alignment: center; }
-
-            // ── No model to answer with ──
-            //
-            // #30: the desktop had no model all day and never said so — the bar's only trace
-            // was the 6px red dot, and the rest went to 450+ log lines nobody reads. This chip
-            // is the one persistent visible line naming the failure and the way out of it:
-            // the click goes to Settings → AI, where a model gets set up. It hides itself the
-            // moment a model answers again.
-            if root.assistant-offline-notice != "" : TouchArea {
-                width: min(notice-row.preferred-width + Theme.sp-3, 340px);
-                height: Theme.status-bar-height;
-                mouse-cursor: pointer;
+            accessible-role: button;
+            accessible-label: "Yantrik";
+        }
+        BarSlot {
+            MindsChip {
+                needing: root.minds-needing;
+                requests: root.minds-requests;
+                clicked => { root.minds-clicked(); }
+            }
+        }
+        if root.assistant-offline-notice != "" : BarSlot {
+            NoticeChip {
+                text: root.assistant-offline-notice;
                 clicked => { root.assistant-offline-clicked(); }
-
-                Rectangle {
-                    width: parent.width;
-                    height: 20px;
-                    y: (parent.height - 20px) / 2;
-                    border-radius: Theme.r-sm;
-                    background: Theme.color-danger-dim;
-                    border-width: 1px;
-                    border-color: Theme.color-danger;
-
-                    notice-row := HorizontalLayout {
-                        padding-left: 7px;
-                        padding-right: 7px;
-                        spacing: 5px;
-                        alignment: center;
-
-                        Icon {
-                            commands: Icons.warning;
-                            size: 12px;
-                            tint: Theme.color-danger;
-                            y: (parent.height - self.height) / 2;
-                        }
-                        Text {
-                            text: root.assistant-offline-notice;
-                            max-width: 300px; overflow: elide;
-                            color: Theme.color-danger;
-                            font-size: Theme.fs-micro;
-                            font-weight: 700;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
             }
-
-            // ── Minds can't reach this desktop ──
-            //
-            // #367: another process held the harness socket for two days and the only trace was
-            // a log line. The same persistent chip as "no model", naming the process that holds
-            // it; it hides itself the moment this shell takes the socket.
-            if root.minds-notice != "" : TouchArea {
-                width: min(minds-row.preferred-width + Theme.sp-3, 340px);
-                height: Theme.status-bar-height;
-                mouse-cursor: pointer;
+        }
+        if root.minds-notice != "" : BarSlot {
+            NoticeChip {
+                text: root.minds-notice;
                 clicked => { root.minds-notice-clicked(); }
-
-                Rectangle {
-                    width: parent.width;
-                    height: 20px;
-                    y: (parent.height - 20px) / 2;
-                    border-radius: Theme.r-sm;
-                    background: Theme.color-danger-dim;
-                    border-width: 1px;
-                    border-color: Theme.color-danger;
-
-                    minds-row := HorizontalLayout {
-                        padding-left: 7px;
-                        padding-right: 7px;
-                        spacing: 5px;
-                        alignment: center;
-
-                        Icon {
-                            commands: Icons.warning;
-                            size: 12px;
-                            tint: Theme.color-danger;
-                            y: (parent.height - self.height) / 2;
-                        }
-                        Text {
-                            text: root.minds-notice;
-                            max-width: 300px; overflow: elide;
-                            color: Theme.color-danger;
-                            font-size: Theme.fs-micro;
-                            font-weight: 700;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-            }
-
-            // Project indicator
-            if root.active-project != "" && root.width >= 1000px : Rectangle {
-                width: proj-text.preferred-width + Theme.sp-3;
-                height: 20px;
-                y: (Theme.status-bar-height - self.height) / 2;
-                border-radius: self.height / 2;
-                background: Theme.tint-accent;
-                border-width: 1px;
-                border-color: Theme.border-subtle;
-
-                proj-text := Text {
-                    text: root.active-project;
-                    color: Theme.accent;
-                    font-size: Theme.fs-micro;
-                    font-weight: Theme.fw-micro;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
             }
         }
+    }
 
-        // ── CENTER ZONE: AI context lane ──
-        HorizontalLayout {
-            horizontal-stretch: 1;
-            alignment: center;
+    // ── Right ──
+    HorizontalLayout {
+        padding-left: Theme.sp-3;
+        padding-right: Theme.sp-3;
+        spacing: Theme.bar-gap;
+        alignment: end;
 
-            if root.ai-context-text != "" && root.width >= 1200px : Text {
-                text: root.ai-context-text;
-                color: Theme.text-dim;
-                font-size: Theme.fs-caption;
-                font-weight: Theme.fw-caption;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                overflow: elide;
-                max-width: 300px;
-            }
-        }
-
-        // ── RIGHT ZONE: load | model | network | badges | power | clock ──
-        HorizontalLayout {
-            horizontal-stretch: 1;
-            spacing: Theme.sp-3;
-            alignment: end;
-
-            // Detailed telemetry yields to essential controls on compact screens.
-            if root.width >= 1100px : HorizontalLayout {
-                spacing: Theme.sp-2;
-                Text {
-                    text: "CPU";
-                    color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
-                    font-weight: Theme.fw-micro;
-                    vertical-alignment: center;
-                }
-                Text {
-                    text: root.cpu-percent + "%";
-                    color: root.cpu-percent >= 90 ? Theme.color-warning : Theme.text-secondary;
-                    font-size: Theme.fs-micro;
-                    font-weight: 500;
-                    vertical-alignment: center;
-                    min-width: 26px;
-                }
-                Text {
-                    text: "MEM";
-                    color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
-                    font-weight: Theme.fw-micro;
-                    vertical-alignment: center;
-                }
-                Text {
-                    text: root.mem-text;
-                    color: Theme.text-secondary;
-                    font-size: Theme.fs-micro;
-                    font-weight: 500;
-                    vertical-alignment: center;
-                }
-            }
-
-            Rectangle { width: 1px; height: 14px; y: (parent.height - 14px) / 2; background: Theme.separator; }
-
-            // ── A free AI key is awaited ──
-            //
-            // The person is on a provider's page in the browser, which covers Settings; the bar is
-            // the one part of the shell still in view. One press reads the clipboard into the
-            // card (clipboard history is paused meanwhile).
-            if FreeAiState.chip-label != "" : TouchArea {
-                width: paste-row.preferred-width + Theme.sp-3;
-                height: Theme.status-bar-height;
-                mouse-cursor: pointer;
-                clicked => { FreeAiState.chip-pressed(); }
-                Rectangle {
-                    width: parent.width;
-                    height: 20px;
-                    y: (parent.height - 20px) / 2;
-                    border-radius: Theme.r-sm;
-                    background: Theme.tint-amber;
-                    border-width: 1px;
-                    border-color: Theme.amber;
-                    paste-row := HorizontalLayout {
-                        padding-left: 7px;
-                        padding-right: 7px;
-                        alignment: center;
-                        Text {
-                            text: FreeAiState.chip-label + " · clipboard history paused";
-                            max-width: 320px; overflow: elide;
-                            color: Theme.amber;
-                            font-size: Theme.fs-micro;
-                            font-weight: 600;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-            }
-
-            // ── What the mind may do without asking ──
-            //
-            // Always on the bar, unlike the mind chip beside it, and that is the point: the mode
-            // is a fact about what this machine will let happen to it, and a person must never be
-            // surprised by it. In `plan` they would otherwise only find out when the mind said it
-            // could not do anything; in either bypass they are owed a permanent, unmissable reminder
-            // and a countdown, which is why the label carries the time left and this chip goes
-            // red rather than accent-tinted.
-            //
-            // Immediately to the LEFT of the mind chip: the two answer the same question — who
-            // is acting, and how freely — and they belong together.
-            TouchArea {
-                width: mode-row.preferred-width + Theme.sp-3;
-                height: Theme.status-bar-height;
-                mouse-cursor: pointer;
+        BarSlot {
+            ModeChip {
+                mode: root.mind-mode;
+                mode-label: root.mind-mode-label;
+                private-mode: root.private-mode;
                 clicked => { root.mind-mode-clicked(); }
-
-                Rectangle {
-                    width: parent.width;
-                    height: 20px;
-                    y: (parent.height - 20px) / 2;
-                    border-radius: Theme.r-sm;
-                    background: root.private-mode ? Theme.tint-accent
-                        : root.in-bypass ? Theme.color-danger-dim
-                        : root.mind-mode == "plan" ? Theme.tint-amber
-                        : Theme.hover-fill;
-                    border-width: root.private-mode || root.in-bypass ? 1px : 0px;
-                    border-color: root.private-mode ? Theme.accent : Theme.color-danger;
-
-                    mode-row := HorizontalLayout {
-                        padding-left: 7px;
-                        padding-right: 7px;
-                        spacing: 5px;
-                        alignment: center;
-
-                        Icon {
-                            commands: root.mind-mode == "plan" && !root.private-mode ? Icons.eye : Icons.shield;
-                            size: 12px;
-                            tint: root.private-mode ? Theme.accent
-                                : root.in-bypass ? Theme.color-danger
-                                : root.mind-mode == "plan" ? Theme.amber
-                                : Theme.text-secondary;
-                            y: (parent.height - self.height) / 2;
-                        }
-                        Text {
-                            text: root.private-mode ? "Private" : root.mind-mode-label;
-                            max-width: 120px; overflow: elide;
-                            color: root.private-mode ? Theme.accent
-                                : root.in-bypass ? Theme.color-danger
-                                : root.mind-mode == "plan" ? Theme.amber
-                                : Theme.text-secondary;
-                            font-size: Theme.fs-micro;
-                            font-weight: root.private-mode || root.in-bypass ? 700 : 500;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
             }
-
-            // ── Which mind is answering ──
-            //
-            // Shown ONLY when it is not the built-in one. On a machine using the companion this
-            // badge would be noise — the companion is what "Yantrik" means here — but the moment
-            // something else is answering, it is the most important thing in the bar, because
-            // everything typed into the panel is going somewhere else. Costs nothing by default
-            // and is impossible to miss when it matters.
-            if root.active-harness-id != "" && root.active-harness-id != "companion" : TouchArea {
-                width: mind-row.preferred-width + Theme.sp-3;
-                height: Theme.status-bar-height;
-                mouse-cursor: pointer;
-                clicked => { root.active-mind-clicked(); }
-
-                Rectangle {
-                    width: parent.width;
-                    height: 20px;
-                    y: (parent.height - 20px) / 2;
-                    border-radius: Theme.r-sm;
-                    background: Theme.tint-accent;
-
-                    mind-row := HorizontalLayout {
-                        padding-left: 7px;
-                        padding-right: 7px;
-                        spacing: 5px;
-                        alignment: center;
-
-                        Icon {
-                            commands: Icons.companion;
-                            size: 12px;
-                            tint: Theme.accent;
-                            y: (parent.height - self.height) / 2;
-                        }
-                        Text {
-                            text: root.active-harness-name;
-                            max-width: 150px; overflow: elide;
-                            color: Theme.accent;
-                            font-size: Theme.fs-micro;
-                            font-weight: 500;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
+        }
+        if root.dnd-enabled : BarSlot {
+            YIndicator {
+                icon: Icons.moon;
+                tooltip: "Do Not Disturb is on. Click to turn it off.";
+                tooltip-above: false;
+                clicked => { root.dnd-clicked(); }
             }
-
-            // AI privacy / model badge
-            //
-            // Hidden while an attached mind is answering, because every part of it is a
-            // statement about the BUILT-IN companion: the lock icon is the shell's privacy
-            // mode, the text is the shell's configured provider, and the click opens the
-            // shell's provider switcher. With a harness driving, none of that is doing the
-            // work — the bar showed "qwen3.5:9b" from a settings file, one chip away from
-            // "Yantrik Mind", which was answering on a different model on a different machine.
-            // Two badges side by side disagreeing about the model is worse than one badge.
-            // The mind's own model is on the machine rail, where it says which mind it belongs
-            // to; the chip to the left of this goes to the Harnesses screen.
-            if !root.harness-driving : TouchArea {
-                width: ai-priv-row.preferred-width + Theme.sp-3;
-                height: Theme.status-bar-height;
-                mouse-cursor: pointer;
-                clicked => { root.ai-privacy-clicked(); }
-
-                Rectangle {
-                    width: parent.width;
-                    height: 20px;
-                    y: (parent.height - 20px) / 2;
-                    border-radius: Theme.r-sm;
-                    background: Theme.hover-fill;
-
-                    ai-priv-row := HorizontalLayout {
-                        padding-left: 7px;
-                        padding-right: 7px;
-                        spacing: 5px;
-                        alignment: center;
-
-                        Icon {
-                            commands: root.ai-privacy-mode == "local" ? Icons.lock
-                                    : root.ai-privacy-mode == "cloud" ? Icons.cloud
-                                    : Icons.hybrid;
-                            size: 12px;
-                            tint: root.ai-privacy-mode == "local" ? Theme.color-success
-                                : root.ai-privacy-mode == "cloud" ? Theme.holo-blue
-                                : Theme.color-warning;
-                            y: (parent.height - self.height) / 2;
-                        }
-                        // The model name when we know it; the mode when we do not
-                        Text {
-                            max-width: 150px; overflow: elide;
-                            text: root.ai-provider-label != "" ? root.ai-provider-label
-                                : root.ai-privacy-mode == "local" ? "Local"
-                                : root.ai-privacy-mode == "cloud" ? "Cloud"
-                                : "Hybrid";
-                            color: Theme.text-secondary;
-                            font-size: Theme.fs-micro;
-                            font-weight: 500;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-            }
-
-            // Whisper hint badge
-            if root.whisper-hint-count > 0 : TouchArea {
-                width: whisper-badge.preferred-width + 4px;
-                height: Theme.status-bar-height;
-                mouse-cursor: pointer;
-                clicked => { root.whisper-hint-clicked(); }
-
-                whisper-badge := Rectangle {
-                    width: max(20px, whisper-text.preferred-width + 10px);
-                    height: 20px;
-                    y: (parent.height - 20px) / 2;
-                    border-radius: self.height / 2;
-                    background: Theme.accent-dim;
-
-                    whisper-text := Text {
-                        text: root.whisper-hint-count;
-                        color: Theme.text-on-accent;
-                        font-size: Theme.fs-micro;
-                        font-weight: 700;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-
-            // Unread notifications — opens the notification centre
-            if root.notification-unread > 0 : TouchArea {
-                width: unread-badge.preferred-width + 4px;
-                height: Theme.status-bar-height;
-                mouse-cursor: pointer;
-                clicked => { root.notifications-clicked(); }
-
-                unread-badge := Rectangle {
-                    width: max(20px, unread-text.preferred-width + 10px);
-                    height: 20px;
-                    y: (parent.height - 20px) / 2;
-                    border-radius: self.height / 2;
-                    background: Theme.accent;
-
-                    unread-text := Text {
-                        text: root.notification-unread > 99 ? "99+" : root.notification-unread;
-                        color: Theme.text-on-accent;
-                        font-size: Theme.fs-micro;
-                        font-weight: 700;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-
-            // Incognito badge
-            if root.incognito-enabled : Rectangle {
-                width: inc-text.preferred-width + 10px;
-                height: 20px;
-                y: (Theme.status-bar-height - 20px) / 2;
-                border-radius: Theme.r-sm;
-                background: Theme.color-danger-dim;
-
-                inc-text := Text {
-                    text: "INC";
-                    color: Theme.color-danger;
-                    font-size: Theme.fs-micro;
-                    font-weight: 700;
-                    letter-spacing: 0.5px;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-            }
-
-            // DND badge
-            if root.dnd-enabled : Rectangle {
-                width: dnd-text.preferred-width + 10px;
-                height: 20px;
-                y: (Theme.status-bar-height - 20px) / 2;
-                border-radius: Theme.r-sm;
-                background: Theme.color-warning-dim;
-
-                dnd-text := Text {
-                    text: "DND";
-                    color: Theme.color-warning;
-                    font-size: Theme.fs-micro;
-                    font-weight: 700;
-                    letter-spacing: 0.5px;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-            }
-
-            // Pending queue badge
-            if root.pending-count > 0 : TouchArea {
-                width: queue-badge.preferred-width + 4px;
-                height: Theme.status-bar-height;
-                mouse-cursor: pointer;
-                clicked => { root.queue-clicked(); }
-
-                queue-badge := Rectangle {
-                    width: max(20px, queue-text.preferred-width + 10px);
-                    height: 20px;
-                    y: (parent.height - 20px) / 2;
-                    border-radius: self.height / 2;
-                    background: Theme.amber-dim;
-
-                    queue-text := Text {
-                        text: root.pending-count;
-                        color: Theme.amber;
-                        font-size: Theme.fs-micro;
-                        font-weight: 700;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-
-            // Network: its own indicator and its own click. It shared one TouchArea with the
-            // battery and both opened Quick Settings, so neither could open anything of its own.
-            // The click opens the network popover (`network-tapped`). Quick Settings has its own
-            // button at the far right, because on a machine with no battery the network mark was
-            // its only door.
+        }
+        BarSlot {
             NetworkIndicator {
                 clicked => { root.network-tapped(); }
-                // Where the popover hangs from: the app reads this off the bar.
                 changed anchor-x => { root.network-anchor-x = self.anchor-x; }
                 init => { root.network-anchor-x = self.anchor-x; }
             }
-
-            // Battery → opens Quick Settings
-            TouchArea {
-                height: Theme.status-bar-height;
-                mouse-cursor: pointer;
+        }
+        if root.volume-available : BarSlot {
+            SoundIndicator {
+                level: root.volume-level;
+                muted: root.volume-muted;
                 clicked => { root.settings-tapped(); }
-
-                HorizontalLayout {
-                    spacing: Theme.sp-2;
-
-                    // Battery, only when the machine has one. Its own click opens its popover
-                    // (the owner places it), so it is not part of the Quick Settings press.
-                    if root.battery-available : BatteryIndicator {
-                        level: root.battery-level;
-                        battery-state: root.battery-state;
-                        status-text: root.battery-status-text;
-                        time-text: root.battery-time-text;
-                        active: root.battery-popover-open;
-                        clicked => { root.battery-clicked(self.anchor-x); }
-                    }
-                }
+                volume-changed(v) => { root.volume-changed(v); }
+                mute-toggled => { root.volume-mute-toggled(); }
             }
-
-            // Power
-            TouchArea {
-                width: 22px;
-                height: Theme.status-bar-height;
-                mouse-cursor: pointer;
-                clicked => { root.power-pressed(); }
-
-                Icon {
-                    commands: Icons.power;
-                    size: 13px;
-                    tint: parent.has-hover ? Theme.text-primary : Theme.text-dim;
-                    x: (parent.width - self.width) / 2;
-                    y: (parent.height - self.height) / 2;
-                }
+        }
+        if root.battery-available : BarSlot {
+            BatteryIndicator {
+                level: root.battery-level;
+                battery-state: root.battery-state;
+                status-text: root.battery-status-text;
+                time-text: root.battery-time-text;
+                active: root.battery-popover-open;
+                clicked => { root.battery-clicked(self.anchor-x); }
             }
-
-            // Clock + date — right-most
-            Text {
-                text: root.clock-text;
-                color: Theme.text-primary;
-                font-size: Theme.fs-caption;
-                font-weight: Theme.fw-body-strong;
-                vertical-alignment: center;
-            }
-            if root.date-text != "" && root.width >= 1000px : Text {
-                text: root.date-text;
-                color: Theme.text-dim;
-                font-size: Theme.fs-caption;
-                vertical-alignment: center;
-            }
-
-            // Quick Settings: a visible door at the far right, on every machine. It opens exactly
-            // what the battery's press does (`settings-tapped`).
+        }
+        BarSlot {
             YIndicator {
                 icon: Icons.settings;
                 tooltip: "Quick Settings";
                 tooltip-above: false;
-                // The last thing on the bar: a centred tooltip would run off the screen.
                 tooltip-end: true;
                 clicked => { root.settings-tapped(); }
             }
         }
+    }
+
+    // ── Centre ── on the bar's own middle, not on what the two groups leave between them.
+    BarClock {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        text: root.date-text != "" ? root.date-text + " · " + root.clock-text : root.clock-text;
+        active: root.today-open;
+        clicked => { root.clock-clicked(); }
     }
 }

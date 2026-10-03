@@ -1,0 +1,124 @@
+// MindsChip — the one summary of the minds on the top bar (render 01).
+//
+// "● Minds", and "· 2 need you" in amber when any mind has an unresolved request. It counts MINDS,
+// not requests (minds-surfaces spec, shared contract): the tooltip gives the scope, "1 mind has
+// 3 requests". There is no roster here; the workroom is where the minds are listed, and a click
+// goes there, filtered to Needs you when that is non-empty (the owner decides where, see app.slint).
+//
+// Teal is a mind's presence and amber is "a person's response is pending", and nothing else is
+// either (the colour roles in the same spec). The counts are inputs: the shell fills them from the
+// approvals and the requests the agents store holds, so the chip says "needs you" only when
+// something does.
+//
+// Input: pointer click, Tab to reach it, Space/Enter to press, a tooltip after one resting
+// pointer. The tooltip's delay is one single-shot Timer that stops itself, like YIndicator's.
+import { Theme } from "theme.slint";
+
+export component MindsChip inherits Rectangle {
+    // Minds with an unresolved request, and the requests in all.
+    in property <int> needing: 0;
+    in property <int> requests: 0;
+    callback clicked();
+
+    property <bool> pointer-focus: false;
+    property <bool> ring: keys.has-focus && !root.pointer-focus;
+    property <bool> tip-shown: false;
+    property <string> request-text: root.requests == 1 ? "1 request" : root.requests + " requests";
+    property <string> tip: root.needing <= 0 ? "No mind needs you"
+        : (root.needing == 1 ? "1 mind has " : root.needing + " minds have ") + root.request-text;
+
+    height: Theme.bar-chip-h;
+    width: row.preferred-width + 2 * Theme.sp-3;
+    border-radius: Theme.bar-chip-radius;
+    background: area.pressed ? Theme.hover-fill-strong : area.has-hover ? Theme.hover-fill : transparent;
+    animate background { duration: Theme.dur-fast; }
+    border-width: root.ring ? Theme.focus-ring-width : Theme.hairline;
+    border-color: root.ring ? Theme.focus-ring : Theme.bar-border;
+    forward-focus: keys;
+    accessible-role: button;
+    accessible-label: root.needing > 0 ? "Minds, " + root.needing + " need you. " + root.tip : "Minds. " + root.tip;
+
+    // One single-shot delay: it runs only while the pointer rests here, and stops itself the
+    // moment the tooltip is up. The same 600ms as `Theme.dur-tooltip`, written out because the
+    // idle-window test reads a Timer's rate from its text and cannot resolve a token.
+    Timer {
+        running: area.has-hover && !area.pressed && !root.tip-shown;
+        interval: 600ms;
+        triggered => { root.tip-shown = true; }
+    }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            root.pointer-focus = false;
+            if ((event.text == " " || event.text == "\n") && !event.repeat) { root.clicked(); return accept; }
+            reject
+        }
+    }
+
+    area := TouchArea {
+        mouse-cursor: pointer;
+        changed has-hover => { if (!self.has-hover) { root.tip-shown = false; } }
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                root.tip-shown = false;
+                root.pointer-focus = true;
+                keys.focus();
+            }
+        }
+        clicked => { root.clicked(); }
+    }
+
+    row := HorizontalLayout {
+        padding-left: Theme.sp-3;
+        padding-right: Theme.sp-3;
+        spacing: Theme.sp-2;
+        alignment: center;
+
+        Rectangle {
+            width: Theme.bar-chip-dot;
+            Rectangle {
+                y: (parent.height - self.height) / 2;
+                width: Theme.bar-chip-dot;
+                height: Theme.bar-chip-dot;
+                border-radius: self.height / 2;
+                background: Theme.mind-teal;
+            }
+        }
+        Text {
+            text: "Minds";
+            color: Theme.text-primary;
+            font-size: Theme.fs-caption;
+            font-weight: Theme.fw-body-strong;
+            vertical-alignment: center;
+        }
+        if root.needing > 0 : Text {
+            text: "· " + root.needing + (root.needing == 1 ? " needs you" : " need you");
+            color: Theme.needs-you;
+            font-size: Theme.fs-caption;
+            font-weight: Theme.fw-body-strong;
+            vertical-alignment: center;
+        }
+    }
+
+    if root.tip-shown : Rectangle {
+        x: 0px;
+        y: parent.height + Theme.sp-1 + 2px;
+        width: tip-text.preferred-width + 2 * Theme.sp-3;
+        height: tip-text.preferred-height + 2 * Theme.sp-1 + Theme.sp-1;
+        border-radius: Theme.r-sm;
+        background: Theme.bg-elevated;
+        border-width: Theme.hairline;
+        border-color: Theme.border-card;
+        drop-shadow-blur: Theme.shadow-md-blur;
+        drop-shadow-offset-y: Theme.shadow-md-dy;
+        drop-shadow-color: Theme.overlay-shadow;
+
+        tip-text := Text {
+            text: root.tip;
+            color: Theme.text-primary;
+            font-size: Theme.fs-caption;
+            x: Theme.sp-3;
+            y: (parent.height - self.height) / 2;
+        }
+    }
+}

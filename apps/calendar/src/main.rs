@@ -367,17 +367,6 @@ fn update_event_via_service(
 
 // ── Date helpers ─────────────────────────────────────────────────────
 
-/// Column index of a date in the month grid: 0=Sunday .. 6=Saturday.
-///
-/// This MUST match the header row in calendar.slint, which is Sun-first. The previous
-/// hand-rolled Zeller returned a Monday-first index and the grid used it as the number of
-/// leading blanks, so every month was drawn one column to the left of the truth.
-fn day_of_week_for_date(year: i32, month: u32, day: u32) -> u32 {
-    chrono::NaiveDate::from_ymd_opt(year, month, day)
-        .map(|d| d.weekday().num_days_from_sunday())
-        .unwrap_or(0)
-}
-
 fn today() -> (i32, u32, u32) {
     let now = chrono::Local::now();
     (now.year(), now.month(), now.day())
@@ -386,47 +375,24 @@ fn today() -> (i32, u32, u32) {
 use chrono::{Datelike, Timelike};
 
 fn build_month_grid(year: i32, month: u32, events: &[CalEvent], today_day: Option<u32>) -> Vec<CalendarDay> {
-    let first_dow = day_of_week_for_date(year, month, 1);
-    let last = views::last_day_of_month(year, month);
-    let mut cells = Vec::with_capacity(42);
-
-    // Empty cells before month start
-    for _ in 0..first_dow {
-        cells.push(CalendarDay {
-            day_number: 0,
-            is_today: false,
+    // The grid itself is the contract's `month_grid`, shared with the shell's Today panel: two
+    // copies of "which column does the 1st land in" is how two calendars end up disagreeing.
+    let today = today_day.and_then(|d| chrono::NaiveDate::from_ymd_opt(year, month, d));
+    let counts = |d: u32| {
+        let prefix = format!("{:04}-{:02}-{:02}", year, month, d);
+        events.iter().filter(|e| e.start.starts_with(&prefix)).count() as i32
+    };
+    yantrik_ipc_contracts::calendar::month_grid(year, month, &counts, today)
+        .into_iter()
+        .map(|c| CalendarDay {
+            day_number: c.day as i32,
+            is_today: c.is_today,
             is_selected: false,
-            is_current_month: false,
-            has_events: false,
-            event_count: 0,
-        });
-    }
-
-    for d in 1..=last as i32 {
-        let day_str = format!("{:04}-{:02}-{:02}", year, month, d);
-        let ev_count = events.iter().filter(|e| e.start.starts_with(&day_str)).count() as i32;
-        cells.push(CalendarDay {
-            day_number: d,
-            is_today: today_day == Some(d as u32),
-            is_selected: false,
-            is_current_month: true,
-            has_events: ev_count > 0,
-            event_count: ev_count,
-        });
-    }
-
-    // Pad to 42 cells (6 weeks)
-    while cells.len() < 42 {
-        cells.push(CalendarDay {
-            day_number: 0,
-            is_today: false,
-            is_selected: false,
-            is_current_month: false,
-            has_events: false,
-            event_count: 0,
-        });
-    }
-    cells
+            is_current_month: c.is_current_month,
+            has_events: c.event_count > 0,
+            event_count: c.event_count,
+        })
+        .collect()
 }
 
 /// What is on one day, in the order the store returned it.

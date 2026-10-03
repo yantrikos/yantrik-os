@@ -284,6 +284,9 @@ fn first_letter(app: &str) -> slint::SharedString {
         .into()
 }
 
+/// How many of the newest notifications Today lists (the full history is a click away).
+pub const TODAY_SHOWN: usize = 5;
+
 /// Put the whole list on screen: grouped by app, newest group first, newest within a group
 /// first, with a synthetic header row before each group.
 ///
@@ -291,6 +294,7 @@ fn first_letter(app: &str) -> slint::SharedString {
 /// under "Zoom" at the bottom of the screen if that was where its app's name fell. They are in
 /// the order the apps last said something now, which is the order a person is looking for.
 pub fn sync_to_ui(mirror: &NotificationMirror, ui_weak: &slint::Weak<crate::App>) {
+    use slint::ComponentHandle;
     let Some(ui) = ui_weak.upgrade() else { return };
 
     let showing = mirror.showing();
@@ -330,6 +334,10 @@ pub fn sync_to_ui(mirror: &NotificationMirror, ui_weak: &slint::Weak<crate::App>
         }
     }
 
+    // Today's list: the newest few, flat, with their buttons.
+    ui.global::<crate::TodayState>().set_notifications(slint::ModelRc::new(slint::VecModel::from(
+        showing.iter().take(TODAY_SHOWN).map(|n| to_slint_data(n)).collect::<Vec<_>>(),
+    )));
     ui.set_notification_unread_count(mirror.unread_count() as i32);
     ui.set_notification_service_up(mirror.service_up());
     ui.set_notification_service_notice(mirror.notice().unwrap_or_default().into());
@@ -529,5 +537,18 @@ mod tests {
     fn an_unparseable_timestamp_reads_as_just_now_not_as_a_wild_number() {
         assert_eq!(seconds_since("not a timestamp"), 0.0);
         assert!(seconds_since("2020-01-01T00:00:00Z") > 0.0);
+    }
+
+    /// Today lists the five newest, in the store's own newest-first order, so a sixth arriving
+    /// pushes the oldest off Today (it stays in the notification centre).
+    #[test]
+    fn today_lists_the_five_newest_in_the_stores_order() {
+        assert_eq!(TODAY_SHOWN, 5);
+        let mut mirror = NotificationMirror::new();
+        mirror.items = (1..=7).map(|i| note(&i.to_string(), "Files", &format!("2026-10-02T09:0{i}:00Z"))).collect();
+        let ids: Vec<&str> = mirror.showing().into_iter().take(TODAY_SHOWN).map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, ["7", "6", "5", "4", "3"]);
+        let source = include_str!("notifications.rs");
+        assert!(source.contains("showing.iter().take(TODAY_SHOWN)"), "sync_to_ui hands Today exactly that slice");
     }
 }

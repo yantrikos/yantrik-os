@@ -10,6 +10,10 @@ import { AgentRail, AgentContextItem, AgentSuggestion } from "components/agent_r
 import { AgentProposalCard, AgentProposal } from "components/agent_proposal.slint";
 import { AppColor, AppIdentity } from "components/app_color.slint";
 import { YNoticeBar } from "components/notice_bar.slint";
+import { MonthGrid, CalendarDay } from "components/month_grid.slint";
+
+// The struct moved with the grid that draws it; the app's Rust still names it from here.
+export { CalendarDay }
 
 // ── Data Structures ──
 
@@ -20,15 +24,6 @@ export struct CalendarEvent {
     time-text: string,       // "2:00 PM - 3:00 PM" or "All day"
     color: color,            // category color
     is-all-day: bool,
-}
-
-export struct CalendarDay {
-    day-number: int,         // 1-31, 0 = empty cell
-    is-today: bool,
-    is-selected: bool,
-    is-current-month: bool,
-    has-events: bool,
-    event-count: int,
 }
 
 export struct CalendarTimeEvent {
@@ -332,131 +327,12 @@ export component CalendarScreen inherits Rectangle {
                 // ═══════════════════════════════════════
                 // MONTH VIEW (view-mode == 0)
                 // ═══════════════════════════════════════
-                if root.view-mode == 0 : VerticalLayout {
-                    spacing: 2px;
-
-                    // A month needs 6 rows only when it spills past cell 35; drawing
-                    // 6 regardless left an empty band under every shorter month.
-                    property <int> month-rows: root.days.length > 35
-                        && root.days[35].day-number > 0 ? 6 : 5;
-
-                    // Day-of-week headers
-                    HorizontalLayout {
-                        spacing: 2px;
-
-                        for header in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] : Rectangle {
-                            height: 32px;
-
-                            // Same box the date numeral gets below (x:6, width:22),
-                            // so the header sits on the column's own axis instead of
-                            // the column's centre ~38px to its right.
-                            Text {
-                                x: 6px;
-                                width: 22px;
-                                height: 100%;
-                                text: header;
-                                color: Theme.text-dim;
-                                font-size: Theme.fs-micro;
-                                font-weight: 600;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-
-                    // Calendar grid (6 rows x 7 cols = 42 cells)
-                    // Rows share the pane height; a cell never drops below 56px.
-                    VerticalLayout {
-                        spacing: 2px;
-                        vertical-stretch: 1;
-
-                        for row in parent.month-rows : HorizontalLayout {
-                            spacing: 2px;
-
-                            for col in 7 : Rectangle {
-                                property <int> cell-idx: row * 7 + col;
-                                property <CalendarDay> cell-day: root.days.length > cell-idx
-                                    ? root.days[cell-idx]
-                                    : { day-number: 0, is-today: false, is-selected: false, is-current-month: false, has-events: false, event-count: 0 };
-
-                                min-height: 56px;
-                                border-radius: Theme.r-sm;
-                                // Days of this month sit on a faint surface so the month reads as
-                                // a grid; days spilling in from the neighbouring months do not.
-                                // bg-surface, not bg-surface at 55% opacity.
-                                //
-                                // #161622 over #0c0c14 at 55% lands on #111119 -- five values
-                                // from the background, which is to say invisible. The month
-                                // read as thirty numbers floating on a black field with no
-                                // grid at all, which is the one thing a month view has to be.
-                                background: cell-day.is-selected ? AppIdentity.tint
-                                    : cell-day.is-current-month ? Theme.bg-surface
-                                    : transparent;
-                                border-width: cell-day.is-selected ? 1px : 0;
-                                border-color: cell-day.is-selected ? Theme.accent-dim : transparent;
-
-                                if cell-day.day-number > 0 : day-ta := TouchArea {
-                                    clicked => { root.day-clicked(cell-day.day-number); }
-                                    mouse-cursor: pointer;
-                                }
-
-                                // The cell's contents are positioned, not laid out: a layout child
-                                // reports a preferred width upward, and that made cells with a date
-                                // shrink to their content while empty cells ate the rest of the row
-                                // — the columns stopped lining up with the weekday header.
-                                // A Rectangle does not size to its children, so the row stays even.
-
-                                // Date, top-left. Today is a filled disc: the day you look for
-                                // first should not have to be read.
-                                if cell-day.day-number > 0 : Rectangle {
-                                    x: 6px;
-                                    y: 6px;
-                                    width: 22px;
-                                    height: 20px;
-                                    border-radius: Theme.r-sm;
-                                    background: cell-day.is-today ? AppIdentity.accent : transparent;
-
-                                    Text {
-                                        text: cell-day.day-number;
-                                        color: cell-day.is-today ? Theme.bg-deep
-                                            : cell-day.is-selected ? AppIdentity.accent
-                                            : cell-day.is-current-month ? Theme.text-secondary
-                                            : Theme.text-dim.transparentize(30%);
-                                        font-size: Theme.fs-caption;
-                                        font-weight: cell-day.is-today ? 700 : cell-day.is-current-month ? 500 : 400;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-
-                                // What is on that day
-                                if cell-day.has-events : HorizontalLayout {
-                                    x: 9px;
-                                    y: 32px;
-                                    width: parent.width - 18px;
-                                    height: 6px;
-                                    alignment: start;
-                                    spacing: 3px;
-
-                                    Rectangle {
-                                        width: 5px; height: 5px;
-                                        border-radius: 2.5px;
-                                        background: Theme.accent;
-                                    }
-                                    if cell-day.event-count > 1 : Rectangle {
-                                        width: 5px; height: 5px;
-                                        border-radius: 2.5px;
-                                        background: Theme.amber;
-                                    }
-                                    if cell-day.event-count > 2 : Rectangle {
-                                        width: 5px; height: 5px;
-                                        border-radius: 2.5px;
-                                        background: Theme.color-purple;
-                                    }
-                                }
-                            }
-                        }
-                    }
+                if root.view-mode == 0 : MonthGrid {
+                    days: root.days;
+                    cell-min-height: 56px;
+                    accent: AppIdentity.accent;
+                    tint: AppIdentity.tint;
+                    day-clicked(day) => { root.day-clicked(day); }
                 }
 
                 // ═══════════════════════════════════════

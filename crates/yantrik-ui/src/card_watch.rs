@@ -452,7 +452,7 @@ mod tests {
             ),
             ("control_files.rs", &["files_open"]),
             ("control_approvals.rs", &["show_mind_audit"]),
-            ("control_overlays.rs", &["open_quick_settings", "open_power_menu", "open_clipboard", "open_cheat_sheet"]),
+            ("control_overlays.rs", &["open_today", "open_quick_settings", "open_power_menu", "open_clipboard", "open_cheat_sheet"]),
         ];
         for (file, actions) in held {
             let src = std::fs::read_to_string(format!("{}/src/{file}", env!("CARGO_MANIFEST_DIR"))).unwrap();

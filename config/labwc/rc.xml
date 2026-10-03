@@ -59,14 +59,14 @@
 
     labwc documents <margin> for exactly this case ("a workaround for clients such as panels that
     do NOT support the wlr-layer-shell protocol"). New, maximized and tiled windows keep out of
-    these strips. The numbers are the real heights: Theme.status-bar-height is 32px
+    these strips. The numbers are the real heights: Theme.status-bar-height is 36px
     (crates/yantrik-design-tokens/slint/theme.slint) and the grounded dock is 48px
     (crates/yantrik-ui-slint/ui/components/grounded_dock.slint; Theme.taskbar-height). If either changes, change these.
 
     The proper fix is for the panel to speak layer-shell and declare its own exclusive zone; this
     is the honest workaround until it does, and it is the one labwc recommends.
   -->
-  <margin top="32" bottom="48" left="0" right="0" />
+  <margin top="36" bottom="48" left="0" right="0" />
 
   <!-- Focus follows the click, not the pointer: an agent moving the pointer must not change
        which window receives what the person types next. -->
@@ -423,6 +423,7 @@
 
         Super+V          clipboard history   (open_clipboard)
         Super+A          Quick Settings      (open_quick_settings)
+        Super+N          Today               (open_today): the clock's panel
         Super+Escape     power menu          (open_power_menu); it only shows it, choosing is the
                                               person's
         Super+Shift+V    Mind View forward   (focus_window)
@@ -440,15 +441,17 @@
       which section it is drawn in (Windows, Snap, Workspaces, Shell, Minds or Capture), in the
       form crates/yantrik-ui/src/cheat_sheet.rs documents. A keybind without one fails that
       file's tests, so a new key says what it does or does not land.
-
-      RESERVED, not bound yet, because nothing exists for it to open:
-        Super+N   Today        (UI/UX overhaul story 3.1)
-      Leave it free for that story.
     -->
     <!-- @help group="Shell" text="Clipboard history" -->
     <keybind key="W-v">
       <action name="Execute">
         <command>/opt/yantrik/bin/yos act shell open_clipboard</command>
+      </action>
+    </keybind>
+    <!-- @help group="Shell" text="Today: calendar, notifications and Do Not Disturb" -->
+    <keybind key="W-n">
+      <action name="Execute">
+        <command>/opt/yantrik/bin/yos act shell open_today</command>
       </action>
     </keybind>
     <!-- @help group="Shell" text="Quick Settings" -->

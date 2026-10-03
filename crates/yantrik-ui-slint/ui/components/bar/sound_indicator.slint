@@ -1,0 +1,22 @@
+// SoundIndicator — the speaker mark on the bar, from the machine's real level.
+//
+// Drawn only where there is an audio device to read (`volume-available`, the owner wraps it in an
+// `if`); the glyph is the speaker with waves, or struck through while muted, and the tooltip says
+// the level in words. A click opens Quick Settings, where the slider lives; the wheel nudges the
+// volume by 5 points a step, the way every desktop's speaker does; a middle click mutes.
+import { YIndicator } from "../y_indicator.slint";
+import { Icons } from "../icon.slint";
+
+export component SoundIndicator inherits YIndicator {
+    in property <int> level: 0;
+    in property <bool> muted: false;
+    // The wheel and the middle click ask; the owner writes the real level and reads it back.
+    callback volume-changed(int);
+    callback mute-toggled();
+
+    icon: root.muted ? Icons.volume-off : Icons.volume;
+    tooltip: root.muted ? "Sound muted" : "Volume " + root.level + "%";
+    tooltip-above: false;
+    middle-clicked => { root.mute-toggled(); }
+    scrolled(steps) => { root.volume-changed(Math.max(0, Math.min(100, root.level + steps * 5))); }
+}

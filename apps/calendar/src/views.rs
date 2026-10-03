@@ -13,7 +13,7 @@
 //! these plain structs into `CalendarTimeEvent` rows and nothing else.
 //!
 //! The week starts on Sunday. That is not a preference: the month grid's own header row in
-//! `calendar.slint` reads Sun..Sat and `day_of_week_for_date` fills it with
+//! `calendar.slint` reads Sun..Sat and the contract's `month_grid` fills it with
 //! `num_days_from_sunday`, so a week view starting anywhere else would put the same date in two
 //! different columns in two views of the same calendar.
 

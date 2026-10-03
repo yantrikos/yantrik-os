@@ -47,6 +47,7 @@ pub mod screenshot;
 pub mod settings;
 mod system_poll;
 mod timers;
+mod today;
 pub mod toast;
 mod voice_mode;
 pub mod apt;

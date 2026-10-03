@@ -13,6 +13,9 @@ import { StatusBar } from "components/status_bar.slint";
 import { ShellOverlays } from "components/shell_overlays.slint";
 import { NetworkState, NetworkRow } from "components/bar/network_state.slint";
 export { NetworkState, NetworkRow }
+import { TodayState, TodayEvent } from "components/bar/today_state.slint";
+import { CalendarDay } from "components/month_grid.slint";
+export { TodayState, TodayEvent, CalendarDay }
 import { BootScreen, BootStage } from "boot.slint";
 import { OnboardingScreen } from "onboarding.slint";
 import { InstallerScreen, InstallerDisk, KeyboardChoice } from "installer.slint";
@@ -302,7 +305,7 @@ export component App inherits Window {
     // nothing underneath moves.
     // The bar's three panels are the shell's and open over any screen, so they cover it on any
     // screen; the rest are the desktop's.
-    property <bool> mind-panel-covered: root.quick-settings-open || root.power-menu-open || root.clip-panel-open || root.cheat-sheet-open || root.battery-popover-open || root.network-open || root.alt-tab-open
+    property <bool> mind-panel-covered: root.today-open || root.quick-settings-open || root.power-menu-open || root.clip-panel-open || root.cheat-sheet-open || root.battery-popover-open || root.network-open || root.alt-tab-open
         || (root.current-screen == 1
             && (root.lens-open || root.app-grid-open || root.command-palette-open));
 
@@ -411,6 +414,18 @@ export component App inherits Window {
     // shell forward or the panel opens where nobody can see it (see `app-grid-opened`). The
     // clipboard also refreshes its entries here, once, instead of a timer watching the flag.
     callback shell-overlay-opened(string);
+    // Today hangs from the clock like the network and battery popovers: opening it puts the
+    // others away, and the shell comes forward so it is not drawn behind an app (Rust fills the
+    // month and the day's events in the same hook).
+    changed today-open => {
+        if (self.today-open) {
+            self.network-open = false;
+            self.battery-popover-open = false;
+            self.quick-settings-open = false;
+            self.power-menu-open = false;
+            self.shell-overlay-opened("today");
+        }
+    }
     changed network-open => {
         if (self.network-open) { self.shell-overlay-opened("network"); }
     }
@@ -549,6 +564,8 @@ export component App inherits Window {
     in-out property <int> volume-level: 0;
     // The network popover under the bar's network mark, and where that mark is.
     in-out property <bool> network-open: false;
+    // The clock's popover: the month, today's events, the newest notifications, Do Not Disturb.
+    in-out property <bool> today-open: false;
     in-out property <length> network-anchor-x: 0;
     callback brightness-changed(int);
     callback volume-changed(int);
@@ -2741,6 +2758,14 @@ export component App inherits Window {
             quick-settings-open <=> root.quick-settings-open;
             network-open <=> root.network-open;
             network-anchor-x: root.network-anchor-x;
+            today-open <=> root.today-open;
+            dnd-mode: root.dnd-mode;
+            notification-unread: root.notification-unread-count;
+            toggle-dnd-mode => { root.toggle-dnd-mode(); }
+            // "All notifications" is the notification centre, the full history.
+            all-notifications => { root.current-screen = 9; root.navigate(9); }
+            notification-tapped(id) => { root.notification-tapped(id); }
+            notification-action(id, action) => { root.notification-action(id, action); }
             // Settings > Network is category 3 of the settings sidebar.
             network-settings => {
                 root.settings-category = 3;
@@ -2783,10 +2808,26 @@ export component App inherits Window {
             y: 0;
             width: 100%;
             clock-text: root.clock-text;
-            notification-unread: root.notification-unread-count;
-            notifications-clicked => { root.current-screen = 9; root.navigate(9); }
-            companion-status: root.companion-status;
-            companion-online: root.companion-online;
+            date-text: root.date-text;
+            today-open: root.today-open;
+            // One panel at a time: the others hang from the same bar.
+            clock-clicked => {
+                root.network-open = false;
+                root.battery-popover-open = false;
+                root.quick-settings-open = false;
+                root.power-menu-open = false;
+                root.today-open = !root.today-open;
+            }
+            // The minds: one chip, from the approvals and requests the Agents workroom counts. A
+            // click opens Agents, on Needs you when something does.
+            minds-needing: AgentsState.request-minds;
+            minds-requests: AgentsState.needs-count;
+            minds-clicked => {
+                root.today-open = false;
+                AgentsState.show-section(AgentsState.needs-count > 0 ? "needs_you" : "workroom");
+                root.current-screen = 34;
+                root.navigate(34);
+            }
             assistant-offline-notice: root.assistant-offline-notice;
             minds-notice: root.minds-notice;
             battery-available: root.battery-available;
@@ -2797,28 +2838,21 @@ export component App inherits Window {
             battery-popover-open: root.battery-popover-open;
             battery-clicked(x) => {
                 root.battery-anchor-x = x;
-                // One panel at a time: the others hang from the same bar.
                 root.network-open = false;
                 root.quick-settings-open = false;
                 root.power-menu-open = false;
+                root.today-open = false;
                 root.battery-popover-open = !root.battery-popover-open;
             }
             network-online: root.network-online;
             network-medium: root.network-medium;
-            pending-count: root.pending-count;
-            whisper-hint-count: root.whisper-hint-count;
-            incognito-enabled: root.settings-incognito-mode;
+            volume-available: root.volume-available;
+            volume-muted: root.volume-muted;
+            volume-level: root.volume-level;
+            volume-changed(val) => { root.volume-changed(val); }
+            volume-mute-toggled => { root.volume-mute-toggled(); }
             dnd-enabled: root.dnd-mode;
-            active-project: root.active-project;
-            ai-privacy-mode: root.ai-privacy-mode;
-            ai-provider-label: root.ai-active-provider-label;
-            ai-fallback-banner: root.ai-fallback-banner;
-            cpu-percent: root.bar-cpu-percent;
-            mem-text: root.bar-mem-text;
-            date-text: root.date-text;
-            active-harness-id: root.active-harness-id;
-            active-harness-name: root.active-harness-name;
-            harness-driving: root.harness-driving;
+            dnd-clicked => { root.toggle-dnd-mode(); }
             mind-mode: root.mind-mode;
             mind-mode-label: root.mind-mode-label;
             private-mode: root.private-mode;
@@ -2830,9 +2864,8 @@ export component App inherits Window {
                 root.mind-menu-confirming = false;
                 root.mind-menu-audit-open = false;
             }
+            // The mark opens the Lens, where the companion's dot beside it used to.
             anchor-clicked => { root.lens-open = !root.lens-open; root.open-lens(); }
-            queue-clicked => { root.lens-open = true; root.open-lens(); }
-            whisper-hint-clicked => { root.whisper-hint-clicked(); }
             // The network mark opens its own popover and puts the other panels away, so one
             // bar panel is up at a time; the battery's and Quick Settings' doors do the same the
             // other way.
@@ -2842,21 +2875,14 @@ export component App inherits Window {
                 root.quick-settings-open = false;
                 root.power-menu-open = false;
                 root.clip-panel-open = false;
+                root.today-open = false;
             }
             network-anchor-x <=> root.network-anchor-x;
-            settings-tapped => { root.network-open = false; root.battery-popover-open = false; root.quick-settings-open = !root.quick-settings-open; }
-            power-pressed => { root.network-open = false; root.battery-popover-open = false; root.power-menu-open = !root.power-menu-open; }
-            // Handled here, the same way the desktop's own instance handles them. They are not
-            // callbacks on this component -- `ai-privacy-clicked` and `active-mind-clicked` are
-            // declared on DesktopScreen, and forwarding to a root callback of the same name was
-            // inventing two that do not exist.
-            ai-privacy-clicked => { root.ai-quick-switcher-open = !root.ai-quick-switcher-open; }
-            // The Minds panel, under the chip; Settings → Minds is its gear.
-            active-mind-clicked => {
-                root.minds-panel-open = !root.minds-panel-open;
-                root.minds-panel-adding = false;
-                root.mind-menu-open = false;
-                if root.minds-panel-open { root.minds-panel-opened(); }
+            settings-tapped => {
+                root.network-open = false;
+                root.battery-popover-open = false;
+                root.today-open = false;
+                root.quick-settings-open = !root.quick-settings-open;
             }
             // The "minds can't reach" notice goes to Minds, which lists what is attached (#367).
             minds-notice-clicked => {

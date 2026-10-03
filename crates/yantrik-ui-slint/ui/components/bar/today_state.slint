@@ -1,0 +1,29 @@
+// What Today (the clock's popover) shows, filled by Rust when it opens (`wire/today.rs`) and by the
+// notifications poll (`notifications::sync_to_ui`), never by a timer here.
+//
+// The calendar is the calendar service's: the days and events arrive on a worker, so the panel
+// opens at once with the grid and the date and the events say "loading" until the store answers.
+// "unavailable" is a real state: the service did not answer, which is not the same as an empty day,
+// and the panel says which.
+import { NotificationData } from "../../notification_center.slint";
+import { CalendarDay } from "../month_grid.slint";
+
+export struct TodayEvent {
+    title: string,
+    // "09:30 – 10:00" or "All day".
+    time-text: string,
+}
+
+export global TodayState {
+    // "Friday" and "2 October 2026".
+    in property <string> weekday: "";
+    in property <string> date-line: "";
+    // "October 2026".
+    in property <string> month-title: "";
+    in property <[CalendarDay]> days: [];
+    // loading | ok | unavailable
+    in property <string> events-state: "loading";
+    in property <[TodayEvent]> events: [];
+    // The newest five, with the buttons their senders gave them.
+    in property <[NotificationData]> notifications: [];
+}

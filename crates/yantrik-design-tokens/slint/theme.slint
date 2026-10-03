@@ -427,7 +427,7 @@ export global Theme {
     out property <length> h-app-header: 48px;
 
     // ─── Desktop layout sizes ─────────────────────────────────────
-    out property <length> status-bar-height: 32px;
+    out property <length> status-bar-height: 36px;
     /// The bar along the bottom of the screen.
     ///
     /// Written as a bare `40px` in fifteen places — the taskbar itself and every maximised
@@ -518,9 +518,22 @@ export global Theme {
     // something up with a slider's thumb or a tile's edge reads it here instead of guessing.
     //
     // The glyph size for every icon that lives on the top/bottom bar (YIndicator).
-    out property <length> bar-icon-size: 16px;
+    out property <length> bar-icon-size: 18px;
     // The attention dot on a bar indicator (a thing here needs a look).
     out property <length> bar-dot: 7px;
+    // The top bar (render 01): an opaque #101417 strip, 36px tall, with a 1px neutral edge under it.
+    // The same two colours as the dock, because they are one family of chrome.
+    out property <color> bar-bg:     root.dock-bar;
+    out property <color> bar-border: root.dock-border;
+    // The gap between neighbours on the bar's right: indicators, the mode chip, Quick Settings.
+    out property <length> bar-gap: 8px;
+    // The Minds chip and the mode chip: 24px tall, a pill-ish corner, a 6px dot.
+    out property <length> bar-chip-h: 24px;
+    out property <length> bar-chip-radius: 6px;
+    out property <length> bar-chip-dot: 6px;
+    // Today (the clock's popover) is wider than a list popover: it holds a month.
+    out property <length> today-width: 380px;
+    out property <length> today-cell-h: 30px;
     // A popover (Quick Settings, Sound, Network, Today) is this wide, and sits this far from
     // what opened it and from the screen edge. The radius is the window/modal step of the scale.
     out property <length> popover-width: 360px;

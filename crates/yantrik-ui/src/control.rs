@@ -968,6 +968,13 @@ pub fn publish(
                 .with("launcher", serde_json::json!({ "open": ui.get_app_grid_open() }))
                 // The bar's three panels, which open over any screen: whether each is on the
                 // screen, and the action that puts it away. See `control_overlays`.
+                .with("today", crate::control_overlays::panel_for_describe(ui.get_today_open(), screen, "close_today"))
+                // The bar's Minds chip: what it says and where a click goes, read from the same two
+                // numbers it draws, so "does anything need me" does not need a screenshot.
+                .with("bar_minds", crate::control_overlays::bar_minds_for_describe(
+                    ui.global::<crate::AgentsState>().get_request_minds(),
+                    ui.global::<crate::AgentsState>().get_needs_count(),
+                ))
                 .with("quick_settings", crate::control_overlays::panel_for_describe(ui.get_quick_settings_open(), screen, "close_quick_settings"))
                 .with("power_menu", crate::control_overlays::panel_for_describe(ui.get_power_menu_open(), screen, "close_power_menu"))
                 .with("clipboard_panel", crate::control_overlays::panel_for_describe(ui.get_clip_panel_open(), screen, "close_clipboard"))

@@ -1,12 +1,12 @@
-//! The bar's panels, operable as data: Quick Settings, the power menu, the clipboard, and the
-//! keyboard cheat sheet (Super+/).
+//! The bar's panels, operable as data: Today (the clock's), Quick Settings, the power menu, the
+//! clipboard, and the keyboard cheat sheet (Super+/).
 //!
 //! A person opens them by pressing the bar's network, settings and power buttons or Super+V, and
 //! they open over whatever screen is up. A mind can ask for the same panels, so what a pointer
 //! can do it can do too, and `describe shell` says which one is on the screen so nothing has to
 //! be photographed to find out (`quick_settings`, `power_menu`, `clipboard_panel`, `cheat_sheet`).
 //!
-//! All eight actions are `safe`. Opening the power menu does not power anything off: it shows the
+//! All ten actions are `safe`. Opening the power menu does not power anything off: it shows the
 //! menu, and choosing an entry in it is a separate act that is the person's. Nothing here is
 //! chosen, sent, pasted or written; a panel is shown or put away.
 //!
@@ -32,6 +32,7 @@ pub(crate) fn bar_is_drawn(screen: i32) -> bool {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Panel {
+    Today,
     QuickSettings,
     PowerMenu,
     Clipboard,
@@ -39,10 +40,11 @@ enum Panel {
 }
 
 impl Panel {
-    const ALL: [Panel; 4] = [Panel::QuickSettings, Panel::PowerMenu, Panel::Clipboard, Panel::CheatSheet];
+    const ALL: [Panel; 5] = [Panel::Today, Panel::QuickSettings, Panel::PowerMenu, Panel::Clipboard, Panel::CheatSheet];
 
     fn name(self) -> &'static str {
         match self {
+            Panel::Today => "today panel",
             Panel::QuickSettings => "quick settings",
             Panel::PowerMenu => "power menu",
             Panel::Clipboard => "clipboard panel",
@@ -52,6 +54,7 @@ impl Panel {
 
     fn flag(self, ui: &App) -> bool {
         match self {
+            Panel::Today => ui.get_today_open(),
             Panel::QuickSettings => ui.get_quick_settings_open(),
             Panel::PowerMenu => ui.get_power_menu_open(),
             Panel::Clipboard => ui.get_clip_panel_open(),
@@ -61,6 +64,7 @@ impl Panel {
 
     fn set(self, ui: &App, open: bool) {
         match self {
+            Panel::Today => ui.set_today_open(open),
             Panel::QuickSettings => ui.set_quick_settings_open(open),
             Panel::PowerMenu => ui.set_power_menu_open(open),
             Panel::Clipboard => ui.set_clip_panel_open(open),
@@ -79,7 +83,36 @@ pub fn panel_for_describe(open: bool, screen: i32, close_with: &str) -> serde_js
     })
 }
 
-/// Show one panel, put the other two away so only one is up, bring the shell forward, and answer
+/// What `describe shell` says under `bar_minds`: the top bar's one Minds chip, as a person reads it.
+///
+/// `needing` counts the minds with an unresolved request and `requests` the requests, the two numbers
+/// the chip is drawn from. The label and tooltip are built here from them in the chip's own words
+/// ("Minds · 2 need you", "1 mind has 3 requests"), and `opens` says where a click goes: Agents, on
+/// Needs you when there is something to answer. A mind that reads this knows what the person is
+/// looking at without being told what any request says.
+pub fn bar_minds_for_describe(needing: i32, requests: i32) -> serde_json::Value {
+    let (needing, requests) = (needing.max(0), requests.max(0));
+    let label = match needing {
+        0 => "Minds".to_string(),
+        1 => "Minds · 1 needs you".to_string(),
+        n => format!("Minds · {n} need you"),
+    };
+    let tooltip = match (needing, requests) {
+        (0, _) => "No mind needs you".to_string(),
+        (1, 1) => "1 mind has 1 request".to_string(),
+        (1, r) => format!("1 mind has {r} requests"),
+        (n, r) => format!("{n} minds have {r} requests"),
+    };
+    serde_json::json!({
+        "label": label,
+        "tooltip": tooltip,
+        "minds_needing_you": needing,
+        "requests": requests,
+        "opens": if needing > 0 { "agents: needs_you" } else { "agents: workroom" },
+    })
+}
+
+/// Show one panel, put the others away so only one is up, bring the shell forward, and answer
 /// with what was observed afterwards.
 fn open_panel(ui: &App, panel: Panel) -> Result<serde_json::Value, String> {
     // The panels are drawn under the approval overlay but over the Lens, so a card shown in the
@@ -87,6 +120,7 @@ fn open_panel(ui: &App, panel: Panel) -> Result<serde_json::Value, String> {
     // while a card waits; putting a panel away never is. Each name written out, so the test that
     // reads the source for the hold finds it.
     match panel {
+        Panel::Today => crate::card_watch::hold_windows("open_today")?,
         Panel::QuickSettings => crate::card_watch::hold_windows("open_quick_settings")?,
         Panel::PowerMenu => crate::card_watch::hold_windows("open_power_menu")?,
         Panel::Clipboard => crate::card_watch::hold_windows("open_clipboard")?,
@@ -142,7 +176,7 @@ fn close_panel(ui: &App, panel: Panel) -> serde_json::Value {
     })
 }
 
-/// Add the eight panel actions to the shell's surface.
+/// Add the ten panel actions to the shell's surface.
 pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
     // Each action carries its own literal name, so the control tests that read the source for
     // `Action::new("name"` find them; the handlers are the same two functions.
@@ -160,6 +194,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             },
         )
     };
+    let (open_td, close_td) = handlers(Panel::Today);
     let (open_qs, close_qs) = handlers(Panel::QuickSettings);
     let (open_pm, close_pm) = handlers(Panel::PowerMenu);
     let (open_cb, close_cb) = handlers(Panel::Clipboard);
@@ -168,10 +203,32 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
     surface
         .action(
             Action::new(
+                "open_today",
+                "Show Today, the panel that drops from the clock: the date, this month's calendar, \
+                 today's events, the five newest notifications with their buttons and the Do Not \
+                 Disturb switch, over whatever screen is up, and bring the shell in front of any app \
+                 window. Nothing is changed: the switch and the buttons are the person's to press. \
+                 Only one of the bar's panels is up at a time. `describe shell` says whether it is \
+                 open, under `today`.",
+            )
+            .risk("safe"),
+            open_td,
+        )
+        .action(
+            Action::new(
+                "close_today",
+                "Put away Today. It changes nothing else and does not send the shell behind an app \
+                 window.",
+            )
+            .risk("safe"),
+            close_td,
+        )
+        .action(
+            Action::new(
                 "open_quick_settings",
                 "Show Quick Settings, the network, volume, brightness and battery panel that drops \
                  from the bar, over whatever screen is up, and bring the shell in front of any app \
-                 window. Only one of the bar's three panels is up at a time. `describe shell` says \
+                 window. Only one of the bar's panels is up at a time. `describe shell` says \
                  whether it is open, under `quick_settings`.",
             )
             .risk("safe"),
@@ -300,10 +357,12 @@ mod tests {
         assert_eq!(on_lock["open"], false, "a flag set under the lock screen is not a panel anyone sees");
     }
 
-    /// All eight are `safe`: they show or put away a panel and nothing else.
+    /// All ten are `safe`: they show or put away a panel and nothing else.
     #[test]
-    fn all_eight_are_published_and_safe() {
+    fn all_ten_are_published_and_safe() {
         for name in [
+            "open_today",
+            "close_today",
             "open_quick_settings",
             "close_quick_settings",
             "open_power_menu",
@@ -341,6 +400,7 @@ mod tests {
         let handlers = &src[src.find("let handlers").unwrap()..src.find("let (open_qs").unwrap()];
         assert!(handlers.contains("open_panel(&ui, panel)"), "the opens go through `open_panel`");
         for (name, opener) in [
+            ("open_today", "open_td"),
             ("open_quick_settings", "open_qs"),
             ("open_power_menu", "open_pm"),
             ("open_clipboard", "open_cb"),
@@ -348,6 +408,19 @@ mod tests {
         ] {
             assert!(declaration(name).contains(opener), "`{name}` must use its own opener `{opener}`");
         }
+    }
+
+    /// The chip says what it draws: minds counted, requests in the tooltip, and the door it opens.
+    #[test]
+    fn the_minds_chip_is_described_in_its_own_words() {
+        let none = bar_minds_for_describe(0, 0);
+        assert_eq!((none["label"].as_str(), none["opens"].as_str()), (Some("Minds"), Some("agents: workroom")));
+        let one = bar_minds_for_describe(1, 3);
+        assert_eq!(one["label"], "Minds · 1 needs you");
+        assert_eq!(one["tooltip"], "1 mind has 3 requests");
+        assert_eq!(one["opens"], "agents: needs_you");
+        let two = bar_minds_for_describe(2, 5);
+        assert_eq!((two["label"].as_str(), two["tooltip"].as_str()), (Some("Minds · 2 need you"), Some("2 minds have 5 requests")));
     }
 
     /// Opening one puts the others away, so the answer and `describe` are unambiguous.
@@ -367,10 +440,10 @@ mod tests {
 
     /// The shell publishes each panel's state, so a mind reads it rather than photographing.
     #[test]
-    fn describe_shell_publishes_the_four_panels() {
+    fn describe_shell_publishes_the_five_panels() {
         let control = include_str!("control.rs");
         let control: String = control.split("#[cfg(test)]").next().unwrap().split_whitespace().collect();
-        for key in ["quick_settings", "power_menu", "clipboard_panel", "cheat_sheet"] {
+        for key in ["today", "quick_settings", "power_menu", "clipboard_panel", "cheat_sheet"] {
             assert!(
                 control.contains(&format!(".with(\"{key}\",crate::control_overlays::panel_for_describe(")),
                 "describe shell must publish `{key}`"
@@ -378,7 +451,7 @@ mod tests {
         }
         assert!(
             control.contains("crate::control_overlays::actions(surface,ui)"),
-            "the eight actions must be added to the shell's surface"
+            "the ten actions must be added to the shell's surface"
         );
     }
 }

@@ -1,0 +1,58 @@
+// BarClock — "Fri 2 Oct · 14:32", centred on the SCREEN, and the door to Today.
+//
+// The text comes from Rust once a minute on the minute (`wire/timers.rs`); there is no timer in
+// here. Where it sits is the bar's business: the bar places it at the middle of its own width, not
+// in whatever room the left and right groups leave, so it stays under the same pixel on every
+// screen however many indicators the right-hand side has.
+//
+// A click asks for Today. `active` keeps the hover wash on while Today is open.
+import { Theme } from "theme.slint";
+
+export component BarClock inherits Rectangle {
+    in property <string> text: "";
+    in property <bool> active: false;
+    callback clicked();
+
+    property <bool> pointer-focus: false;
+    property <bool> ring: keys.has-focus && !root.pointer-focus;
+
+    height: Theme.bar-chip-h;
+    width: label.preferred-width + 2 * Theme.sp-3;
+    border-radius: Theme.bar-chip-radius;
+    background: area.pressed || root.active ? Theme.hover-fill-strong : area.has-hover ? Theme.hover-fill : transparent;
+    animate background { duration: Theme.dur-fast; }
+    border-width: root.ring ? Theme.focus-ring-width : 0px;
+    border-color: Theme.focus-ring;
+    forward-focus: keys;
+    accessible-role: button;
+    accessible-label: "Today, " + root.text;
+    accessible-expanded: root.active;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            root.pointer-focus = false;
+            if ((event.text == " " || event.text == "\n") && !event.repeat) { root.clicked(); return accept; }
+            reject
+        }
+    }
+
+    area := TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                root.pointer-focus = true;
+                keys.focus();
+            }
+        }
+        clicked => { root.clicked(); }
+    }
+
+    label := Text {
+        text: root.text;
+        color: Theme.text-primary;
+        font-size: Theme.fs-body;
+        font-weight: Theme.fw-body-strong;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}

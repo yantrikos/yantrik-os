@@ -1,0 +1,82 @@
+// One notification in Today: who, what, when, and the buttons its sender gave it.
+//
+// Pressing the row is the notification's own tap (read, and the sender's app comes forward when it
+// is one of ours); pressing a button sends that action to the sender, the same path a toast's button
+// takes. The row draws what the store holds and nothing else: no icon the sender did not give.
+import { Theme } from "theme.slint";
+import { NotificationData } from "../../notification_center.slint";
+
+export component TodayNotification inherits Rectangle {
+    in property <NotificationData> note;
+    callback tapped(string);
+    callback action(string, string);
+
+    height: col.preferred-height + 2 * Theme.sp-2;
+    border-radius: Theme.r-md;
+    background: ta.has-hover ? Theme.hover-fill : transparent;
+    accessible-role: button;
+    accessible-label: root.note.app-name + ": " + root.note.summary;
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.tapped(root.note.id); }
+    }
+
+    col := VerticalLayout {
+        padding: Theme.sp-2;
+        padding-left: Theme.sp-3;
+        padding-right: Theme.sp-3;
+        spacing: Theme.sp-1;
+
+        HorizontalLayout {
+            spacing: Theme.sp-2;
+            Text {
+                text: root.note.summary;
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+                font-weight: root.note.is-read ? Theme.fw-body : Theme.fw-body-strong;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: root.note.time-ago;
+                color: Theme.text-dim;
+                font-size: Theme.fs-caption;
+                vertical-alignment: center;
+            }
+        }
+        Text {
+            text: root.note.app-name + (root.note.body != "" ? " · " + root.note.body : "");
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            overflow: elide;
+            max-height: self.font-size * 1.4;
+        }
+        if root.note.actions.length > 0 : HorizontalLayout {
+            spacing: Theme.sp-2;
+            alignment: start;
+            padding-top: Theme.sp-1;
+            for act in root.note.actions : Rectangle {
+                height: Theme.h-compact - Theme.sp-1;
+                width: act-label.preferred-width + 2 * Theme.sp-3;
+                border-radius: Theme.r-sm;
+                border-width: Theme.hairline;
+                border-color: act-ta.has-hover ? Theme.text-secondary : Theme.border-card;
+                background: act-ta.pressed ? Theme.hover-fill-strong : act-ta.has-hover ? Theme.hover-fill : transparent;
+                accessible-role: button;
+                accessible-label: act.label;
+                act-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.action(root.note.id, act.id); }
+                }
+                act-label := Text {
+                    text: act.label;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-caption;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

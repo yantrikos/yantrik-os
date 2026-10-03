@@ -1,6 +1,6 @@
 //! Calendar service contract — event CRUD, sync, scheduling.
 
-use chrono::NaiveDateTime;
+use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 use crate::email::ServiceError;
 
@@ -281,6 +281,38 @@ pub struct DayCell {
     pub is_current_month: bool,
 }
 
+/// The 42 cells of a Sunday-first month grid: blanks (`day == 0`) before the 1st and after the
+/// last day, then the days, so a cell's row is `index / 7` and its column `index % 7`.
+///
+/// One function for every surface that draws a month: the Calendar app's month view and the
+/// shell's Today panel both used to need it, and the second copy would have been the one that
+/// disagreed about which weekday a month starts on. `events_on` answers how many events a day
+/// holds; `today` is the date to mark. A month that does not exist gives all blanks.
+pub fn month_grid(year: i32, month: u32, events_on: &dyn Fn(u32) -> i32, today: Option<NaiveDate>) -> Vec<DayCell> {
+    let blank = || DayCell { year, month, day: 0, event_count: 0, is_today: false, is_current_month: false };
+    let Some(first) = NaiveDate::from_ymd_opt(year, month, 1) else {
+        return (0..42).map(|_| blank()).collect();
+    };
+    let lead = first.weekday().num_days_from_sunday() as usize;
+    let last = (28..=31).rev().find(|d| NaiveDate::from_ymd_opt(year, month, *d).is_some()).unwrap_or(28);
+    let mut cells: Vec<DayCell> = (0..lead).map(|_| blank()).collect();
+    for day in 1..=last {
+        let event_count = events_on(day);
+        cells.push(DayCell {
+            year,
+            month,
+            day,
+            event_count,
+            is_today: today == NaiveDate::from_ymd_opt(year, month, day),
+            is_current_month: true,
+        });
+    }
+    while cells.len() < 42 {
+        cells.push(blank());
+    }
+    cells
+}
+
 /// Calendar service operations.
 pub trait CalendarService: Send + Sync {
     fn list_events(&self, calendar_id: &str, start: &str, end: &str) -> Result<Vec<CalendarEvent>, ServiceError>;
@@ -290,4 +322,46 @@ pub trait CalendarService: Send + Sync {
     fn delete_event(&self, calendar_id: &str, event_id: &str) -> Result<(), ServiceError>;
     fn month_cells(&self, year: i32, month: u32) -> Result<Vec<DayCell>, ServiceError>;
     fn sync(&self, calendar_id: &str) -> Result<(), ServiceError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn day(cells: &[DayCell], d: u32) -> usize {
+        cells.iter().position(|c| c.day == d).expect("the day is in the grid")
+    }
+
+    /// October 2026 starts on a Thursday: four blanks, then the 1st in the fifth column of a
+    /// Sunday-first week. The Calendar app drew its weekday header from the same assumption.
+    #[test]
+    fn a_month_starts_in_the_column_of_its_weekday() {
+        let cells = month_grid(2026, 10, &|_| 0, None);
+        assert_eq!(cells.len(), 42);
+        assert_eq!(day(&cells, 1), 4, "Thursday is column 4 with Sunday first");
+        assert_eq!(day(&cells, 31) % 7, 6, "31 October 2026 is a Saturday");
+        assert!(cells[..4].iter().all(|c| c.day == 0 && !c.is_current_month));
+        assert!(cells.iter().skip(35).all(|c| c.day == 0), "October fits five rows; the sixth is blank");
+    }
+
+    #[test]
+    fn leap_february_has_twenty_nine_days_and_a_common_one_twenty_eight() {
+        let days = |y| month_grid(y, 2, &|_| 0, None).iter().filter(|c| c.day > 0).count();
+        assert_eq!((days(2028), days(2026)), (29, 28));
+    }
+
+    /// Today is marked once, only in its own month, and the event counts come from the closure.
+    #[test]
+    fn today_is_marked_once_and_events_are_counted_per_day() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 2);
+        let cells = month_grid(2026, 10, &|d| if d == 2 { 3 } else { 0 }, today);
+        assert_eq!(cells.iter().filter(|c| c.is_today).count(), 1);
+        assert_eq!(cells[day(&cells, 2)].event_count, 3);
+        assert!(month_grid(2026, 11, &|_| 0, today).iter().all(|c| !c.is_today), "another month marks nothing");
+    }
+
+    #[test]
+    fn a_month_that_does_not_exist_is_all_blanks() {
+        assert!(month_grid(2026, 13, &|_| 1, None).iter().all(|c| c.day == 0 && c.event_count == 0));
+    }
 }

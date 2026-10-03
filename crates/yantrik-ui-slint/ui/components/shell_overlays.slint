@@ -1,5 +1,5 @@
-// The overlays the bar opens: the network popover, Quick Settings, the power menu and the
-// clipboard panel, and the keyboard cheat sheet (Super+/).
+// The overlays the bar opens: the network popover, Today (the clock's), Quick Settings, the power
+// menu and the clipboard panel, and the keyboard cheat sheet (Super+/).
 //
 // They stood inside DesktopScreen, which is only on screen while the desktop is. The bar is the
 // shell's and is drawn above every screen, so its network, settings and power buttons toggled a
@@ -18,6 +18,7 @@ import { CheatSheet, CheatRowData } from "cheat_sheet.slint";
 import { BatteryPopover } from "bar/battery_popover.slint";
 import { NetworkPopover } from "popovers/network_popover.slint";
 import { NetworkState } from "bar/network_state.slint";
+import { TodayPopover } from "popovers/today_popover.slint";
 
 export component ShellOverlays inherits Rectangle {
     // Quick Settings
@@ -51,6 +52,15 @@ export component ShellOverlays inherits Rectangle {
     in property <length> network-anchor-x: 0;
     callback network-settings();
 
+    // Today: hangs from the clock, centred on the screen. Its content is `TodayState`.
+    in-out property <bool> today-open: false;
+    in property <bool> dnd-mode: false;
+    in property <int> notification-unread: 0;
+    callback toggle-dnd-mode();
+    callback all-notifications();
+    callback notification-tapped(string);
+    callback notification-action(string, string);
+
     // Power menu
     in-out property <bool> power-menu-open: false;
     callback power-action(string);
@@ -77,6 +87,19 @@ export component ShellOverlays inherits Rectangle {
         anchor-y: Theme.status-bar-height;
         close-requested => { root.network-open = false; }
         settings-requested => { root.network-open = false; root.network-settings(); }
+    }
+
+    TodayPopover {
+        open: root.today-open;
+        anchor-x: root.width / 2;
+        anchor-y: Theme.status-bar-height;
+        dnd: root.dnd-mode;
+        unread: root.notification-unread;
+        close-requested => { root.today-open = false; }
+        dnd-toggled => { root.toggle-dnd-mode(); }
+        all-notifications => { root.today-open = false; root.all-notifications(); }
+        notification-tapped(id) => { root.notification-tapped(id); }
+        notification-action(id, action) => { root.notification-action(id, action); }
     }
 
     QuickSettings {

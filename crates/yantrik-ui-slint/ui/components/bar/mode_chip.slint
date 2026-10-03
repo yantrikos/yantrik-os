@@ -1,0 +1,65 @@
+// ModeChip — what the minds may do without asking: Plan, Ask, Auto, a bypass, or Private.
+//
+// Plain and neutral (a shield and a word on a 1px edge) in the ordinary modes, because the ordinary
+// mode is not news. It takes a colour only when it should: red for either bypass ("it is not
+// asking you"), amber for Plan's "read-only" (the existing meaning, kept), the accent for Private,
+// when the Mind is off whatever the mode says. The label carries a bypass's countdown.
+// See mind_mode_menu.slint for what a click opens.
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "../icon.slint";
+
+export component ModeChip inherits Rectangle {
+    // plan | ask | auto | bypass | bypass_all
+    in property <string> mode: "ask";
+    in property <string> mode-label: "Ask";
+    in property <bool> private-mode: false;
+    callback clicked();
+
+    property <bool> in-bypass: root.mode == "bypass" || root.mode == "bypass_all";
+    property <color> ink: root.private-mode ? Theme.accent
+        : root.in-bypass ? Theme.color-danger
+        : root.mode == "plan" ? Theme.amber
+        : Theme.text-primary;
+
+    height: Theme.bar-chip-h;
+    width: row.preferred-width + 2 * Theme.sp-3;
+    border-radius: Theme.bar-chip-radius;
+    background: area.pressed ? Theme.hover-fill-strong
+        : area.has-hover ? Theme.hover-fill
+        : root.private-mode ? Theme.tint-accent
+        : root.in-bypass ? Theme.color-danger-dim
+        : transparent;
+    animate background { duration: Theme.dur-fast; }
+    border-width: Theme.hairline;
+    border-color: root.private-mode ? Theme.accent : root.in-bypass ? Theme.color-danger : Theme.bar-border;
+    accessible-role: button;
+    accessible-label: root.private-mode ? "Private mode" : "Mind mode: " + root.mode-label;
+
+    area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    row := HorizontalLayout {
+        padding-left: Theme.sp-3;
+        padding-right: Theme.sp-3;
+        spacing: Theme.sp-2;
+        alignment: center;
+
+        Icon {
+            commands: root.mode == "plan" && !root.private-mode ? Icons.eye : Icons.shield;
+            size: 14px;
+            tint: root.ink;
+            y: (parent.height - self.height) / 2;
+        }
+        Text {
+            text: root.private-mode ? "Private" : root.mode-label;
+            max-width: 140px;
+            overflow: elide;
+            color: root.ink;
+            font-size: Theme.fs-caption;
+            font-weight: Theme.fw-body-strong;
+            vertical-alignment: center;
+        }
+    }
+}

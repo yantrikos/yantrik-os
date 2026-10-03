@@ -40,6 +40,7 @@ mod ai_map_tests;
 mod provider_panel_tests;
 mod rail_tests;
 mod calendar_tests;
+mod top_bar_tests;
 use slint::{
     platform::{
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
@@ -91,6 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-cards-waiting") { return cards_waiting_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-kit-controls") { return kit_controls_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-colour-system") { return colour_system_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-top-bar") { return top_bar_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-bar-overlays") { return bar_overlays_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-cheat-sheet") { return cheat_sheet_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-qs-levels") { return qs_levels_tests::run(&window, output); }

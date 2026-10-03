@@ -4,9 +4,9 @@
 //! app.slint), and this draws the whole shell on each of those three screens and checks that
 //! each panel appears and that closing it brings back exactly the frame that was there before.
 //!
-//! Quick Settings and the power menu are opened by pressing the bar's own buttons, found by
-//! sweeping the bar, so a change to the bar's layout does not break this; the clipboard has no
-//! button on the bar, its door is Super+V, which sets the flag, so the flag is set here.
+//! Quick Settings is opened by pressing the bar's own button, found by sweeping the bar, so a
+//! change to the bar's layout does not break this; the power menu and the clipboard have no button
+//! on the bar (Super+Escape and Super+V set the flag), so the flag is set here.
 use super::*;
 use std::cell::Cell;
 
@@ -111,18 +111,18 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         assert!(!ui.get_quick_settings_open(), "{name}: the same button closes it");
         assert_eq!(changed(&before, &back, width, (0, width as usize), (0, height as usize)), 0, "{name}: closed, the frame is the one that was there");
 
-        // The power menu, the same way, further along the bar.
-        let x_pm = press_bar_for(&ui, screen, &|ui| ui.get_power_menu_open());
+        // The power menu is not on the bar any more (render 01 has no power button): Super+Escape
+        // and the command palette set the flag, so the flag is set here, as the clipboard's is.
+        ui.set_power_menu_open(true);
+        park();
         let pm = draw();
         let card = changed(&before, &pm, width, (440, 840), (200, 600));
         assert!(card > 20_000, "{name}: the power menu is drawn over the screen: only {card} pixels changed");
-        assert_ne!(x_pm, x_qs, "{name}: the two buttons are two buttons");
         save(&pm, &path(&format!("{name}-power")), width, height)?;
-        click(w, x_pm, 16.0);
+        ui.set_power_menu_open(false);
         park();
         settle();
         let back = draw();
-        assert!(!ui.get_power_menu_open(), "{name}: the power button closes the menu");
         assert_eq!(changed(&before, &back, width, (0, width as usize), (0, height as usize)), 0, "{name}: closed, the frame is the one that was there");
 
         // The clipboard, from its keybind: the flag. Escape-less; the backdrop closes it.

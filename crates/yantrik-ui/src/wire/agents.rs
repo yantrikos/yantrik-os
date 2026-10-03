@@ -285,6 +285,7 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
     let timer = Timer::default();
     {
         let (weak, state) = (weak.clone(), state.clone());
+        let beat = std::cell::Cell::new(0u32);
         timer.start(TimerMode::Repeated, TICK, move || {
             agents::store().save_if_due();
             let seen = Seen::now();
@@ -306,6 +307,13 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
             publish_lens_questions(&ui);
             if ui.get_current_screen() == SCREEN {
                 refresh(&ui, &state, false);
+            } else if beat.replace(beat.get().wrapping_add(1)) % 4 == 3 {
+                // The bar's Minds chip is on every screen and counts the same requests the
+                // workroom does, so they are read here when the workroom is not drawing them:
+                // once a second, not every tick, because a request is not urgent to the
+                // quarter-second and the bar is the one thing drawn all day.
+                let room = agents::store().read(|s| room_now(s, &seen, &waiting_jobs));
+                publish_request_counts(&ui.global::<AgentsState>(), &room);
             }
             refresh_windows(&ui, &state);
             tell_the_person(&ui, &state, &mut watch.borrow_mut(), &waiting_jobs);
@@ -689,6 +697,18 @@ pub fn workroom_minds_now() -> Vec<(String, String)> {
     room.nav.into_iter().filter(|n| n.kind == "mind").map(|n| (n.id, n.label)).collect()
 }
 
+/// How many requests wait on the person and how many minds they come from: the workroom's header
+/// and the top bar's Minds chip both read these two numbers, so there is one reading of them. Set
+/// only where they changed.
+fn publish_request_counts(g: &AgentsState, all: &workroom::Workroom) {
+    if g.get_needs_count() != all.requests as i32 {
+        g.set_needs_count(all.requests as i32);
+    }
+    if g.get_request_minds() != all.request_minds as i32 {
+        g.set_request_minds(all.request_minds as i32);
+    }
+}
+
 /// The workroom, into the global: the navigation, the desks, the shelf and the pages behind it.
 /// Every list is set only where it changed, so a workroom in which nothing moves asks for no
 /// redraw. The header's counts and the navigation are the whole desktop's; the pages are the
@@ -706,10 +726,9 @@ fn publish_workroom(g: &AgentsState, all: &workroom::Workroom, mind: Option<&str
         .map(|n| n.label.clone())
         .unwrap_or_default();
     set(g.get_mind_filter_name(), name, &|t| g.set_mind_filter_name(t));
+    publish_request_counts(g, all);
     for (current, now, put) in [
-        (g.get_needs_count(), all.requests as i32, &(|n| g.set_needs_count(n)) as &dyn Fn(i32)),
-        (g.get_request_minds(), all.request_minds as i32, &|n| g.set_request_minds(n)),
-        (g.get_runs_count(), all.runs as i32, &|n| g.set_runs_count(n)),
+        (g.get_runs_count(), all.runs as i32, &(|n| g.set_runs_count(n)) as &dyn Fn(i32)),
         (g.get_shelf_count(), view.requests as i32, &|n| g.set_shelf_count(n)),
         (g.get_shelf_minds(), view.request_minds as i32, &|n| g.set_shelf_minds(n)),
         (g.get_view_runs(), view.runs as i32, &|n| g.set_view_runs(n)),

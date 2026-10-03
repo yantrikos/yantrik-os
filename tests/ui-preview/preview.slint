@@ -56,7 +56,7 @@ export component Preview inherits Window {
             { title: "Project overview.md", subtitle: "Documents", action-id: "file:1" },
         ];
     }
-    if root.scene == "" : StatusBar { y: 0px; clock-text: "10:24"; date-text: "Sat, Sep 19"; mem-text: "4.2 GB"; cpu-percent: 8; network-online: true; active-harness-id: "mind"; active-harness-name: "Yantrik Mind"; harness-driving: true; }
+    if root.scene == "" : StatusBar { y: 0px; clock-text: "10:24"; date-text: "Sat 19 Sep"; network-online: true; }
     if root.scene == "" && !root.app-view && !root.actual-desktop : DesktopHome {
         width: min(760px, parent.width - 48px); x: (parent.width - self.width) / 2;
         y: 76px; height: parent.height - 136px;
@@ -471,6 +471,8 @@ export component AgentsProbe inherits Window {
 // with fixture data by src/mind_panel_tests.rs. Callbacks are recorded there, never acted on.
 export { App } from "app.slint";
 export { NetworkState, NetworkRow } from "components/bar/network_state.slint";
+export { TodayState, TodayEvent } from "components/bar/today_state.slint";
+export { NotificationData, NotifActionData } from "notification_center.slint";
 export { MindPanelState, MindPanelNow, MindPanelAgent, MindPanelRecipe, MindPanelAct } from "components/mind_panel.slint";
 export { ThemeMode }
 
