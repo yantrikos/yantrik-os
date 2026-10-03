@@ -738,7 +738,10 @@ mod tests {
         let at = app.find("minds-notice-clicked =>").expect("the chip's click is handled");
         assert!(app[at..at + 200].contains("root.settings-category = 8;"), "it opens Minds");
         let bar = include_str!("../../../yantrik-ui-slint/ui/components/status_bar.slint");
-        assert!(bar.contains("if root.minds-notice != \"\" : TouchArea"));
+        // The notice is its own chip, drawn only while there is something to say, and its click is the
+        // bar's `minds-notice-clicked`.
+        assert!(bar.contains("if root.minds-notice != \"\" : BarSlot"));
+        assert!(bar.contains("clicked => { root.minds-notice-clicked(); }"));
     }
 
     /// #447: the first-party Mind's id is the mind account's alone wherever the door is served.
