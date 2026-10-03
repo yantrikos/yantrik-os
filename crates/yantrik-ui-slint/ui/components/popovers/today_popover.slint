@@ -33,7 +33,7 @@ export component TodayPopover inherits YPopover {
 
     // Everything that does not scroll, so the body can take what is left of the screen.
     property <length> fixed-h: head.preferred-height + dnd-tile.height + month-block.preferred-height
-        + foot.height + 4 * Theme.sp-3 + 2 * Theme.sp-4;
+        + foot.height + 5 * Theme.sp-3 + 2 * Theme.sp-4;
     property <length> body-room: root.screen-height - root.anchor-y - Theme.popover-gap - Theme.popover-margin - Theme.taskbar-height - Theme.popover-margin - root.fixed-h;
 
     head := VerticalLayout {
