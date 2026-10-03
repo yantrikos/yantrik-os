@@ -13,7 +13,7 @@ export component NoticeChip inherits Rectangle {
     callback clicked();
 
     height: Theme.bar-chip-h;
-    width: min(row.preferred-width + 2 * Theme.sp-3, 340px);
+    width: min(row.preferred-width, 340px);
     border-radius: Theme.bar-chip-radius;
     background: Theme.color-danger-dim;
     border-width: Theme.hairline;

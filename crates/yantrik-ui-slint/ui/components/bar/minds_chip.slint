@@ -28,7 +28,7 @@ export component MindsChip inherits Rectangle {
         : (root.needing == 1 ? "1 mind has " : root.needing + " minds have ") + root.request-text;
 
     height: Theme.bar-chip-h;
-    width: row.preferred-width + 2 * Theme.sp-3;
+    width: row.preferred-width;
     border-radius: Theme.bar-chip-radius;
     background: area.pressed ? Theme.hover-fill-strong : area.has-hover ? Theme.hover-fill : transparent;
     animate background { duration: Theme.dur-fast; }

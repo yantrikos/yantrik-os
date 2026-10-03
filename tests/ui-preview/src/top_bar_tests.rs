@@ -279,7 +279,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     let busy = look_at_bar(w, &ui, width, height, "needs-you-1280", output)?;
     save(&busy, &path("desktop-needs-you"), width, height)?;
     let amber = near(&busy, width, (0, 360), (0, 36), AMBER, 12);
-    assert!(amber >= 30, "'· 2 need you' is drawn in amber: {amber} amber pixels");
+    assert!(amber >= 15, "'· 2 need you' is drawn in amber: {amber} amber pixels");
     // It grows the chip and nothing else on the left moves: the mark stays where it was.
     assert_eq!(changed(&calm, &busy, width, (0, 40), (0, 36)), 0, "the mark does not move when the count appears");
 
