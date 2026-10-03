@@ -2,6 +2,8 @@
 //!
 //! Called from the command palette. The Print keys are bound in `config/labwc/rc.xml`.
 
+use slint::ComponentHandle;
+
 use crate::app_context::AppContext;
 use crate::App;
 

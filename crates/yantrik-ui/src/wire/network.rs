@@ -490,7 +490,11 @@ mod tests {
         assert!(!callbacks.contains("\"radio\""), "nothing in callbacks.rs shells out to `nmcli radio` any more");
         let qs = include_str!("../../../yantrik-ui-slint/ui/components/quick_settings.slint");
         assert!(!qs.contains("Tap to disconnect"), "the tile does not promise a disconnect it never did");
-        assert!(qs.contains("Tap to turn Wi-Fi off"), "the tile says what pressing it does");
+        // The tile says the radio's state in words ("Off", the network's name), presses the radio,
+        // and its chevron is the list: the body and the chevron are separate targets.
+        assert!(qs.contains("root.toggle-wifi()"), "pressing the Wi-Fi tile switches the radio");
+        assert!(qs.contains("details-requested => { root.network-details(); }"), "its chevron opens the network list");
+        assert!(qs.contains("!root.wifi-radio-on ? \"Off\""), "the tile says the radio is off when it is");
     }
 
     fn row(ssid: &str, strength: i32) -> NetworkRow {

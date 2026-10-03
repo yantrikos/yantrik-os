@@ -123,14 +123,14 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             .arg(Param::text("how").describe("suspend or hibernate")),
             move |args| {
                 sleep_weak.upgrade().ok_or_else(|| "the shell is gone".to_string())?;
-                let how = args["how"].as_str().unwrap_or_default();
-                let verb = match Verb::parse(how) {
+                let how = args["how"].as_str().unwrap_or_default().to_string();
+                let verb = match Verb::parse(&how) {
                     Some(v @ (Verb::Suspend | Verb::Hibernate)) => v,
                     _ => return Err("`how` must be suspend or hibernate".to_string()),
                 };
                 let work = move || {
                     run(verb)?;
-                    tracing::info!(how, "Sleep requested through the control surface");
+                    tracing::info!(how = %how, "Sleep requested through the control surface");
                     Ok(serde_json::json!({ "requested": how, "note": "logind accepted the request" }))
                 };
                 answer_later(work).map(|()| serde_json::json!({ "answering": "off the UI thread" })).or_else(|work| work())
@@ -150,8 +150,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             .arg(Param::flag("even_if_minds_working").describe("true to go ahead although minds are working; they are stopped").optional()),
             move |args| {
                 off_weak.upgrade().ok_or_else(|| "the shell is gone".to_string())?;
-                let how = args["how"].as_str().unwrap_or_default();
-                let verb = match Verb::parse(how) {
+                let how = args["how"].as_str().unwrap_or_default().to_string();
+                let verb = match Verb::parse(&how) {
                     Some(v) if v.ends_the_session() => v,
                     _ => return Err("`how` must be logout, restart or shutdown".to_string()),
                 };
@@ -164,7 +164,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 }
                 let work = move || {
                     run(verb)?;
-                    tracing::warn!(how, forced, "Session end requested through the control surface");
+                    tracing::warn!(how = %how, forced, "Session end requested through the control surface");
                     Ok(serde_json::json!({ "requested": how, "note": "logind accepted the request" }))
                 };
                 answer_later(work).map(|()| serde_json::json!({ "answering": "off the UI thread" })).or_else(|work| work())
