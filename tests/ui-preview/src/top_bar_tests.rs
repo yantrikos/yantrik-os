@@ -13,7 +13,7 @@
 //! Callbacks are recorded, never acted on: a click on the chip, the clock, the switch and a
 //! notification's button is proven to reach its callback.
 use super::*;
-use slint::{Model, ModelRc, VecModel};
+use slint::{ModelRc, VecModel};
 use std::cell::{Cell, RefCell};
 
 type Pixels = slint::SharedPixelBuffer<slint::Rgb8Pixel>;
@@ -285,8 +285,6 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
 
     // ── The clock is under the screen's middle, at both widths ──
     for (sw, sh) in [(1280u32, 800u32), (1920, 1080)] {
-        width = sw;
-        height = sh;
         let frame = look_at_bar(w, &ui, sw, sh, &format!("clock-{sw}"), output)?;
         let (l, r) = bright_extent(&frame, sw, (sw / 2 - 150, sw / 2 + 150), (4, 32)).expect("the clock is drawn mid-bar");
         let centre = (l + r) as f32 / 2.0;
