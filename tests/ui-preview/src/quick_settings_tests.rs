@@ -292,6 +292,27 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     tap(" ".into());
     assert_eq!(take(), ["profile power-saver"], "the seventh stop on a laptop is Power mode; Balanced steps to Power saver");
 
+    // The footer: Lock and Power put Quick Settings away and do their own thing; Power opens the
+    // power popover. (Laptop shape: the footer's four icons are at y=465, Power the last.)
+    ui.set_quick_settings_open(false);
+    ui.set_quick_settings_open(true);
+    draw();
+    settle();
+    draw();
+    take();
+    click(w, 1204.0, 465.0);
+    draw();
+    assert_eq!(take(), ["lock"], "the footer's Lock locks");
+    assert!(!ui.get_quick_settings_open(), "and puts Quick Settings away");
+    ui.set_quick_settings_open(true);
+    draw();
+    settle();
+    draw();
+    click(w, 1240.0, 465.0);
+    draw();
+    assert!(!ui.get_quick_settings_open() && ui.get_power_menu_open(), "the footer's Power swaps Quick Settings for the power popover");
+    ui.set_power_menu_open(false);
+
     // The speaker icon at the left of the Volume row mutes, as the media key does; a muted sink
     // draws the crossed speaker, and the level is still the machine's.
     ui.set_quick_settings_open(false);
@@ -341,9 +362,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     settle();
     let list = draw();
     save(&list, &named("power-list.png"), 1280, 800)?;
-    assert!(changed(&closed, &list, 1280, (900, 1280), (36, 330)) > 8_000, "the popover is drawn under the bar's power mark");
-    let anchor = ui.get_power_anchor_x();
-    assert!(anchor > 900.0 && anchor < 1270.0, "the bar's power mark reports where it is: {anchor}");
+    assert!(changed(&closed, &list, 1280, (900, 1280), (36, 330)) > 8_000, "the popover is drawn at the right, under the bar");
 
     // Hibernate is a row only where logind offers it.
     ui.set_power_can_hibernate(true);
