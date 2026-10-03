@@ -18,7 +18,7 @@ use crate::mind_view::{requester_now, Requester};
 /// What `describe shell` says in place of a folder a mind may not see.
 pub const HIDDEN: &str = "the folder is outside what a mind may see";
 
-fn a_mind_is_calling() -> bool {
+pub fn a_mind_is_calling() -> bool {
     requester_now() != Requester::Person
 }
 

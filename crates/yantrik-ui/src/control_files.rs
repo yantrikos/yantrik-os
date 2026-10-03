@@ -73,8 +73,11 @@ fn make_here(
     mind::may_make(&ui.get_file_browser_path(), &name)?;
     let dir = crate::filebrowser::expand_home(&ui.get_file_browser_path());
     let weak = ui.as_weak();
+    // Who is asking is known here; the worker may not be able to tell, so it is carried in.
+    let mind = mind::a_mind_is_calling();
     let work = move || {
-        let answer = crate::control_files_create::make(&dir, &name, folder)?;
+        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+        let answer = crate::control_files_create::make_checked(&dir, &name, folder, mind, &home)?;
         if answer.get("created").is_some() {
             let _ = weak.upgrade_in_event_loop(|ui| ui.invoke_file_refresh());
         }
