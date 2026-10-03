@@ -902,6 +902,56 @@ fn needed(
     }
 }
 
+/// How many notes `read_notes` returns, how much of each, and how much in all.
+const READ_NOTES_MAX: usize = 25;
+const READ_NOTE_CHARS: usize = 2000;
+const READ_NOTES_BUDGET: usize = 24_000;
+
+/// The notes outside the Trash whose text or metadata contain `query` (all of them when it is
+/// empty), newest first, each with its title, filename, modified time and text.
+///
+/// On VM 520 a mind asked to list every note that mentions a date searched and filtered for a
+/// minute and never read a body: the only way in was `open_note` then `describe`, once per note,
+/// which no step budget covers for seventeen notes. Each text is cut at [`READ_NOTE_CHARS`] and the
+/// answer at [`READ_NOTES_BUDGET`], and it says what was left out, so a long library is never
+/// mistaken for a short one.
+fn read_notes(notes: &[Note], query: &str) -> serde_json::Value {
+    let q = query.to_lowercase();
+    let mut matching: Vec<&Note> = notes
+        .iter()
+        .filter(|n| !n.trash)
+        .filter(|n| q.is_empty() || n.text.to_lowercase().contains(&q) || n.meta.to_lowercase().contains(&q))
+        .collect();
+    matching.sort_by(|a, b| b.modified.cmp(&a.modified));
+    let total = matching.len();
+    let mut used = 0;
+    let mut out = Vec::new();
+    let mut cut = Vec::new();
+    for n in matching.iter().take(READ_NOTES_MAX) {
+        let text: String = n.text.chars().take(READ_NOTE_CHARS).collect();
+        if used + text.len() > READ_NOTES_BUDGET {
+            break;
+        }
+        used += text.len();
+        if n.text.chars().count() > READ_NOTE_CHARS {
+            cut.push(n.title());
+        }
+        out.push(serde_json::json!({ "title": n.title(), "file": n.id, "modified": n.modified, "text": text }));
+    }
+    let returned = out.len();
+    serde_json::json!({
+        "query": query,
+        "matching": total,
+        "returned": returned,
+        "notes": out,
+        "left_out": total - returned,
+        "texts_cut_short": cut,
+        "how_to_see_the_rest": if total > returned {
+            "narrow `query`, or open_note a title and read describe.content"
+        } else { "" },
+    })
+}
+
 /// An optional text argument: absent and empty mean the same thing to every caller here.
 fn given(args: &serde_json::Value, name: &str) -> String {
     args.get(name).and_then(|v| v.as_str()).unwrap_or_default().to_string()
@@ -1302,7 +1352,7 @@ fn surface(ui: &NotesApp, s: &State) -> Vec<(Action, Handler)> {
         act(
             "search",
             "Filter the library list to the notes whose text or metadata contains this, without \
-             opening anything. `set_folder` decides which section is searched.",
+             opening anything; `read_notes` returns their text. `set_folder` picks the section.",
         )
         .arg(arg(
             "query",
@@ -1321,6 +1371,23 @@ fn surface(ui: &NotesApp, s: &State) -> Vec<(Action, Handler)> {
                 "titles": titles,
             }))
         },
+    );
+
+    add(
+        act(
+            "read_notes",
+            "Read the text of many notes in one call: every note whose text, notebook or tags \
+             contain `query`, or all of them, without opening any.",
+        )
+        .arg(
+            arg(
+                "query",
+                "Matched case-insensitively like `search`; leave it out to read every note \
+                 outside the Trash.",
+            )
+            .optional(),
+        ),
+        |_ui, s, args| Ok(read_notes(&s.borrow().notes, &given(args, "query"))),
     );
 
     add(

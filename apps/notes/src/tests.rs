@@ -608,3 +608,43 @@ fn a_missing_required_argument_is_refused_by_name(
         "the refusal has to say what it could not find and what there is: {missing}"
     );
 }
+
+fn note_with(title: &str, body: &str, modified: u64, trash: bool) -> Note {
+    let mut n = Note::blank(title);
+    n.text.push_str(body);
+    n.modified = modified;
+    n.trash = trash;
+    n
+}
+
+#[test]
+fn read_notes_returns_the_matching_texts_newest_first_and_never_the_trash() {
+    let notes = vec![
+        note_with("Standup", "Ship the demo by 9 October.", 3, false),
+        note_with("Groceries", "Milk, eggs.", 2, false),
+        note_with("Old plan", "Deadline 1 October.", 9, true),
+        note_with("Taxes", "File by 15 October.", 5, false),
+    ];
+    let all = read_notes(&notes, "");
+    assert_eq!(all["matching"], 3, "the trashed note is left out: {all}");
+    let titles: Vec<&str> = all["notes"].as_array().unwrap().iter().map(|n| n["title"].as_str().unwrap()).collect();
+    assert_eq!(titles, ["Taxes", "Standup", "Groceries"], "newest first");
+    assert!(all["notes"][1]["text"].as_str().unwrap().contains("9 October"), "the body itself, not only the title");
+
+    let october = read_notes(&notes, "OCTOBER");
+    assert_eq!(october["matching"], 2, "matched case-insensitively against the text: {october}");
+    assert_eq!(october["left_out"], 0);
+}
+
+#[test]
+fn read_notes_says_what_it_left_out_and_what_it_cut() {
+    let long = "x".repeat(READ_NOTE_CHARS + 500);
+    let notes: Vec<Note> = (0..(READ_NOTES_MAX as u64 + 5)).map(|i| note_with(&format!("N{i}"), &long, i, false)).collect();
+    let got = read_notes(&notes, "");
+    let returned = got["returned"].as_u64().unwrap() as usize;
+    assert!(returned <= READ_NOTES_MAX && returned * READ_NOTE_CHARS <= READ_NOTES_BUDGET + READ_NOTE_CHARS, "{returned}");
+    assert_eq!(got["matching"].as_u64().unwrap() as usize, READ_NOTES_MAX + 5);
+    assert_eq!(got["left_out"].as_u64().unwrap() as usize, READ_NOTES_MAX + 5 - returned, "a long library is never mistaken for a short one");
+    assert!(got["texts_cut_short"].as_array().unwrap().len() == returned, "every long text says it was cut");
+    assert!(!got["how_to_see_the_rest"].as_str().unwrap().is_empty());
+}
