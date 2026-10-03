@@ -446,9 +446,9 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             },
         )
         .action(
-            // `safe` as `set_mind_mode` is: switching it ON only removes power (an "ask" becomes a
-            // "refuse"), and switching it OFF is refused to a mind and to any account but the
-            // person's own or root (`never_ask::may_switch_off`). Named without a word the
+            // `safe` as `set_mind_mode` is: it only removes power (an "ask" becomes a "refuse"),
+            // and both switching it on and off are refused to a mind and to any account but the
+            // person's own or root (`never_ask::may_switch`). Named without a word the
             // mode-loosening scan looks for, because it cannot loosen anything for a mind.
             Action::new(
                 "set_approvals_off_for_test",
@@ -465,6 +465,21 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 let wanted = required(args, "state")?;
                 match wanted.as_str() {
                     "on" => {
+                        // The same door as switching off. It only removes power, but a mind that
+                        // could switch it on could keep re-arming it and silently refuse every other
+                        // mind's requests with nothing shown to the person; the arena runs as root.
+                        let caller = yantrik_app_runtime::control::caller();
+                        let mind_account = caller
+                            .as_ref()
+                            .is_some_and(|c| yantrik_ipc_transport::mind_door::is_mind(c.uid));
+                        let by_a_mind = yantrik_app_runtime::control::agent_is_calling()
+                            || crate::mind_view::requester_now() != crate::mind_view::Requester::Person;
+                        crate::never_ask::may_switch(
+                            caller.as_ref().map(|c| c.uid),
+                            own_uid(),
+                            mind_account,
+                            by_a_mind,
+                        )?;
                         let minutes = args.get("minutes").and_then(|m| m.as_u64());
                         let set_for = crate::never_ask::switch_on(minutes);
                         Ok(serde_json::json!({
@@ -480,7 +495,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                             .is_some_and(|c| yantrik_ipc_transport::mind_door::is_mind(c.uid));
                         let by_a_mind = yantrik_app_runtime::control::agent_is_calling()
                             || crate::mind_view::requester_now() != crate::mind_view::Requester::Person;
-                        crate::never_ask::may_switch_off(
+                        crate::never_ask::may_switch(
                             caller.as_ref().map(|c| c.uid),
                             own_uid(),
                             mind_account,

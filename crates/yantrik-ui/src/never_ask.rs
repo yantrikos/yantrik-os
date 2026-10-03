@@ -18,10 +18,10 @@
 //!
 //! - **It only removes power.** It turns an "ask" into a "refuse", never into an "allow". An
 //!   action the table runs without a card still runs, and the grade and the mode are untouched.
-//! - **A mind cannot switch it off.** [`may_switch_off`] lets in only the shell's own account or
-//!   root, and never a mind account, an agent token or a process an attached mind started.
-//!   Switching it ON is open to any caller on the socket: that takes power away, so it needs no
-//!   guard beyond the cap on how long it lasts.
+//! - **A mind cannot switch it on or off.** [`may_switch`] lets in only the shell's own account or
+//!   root, and never a mind account, an agent token or a process an attached mind started. On
+//!   only removes power, but a mind able to re-arm it could silently refuse every other mind's
+//!   requests with nothing shown to the person, so both directions take the same door.
 //! - **It ends by itself.** It is a deadline, never a bare flag and never written to a file, so
 //!   a crashed arena or a restarted shell cannot leave a machine refusing every approval. The
 //!   longest it can be set for is [`MAX_MINUTES`], and asking again only moves the deadline
@@ -74,12 +74,12 @@ fn refusal_at(state: &NeverAsk, now: Instant) -> Option<String> {
     state.active(now).then(|| REFUSED.to_string())
 }
 
-/// Whether the caller may switch it OFF. Pure, so each way in is a test.
+/// Whether the caller may switch it on or off. Pure, so each way in is a test.
 ///
 /// `caller_uid` is `None` for no socket call at all (a click in the shell itself). Allowed:
 /// that, the shell's own account, and root. Never: the mind account, an agent token, or a
 /// process an attached mind started (`requester_is_mind`), whatever account it runs as.
-pub fn may_switch_off(
+pub fn may_switch(
     caller_uid: Option<u32>,
     shell_uid: u32,
     mind_account: bool,
@@ -122,7 +122,7 @@ pub fn switch_on(minutes: Option<u64>) -> u64 {
     length.as_secs() / 60
 }
 
-/// Switch it off. The caller's right to has been checked by [`may_switch_off`].
+/// Switch it off. The caller's right to has been checked by [`may_switch`].
 pub fn switch_off() {
     locked().clear();
     tracing::info!("approvals are back on: the test run ended");
@@ -175,15 +175,15 @@ mod tests {
     }
 
     #[test]
-    fn a_mind_cannot_switch_it_off() {
+    fn a_mind_cannot_switch_it_on_or_off() {
         let me = 1000;
-        assert!(may_switch_off(Some(me), me, true, false).is_err(), "the mind account");
-        assert!(may_switch_off(Some(me), me, false, true).is_err(), "an agent or a mind's process");
-        assert!(may_switch_off(Some(me), me, true, true).is_err());
-        assert!(may_switch_off(Some(4242), me, false, false).is_err(), "some other account");
-        assert!(may_switch_off(Some(me), me, false, false).is_ok(), "the person's own account");
-        assert!(may_switch_off(Some(0), me, false, false).is_ok(), "root");
-        assert!(may_switch_off(None, me, false, false).is_ok(), "the shell itself");
+        assert!(may_switch(Some(me), me, true, false).is_err(), "the mind account");
+        assert!(may_switch(Some(me), me, false, true).is_err(), "an agent or a mind's process");
+        assert!(may_switch(Some(me), me, true, true).is_err());
+        assert!(may_switch(Some(4242), me, false, false).is_err(), "some other account");
+        assert!(may_switch(Some(me), me, false, false).is_ok(), "the person's own account");
+        assert!(may_switch(Some(0), me, false, false).is_ok(), "root");
+        assert!(may_switch(None, me, false, false).is_ok(), "the shell itself");
     }
 
     /// The one rule that keeps the mode from ever loosening anything: it has no path to a
