@@ -902,20 +902,23 @@ fn needed(
     }
 }
 
-/// How many notes `read_notes` returns, how much of each, and how much in all.
-const READ_NOTES_MAX: usize = 25;
-const READ_NOTE_CHARS: usize = 2000;
-const READ_NOTES_BUDGET: usize = 24_000;
+/// How much of one note's text `read_notes` returns, and the most its whole answer may be, as
+/// serialized JSON. A mind is handed a safe read's answer up to 4,000 characters, so a page has to
+/// fit under that with room for its envelope; what does not fit is the next page, not a silent cut.
+const READ_NOTE_CHARS: usize = 700;
+const READ_NOTES_ANSWER: usize = 3_400;
 
-/// The notes outside the Trash whose text or metadata contain `query` (all of them when it is
-/// empty), newest first, each with its title, filename, modified time and text.
+/// One page of the notes outside the Trash whose text or metadata contain `query` (all of them
+/// when it is empty), newest first, each with its title, filename, modified time and text.
 ///
 /// On VM 520 a mind asked to list every note that mentions a date searched and filtered for a
 /// minute and never read a body: the only way in was `open_note` then `describe`, once per note,
-/// which no step budget covers for seventeen notes. Each text is cut at [`READ_NOTE_CHARS`] and the
-/// answer at [`READ_NOTES_BUDGET`], and it says what was left out, so a long library is never
-/// mistaken for a short one.
-fn read_notes(notes: &[Note], query: &str) -> serde_json::Value {
+/// which no step budget covers for seventeen notes. Then, given a 24,000-character answer, its
+/// work log kept the first few thousand and it asked again and again. So a page is sized to be
+/// read whole: each text is cut at [`READ_NOTE_CHARS`], the page ends before it would pass
+/// [`READ_NOTES_ANSWER`], and the answer names the exact call for the next page (`skip`), so a
+/// long library is read in a few calls and never mistaken for a short one.
+fn read_notes(notes: &[Note], query: &str, skip: usize) -> serde_json::Value {
     let q = query.to_lowercase();
     let mut matching: Vec<&Note> = notes
         .iter()
@@ -924,31 +927,41 @@ fn read_notes(notes: &[Note], query: &str) -> serde_json::Value {
         .collect();
     matching.sort_by(|a, b| b.modified.cmp(&a.modified));
     let total = matching.len();
-    let mut used = 0;
+    // The envelope's own size, with room for the longest `how_to_see_the_rest` and a cut list.
+    let mut used = 600 + query.len();
     let mut out = Vec::new();
     let mut cut = Vec::new();
-    for n in matching.iter().take(READ_NOTES_MAX) {
+    for n in matching.iter().skip(skip) {
         let text: String = n.text.chars().take(READ_NOTE_CHARS).collect();
-        if used + text.len() > READ_NOTES_BUDGET {
+        let entry = serde_json::json!({ "title": n.title(), "file": n.id, "modified": n.modified, "text": text });
+        let size = entry.to_string().len() + n.title().len() + 4;
+        // A page always carries at least one note, or a long first note would page forever.
+        if !out.is_empty() && used + size > READ_NOTES_ANSWER {
             break;
         }
-        used += text.len();
+        used += size;
         if n.text.chars().count() > READ_NOTE_CHARS {
             cut.push(n.title());
         }
-        out.push(serde_json::json!({ "title": n.title(), "file": n.id, "modified": n.modified, "text": text }));
+        out.push(entry);
     }
     let returned = out.len();
+    let next = skip.saturating_add(returned);
+    let left = total.saturating_sub(next);
+    let query_arg = if query.is_empty() { String::new() } else { format!(" with query {query:?}") };
     serde_json::json!({
         "query": query,
         "matching": total,
+        "skip": skip,
         "returned": returned,
         "notes": out,
-        "left_out": total - returned,
+        "left_out": left,
         "texts_cut_short": cut,
-        "how_to_see_the_rest": if total > returned {
-            "narrow `query`, or open_note a title and read describe.content"
-        } else { "" },
+        "how_to_see_the_rest": if left > 0 {
+            format!("{left} more: call read_notes again{query_arg} and skip {next}")
+        } else if !cut.is_empty() {
+            "all matching notes are here; for a whole cut text, open_note its title and read describe.content".to_string()
+        } else { String::new() },
     })
 }
 
@@ -1376,8 +1389,9 @@ fn surface(ui: &NotesApp, s: &State) -> Vec<(Action, Handler)> {
     add(
         act(
             "read_notes",
-            "Read the text of many notes in one call: every note whose text, notebook or tags \
-             contain `query`, or all of them, without opening any.",
+            "Read the text of many notes in one call, newest first: every note whose text, \
+             notebook or tags contain `query`, or all of them, without opening any. One page at \
+             a time; the answer names the `skip` for the next page.",
         )
         .arg(
             arg(
@@ -1387,11 +1401,25 @@ fn surface(ui: &NotesApp, s: &State) -> Vec<(Action, Handler)> {
             )
             .optional(),
         )
+        .arg(
+            arg(
+                "skip",
+                "How many matching notes to pass over, as the last answer's `how_to_see_the_rest` \
+                 says; leave it out for the first page.",
+            )
+            .optional(),
+        )
         // A read that opens nothing and moves no view. Left at the default grade, a mind's work
         // log cut its answer at 900 characters, so on VM 520 the model saw the envelope and none
         // of the notes, and asked eight more times without writing the file it was asked for.
         .risk("safe"),
-        |_ui, s, args| Ok(read_notes(&s.borrow().notes, &given(args, "query"))),
+        |_ui, s, args| {
+            let skip = args
+                .get("skip")
+                .and_then(|v| v.as_u64().or_else(|| v.as_str()?.trim().parse().ok()))
+                .unwrap_or(0) as usize;
+            Ok(read_notes(&s.borrow().notes, &given(args, "query"), skip))
+        },
     );
 
     add(

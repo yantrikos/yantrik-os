@@ -338,7 +338,7 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | network | `wifi_connect`, `wifi_forget` | sensitive | changes what the machine joins; forgetting deletes a stored credential |
 | network | `wifi_disconnect`, `wifi_radio` | dangerous | on a machine reached over Wi-Fi, takes away the channel the undo would travel on |
 | notes | `new_note`, `open_note`, `set_title`, `append`, `search`, `set_folder`, `notebook`, `tags`, `save`, `restore`, `copy`, `reload`, `preview`, `focus`, `undo`, `redo` | standard | library content, with `undo` beside it |
-| notes | `read_notes` | safe | a read: the text of every note matching `query` (or all, never the Trash), newest first, within a size budget that says what it left out; opens nothing |
+| notes | `read_notes` | safe | a read: the text of the notes matching `query` (or all, never the Trash), newest first, one page under 3,400 characters with each text cut at 700; `skip` takes the next page, which the answer names. Being `safe`, a phone turn or a read-only role reads the library unasked; anything that sends it on is still sensitive and asks |
 | notes | `set_content`, `trash`, `import`, `export` | sensitive | replaces a note's whole body; moves things in and out of the library and the filesystem |
 | presentation | `open`, `show`, `save`, `save_as`, `new_deck`, `add_slide`, `set_slide`, `move_slide`, `go_to`, `next`, `previous`, `present`, `export_markdown` | standard | deck content, editable again |
 | presentation | `delete_slide` | sensitive | takes the slide and its contents off the deck |
