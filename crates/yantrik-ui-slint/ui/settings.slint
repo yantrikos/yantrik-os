@@ -107,6 +107,19 @@ export struct AIModelData {
 // ── Live AI status data ──
 // One mind and what it runs on (crates/yantrik-ui/src/runs_on): the same words the Minds panel and
 // the Harnesses rows use, from the same resolver.
+// One theme card: a place. The colours are the theme's own palette, read from its file by
+// wire/theme.rs, so the card cannot show a colour the theme does not have.
+export struct ThemeCardData {
+    id: string,
+    name: string,
+    description: string,
+    preview: image,
+    ground: color,
+    surface: color,
+    card: color,
+    accent: color,
+}
+
 export struct RunsOnRow {
     name: string,       // "Yantrik Mind"
     state: string,      // "Answering" | "Built in" | "Attached"
@@ -169,6 +182,52 @@ component WallpaperChoice inherits Rectangle {
         text: root.label; color: Theme.text-primary; font-size: 12px;
         font-weight: root.selected ? 600 : 400; vertical-alignment: center; overflow: elide;
     }
+    focus := FocusScope {
+        key-pressed(e) => {
+            if (e.text == "\n" || e.text == " ") && !e.repeat { root.chosen(); return accept; }
+            return reject;
+        }
+    }
+    TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.chosen(); } }
+}
+
+component ThemeCard inherits Rectangle {
+    in property <ThemeCardData> theme;
+    in property <bool> selected;
+    callback chosen();
+    forward-focus: focus;
+    accessible-role: button;
+    accessible-label: root.theme.name + ". " + root.theme.description;
+    accessible-action-default => { root.chosen(); }
+    preferred-width: 360px;
+    min-width: 240px;
+    max-width: 380px;
+    border-radius: Theme.r-xl;
+    background: Theme.bg-card;
+    border-width: root.selected || focus.has-focus ? 2px : 1px;
+    border-color: root.selected || focus.has-focus ? Theme.text-primary : Theme.border-default;
+    // The place itself: its wallpaper, with the colours it brings in the corner.
+    Rectangle {
+        x: 8px; y: 8px; width: parent.width - 16px; height: 104px;
+        border-radius: Theme.r-lg; clip: true; background: root.theme.ground;
+        Image { width: 100%; height: 100%; source: root.theme.preview; image-fit: cover; }
+        HorizontalLayout {
+            x: 10px; y: parent.height - 28px; spacing: 6px;
+            for swatch in [root.theme.ground, root.theme.surface, root.theme.card, root.theme.accent] : Rectangle {
+                width: 18px; height: 18px; border-radius: 9px; background: swatch;
+                border-width: 1px; border-color: Theme.glass-border-strong;
+            }
+        }
+    }
+    Text {
+        x: 16px; y: 122px; width: parent.width - 56px; height: 22px;
+        text: root.theme.name; color: Theme.text-primary; font-size: Theme.fs-title-2; font-weight: 600; overflow: elide;
+    }
+    Text {
+        x: 16px; y: 146px; width: parent.width - 32px; height: 18px;
+        text: root.theme.description; color: Theme.text-secondary; font-size: Theme.fs-caption; overflow: elide;
+    }
+    if root.selected : Icon { x: parent.width - 36px; y: 122px; commands: Icons.check; size: 20px; tint: Theme.text-primary; }
     focus := FocusScope {
         key-pressed(e) => {
             if (e.text == "\n" || e.text == " ") && !e.repeat { root.chosen(); return accept; }
@@ -319,6 +378,10 @@ export component SettingsScreen inherits Rectangle {
     // Appearance
     in-out property <bool> dark-mode: true;
     in-out property <string> accent-color: "cyan";
+    // The themes (places) to choose from, and the one in use.
+    in property <[ThemeCardData]> themes;
+    in-out property <string> theme-id: "lake";
+    callback choose-theme(string);
     callback toggle-dark-mode();
     in property <bool> agent-mode: false;
     callback set-agent-mode(bool);
@@ -708,6 +771,17 @@ export component SettingsScreen inherits Rectangle {
 
                         Text { text: "Appearance"; color: Theme.text-primary; font-size: 28px; font-weight: 600; }
                         Text { text: "A workspace that feels like you. Native apps pick up appearance changes when reopened."; color: Theme.text-secondary; font-size: 13px; wrap:word-wrap; }
+                        // Themes: a place sets the colours, the accent and the wallpaper together,
+                        // and reaches the window frames, the terminal and the lock screen. The
+                        // light and dark choice, accent and wallpaper below still work on top.
+                        HorizontalLayout {
+                            spacing: 16px; height: 176px; alignment: start;
+                            for theme in root.themes : ThemeCard {
+                                theme: theme;
+                                selected: root.theme-id == theme.id;
+                                chosen => { root.theme-id = theme.id; root.choose-theme(theme.id); }
+                            }
+                        }
                         HorizontalLayout {
                             spacing: 16px; height: 164px;
                             ThemeChoice {
@@ -775,8 +849,9 @@ export component SettingsScreen inherits Rectangle {
                                 // Real wallpaper previews, sized to the available pane.
                                 wallpaper-grid := Rectangle {
                                     property <int> columns: max(1, floor(self.width / 140px));
-                                    height: ceil(8 / self.columns) * 114px;
+                                    height: ceil(9 / self.columns) * 114px;
                                     for preset[idx] in [
+                                        { id: "lake", label: "Lake", image: @image-url("wallpapers/previews/lake.png") },
                                         { id: "serenity", label: "Serenity", image: @image-url("wallpapers/previews/serenity.png") },
                                         { id: "first-light", label: "First light", image: @image-url("wallpapers/previews/first-light.png") },
                                         { id: "nightfall", label: "Nightfall", image: @image-url("wallpapers/previews/nightfall.png") },
@@ -829,7 +904,7 @@ export component SettingsScreen inherits Rectangle {
                                     }
 
                                     // Show active wallpaper label
-                                    if root.wallpaper-path != "" && root.wallpaper-path != "serenity" && root.wallpaper-path != "first-light" && root.wallpaper-path != "nightfall" && root.wallpaper-path != "aurora" && root.wallpaper-path != "sunset" && root.wallpaper-path != "ocean" && root.wallpaper-path != "nebula" : Text {
+                                    if root.wallpaper-path != "" && root.wallpaper-path != "lake" && root.wallpaper-path != "serenity" && root.wallpaper-path != "first-light" && root.wallpaper-path != "nightfall" && root.wallpaper-path != "aurora" && root.wallpaper-path != "sunset" && root.wallpaper-path != "ocean" && root.wallpaper-path != "nebula" : Text {
                                         text: root.wallpaper-path;
                                         color: Theme.text-dim;
                                         font-size: Theme.fs-micro;

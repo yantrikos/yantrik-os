@@ -1,0 +1,353 @@
+// YLockView — what the lock screen looks like, drawn once for both lock screens.
+//
+// The compositor's session lock (`yantrik-lock`, #313) and the shell's own screen (the fallback
+// on a compositor without the protocol) used to be two copies of the same markup, and they had
+// drifted. This is the picture; each of them owns only how it takes keys. It asks for no secret
+// and checks none: the entry arrives as `digits` (how many things were typed) and, only while
+// the eye is open, as `revealed-text`.
+//
+// The wallpaper is pre-blurred ONCE, when it is chosen (`lock_wallpaper.rs` in the shell), and
+// arrives here as an ordinary image: the software renderer has no cheap blur, and a lock screen
+// is what is on the glass whenever nobody is at the machine. With no wallpaper it is the dock's
+// charcoal, solid. Nothing on it moves: the clock changes once a minute and that is all.
+//
+// Quiet on purpose. The status line says what the machine is (network, battery if it has one)
+// and how many notifications wait — a count, never what they say, because a lock screen is
+// visible to anyone standing behind the person.
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
+
+component LockAction inherits Rectangle {
+    in property <string> label;
+    in property <string> icon;
+    callback clicked();
+
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+
+    height: 40px;
+    border-radius: Theme.r-lg;
+    border-width: 1px;
+    border-color: Theme.lock-field-line;
+    background: ta.has-hover ? Theme.lock-action-hover : Theme.lock-action;
+    animate background { duration: Theme.dur-fast; }
+
+    HorizontalLayout {
+        padding-left: Theme.sp-3;
+        padding-right: Theme.sp-4;
+        spacing: Theme.sp-2;
+        alignment: center;
+        VerticalLayout {
+            alignment: center;
+            Icon { commands: root.icon; size: 16px; tint: Theme.lock-text; thickness: Theme.icon-stroke; }
+        }
+        Text {
+            text: root.label;
+            color: Theme.lock-text;
+            font-size: Theme.fs-body;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+export component YLockView inherits Rectangle {
+    in property <image> wallpaper;
+    in property <bool> has-wallpaper: false;
+    in property <string> clock-text: "00:00";
+    in property <string> date-text;
+    in property <string> user-name;
+    // The first letter of the name, for the avatar. Computed by the caller: Slint cannot slice.
+    in property <string> initial;
+    // What the shell asks for, in its words (`lock::Secret::prompt`): the field's placeholder.
+    in property <string> prompt-text;
+    in property <string> error-text;
+    // How many characters are in the field, and what they are while the eye is open. The text is
+    // empty whenever the eye is shut, so a hidden entry is never held here at all.
+    in property <int> digits: 0;
+    in property <string> revealed-text;
+    in-out property <bool> revealed: false;
+    // The status line. A reading the machine does not have is not drawn: no network name means
+    // no mark, battery below zero means no battery.
+    in property <string> network-text;
+    in property <int> battery-percent: -1;
+    in property <bool> battery-charging: false;
+    in property <int> notification-count: 0;
+
+    callback submit();
+    callback suspend();
+    callback restart();
+    callback shutdown();
+
+    background: Theme.lock-ground;
+    clip: true;
+
+    // Narrow screens drop the clock size and the gaps rather than the content.
+    property <length> clock-size: max(72px, min(root.width * 0.085, 144px));
+    property <bool> tall: root.height >= 700px;
+
+    if root.has-wallpaper : Image {
+        width: 100%;
+        height: 100%;
+        source: root.wallpaper;
+        image-fit: cover;
+    }
+    // Scrim: the clock and the field read over any picture, a person's own included.
+    Rectangle { background: Theme.lock-scrim; }
+
+    // ── Clock and date ──
+    VerticalLayout {
+        x: 0;
+        y: root.height * (root.tall ? 0.11 : 0.07);
+        width: 100%;
+        // As tall as the clock and the date, not the rest of the screen: a layout with no height
+        // of its own fills its parent and spreads its children down it.
+        height: root.clock-size * 1.3 + Theme.sp-8;
+        alignment: start;
+        spacing: Theme.sp-1;
+        Text {
+            text: root.clock-text;
+            color: Theme.lock-text;
+            font-size: root.clock-size;
+            font-weight: 400;
+            horizontal-alignment: center;
+        }
+        if root.date-text != "" : Text {
+            text: root.date-text;
+            color: Theme.lock-text-dim;
+            font-size: Theme.fs-title-1;
+            horizontal-alignment: center;
+        }
+    }
+
+    // ── Who, and where to type ──
+    VerticalLayout {
+        x: (root.width - Theme.lock-field-width - 64px) / 2;
+        y: root.height * (root.tall ? 0.50 : 0.42);
+        width: Theme.lock-field-width + 64px;
+        spacing: Theme.sp-3;
+        alignment: start;
+
+        HorizontalLayout {
+            alignment: center;
+            // A neutral disc, not the mind teal: teal marks minds and nothing else.
+            Rectangle {
+                width: Theme.lock-avatar;
+                height: Theme.lock-avatar;
+                border-radius: Theme.lock-avatar / 2;
+                background: Theme.lock-action-hover;
+                border-width: 1px;
+                border-color: Theme.lock-field-line;
+                Text {
+                    text: root.initial;
+                    color: Theme.lock-text;
+                    font-size: Theme.lock-initial-size;
+                    font-weight: 500;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        Text {
+            text: root.user-name;
+            color: Theme.lock-text;
+            font-size: Theme.fs-title-1;
+            font-weight: 600;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+
+        HorizontalLayout {
+            alignment: center;
+            spacing: Theme.sp-2;
+
+            Rectangle {
+                width: Theme.lock-field-width;
+                height: Theme.lock-field-height;
+                border-radius: Theme.r-lg;
+                background: Theme.lock-field;
+                border-width: 1px;
+                border-color: root.error-text != "" ? Theme.lock-error : Theme.lock-field-line;
+                clip: true;
+
+                accessible-role: text-input;
+                accessible-label: root.prompt-text;
+
+                if root.digits == 0 : Text {
+                    x: Theme.sp-4;
+                    width: parent.width - 64px;
+                    height: parent.height;
+                    text: root.prompt-text;
+                    color: Theme.lock-text-dim;
+                    font-size: Theme.fs-headline;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                if root.digits > 0 && root.revealed : Text {
+                    x: Theme.sp-4;
+                    width: parent.width - 64px;
+                    height: parent.height;
+                    text: root.revealed-text;
+                    color: Theme.lock-text;
+                    font-size: Theme.fs-title-2;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                if root.digits > 0 && !root.revealed : HorizontalLayout {
+                    x: Theme.sp-4;
+                    width: parent.width - 64px;
+                    height: parent.height;
+                    spacing: 9px;
+                    alignment: start;
+                    for i in min(root.digits, 24) : VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 9px;
+                            height: 9px;
+                            border-radius: 5px;
+                            background: Theme.lock-text;
+                        }
+                    }
+                }
+
+                // Show or hide what was typed: the kit's eye, struck through while it is shown.
+                Rectangle {
+                    x: parent.width - self.width - 8px;
+                    y: (parent.height - self.height) / 2;
+                    width: 36px;
+                    height: 36px;
+                    border-radius: 18px;
+                    background: eye-ta.has-hover ? Theme.hover-fill-strong : transparent;
+                    accessible-role: button;
+                    accessible-label: root.revealed ? "Hide what you typed" : "Show what you typed";
+                    accessible-action-default => { root.revealed = !root.revealed; }
+                    Icon {
+                        commands: root.revealed ? Icons.eye-off : Icons.eye;
+                        size: 20px;
+                        tint: Theme.lock-text-dim;
+                        thickness: Theme.icon-stroke;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    eye-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.revealed = !root.revealed; }
+                    }
+                }
+            }
+
+            // The one filled button on the screen. Enter does the same.
+            Rectangle {
+                width: Theme.lock-field-height;
+                height: Theme.lock-field-height;
+                border-radius: Theme.r-lg;
+                background: go-ta.pressed ? Theme.lock-text-dim : Theme.lock-text;
+                accessible-role: button;
+                accessible-label: "Unlock";
+                accessible-action-default => { root.submit(); }
+                Icon {
+                    commands: Icons.arrow-right;
+                    size: 20px;
+                    tint: Theme.lock-ground;
+                    thickness: 2px;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+                go-ta := TouchArea { mouse-cursor: pointer; clicked => { root.submit(); } }
+            }
+        }
+
+        // What the shell said about the last try ("Wrong password. Try again in 4 s").
+        Text {
+            text: root.error-text;
+            color: Theme.lock-error;
+            font-size: Theme.fs-body;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+
+    // ── Status line, top right ──
+    HorizontalLayout {
+        x: 0;
+        y: Theme.sp-6;
+        width: 100%;
+        height: Theme.sp-6;
+        padding-right: Theme.sp-7;
+        alignment: end;
+        spacing: Theme.sp-5;
+        if root.network-text != "" : HorizontalLayout {
+            spacing: Theme.sp-2;
+            VerticalLayout { alignment: center; Icon { commands: Icons.wifi; size: 18px; tint: Theme.lock-text; thickness: Theme.icon-stroke; } }
+            Text { text: root.network-text; color: Theme.lock-text; font-size: Theme.fs-body; vertical-alignment: center; }
+        }
+        if root.battery-percent >= 0 : HorizontalLayout {
+            spacing: Theme.sp-2;
+            VerticalLayout { alignment: center; Icon { commands: Icons.battery; size: 18px; tint: Theme.lock-text; thickness: Theme.icon-stroke; } }
+            Text {
+                text: root.battery-percent + "%" + (root.battery-charging ? " · charging" : "");
+                color: Theme.lock-text;
+                font-size: Theme.fs-body;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    // ── Notifications, bottom left: a count and what it hides ──
+    if root.notification-count > 0 : VerticalLayout {
+        x: Theme.sp-7;
+        y: root.height - self.height - Theme.sp-7;
+        width: 320px;
+        height: 40px;
+        alignment: end;
+        spacing: 2px;
+        Text {
+            text: root.notification-count == 1 ? "1 notification" : root.notification-count + " notifications";
+            color: Theme.lock-text;
+            font-size: Theme.fs-body;
+        }
+        Text {
+            text: "Details are hidden until you unlock";
+            color: Theme.lock-text-dim;
+            font-size: Theme.fs-caption;
+        }
+    }
+
+    // ── Power, bottom right ──
+    //
+    // Suspend is undone by waking the machine. Restart and Shut down end whatever the person had
+    // open, and a lock screen is where a stray click lands, so each asks once more: the first
+    // click turns the button into "Confirm …" and the second does it. Pressing another of the
+    // three moves the question there. (No timeout: a timer here would have to redraw a window
+    // that otherwise draws only when a key is pressed.)
+    property <string> armed: "";
+    HorizontalLayout {
+        x: 0;
+        y: root.height - self.height - Theme.sp-7;
+        width: 100%;
+        height: 40px;
+        padding-right: Theme.sp-7;
+        alignment: end;
+        spacing: Theme.sp-2;
+        LockAction {
+            label: "Suspend";
+            icon: Icons.moon;
+            clicked => { root.armed = ""; root.suspend(); }
+        }
+        LockAction {
+            label: root.armed == "restart" ? "Confirm restart" : "Restart";
+            icon: Icons.refresh;
+            clicked => {
+                if root.armed == "restart" { root.armed = ""; root.restart(); } else { root.armed = "restart"; }
+            }
+        }
+        LockAction {
+            label: root.armed == "shutdown" ? "Confirm shut down" : "Shut down";
+            icon: Icons.power;
+            clicked => {
+                if root.armed == "shutdown" { root.armed = ""; root.shutdown(); } else { root.armed = "shutdown"; }
+            }
+        }
+    }
+}

@@ -261,10 +261,12 @@ export component FilesProbe inherits Window {
     }
 }
 
-import { SettingsScreen, SettingsCategoryItem, RunsOnRow, InUseRow } from "settings.slint";
+import { SettingsScreen, SettingsCategoryItem, RunsOnRow, InUseRow, ThemeCardData } from "settings.slint";
 import { FreeAiCard } from "components/free_ai_card.slint";
 export { FreeAiState, FreeAiRow, FreeAiValue } from "components/free_ai_card.slint";
-export { RunsOnRow, InUseRow }
+export { RunsOnRow, InUseRow, ThemeCardData }
+// The compositor's lock screen (crates/yantrik-lock), the real component, beside the shell's own.
+export { LockView } from "../../crates/yantrik-lock/ui/lock.slint";
 export component SettingsProbe inherits Window {
     in property <length> canvas-width:800px;in property <length> canvas-height:600px;
     width:root.canvas-width;height:root.canvas-height;background:Theme.bg-deep;
@@ -273,6 +275,8 @@ export component SettingsProbe inherits Window {
     in property <[SettingsCategoryItem]> categories;
     in-out property <string> action;
     in-out property <string> accent:"cyan";
+    in property <[ThemeCardData]> themes;
+    in-out property <string> theme:"lake";
     in-out property <bool> save-error;
     in-out property <bool> dark:true;
     callback search(string);
@@ -283,6 +287,7 @@ export component SettingsProbe inherits Window {
         active-category<=>root.category;search-query<=>root.query;
         categories:root.categories;settings-search(q)=>{root.search(q);}
         accent-color:root.accent;dark-mode:root.dark;
+        themes:root.themes;theme-id<=>root.theme;choose-theme(id)=>{root.action="theme:"+id;}
         choose-accent(a)=>{root.accent=a;root.action="accent:"+a;}
         toggle-dark-mode=>{root.dark=!root.dark;}
         wallpaper-path:"serenity";wallpaper-changed(id)=>{root.action="wallpaper:"+id;}

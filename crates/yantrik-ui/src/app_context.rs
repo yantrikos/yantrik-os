@@ -104,14 +104,13 @@ impl AppContext {
         // draws need something with depth behind them, and a smooth gradient gives them
         // nothing to be in front of.
         if user_settings.wallpaper.is_empty() {
-            ui.set_wallpaper_path("serenity".into());
+            ui.set_wallpaper_path(crate::wire::settings::DEFAULT_WALLPAPER.into());
         }
         if !user_settings.wallpaper.is_empty() {
             let wp = &user_settings.wallpaper;
             ui.set_wallpaper_path(wp.as_str().into());
             // For custom file paths (not presets), load the image
-            let presets = ["serenity", "first-light", "nightfall", "aurora", "sunset", "ocean", "nebula"];
-            if !presets.contains(&wp.as_str()) {
+            if !crate::wire::settings::WALLPAPER_PRESETS.contains(&wp.as_str()) {
                 let path = std::path::Path::new(wp.as_str());
                 if path.exists() && path.is_file() {
                     match slint::Image::load_from_path(path) {
@@ -133,7 +132,11 @@ impl AppContext {
             }
         }
 
-        // Community theme overrides
+        // The saved theme's palette and its files on the machine (wire/theme.rs), then the
+        // community override file on top: a person's own file is the last word.
+        crate::wire::theme::restore(ui);
+        // The lock screen's blurred wallpaper, made if it is missing or is for another wallpaper.
+        crate::lock_wallpaper::refresh_if_stale(&ui.get_wallpaper_path());
         load_theme_overrides(ui);
 
         // Boot status + greeting (personalized with user name)

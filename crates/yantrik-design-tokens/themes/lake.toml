@@ -1,0 +1,26 @@
+# Lake: the default place. The charcoal and soft blue the shell has always been, over the lake
+# photograph. Its palette is the stock one in theme.slint, so choosing it turns the overrides OFF
+# and the tokens speak for themselves; a test (wire/theme.rs) keeps this file and theme.slint
+# from drifting apart.
+id = "lake"
+name = "Lake"
+description = "Charcoal and soft blue, over a still lake."
+dark = true
+# One of the accent presets in AccentPreset: cyan (the soft blue), amber, purple, green, pink.
+accent = "cyan"
+# A wallpaper preset id (wire/settings.rs).
+wallpaper = "lake"
+# false: the tokens' own values are this palette, so nothing is overridden.
+overrides = false
+
+[palette]
+bg_deep = "#0e1117"
+bg_surface = "#161b23"
+bg_card = "#212937"
+bg_elevated = "#2c3545"
+amber = "#d4a574"
+cyan = "#38d8cd"
+text_primary = "#f4f6fa"
+text_secondary = "#c0c8d6"
+text_dim = "#95a1b4"
+accent = "#8fb4e3"

@@ -1014,6 +1014,8 @@ pub fn publish(
                 // Private mode: only the person ever reads this as true. While it is on, an agent
                 // is refused before describe runs (`yantrik_ipc_transport::privacy`).
                 .with("private", crate::private_mode::is_on())
+                // The theme in use and the ones to choose from (`set_theme`).
+                .with("theme", crate::wire::theme::for_describe(ui.get_settings_theme().as_str()))
                 .with("settings", serde_json::json!({"category":ui.get_settings_category(),"query":ui.get_settings_query().to_string(),"dark":ui.get_settings_dark_mode(),"accent":ui.get_settings_accent_color().to_string(),"wallpaper":ui.get_wallpaper_path().to_string(),"save_error":ui.get_settings_save_error(),"save_status":ui.get_settings_save_status().to_string(),"auto_lock_secs":ui.get_settings_auto_lock_secs(),"auto_lock_available":ui.get_settings_auto_lock_available()}))
         }
     };
@@ -2090,6 +2092,8 @@ pub fn publish(
     let surface = crate::control_overlays::actions(surface, ui);
     // The media keys' actions: set_volume, set_mute, set_brightness, set_mic_mute, mute_mic, show_caps_lock.
     let surface = crate::control_levels_actions::actions(surface, ui);
+    // The desktop's theme: set_theme. See `control_theme`.
+    let surface = crate::control_theme::actions(surface, ui);
     // The network mark's popover as data: set_wifi, disconnect_network, connect_wifi. See
     // `control_network`, which also says why no action there takes a password.
     let surface = crate::control_network::actions(surface, ui);

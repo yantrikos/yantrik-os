@@ -14,14 +14,21 @@ use crate::{
 /// Accent color preset names in cycle order (matches AccentPreset.index).
 const ACCENT_PRESETS: &[&str] = &["cyan", "amber", "purple", "green", "pink"];
 
-/// Known wallpaper preset names.
-/// The wallpapers this OS ships, scenes first.
+/// The wallpapers this OS ships, the default first.
+///
+/// Lake leads: it is what a new install and a reset get, and the picker shows it first. The
+/// others stay selectable, and a person's saved choice is never replaced by the default — only a
+/// settings file with no wallpaper in it (a new install) gets Lake.
 ///
 /// The scenes are rendered by scripts/render-scene-wallpapers.py and the gradients by
 /// scripts/render-wallpapers.py; both write into crates/yantrik-ui-slint/ui/wallpapers and both
 /// are committed beside their output, so the desktop stays editable and reproducible rather
 /// than being four PNGs somebody exported once.
-const WALLPAPER_PRESETS: &[&str] = &[
+/// What a new install and a reset start on.
+pub const DEFAULT_WALLPAPER: &str = "lake";
+
+pub const WALLPAPER_PRESETS: &[&str] = &[
+    "lake",
     "serenity",
     "first-light",
     "nightfall",
@@ -41,6 +48,15 @@ pub struct UserSettings {
     pub auto_lock_secs: i32,
     pub dnd_mode: bool,
     pub wallpaper: String,
+    /// The theme (a place: palette, accent, wallpaper) last chosen, by id. A file written before
+    /// themes existed has none, and gets the default one.
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    /// Whether the person (or a mind they allowed) has chosen a theme. Until then the machine's
+    /// files are left as they are at start: an upgrade must not rewrite a terminal's colours the
+    /// person set themselves because a theme they never picked exists now.
+    #[serde(default)]
+    pub theme_chosen: bool,
     #[serde(default)]
     pub user_name: String,
     #[serde(default)]
@@ -95,7 +111,9 @@ impl Default for UserSettings {
             dnd_mode: false,
             // Named rather than empty: an empty wallpaper draws the flat fallback gradient,
             // which is the one backdrop that makes the translucent surfaces above it pointless.
-            wallpaper: "serenity".to_string(),
+            wallpaper: DEFAULT_WALLPAPER.to_string(),
+            theme: crate::wire::theme::DEFAULT.to_string(),
+            theme_chosen: false,
             user_name: String::new(),
             companion_name: String::new(),
             agent_mode: false,
@@ -132,6 +150,10 @@ pub struct Place {
     pub source: String,
 }
 
+fn default_theme() -> String {
+    crate::wire::theme::DEFAULT.to_string()
+}
+
 /// The live settings, so other wiring can persist one preference without keeping a second copy
 /// of the file. Set by [`wire`]; everything below tolerates it being unset.
 static LIVE: std::sync::OnceLock<SharedSettings> = std::sync::OnceLock::new();
@@ -156,6 +178,43 @@ pub fn set_place(place: Place) {
     let mut settings = load();
     settings.place = place;
     save(&settings);
+}
+
+/// The id of the theme last chosen.
+pub fn theme_id() -> String {
+    match LIVE.get().and_then(|s| s.lock().ok()) {
+        Some(settings) => settings.theme.clone(),
+        None => load().theme,
+    }
+}
+
+/// Whether a theme has ever been chosen (see `UserSettings::theme_chosen`).
+pub fn theme_chosen() -> bool {
+    match LIVE.get().and_then(|s| s.lock().ok()) {
+        Some(settings) => settings.theme_chosen,
+        None => load().theme_chosen,
+    }
+}
+
+/// Record a chosen theme: its id, and the dark flag, accent and wallpaper it brings, which are
+/// the settings the rest of the shell reads. Saved at once, so the choice outlives a restart.
+pub fn record_theme(theme: &crate::wire::theme::Theme) -> Result<(), String> {
+    let apply = |settings: &mut UserSettings| {
+        settings.theme = theme.id.clone();
+        settings.theme_chosen = true;
+        settings.dark_mode = theme.dark;
+        settings.accent_color = theme.accent.clone();
+        settings.wallpaper = theme.wallpaper.clone();
+    };
+    if let Some(shared) = LIVE.get() {
+        if let Ok(mut settings) = shared.lock() {
+            apply(&mut settings);
+        }
+        return persist(shared);
+    }
+    let mut settings = load();
+    apply(&mut settings);
+    save(&settings)
 }
 
 /// The apps pinned to START, in order.
@@ -505,6 +564,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let new_val = !ui.get_settings_dark_mode();
         ui.set_settings_dark_mode(new_val);
         ui.global::<ThemeMode>().set_dark(new_val);
+        crate::wire::theme::dark_mode_changed(&ui);
         if let Ok(mut st) = s.lock() {
             st.dark_mode = new_val;
         }
@@ -625,6 +685,8 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 st.wallpaper = wp.clone();
             }
             persist(&s);
+            // The lock screen shows this wallpaper, blurred once now rather than live.
+            crate::lock_wallpaper::refresh(&wp);
             tracing::info!(wallpaper = %wp, "Wallpaper changed (preset)");
             return;
         }
@@ -640,6 +702,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                         st.wallpaper = wp.clone();
                     }
                     persist(&s);
+                    crate::lock_wallpaper::refresh(&wp);
                     tracing::info!(wallpaper = %wp, "Wallpaper changed (custom image)");
                 }
                 Err(e) => {
@@ -723,6 +786,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         }
         let _ = persist(&accent_settings);
     });
+
+    // Theme cards and what choosing one does (wire/theme.rs).
+    crate::wire::theme::wire(ui);
 
     // Push initial AI status + providers to UI
     {
@@ -1358,6 +1424,39 @@ mod tests {
             "30 s, 1, 2, 5, 10 min, never, and round"
         );
     }
+    /// A new install and a reset start on the lake; a saved choice is never replaced by it, and
+    /// the others stay in the picker, the lake first.
+    #[test]
+    fn the_lake_is_the_default_wallpaper_and_a_saved_choice_is_never_overwritten() {
+        assert_eq!(UserSettings::default().wallpaper, "lake", "a reset or a new install");
+        assert_eq!(WALLPAPER_PRESETS[0], "lake", "the picker shows it first");
+        for old in ["serenity", "first-light", "nightfall", "aurora", "sunset", "ocean", "nebula"] {
+            assert!(WALLPAPER_PRESETS.contains(&old), "{old} stays selectable");
+        }
+        // A settings file that has a wallpaper keeps it, whatever the default is now.
+        for chosen in ["serenity", "sunset", "", "/home/p/Pictures/mine.jpg"] {
+            let saved: UserSettings = serde_yaml::from_str(&format!("wallpaper: \"{chosen}\"\n")).expect("parses");
+            assert_eq!(saved.wallpaper, chosen, "a saved choice survives a load");
+        }
+        // One with no wallpaper in it (never chosen: a new install) gets the lake; no theme gets Lake.
+        let fresh: UserSettings = serde_yaml::from_str("dark_mode: true\n").expect("parses");
+        assert_eq!((fresh.wallpaper.as_str(), fresh.theme.as_str()), ("lake", "lake"));
+        assert!(!fresh.theme_chosen, "nothing was chosen, so the machine's files are left alone at start");
+    }
+
+    /// Choosing a theme brings its dark flag, accent and wallpaper and saves with them.
+    #[test]
+    fn a_chosen_theme_is_what_the_settings_file_says_after() {
+        let night = crate::wire::theme::find("nightfall").expect("ships");
+        let mut settings = UserSettings::default();
+        settings.theme = night.id.clone();
+        settings.dark_mode = night.dark;
+        settings.accent_color = night.accent.clone();
+        settings.wallpaper = night.wallpaper.clone();
+        let back: UserSettings = serde_yaml::from_str(&serde_yaml::to_string(&settings).unwrap()).unwrap();
+        assert_eq!((back.theme.as_str(), back.accent_color.as_str(), back.wallpaper.as_str()), ("nightfall", "purple", "nightfall"));
+    }
+
     use std::path::{Path, PathBuf};
 
     /// A settings file of our own, in a directory of its own, so the preference store's

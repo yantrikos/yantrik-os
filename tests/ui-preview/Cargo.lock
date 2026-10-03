@@ -6039,6 +6039,7 @@ dependencies = [
  "png",
  "slint",
  "slint-build",
+ "tracing",
 ]
 
 [[package]]

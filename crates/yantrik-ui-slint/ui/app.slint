@@ -20,7 +20,7 @@ import { BootScreen, BootStage } from "boot.slint";
 import { OnboardingScreen } from "onboarding.slint";
 import { InstallerScreen, InstallerDisk, KeyboardChoice } from "installer.slint";
 export { InstallerDisk, KeyboardChoice }
-export { DecisionPreset, DecisionUse } from "settings.slint";
+export { DecisionPreset, DecisionUse, ThemeCardData } from "settings.slint";
 export { ProviderPresetData, ProviderPresetRow, ProviderPresetGroup } from "provider_presets.slint";
 import { ProviderPresetData, ProviderPresetGroup } from "provider_presets.slint";
 import { DesktopScreen } from "desktop.slint";
@@ -28,7 +28,7 @@ import { BondScreen, BondData } from "bond.slint";
 import { PersonalityScreen, OpinionData, SharedRefData } from "personality.slint";
 import { LockScreen } from "lock.slint";
 import { LoginScreen } from "login.slint";
-import { SettingsScreen, SettingsCategoryItem, AIProviderData, AIModelData, AIStatusData, HarnessData, HarnessRowData, DecisionPreset, DecisionUse, RunsOnRow, InUseRow } from "settings.slint";
+import { SettingsScreen, SettingsCategoryItem, AIProviderData, AIModelData, AIStatusData, HarnessData, HarnessRowData, DecisionPreset, DecisionUse, RunsOnRow, InUseRow, ThemeCardData } from "settings.slint";
 import { SkillData } from "skill_store.slint";
 import { MemoryBrowser, MemoryItem } from "memory_browser.slint";
 import { FileBrowser, FileEntry, BreadcrumbSegment, FileDetailData, FileTabData, FileOpItem, FilePlaceData, FileRecentData, OpenWithItem } from "file_browser.slint";
@@ -644,6 +644,12 @@ export component App inherits Window {
     in property <string> lock-error: "";
     in property <string> lock-date-text: "";
     in property <string> lock-greeting: "";
+    // Who is locked in (the settings name, else the login), and the lock screen's pre-blurred
+    // wallpaper (lock_wallpaper.rs): none means the solid charcoal.
+    in property <string> lock-user-name: "";
+    in property <string> lock-initial: "";
+    in property <image> lock-wallpaper;
+    in property <bool> lock-has-wallpaper: false;
     // What the lock asks for: the login password, or the PIN on an account without one (#414).
     in property <string> lock-prompt: "Enter your password to unlock";
     callback try-unlock(string);
@@ -674,6 +680,10 @@ export component App inherits Window {
     in-out property <bool> settings-dark-mode: true;
     in-out property <bool> settings-incognito-mode: false;
     in-out property <string> settings-accent-color: "cyan";
+    // The theme in use (an id from crates/yantrik-design-tokens/themes), and the cards to show.
+    in-out property <string> settings-theme: "lake";
+    in property <[ThemeCardData]> theme-cards;
+    callback choose-theme(string);
 
     // AI Provider management
     in property <AIStatusData> settings-ai-status;
@@ -1537,16 +1547,24 @@ export component App inherits Window {
         // Lock screen
         if current-screen == 3 : LockScreen {
             width: 100%; height: 100%;
-            // The breathing background is decoration, and it is drawn on the screen that is up
-            // whenever nobody is at the machine — so it gets the renderer's budget, like the
-            // desktop's ambient layers, rather than the display's frame rate.
-            ambient-interval-ms: root.ambient-interval-ms;
             clock-text: root.clock-text;
             date-text: root.lock-date-text;
-            greeting-text: root.lock-greeting;
+            user-name: root.lock-user-name;
+            initial: root.lock-initial;
             error-text: root.lock-error;
             prompt-text: root.lock-prompt;
+            wallpaper: root.lock-wallpaper;
+            has-wallpaper: root.lock-has-wallpaper;
+            // The status line says only what the machine has: no network name when nothing is up,
+            // no battery on a machine without one.
+            network-text: root.network-online ? root.network-label : "";
+            battery-percent: root.battery-available ? root.battery-level : -1;
+            battery-charging: root.battery-charging;
+            notification-count: root.notification-unread-count;
             try-unlock(pin) => { root.try-unlock(pin); }
+            suspend => { root.power-action("suspend"); }
+            restart => { root.power-action("restart"); }
+            shutdown => { root.power-action("shutdown"); }
         }
 
         // Login screen (installed system boot)
@@ -1928,6 +1946,9 @@ export component App inherits Window {
                 incognito-mode <=> root.settings-incognito-mode;
                 dnd-mode <=> root.dnd-mode;
                 accent-color <=> root.settings-accent-color;
+                theme-id <=> root.settings-theme;
+                themes: root.theme-cards;
+                choose-theme(id) => { root.choose-theme(id); }
                 toggle-dark-mode => { root.toggle-dark-mode(); }
                 agent-mode: root.agent-mode;
                 set-agent-mode(value) => { root.set-agent-mode(value); }

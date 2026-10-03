@@ -7,6 +7,11 @@ mod installer_rules;
 mod installer_tests;
 mod files_tests;
 mod settings_tests;
+// The lock screen's blur, the production file: the lock scene blurs the same way the shell does.
+#[path="../../../crates/yantrik-ui/src/lock_wallpaper.rs"]
+#[allow(dead_code)]
+mod lock_wallpaper;
+mod lock_theme_tests;
 mod decision_tests;
 mod free_ai_tests;
 mod agents_tests;
@@ -67,6 +72,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
     slint::platform::set_platform(Box::new(Headless(window.clone())))?;
     if args.iter().any(|a| a == "verify-settings") { return settings_tests::run(&window, output, width, height); }
+    if args.iter().any(|a| a == "verify-lock") { return lock_theme_tests::run_lock(&window, output, width, height); }
+    if args.iter().any(|a| a == "verify-themes") { return lock_theme_tests::run_themes(&window, output, width, height); }
+    if args.iter().any(|a| a == "verify-lake-desktop") { return lock_theme_tests::run_desktop(&window, output, width, height); }
     if args.iter().any(|a| a == "verify-decision") { return decision_tests::run(&window, output, width, height); }
     if args.iter().any(|a| a == "verify-free-ai") { return free_ai_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-files") { return files_tests::run(&window); }

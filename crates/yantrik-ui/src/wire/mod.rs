@@ -47,6 +47,7 @@ pub mod notifications;
 mod power;
 pub mod screenshot;
 pub mod settings;
+pub mod theme;
 mod system_poll;
 mod timers;
 mod today;

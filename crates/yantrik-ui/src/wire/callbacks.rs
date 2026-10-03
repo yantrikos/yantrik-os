@@ -78,6 +78,24 @@ fn wire_lock(ui: &App, ctx: &AppContext) {
             ui.set_lock_error("".into());
             ui.set_lock_date_text(app_context::current_date_text().into());
             ui.set_lock_greeting(ui.get_greeting_text());
+            // Who is locked in, and what the screen says about the machine, read here on the UI
+            // thread from what the shell already holds: no process, no probe.
+            let name = lock_name(&ui);
+            ui.set_lock_initial(lock_initial(&name).into());
+            ui.set_lock_user_name(name.clone().into());
+            let wallpaper = crate::lock_wallpaper::ready();
+            // The shell's own screen loads the same small PNG the lock client does.
+            let image = wallpaper.as_deref().and_then(|p| slint::Image::load_from_path(p).ok());
+            ui.set_lock_has_wallpaper(image.is_some());
+            if let Some(image) = image {
+                ui.set_lock_wallpaper(image);
+            }
+            let look = crate::session_lock::Look {
+                name,
+                network: if ui.get_network_online() { ui.get_network_label().to_string() } else { String::new() },
+                notifications: ui.get_notification_unread_count().max(0) as u32,
+                wallpaper,
+            };
             let secret = lock::secret_for_this_account();
             asking.set(secret);
             ui.set_lock_prompt(secret.prompt().into());
@@ -85,11 +103,25 @@ fn wire_lock(ui: &App, ctx: &AppContext) {
             // And at the compositor (#313): the shell's screen alone left every app window
             // above it, visible and usable. The session lock shows only the lock.
             let bridge = lock_bridge.clone();
-            crate::session_lock::engage(ui.as_weak(), ui.get_greeting_text().to_string(), secret, move |ui, given, kind| {
+            crate::session_lock::engage(ui.as_weak(), ui.get_greeting_text().to_string(), look, secret, move |ui, given, kind| {
                 unlocked(ui, &bridge, given, kind)
             });
         }
     });
+}
+
+/// The name under the avatar: what the person told the shell to call them, else their login.
+fn lock_name(ui: &App) -> String {
+    let said = ui.get_settings_user_name().trim().to_string();
+    if !said.is_empty() {
+        return said;
+    }
+    std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).unwrap_or_default()
+}
+
+/// The letter in the avatar disc: the first letter or digit of the name, upper-cased.
+fn lock_initial(name: &str) -> String {
+    name.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().collect()).unwrap_or_default()
 }
 
 /// The screen is open: back to the desktop, and the same secret offered to the vault. One path

@@ -263,6 +263,13 @@ export component DesktopScreen inherits Rectangle {
         //
         // These are blurred slightly at render time, which is the whole reason the surfaces on
         // top can be translucent without the compositor blurring anything per frame.
+        // The default: an original photograph, 2560x1600. Covered, not stretched, so a screen of
+        // another shape crops it rather than squeezing the lake.
+        if root.wallpaper-path == "lake" : Image {
+            width: 100%; height: 100%;
+            source: @image-url("wallpapers/lake.jpg");
+            image-fit: cover;
+        }
         if root.wallpaper-path == "serenity" : Image {
             width: 100%; height: 100%;
             source: @image-url("wallpapers/serenity.png");
@@ -300,7 +307,7 @@ export component DesktopScreen inherits Rectangle {
             image-fit: fill;
         }
 
-        if root.wallpaper-path != "" && root.wallpaper-path != "aurora" && root.wallpaper-path != "sunset" && root.wallpaper-path != "ocean" && root.wallpaper-path != "nebula" && root.wallpaper-path != "serenity" && root.wallpaper-path != "first-light" && root.wallpaper-path != "nightfall" : Image {
+        if root.wallpaper-path != "" && root.wallpaper-path != "lake" && root.wallpaper-path != "aurora" && root.wallpaper-path != "sunset" && root.wallpaper-path != "ocean" && root.wallpaper-path != "nebula" && root.wallpaper-path != "serenity" && root.wallpaper-path != "first-light" && root.wallpaper-path != "nightfall" : Image {
             width: 100%; height: 100%;
             source: root.wallpaper-image;
             image-fit: cover;

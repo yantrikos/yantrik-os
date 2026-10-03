@@ -26,7 +26,13 @@ pub fn run(w:&MinimalSoftwareWindow, output:&str,width:u32,height:u32)->Result<(
     }
     ui.set_category(5);draw();click(w,width as f32-75.,if width>=1000{536.}else{545.});assert_eq!(ui.get_action(),"screen:28","Permissions opens its own dashboard");
     ui.set_category(0);ui.set_dark(width>=1000);draw();
-    click(w,width as f32-139.,if width>=1000{395.}else{413.});assert_eq!(ui.get_accent(),"purple","Direct accent choice");
+    // The theme cards (176px and the gap, 196 in all) sit above the accent row now: on a tall
+    // canvas it is that much lower, on a short one it is scrolled up to where it was.
+    let accent_y=if width>=1000{395.}else{413.};
+    let accent_y=if height>=700{accent_y+196.}else{
+        w.dispatch_event(WindowEvent::PointerScrolled{position:slint::LogicalPosition::new(width as f32-100.,height as f32-150.),delta_x:0.,delta_y:-196.});
+        std::thread::sleep(std::time::Duration::from_millis(350));draw();accent_y};
+    click(w,width as f32-139.,accent_y);assert_eq!(ui.get_accent(),"purple","Direct accent choice");
     key(w," ".into());assert_eq!(ui.get_action(),"accent:purple","Accent keyboard activation");
     ui.set_accent("cyan".into());draw();
     let p=draw();let f=BufWriter::new(File::create(output)?);let mut e=png::Encoder::new(f,width,height);e.set_color(png::ColorType::Rgb);e.set_depth(png::BitDepth::Eight);e.write_header()?.write_image_data(p.as_bytes())?;

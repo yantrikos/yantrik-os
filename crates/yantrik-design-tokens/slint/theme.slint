@@ -482,6 +482,26 @@ export global Theme {
     out property <color> mind-teal-ink:   #0c1a18;   // the glyph on the teal tile
     out property <color> needs-you:       #E7B567;   // a person's response is pending, nothing else
 
+    // Lock screen (design/ui-overhaul-2026-10-01.md §1.6, PR 6.2)
+    //
+    // Always dark, in both modes: the lock sits on a darkened photograph, and near-black text on
+    // it (what `text-primary` becomes in light mode) would vanish. The scrim is what keeps the
+    // clock readable over any wallpaper, a person's own included, so it is a token and not a
+    // guess at one image.
+    out property <color> lock-scrim:        #080b0e8c;
+    out property <color> lock-ground:       #101417;   // no wallpaper: the dock's charcoal, solid
+    out property <color> lock-text:         #f2f4f5;
+    out property <color> lock-text-dim:     #b4bcc2;
+    out property <color> lock-field:        #101417e6;
+    out property <color> lock-field-line:   #4a535a;
+    out property <color> lock-action:       #151a1ee0;
+    out property <color> lock-action-hover: #1e252b;
+    out property <color> lock-error:        #f4a3a3;
+    out property <length> lock-field-width: 340px;
+    out property <length> lock-field-height: 52px;
+    out property <length> lock-avatar: 88px;
+    out property <length> lock-initial-size: 40px;
+
     // Intent Lens
     out property <length> lens-width: 640px;
     out property <length> lens-input-height: 48px;

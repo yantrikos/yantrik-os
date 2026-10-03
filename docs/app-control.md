@@ -293,6 +293,7 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | shell | `use_harness` | sensitive | **regraded (#48)**: writes the preferred mind into the shell's settings — a choice about who answers from now on, across restarts |
 | shell | `set_do_not_disturb` | sensitive | **regraded (#48)**: writes `dnd_mode` into the shell's settings; left on, it swallows every notification that follows, quietly, until somebody notices |
 | shell | `set_volume`, `set_mute`, `set_brightness` | standard | the machine's own output level and backlight, which the keys move too and the same slider takes back; nothing is written to the shell's settings. They answer with the level read back from PipeWire / the panel, and `set_brightness` refuses on a machine with no backlight |
+| shell | `set_theme` | sensitive | chooses the desktop's theme (lake, nightfall): the colours, accent, wallpaper and dark flag together, saved in the shell's settings, and it rewrites files outside the shell (labwc's themerc, foot's colours, GTK's scheme) on a worker. `describe shell` lists the themes under `theme`; the answer is the theme the shell reports back |
 | shell | `report_problem` | sensitive | sends what it carries out of the machine |
 | shell | `install_harness`, `start_harness` | sensitive | fetches software onto the machine; decides what it runs on every login |
 | shell | `set_mind_panel` | safe | showing: how much of one panel is drawn, remembered in the panel's own file; nothing sent, run or granted |

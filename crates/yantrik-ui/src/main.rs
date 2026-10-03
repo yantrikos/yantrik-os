@@ -56,6 +56,7 @@ mod control_power;
 mod control_installer;
 mod control_levels;
 mod control_levels_actions;
+mod control_theme;
 mod installer_rules;
 mod control_update;
 mod control_files;
@@ -106,6 +107,7 @@ mod lens;
 /// The Lens's conversation put back from the saved session when it opens empty (#246).
 mod lens_history;
 mod lock;
+mod lock_wallpaper;
 mod memory_grants;
 mod markdown;
 /// What the mind may do without being asked: plan / ask / auto / bypass / bypass_all. See its module doc.
