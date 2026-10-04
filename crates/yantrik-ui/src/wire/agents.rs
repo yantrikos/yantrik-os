@@ -829,6 +829,7 @@ fn publish_workroom(g: &AgentsState, all: &workroom::Workroom, mind: Option<&str
 /// The opened run: its state in the screen's words, the changes recorded and the facts behind it.
 /// Worked out when the store changes, with the session, not every tick.
 fn publish_detail(g: &AgentsState, s: &Store, a: &Agent, run: Option<u64>) {
+    let run = workroom::run_to_show(a, run);
     let (state, label) = workroom::state_of(a, run);
     if g.get_detail_state() != state {
         g.set_detail_state(state.into());

@@ -1085,10 +1085,15 @@ fn settle_turn(agent: &mut Agent, ok: bool, now: u64, note: Option<&str>) {
     turn.ok = Some(ok);
 }
 
-/// Where a verified event, or a note, goes: the open turn; else the last one; else a turn of its
-/// own with no prompt, already ended — the shell can have something to say outside any turn.
+/// Where a verified event, or a note, goes: the open turn; else a turn of its own with no prompt,
+/// already ended — the shell can have something to say outside any turn. Not the last closed turn:
+/// filed there, an approval or a command that came after a run had ended was listed among that
+/// run's changes (VM 520, 4 October: the notes task showed arena saves and old approval cards).
+/// One such turn is kept at the end and reused, so a quiet stretch does not grow the history.
 fn turn_for_verified(agent: &mut Agent, now: u64) -> &mut Turn {
-    if agent.turns.is_empty() {
+    let outside = |t: &Turn| !t.open() && t.prompt.is_empty();
+    let fits = agent.turns.last().is_some_and(|t| t.open() || outside(t));
+    if !fits {
         let n = agent.next_turn;
         agent.next_turn += 1;
         agent.turns.push(Turn {
@@ -1977,6 +1982,33 @@ mod tests {
         assert_eq!(d.files, vec!["/home/p/a.md".to_string(), "~/b.md".to_string()], "only paths a verified call names");
         assert_eq!((d.approvals_asked, d.approvals_answered), (1, 1));
         assert_eq!(s.agent(&ds).unwrap().state, State::Thinking);
+    }
+
+    /// An approval asked after a run ended is not that run's: it goes in a turn of its own, outside
+    /// any run, and a second one shares it. On VM 520 the notes task listed arena saves and old
+    /// approval cards among its changes, because late events were filed in the last closed turn.
+    #[test]
+    fn what_comes_after_a_run_ended_is_not_filed_in_that_run() {
+        let (mut s, _) = store();
+        let ds = id("deepseek:main");
+        s.open_turn(&ds, "write the week plan");
+        s.close_turn(&ds, true);
+        s.approval_asked(&ds, "late-1", "files.move");
+        s.approval_asked(&ds, "late-2", "files.copy");
+        let a = s.agent(&ds).unwrap();
+        let run = a.turns.iter().find(|t| t.prompt == "write the week plan").unwrap();
+        assert!(!run.items.iter().any(|i| matches!(i, Item::Approval(_))), "the closed run keeps only its own");
+        assert_eq!(a.turns.len(), 2, "one turn outside any run, shared by both late approvals");
+        let outside = a.turns.last().unwrap();
+        assert!(outside.prompt.is_empty() && !outside.open());
+        assert_eq!(outside.items.iter().filter(|i| matches!(i, Item::Approval(_))).count(), 2);
+        // The next run starts clean, and an approval during it is its own.
+        s.open_turn(&ds, "tidy notes");
+        s.approval_asked(&ds, "in-run", "notes.trash");
+        let a = s.agent(&ds).unwrap();
+        let open = a.turns.last().unwrap();
+        assert_eq!(open.prompt, "tidy notes");
+        assert_eq!(open.items.iter().filter(|i| matches!(i, Item::Approval(_))).count(), 1);
     }
 
     #[test]

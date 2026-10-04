@@ -153,6 +153,17 @@ fn at_work(s: &Store) -> impl Iterator<Item = (&Agent, &Turn)> {
     })
 }
 
+/// The run a detail view shows. A main mind opened without one (its name in the navigation, a
+/// request card with no turn open) shows its latest run, the one the title names: listing every
+/// turn it ever kept put arena saves and old approval cards among one task's changes (VM 520,
+/// 4 October). A task agent's turns are all its one task, so it keeps showing them all.
+pub fn run_to_show(a: &Agent, run: Option<u64>) -> Option<u64> {
+    run.or_else(|| {
+        // Not a promptless turn: that holds what the shell said outside any run.
+        a.is_plain_main().then(|| a.turns.iter().rev().find(|t| a.is_run(t) && !t.prompt.trim().is_empty()).map(|t| t.n)).flatten()
+    })
+}
+
 fn key_of(a: &Agent, turn: &Turn) -> String {
     if a.is_plain_main() {
         RowKey::run(&a.meta.id, turn.n).id()
@@ -753,6 +764,24 @@ mod tests {
             &[],
             now(),
         )
+    }
+
+    /// A main mind opened without a run shows its latest run, not every turn it kept; a task agent,
+    /// whose turns are all its one task, shows them all (VM 520, 4 October).
+    #[test]
+    fn a_main_mind_opened_without_a_run_shows_its_latest_run() {
+        let mut s = Store::new();
+        let m = start(&mut s, "pi:main", "pi", "write the week plan");
+        s.close_turn(&m, true);
+        s.open_turn(&m, "go through my notes");
+        s.close_turn(&m, true);
+        s.approval_asked(&m, "late", "files.move"); // after the run: a promptless turn of its own
+        let a = s.agent(&m).unwrap();
+        let notes = a.turns.iter().find(|t| t.prompt == "go through my notes").unwrap().n;
+        assert_eq!(run_to_show(a, None), Some(notes), "the latest run, not the promptless turn after it");
+        assert_eq!(run_to_show(a, Some(1)), Some(1), "a run asked for is the run shown");
+        let t = start(&mut s, "pi:c-7", "pi", "tidy the photos folder");
+        assert_eq!(run_to_show(s.agent(&t).unwrap(), None), None, "a task agent shows all its turns");
     }
 
     #[test]
