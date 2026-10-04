@@ -73,6 +73,35 @@ pub fn is_own_binary(exe: &str) -> bool {
     name.starts_with("yantrik-") || name.ends_with("-service")
 }
 
+/// The desktop itself: the shell, and the notifications service. The only programs the name
+/// `Yantrik` belongs to on a notification (#114).
+pub const DESKTOP_BINARIES: &[&str] = &[SHELL_BINARY, "notifications-service"];
+
+/// Where an installed desktop keeps its programs.
+pub const INSTALL_DIR: &str = "/opt/yantrik/bin";
+
+/// Whether `exe` is the desktop itself by file name — the rule the notifications service grants
+/// the name `Yantrik` by. A file name only, so a developer's own build passes; see
+/// [`is_installed_desktop_binary`] for the stricter question.
+pub fn is_desktop_binary(exe: &str) -> bool {
+    let exe = exe.strip_suffix(DELETED).unwrap_or(exe);
+    DESKTOP_BINARIES.contains(&crate::peer_identity::basename(exe))
+}
+
+/// Whether `exe` is the desktop itself AS INSTALLED: one of [`DESKTOP_BINARIES`] at its path in
+/// [`INSTALL_DIR`], live or replaced underfoot by an update.
+///
+/// The notification card's plain "Sent by yantrik-ui · verified" is drawn only for this. The
+/// file name alone is not enough there (VM 520 sweep review, 4 October): a copy at
+/// `/tmp/yantrik-ui` passes [`is_desktop_binary`], and a card that cannot be told from the real
+/// shell's is the spoof #114 exists to stop.
+pub fn is_installed_desktop_binary(exe: &str) -> bool {
+    let exe = exe.strip_suffix(DELETED).unwrap_or(exe);
+    exe.strip_prefix(INSTALL_DIR)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .is_some_and(|name| DESKTOP_BINARIES.contains(&name))
+}
+
 /// The program behind a pid, as `/proc` says it, or `None` when it cannot be read.
 #[cfg(target_os = "linux")]
 pub fn exe_of(pid: i32) -> Option<String> {
@@ -338,6 +367,35 @@ mod tests {
                 });
             }
         });
+    }
+
+    #[test]
+    fn the_installed_desktop_is_its_two_binaries_at_their_installed_paths() {
+        for exe in [
+            "/opt/yantrik/bin/yantrik-ui",
+            "/opt/yantrik/bin/notifications-service",
+            "/opt/yantrik/bin/yantrik-ui (deleted)",
+        ] {
+            assert!(is_installed_desktop_binary(exe), "{exe}");
+            assert!(is_desktop_binary(exe), "{exe}");
+        }
+        // A copy, a developer's build, a lookalike and a nested path: not the installed desktop.
+        for exe in [
+            "/tmp/yantrik-ui",
+            "/home/yantrik/targets/sdk-spec/release/yantrik-ui",
+            "/opt/yantrik/bin/yantrik-uix",
+            "/opt/yantrik/bin/sub/yantrik-ui",
+            "/opt/yantrik/binyantrik-ui",
+            "/opt/yantrik/bin/yantrik-terminal",
+            "/usr/bin/python3",
+            "yantrik-ui",
+            "",
+        ] {
+            assert!(!is_installed_desktop_binary(exe), "{exe}");
+        }
+        // The name rule the service grants `Yantrik` by takes the copy; the stricter one did not.
+        assert!(is_desktop_binary("/tmp/yantrik-ui"));
+        assert!(!is_desktop_binary("/usr/bin/python3"));
     }
 
     #[test]

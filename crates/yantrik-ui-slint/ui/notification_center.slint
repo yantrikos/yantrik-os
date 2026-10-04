@@ -45,9 +45,10 @@ export struct NotificationData {
     // recorded nothing — an old record, or one from the freedesktop door — and then not drawn.
     // Shown behind the card's Details control; `sender-short` is what the card leads with.
     sender-line: string,
-    // The same two facts in a few words: "Sent by yantrik-ui · verified", or, when the name the
-    // caller gave itself is not the program that sent it, "Calls itself “Yantrik” · sent by
-    // hermes_cli.main (verified)" (notification_sender.rs).
+    // The same two facts in a few words, the verified program first: "Sent by yantrik-ui ·
+    // verified" for the installed desktop only, else "Sent by python3 evil.py (verified) · calls
+    // itself “Yantrik”", with the claim cut short so it can only elide itself
+    // (notification_sender.rs).
     sender-short: string,
 }
 
@@ -306,7 +307,9 @@ export component NotificationCenter inherits Rectangle {
                             // every card, "“Yantrik” says the caller · verified by this machine:
                             // yantrik-ui config.yaml (pid 189858)". The card now leads with the
                             // short form and keeps the full line, pid and all, one press away
-                            // under Details, for whoever wants to check it against ps.
+                            // under Details, for whoever wants to check it against ps. The
+                            // verified program leads and the caller's claim (cut short) trails,
+                            // so the elision can only ever eat the claim, never the fact.
                             if notif.sender-short != "" : HorizontalLayout {
                                 spacing: Theme.sp-2;
                                 Text {

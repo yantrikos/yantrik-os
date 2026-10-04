@@ -168,8 +168,9 @@ impl SmartRecallResult {
 /// Audit logs and system domains pollute recall with operational noise.
 /// Self-reflections have their own recall path (Step 3 introspect).
 /// Shared with the `recall` tool (#88) so the model never reads back its own
-/// tool-audit lines — the same rule, one definition.
-pub(crate) fn is_excluded_domain(domain: &str) -> bool {
+/// tool-audit lines — the same rule, one definition. Public for the shell's Memory screen, which
+/// lists the newest memories by the same rule.
+pub fn is_excluded_domain(domain: &str) -> bool {
     domain.starts_with("audit/")
         || domain.starts_with("system/")
         || domain == "self-reflection"

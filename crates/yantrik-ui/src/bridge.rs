@@ -1521,18 +1521,18 @@ fn worker_loop(
                     }
                 }
             }
-            // VM 520 sweep, 4 October: the Memory screen was blank until something was searched,
-            // over a store of about 1,036 memories. It opens on the newest ones now. The tools'
-            // own audit lines (`audit/tools`, one per tool call) are left out: they are the
-            // companion's log, not something it remembers about the person, and on a busy machine
-            // they would be every row. Fetched with headroom so the page is still full after.
+            // The Memory screen's newest memories (VM 520 sweep, 4 October), by recall's own
+            // domain rule, paged until the screen's page is full: crate::recent_memories.
             Ok(CompanionCommand::RecentMemories { limit, reply_tx }) => {
-                match companion.db.list_memories(limit * 5, 0, None, None, None, "created_at") {
-                    Ok((memories, _total)) => {
+                let newest = crate::recent_memories::collect(
+                    limit,
+                    |m: &yantrikdb_core::types::Memory| m.domain.as_str(),
+                    |offset, page| companion.db.list_memories(page, offset, None, None, None, "created_at"),
+                );
+                match newest {
+                    Ok(memories) => {
                         let items: Vec<MemoryResult> = memories
                             .into_iter()
-                            .filter(|m| m.domain != "audit/tools")
-                            .take(limit)
                             .map(|m| MemoryResult {
                                 rid: m.rid,
                                 text: m.text,

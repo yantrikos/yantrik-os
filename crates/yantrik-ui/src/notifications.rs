@@ -234,7 +234,12 @@ pub fn sender_line(n: &Notification) -> String {
         return String::new();
     };
     let claim = match &sender.claimed {
-        Some(name) => format!("\u{201c}{name}\u{201d} says the caller \u{b7} "),
+        // One line whatever the caller sent: the card draws this behind Details with word wrap,
+        // and a newline in the claim would otherwise draw a line of the caller's choosing.
+        Some(name) => format!(
+            "\u{201c}{}\u{201d} says the caller \u{b7} ",
+            crate::notification_sender::one_line(name)
+        ),
         None => String::new(),
     };
     if sender.pid == 0 {
