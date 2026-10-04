@@ -123,6 +123,10 @@ rsync -aAXH --exclude='/proc/*' --exclude='/sys/*' --exclude='/dev/*' \
     --exclude='/live/*' --exclude='/cdrom/*' \
     / "$M/" --info=progress2
 ok "System copied"
+# The live image's blanket rule (`yantrik ALL=(ALL) NOPASSWD: ALL`) came over with the copy. It
+# is the live session's alone, so it goes now rather than at the end: an install cut off before
+# step 14b must not leave a disk that boots with it (#397; security review of #616).
+rm -f "$M/etc/sudoers.d/yantrik"
 
 # ── 6. Bind mounts for chroot ──
 mount --bind /dev "$M/dev"
@@ -253,6 +257,27 @@ VERSION_ID=$(sed -n 's/^version=//p' "$M/opt/yantrik/BUILD" 2>/dev/null | head -
 [ -n "$VERSION_ID" ] || VERSION_ID="unknown"
 printf 'PRETTY_NAME="Yantrik OS"\nNAME="Yantrik OS"\nID=yantrik\nID_LIKE=debian\nVERSION_ID="%s"\nHOME_URL="https://yantrikos.com"\n' "$VERSION_ID" > "$M/etc/os-release"
 
+# ── 14b. Whose files these are (#397) ──
+#
+# /opt/yantrik is root's on an installed machine: the desktop's account keeps logs/, data/ and
+# config.yaml, and may run the updater and a few helpers as root through one narrow rule. The
+# updater's `migrate-ownership` writes that layout and that rule; yantrik-lockdown runs it, checks
+# the result rather than trusting its exit code, and locks the tree down itself when it is not
+# right. --fresh: the live session's logs are not the person's. Before the bootloader, so an
+# install that cannot do this leaves a disk that does not boot rather than one that boots open
+# (security review of #614 and #616, 4 October 2026).
+rm -f "$M/opt/yantrik/.installer-mode"
+step "Making the system's files root's..."
+LOCKDOWN_RC=0
+chroot "$M" /opt/yantrik/bin/yantrik-lockdown secure --fresh "$USERNAME" || LOCKDOWN_RC=$?
+case "$LOCKDOWN_RC" in
+    0) ok "/opt/yantrik is root's; $USERNAME keeps logs/, data/ and config.yaml" ;;
+    3) echo -e "   ${A}Yantrik could not finish securing its system files, so the installer locked them down itself.${N}"
+       echo -e "   ${A}If updates ask for your password, run: sudo yantrik-update migrate-ownership${N}" ;;
+    *) echo -e "   ${R}Could not make /opt/yantrik root's. Stopping before the bootloader: this disk will not boot.${N}" >&2
+       exit 1 ;;
+esac
+
 # ── 15. GRUB ──
 step "Installing bootloader..."
 printf 'GRUB_DEFAULT=0\nGRUB_TIMEOUT=3\nGRUB_DISTRIBUTOR="Yantrik OS"\nGRUB_CMDLINE_LINUX_DEFAULT="quiet splash"\nGRUB_CMDLINE_LINUX=""\n' > "$M/etc/default/grub"
@@ -270,42 +295,6 @@ ok "GRUB installed"
 chroot "$M" update-initramfs -u 2>/dev/null || true
 
 # ── 17. Cleanup ──
-rm -f "$M/opt/yantrik/.installer-mode"
-# The desktop user owns its own logs. `chmod 777` made this world-writable on every installed
-# machine: any process any user runs could rewrite the log that says what the OS did.
-mkdir -p "$M/opt/yantrik/logs"
-chmod 755 "$M/opt/yantrik/logs"
-chown "$UID_NUM:$GID_NUM" "$M/opt/yantrik/logs"
-chown -R "$UID_NUM:$GID_NUM" "$M/opt/yantrik/data" 2>/dev/null || true
-# The installer can rename the desktop user, and a renamed user can land on a different uid
-# than the 1000 the image chowned /opt/yantrik to. update.conf and BUILD are the two files the
-# updater writes as that user — set-channel writes the first, apply writes the second — so they
-# follow the account that actually exists on this machine.
-chown "$UID_NUM:$GID_NUM" "$M/opt/yantrik/update.conf" 2>/dev/null || true
-chown "$UID_NUM:$GID_NUM" "$M/opt/yantrik/BUILD" 2>/dev/null || true
-
-# /opt/yantrik is root's on an installed machine (#397): the desktop's account keeps logs/, data/
-# and config.yaml, and may run the updater and a few helpers as root through one narrow rule.
-# `yantrik-update migrate-ownership` is that layout's and that rule's one author, and it also
-# removes the live image's blanket /etc/sudoers.d/yantrik that came over with the copy. When it
-# fails, the tree is locked down here and the install says so: the copied tree is the person's,
-# and leaving it that way fails open (security review of #614, 4 October 2026). The same
-# fallback as the desktop installer's (crates/yantrik-ui/src/wire/installer_ownership.rs).
-if ! chroot "$M" /opt/yantrik/bin/yantrik-update migrate-ownership; then
-    rm -f "$M/etc/sudoers.d/yantrik"
-    chroot "$M" chown -R root:root /opt/yantrik
-    chroot "$M" chmod -R go-w /opt/yantrik
-    chroot "$M" mkdir -p /opt/yantrik/logs /opt/yantrik/data
-    chroot "$M" chown -R "$UID_NUM:$GID_NUM" /opt/yantrik/logs /opt/yantrik/data
-    chroot "$M" chmod go-rwx /opt/yantrik/logs /opt/yantrik/data
-    if [ -e "$M/opt/yantrik/config.yaml" ]; then
-        chroot "$M" chown "$UID_NUM:$GID_NUM" /opt/yantrik/config.yaml
-        chroot "$M" chmod 0600 /opt/yantrik/config.yaml
-    fi
-    echo -e "   ${A}Yantrik could not finish securing its system files, so the installer locked them down itself.${N}"
-    echo -e "   ${A}If updates ask for your password, run: sudo yantrik-update migrate-ownership${N}"
-fi
-
 umount "$M/sys" "$M/proc" "$M/dev" 2>/dev/null || true
 $IS_EFI && umount "$M/boot/efi" 2>/dev/null || true
 umount "$M" 2>/dev/null || true

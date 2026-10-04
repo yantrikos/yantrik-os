@@ -210,24 +210,52 @@ echo "   session unit enabled, boots to graphical.target"
 # sudo rule. This image never runs the installer, which is where an ISO install gets that
 # layout, and it used to `chown -R yantrik /opt/yantrik` and write `yantrik ALL=(ALL)
 # NOPASSWD:ALL` instead: anything running as the person could replace yantrik-update and run
-# it as root (security review of #614, 4 October 2026). So the image runs the same
-# `yantrik-update migrate-ownership` the installer does, the one author of the layout and the
-# rule, and nothing here writes a second copy of either. The payload is unpacked as root's
-# (--no-same-owner above), the account gets the two directories it keeps, and the updater does
-# the rest. Its systemd parts (the mind door's tmpfiles, the DevTools guard's nft load) only
-# warn offline and are completed at boot; the layout and the rule do not depend on them.
+# it as root (security review of #614, 4 October 2026). So the image runs what the text
+# installer and cloud-init's first boot run: yantrik-lockdown, which runs the updater's
+# `migrate-ownership` (the one author of the layout and the rule), checks the result rather
+# than trusting its exit code, and locks down anything the updater left open. Here even its
+# fallback is a failed build (exit 3): an image must carry the narrow rule. The payload is
+# unpacked as root's (--no-same-owner above). The updater's systemd parts (the mind door's
+# tmpfiles, the DevTools guard's nft load) only warn offline and are completed at boot.
 #
 # Then proved from inside the image, because a build that cannot show the layout must fail:
-# the tree and the updater root's, the narrow rule in place, no blanket rule for the account.
+# nothing in the tree but logs/, data/ and config.yaml is anyone's but root's or writable by
+# others (share/ and models/ included), config.yaml is the person's alone, the narrow rule is in
+# place, and no rule gives the account every command without a password.
 say "Ownership"
 step "ownership (#397)" virt-customize -a "$IMAGE" \
-  --run-command 'install -d -o yantrik -g yantrik -m 0700 /opt/yantrik/logs /opt/yantrik/data' \
-  --run-command '/opt/yantrik/bin/yantrik-update migrate-ownership'
+  --run-command 'test -x /opt/yantrik/bin/yantrik-lockdown || { echo "the payload carries no bin/yantrik-lockdown; build it with build-release.sh from this checkout" >&2; exit 1; }' \
+  --run-command 'install -d -o yantrik -g yantrik -m 0700 /opt/yantrik/data' \
+  --run-command '/opt/yantrik/bin/yantrik-lockdown secure yantrik'
 step "ownership check (#397)" virt-customize -a "$IMAGE" \
-  --run-command 'test "$(stat -c %u /opt/yantrik)" = 0 && test "$(stat -c %u /opt/yantrik/bin)" = 0 && test "$(stat -c %u /opt/yantrik/bin/yantrik-update)" = 0 && test "$(stat -c %U /opt/yantrik/logs)" = yantrik' \
+  --run-command '/opt/yantrik/bin/yantrik-lockdown check' \
+  --run-command 'test "$(stat -c %U /opt/yantrik/logs)" = yantrik && test "$(stat -c %U /opt/yantrik/data)" = yantrik' \
+  --run-command 'f=/opt/yantrik/config.yaml; [ ! -e "$f" ] || { [ ! -L "$f" ] && [ "$(stat -c %U "$f")" = yantrik ] && [ -z "$(find "$f" -perm /077)" ]; }' \
   --run-command 'grep -q "NOPASSWD: /opt/yantrik/bin/yantrik-update" /etc/sudoers.d/yantrik-os' \
   --run-command '! grep -rEqs "^[[:space:]]*(yantrik|%sudo)[[:space:]].*NOPASSWD:[[:space:]]*ALL[[:space:]]*$" /etc/sudoers /etc/sudoers.d'
 echo "   /opt/yantrik root's; yantrik keeps logs/, data/ and config.yaml; narrow sudo rule only"
+
+# ── The cloud-init drive this image is booted with ──
+#
+# The recipe below attaches a Proxmox cloud-init drive. Its generated user-data creates the
+# distro's default user, and Debian's cloud.cfg gives that user `NOPASSWD:ALL` in
+# /etc/sudoers.d/90-cloud-init-users at first boot, after every check above has run; with
+# `ciuser=yantrik` that user is the desktop's account again (security review of #616,
+# 4 October 2026). So the default user gets no sudo rule from cloud-init: the desktop's account
+# keeps the narrow one, and any other account's root is the operator's to grant. `null`, not
+# `false`: cloud-init's schema deprecates `false` for this key (22.2), and both write no rule.
+# cloud.cfg.d outranks cloud.cfg, and its merge keeps the higher-ranked value of a key both set.
+# yantrik-update also removes a 90-cloud-init-users that gives the desktop's account everything.
+step "cloud-init default user (#397)" virt-customize -a "$IMAGE" \
+  --mkdir /etc/cloud/cloud.cfg.d \
+  --write '/etc/cloud/cloud.cfg.d/99-yantrik.cfg:# Yantrik OS (#397): no password-free sudo for the default user cloud-init creates.
+# The desktop account keeps the narrow rule yantrik-update writes (/etc/sudoers.d/yantrik-os).
+system_info:
+  default_user:
+    sudo: null
+' \
+  --chmod '0644:/etc/cloud/cloud.cfg.d/99-yantrik.cfg'
+echo "   cloud-init gives its default user no sudo rule"
 
 # A VM has no sound card. Without a virtual one the machine is simply deaf and `yos web
 # listen` records silence, which is indistinguishable from a video with nobody talking.

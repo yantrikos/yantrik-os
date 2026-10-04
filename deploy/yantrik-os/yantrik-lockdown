@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# yantrik-lockdown — make a machine being made have a root-owned /opt/yantrik, whatever the
+# updater managed, and prove it (#397).
+# ═══════════════════════════════════════════════════════════════════════════════════════
+#
+# On every Yantrik machine /opt/yantrik is root's. The desktop's account keeps logs/, data/ and
+# config.yaml, and may run the updater and a few helpers as root through one narrow sudo rule.
+# `yantrik-update migrate-ownership` writes that layout and that rule. This script is what the
+# shell-driven ways of making a machine (yantrik-install.sh, cloud-init's yantrik-firstboot)
+# run around it, so that the machine never comes out the other way: a tree the person can write
+# plus a password-free rule is root for anything running as the person.
+#
+# The updater's exit code only says its sudo rule was written: its chowns are not checked, and
+# it removes the blanket rule only on an exact match. So the result is checked here, not trusted,
+# and when it is not right the tree is locked down here (security review of #614 and #616,
+# 4 October 2026). The desktop installer does the same in Rust
+# (crates/yantrik-ui/src/wire/installer_ownership.rs); keep the two in step.
+#
+# Usage, as root, on the machine being made (or in a chroot of it):
+#   yantrik-lockdown secure [--fresh] OWNER   migrate, check, lock down if needed, check again
+#   yantrik-lockdown check                    exit 1 and say why if the layout is not right
+#
+# secure exits 0 when the tree is root's and the updater put its rule in place, 3 when the tree
+# had to be locked down without the updater (no narrow rule: updates ask for a password until
+# `sudo yantrik-update migrate-ownership` is run once), and 1 when it could not be made safe, in
+# which case the narrow rule is removed too.
+# --fresh empties logs/ first: a new install has no logs of its own, and what was copied from
+# the live session is not the person's to adopt.
+#
+# Not for a machine in use: the lock-down empties logs/.
+
+set -uo pipefail
+[ "$(id -u)" = 0 ] || { echo "yantrik-lockdown runs as root" >&2; exit 1; }
+cd /
+
+# Fixed, not from the environment: this runs as root.
+PREFIX=/opt/yantrik
+BLANKET=/etc/sudoers.d/yantrik
+# The updater's narrow rule (SUDO_RULE in yantrik-update). Taken away only when the tree cannot be
+# made root's: a password-free rule on files the person can write is root for the person.
+NARROW=/etc/sudoers.d/yantrik-os
+
+say() { printf '[yantrik-lockdown] %s\n' "$*"; }
+
+# Everything in the tree that is not root's, or that another account may write, apart from the
+# three things the desktop's account keeps. Links are skipped for the mode test: theirs is 0777.
+strays() {
+  find "$PREFIX" \( -path "$PREFIX/logs" -o -path "$PREFIX/data" \) -prune \
+    -o ! -path "$PREFIX/config.yaml" \( ! -user root -o \( ! -type l -perm /022 \) \) -print
+}
+
+cmd_check() {
+  local bad=0 found
+  if [ -e "$BLANKET" ]; then
+    say "the blanket sudo rule is still there: $BLANKET" >&2
+    bad=1
+  fi
+  # A find that could not read the tree has not shown it is right.
+  if ! found="$(strays)"; then
+    say "could not read all of $PREFIX" >&2
+    return 1
+  fi
+  if [ -n "$found" ]; then
+    say "not root's, or writable by others, in $PREFIX:" >&2
+    printf '%s\n' "$found" | head -5 | sed 's/^/  /' >&2
+    bad=1
+  fi
+  return "$bad"
+}
+
+# The fallback: the blanket rule gone, everything root's and written by root alone, then the
+# account given back what it keeps, private to it. No sudo rule is written here: the updater is
+# that rule's one author. `-R` never follows a link, and the hand-back names only real
+# directories and a regular file, so nothing outside the tree is touched.
+lock_down() { # <owner> <group>
+  rm -f "$BLANKET" || return 1
+  chown -R root:root "$PREFIX" && chmod -R go-w "$PREFIX" || return 1
+  rm -rf "$PREFIX/logs" || return 1
+  if [ -L "$PREFIX/data" ] || { [ -e "$PREFIX/data" ] && [ ! -d "$PREFIX/data" ]; }; then
+    rm -f "$PREFIX/data" || return 1
+  fi
+  install -d -o "$1" -g "$2" -m 0700 "$PREFIX/logs" "$PREFIX/data" || return 1
+  chown -R "$1:$2" "$PREFIX/data" && chmod 0700 "$PREFIX/data" || return 1
+  if [ -f "$PREFIX/config.yaml" ] && [ ! -L "$PREFIX/config.yaml" ]; then
+    chown -h "$1:$2" "$PREFIX/config.yaml" && chmod 0600 "$PREFIX/config.yaml" || return 1
+  fi
+}
+
+# Could not make the tree root's: no password-free rule is left behind.
+refuse() {
+  rm -f "$NARROW" "$BLANKET"
+  say "FAILED: could not make $PREFIX root's${1:+ ($1)}; no password-free sudo rule is left" >&2
+  return 1
+}
+
+cmd_secure() {
+  local fresh=0 owner group migrated=0
+  [ "${1:-}" = --fresh ] && { fresh=1; shift; }
+  owner="${1:-}"
+  case "$owner" in
+    ''|root|[!a-z_]*|*[!a-z0-9_-]*) say "not an account name: '$owner'" >&2; return 1 ;;
+  esac
+  group="$(id -gn "$owner" 2>/dev/null)" || { say "no account $owner here" >&2; return 1; }
+
+  # The updater learns whose desktop this is from who owns logs/, so it is the owner's before it
+  # runs: an install that renamed the account would otherwise hand the layout to the live user.
+  if [ "$fresh" = 1 ]; then rm -rf "$PREFIX/logs" || { refuse "emptying logs/"; return 1; }; fi
+  if [ -L "$PREFIX/logs" ]; then rm -f "$PREFIX/logs" || { refuse "a linked logs/"; return 1; }; fi
+  install -d -o "$owner" -g "$group" -m 0700 "$PREFIX/logs" || { refuse "making logs/"; return 1; }
+
+  if "$PREFIX/bin/yantrik-update" migrate-ownership; then
+    migrated=1
+  else
+    say "yantrik-update migrate-ownership failed; locking $PREFIX down here" >&2
+  fi
+  # Whatever the updater said, the live image's blanket rule never stays.
+  rm -f "$BLANKET" || { refuse "removing $BLANKET"; return 1; }
+  if [ "$migrated" = 1 ] && cmd_check 2>/dev/null; then
+    say "$PREFIX is root's; $owner keeps logs/, data/ and config.yaml"
+    return 0
+  fi
+  [ "$migrated" = 1 ] && say "the updater left part of $PREFIX open; locking it down here" >&2
+  if ! lock_down "$owner" "$group" || ! cmd_check; then
+    refuse
+    return 1
+  fi
+  if [ "$migrated" = 1 ]; then
+    say "$PREFIX is root's; $owner keeps logs/, data/ and config.yaml"
+    return 0
+  fi
+  say "$PREFIX locked down without the updater: no narrow sudo rule until 'sudo yantrik-update migrate-ownership' is run once"
+  return 3
+}
+
+case "${1:-}" in
+  secure) shift; cmd_secure "$@" ;;
+  check)  cmd_check ;;
+  *) echo "usage: yantrik-lockdown secure [--fresh] OWNER | check" >&2; exit 2 ;;
+esac

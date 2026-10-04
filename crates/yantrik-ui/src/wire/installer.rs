@@ -399,11 +399,12 @@ fn install_to_target(
 
     // The OS's own code is root's on an installed machine (#397): the shell, the updater and every
     // binary used to belong to the desktop's user, so anything running as them could replace the
-    // OS. The updater moves the copied tree over, puts its narrow sudo rule in place and removes
-    // the live image's blanket one; the desktop's user keeps logs/, data/ and config.yaml. When
-    // the updater fails, the installer locks the tree down itself and says so, and when that fails
-    // too the install does (security review of #614, 4 October 2026: it used to warn and carry
-    // on, leaving the blanket rule and a tree the person's processes could write).
+    // OS. The updater moves the copied tree over and puts its narrow sudo rule in place; the
+    // desktop's user keeps logs/, data/ and config.yaml. The live image's blanket rule is removed
+    // and the result checked whatever the updater says; when it is not right the installer locks
+    // the tree down itself (and says so when the updater failed), and when that fails too the
+    // install does, before the bootloader (security reviews of #614 and #616, 4 October 2026: it
+    // used to warn and carry on, leaving the blanket rule and a tree the person could write).
     let owner = if state.username.is_empty() { "yantrik" } else { &state.username };
     let ownership_note = installer_ownership::secure_target(mount_dir, owner)?;
     if let Some(note) = &ownership_note {
@@ -555,13 +556,11 @@ fn install_to_target(
     let marker = format!("{mount_dir}/opt/yantrik/.installer-mode");
     let _ = run_cmd("rm", &["-f", &marker]);
 
-    // The session's log directory, the person's and written by them alone. It was 0777, which
-    // let any other account plant a name the session appends to — a symlink to ~/.bashrc, say
-    // (yantrik-update's reconcile_private_dirs repairs machines installed that way).
-    let logs = format!("{mount_dir}/opt/yantrik/logs");
-    let _ = run_cmd("install", &["-d", "-m", "0755", &logs]);
-    let _ = run_cmd("chmod", &["0755", &logs]);
-    let _ = chroot_cmd(mount_dir, &["chown", &format!("{owner}:{owner}"), "/opt/yantrik/logs"]);
+    // The session's log directory is set once, by secure_target after create_user: new, the
+    // person's and readable by them alone. It is not touched here. This step used to make it 0755
+    // again, so the log of what the person types to the companion was readable by every account,
+    // the mind's included, until the next update; and the host-side chmod and chown followed a
+    // logs/ that was a link (security review of #616, 4 October 2026).
 
     // Regenerate initramfs without live-boot hooks, and with the unlock when the root is
     // encrypted. There a failure is the install's failure, and so is an image that came out

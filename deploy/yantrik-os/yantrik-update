@@ -643,22 +643,41 @@ reconcile_sudo_rule() {
 # narrow rule is in place (#397). With it, anything running as the desktop's account was root
 # without asking; the narrow rule is everything the desktop needs. Only a file whose one
 # non-comment line is exactly that rule is removed: a file a person wrote themselves is theirs.
+#
+# And cloud-init's: a VM image booted with a cloud-init drive (Proxmox makes one) gets the
+# distro's default user with `NOPASSWD:ALL` in 90-cloud-init-users, and with `ciuser=yantrik`
+# that user is the desktop's account (security review of #616, 4 October 2026). That file names
+# whichever accounts cloud-init made, so it goes only when its one rule is the desktop's own.
 remove_blanket_sudo() {
   [ "$(id -u)" = 0 ] || return 0
   [ -f "$SUDO_RULE" ] || return 0
   if command -v visudo >/dev/null 2>&1 && ! visudo -cf "$SUDO_RULE" >/dev/null 2>&1; then
     return 0
   fi
-  local owner f body
+  local owner f who
   owner="$(desktop_owner)"
-  for f in /etc/sudoers.d/yantrik ${owner:+"/etc/sudoers.d/$owner"}; do
+  case "$owner" in ''|root|[!a-z_]*|*[!a-z0-9_-]*) owner="" ;; esac
+  for f in /etc/sudoers.d/yantrik ${owner:+"/etc/sudoers.d/$owner"} \
+           ${owner:+/etc/sudoers.d/90-cloud-init-users}; do
     [ -f "$f" ] || continue
-    body="$(grep -v '^[[:space:]]*#' "$f" | grep -v '^[[:space:]]*$')"
-    [ "$(printf '%s\n' "$body" | wc -l)" = 1 ] || continue
-    if printf '%s\n' "$body" | grep -qxE '[a-z_][a-z0-9_-]* ALL=\(ALL(:ALL)?\) ?NOPASSWD: ?ALL'; then
+    who='[a-z_][a-z0-9_-]*'
+    [ "$f" = /etc/sudoers.d/90-cloud-init-users ] && who="$owner"
+    if blanket_rule_in "$f" "$who"; then
       rm -f "$f" && info "removed the blanket sudo rule $f; the desktop keeps only $SUDO_RULE"
+    elif [ "$f" = /etc/sudoers.d/90-cloud-init-users ] \
+         && grep -qE "^[[:space:]]*$owner[[:space:]].*NOPASSWD:[[:space:]]*ALL[[:space:]]*\$" "$f"; then
+      warn "$f gives $owner every command without a password beside rules for other accounts; left as it is, remove that line by hand"
     fi
   done
+}
+
+# Is <file> nothing but one blanket rule, `<who> ALL=(ALL) NOPASSWD: ALL`, for an account
+# matching the ERE <who>? Comments and blank lines aside; cloud-init writes `NOPASSWD:ALL`.
+blanket_rule_in() { # <file> <who-ERE>
+  local body
+  body="$(grep -v '^[[:space:]]*#' "$1" | grep -v '^[[:space:]]*$')"
+  [ -n "$body" ] && [ "$(printf '%s\n' "$body" | wc -l)" = 1 ] || return 1
+  printf '%s\n' "$body" | grep -qxE "$2 ALL=\\(ALL(:ALL)?\\) ?NOPASSWD: ?ALL"
 }
 
 # Run by this updater's own `apply` and `reconcile`, first thing: a machine whose tree is still
@@ -2941,6 +2960,19 @@ with tarfile.open(sys.argv[1], "w") as t:
   else
     printf '  skip install-mind checks: no zstd here\n'
   fi
+
+  # The blanket sudo rules taken away once the narrow one is in place (#397), cloud-init's included.
+  local sd="$root/sudoers.d"; mkdir -p "$sd"
+  printf '# written by the image\nyantrik ALL=(ALL) NOPASSWD: ALL\n' > "$sd/image"
+  printf '# Created by cloud-init v. 25.1\n\n# User rules for asha\nasha ALL=(ALL) NOPASSWD:ALL\n' > "$sd/ci-asha"
+  printf '# User rules for debian\ndebian ALL=(ALL) NOPASSWD:ALL\n' > "$sd/ci-debian"
+  printf 'asha ALL=(ALL) NOPASSWD:ALL\ndebian ALL=(ALL) NOPASSWD:ALL\n' > "$sd/ci-both"
+  printf 'asha ALL=(ALL) NOPASSWD: /usr/bin/apt\n' > "$sd/own"
+  is "blanket rule: the image's is one" "yes" "$(blanket_rule_in "$sd/image" '[a-z_][a-z0-9_-]*' && echo yes || echo no)"
+  is "blanket rule: cloud-init's for the desktop's account is one" "yes" "$(blanket_rule_in "$sd/ci-asha" asha && echo yes || echo no)"
+  is "blanket rule: cloud-init's for another account is not the desktop's" "no" "$(blanket_rule_in "$sd/ci-debian" asha && echo yes || echo no)"
+  is "blanket rule: a file with rules for two accounts is left alone" "no" "$(blanket_rule_in "$sd/ci-both" asha && echo yes || echo no)"
+  is "blanket rule: a narrow rule a person wrote is theirs" "no" "$(blanket_rule_in "$sd/own" asha && echo yes || echo no)"
 
   if [ "$fails" = 0 ]; then
     printf '%sall selftest checks passed%s\n' "$c_grn" "$c_off"

@@ -200,6 +200,12 @@ if [ -f "$SCRIPT_DIR/yantrik-update" ]; then
 else
   echo "   (no yantrik-update script found — image will not self-update)"
 fi
+# What the text installer and cloud-init's first boot run around the updater's
+# migrate-ownership, so a machine never comes out with a tree its user can write (#397).
+cp "$SCRIPT_DIR/yantrik-lockdown" "$ROOT/bin/yantrik-lockdown" \
+  || fail "no yantrik-lockdown: an installed machine could keep a tree its user can write"
+chmod +x "$ROOT/bin/yantrik-lockdown"
+echo "   + yantrik-lockdown"
 
 # The session script. It decides what environment every program on this desktop inherits,
 # and it used to live only inside cloud-init's write_files -- written once at provision

@@ -515,6 +515,10 @@ for required in share/labwc/rc.xml share/labwc/menu.xml share/labwc/autostart bi
                 share/icons/hicolor/scalable/apps/yantrik.svg; do
     [ -e "$ROOTFS/opt/yantrik/$required" ] || fail "$required missing from the image — the desktop session would not be the shipped one"
 done
+# What both installers run to make an installed machine's /opt/yantrik root's (#397).
+for required in bin/yantrik-update bin/yantrik-lockdown; do
+    [ -x "$ROOTFS/opt/yantrik/$required" ] || fail "$required missing from the image — an install could not make /opt/yantrik root's"
+done
 
 # ── The app icon, also in the system icon theme ──
 #
@@ -924,9 +928,10 @@ sudo chown -R 1000:1000 "$ROOTFS/home/yantrik"
 # session runs the installer and nothing on it is kept. An installed machine must not inherit
 # either (#397). The installer copies this tree and then runs `yantrik-update migrate-ownership`
 # on the target, which makes /opt/yantrik root's (the person keeps logs/, data/, config.yaml),
-# puts the narrow sudo rule in place and removes /etc/sudoers.d/yantrik; when that fails, the
-# installer locks the tree down itself (crates/yantrik-ui/src/wire/installer_ownership.rs, and
-# the end of yantrik-install.sh). Change this line and that migration together.
+# and puts the narrow sudo rule in place. Both installers then remove /etc/sudoers.d/yantrik,
+# check the result, and lock the tree down themselves when it is not right
+# (crates/yantrik-ui/src/wire/installer_ownership.rs; yantrik-lockdown for yantrik-install.sh).
+# Change this line and that migration together.
 sudo chown -R 1000:1000 "$ROOTFS/opt/yantrik"
 
 ok "labwc + foot configured"

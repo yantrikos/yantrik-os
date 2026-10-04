@@ -342,12 +342,19 @@ write_files:
 
         # ── Whose files these are (#397) ─────────────────────────────────────────────────
         # The tree was the person's above (chown -R), as an ISO install's is when copied from
-        # the live system. The same updater that makes an installed machine's tree root's does
-        # it here, last, after update.conf is written: the desktop's account keeps logs/, data/
-        # and config.yaml, and gets the narrow sudo rule. Under `set -e` a failure stops
-        # firstboot here, and the account is left with no sudo rule at all: closed, not open.
-        /opt/yantrik/bin/yantrik-update migrate-ownership
-        log "/opt/yantrik is root's; yantrik keeps logs/, data/ and config.yaml"
+        # the live system. It is made root's here, last, after update.conf is written, the way
+        # the text installer does it: yantrik-lockdown runs the updater's migrate-ownership
+        # (the layout and the narrow sudo rule), checks the result, and locks the tree down
+        # itself when the updater did not. The desktop's account keeps logs/, data/ and
+        # config.yaml. If even that fails, first boot stops here, and the account has no sudo
+        # rule at all: closed, not open (security review of #614 and #616, 4 October 2026).
+        LOCKDOWN_RC=0
+        /opt/yantrik/bin/yantrik-lockdown secure yantrik || LOCKDOWN_RC=$?
+        case "$LOCKDOWN_RC" in
+          0) log "/opt/yantrik is root's; yantrik keeps logs/, data/ and config.yaml" ;;
+          3) log "WARNING: /opt/yantrik locked down without the updater; run 'sudo yantrik-update migrate-ownership' once" ;;
+          *) log "ERROR: could not make /opt/yantrik root's; stopping"; exit 1 ;;
+        esac
       else
         log "no YANTRIK_RELEASE_URL set — desktop will start with nothing to run"
       fi
