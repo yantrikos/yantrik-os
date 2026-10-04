@@ -212,7 +212,7 @@ fn put_front_first(merged: &mut Vec<WindowEntry>, front: Option<&str>) {
 /// declares `google-chrome`. So the two are the same program when they are equal, or when one is
 /// the other up to a `-`. The binary is compared by its file name, because the shell launches
 /// Blender by the full path `find_program` resolved.
-fn same_program(binary: &str, wayland_app_id: &str) -> bool {
+pub(crate) fn same_program(binary: &str, wayland_app_id: &str) -> bool {
     let bin = std::path::Path::new(binary)
         .file_name()
         .map(|n| n.to_string_lossy().to_lowercase())

@@ -837,12 +837,18 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 );
                 return;
             }
+            // Every arm below that starts a program asks `already_open` first: an app whose window
+            // is on the desktop is brought forward, whoever started it (see that module for the
+            // Blenders that taught us).
             Resolved::Catalogue { id, bin, args, surface, adapter, .. } => {
-                let args: Vec<&str> = args.iter().map(String::as_str).collect();
-                // An app that cannot host its own surface has its adapter started beside it,
-                // and stopped with it.
-                let adapter = surface.as_deref().zip(adapter.as_deref());
-                spawn_launch(&id, &bin, &args, None, adapter);
+                let (window_id, program) = (id.clone(), bin.clone());
+                super::already_open::focus_or_start(&window_id, Some(&program), move || {
+                    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                    // An app that cannot host its own surface has its adapter started beside it,
+                    // and stopped with it.
+                    let adapter = surface.as_deref().zip(adapter.as_deref());
+                    spawn_launch(&id, &bin, &args, None, adapter);
+                });
                 return;
             }
             Resolved::Unknown => {
@@ -865,7 +871,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 }
                 show(7);
             }
-            Launch::Editor => spawn_app("editor", "yantrik-text-editor"),
+            Launch::Editor => super::already_open::focus_or_start("editor", Some("yantrik-text-editor"), || {
+                spawn_app("editor", "yantrik-text-editor")
+            }),
             // This does open the launcher: the grid's `changed` handler fires and the
             // catalogue is rescanned, which is the "Scanned .desktop files count=31" line that
             // followed every `open_app name=launchpad` in the log. What it does not do is put
@@ -886,41 +894,47 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             // session's display environment. The old arm set WAYLAND_DISPLAY and XDG_RUNTIME_DIR
             // by hand, for uid 1000 only.
             Launch::Browser => match find_browser() {
-                Some((bin, args)) => spawn_app_with_args("browser", bin, args),
+                Some((bin, args)) => super::already_open::focus_or_start("browser", Some(bin), move || {
+                    spawn_app_with_args("browser", bin, args)
+                }),
                 None => tracing::error!(
                     "Cannot open the browser: none is installed (looked for {})",
                     BROWSERS.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(", ")
                 ),
             },
-            // Blender opens through the one launcher like any other window — registry, reaper,
-            // session environment — with the addon as its argument. A Blender started without
-            // `--python` would still be Blender, but a window a mind can only photograph, and
-            // the refusal below says so rather than quietly opening the lesser thing.
-            Launch::Blender => match (find_program("blender"), blender_bootstrap()) {
-                (Some(bin), Some(bootstrap)) => {
-                    // Third check, same reason as the other two: a launch that dies in under a
-                    // second is a launch the shell reported and nobody saw. Debian's Blender
-                    // speaks X11 only, so without an X display it prints one GHOST line and
-                    // exits, and `open_app` had already answered "launching".
-                    if let Err(why) = blender_display(std::env::var("DISPLAY").ok().as_deref()) {
-                        tracing::error!("Cannot open Blender: {why}");
-                        return;
-                    }
-                    let bin = bin.to_string_lossy().into_owned();
-                    let bootstrap = bootstrap.to_string_lossy().into_owned();
-                    spawn_app_with_args("blender", &bin, &["--python", &bootstrap]);
-                }
-                (None, _) => {
-                    tracing::error!("Cannot open Blender: it is not installed on this machine")
-                }
-                (_, None) => tracing::error!(
-                    "Cannot open Blender: the Yantrik addon is missing \
-                     (expected /opt/yantrik/share/blender/bootstrap.py), and a Blender \
-                     without it answers to nothing"
-                ),
-            },
+            // Blender, above all: it has no single-instance guard of its own, so this check is
+            // the only thing between a second launch and a second Blender.
+            Launch::Blender => super::already_open::focus_or_start("blender", Some("blender"), open_blender),
         }
     });
+}
+
+/// Blender opens through the one launcher like any other window — registry, reaper, session
+/// environment — with the addon as its argument. A Blender started without `--python` would
+/// still be Blender, but a window a mind can only photograph, and the refusal below says so
+/// rather than quietly opening the lesser thing.
+fn open_blender() {
+    match (find_program("blender"), blender_bootstrap()) {
+        (Some(bin), Some(bootstrap)) => {
+            // Third check, same reason as the other two: a launch that dies in under a second is
+            // a launch the shell reported and nobody saw. Debian's Blender speaks X11 only, so
+            // without an X display it prints one GHOST line and exits, and `open_app` had
+            // already answered "launching".
+            if let Err(why) = blender_display(std::env::var("DISPLAY").ok().as_deref()) {
+                tracing::error!("Cannot open Blender: {why}");
+                return;
+            }
+            let bin = bin.to_string_lossy().into_owned();
+            let bootstrap = bootstrap.to_string_lossy().into_owned();
+            spawn_app_with_args("blender", &bin, &["--python", &bootstrap]);
+        }
+        (None, _) => tracing::error!("Cannot open Blender: it is not installed on this machine"),
+        (_, None) => tracing::error!(
+            "Cannot open Blender: the Yantrik addon is missing \
+             (expected /opt/yantrik/share/blender/bootstrap.py), and a Blender \
+             without it answers to nothing"
+        ),
+    }
 }
 
 /// Where an app binary lives, or the bare name for `Command` to look up if it is nowhere.
@@ -928,7 +942,8 @@ pub fn resolve_app_binary(bin: &str) -> PathBuf {
     find_program(bin).unwrap_or_else(|| PathBuf::from(bin))
 }
 
-/// Launch a standalone app binary. The app's own single-instance guard handles repeats.
+/// Launch a standalone app binary. Starts it whatever is open: a launch by name has already asked
+/// `already_open`, and a launch with a file or a directory is a request for that file or place.
 /// Launch a windowed app under a logical id.
 ///
 /// `app_id` is the id the app is known by everywhere a caller reads it — the dock, `open_app`,
