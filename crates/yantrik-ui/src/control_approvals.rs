@@ -235,6 +235,9 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     verified.discrepancies.push(grade_note);
                 }
                 let agent = verified.agent.clone();
+                // Who the notification below names: the verified asker, never `requester`, which
+                // is only what the request called itself (security review of #614).
+                let asker = verified.who();
 
                 // And one line beside the arguments saying what their handles are, from the same
                 // `describe` the grade came from (#54) — empty for a call that names nothing by
@@ -300,7 +303,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     // minutes; the notification is what is still there afterwards, so a person
                     // who was away learns that a mind asked for something and got no answer.
                     // Critical, so Do Not Disturb does not swallow a question.
-                    crate::wire::notifications::approval_waiting(&requester, &app, &action);
+                    crate::wire::notifications::approval_waiting(&asker, &app, &action);
                 }
 
                 Ok(serde_json::json!({

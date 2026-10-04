@@ -102,6 +102,25 @@ pub fn is_installed_desktop_binary(exe: &str) -> bool {
     is_desktop_binary_in(exe, Path::new(INSTALL_DIR))
 }
 
+/// This process's effective uid. `u32::MAX` off unix, which no peer's uid equals.
+#[cfg(unix)]
+pub fn own_euid() -> u32 {
+    // SAFETY: geteuid cannot fail and touches no memory.
+    unsafe { libc::geteuid() }
+}
+
+#[cfg(not(unix))]
+pub fn own_euid() -> u32 {
+    u32::MAX
+}
+
+/// Whether the kernel says the peer runs as this process's own user. `false` when it would not
+/// say. A mind that runs under an account of its own (#411) is never the same user as the
+/// desktop, whatever binary it manages to have on the socket.
+pub fn same_user(peer: Option<PeerCred>) -> bool {
+    peer.is_some_and(|p| p.uid == own_euid())
+}
+
 /// The program behind a pid, as `/proc` says it, or `None` when it cannot be read.
 #[cfg(target_os = "linux")]
 pub fn exe_of(pid: i32) -> Option<String> {

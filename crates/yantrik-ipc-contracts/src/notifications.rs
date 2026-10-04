@@ -265,6 +265,9 @@ pub struct Sender {
     /// bridge the shell spawned has `yos` on the socket and `yantrik-ui` above it, and its `exe`
     /// is the shell's (security re-review of #611). `false` on a record written before this
     /// existed, which is the direction to fail in.
+    ///
+    /// It does not hold against a process running as the person's own user, which can exec the
+    /// real binary after connecting; see docs/notifications-provenance.md.
     #[serde(default)]
     pub desktop: bool,
 }

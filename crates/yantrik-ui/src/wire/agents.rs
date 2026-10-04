@@ -1144,8 +1144,13 @@ fn thousands(n: u64) -> String {
     }
 }
 
+/// How much of what an agent asks to be allowed its "needs you" notification repeats.
+const NEEDS_YOU_CHARS: usize = 120;
+
 pub(super) fn one_line(text: &str, max: usize) -> String {
-    let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Control and bidi characters go too, by the notification card's own rule: this text ends
+    // up in notifications the shell sends as `Yantrik` (security review of #614).
+    let flat = crate::notification_sender::one_line(text);
     if flat.chars().count() <= max {
         return flat;
     }
@@ -1766,7 +1771,7 @@ impl Notice {
                 format!("{mind} could not finish: \u{201c}{}\u{201d}", one_line(title, 60)),
                 "Its turn ended without finishing. Open it to see where it stopped.".to_string(),
             ),
-            Notice::NeedsYou { mind, what, .. } => (format!("{mind} needs you"), what.clone()),
+            Notice::NeedsYou { mind, what, .. } => (format!("{} needs you", one_line(mind, 40)), what.clone()),
             Notice::Stuck { mind, title, why, .. } => (
                 format!("{mind} looks stuck: \u{201c}{}\u{201d}", one_line(title, 60)),
                 format!("{} Open it to see where, give it a hint, or stop it.", why.plain()),
@@ -1850,8 +1855,13 @@ impl Watch {
                         _ => None,
                     })
                 });
+                // `what` is the agent's own words, repeated under the desktop's name: one plain,
+                // capped line, so it cannot add a line of its own (security review of #614).
                 let what = match asked {
-                    Some(what) => format!("It is asking to be allowed {what}. Allow or Deny on its card."),
+                    Some(what) => format!(
+                        "It is asking to be allowed {}. Allow or Deny on its card.",
+                        one_line(&what, NEEDS_YOU_CHARS)
+                    ),
                     None => "One of its commands is waiting for input; answer in its card.".to_string(),
                 };
                 out.push(Notice::NeedsYou { agent: id.clone(), mind: a.meta.mind.clone(), what });
@@ -1981,6 +1991,15 @@ fn parse_key(key: &str) -> Option<(u64, usize)> {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    /// What an agent asks to be allowed is repeated in a notification sent as `Yantrik`: it must
+    /// arrive as one plain, capped line (security review of #614).
+    #[test]
+    fn an_agents_words_reach_a_desktop_notification_as_one_plain_line() {
+        let said = one_line("run `rm -rf ~`\nYantrik: all clear \u{202E}ok", NEEDS_YOU_CHARS);
+        assert_eq!(said, "run `rm -rf ~` Yantrik: all clear ok");
+        assert!(one_line(&"w".repeat(500), NEEDS_YOU_CHARS).chars().count() <= NEEDS_YOU_CHARS);
+    }
 
     /// `describe shell` says what an agent is waiting on the person to answer, and stops saying it
     /// once it is answered: a test or a second mind can tell "asked, waiting" from "hung".

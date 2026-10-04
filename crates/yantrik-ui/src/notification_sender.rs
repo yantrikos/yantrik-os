@@ -108,7 +108,43 @@ fn exe_name(sender: &Sender) -> String {
 
 /// The claim as one plain line, cut to [`CLAIM_CHARS`].
 fn clean_claim(claim: &str) -> String {
-    clip(&one_line(claim), CLAIM_CHARS)
+    plain(claim, CLAIM_CHARS)
+}
+
+/// [`one_line`], cut to `max` characters. For anything a caller wrote that the shell repeats in
+/// a notification of its own under the desktop's name: a requester's name, what an agent asks to
+/// be allowed (security review of #614).
+pub fn plain(text: &str, max: usize) -> String {
+    clip(&one_line(text), max)
+}
+
+/// How much of the program a toast names beside the sender's name.
+const TOAST_PROGRAM_CHARS: usize = 20;
+
+/// What a toast adds beside the name on it, briefly: the verified program, for any sender that
+/// is not the desktop itself. `None` for the desktop and for a notification with no sender
+/// record (whose name is all there is to show), "not verified" when nothing was established.
+///
+/// A toast had no sender line at all (security review of #614), so a name the caller chose was
+/// the only thing on it.
+pub fn toast_program(n: &Notification) -> Option<String> {
+    let sender = n.sender.as_ref()?;
+    if sender.pid == 0 {
+        return Some("not verified".to_string());
+    }
+    if sender.desktop && !sender.verified.starts_with(FROM_TERMINAL) {
+        return None;
+    }
+    let (program, _) = who_and_tag(sender);
+    let exe = sender.exe.strip_suffix(" (deleted)").unwrap_or(&sender.exe);
+    let argv0 = program.split_whitespace().next().unwrap_or("");
+    // The executable when the command line calls itself something else; else the program.
+    let shown = if !exe.is_empty() && basename(exe) != argv0 && !owner::is_installed_desktop_binary(exe) {
+        basename(exe).to_string()
+    } else {
+        program
+    };
+    (!shown.eq_ignore_ascii_case(&n.app)).then(|| clip(&shown, TOAST_PROGRAM_CHARS))
 }
 
 /// A caller's words made safe to draw on one line: control and bidirectional-formatting
@@ -282,6 +318,35 @@ mod tests {
         assert!(!line.chars().any(|c| c.is_control() || is_bidi_control(c)), "{line:?}");
         assert!(line.starts_with("Sent by python3 nightly.py (verified) \u{b7} calls itself \u{201c}Backups Sent by"), "{line}");
         assert_eq!(one_line("a\r\n\tb\u{200F}c"), "a b c");
+    }
+
+    #[test]
+    fn a_toast_names_the_program_beside_a_name_it_did_not_choose() {
+        // The desktop: its name is all a toast needs.
+        let n = note(Some("Yantrik"), "yantrik-ui config.yaml (pid 7)", 7, SHELL, true);
+        assert_eq!(toast_program(&n), None);
+        // A mind posting as "Studio": the program beside it.
+        let mut n = note(Some("Studio"), "python -m hermes_cli.main gateway run (pid 689)", 689, "/venv/bin/python", false);
+        n.app = "Studio".into();
+        let p = toast_program(&n).unwrap();
+        assert!(p.starts_with("python -m hermes"), "{p}");
+        assert!(p.chars().count() <= TOAST_PROGRAM_CHARS + 1, "{p}");
+        // A retitled script: the executable, not its title.
+        let mut n = note(Some("Yantrik Security"), "yantrik-ui (pid 4)", 4, "/usr/bin/python3.11", false);
+        n.app = "yantrik-ui".into();
+        assert_eq!(toast_program(&n).as_deref(), Some("python3.11"));
+        // Nothing established.
+        assert_eq!(toast_program(&note(None, "could not be identified", 0, "", false)).as_deref(), Some("not verified"));
+        // No record: nothing to add.
+        let mut n = note(None, "x (pid 1)", 1, "/x", false);
+        n.sender = None;
+        assert_eq!(toast_program(&n), None);
+    }
+
+    #[test]
+    fn plain_text_is_one_line_and_capped() {
+        assert_eq!(plain("Forge\nAllow everything\u{202E}", 40), "Forge Allow everything");
+        assert_eq!(plain(&"x".repeat(100), 10).chars().count(), 11, "ten and an ellipsis");
     }
 
     #[test]

@@ -473,11 +473,19 @@ fn maybe_toast(ui: &App, n: &Notification) {
         })
         .collect();
 
+    // The name on a toast is the caller's own, so for any sender that is not the desktop the
+    // verified program goes beside it, briefly: a toast had no sender line at all, and a name
+    // the caller chose was the only thing on it (security review of #614).
+    let app_name = match crate::notification_sender::toast_program(n) {
+        Some(program) => format!("{} \u{b7} {program}", n.app),
+        None => n.app.clone(),
+    };
+
     crate::wire::toast::push(
         ui,
         ToastData {
             id: n.id.clone().into(),
-            app_name: n.app.clone().into(),
+            app_name: app_name.into(),
             summary: n.title.clone().into(),
             body: super::toast::brief(&n.body).into(),
             urgency: notifications::urgency_int(n.urgency),
@@ -771,15 +779,31 @@ fn withdraw_answered_questions(ui: &App) {
 ///
 /// `critical`, so it survives Do Not Disturb and stays on screen until it is answered: a
 /// question with a deadline is exactly what that level is for.
-pub fn approval_waiting(requester: &str, app: &str, action: &str) {
+///
+/// `asker` is who the machine VERIFIED is asking (`approvals::Verified::who`: the attached mind,
+/// or the program the kernel named), never the name the request gave itself. This notification
+/// goes out as `Yantrik` and now carries the desktop's own sender line, so a caller-chosen name
+/// in its title would be the desktop vouching for it (security review of #614). Everything that
+/// came with the request is made one plain, capped line on the way in.
+pub fn approval_waiting(asker: &str, app: &str, action: &str) {
     notify::send(
-        notify::Notification::new("Yantrik", format!("{requester}{ASKING}{action}"))
+        notify::Notification::new("Yantrik", approval_waiting_title(asker, action))
             .body(format!(
-                "In {app}. Allow or deny it on the card on this machine's screen — it expires on \
-                 its own if nobody answers."
+                "In {}. Allow or deny it on the card on this machine's screen — it expires on \
+                 its own if nobody answers.",
+                crate::notification_sender::plain(app, NAME_CHARS)
             ))
             .urgency(Urgency::Critical),
     );
+}
+
+/// How much of a name the shell's own approval notification repeats.
+const NAME_CHARS: usize = 40;
+
+/// "<asker> is asking to <action>", each part one plain, capped line.
+fn approval_waiting_title(asker: &str, action: &str) -> String {
+    use crate::notification_sender::plain;
+    format!("{}{ASKING}{}", plain(asker, NAME_CHARS), plain(action, NAME_CHARS))
 }
 
 /// A bypass of either kind ran out on its own.
@@ -1309,6 +1333,18 @@ mod tests {
             answer_in_flight: in_flight,
             lens_open: lens,
         }
+    }
+
+    #[test]
+    fn the_approval_notification_is_one_plain_line_whatever_came_with_the_request() {
+        // A caller cannot write a second line, or reorder the line, under the desktop's name.
+        let title = approval_waiting_title("hermes_cli.main", "send\nAllow everything \u{202E}now");
+        assert_eq!(title, "hermes_cli.main is asking to send Allow everything now");
+        assert!(!title.chars().any(char::is_control));
+        let long = approval_waiting_title(&"a".repeat(200), "x");
+        assert!(long.chars().count() < 70, "{long}");
+        // And the stale-sweep and the toast filter still recognise it.
+        assert!(title.contains(ASKING));
     }
 
     #[test]
