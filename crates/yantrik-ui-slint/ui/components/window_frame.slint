@@ -87,7 +87,9 @@ export component WindowFrame inherits Rectangle {
     in property <string> icon-char: "";
     /// Stroke glyph from the Icons global; when set it replaces icon-char.
     in property <string> icon-path: "";
-    in property <color> icon-color: Theme.cyan;
+    // Each window passes its app's colour; with none, a neutral glyph rather than the
+    // minds' teal (colour system).
+    in property <color> icon-color: Theme.text-secondary;
     in-out property <bool> is-maximized: true;
 
     // Window geometry (when not maximized) — bind with <=> from parent
@@ -256,7 +258,7 @@ export component WindowFrame inherits Rectangle {
             background: @linear-gradient(90deg,
                 transparent 5%,
                 Theme.separator 20%,
-                Theme.cyan-glow 50%,
+                Theme.border-strong 50%,
                 Theme.separator 80%,
                 transparent 95%
             );

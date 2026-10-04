@@ -28,6 +28,8 @@ pub mod launcher;
 pub mod dep_check;
 mod callbacks;
 pub(crate) mod files;
+/// Where Files lands, and what it says, when a folder cannot be opened.
+mod files_gone;
 /// Launching the app the one MIME rule picked: double-click, "Open with" and `files_open`
 /// all run their decision through here (#233).
 pub mod open_with;

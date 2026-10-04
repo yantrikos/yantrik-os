@@ -8,6 +8,8 @@
 // The AI IS the shell — Intent Lens is the primary interaction.
 
 import { Theme, ThemeMode, ThemeOverrides, AccentPreset } from "theme.slint";
+// A window frame's glyph wears its app's colour from the one table, not the minds' teal.
+import { AppColor } from "components/app_color.slint";
 import { GroundedDock, DockButton, DockWindow } from "components/grounded_dock.slint";
 import { StatusBar } from "components/status_bar.slint";
 import { ShellOverlays } from "components/shell_overlays.slint";
@@ -388,6 +390,8 @@ export component App inherits Window {
     // Memory browser state
     in property <[MemoryItem]> memory-results: [];
     in property <bool> is-searching-memories: false;
+    // The Memory screen's rows are the newest memories, not search results (wire/callbacks.rs).
+    in property <bool> memory-showing-recent: false;
 
     // Voice state
     in-out property <bool> voice-active: false;
@@ -1875,6 +1879,7 @@ export component App inherits Window {
                 width: 100%; height: 100%;
                 results: root.memory-results;
                 is-searching: root.is-searching-memories;
+                showing-recent: root.memory-showing-recent;
                 total-memories: root.memory-count;
                 search(query) => { root.search-memories(query); }
                 back-pressed => {
@@ -2124,7 +2129,7 @@ export component App inherits Window {
             win-w <=> root.window-w;
             win-h <=> root.window-h;
             icon-path: Icons.files;
-            icon-color: Theme.cyan;
+            icon-color: AppColor.for-app("files");
             title: Tr.title-files;
             close => {
                 if (root.minimized-screen == 8) { root.minimized-screen = 0; }
@@ -2383,7 +2388,7 @@ export component App inherits Window {
             win-w <=> root.window-w;
             win-h <=> root.window-h;
             icon-path: Icons.doc;
-            icon-color: Theme.cyan;
+            icon-color: AppColor.for-app("about");
             title: Tr.title-about;
             close => {
                 if (root.minimized-screen == 16) { root.minimized-screen = 0; }
@@ -2461,7 +2466,7 @@ export component App inherits Window {
             win-w <=> root.window-w;
             win-h <=> root.window-h;
             icon-path: Icons.packages;
-            icon-color: Theme.cyan;
+            icon-color: AppColor.for-app("packages");
             title: Tr.title-packages;
             close => {
                 if (root.minimized-screen == 21) { root.minimized-screen = 0; }
@@ -2528,6 +2533,10 @@ export component App inherits Window {
                 ai-explain-pressed => { root.pkg-ai-explain(); }
                 ai-intent(query) => { root.pkg-ai-intent(query); }
                 ai-dismiss => { root.pkg-ai-dismiss(); }
+                back-pressed => {
+                    root.current-screen = 1;
+                    root.navigate(1);
+                }
             }
         }
 
@@ -2551,7 +2560,7 @@ export component App inherits Window {
             win-w <=> root.window-w;
             win-h <=> root.window-h;
             icon-path: Icons.hybrid;
-            icon-color: Theme.cyan;
+            icon-color: AppColor.for-app("devices");
             title: Tr.title-devices;
             close => {
                 if (root.minimized-screen == 27) { root.minimized-screen = 0; }
@@ -2611,6 +2620,10 @@ export component App inherits Window {
                 ai-panel-open <=> root.dev-ai-panel-open;
                 ai-explain-pressed => { root.dev-ai-explain(); }
                 ai-dismiss => { root.dev-ai-dismiss(); }
+                back-pressed => {
+                    root.current-screen = 1;
+                    root.navigate(1);
+                }
             }
         }
 
@@ -2691,6 +2704,10 @@ export component App inherits Window {
                 ai-panel-open <=> root.perm-ai-panel-open;
                 ai-explain-pressed => { root.perm-ai-explain(); }
                 ai-dismiss => { root.perm-ai-dismiss(); }
+                back-pressed => {
+                    root.current-screen = 1;
+                    root.navigate(1);
+                }
             }
         }
 
@@ -2770,6 +2787,9 @@ export component App inherits Window {
         // Recipes — every recipe the companion holds, drawn as its stages. Everything on it reads
         // the RecipesState global; see recipes.slint and crates/yantrik-ui/src/wire/recipes.rs.
         if current-screen == 35 : WindowFrame {
+            // The screen's own AppHeader is the window's bar (VM 520 sweep, 4 October), so the
+            // frame draws none: one bar, as on Files and Settings (#560).
+            content-has-controls: true;
             x: root.window-maximized ? 0px : root.window-x;
             y: root.window-maximized ? Theme.status-bar-height : root.window-y;
             width: root.window-maximized ? parent.width - root.mind-panel-reserve : root.window-w;
@@ -2796,6 +2816,23 @@ export component App inherits Window {
 
             RecipesScreen {
                 width: 100%; height: 100%;
+                show-window-controls: true;
+                maximized: root.window-maximized;
+                minimize => {
+                    root.minimized-screen = 35;
+                    root.minimized-title = Tr.title-recipes;
+                    root.minimized-app-id = "recipes";
+                    root.current-screen = 1; root.navigate(1);
+                }
+                toggle-maximize => { root.window-maximized = !root.window-maximized; }
+                close-window => {
+                    if (root.minimized-screen == 35) { root.minimized-screen = 0; }
+                    root.current-screen = 1; root.navigate(1);
+                }
+                back-pressed => {
+                    root.current-screen = 1;
+                    root.navigate(1);
+                }
             }
         }
 

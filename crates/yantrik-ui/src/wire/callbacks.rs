@@ -399,23 +399,34 @@ fn wire_quick_settings(ui: &App) {
 
 // ── Memory search ──
 
+/// How many of the newest memories the Memory screen shows before anything is searched: the
+/// same page size a search returns (bridge.rs, `recall_text(.., 20)`).
+const RECENT_MEMORIES: usize = 20;
+
 fn wire_memory_search(ui: &App, ctx: &AppContext) {
     let bridge = ctx.bridge.clone();
     let ui_weak = ui.as_weak();
     let search_timer: Rc<RefCell<Option<Timer>>> = Rc::new(RefCell::new(None));
     let timer_inner = search_timer.clone();
 
+    // An empty query lists the newest memories instead of searching. The screen asks for that
+    // when it opens and when its search is cleared (wire/navigate.rs, memory_browser.slint):
+    // VM 520 sweep, 4 October, it was blank until something was typed, over about 1,036
+    // stored memories.
     ui.on_search_memories(move |query| {
-        let query = query.to_string();
-        if query.is_empty() {
-            return;
-        }
+        let query = query.trim().to_string();
+        let recent = query.is_empty();
 
         if let Some(ui) = ui_weak.upgrade() {
             ui.set_is_searching_memories(true);
+            ui.set_memory_showing_recent(recent);
         }
 
-        let reply_rx = bridge.recall_memories(query);
+        let reply_rx = if recent {
+            bridge.recent_memories(RECENT_MEMORIES)
+        } else {
+            bridge.recall_memories(query)
+        };
         let weak = ui_weak.clone();
         let handle = timer_inner.clone();
         let timer = Timer::default();

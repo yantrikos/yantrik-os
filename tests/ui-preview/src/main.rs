@@ -302,13 +302,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         ui.set_scene("settings".into());
         redraw();
-        click(&window, 400., 240.);
+        // The Dark/Light cards sit under the themes (Lake, Nightfall) since #601: 196px lower.
+        const BELOW_THEMES: f32 = 196.;
+        click(&window, 400., 240. + BELOW_THEMES);
         assert_eq!(
             ui.get_app_action_count(),
             0,
             "Selecting the active theme does not toggle it"
         );
-        click(&window, 900., 240.);
+        click(&window, 900., 240. + BELOW_THEMES);
         assert_eq!(
             ui.get_app_action(),
             "theme",
@@ -322,7 +324,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             1,
             "Space on the now-active theme is idempotent"
         );
-        click(&window, 490., 510.);
+        // First light is the third tile since Lake became the first preset (#601).
+        click(&window, 680., 510. + BELOW_THEMES);
         assert_eq!(ui.get_app_action(), "wallpaper:first-light");
         key(&window, "\n".into());
         assert_eq!(

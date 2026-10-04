@@ -27,7 +27,8 @@ export component BondRing inherits Rectangle {
 
     // Progress arc (using conic gradient approximation)
     // Slint doesn't support conic-gradient, so use stacked arcs
-    // We show a full amber ring with opacity proportional to fill
+    // We show a full accent ring with opacity proportional to fill. It was amber, and amber
+    // means "needs you" and nothing else (colour system); a score is data, so the accent.
     Rectangle {
         x: 4px;
         y: 4px;
@@ -36,7 +37,7 @@ export component BondRing inherits Rectangle {
         border-radius: self.width / 2;
         background: transparent;
         border-width: 4px;
-        border-color: Theme.amber;
+        border-color: Theme.accent;
         opacity: fill-fraction;
     }
 
@@ -46,7 +47,7 @@ export component BondRing inherits Rectangle {
 
         Text {
             text: @tr("{}", Math.round(score * 10) / 10);
-            color: Theme.amber;
+            color: Theme.accent;
             font-size: 1px * size-px * 0.22;
             font-weight: 700;
             horizontal-alignment: center;

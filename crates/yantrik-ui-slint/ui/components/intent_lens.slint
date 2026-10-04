@@ -950,7 +950,7 @@ export component VaultUnlockCard inherits Rectangle {
                 border-radius: Theme.r-md;
                 background: Theme.bg-elevated;
                 border-width: 1px;
-                border-color: pass-input.has-focus ? Theme.cyan : Theme.border-default;
+                border-color: pass-input.has-focus ? Theme.accent : Theme.border-default;
 
                 HorizontalLayout {
                     padding-left: Theme.sp-2;
@@ -1784,13 +1784,14 @@ export component IntentLens inherits Rectangle {
                                 }
                             }
 
-                            // Score indicator bar (3px on right side)
+                            // Score indicator bar (3px on right side). A result's score is
+                            // data, so the accent; teal is only for minds (colour system).
                             if result.score > 0.0 : Rectangle {
                                 width: 3px;
                                 height: parent.height * 0.6;
                                 y: (parent.height - self.height) / 2;
                                 border-radius: 1.5px;
-                                background: Theme.cyan;
+                                background: Theme.accent;
                                 opacity: result.score;
                             }
 

@@ -130,6 +130,11 @@ pub enum CompanionCommand {
         query: String,
         reply_tx: Sender<Vec<MemoryResult>>,
     },
+    /// The newest memories, for the Memory screen before anything is searched.
+    RecentMemories {
+        limit: usize,
+        reply_tx: Sender<Vec<MemoryResult>>,
+    },
     /// Get current bond level (for voice profile adaptation).
     GetBondLevel {
         reply_tx: Sender<BondLevel>,
@@ -737,6 +742,13 @@ impl CompanionBridge {
     pub fn recall_memories(&self, query: String) -> Receiver<Vec<MemoryResult>> {
         let (reply_tx, reply_rx) = crossbeam_channel::unbounded();
         let _ = self.cmd_tx.send(CompanionCommand::RecallMemories { query, reply_tx });
+        reply_rx
+    }
+
+    /// The newest `limit` memories, newest first.
+    pub fn recent_memories(&self, limit: usize) -> Receiver<Vec<MemoryResult>> {
+        let (reply_tx, reply_rx) = crossbeam_channel::unbounded();
+        let _ = self.cmd_tx.send(CompanionCommand::RecentMemories { limit, reply_tx });
         reply_rx
     }
 
@@ -1505,6 +1517,37 @@ fn worker_loop(
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "Memory recall failed");
+                        let _ = reply_tx.send(vec![]);
+                    }
+                }
+            }
+            // The Memory screen's newest memories (VM 520 sweep, 4 October), by recall's own
+            // domain rule, paged until the screen's page is full: crate::recent_memories.
+            Ok(CompanionCommand::RecentMemories { limit, reply_tx }) => {
+                let newest = crate::recent_memories::collect(
+                    limit,
+                    |m: &yantrikdb_core::types::Memory| m.domain.as_str(),
+                    |offset, page| companion.db.list_memories(page, offset, None, None, None, "created_at"),
+                );
+                match newest {
+                    Ok(memories) => {
+                        let items: Vec<MemoryResult> = memories
+                            .into_iter()
+                            .map(|m| MemoryResult {
+                                rid: m.rid,
+                                text: m.text,
+                                memory_type: m.memory_type,
+                                importance: m.importance,
+                                valence: m.valence,
+                                score: 0.0,
+                                created_at: m.created_at,
+                                domain: m.domain,
+                            })
+                            .collect();
+                        let _ = reply_tx.send(items);
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Listing recent memories failed");
                         let _ = reply_tx.send(vec![]);
                     }
                 }

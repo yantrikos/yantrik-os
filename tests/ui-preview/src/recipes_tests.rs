@@ -278,45 +278,48 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         pixels
     };
     let logged = |event: &str| log.borrow().iter().any(|e| e == event);
+    // Everything below the screen's AppHeader (Theme.h-app-header), which Recipes wears since
+    // the VM 520 sweep of 4 October: every press lands that much lower than it did before.
+    const HEADER: f32 = 48.;
 
     // Every recipe, in the desk's order, nothing opened.
     let (width, height) = (1280u32, 1000u32);
     save(&draw(width, height), output, width, height)?;
 
     // The question, answered from its choices…
-    click(w, 69., 217.);
+    click(w, 69., 217. + HEADER);
     assert!(logged("answer:rcp_tidy:Archive"), "a choice answers: {:?}", log.borrow());
     // …and in the person's own words: Answer does nothing while the box is empty, then sends
     // what was typed; Enter sends too.
-    click(w, 1195., 253.);
+    click(w, 1195., 253. + HEADER);
     assert!(!log.borrow().iter().any(|e| e == "answer:rcp_tidy:"), "an empty answer is not sent");
-    click(w, 590., 255.);
+    click(w, 590., 255. + HEADER);
     key(w, "Keep the newest".into());
     draw(width, height);
-    click(w, 1195., 253.);
+    click(w, 1195., 253. + HEADER);
     assert!(logged("answer:rcp_tidy:Keep the newest"), "Answer sends the typed answer: {:?}", log.borrow());
-    click(w, 590., 255.);
+    click(w, 590., 255. + HEADER);
     key(w, "Leave them here".into());
     key(w, "\n".into());
     assert!(logged("answer:rcp_tidy:Leave them here"), "Enter sends it: {:?}", log.borrow());
     // A row opens from its name; a tab filters.
-    click(w, 113., 327.);
+    click(w, 113., 327. + HEADER);
     assert!(logged("select:rcp_digest"), "{:?}", log.borrow());
-    click(w, 125., 32.);
+    click(w, 125., 32. + HEADER);
     assert!(logged("tab:finished"), "{:?}", log.borrow());
 
     // The running digest, opened below its row, with Pause and Cancel.
     g.set_selected("rcp_digest".into());
     g.set_steps(ModelRc::new(VecModel::from(digest_steps())));
     save(&draw(1280, 1000), &output.replace(".png", "-open.png"), 1280, 1000)?;
-    click(w, 1123., 718.);
+    click(w, 1123., 718. + HEADER);
     assert!(logged("pause:rcp_digest"), "Pause reaches the recipe shown: {:?}", log.borrow());
     // Cancel asks first: one press cancels nothing, the second — on "Cancel recipe" — does.
-    click(w, 1208., 718.);
+    click(w, 1208., 718. + HEADER);
     draw(1280, 1000);
     assert!(!logged("cancel:rcp_digest"), "Cancel asks before it cancels");
     save(&draw(1280, 1000), &output.replace(".png", "-confirm.png"), 1280, 1000)?;
-    click(w, 1215., 718.);
+    click(w, 1215., 718. + HEADER);
     assert!(logged("cancel:rcp_digest"), "and cancels once asked: {:?}", log.borrow());
 
     // Finished: the failed research opened, with its unbound {{topic}}.

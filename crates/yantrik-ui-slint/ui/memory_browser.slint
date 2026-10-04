@@ -34,6 +34,10 @@ export component MemoryBrowser inherits Rectangle {
     in property <[MemoryItem]> results: [];
     in property <bool> is-searching: false;
     in property <int> total-memories: 0;
+    // The rows are the newest memories rather than a search's matches: what the screen shows
+    // when it opens and when its search is cleared (VM 520 sweep, 4 October -- it was blank
+    // until something was typed, over about 1,036 stored memories).
+    in property <bool> showing-recent: false;
     callback search(string);
     callback back-pressed();
 
@@ -71,6 +75,22 @@ export component MemoryBrowser inherits Rectangle {
             status: root.is-searching ? "searching" : "";
             back => { root.back-pressed(); }
             search-accepted(q) => { root.search(q); }
+            // Clearing the field goes back to the newest memories, rather than leaving the last
+            // search's matches under an empty box.
+            search-edited(q) => { if (q == "") { root.search(""); } }
+        }
+
+        // What the rows are: the newest, or what a search found.
+        if results.length > 0 : HorizontalLayout {
+            padding-left: Theme.sp-4;
+            height: 28px;
+            Text {
+                text: root.showing-recent ? "Most recent" : "Best matches";
+                color: Theme.text-dim;
+                font-size: Theme.fs-micro;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
         }
 
         // Results
@@ -189,11 +209,16 @@ export component MemoryBrowser inherits Rectangle {
         // in this OS uses YEmptyState for this -- a stroke glyph in a tinted circle, a title
         // and one sentence -- so this one looked like a screen that had failed to load rather
         // than one that is waiting for you.
+        //
+        // With nothing searched, the count is said beside the prompt, so an empty list is never
+        // read as an empty store.
         if results.length == 0 && !is-searching : YEmptyState {
             vertical-stretch: 1;
-            icon-path: Icons.chip;
-            title: "Search your memories";
-            description: "Type a query above and Yantrik will recall what it knows.";
+            icon-path: root.showing-recent ? Icons.chip : Icons.search;
+            title: root.showing-recent ? "Search your memories" : "Nothing matched";
+            description: !root.showing-recent ? "Try other words, or clear the search to see the newest memories."
+                : root.total-memories > 0 ? "\{root.total-memories} stored. Type a query above and Yantrik will recall what it knows."
+                : "Type a query above and Yantrik will recall what it knows.";
         }
     }
 }

@@ -19,8 +19,10 @@ export component RibbonToolButton inherits Rectangle {
     width: 32px;
     height: 32px;
     border-radius: 6px;
-    background: is-active ? Theme.cyan.transparentize(81%)
-        : ta.has-hover ? Theme.tint-cyan
+    // On (Bold pressed, say) is the accent's tint and hover a neutral step. Both were teal,
+    // which is only for minds (colour system).
+    background: is-active ? Theme.tint-accent
+        : ta.has-hover ? Theme.hover-fill
         : transparent;
 
     ta := TouchArea {
@@ -83,8 +85,10 @@ export component RibbonToolButtonWide inherits Rectangle {
     min-width: 40px;
     height: 32px;
     border-radius: 6px;
-    background: is-active ? Theme.cyan.transparentize(81%)
-        : ta.has-hover ? Theme.tint-cyan
+    // On (Bold pressed, say) is the accent's tint and hover a neutral step. Both were teal,
+    // which is only for minds (colour system).
+    background: is-active ? Theme.tint-accent
+        : ta.has-hover ? Theme.hover-fill
         : transparent;
 
     ta := TouchArea {
@@ -327,7 +331,7 @@ export component RibbonColorButton inherits Rectangle {
     width: 32px;
     height: 32px;
     border-radius: 6px;
-    background: ta.has-hover ? Theme.tint-cyan : transparent;
+    background: ta.has-hover ? Theme.hover-fill : transparent;
 
     ta := TouchArea {
         mouse-cursor: pointer;
