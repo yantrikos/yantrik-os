@@ -55,7 +55,7 @@ def yos(*args, timeout=60):
     that (`delete_event`, TimeoutExpired, the whole run gone). The caller sees the timeout and
     decides what it means."""
     try:
-        r = subprocess.run(["yos", *args], capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run([YOS, *args], capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return f"{YOS_TIMED_OUT} after {timeout}s: {' '.join(args[:3])} -- probably waiting on a card)"
     return (r.stdout or "") + (r.stderr or "")
@@ -202,6 +202,9 @@ def show_arena_month():
 
 
 EDITOR_PATTERN = "^/opt/yantrik/bin/yantrik-text-editor"
+# By its install path: over a plain ssh session /opt/yantrik/bin is not on PATH, `yos` was not found,
+# and the run refused to start as if approvals could not be turned off (VM 520, 4 October).
+YOS = "/opt/yantrik/bin/yos" if os.path.exists("/opt/yantrik/bin/yos") else "yos"
 CALENDAR_STORE = os.path.join(HOME, ".local", "share", "yantrik", "calendar")
 # Every arena task plays on this day, and every event it asks for is titled "Arena <tag>...".
 ARENA_DAY = "2026-09-30"
