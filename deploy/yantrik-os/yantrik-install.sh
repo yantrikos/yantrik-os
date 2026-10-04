@@ -169,8 +169,8 @@ for kind in uid gid; do
 done
 HASH=$(openssl passwd -6 "$PASSWORD")
 chroot "$M" usermod -p "$HASH" "$USERNAME"
-echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" > "$M/etc/sudoers.d/$USERNAME"
-chmod 440 "$M/etc/sudoers.d/$USERNAME"
+# No `NOPASSWD: ALL` for the account (#397). This used to write one, so anything running as the
+# person was root without asking; the narrow rule is put in place at the end, by the updater.
 ok "User $USERNAME created"
 
 # ── 11. Desktop config for new user ──
@@ -283,6 +283,28 @@ chown -R "$UID_NUM:$GID_NUM" "$M/opt/yantrik/data" 2>/dev/null || true
 # follow the account that actually exists on this machine.
 chown "$UID_NUM:$GID_NUM" "$M/opt/yantrik/update.conf" 2>/dev/null || true
 chown "$UID_NUM:$GID_NUM" "$M/opt/yantrik/BUILD" 2>/dev/null || true
+
+# /opt/yantrik is root's on an installed machine (#397): the desktop's account keeps logs/, data/
+# and config.yaml, and may run the updater and a few helpers as root through one narrow rule.
+# `yantrik-update migrate-ownership` is that layout's and that rule's one author, and it also
+# removes the live image's blanket /etc/sudoers.d/yantrik that came over with the copy. When it
+# fails, the tree is locked down here and the install says so: the copied tree is the person's,
+# and leaving it that way fails open (security review of #614, 4 October 2026). The same
+# fallback as the desktop installer's (crates/yantrik-ui/src/wire/installer_ownership.rs).
+if ! chroot "$M" /opt/yantrik/bin/yantrik-update migrate-ownership; then
+    rm -f "$M/etc/sudoers.d/yantrik"
+    chroot "$M" chown -R root:root /opt/yantrik
+    chroot "$M" chmod -R go-w /opt/yantrik
+    chroot "$M" mkdir -p /opt/yantrik/logs /opt/yantrik/data
+    chroot "$M" chown -R "$UID_NUM:$GID_NUM" /opt/yantrik/logs /opt/yantrik/data
+    chroot "$M" chmod go-rwx /opt/yantrik/logs /opt/yantrik/data
+    if [ -e "$M/opt/yantrik/config.yaml" ]; then
+        chroot "$M" chown "$UID_NUM:$GID_NUM" /opt/yantrik/config.yaml
+        chroot "$M" chmod 0600 /opt/yantrik/config.yaml
+    fi
+    echo -e "   ${A}Yantrik could not finish securing its system files, so the installer locked them down itself.${N}"
+    echo -e "   ${A}If updates ask for your password, run: sudo yantrik-update migrate-ownership${N}"
+fi
 
 umount "$M/sys" "$M/proc" "$M/dev" 2>/dev/null || true
 $IS_EFI && umount "$M/boot/efi" 2>/dev/null || true

@@ -12,6 +12,7 @@ use crate::installer_rules;
 use crate::wire::provider_catalogue::{auth_type_for, default_model_for, provider_preset};
 use crate::wire::installer_disk;
 use crate::wire::installer_locale;
+use crate::wire::installer_ownership;
 use crate::wire::settings::{ProviderStore, ProviderStoreEntry};
 use crate::{App, InstallerDisk, KeyboardChoice};
 
@@ -127,8 +128,17 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
                     // every retry was refused as "already running".
                     ui.set_onboard_installing(false);
                     match result {
-                        Ok(()) => {
-                            ui.set_onboard_install_status("Installation complete!".into());
+                        Ok(note) => {
+                            // A note holds the Installed screen's restart and is shown there:
+                            // the machine is safe, and the person has one thing to do.
+                            let note = note.unwrap_or_default();
+                            let status = if note.is_empty() {
+                                "Installation complete!".to_string()
+                            } else {
+                                format!("Installation complete. {note}")
+                            };
+                            ui.set_onboard_install_note(note.into());
+                            ui.set_onboard_install_status(status.into());
                             ui.set_onboard_install_progress(100);
                             // The installed step (and its restart countdown) is shown by the
                             // screen when install-progress reaches 100.
@@ -266,7 +276,11 @@ pub struct InstallerState {
 type ProgressFn = Box<dyn Fn(i32, &str) + Send>;
 
 /// Run the full installation. Blocks the calling thread.
-pub fn run_install(state: &InstallerState, progress: ProgressFn) -> Result<(), String> {
+///
+/// `Ok(Some(note))` is an installed machine with something the person must read: today, that
+/// the updater could not secure /opt/yantrik and the installer locked it down instead
+/// (installer_ownership.rs).
+pub fn run_install(state: &InstallerState, progress: ProgressFn) -> Result<Option<String>, String> {
     progress(1, "Detecting target disk...");
 
     tracing::info!(target_disk = %state.target_disk, "Installer: starting, target_disk from UI");
@@ -329,7 +343,7 @@ fn install_to_target(
     is_efi: bool,
     mount_dir: &str,
     progress: &ProgressFn,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     // ── Step 4: Copy live system via rsync ──────────────────────
     copy_system(mount_dir, progress)?;
     progress(55, "System files copied");
@@ -382,6 +396,19 @@ fn install_to_target(
     // ── Step 8: Create user account ─────────────────────────────
     progress(65, "Creating user account...");
     create_user(mount_dir, state)?;
+
+    // The OS's own code is root's on an installed machine (#397): the shell, the updater and every
+    // binary used to belong to the desktop's user, so anything running as them could replace the
+    // OS. The updater moves the copied tree over, puts its narrow sudo rule in place and removes
+    // the live image's blanket one; the desktop's user keeps logs/, data/ and config.yaml. When
+    // the updater fails, the installer locks the tree down itself and says so, and when that fails
+    // too the install does (security review of #614, 4 October 2026: it used to warn and carry
+    // on, leaving the blanket rule and a tree the person's processes could write).
+    let owner = if state.username.is_empty() { "yantrik" } else { &state.username };
+    let ownership_note = installer_ownership::secure_target(mount_dir, owner)?;
+    if let Some(note) = &ownership_note {
+        progress(66, note);
+    }
 
     // ── Step 9: Set locale ──────────────────────────────────────
     progress(68, "Configuring locale...");
@@ -532,7 +559,6 @@ fn install_to_target(
     // let any other account plant a name the session appends to — a symlink to ~/.bashrc, say
     // (yantrik-update's reconcile_private_dirs repairs machines installed that way).
     let logs = format!("{mount_dir}/opt/yantrik/logs");
-    let owner = if state.username.is_empty() { "yantrik" } else { &state.username };
     let _ = run_cmd("install", &["-d", "-m", "0755", &logs]);
     let _ = run_cmd("chmod", &["0755", &logs]);
     let _ = chroot_cmd(mount_dir, &["chown", &format!("{owner}:{owner}"), "/opt/yantrik/logs"]);
@@ -549,7 +575,7 @@ fn install_to_target(
     }
 
     progress(100, "Installation complete!");
-    Ok(())
+    Ok(ownership_note)
 }
 
 /// Create user account inside the chroot.
@@ -735,18 +761,7 @@ fi
     let _ = chroot_cmd(mount_dir, &["passwd", "-l", "root"]);
     let _ = run_cmd("sed", &["-i", "/^PermitRootLogin/d", &format!("{mount_dir}/etc/ssh/sshd_config.d/yantrik.conf")]);
 
-    // The OS's own code is root's on an installed machine (#397): the shell, the updater and every
-    // binary used to belong to the desktop's user, so anything running as them could replace the
-    // OS. The updater moves the copied tree over and puts its narrow sudo rule in place; the
-    // desktop's user keeps logs/, data/ and config.yaml. Refused or missing, the machine's first
-    // update does the same.
-    if let Err(e) = chroot_cmd(mount_dir, &["/opt/yantrik/bin/yantrik-update", "migrate-ownership"]) {
-        tracing::warn!(error = %e, "Could not make /opt/yantrik root's at install; the first update will");
-    }
-
-    // No passwordless sudo for everything on an installed machine (#397): the migration above
-    // put the narrow rule in place (the updater, the Package Manager's helper, the timezone) and
-    // removed the blanket one the live image carries. The person's own password does the rest.
+    // /opt/yantrik is made root's right after this returns (installer_ownership.rs, #397).
 
     // Autologin to start labwc + yantrik-ui automatically (no TTY shown to user).
     // Yantrik UI shows its own graphical login screen (screen 32) for authentication.

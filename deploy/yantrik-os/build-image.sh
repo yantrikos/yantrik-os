@@ -140,7 +140,7 @@ say "Payload"
 virt-customize -a "$IMAGE" \
   --mkdir /opt/yantrik \
   --upload "$PAYLOAD:/tmp/payload.tar.zst" \
-  --run-command 'tar --zstd -xf /tmp/payload.tar.zst -C /opt/yantrik --strip-components=1' \
+  --run-command 'tar --zstd --no-same-owner -xf /tmp/payload.tar.zst -C /opt/yantrik --strip-components=1' \
   --run-command 'rm -f /tmp/payload.tar.zst' \
   --run-command 'ln -sf /opt/yantrik/bin/yos /usr/local/bin/yos' \
 
@@ -198,12 +198,36 @@ fi
 exec labwc -s "/opt/yantrik/bin/yantrik-ui /opt/yantrik/config.yaml"' \
   --chmod '0755:/opt/yantrik/bin/yantrik-session' \
   --run-command 'useradd -m -s /bin/bash -G sudo,video,render,input,audio yantrik 2>/dev/null || true' \
-  --run-command 'echo "yantrik ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/yantrik' \
-  --run-command 'chown -R yantrik:yantrik /opt/yantrik' \
   --run-command 'systemctl enable seatd yantrik-session qemu-guest-agent' \
   --run-command 'systemctl set-default graphical.target' \
   >/dev/null 2>&1 || fail "session setup failed"
 echo "   session unit enabled, boots to graphical.target"
+
+# ── Whose files these are (#397) ────────────────────────────────────────────────────────
+#
+# /opt/yantrik is root's on every machine this OS makes; the desktop's account keeps logs/,
+# data/ and config.yaml, and may run the updater and a few helpers as root through one narrow
+# sudo rule. This image never runs the installer, which is where an ISO install gets that
+# layout, and it used to `chown -R yantrik /opt/yantrik` and write `yantrik ALL=(ALL)
+# NOPASSWD:ALL` instead: anything running as the person could replace yantrik-update and run
+# it as root (security review of #614, 4 October 2026). So the image runs the same
+# `yantrik-update migrate-ownership` the installer does, the one author of the layout and the
+# rule, and nothing here writes a second copy of either. The payload is unpacked as root's
+# (--no-same-owner above), the account gets the two directories it keeps, and the updater does
+# the rest. Its systemd parts (the mind door's tmpfiles, the DevTools guard's nft load) only
+# warn offline and are completed at boot; the layout and the rule do not depend on them.
+#
+# Then proved from inside the image, because a build that cannot show the layout must fail:
+# the tree and the updater root's, the narrow rule in place, no blanket rule for the account.
+say "Ownership"
+step "ownership (#397)" virt-customize -a "$IMAGE" \
+  --run-command 'install -d -o yantrik -g yantrik -m 0700 /opt/yantrik/logs /opt/yantrik/data' \
+  --run-command '/opt/yantrik/bin/yantrik-update migrate-ownership'
+step "ownership check (#397)" virt-customize -a "$IMAGE" \
+  --run-command 'test "$(stat -c %u /opt/yantrik)" = 0 && test "$(stat -c %u /opt/yantrik/bin)" = 0 && test "$(stat -c %u /opt/yantrik/bin/yantrik-update)" = 0 && test "$(stat -c %U /opt/yantrik/logs)" = yantrik' \
+  --run-command 'grep -q "NOPASSWD: /opt/yantrik/bin/yantrik-update" /etc/sudoers.d/yantrik-os' \
+  --run-command '! grep -rEqs "^[[:space:]]*(yantrik|%sudo)[[:space:]].*NOPASSWD:[[:space:]]*ALL[[:space:]]*$" /etc/sudoers /etc/sudoers.d'
+echo "   /opt/yantrik root's; yantrik keeps logs/, data/ and config.yaml; narrow sudo rule only"
 
 # A VM has no sound card. Without a virtual one the machine is simply deaf and `yos web
 # listen` records silence, which is indistinguishable from a video with nobody talking.

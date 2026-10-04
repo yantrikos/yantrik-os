@@ -25,7 +25,12 @@ users:
     gecos: Yantrik OS
     groups: [sudo, video, render, input, audio, seat]
     shell: /bin/bash
-    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    # No `sudo:` line. It was `ALL=(ALL) NOPASSWD:ALL`, so anything running as the person (an
+    # agent harness, a mind with a terminal) was root without asking (#397; security review of
+    # #614, 4 October 2026). The account's sudo is the narrow rule yantrik-firstboot has
+    # `yantrik-update migrate-ownership` put in place: the updater and a few helpers, nothing
+    # else. Root for an operator is the guest agent (`qm guest exec`), or give this account a
+    # password here (`passwd:`) and sudo asks for it.
     # Key auth only. A password hash invented for an example is worse than none: the
     # machine boots, looks correct, and nobody can log in to find out why.
     lock_passwd: true
@@ -334,6 +339,15 @@ write_files:
         else
           log "onboarding left interactive"
         fi
+
+        # ── Whose files these are (#397) ─────────────────────────────────────────────────
+        # The tree was the person's above (chown -R), as an ISO install's is when copied from
+        # the live system. The same updater that makes an installed machine's tree root's does
+        # it here, last, after update.conf is written: the desktop's account keeps logs/, data/
+        # and config.yaml, and gets the narrow sudo rule. Under `set -e` a failure stops
+        # firstboot here, and the account is left with no sudo rule at all: closed, not open.
+        /opt/yantrik/bin/yantrik-update migrate-ownership
+        log "/opt/yantrik is root's; yantrik keeps logs/, data/ and config.yaml"
       else
         log "no YANTRIK_RELEASE_URL set — desktop will start with nothing to run"
       fi

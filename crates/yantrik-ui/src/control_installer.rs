@@ -283,6 +283,8 @@ pub fn state(ui: &App) -> serde_json::Value {
         "progress": ui.get_onboard_install_progress(),
         "status": ui.get_onboard_install_status().to_string(),
         "error": ui.get_onboard_install_error().to_string(),
+        // Installed, with something the person must do (wire/installer_ownership.rs).
+        "note": ui.get_onboard_install_note().to_string(),
         "blocked_by": blocked_by(ui).map(serde_json::Value::String).unwrap_or(serde_json::Value::Null),
         "steps": if installer {
             STEPS.iter().map(|(n, _)| *n).collect::<Vec<_>>()
@@ -304,6 +306,10 @@ pub fn summary(ui: &App) -> String {
     // apart, and reading them the other way round reports "installing, 100%" to anyone who
     // asks in between — a state that sounds like work still to do.
     if ui.get_onboard_phase() == step::INSTALLED {
+        let note = ui.get_onboard_install_note();
+        if !note.is_empty() {
+            return format!("Yantrik installer — installed, waiting for a restart: {note}");
+        }
         return "Yantrik installer — installed, restarting".into();
     }
     if ui.get_onboard_installing() {

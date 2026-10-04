@@ -219,6 +219,10 @@ export component InstallerScreen inherits Rectangle {
     in-out property <int> install-progress: 0;
     in-out property <string> install-status;
     in-out property <string> install-error;
+    // What a finished install needs the person to read (wire/installer_ownership.rs). While it is
+    // set the Installed screen does not restart by itself: the countdown would take the message
+    // away before anyone read it.
+    in-out property <string> install-note;
     callback install-to-disk(/* username */ string, /* password */ string,
                              /* full_name */ string, /* hostname */ string,
                              /* keyboard */ string, /* timezone */ string,
@@ -274,7 +278,8 @@ export component InstallerScreen inherits Rectangle {
     // on machines that were, as often as not, rendering in software.
     Timer {
         interval: 1s;
-        running: root.step == 4 || (root.step == 5 && !root.restart-held && root.restart-in > 0);
+        running: root.step == 4
+            || (root.step == 5 && !root.restart-held && root.install-note == "" && root.restart-in > 0);
         triggered => {
             if root.step == 4 {
                 root.elapsed-s += 1;
@@ -992,8 +997,15 @@ export component InstallerScreen inherits Rectangle {
                         font-size: Theme.fs-body;
                         horizontal-alignment: center;
                     }
+                    if root.install-note != "" : Text {
+                        text: root.install-note;
+                        color: Theme.amber;
+                        font-size: Theme.fs-caption;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
                     Text {
-                        text: root.restart-held ? "Restart when you are ready."
+                        text: root.restart-held || root.install-note != "" ? "Restart when you are ready."
                             : "Restarting in " + root.restart-in + " s…";
                         color: Theme.text-primary;
                         font-size: Theme.fs-body;
@@ -1004,7 +1016,7 @@ export component InstallerScreen inherits Rectangle {
                     HorizontalLayout {
                         alignment: center;
                         spacing: Theme.sp-3;
-                        if !root.restart-held : PillButton {
+                        if !root.restart-held && root.install-note == "" : PillButton {
                             label: "Wait";
                             quiet: true;
                             clicked => { root.restart-held = true; }

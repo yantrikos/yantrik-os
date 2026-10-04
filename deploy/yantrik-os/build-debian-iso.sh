@@ -920,6 +920,13 @@ FOOTINI
 
 # Fix ownership
 sudo chown -R 1000:1000 "$ROOTFS/home/yantrik"
+# The LIVE image's tree is the live user's on purpose, as its blanket sudo rule above is: the live
+# session runs the installer and nothing on it is kept. An installed machine must not inherit
+# either (#397). The installer copies this tree and then runs `yantrik-update migrate-ownership`
+# on the target, which makes /opt/yantrik root's (the person keeps logs/, data/, config.yaml),
+# puts the narrow sudo rule in place and removes /etc/sudoers.d/yantrik; when that fails, the
+# installer locks the tree down itself (crates/yantrik-ui/src/wire/installer_ownership.rs, and
+# the end of yantrik-install.sh). Change this line and that migration together.
 sudo chown -R 1000:1000 "$ROOTFS/opt/yantrik"
 
 ok "labwc + foot configured"

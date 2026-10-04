@@ -1280,6 +1280,8 @@ export component App inherits Window {
     in-out property <string> onboard-input-password-confirm: "";
     in-out property <string> onboard-input-hostname: "yantrik";
     in-out property <string> onboard-install-error: "";
+    // Set by a finished install the person must read before the restart (wire/installer.rs).
+    in-out property <string> onboard-install-note: "";
     in-out property <bool> onboard-installing: false;
 
     callback onboard-install-to-disk(/* username */ string, /* password */ string,
@@ -1535,6 +1537,7 @@ export component App inherits Window {
             install-progress <=> root.onboard-install-progress;
             install-status <=> root.onboard-install-status;
             install-error <=> root.onboard-install-error;
+            install-note <=> root.onboard-install-note;
             install-to-disk(username, password, full-name, hostname, keyboard, timezone, disk, encrypt) => {
                 root.onboard-install-to-disk(username, password, full-name, hostname, keyboard, timezone, disk, encrypt);
             }
