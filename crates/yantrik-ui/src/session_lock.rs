@@ -159,6 +159,8 @@ pub struct Look {
     pub notifications: u32,
     /// The pre-blurred wallpaper, if one has been made (`lock_wallpaper`).
     pub wallpaper: Option<std::path::PathBuf>,
+    /// The machine is declared open at boot (`lock::start_open_marker_present`): no Restart.
+    pub no_restart: bool,
 }
 
 impl Look {
@@ -171,6 +173,9 @@ impl Look {
         }
         if let Some(path) = &self.wallpaper {
             args.extend(["--wallpaper".to_string(), path.to_string_lossy().into_owned()]);
+        }
+        if self.no_restart {
+            args.push("--no-restart".to_string());
         }
         args
     }
@@ -376,14 +381,18 @@ mod tests {
     fn the_lock_client_is_told_who_and_what_but_never_what_a_notification_says() {
         let look = Look {
             name: "Pranab".into(),
-            network: "Harbor".into(),
+            network: "Wi-Fi".into(),
             notifications: 3,
             wallpaper: Some("/home/p/.cache/yantrik/lock-wallpaper.png".into()),
+            no_restart: false,
         };
         assert_eq!(
             look.args(),
-            ["--name", "Pranab", "--notifications", "3", "--network", "Harbor", "--wallpaper", "/home/p/.cache/yantrik/lock-wallpaper.png"]
+            ["--name", "Pranab", "--notifications", "3", "--network", "Wi-Fi", "--wallpaper", "/home/p/.cache/yantrik/lock-wallpaper.png"]
         );
+        // A machine declared open at boot: the lock draws no Restart, which would come back open.
+        let open = Look { name: "Pranab".into(), no_restart: true, ..Look::default() };
+        assert_eq!(open.args(), ["--name", "Pranab", "--notifications", "0", "--no-restart"]);
         // Nothing up and no picture: no flags for them, so the lock draws neither.
         let bare = Look { name: "Pranab".into(), ..Look::default() };
         assert_eq!(bare.args(), ["--name", "Pranab", "--notifications", "0"]);

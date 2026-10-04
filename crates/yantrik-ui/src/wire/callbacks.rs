@@ -90,9 +90,14 @@ fn wire_lock(ui: &App, ctx: &AppContext) {
             if let Some(image) = image {
                 ui.set_lock_wallpaper(image);
             }
+            let no_restart = lock::start_open_marker_present();
+            ui.set_lock_can_restart(!no_restart);
             let look = crate::session_lock::Look {
                 name,
-                network: if ui.get_network_online() { ui.get_network_label().to_string() } else { String::new() },
+                // The kind of connection, never its name: a Wi-Fi name says where this machine is,
+                // to anyone standing at the lock screen (security review of #601).
+                network: network_kind(ui.get_network_online(), &ui.get_network_medium()),
+                no_restart,
                 notifications: ui.get_notification_unread_count().max(0) as u32,
                 wallpaper,
             };
@@ -119,9 +124,19 @@ fn lock_name(ui: &App) -> String {
     std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).unwrap_or_default()
 }
 
-/// The letter in the avatar disc: the first letter or digit of the name, upper-cased.
+/// What the lock screen's status line says about the network: its kind, or nothing when offline.
+fn network_kind(online: bool, medium: &str) -> String {
+    match (online, medium) {
+        (false, _) => String::new(),
+        (true, "wifi") => "Wi-Fi".into(),
+        (true, "ethernet") => "Wired".into(),
+        (true, _) => "Online".into(),
+    }
+}
+
+/// The letter in the avatar disc: one rule, shared with the session-lock client.
 fn lock_initial(name: &str) -> String {
-    name.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().collect()).unwrap_or_default()
+    yantrik_ui_kit::lock_shared::initial_of(name)
 }
 
 /// The screen is open: back to the desktop, and the same secret offered to the vault. One path

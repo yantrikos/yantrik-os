@@ -10,6 +10,8 @@
 // AppShell used to sit here and were instantiated by nothing, because each spent Slint's
 // single `@children` on a region no app needed. They are gone.
 
+pub mod lock_shared;
+
 #[cfg(test)]
 mod app_header_is_mandatory {
     use std::path::{Path, PathBuf};

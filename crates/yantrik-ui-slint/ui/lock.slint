@@ -30,6 +30,7 @@ export component LockScreen inherits Rectangle {
     in property <int> battery-percent: -1;
     in property <bool> battery-charging: false;
     in property <int> notification-count: 0;
+    in property <bool> can-restart: true;
 
     callback try-unlock(string);
     callback suspend();
@@ -68,6 +69,7 @@ export component LockScreen inherits Rectangle {
         battery-percent: root.battery-percent;
         battery-charging: root.battery-charging;
         notification-count: root.notification-count;
+        can-restart: root.can-restart;
         submit => {
             root.try-unlock(pin-input.text);
             pin-input.text = "";

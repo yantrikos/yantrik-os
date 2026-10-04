@@ -62,6 +62,8 @@ use wayland_client::{
 
 slint::include_modules!();
 
+mod wallpaper;
+
 /// The compositor has no session lock.
 const EXIT_UNSUPPORTED: i32 = 3;
 /// Anything else that stopped it before it could lock.
@@ -112,6 +114,9 @@ struct Look {
     wallpaper: Option<String>,
     network: String,
     notifications: i32,
+    /// False on a machine declared open at boot: there, Restart would come back to an unlocked
+    /// desktop, so the button is not drawn and the request is ignored (security review of #601).
+    can_restart: bool,
 }
 
 impl Look {
@@ -122,14 +127,12 @@ impl Look {
             wallpaper: value("--wallpaper").filter(|p| !p.is_empty()),
             network: value("--network").unwrap_or_default(),
             notifications: value("--notifications").and_then(|n| n.parse().ok()).unwrap_or(0).max(0),
+            can_restart: !args.iter().any(|a| a == "--no-restart"),
         }
     }
 }
 
-/// The letter in the avatar: the first letter of the name, upper-cased; nothing for no name.
-fn initial_of(name: &str) -> String {
-    name.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().collect()).unwrap_or_default()
-}
+use yantrik_ui_kit::lock_shared::initial_of;
 
 /// The battery, as the kernel reports it: percent and whether it is charging. `None` on a machine
 /// with no battery, so the lock draws no battery at all rather than a made-up level.
@@ -210,6 +213,9 @@ struct App {
     pointer: Option<ThemedPointer>,
     /// What the view's buttons asked for since `App` last looked.
     requested: Rc<Cell<Option<Request>>>,
+    /// The pre-blurred wallpaper's path, read once the session is locked.
+    wallpaper: Option<String>,
+    can_restart: bool,
     window: Rc<MinimalSoftwareWindow>,
     view: LockView,
     ask: Ask,
@@ -241,12 +247,9 @@ fn main() {
     view.set_prompt(ask.prompt().into());
     view.set_network(look.network.clone().into());
     view.set_notifications(look.notifications);
-    // Pre-blurred by the shell when the wallpaper was chosen; this only shows it. A file that is
-    // missing or will not load leaves the solid charcoal, which is still a lock screen.
-    if let Some(image) = look.wallpaper.as_deref().and_then(|p| slint::Image::load_from_path(std::path::Path::new(p)).ok()) {
-        view.set_wallpaper(image);
-        view.set_has_wallpaper(true);
-    }
+    view.set_can_restart(look.can_restart);
+    // The wallpaper is not read here: only after the compositor has locked (see `locked`), so no
+    // file can stop the lock from being taken.
     let requested: Rc<Cell<Option<Request>>> = Rc::default();
     {
         let note = |request: Request| {
@@ -284,6 +287,8 @@ fn main() {
         keyboard: None,
         pointer: None,
         requested,
+        wallpaper: look.wallpaper.clone(),
+        can_restart: look.can_restart,
         window,
         view,
         ask,
@@ -417,10 +422,20 @@ impl App {
     fn act_on_request(&mut self) {
         match self.requested.take() {
             Some(Request::Submit) => self.ask_shell(),
+            Some(Request::Power(Power::Restart)) if !self.can_restart => {}
             Some(Request::Power(power)) => {
                 // Not waited on here: `systemctl suspend` can take seconds, and the lock must keep
-                // answering. A thread reaps it; a refusal is shown on the screen.
-                match std::process::Command::new("systemctl").arg(power.verb()).spawn() {
+                // answering. A thread reaps it; a refusal is shown on the screen. Its stdin and
+                // stdout are not this client's: those are the channel to the shell, and a child
+                // holding them could read the shell's `ok` or write into the conversation.
+                use std::process::Stdio;
+                match std::process::Command::new("systemctl")
+                    .arg(power.verb())
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                {
                     Ok(mut child) => {
                         std::thread::spawn(move || {
                             let _ = child.wait();
@@ -486,6 +501,14 @@ impl SessionLockHandler for App {
         self.locked = true;
         self.tell("locked");
         self.draw();
+        // Now, with the lock held and the charcoal on screen, the picture: pre-blurred by the
+        // shell, checked and capped by `wallpaper::load`. One that will not load leaves the
+        // charcoal, which is still a lock screen.
+        if let Some(image) = self.wallpaper.take().and_then(|p| wallpaper::load(std::path::Path::new(&p))) {
+            self.view.set_wallpaper(image);
+            self.view.set_has_wallpaper(true);
+            self.draw();
+        }
     }
 
     fn finished(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _lock: SessionLock) {
@@ -637,14 +660,8 @@ mod tests {
         assert_eq!(bare.notifications, 0);
         assert_eq!(Look::from_args(&args(&["--notifications", "-4"])).notifications, 0, "a count is never negative");
         assert!(Look::from_args(&args(&["--wallpaper", ""])).wallpaper.is_none(), "an empty path is no wallpaper");
-    }
-
-    #[test]
-    fn the_avatar_letter_is_the_first_letter_of_the_name() {
-        assert_eq!(initial_of("Pranab"), "P");
-        assert_eq!(initial_of("  ørjan"), "Ø");
-        assert_eq!(initial_of("\"quoted\""), "Q");
-        assert_eq!(initial_of(""), "");
+        assert!(bare.can_restart, "Restart is offered unless the shell says not to");
+        assert!(!Look::from_args(&args(&["--no-restart"])).can_restart, "a start-open machine draws no Restart");
     }
 
     #[test]

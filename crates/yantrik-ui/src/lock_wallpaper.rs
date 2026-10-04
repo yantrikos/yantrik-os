@@ -146,8 +146,29 @@ fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, usize, usize), String> {
     Ok((rgb, w, h))
 }
 
-/// A person's own wallpaper file, through the same decoder the desktop uses, shrunk.
+/// The largest wallpaper file the lock's blur will read, and the most pixels it will decode: an
+/// 8K photograph fits; a small file whose header claims billions of pixels is not decoded at all
+/// (security review of #601).
+const CUSTOM_MOST_BYTES: u64 = 64 * 1024 * 1024;
+const CUSTOM_MOST_PIXELS: u64 = 8192 * 8192;
+
+/// A person's own wallpaper file, through the same decoder the desktop uses, shrunk. Its size is
+/// read from its header first, so a picture too big to hold is refused before it is decoded.
 fn load_custom(path: &str) -> Result<(Vec<u8>, usize, usize), String> {
+    let mut head = Vec::new();
+    {
+        use std::io::Read;
+        let file = std::fs::File::open(Path::new(path)).map_err(|_| "the file could not be opened".to_string())?;
+        let meta = file.metadata().map_err(|_| "the file could not be read".to_string())?;
+        if !meta.is_file() || meta.len() > CUSTOM_MOST_BYTES {
+            return Err("the file is too large for the lock screen".into());
+        }
+        file.take(64 * 1024).read_to_end(&mut head).map_err(|_| "the file could not be read".to_string())?;
+    }
+    let (hw, hh) = yantrik_ui_kit::lock_shared::picture_size(&head).ok_or("only a PNG or JPEG can be the lock screen's picture")?;
+    if hw == 0 || hh == 0 || u64::from(hw) * u64::from(hh) > CUSTOM_MOST_PIXELS {
+        return Err("the picture is too large for the lock screen".into());
+    }
     let image = slint::Image::load_from_path(Path::new(path)).map_err(|_| "the file could not be loaded".to_string())?;
     let pixels = image.to_rgba8().ok_or("the picture has no pixels to read")?;
     let (sw, sh) = (pixels.width(), pixels.height());

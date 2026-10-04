@@ -24,6 +24,7 @@ export component LockView inherits Window {
     in property <int> battery-percent: -1;
     in property <bool> battery-charging: false;
     in property <int> notifications: 0;
+    in property <bool> can-restart: true;
 
     callback submit();
     callback suspend();
@@ -51,6 +52,7 @@ export component LockView inherits Window {
         battery-percent: root.battery-percent;
         battery-charging: root.battery-charging;
         notification-count: root.notifications;
+        can-restart: root.can-restart;
         submit => { root.submit(); }
         suspend => { root.suspend(); }
         restart => { root.restart(); }

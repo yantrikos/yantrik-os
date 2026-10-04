@@ -20,6 +20,8 @@ import { Icon, Icons } from "icon.slint";
 component LockAction inherits Rectangle {
     in property <string> label;
     in property <string> icon;
+    /// Asking "Confirm …": drawn in the destructive red, so the second click is not a surprise.
+    in property <bool> armed: false;
     callback clicked();
 
     accessible-role: button;
@@ -29,8 +31,9 @@ component LockAction inherits Rectangle {
     height: 40px;
     border-radius: Theme.r-lg;
     border-width: 1px;
-    border-color: Theme.lock-field-line;
-    background: ta.has-hover ? Theme.lock-action-hover : Theme.lock-action;
+    border-color: root.armed ? Theme.destructive : Theme.lock-field-line;
+    background: root.armed ? (ta.has-hover ? Theme.destructive.brighter(8%) : Theme.destructive)
+              : ta.has-hover ? Theme.lock-action-hover : Theme.lock-action;
     animate background { duration: Theme.dur-fast; }
 
     HorizontalLayout {
@@ -63,8 +66,9 @@ export component YLockView inherits Rectangle {
     // What the shell asks for, in its words (`lock::Secret::prompt`): the field's placeholder.
     in property <string> prompt-text;
     in property <string> error-text;
-    // How many characters are in the field, and what they are while the eye is open. The text is
-    // empty whenever the eye is shut, so a hidden entry is never held here at all.
+    // How many characters are in the field, and what they are while the eye is open. yantrik-lock
+    // fills `revealed-text` only while the eye is open, so there a hidden entry is never held in
+    // the view; the shell's own fallback screen (ui/lock.slint) binds its field's text throughout.
     in property <int> digits: 0;
     in property <string> revealed-text;
     in-out property <bool> revealed: false;
@@ -75,6 +79,8 @@ export component YLockView inherits Rectangle {
     in property <bool> battery-charging: false;
     in property <int> notification-count: 0;
 
+    /// False on a machine declared open at boot, where Restart would come back unlocked.
+    in property <bool> can-restart: true;
     callback submit();
     callback suspend();
     callback restart();
@@ -242,7 +248,8 @@ export component YLockView inherits Rectangle {
                 width: Theme.lock-field-height;
                 height: Theme.lock-field-height;
                 border-radius: Theme.r-lg;
-                background: go-ta.pressed ? Theme.lock-text-dim : Theme.lock-text;
+                // The accent, as every primary button on the desktop is (colour system).
+                background: go-ta.pressed ? Theme.accent-button-pressed : Theme.accent;
                 accessible-role: button;
                 accessible-label: "Unlock";
                 accessible-action-default => { root.submit(); }
@@ -335,7 +342,8 @@ export component YLockView inherits Rectangle {
             icon: Icons.moon;
             clicked => { root.armed = ""; root.suspend(); }
         }
-        LockAction {
+        if root.can-restart : LockAction {
+            armed: root.armed == "restart";
             label: root.armed == "restart" ? "Confirm restart" : "Restart";
             icon: Icons.refresh;
             clicked => {
@@ -343,6 +351,7 @@ export component YLockView inherits Rectangle {
             }
         }
         LockAction {
+            armed: root.armed == "shutdown";
             label: root.armed == "shutdown" ? "Confirm shut down" : "Shut down";
             icon: Icons.power;
             clicked => {

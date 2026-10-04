@@ -650,6 +650,8 @@ export component App inherits Window {
     in property <string> lock-initial: "";
     in property <image> lock-wallpaper;
     in property <bool> lock-has-wallpaper: false;
+    // False on a machine declared open at boot, where Restart would come back unlocked.
+    in property <bool> lock-can-restart: true;
     // What the lock asks for: the login password, or the PIN on an account without one (#414).
     in property <string> lock-prompt: "Enter your password to unlock";
     callback try-unlock(string);
@@ -1555,9 +1557,12 @@ export component App inherits Window {
             prompt-text: root.lock-prompt;
             wallpaper: root.lock-wallpaper;
             has-wallpaper: root.lock-has-wallpaper;
-            // The status line says only what the machine has: no network name when nothing is up,
-            // no battery on a machine without one.
-            network-text: root.network-online ? root.network-label : "";
+            // The status line says only what the machine has, and never the network's name: a lock
+            // screen is read by whoever stands at it, and a Wi-Fi name says where this is.
+            network-text: !root.network-online ? ""
+                : root.network-medium == "wifi" ? "Wi-Fi"
+                : root.network-medium == "ethernet" ? "Wired" : "Online";
+            can-restart: root.lock-can-restart;
             battery-percent: root.battery-available ? root.battery-level : -1;
             battery-charging: root.battery-charging;
             notification-count: root.notification-unread-count;
