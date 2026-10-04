@@ -178,6 +178,15 @@ fn mind_for(chain: &[ProcessFacts], minds: &[Mind]) -> Option<String> {
             return Some(mind.name.clone());
         }
     }
+    // By name only for a mind the host has no pid for, as said above: one that attached with a pid
+    // is found by it, and a name match on top only adds false ones. On VM 520 (4 October) the gate
+    // runner, `python3 harness_arena.py --minds mind`, matched "Yantrik Mind" by the word "mind" in
+    // its own arguments, so the shell refused its never-ask switch as "a mind or an agent" and every
+    // gate needed a wrapper to run. Whole words only, too: "--minds" does not contain the word "mind".
+    let unpinned: Vec<&Mind> = minds.iter().filter(|m| m.pid.is_none()).collect();
+    if unpinned.is_empty() {
+        return None;
+    }
     for facts in chain {
         if is_bridge(facts) || is_this_desktop(facts) {
             continue;
@@ -186,11 +195,12 @@ fn mind_for(chain: &[ProcessFacts], minds: &[Mind]) -> Option<String> {
         if haystack.is_empty() {
             continue;
         }
-        for mind in minds {
+        let words: Vec<&str> = haystack.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()).collect();
+        for mind in &unpinned {
             if name_tokens(&mind.name)
                 .into_iter()
                 .chain(name_tokens(&mind.id))
-                .any(|token| haystack.contains(&token))
+                .any(|token| words.iter().any(|w| *w == token))
             {
                 return Some(mind.name.clone());
             }
@@ -349,6 +359,33 @@ mod caller_identity_tests {
         assert_eq!(who.attached_mind.as_deref(), Some("Hermes Agent"));
         assert!(!who.line().starts_with("a program started from a terminal"), "{}", who.line());
         assert!(who.line().ends_with("the attached mind"), "{}", who.line());
+    }
+
+    /// The gate runner names the mind it drives in its own arguments. A mind attached with a pid is
+    /// found by that pid and never by a word in some other process's command line (VM 520, 4 Oct).
+    #[test]
+    fn a_runner_naming_a_pinned_mind_in_its_arguments_is_not_that_mind() {
+        let minds = vec![Mind { id: "mind".into(), name: "Yantrik Mind".into(), pid: Some(4242) }];
+        let chain = vec![
+            facts(9001, "/usr/bin/python3.13", "python3 yos act shell set_approvals_off_for_test state=on"),
+            facts(9000, "/usr/bin/python3.13", "python3 -u harness_arena.py --minds mind --tasks T1"),
+            facts(8990, "/usr/bin/bash", "bash .gate2.sh"),
+        ];
+        assert_eq!(identify(chain.clone(), &minds).attached_mind, None);
+        // Its own descendants are still found, by the pid.
+        let mut under = chain;
+        under.push(facts(4242, "/opt/yantrik-mind/bin/yantrik-mind", "yantrik-mind --headless"));
+        assert_eq!(identify(under, &minds).attached_mind.as_deref(), Some("Yantrik Mind"));
+    }
+
+    /// For a mind with no pid, a name still matches, but only as a whole word.
+    #[test]
+    fn a_name_matches_whole_words_only() {
+        let minds = vec![Mind { id: "mind".into(), name: "Yantrik Mind".into(), pid: None }];
+        let runner = vec![facts(9000, "/usr/bin/python3.13", "python3 harness_arena.py --minds")];
+        assert_eq!(identify(runner, &minds).attached_mind, None, "\"minds\" is not the word \"mind\"");
+        let named = vec![facts(9000, "/usr/bin/python3.13", "python3 my-mind-tool.py")];
+        assert_eq!(identify(named, &minds).attached_mind.as_deref(), Some("Yantrik Mind"));
     }
 
     #[test]
