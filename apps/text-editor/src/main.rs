@@ -1,6 +1,7 @@
 //! Native, bounded text workbench. All document I/O runs on one worker.
 mod agent_rule;
 mod document;
+mod reading;
 use document::{Document, MAX_TABS};
 use slint::{ComponentHandle, ModelRc, VecModel};
 use std::{
@@ -972,14 +973,14 @@ fn refuse_if_hidden(ui: &TextEditorApp, s: &State) -> Result<(), String> {
     let path = s.borrow().docs[s.borrow().active].path.clone();
     // The refusal does not name the file: the notice it leaves is in `describe` too.
     match agent_rule::hidden_from_caller(path.as_deref()) {
-        Some(_) => Err(refuse(
-            ui,
-            "The tab in front holds a file an agent is not shown, and its text is left alone; \
-             `select_tab` another or `new` one.",
-        )),
+        Some(_) => Err(refuse(ui, HIDDEN_REFUSAL)),
         None => Ok(()),
     }
 }
+
+/// What an agent is told when it reaches for a tab it is not shown.
+const HIDDEN_REFUSAL: &str = "The tab in front holds a file an agent is not shown, and its text \
+                              is left alone; `select_tab` another or `new` one.";
 
 /// One action, with the one sentence a reader who cannot see the screen needs.
 ///
@@ -1017,6 +1018,11 @@ fn needed(
         Some(_) => Err(refuse(ui, format!("`{action}` was given an empty `{name}`. {hint}"))),
         None => Err(refuse(ui, format!("`{action}` needs `{name}`. {hint}"))),
     }
+}
+
+/// An optional whole-number argument, given as a JSON number or as digits in a string.
+fn number(args: &serde_json::Value, name: &str) -> Option<i64> {
+    args.get(name).and_then(|v| v.as_i64().or_else(|| v.as_str()?.trim().parse().ok()))
 }
 
 /// Wait, on the UI thread, for the file work this action started.
@@ -1148,6 +1154,13 @@ fn view(ui: &TextEditorApp, s: &State) -> View {
     if !notice.is_empty() {
         summary.push_str(&format!(" · {notice}"));
     }
+    let cut = if hidden { None } else { reading::describe_cut(&d.text) };
+    if cut.is_some() {
+        summary.push_str(&format!(
+            " · `content` holds its first {} characters; `read` pages the whole text",
+            reading::DESCRIBE_CHARS
+        ));
+    }
     // "Showing the first N lines" is the file's length too.
     let view_status = if hidden { String::new() } else { ui.get_view_status().to_string() };
     if !view_status.is_empty() {
@@ -1159,7 +1172,11 @@ fn view(ui: &TextEditorApp, s: &State) -> View {
         .with("modified", d.dirty())
         .with("lines", (!hidden).then_some(lines as i64))
         .with("characters", (!hidden).then(|| d.text.chars().count() as i64))
-        .with("content", if hidden { String::new() } else { d.text.chars().take(4000).collect::<String>() })
+        .with("content", if hidden { String::new() } else { reading::describe_content(&d.text) })
+        // Said out loud, with the call that carries on: a cut `content` that passed for the whole
+        // file is how a mind on VM 520 (4 October) read 42% of a 9.5 KB spec and gave up.
+        .with("content_cut", cut.is_some())
+        .with("read_with", cut)
         .with("content_hidden", hidden.then_some("the tab holds a file an agent is not shown"))
         .with("bytes", (!hidden).then_some(d.text.len()))
         .with("language", document::language(d.path.as_deref()))
@@ -1310,7 +1327,88 @@ fn surface(ui: &TextEditorApp, s: &State) -> Vec<(Action, Handler)> {
                     },
                 ));
             }
+            // A file longer than `describe.content` holds says so where it was opened, and names
+            // the call that reads the rest (VM 520, 4 October: the 9.5 KB spec).
+            let mut answer = answer;
+            if answer["path"] != HIDDEN_TAB {
+                let cut = reading::describe_cut(&s.borrow().docs[s.borrow().active].text);
+                answer["content_cut"] = serde_json::json!(cut.is_some());
+                answer["read_with"] = serde_json::json!(cut);
+            }
             Ok(answer)
+        },
+    );
+
+    add(
+        // Safe: it reads and changes nothing, not even which tab is in front. VM 520, 4 October:
+        // a mind asked to read a 9.5 KB spec found no action that read a document and gave up,
+        // and `describe` would have shown it only the first 4,000 characters. A mind keeps about
+        // 4,000 characters of a safe read and 900 of anything graded higher, so the grade is what
+        // lets a page reach it whole.
+        act(
+            "read",
+            "Read a document's text one page at a time, changing nothing: the tab in front, \
+             another open tab, or a file by path without opening it. The answer names the \
+             `from_line` of the next page.",
+        )
+        .arg(
+            Param::number("from_line").optional().describe(
+                "The first line to return, counting from 1, as the last answer's \
+                 `how_to_see_the_rest` names it. Leave it out to start at line 1.",
+            ),
+        )
+        .arg(
+            Param::number("tab").optional().describe(
+                "Which open tab to read, counting from 0 as `describe.tabs` lists them; it is not \
+                 brought forward. Leave it out to read the tab in front.",
+            ),
+        )
+        .arg(
+            arg(
+                "path",
+                "A file to read without opening it: an absolute path or one starting `~/`, by the \
+                 same rule as `open`. Leave it out to read a tab.",
+            )
+            .optional(),
+        )
+        .risk("safe"),
+        |ui, s, args| {
+            let from_line = number(args, "from_line").unwrap_or(1).max(1) as usize;
+            let tab = number(args, "tab");
+            let path = args.get("path").and_then(|v| v.as_str()).map(str::trim).filter(|p| !p.is_empty());
+            if let Some(p) = path {
+                if tab.is_some() {
+                    return Err(refuse(ui, "`read` takes a `path` or a `tab`, not both."));
+                }
+                // Exactly `open`'s check, so a file read unopened is one `open` then `describe`
+                // could have shown anyway.
+                let full = expanded(p);
+                agent_rule::may_read(&full).map_err(|e| refuse(ui, e))?;
+                let text = document::read(&full)
+                    .map_err(|e| refuse(ui, format!("{}: {e}", full.display())))?;
+                let shown = serde_json::json!(full.display().to_string());
+                return Ok(reading::page(&text, shown, from_line, &format!("path {p:?} and ")));
+            }
+            let b = s.borrow();
+            let open = b.docs.len();
+            let index = match tab {
+                None => b.active,
+                Some(i) if i >= 0 && (i as usize) < open => i as usize,
+                Some(i) => {
+                    drop(b);
+                    return Err(refuse(
+                        ui,
+                        format!("There is no tab {i}; {open} are open, numbered 0 to {}.", open - 1),
+                    ));
+                }
+            };
+            let d = &b.docs[index];
+            if agent_rule::hidden_from_caller(d.path.as_deref()).is_some() {
+                drop(b);
+                return Err(refuse(ui, HIDDEN_REFUSAL));
+            }
+            let call = tab.map(|i| format!("tab {i} and ")).unwrap_or_default();
+            Ok(reading::page(&d.text, shown_path(d), from_line, &call))
         },
     );
 
@@ -1708,9 +1806,7 @@ fn surface(ui: &TextEditorApp, s: &State) -> Vec<(Action, Handler)> {
         ),
         |ui, s, args| {
             no_dialog(ui, "select_tab")?;
-            let index = args
-                .get("index")
-                .and_then(|v| v.as_i64().or_else(|| v.as_str()?.trim().parse().ok()))
+            let index = number(args, "index")
                 .ok_or_else(|| {
                     refuse(ui, "`select_tab` needs `index`: which tab, counting from 0.")
                 })?;

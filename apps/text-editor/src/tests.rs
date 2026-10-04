@@ -424,6 +424,7 @@ fn real_editor_keyboard_tabs_search_save_close_and_recovery() {
     // `OnceCell` — and every check below needs a real window to read the surface off.
     let published = surface(&ui, &s);
     every_action_says_what_it_does(&published);
+    read_pages_a_tab_another_tab_and_a_file(&ui, &s, &published, &dir);
     the_editor_answers_with_what_it_wrote(&ui, &s, &published, &dir);
     an_agent_names_only_files_in_the_home(&ui, &s, &published, &dir);
     a_missing_required_argument_is_refused_by_name(&ui, &s, &published);
@@ -524,6 +525,166 @@ fn every_action_says_what_it_does(published: &[(Action, Handler)]) {
             spec.permission
         );
     }
+    // A pure read is `safe`: a mind keeps about 4,000 characters of a safe read and cuts anything
+    // graded higher to 900, which would hide the very text the read was for (VM 520, 4 October).
+    let (spec, _) = published.iter().find(|(s, _)| s.name == "read").expect("`read` is published");
+    assert_eq!(spec.permission, "safe", "`read` only reads; it must be graded `safe`");
+}
+
+/// VM 520, 4 October: a mind asked to read ~/mdg/MDG-spec.md (9,557 bytes) found no action that
+/// read a document, and `describe` showed only its first 4,000 characters without saying so.
+/// Through the real surface: `describe` and `open` now say the content is cut and name the call,
+/// and `read` pages the tab in front, another tab, and a file it does not open.
+fn read_pages_a_tab_another_tab_and_a_file(
+    ui: &TextEditorApp,
+    s: &State,
+    published: &[(Action, Handler)],
+    dir: &Path,
+) {
+    let spec = spec_like(240);
+    let in_front = s.borrow().active;
+    act_on(published, "new", serde_json::json!({ "text": spec.clone() })).expect("a long tab");
+    let shown = view(ui, s);
+    assert_eq!(shown.state["content_cut"], true, "{}", shown.state);
+    assert!(shown.state["read_with"].as_str().unwrap().starts_with("read from_line "), "{}", shown.state);
+    assert!(shown.summary.contains("`read` pages"), "the first line says so too: {}", shown.summary);
+    assert_eq!(walk(published, serde_json::json!({})), spec, "the tab in front, read whole");
+
+    // Another tab, read where it is: nothing comes forward.
+    let long_tab = s.borrow().active;
+    act_on(published, "select_tab", serde_json::json!({ "index": in_front })).expect("back");
+    let page = act_on(published, "read", serde_json::json!({ "tab": long_tab })).expect("read a tab");
+    assert!(page["how_to_see_the_rest"].as_str().unwrap().contains(&format!("tab {long_tab} and from_line ")), "{page}");
+    assert_eq!(walk(published, serde_json::json!({ "tab": long_tab })), spec);
+    assert_eq!(s.borrow().active, in_front, "reading a tab does not bring it forward");
+    assert!(act_on(published, "read", serde_json::json!({ "tab": 99 })).unwrap_err().contains("no tab 99"));
+    act_on(published, "select_tab", serde_json::json!({ "index": long_tab })).expect("forward");
+    act_on(published, "close", serde_json::json!({})).expect("close the long tab");
+    act_on(published, "discard", serde_json::json!({})).expect("discard the long tab");
+
+    // A file by path, never opened; and `open` of it says what `describe` will leave out.
+    let file = dir.join("MDG-spec.md");
+    std::fs::write(&file, &spec).unwrap();
+    let tabs = s.borrow().docs.len();
+    let by_path = serde_json::json!({ "path": file.display().to_string() });
+    assert_eq!(walk(published, by_path.clone()), spec, "the file, read whole");
+    assert_eq!(s.borrow().docs.len(), tabs, "reading by path opens nothing");
+    assert!(act_on(published, "read", serde_json::json!({ "path": file.display().to_string(), "tab": 0 })).is_err());
+    let opened = act_on(published, "open", by_path).expect("open the spec");
+    assert_eq!(opened["content_cut"], true, "{opened}");
+    assert!(opened["read_with"].as_str().unwrap().starts_with("read from_line "), "{opened}");
+    act_on(published, "close", serde_json::json!({})).expect("close the spec");
+
+    // A short tab: describe is whole and says so.
+    act_on(published, "new", serde_json::json!({ "text": "short\n" })).expect("a short tab");
+    assert_eq!(view(ui, s).state["content_cut"], false);
+    assert!(view(ui, s).state["read_with"].is_null());
+    act_on(published, "close", serde_json::json!({})).expect("close the short tab");
+    if ui.get_dialog() == 3 {
+        act_on(published, "discard", serde_json::json!({})).expect("discard the short tab");
+    }
+}
+
+/// Follow `read`'s `how_to_see_the_rest` from line 1 to the end and give back the text it read.
+fn walk(published: &[(Action, Handler)], args: serde_json::Value) -> String {
+    let mut pages = Vec::new();
+    let mut from = 1;
+    for _ in 0..100 {
+        let mut call = args.clone();
+        call["from_line"] = serde_json::json!(from);
+        let page = act_on(published, "read", call).expect("a page");
+        assert!(page.to_string().len() < 4_000, "a page a mind cannot keep whole: {page}");
+        pages.push(page["text"].as_str().unwrap().to_string());
+        let hint = page["how_to_see_the_rest"].as_str().unwrap();
+        if hint.is_empty() {
+            return pages.join("\n");
+        }
+        from = page["to_line"].as_u64().unwrap() as usize + 1;
+        assert!(hint.ends_with(&format!("from_line {from}")), "the next call is named exactly: {hint}");
+    }
+    panic!("100 pages and the document never ended");
+}
+
+/// A document shaped like the spec from VM 520: about 9.5 KB over `lines` lines of uneven length,
+/// with the quotes, backslashes and non-ASCII that JSON makes longer.
+fn spec_like(lines: usize) -> String {
+    (0..lines)
+        .map(|i| match i % 4 {
+            0 => format!("## {i}. Section — \"quoted\" \\path\\"),
+            1 => format!("- item {i}: {}", "word ".repeat(i % 13 + 6)),
+            2 => String::new(),
+            _ => format!("{i}\ttabbed ✓ {}", "x".repeat(i % 60)),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn read_walks_a_long_document_exactly_once_in_pages_a_mind_keeps_whole() {
+    let spec = spec_like(240);
+    assert!(spec.len() > 8_000, "long enough to need pages: {}", spec.len());
+    let lines_total = spec.split('\n').count();
+    let mut from = 1;
+    let mut pages = Vec::new();
+    loop {
+        let page = reading::page(&spec, serde_json::json!("/home/p/mdg/MDG-spec.md"), from, "");
+        let size = page.to_string().len();
+        assert!(size < 4_000 && size <= reading::READ_ANSWER, "a page a mind cannot keep whole: {size}");
+        assert_eq!(page["lines_total"], lines_total);
+        assert_eq!(page["from_line"], from);
+        let to = page["to_line"].as_u64().unwrap() as usize;
+        assert!(to >= from, "a page always carries at least one line: {page}");
+        assert!(page.get("line_cut").is_none(), "no line here is longer than a page: {page}");
+        pages.push(page["text"].as_str().unwrap().to_string());
+        let hint = page["how_to_see_the_rest"].as_str().unwrap();
+        if to == lines_total {
+            assert_eq!(hint, "", "the last page says nothing is left");
+            break;
+        }
+        assert_eq!(hint, format!("lines {from}–{to} of {lines_total}: call read with from_line {}", to + 1));
+        from = to + 1;
+    }
+    assert!(pages.len() >= 3, "9.5 KB is more than one page: {} pages", pages.len());
+    assert_eq!(pages.join("\n"), spec, "every line exactly once, in order");
+}
+
+#[test]
+fn read_fits_a_short_document_in_one_page_with_nothing_to_follow() {
+    let page = reading::page("one\ntwo\n", serde_json::json!(null), 1, "");
+    assert_eq!(page["text"], "one\ntwo\n");
+    assert_eq!(page["lines_total"], 3, "counted as `describe.lines` counts them");
+    assert_eq!((page["from_line"].as_u64(), page["to_line"].as_u64()), (Some(1), Some(3)));
+    assert_eq!(page["how_to_see_the_rest"], "");
+    assert!(reading::describe_cut("one\ntwo\n").is_none(), "describe holds it whole");
+}
+
+#[test]
+fn read_cuts_a_line_longer_than_a_page_and_says_so() {
+    let text = format!("head\n{}\ntail", "\"".repeat(9_000));
+    let first = reading::page(&text, serde_json::json!(null), 1, "");
+    assert_eq!(first["text"], "head", "the long line starts its own page");
+    assert_eq!(first["how_to_see_the_rest"], "lines 1–1 of 3: call read with from_line 2");
+    let long = reading::page(&text, serde_json::json!(null), 2, "");
+    assert!(long.to_string().len() < 4_000, "{}", long.to_string().len());
+    assert_eq!(long["to_line"], 2, "one line, cut");
+    assert!(long["line_cut"].as_str().unwrap().contains("9000 characters long"), "{long}");
+    assert!(long["how_to_see_the_rest"].as_str().unwrap().ends_with("from_line 3"), "{long}");
+    let past = reading::page(&text, serde_json::json!(null), 9, "");
+    assert_eq!(past["text"], "");
+    assert!(past["how_to_see_the_rest"].as_str().unwrap().contains("past the end"), "{past}");
+}
+
+#[test]
+fn read_names_the_whole_next_call_and_describe_names_where_its_content_stops() {
+    let spec = spec_like(240);
+    let page = reading::page(&spec, serde_json::json!("/home/p/x.md"), 1, "path \"~/x.md\" and ");
+    let hint = page["how_to_see_the_rest"].as_str().unwrap();
+    assert!(hint.contains("call read with path \"~/x.md\" and from_line "), "{hint}");
+    assert!(page.to_string().len() < 4_000);
+    let cut = reading::describe_cut(&spec).expect("9.5 KB is cut at 4,000 characters");
+    let shown = reading::describe_content(&spec);
+    assert_eq!(shown.chars().count(), reading::DESCRIBE_CHARS);
+    assert_eq!(cut, format!("read from_line {}", shown.split('\n').count()), "the line the cut falls in");
 }
 
 /// Every answer reports what was observed: the path, the bytes, the count that changed.
@@ -910,7 +1071,13 @@ fn an_agent_names_only_files_in_the_home(ui: &TextEditorApp, s: &State, publishe
     // answer "does it contain X?" by its count.
     let hidden = "its text is left alone; `select_tab` another or `new` one.";
     refused("save_as", serde_json::json!({ "path": "~/Documents/copied-out.txt" }), hidden);
+    // Nor does `read` page it out, or reach a file by path that `open` would refuse.
+    refused("read", serde_json::json!({ "path": "/etc/hostname" }), " is outside");
+    refused("read", serde_json::json!({ "path": "~/.ssh/id_ed25519" }), " is protected");
+    let active = s.borrow().active;
     for (name, args) in [
+        ("read", serde_json::json!({})),
+        ("read", serde_json::json!({ "tab": active })),
         ("find", serde_json::json!({ "text": "omega" })),
         ("find-next", serde_json::json!({})),
         ("find-prev", serde_json::json!({})),

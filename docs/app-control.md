@@ -354,6 +354,7 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | system-monitor | `kill_process` | dangerous | ends what somebody else is running |
 | terminal | `run`, `send_input`, `new_tab`, `open_directory` | sensitive | arbitrary commands in the window the person is looking at |
 | editor | `new`, `open`, `save`, `save_as`, `show`, `close`, `cancel`, `find`, `find-next`, `find-prev`, `replace_text`, `replace`, `replace-all`, `append`, `undo`, `redo`, `select_tab` | standard | buffer and file content, `undo` beside it; `close` refuses unsaved changes rather than deciding about them |
+| editor | `read` | safe | a read: the text of the tab in front, another open tab (`tab`), or a file by `path` without opening it (by `open`'s own path rule), one page under 3,400 characters from `from_line`; the answer names the next call. `describe.content` stops at 4,000 characters and now says so (`content_cut`, `read_with`), as does `open`'s answer. Added after a mind on VM 520 could not read a 9.5 KB spec (4 October) |
 | editor | `discard`, `set_content` | sensitive | throws work away; replaces the buffer wholesale |
 | weather | `refresh` | standard | fetches again, stores nothing |
 | weather | `show_location` | standard | a showing: moves an already-saved place onto the screen — the prefs line it touches is which place was being shown, not what is saved |
