@@ -132,6 +132,8 @@ mod cheat_sheet;
 #[cfg(test)]
 mod rc_keys;
 mod notifications;
+// The short "Sent by … · verified" line on a notification card.
+mod notification_sender;
 mod onboarding;
 mod perception;
 mod icons;

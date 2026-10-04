@@ -138,6 +138,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 });
                 *timer_inner.borrow_mut() = Some(timer);
             }
+            // Memory — the newest memories, so the screen is not blank until something is
+            // searched (VM 520 sweep, 4 October). An empty query is that request.
+            6 => { if let Some(ui) = ui_weak.upgrade() { ui.invoke_search_memories("".into()); } }
             // Directory I/O is owned by the asynchronous Files controller.
             8 => { if let Some(ui)=ui_weak.upgrade() { ui.invoke_file_refresh(); } }
             // Notification Center — draw the mirror at once, and mark what is showing as read.

@@ -80,6 +80,10 @@ export component SystemDashboard inherits Rectangle {
             minimize => { root.minimize(); }
             toggle-maximize => { root.toggle-maximize(); }
             close-window => { root.close-window(); }
+            // VM 520 sweep, 4 October: System was the one AppHeader screen with no app-id, so
+            // its glyph wore the house accent instead of its own colour and AppIdentity kept
+            // whichever app had been open before it.
+            app-id: "system";
             show-back: true;
             icon: Icons.monitor;
             title: "System";

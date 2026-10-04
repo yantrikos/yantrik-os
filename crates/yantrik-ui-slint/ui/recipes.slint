@@ -21,6 +21,7 @@ import { Theme } from "theme.slint";
 import { Icon, Icons } from "components/icon.slint";
 import { YButton } from "components/y_button.slint";
 import { YInput } from "components/y_input.slint";
+import { AppHeader } from "components/app_header.slint";
 
 export struct RecipeTabData {
     id: string,            // active | finished | not_run | all
@@ -698,53 +699,80 @@ component NoticeBar inherits Rectangle {
 }
 
 export component RecipesScreen inherits Rectangle {
+    // ── Window chrome ──
+    //
+    // As on Bond and Memory: the shell's WindowFrame passes these down and draws no bar of its
+    // own (content-has-controls), so this screen's AppHeader is the window's one bar.
+    in property <bool> show-window-controls: false;
+    in property <bool> maximized: true;
+    callback minimize();
+    callback toggle-maximize();
+    callback close-window();
+    callback back-pressed();
+
     background: Theme.bg-surface;
 
     VerticalLayout {
-        padding: Theme.sp-4;
-        spacing: Theme.sp-3;
+        spacing: 0px;
 
-        HorizontalLayout {
-            height: 34px;
-            spacing: 4px;
-            for tab in RecipesState.tabs : RecipeTab {
-                tab: tab;
-                active: tab.id == RecipesState.tab;
-                clicked => { RecipesState.select-tab(tab.id); }
-            }
-            Rectangle { horizontal-stretch: 1; }
-            Text {
-                text: RecipesState.loaded ? "from the companion's recipe store, as it runs" : "waiting for the companion…";
-                color: Theme.text-dim;
-                font-size: Theme.fs-micro;
-                vertical-alignment: center;
-            }
+        // VM 520 sweep, 4 October: Recipes had only the frame's small title row -- no back
+        // arrow, no glyph -- above a line of tabs. It wears the shared AppHeader now, as
+        // Settings and Bond do. The line that said where the rows come from is its subtitle.
+        AppHeader {
+            show-window-controls: root.show-window-controls;
+            maximized: root.maximized;
+            minimize => { root.minimize(); }
+            toggle-maximize => { root.toggle-maximize(); }
+            close-window => { root.close-window(); }
+            app-id: "recipes";
+            show-back: true;
+            icon: Icons.list;
+            title: "Recipes";
+            subtitle: RecipesState.loaded ? "Every recipe, as it runs" : "Waiting for the companion…";
+            back => { root.back-pressed(); }
         }
 
-        if RecipesState.notice != "" : NoticeBar { }
-
-        if RecipesState.rows.length == 0 : Text {
-            text: RecipesState.empty;
-            color: Theme.text-secondary;
-            font-size: Theme.fs-caption;
-            wrap: word-wrap;
-        }
-
-        flick := Flickable {
+        VerticalLayout {
             vertical-stretch: 1;
-            viewport-width: self.width;
-            viewport-height: list.preferred-height;
-            // A Rectangle between the Flickable and the layout, as the Agents screen does: a
-            // Flickable whose child is a layout takes that layout's height as its own.
-            Rectangle {
-                width: flick.width;
-                height: list.preferred-height;
-                list := VerticalLayout {
-                    spacing: 10px;
-                    padding-right: 6px;
-                    for row in RecipesState.rows : RecipeCard {
-                        recipe: row;
-                        selected: row.id == RecipesState.selected;
+            padding: Theme.sp-4;
+            spacing: Theme.sp-3;
+
+            HorizontalLayout {
+                height: 34px;
+                spacing: 4px;
+                for tab in RecipesState.tabs : RecipeTab {
+                    tab: tab;
+                    active: tab.id == RecipesState.tab;
+                    clicked => { RecipesState.select-tab(tab.id); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+
+            if RecipesState.notice != "" : NoticeBar { }
+
+            if RecipesState.rows.length == 0 : Text {
+                text: RecipesState.empty;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-caption;
+                wrap: word-wrap;
+            }
+
+            flick := Flickable {
+                vertical-stretch: 1;
+                viewport-width: self.width;
+                viewport-height: list.preferred-height;
+                // A Rectangle between the Flickable and the layout, as the Agents screen does: a
+                // Flickable whose child is a layout takes that layout's height as its own.
+                Rectangle {
+                    width: flick.width;
+                    height: list.preferred-height;
+                    list := VerticalLayout {
+                        spacing: 10px;
+                        padding-right: 6px;
+                        for row in RecipesState.rows : RecipeCard {
+                            recipe: row;
+                            selected: row.id == RecipesState.selected;
+                        }
                     }
                 }
             }

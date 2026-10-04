@@ -3,7 +3,7 @@
 import { Theme } from "theme.slint";
 import { AppIdentity } from "components/app_color.slint";
 import { Icon, Icons } from "components/icon.slint";
-import { WindowControls } from "window_controls.slint";
+import { AppHeader } from "components/app_header.slint";
 
 // ── Data structs ──
 
@@ -92,76 +92,6 @@ component DevTabButton inherits TouchArea {
             width: 100%;
             height: 2px;
             background: Theme.accent;
-        }
-    }
-}
-
-// ── Refresh button ──
-
-component RefreshButton inherits TouchArea {
-    height: 36px;
-    width: 100px;
-
-    Rectangle {
-        border-radius: Theme.r-lg;
-        background: parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated;
-        border-width: 1px;
-        border-color: Theme.border-subtle;
-
-        HorizontalLayout {
-            padding-left: Theme.sp-3;
-            padding-right: Theme.sp-3;
-            alignment: center;
-            spacing: Theme.r-sm;
-
-            Icon {
-                commands: Icons.refresh;
-                size: 16px;
-                tint: Theme.accent;
-                y: (parent.height - self.height) / 2;
-            }
-            Text {
-                text: "Refresh";
-                color: Theme.text-primary;
-                font-size: Theme.fs-caption;
-                font-weight: 600;
-                vertical-alignment: center;
-            }
-        }
-    }
-}
-
-// ── Export button ──
-
-component ExportButton inherits TouchArea {
-    height: 36px;
-    width: 100px;
-
-    Rectangle {
-        border-radius: Theme.r-lg;
-        background: parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated;
-        border-width: 1px;
-        border-color: Theme.border-subtle;
-
-        HorizontalLayout {
-            padding-left: Theme.sp-3;
-            padding-right: Theme.sp-3;
-            alignment: center;
-            spacing: Theme.r-sm;
-
-            Icon {
-                commands: Icons.inbox;
-                size: 14px;
-                tint: Theme.text-secondary;
-                y: (parent.height - self.height) / 2;
-            }
-            Text {
-                text: "Export";
-                color: Theme.text-primary;
-                font-size: Theme.fs-caption;
-                font-weight: 600;
-                vertical-alignment: center;
-            }
         }
     }
 }
@@ -834,11 +764,7 @@ component CountChip inherits Rectangle {
 // ── Main component ──
 
 export component DeviceDashboardScreen inherits Rectangle {
-    // This screen draws its own header rather than AppHeader, so it has to say what
-    // it is: AppIdentity is otherwise left holding whichever app was opened before it.
-    init => { AppIdentity.id = "devices"; }
-
-    // The window's own buttons, carried in this screen's header row now that its WindowFrame no
+    // The window's own buttons, carried in this screen's AppHeader now that its WindowFrame no
     // longer draws a bar above it (content-has-controls). Without them this screen, hosted
     // restored or maximised, would have no minimise, restore or close at all.
     in property <bool> show-window-controls: false;
@@ -846,6 +772,7 @@ export component DeviceDashboardScreen inherits Rectangle {
     callback minimize();
     callback toggle-maximize();
     callback close-window();
+    callback back-pressed();
 
     background: Theme.bg-deep;
 
@@ -911,6 +838,49 @@ export component DeviceDashboardScreen inherits Rectangle {
     VerticalLayout {
         spacing: 0px;
 
+        // ── Header ──
+        //
+        // VM 520 sweep, 4 October: Devices opened on a row of tabs (USB, PCI, Input, Storage,
+        // Display) and nothing that said which screen this was -- no title, no glyph, no back
+        // arrow. It wears the shared AppHeader now, as Settings and Bond do, and the verbs that
+        // sat at the end of the tab row (AI Explain, Export, Refresh) are its actions. The tabs
+        // stay in their own row under it: they change what you look at, not the window.
+        AppHeader {
+            show-window-controls: root.show-window-controls;
+            maximized: root.maximized;
+            minimize => { root.minimize(); }
+            toggle-maximize => { root.toggle-maximize(); }
+            close-window => { root.close-window(); }
+            app-id: "devices";
+            show-back: true;
+            icon: Icons.hybrid;
+            title: "Devices";
+            subtitle: root.dev-summary != "" ? root.dev-summary : "Hardware on this machine";
+            status: root.scanning ? "Scanning" : "";
+            actions: [
+                { id: "ai", icon: Icons.spark, label: root.ai-is-working ? "Analyzing" : "AI Explain",
+                  emphasis: 1, loading: root.ai-is-working, active: root.ai-panel-open },
+                { id: "export", icon: Icons.export, label: "Export" },
+                { id: "refresh", icon: Icons.refresh, label: "Refresh", loading: root.scanning },
+            ];
+            back => { root.back-pressed(); }
+            action(id) => {
+                if (id == "ai") {
+                    if (root.ai-panel-open) {
+                        root.ai-dismiss();
+                        root.ai-panel-open = false;
+                    } else {
+                        root.ai-explain-pressed();
+                        root.ai-panel-open = true;
+                    }
+                } else if (id == "export") {
+                    root.dev-export();
+                } else if (id == "refresh") {
+                    root.dev-refresh();
+                }
+            }
+        }
+
         // ── Tab bar ──
         Rectangle {
             height: 48px;
@@ -956,78 +926,7 @@ export component DeviceDashboardScreen inherits Rectangle {
                     clicked => { root.active-tab = 4; root.dev-tab(4); }
                 }
 
-                // Spacer
                 Rectangle { horizontal-stretch: 1; }
-
-                // AI Explain button
-                TouchArea {
-                    width: ai-dev-btn.preferred-width + 16px;
-                    height: 32px;
-                    clicked => {
-                        if root.ai-panel-open {
-                            root.ai-dismiss();
-                            root.ai-panel-open = false;
-                        } else {
-                            root.ai-explain-pressed();
-                            root.ai-panel-open = true;
-                        }
-                    }
-                    ai-dev-btn := Rectangle {
-                        height: 32px;
-                        border-radius: self.height / 2;
-                        background: root.ai-is-working ? AppIdentity.accent
-                            : (parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated);
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
-                        HorizontalLayout {
-                            padding-left: 10px;
-                            padding-right: 10px;
-                            spacing: Theme.sp-1;
-                            alignment: center;
-                            Icon {
-                                commands: root.ai-is-working ? Icons.spark : Icons.spark;
-                                size: 12px;
-                                tint: Theme.text-secondary;
-                                y: (parent.height - self.height) / 2;
-                            }
-                            Text {
-                                text: root.ai-is-working ? "Analyzing..." : "AI Explain";
-                                color: root.ai-is-working ? Theme.text-on-accent : Theme.text-secondary;
-                                font-size: Theme.fs-micro;
-                                font-weight: 500;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-                }
-
-                // Export button
-                ExportButton {
-                    clicked => { root.dev-export(); }
-                }
-
-                // Refresh button
-                RefreshButton {
-                    clicked => { root.dev-refresh(); }
-                }
-
-                // Scanning indicator
-                if scanning : Text {
-                    text: "Scanning...";
-                    color: Theme.accent;
-                    font-size: Theme.fs-caption;
-                    vertical-alignment: center;
-                }
-
-                if !root.show-window-controls : Rectangle { width: Theme.sp-4; }
-
-                if root.show-window-controls : WindowControls {
-                    bar-height: 48px;
-                    maximized: root.maximized;
-                    minimize => { root.minimize(); }
-                    toggle-maximize => { root.toggle-maximize(); }
-                    close => { root.close-window(); }
-                }
             }
         }
 
