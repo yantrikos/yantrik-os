@@ -245,7 +245,8 @@ fn wire(ui: &TextEditorApp, recovery_path: PathBuf, publish: bool) -> State {
     let s = state.clone();
     ui.on_edited(move |text| {
         if let Some(u) = weak.upgrade() {
-            edit(&u, &s, text.to_string());
+            // A refusal is already in the notice and the view put back.
+            let _ = edit(&u, &s, text.to_string());
         }
     });
     let weak = ui.as_weak();
@@ -519,23 +520,41 @@ fn checkpoint(ui: &TextEditorApp, state: &State) {
         },
     );
 }
-fn edit(ui: &TextEditorApp, s: &State, text: String) {
+/// Put `text` in the active tab, or say why not: the refusal is left in the notice, the view is
+/// put back to what is stored, and the same sentence is returned for a caller to pass on.
+fn edit(ui: &TextEditorApp, s: &State, text: String) -> Result<(), String> {
     if ui.get_busy() {
-        return;
+        return Err("The editor is reading or writing a file; the tab is unchanged.".into());
     }
     let mut b = s.borrow_mut();
-    if let Err(e) = document::validate(&text) {
-        // Restore what is stored, windowed like every other view of it (#328).
-        show_view(ui, &b.docs[b.active].text);
-        ui.set_notice(e.into());
-        return;
-    }
     let active = b.active;
+    // Every edit is held to the open budget, not just opening a tab: one check here covers
+    // `append`, `set_content`, `replace`, typing and paste (security review of #620).
+    let refused = document::validate(&text).err().or_else(|| {
+        (!document::fits(&b.docs, active, text.len())).then(|| owner::too_big(&b.docs, &Opener::calling()))
+    });
+    if let Some(e) = refused {
+        // Restore what is stored, windowed like every other view of it (#328).
+        show_view(ui, &b.docs[active].text);
+        ui.set_notice(e.clone().into());
+        return Err(e);
+    }
     b.docs[active].edit(text);
     paint(ui, &mut b, false);
     drop(b);
     search(ui, s, false);
     checkpoint(ui, s);
+    Ok(())
+}
+/// Whether `undo` or `redo` may put back what it holds: the budget holds there too, since the
+/// text it restores may be larger than the tab is now.
+fn history_fits(b: &Workbench, id: &str) -> Result<(), String> {
+    let d = &b.docs[b.active];
+    let next = if id == "redo" { d.redo.last() } else { d.undo.last() };
+    match next {
+        Some(t) if !document::fits(&b.docs, b.active, t.len()) => Err(owner::too_big(&b.docs, &Opener::calling())),
+        _ => Ok(()),
+    }
 }
 /// A match can only be selected when it lies inside the windowed view: match offsets are
 /// document-wide, and one past the view would point at text the TextInput does not hold (#328).
@@ -816,6 +835,10 @@ fn action(ui: &TextEditorApp, s: &State, id: &str) {
     match id {
         "undo" | "redo" => {
             let mut b = s.borrow_mut();
+            if let Err(e) = history_fits(&b, id) {
+                ui.set_notice(e.into());
+                return;
+            }
             let active = b.active;
             b.docs[active].undo(id == "redo");
             paint(ui, &mut b, true);
@@ -937,7 +960,9 @@ fn action(ui: &TextEditorApp, s: &State, id: &str) {
                 // `edit` stores the whole replaced text and `paint` shows its windowed view;
                 // writing the full text to the TextInput here would feed the renderer the
                 // coordinates that killed it (#328).
-                Ok(text) => edit(ui, s, text),
+                Ok(text) => {
+                    let _ = edit(ui, s, text);
+                }
                 Err(e) => ui.set_notice(e.into()),
             }
         }
@@ -1223,6 +1248,16 @@ fn view(ui: &TextEditorApp, s: &State) -> View {
 /// How a tab an agent is not shown is named to it, in place of its file's name and path.
 const HIDDEN_TAB: &str = "(hidden)";
 
+/// The tab's name as this caller may see it. `close` and `discard` answered with the plain
+/// title, so an agent could `select_tab` a hidden tab, close it, and read its file name in the
+/// answer (security review of #620).
+fn shown_title(d: &Document) -> String {
+    match agent_rule::hidden_from_caller(d.path.as_deref()) {
+        Some(_) => HIDDEN_TAB.to_string(),
+        None => d.title(),
+    }
+}
+
 /// The tab's path as this caller may see it.
 fn shown_path(d: &Document) -> serde_json::Value {
     match agent_rule::hidden_from_caller(d.path.as_deref()) {
@@ -1306,10 +1341,8 @@ fn surface(ui: &TextEditorApp, s: &State) -> Vec<(Action, Handler)> {
             if !text.is_empty() {
                 // `edit` stores the text whole and `paint` hands the renderer only the
                 // windowed view of it (#328).
-                edit(ui, s, text.clone());
-                if s.borrow().docs[s.borrow().active].text != text {
-                    return Err(refuse(ui, "The new tab is open but empty; the text was rejected."));
-                }
+                edit(ui, s, text.clone())
+                    .map_err(|e| refuse(ui, format!("The new tab is open but empty: {e}")))?;
             }
             Ok(document_now(ui, s))
         },
@@ -1568,7 +1601,7 @@ fn surface(ui: &TextEditorApp, s: &State) -> Vec<(Action, Handler)> {
             owner::may_close(&s.borrow().docs[s.borrow().active]).map_err(|e| refuse(ui, e))?;
             let (before, title) = {
                 let b = s.borrow();
-                (b.docs.len(), b.docs[b.active].title())
+                (b.docs.len(), shown_title(&b.docs[b.active]))
             };
             action(ui, s, "close");
             let asking = ui.get_dialog() == 3;
@@ -1623,7 +1656,7 @@ fn surface(ui: &TextEditorApp, s: &State) -> Vec<(Action, Handler)> {
             }
             let (before, title) = {
                 let b = s.borrow();
-                (b.docs.len(), b.docs[b.active].title())
+                (b.docs.len(), shown_title(&b.docs[b.active]))
             };
             action(ui, s, "discard");
             Ok(serde_json::json!({
@@ -1750,12 +1783,8 @@ fn surface(ui: &TextEditorApp, s: &State) -> Vec<(Action, Handler)> {
             document::validate(&text).map_err(|e| refuse(ui, e))?;
             // `edit` stores the text whole and `paint` hands the renderer only the windowed
             // view of it (#328); the document check below reads the stored text, not the view.
-            edit(ui, s, text.clone());
-            let answer = document_now(ui, s);
-            if s.borrow().docs[s.borrow().active].text != text {
-                return Err(refuse(ui, "The tab was not changed; the text was rejected."));
-            }
-            Ok(answer)
+            edit(ui, s, text).map_err(|e| refuse(ui, e))?;
+            Ok(document_now(ui, s))
         },
     );
 
@@ -1786,10 +1815,7 @@ fn surface(ui: &TextEditorApp, s: &State) -> Vec<(Action, Handler)> {
             let text = format!("{}{add}", s.borrow().docs[s.borrow().active].text);
             document::validate(&text).map_err(|e| refuse(ui, e))?;
             // `edit` stores the text whole and `paint` windows it for the renderer (#328).
-            edit(ui, s, text.clone());
-            if s.borrow().docs[s.borrow().active].text != text {
-                return Err(refuse(ui, "The tab was not changed; the text was rejected."));
-            }
+            edit(ui, s, text).map_err(|e| refuse(ui, e))?;
             Ok(document_now(ui, s))
         },
     );
@@ -1856,6 +1882,7 @@ fn surface(ui: &TextEditorApp, s: &State) -> Vec<(Action, Handler)> {
 fn step_history(ui: &TextEditorApp, s: &State, id: &str) -> Result<serde_json::Value, String> {
     refuse_if_hidden(ui, s)?;
     no_dialog(ui, id)?;
+    history_fits(&s.borrow(), id).map_err(|e| refuse(ui, e))?;
     let before = s.borrow().docs[s.borrow().active].text.clone();
     action(ui, s, id);
     if s.borrow().docs[s.borrow().active].text == before {

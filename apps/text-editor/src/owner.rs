@@ -15,26 +15,20 @@
 //! `opened_by_you` and the refusal compare, so one agent's tabs are told from another's without
 //! anyone knowing a name.
 
-use serde::{Deserialize, Serialize};
 use yantrik_app_runtime::control::{agent_is_calling, agent_token};
 use yantrik_ipc_transport::reach::token_digest;
 
 use crate::document::{Document, MAX_OPEN_BYTES, MAX_TABS};
 
-/// Who opened a tab.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+/// Who opened a tab. Never written anywhere: see `Document::opened_by`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Opener {
     /// From the window, or a call that is not an agent's.
     #[default]
     Person,
     /// An agent's call. `token` is the SHA-256 of the token it carried, the same digest the
-    /// shell publishes reach under; it is not written to the recovery file, because a token does
-    /// not outlive the agent it was issued to, so a recovered tab is no live agent's.
-    Agent {
-        #[serde(skip)]
-        token: Option<String>,
-    },
+    /// shell publishes reach under.
+    Agent { token: Option<String> },
 }
 
 impl Opener {
@@ -72,12 +66,6 @@ impl Opener {
 }
 
 /// The refusal to open or create one more tab, naming the one call that makes room for `me`.
-///
-/// A tab is only ever named when closing it loses nothing (`!dirty()`: saved to its file, or
-/// empty and never written); a modified tab is never suggested. Tabs are kept in the order they
-/// were opened, so the lowest index is the oldest. An agent is pointed only at its own tabs; with
-/// none, it is told so and the tab is named as one the person could close, not as one for it.
-/// The person may close any tab.
 pub fn no_room(docs: &[Document], me: &Opener) -> String {
     let full = if docs.len() >= MAX_TABS {
         format!("{MAX_TABS} tabs are already open, the most the editor keeps; close one before opening another.")
@@ -88,6 +76,27 @@ pub fn no_room(docs: &[Document], me: &Opener) -> String {
             MAX_OPEN_BYTES / crate::document::MAX_BYTES
         )
     };
+    format!("{full} {}", room_hint(docs, me))
+}
+
+/// The refusal of an edit that would take the open tabs past the budget.
+pub fn too_big(docs: &[Document], me: &Opener) -> String {
+    format!(
+        "That would take the open tabs past the {} MiB of text the editor keeps open at once; the \
+         tab is unchanged. {}",
+        MAX_OPEN_BYTES / crate::document::MAX_BYTES,
+        room_hint(docs, me)
+    )
+}
+
+/// Which tab `me` can close to make room, as the call that closes it.
+///
+/// A tab is only ever named when closing it loses nothing (`!dirty()`: saved to its file, or
+/// empty and never written); a modified tab is never suggested. Tabs are kept in the order they
+/// were opened, so the lowest index is the oldest. An agent is pointed only at its own tabs; with
+/// none, it is told so and the tab is named as one the person could close, not as one for it.
+/// The person may close any tab.
+fn room_hint(docs: &[Document], me: &Opener) -> String {
     let clean = |i: &usize| !docs[*i].dirty();
     let all: Vec<usize> = (0..docs.len()).collect();
     let person = matches!(me, Opener::Person);
@@ -95,44 +104,47 @@ pub fn no_room(docs: &[Document], me: &Opener) -> String {
     let whose = if person { "" } else { " you opened" };
     if let Some(i) = mine.iter().copied().find(|i| clean(i)) {
         return format!(
-            "{full} The oldest {} tab{whose} is {i} ({}): `select_tab index={i}` then `close` makes room.",
+            "The oldest {} tab{whose} is {i} ({}): `select_tab index={i}` then `close` makes room.",
             state(&docs[i]),
             name(&docs[i]),
         );
     }
     if !mine.is_empty() {
         return if person {
-            format!("{full} Every open tab has unsaved changes; save one before closing it.")
+            "Every open tab has unsaved changes; save one before closing it.".to_string()
         } else {
-            format!(
-                "{full} Every tab you opened has unsaved changes; `save` or `save_as` one of them \
-                 before closing it, or ask the person to close one of theirs."
-            )
+            "Every tab you opened has unsaved changes; `save` or `save_as` one of them before \
+             closing it, or ask the person to close one of theirs."
+                .to_string()
         };
     }
     match all.into_iter().find(|i| clean(i)) {
         Some(i) => format!(
-            "{full} None of the open tabs were opened by you; the person can close one (oldest {}: {i} {}).",
+            "None of the open tabs were opened by you; the person can close one (oldest {}: {i} {}).",
             state(&docs[i]),
             name(&docs[i]),
         ),
-        None => format!(
-            "{full} None of the open tabs were opened by you, and every one has unsaved changes; \
-             the person decides which to save and close."
-        ),
+        None => "None of the open tabs were opened by you, and every one has unsaved changes; the \
+                 person decides which to save and close."
+            .to_string(),
     }
 }
 
-/// Refuse an agent's `close` of a tab the person opened that holds unsaved changes.
+/// Refuse an agent's `close` of a tab the person opened that holds unsaved changes, or changes
+/// `undo` has set aside.
 ///
 /// Closing it would not lose the text by itself, since `close` asks first and `discard` is
 /// `sensitive`, but the question lands in the person's window over their own work, and the
-/// agent's `save` answers it by writing the person's draft to their file. A saved person tab is
-/// not held here: the Mind keeps its own hold on that (VM 520, 4 October).
+/// agent's `save` answers it by writing the person's draft to their file. Nor is a tab clean
+/// because it matches its file: `undo` (standard) walks it back to the saved text with the
+/// person's typing held only in `redo`, and a `close` then threw that away unasked (security
+/// review of #620). A saved person tab with nothing set aside is not held here: the Mind keeps
+/// its own hold on that (VM 520, 4 October).
 pub fn may_close(tab: &Document) -> Result<(), String> {
-    if agent_is_calling() && tab.opened_by == Opener::Person && tab.dirty() {
-        return Err("The tab in front was opened by the person and has unsaved changes; an agent \
-                    does not close it. `select_tab` one of yours, or leave it to the person."
+    if agent_is_calling() && tab.opened_by == Opener::Person && (tab.dirty() || !tab.redo.is_empty()) {
+        return Err("The tab in front was opened by the person and has changes that are not \
+                    saved, or that `undo` set aside; an agent does not close it. `select_tab` one \
+                    of yours, or leave it to the person."
             .into());
     }
     Ok(())

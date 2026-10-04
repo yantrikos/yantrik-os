@@ -19,9 +19,18 @@ pub const MAX_OPEN_BYTES: usize = 64 * MAX_BYTES;
 /// The most tabs open at once, however small, so the tab strip and the recovery file stay
 /// bounded. Above the 64 a full budget of 1 MiB files fills, so the budget is what bites first.
 pub const MAX_TABS: usize = 128;
-/// The most the recovery file is read: every dirty tab's text and baseline under the budget,
-/// with room for JSON escaping. The file is untrusted input, so the read stays bounded.
-pub const RECOVERY_LIMIT: usize = MAX_OPEN_BYTES * 4 + 65536;
+/// The most the recovery file is read. The file is untrusted input, so the read stays bounded,
+/// and the bound is what `checkpoint` can legitimately write, so a real checkpoint is never
+/// refused on the next launch (security review of #620). It holds only dirty tabs: their text,
+/// at most `MAX_OPEN_BYTES` between them because every edit is held to the budget; their
+/// baselines, at most `MAX_BYTES` each and `MAX_TABS` of them; each doubled at worst by JSON
+/// escaping (`validate` allows no control character but newline, return and tab, each escaped to
+/// two bytes, as are quotes and backslashes; serde_json writes the rest as it is); and per tab a
+/// path of at most 4096 bytes, doubled, plus field names, inside `RECOVERY_PER_TAB`.
+pub const RECOVERY_LIMIT: usize =
+    2 * (MAX_OPEN_BYTES + MAX_TABS * MAX_BYTES) + MAX_TABS * RECOVERY_PER_TAB + 65536;
+/// What one recovered tab may take in the file besides its text and baseline.
+pub const RECOVERY_PER_TAB: usize = 16 * 1024;
 static SERIAL: AtomicU64 = AtomicU64::new(0);
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Document {
@@ -30,9 +39,11 @@ pub struct Document {
     pub baseline: String,
     pub recovered: bool,
     /// Who opened this tab (VM 520, 4 October: a mind closed the person's tab to make room).
-    /// It belongs to the tab, not the file, so it survives `save` and `save_as`; drafts written
-    /// before it existed are read back as the person's.
-    #[serde(default)]
+    /// It belongs to the tab, not the file, so it survives `save` and `save_as`. It is never
+    /// written to or read from the recovery file: a recovered tab belongs to no running agent,
+    /// and an `opened_by` read back from that file could be forged to `agent` to take the close
+    /// protection off a person's draft (security review of #620). Recovered, it is the person's.
+    #[serde(skip)]
     pub opened_by: Opener,
     #[serde(skip)]
     pub undo: Vec<String>,
@@ -306,6 +317,13 @@ pub fn open_bytes(docs: &[Document]) -> usize {
 /// Whether one more tab holding `adding` bytes fits beside `docs`.
 pub fn room_for(docs: &[Document], adding: usize) -> bool {
     docs.len() < MAX_TABS && open_bytes(docs).saturating_add(adding) <= MAX_OPEN_BYTES
+}
+/// Whether tab `at` may come to hold `len` bytes: within the budget beside the other tabs, or no
+/// bigger than it is now. Opening was not enough to hold to (security review of #620): an empty
+/// tab always fits, so 128 of them, each then filled with 1 MiB by `append`, held twice the budget
+/// and more with baselines and undo, and wrote a recovery file the next launch would refuse.
+pub fn fits(docs: &[Document], at: usize, len: usize) -> bool {
+    len <= docs[at].text.len() || open_bytes(docs) - docs[at].text.len() + len <= MAX_OPEN_BYTES
 }
 pub fn recover(path: &Path) -> Result<Vec<Document>, String> {
     recover_within(path, RECOVERY_LIMIT)

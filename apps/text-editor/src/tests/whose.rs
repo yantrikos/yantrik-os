@@ -49,6 +49,13 @@ fn the_open_budget_is_bytes_not_eight_tabs() {
     assert_eq!(document::open_bytes(&big), document::MAX_OPEN_BYTES);
     assert!(!document::room_for(&big, 1), "one byte past 64 MiB is refused");
     assert!(document::room_for(&big, 0), "an empty tab holds nothing and still opens");
+    // Edits are held to it too, not only opening (security review of #620); shrinking never is.
+    assert!(!document::fits(&big, 0, document::MAX_BYTES + 1), "growing a tab past the budget");
+    assert!(document::fits(&big, 0, 10), "shrinking a tab is always allowed");
+    big.pop();
+    big.push(Document::blank());
+    assert!(document::fits(&big, 63, document::MAX_BYTES), "filling the last MiB");
+    assert!(!document::fits(&big, 63, document::MAX_BYTES + 1));
     let many: Vec<Document> = (0..document::MAX_TABS).map(|_| Document::blank()).collect();
     assert!(!document::room_for(&many, 0), "the strip's ceiling still holds");
     assert!(
@@ -84,16 +91,49 @@ fn recovery_is_bounded_by_the_budget_and_keeps_no_token() {
     let err = document::recover_within(&path, 4096).unwrap_err();
     assert!(err.contains("larger than the editor ever writes"), "{err}");
 
-    // A recovered tab is still the agent's by label, but no live agent's: its token was never
-    // written down.
+    // Who opened a tab is never written down, token or label, and a recovered tab is the
+    // person's: it belongs to no running agent.
     let a = agent("tok-a");
     document::checkpoint(&path, &[tab(None, "the agent's draft", "", &a)]).unwrap();
     let written = std::fs::read_to_string(&path).unwrap();
     let Opener::Agent { token: Some(digest) } = &a else { unreachable!() };
-    assert!(!written.contains(digest.as_str()) && !written.contains("tok-a"), "{written}");
-    let back = document::recover(&path).unwrap();
-    assert_eq!(back[0].opened_by.label(), "agent");
-    assert_eq!(a.owns(&back[0].opened_by), Some(false));
+    assert!(!written.contains(digest.as_str()) && !written.contains("opened_by"), "{written}");
+    assert_eq!(document::recover(&path).unwrap()[0].opened_by, Opener::Person);
+    // Nor is it read back: an `opened_by` forged into the file to take the close protection off
+    // a person's draft is ignored (security review of #620).
+    std::fs::write(
+        &path,
+        r#"[{"path":null,"text":"the person's draft","baseline":"","recovered":false,"opened_by":{"agent":{}}}]"#,
+    )
+    .unwrap();
+    assert_eq!(document::recover(&path).unwrap()[0].opened_by, Opener::Person);
+}
+
+/// The recovery bound covers what `checkpoint` writes for any tab, so a real checkpoint is never
+/// refused on the next launch: per tab, at most twice its text and baseline (escaping) plus
+/// `RECOVERY_PER_TAB`; summed under the budget, that is inside `RECOVERY_LIMIT`.
+#[test]
+fn a_worst_case_tab_fits_its_share_of_the_recovery_bound() {
+    // Quotes and backslashes are what JSON doubles; both pass `validate`, newlines would not at
+    // this length (20,000 lines).
+    let worst = Document {
+        path: Some(PathBuf::from(format!("/{}", "\"".repeat(4095)))),
+        text: "\"".repeat(document::MAX_BYTES),
+        baseline: "\\".repeat(document::MAX_BYTES),
+        ..Document::blank()
+    };
+    document::validate(&worst.text).unwrap();
+    document::validate(&worst.baseline).unwrap();
+    let written = serde_json::to_vec(&[&worst]).unwrap().len();
+    assert!(
+        written <= 2 * (worst.text.len() + worst.baseline.len()) + document::RECOVERY_PER_TAB,
+        "{written}"
+    );
+    assert!(
+        document::RECOVERY_LIMIT
+            >= 2 * (document::MAX_OPEN_BYTES + document::MAX_TABS * document::MAX_BYTES)
+                + document::MAX_TABS * document::RECOVERY_PER_TAB
+    );
 }
 
 #[test]
@@ -265,13 +305,60 @@ pub(super) fn tabs_know_who_opened_them(
         act_on(published, "new", serde_json::json!({ "text": "one more" })).expect("room was made");
         act_on(published, "select_tab", serde_json::json!({ "index": 1 })).unwrap();
         let err = act_on(published, "close", serde_json::json!({})).expect_err("the person's unsaved tab");
-        assert!(err.contains("opened by the person and has unsaved changes"), "{err}");
+        assert!(err.contains("opened by the person and has changes that are not saved"), "{err}");
         assert_eq!(ui.get_dialog(), 0, "no question was put over the person's work");
         // A saved tab of the person's is not held here; the Mind keeps its own hold on that.
         act_on(published, "select_tab", serde_json::json!({ "index": 0 })).unwrap();
         let closed = act_on(published, "close", serde_json::json!({})).unwrap();
         assert_eq!(closed["closed"], true, "{closed}");
     }
+
+    // Edits are held to the budget too: an agent filling a tab with `append` stops at the edge.
+    {
+        let _a = as_agent("tok-owner-a");
+        let last = s.borrow().docs.len() - 1;
+        act_on(published, "select_tab", serde_json::json!({ "index": last })).unwrap();
+        let left = document::MAX_OPEN_BYTES - document::open_bytes(&s.borrow().docs);
+        assert!(left > 0 && left < 1000, "{left}");
+        act_on(published, "append", serde_json::json!({ "text": "x".repeat(left) })).expect("up to the edge");
+        let before = s.borrow().docs[last].text.clone();
+        let err = act_on(published, "append", serde_json::json!({ "text": "y" })).expect_err("past it");
+        assert!(err.contains("past the 64 MiB of text") && err.contains("the tab is unchanged"), "{err}");
+        assert_eq!(s.borrow().docs[last].text, before);
+        assert_eq!(document::open_bytes(&s.borrow().docs), document::MAX_OPEN_BYTES);
+        let err = act_on(published, "set_content", serde_json::json!({ "text": format!("{before}z") })).expect_err("nor set_content");
+        assert!(err.contains("past the 64 MiB"), "{err}");
+
+        // `close` names a tab it closed as the caller may see it: a hidden tab stays hidden.
+        let hidden = s.borrow().docs.iter().position(|d| {
+            d.path.as_ref().is_some_and(|p| p.file_name().unwrap().to_string_lossy().starts_with("filler-"))
+        });
+        let hidden = hidden.expect("a filler tab");
+        act_on(published, "select_tab", serde_json::json!({ "index": hidden })).unwrap();
+        let closed = act_on(published, "close", serde_json::json!({})).unwrap();
+        assert_eq!(closed["was"], "(hidden)", "{closed}");
+        assert!(!closed.to_string().contains("filler-"), "{closed}");
+    }
+
+    // Undoing the person's typing back to the saved text does not make the tab the agent's to
+    // close: the typing is held only in `redo` (security review of #620).
+    {
+        let mut b = s.borrow_mut();
+        b.docs = vec![Document::blank()];
+        b.active = 0;
+        paint(ui, &mut b, true);
+    }
+    crate::edit(ui, s, "the person's next line\n".into()).unwrap();
+    {
+        let _a = as_agent("tok-owner-a");
+        act_on(published, "undo", serde_json::json!({})).expect("undo to the saved text");
+        assert!(!s.borrow().docs[0].dirty(), "matches its baseline again");
+        let err = act_on(published, "close", serde_json::json!({})).expect_err("set aside in redo");
+        assert!(err.contains("that `undo` set aside"), "{err}");
+        assert_eq!(s.borrow().docs.len(), 1);
+    }
+    act_on(published, "redo", serde_json::json!({})).expect("the person's line is still there");
+    assert_eq!(s.borrow().docs[0].text, "the person's next line\n");
 
     let mut b = s.borrow_mut();
     b.docs = vec![Document::blank()];
