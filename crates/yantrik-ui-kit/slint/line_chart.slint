@@ -8,7 +8,7 @@
 //       title: "CPU";
 //       values: [...];  // 0.0-1.0 normalized, last 60 points
 //       current-text: "42%";
-//       accent-color: Theme.cyan;
+//       accent-color: Theme.accent;
 //   }
 
 import { Theme } from "theme.slint";
@@ -17,8 +17,9 @@ export component LineChart inherits Rectangle {
     in property <string> title: "CPU";
     in property <[float]> values: [];
     in property <string> current-text: "0%";
-    in property <color> accent-color: Theme.cyan;
-    in property <color> accent-glow: Theme.cyan-glow;
+    // Data is the accent by default; teal is only for minds (colour system).
+    in property <color> accent-color: Theme.accent;
+    in property <color> accent-glow: Theme.accent-glow;
 
     // Chart dimensions
     property <length> chart-left: 0px;

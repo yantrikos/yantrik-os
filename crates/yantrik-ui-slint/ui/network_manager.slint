@@ -13,6 +13,7 @@ import { AppHeader } from "components/app_header.slint";
 import { AgentRail, AgentContextItem, AgentSuggestion } from "components/agent_rail.slint";
 import { AgentProposalCard, AgentProposal } from "components/agent_proposal.slint";
 import { AppColor, AppIdentity } from "components/app_color.slint";
+import { YButton } from "components/y_button.slint";
 
 // ── Data structs ──
 
@@ -137,41 +138,8 @@ component ToggleSwitch inherits TouchArea {
         }
     }
 }
-// ── Action button component ──
-
-component ActionButton inherits TouchArea {
-    in property <string> label;
-    in property <bool> danger: false;
-    in property <bool> primary: false;
-    height: 36px;
-
-    Rectangle {
-        border-radius: Theme.r-lg;
-        background: primary ? AppIdentity.accent
-                  : danger ? Theme.color-danger-dim
-                  : (parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated);
-        border-width: 1px;
-        border-color: primary ? Theme.accent-dim
-                    : danger ? Theme.color-danger
-                    : Theme.border-subtle;
-
-        HorizontalLayout {
-            padding-left: Theme.sp-4;
-            padding-right: Theme.sp-4;
-            alignment: center;
-
-            Text {
-                text: label;
-                color: primary ? Theme.bg-deep
-                     : danger ? Theme.color-danger
-                     : Theme.text-primary;
-                font-size: Theme.fs-caption;
-                font-weight: 600;
-                vertical-alignment: center;
-            }
-        }
-    }
-}
+// Buttons are the kit's YButton. This screen drew its own, and its primary wore the app's
+// cyan identity rather than the accent every primary is (colour system).
 
 // ── Main component ──
 
@@ -811,10 +779,11 @@ export component NetworkManager inherits Rectangle {
                                     }
                                 }
 
-                                ActionButton {
+                                YButton {
                                     label: "Disconnect";
-                                    width: 110px;
-                                    danger: true;
+                                    // Secondary, not the destructive red: a network you leave
+                                    // is one click from rejoining; nothing is lost.
+                                    variant: 1;
                                     clicked => { root.wifi-disconnect(); }
                                 }
                             }
@@ -944,10 +913,9 @@ export component NetworkManager inherits Rectangle {
                                     vertical-alignment: center;
                                 }
 
-                                ActionButton {
+                                YButton {
                                     label: "Scan";
-                                    width: 80px;
-                                    primary: true;
+                                    variant: 0;
                                     clicked => { root.wifi-scan(); }
                                 }
                             }
@@ -1501,15 +1469,14 @@ export component NetworkManager inherits Rectangle {
                         spacing: 10px;
                         alignment: end;
 
-                        ActionButton {
+                        YButton {
                             label: "Cancel";
-                            width: 80px;
+                            variant: 1;
                             clicked => { root.wifi-password-visible = false; }
                         }
-                        ActionButton {
+                        YButton {
                             label: "Connect";
-                            width: 100px;
-                            primary: true;
+                            variant: 0;
                             clicked => {
                                 root.wifi-connect(root.wifi-password-ssid, root.wifi-password-input);
                                 root.wifi-password-visible = false;

@@ -159,12 +159,17 @@ component RecipeTab inherits Rectangle {
 }
 
 // A stage's mark: ticked, lit, red, waiting, dim.
+//
+// Done is neutral, here and in the pills and step labels below. It was the success colour,
+// whose dark value is a teal, and teal marks a mind and its presence, never a success
+// (design/minds-surfaces-spec-2026-10-02.md, "Colour roles"). A finished step is the past: it
+// recedes, the accent marks where the work is now, and amber where the person is needed.
 component StageDot inherits Rectangle {
     in property <string> state;
     in property <string> kind;
     in property <string> number;
     property <color> tone:
-        root.state == "done" ? Theme.color-success
+        root.state == "done" ? Theme.text-secondary
       : root.state == "current" ? Theme.accent
       : root.state == "failed" ? Theme.color-danger
       : root.state == "waiting" || root.state == "paused" ? Theme.amber
@@ -174,14 +179,14 @@ component StageDot inherits Rectangle {
     border-radius: 13px;
     border-width: root.state == "current" ? 3px : 1.5px;
     border-color: root.state == "current" ? Theme.accent-glow-strong : root.tone;
-    background: root.state == "done" ? Theme.color-success-dim
+    background: root.state == "done" ? Theme.hover-fill
         : root.state == "current" ? Theme.accent
         : root.state == "failed" ? Theme.color-danger-dim
         : root.state == "waiting" || root.state == "paused" ? Theme.amber-glow
         : transparent;
     opacity: root.state == "not_taken" || root.state == "unknown" ? 0.45 : 1.0;
 
-    if root.state == "done" : Icon { commands: Icons.check; size: 14px; tint: Theme.color-success; thickness: 2px; }
+    if root.state == "done" : Icon { commands: Icons.check; size: 14px; tint: Theme.text-secondary; thickness: 2px; }
     if root.state == "failed" : Icon { commands: Icons.close; size: 12px; tint: Theme.color-danger; thickness: 2px; }
     if root.state == "waiting" : Icon {
         commands: root.kind == "ask_user" ? Icons.chat : root.kind == "agent" ? Icons.people : Icons.clock;
@@ -242,7 +247,7 @@ component StatusPill inherits Rectangle {
         root.template ? Theme.text-dim
       : root.status == "running" ? Theme.accent
       : root.status == "waiting" || root.status == "paused" ? Theme.amber
-      : root.status == "done" ? Theme.color-success
+      : root.status == "done" ? Theme.text-secondary
       : root.status == "failed" ? Theme.color-danger
       : Theme.text-dim;
     width: pill.preferred-width;
@@ -409,7 +414,7 @@ component StepLine inherits Rectangle {
                     color: root.step.state == "failed" ? Theme.color-danger
                         : root.step.state == "waiting" || root.step.state == "paused" ? Theme.amber
                         : root.step.state == "current" ? Theme.accent
-                        : root.step.state == "done" ? Theme.color-success
+                        : root.step.state == "done" ? Theme.text-secondary
                         : Theme.text-dim;
                     font-size: Theme.fs-micro;
                     font-weight: 600;
@@ -546,12 +551,13 @@ component RecipeCard inherits Rectangle {
                             if i > 0 : Rectangle {
                                 width: 14px;
                                 height: 52px;
-                                // Joined in colour once the recipe has come through to this stage.
+                                // Joined, a step brighter than the separator, once the recipe has
+                                // come through to this stage (neutral, like a done stage).
                                 Rectangle {
                                     y: 12px;
                                     height: 2px;
                                     background: stage.state == "done" || stage.state == "current" || stage.state == "waiting" || stage.state == "failed"
-                                        ? Theme.color-success : Theme.separator;
+                                        ? Theme.text-dim : Theme.separator;
                                 }
                             }
                             StageChip { stage: stage; }

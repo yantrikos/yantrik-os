@@ -3,6 +3,7 @@
 import { Theme } from "theme.slint";
 import { AppIdentity } from "components/app_color.slint";
 import { Icon, Icons } from "components/icon.slint";
+import { YButton } from "components/y_button.slint";
 import { WindowControls } from "window_controls.slint";
 
 // ── Data structs ──
@@ -176,35 +177,10 @@ component RiskSummaryCard inherits Rectangle {
     }
 }
 
-// ── Action button component ──
-
-component PermActionButton inherits TouchArea {
-    in property <string> label;
-    in property <bool> primary: false;
-    height: 32px;
-
-    Rectangle {
-        border-radius: Theme.r-md;
-        background: primary ? AppIdentity.accent
-                  : (parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated);
-        border-width: 1px;
-        border-color: primary ? Theme.accent-dim : Theme.border-subtle;
-
-        HorizontalLayout {
-            padding-left: Theme.sp-3;
-            padding-right: Theme.sp-3;
-            alignment: center;
-
-            Text {
-                text: label;
-                color: primary ? Theme.bg-deep : Theme.text-primary;
-                font-size: Theme.font-small;
-                font-weight: 600;
-                vertical-alignment: center;
-            }
-        }
-    }
-}
+// Buttons are the kit's YButton. This screen drew its own, and its primary wore the app's
+// identity colour, which for Permissions is red: "Scanning..." looked like the destructive
+// button. A primary is the accent in every app (colour system); the red is for what cannot
+// be undone, and nothing here is that.
 
 // ── Detail panel for selected file ──
 
@@ -529,10 +505,9 @@ component FileDetailPanel inherits Rectangle {
                 }
             }
 
-            PermActionButton {
+            YButton {
                 label: "Apply Fix";
-                primary: true;
-                width: 100px;
+                variant: 0;
                 clicked => { root.fix-clicked(); }
             }
         }
@@ -726,30 +701,30 @@ export component PermissionDashboardScreen inherits Rectangle {
                         }
 
                         // Scan button
-                        PermActionButton {
+                        YButton {
                             label: root.perm-scanning ? "Scanning..." : "Scan";
-                            primary: true;
-                            width: 80px;
+                            variant: 0;
+                            // Busy, not dangerous: the accent with a spinner, and no second scan.
+                            loading: root.perm-scanning;
                             clicked => {
                                 root.perm-scan-dir(root.perm-scan-path);
                             }
                         }
 
                         // Export button
-                        PermActionButton {
+                        YButton {
                             label: "Export";
-                            primary: false;
-                            width: 70px;
+                            variant: 1;
                             clicked => {
                                 root.perm-export-report();
                             }
                         }
 
                         // ACL panel toggle
-                        PermActionButton {
+                        YButton {
                             label: root.perm-acl-panel-open ? "Close ACL" : "ACL";
-                            primary: root.perm-acl-panel-open;
-                            width: 80px;
+                            // On while the panel is open: ON is the accent.
+                            variant: root.perm-acl-panel-open ? 0 : 1;
                             clicked => {
                                 root.perm-acl-panel-open = !root.perm-acl-panel-open;
                                 // Auto-populate path from selected file if available
@@ -877,7 +852,8 @@ export component PermissionDashboardScreen inherits Rectangle {
                     ai-perm-btn := Rectangle {
                         height: 32px;
                         border-radius: Theme.radius-pill;
-                        background: root.ai-is-working ? AppIdentity.accent
+                        // Working is the accent; the app's red identity made "Analyzing..." look destructive.
+                        background: root.ai-is-working ? Theme.accent
                             : (parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated);
                         border-width: 1px;
                         border-color: Theme.border-subtle;
@@ -904,10 +880,10 @@ export component PermissionDashboardScreen inherits Rectangle {
                 }
 
                 // Refresh button
-                PermActionButton {
+                YButton {
                     label: root.perm-scanning ? "Scanning..." : "Refresh";
-                    primary: false;
-                    width: 100px;
+                    variant: 1;
+                    loading: root.perm-scanning;
                     clicked => { root.perm-refresh(); }
                 }
 
@@ -1605,9 +1581,10 @@ export component PermissionDashboardScreen inherits Rectangle {
                                         }
 
                                         // Fix button
-                                        PermActionButton {
+                                        YButton {
                                             label: "Fix";
-                                            primary: true;
+                                            variant: 0;
+                                            size: 0;
                                             horizontal-stretch: 1;
                                             clicked => { root.perm-fix(file.path); }
                                         }
@@ -1716,26 +1693,14 @@ export component PermissionDashboardScreen inherits Rectangle {
                     }
                 }
 
-                // View ACL button
-                Rectangle {
-                    height: 34px;
-                    background: acl-view-ta.has-hover ? AppIdentity.accent : Theme.accent-dim;
-                    border-radius: Theme.radius-pill;
-
-                    Text {
-                        text: "View ACL";
-                        font-size: Theme.font-body;
-                        color: Theme.text-on-accent;
-                        font-weight: 600;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-
-                    acl-view-ta := TouchArea {
-                        clicked => {
-                            if root.perm-acl-target-path != "" {
-                                root.perm-view-acl(root.perm-acl-target-path);
-                            }
+                // View ACL button: the primary, so the accent (its hover was the app's red).
+                YButton {
+                    label: "View ACL";
+                    variant: 0;
+                    size: 2;
+                    clicked => {
+                        if root.perm-acl-target-path != "" {
+                            root.perm-view-acl(root.perm-acl-target-path);
                         }
                     }
                 }

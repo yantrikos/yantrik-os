@@ -125,8 +125,10 @@ export component SystemDashboard inherits Rectangle {
                                 }
                                 Text {
                                     text: Math.round(root.cpu-usage) + "%";
-                                    color: root.cpu-usage > 80 ? Theme.color-emotional :
-                                           root.cpu-usage > 50 ? Theme.amber : Theme.cyan;
+                                    // Normal data is the accent and danger is red; nothing between.
+                                    // It was teal (the minds' colour) and amber past 50% (amber
+                                    // means "needs you", and a busy CPU does not).
+                                    color: root.cpu-usage > 80 ? Theme.color-emotional : Theme.accent;
                                     font-size: Theme.font-body;
                                     font-weight: 600;
                                 }
@@ -138,11 +140,12 @@ export component SystemDashboard inherits Rectangle {
                                 background: Theme.bg-deep;
 
                                 Rectangle {
+                                    // From the left edge: a child of a Rectangle is centred by default.
+                                    x: 0;
                                     width: max(0px, parent.width * root.cpu-usage / 100);
                                     height: 100%;
                                     border-radius: 3px;
-                                    background: root.cpu-usage > 80 ? Theme.color-emotional :
-                                               root.cpu-usage > 50 ? Theme.amber : Theme.cyan;
+                                    background: root.cpu-usage > 80 ? Theme.color-emotional : Theme.accent;
                                     animate width { duration: 300ms; }
                                 }
                             }
@@ -163,36 +166,36 @@ export component SystemDashboard inherits Rectangle {
                                 }
                                 Text {
                                     text: root.memory-text;
-                                    color: root.memory-usage > 85 ? Theme.color-emotional :
-                                           root.memory-usage > 60 ? Theme.amber : Theme.text-primary;
+                                    color: root.memory-usage > 85 ? Theme.color-emotional : Theme.text-primary;
                                     font-size: Theme.font-small;
                                 }
                             }
 
-                            // Stacked bar: [used (cyan)] [cached (amber)] [free (dark)]
+                            // Stacked bar: [used (accent)] [cached (dim accent)] [free (dark)].
+                            // Cached was amber, which is "needs you" only (colour system); it is
+                            // the same data at a lower weight, so the same hue, dimmer.
                             Rectangle {
                                 height: 8px;
                                 border-radius: 4px;
                                 background: Theme.bg-deep;
                                 clip: true;
 
-                                // Used segment (cyan)
+                                // Used segment
                                 Rectangle {
                                     x: 0px;
                                     width: max(0px, parent.width * root.memory-used-percent / 100);
                                     height: 100%;
-                                    background: root.memory-usage > 85 ? Theme.color-emotional :
-                                               root.memory-usage > 60 ? Theme.amber : Theme.cyan;
+                                    background: root.memory-usage > 85 ? Theme.color-emotional : Theme.accent;
                                     animate width { duration: 300ms; }
                                 }
 
-                                // Cached segment (amber)
+                                // Cached segment
                                 Rectangle {
                                     x: max(0px, parent.width * root.memory-used-percent / 100);
                                     width: max(0px, parent.width * root.memory-cached-percent / 100);
                                     height: 100%;
-                                    background: Theme.amber;
-                                    opacity: 0.7;
+                                    background: Theme.accent;
+                                    opacity: 0.4;
                                     animate x { duration: 300ms; }
                                     animate width { duration: 300ms; }
                                 }
@@ -211,7 +214,7 @@ export component SystemDashboard inherits Rectangle {
                                         height: 6px;
                                         y: (parent.height - 6px) / 2;
                                         border-radius: 3px;
-                                        background: Theme.cyan;
+                                        background: Theme.accent;
                                     }
                                     Text {
                                         text: "Used: " + root.memory-used-text;
@@ -228,8 +231,8 @@ export component SystemDashboard inherits Rectangle {
                                         height: 6px;
                                         y: (parent.height - 6px) / 2;
                                         border-radius: 3px;
-                                        background: Theme.amber;
-                                        opacity: 0.7;
+                                        background: Theme.accent;
+                                        opacity: 0.4;
                                     }
                                     Text {
                                         text: "Cached: " + root.memory-cached-text;
@@ -274,8 +277,7 @@ export component SystemDashboard inherits Rectangle {
                                 }
                                 Text {
                                     text: root.swap-text;
-                                    color: root.swap-usage > 80 ? Theme.color-emotional :
-                                           root.swap-usage > 50 ? Theme.amber : Theme.text-dim;
+                                    color: root.swap-usage > 80 ? Theme.color-emotional : Theme.text-dim;
                                     font-size: Theme.font-small;
                                 }
                             }
@@ -286,11 +288,12 @@ export component SystemDashboard inherits Rectangle {
                                 background: Theme.bg-deep;
 
                                 Rectangle {
+                                    // From the left edge: a child of a Rectangle is centred by default.
+                                    x: 0;
                                     width: max(0px, parent.width * root.swap-usage / 100);
                                     height: 100%;
                                     border-radius: 3px;
-                                    background: root.swap-usage > 80 ? Theme.color-emotional :
-                                               root.swap-usage > 50 ? Theme.amber : Theme.amber;
+                                    background: root.swap-usage > 80 ? Theme.color-emotional : Theme.accent;
                                     opacity: 0.8;
                                     animate width { duration: 300ms; }
                                 }
@@ -311,10 +314,8 @@ export component SystemDashboard inherits Rectangle {
                     title: "CPU";
                     values: root.cpu-history;
                     current-text: Math.round(root.cpu-usage) + "%";
-                    accent-color: root.cpu-usage > 80 ? Theme.color-emotional :
-                                  root.cpu-usage > 50 ? Theme.amber : Theme.cyan;
-                    accent-glow: root.cpu-usage > 80 ? Theme.color-danger.transparentize(75%) :
-                                 root.cpu-usage > 50 ? Theme.amber-glow : Theme.cyan-glow;
+                    accent-color: root.cpu-usage > 80 ? Theme.color-emotional : Theme.accent;
+                    accent-glow: root.cpu-usage > 80 ? Theme.color-danger.transparentize(75%) : Theme.accent-glow;
                     height: 140px;
                     width: 100%;
                 }
@@ -323,10 +324,8 @@ export component SystemDashboard inherits Rectangle {
                     title: "MEMORY";
                     values: root.memory-history;
                     current-text: root.memory-text;
-                    accent-color: root.memory-usage > 85 ? Theme.color-emotional :
-                                  root.memory-usage > 60 ? Theme.amber : Theme.cyan;
-                    accent-glow: root.memory-usage > 85 ? Theme.color-danger.transparentize(75%) :
-                                 root.memory-usage > 60 ? Theme.amber-glow : Theme.cyan-glow;
+                    accent-color: root.memory-usage > 85 ? Theme.color-emotional : Theme.accent;
+                    accent-glow: root.memory-usage > 85 ? Theme.color-danger.transparentize(75%) : Theme.accent-glow;
                     height: 140px;
                     width: 100%;
                 }
@@ -375,9 +374,7 @@ export component SystemDashboard inherits Rectangle {
                                         width: max(0px, (parent.width - 6px) * root.battery-level / 100);
                                         height: parent.height - 6px;
                                         border-radius: 1px;
-                                        background: root.battery-charging ? Theme.cyan :
-                                                    root.battery-level <= 20 ? Theme.color-emotional :
-                                                    root.battery-level <= 50 ? Theme.amber : Theme.cyan;
+                                        background: !root.battery-charging && root.battery-level <= 20 ? Theme.color-emotional : Theme.accent;
                                     }
                                 }
 
@@ -410,7 +407,7 @@ export component SystemDashboard inherits Rectangle {
                                     height: 8px;
                                     y: (parent.height - 8px) / 2;
                                     border-radius: 4px;
-                                    background: root.network-online ? Theme.cyan : Theme.color-emotional;
+                                    background: root.network-online ? Theme.accent : Theme.color-emotional;
                                 }
 
                                 Text {
@@ -518,7 +515,7 @@ export component SystemDashboard inherits Rectangle {
                             Text {
                                 text: Math.round(proc.cpu-percent * 10) / 10 + "%";
                                 color: proc.cpu-percent > 80 ? Theme.color-emotional :
-                                       proc.cpu-percent > 50 ? Theme.amber :
+                                       proc.cpu-percent > 50 ? Theme.text-primary :
                                        Theme.text-secondary;
                                 font-size: Theme.font-small;
                                 font-weight: 500;

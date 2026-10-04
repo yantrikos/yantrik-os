@@ -7,6 +7,7 @@ import { Theme, AccentPreset } from "theme.slint";
 import { AppIdentity } from "components/app_color.slint";
 import { SkillStore, SkillData } from "skill_store.slint";
 import { YButton, YIconButton } from "components/y_button.slint";
+import { ModelTierBadge } from "components/model_tier_badge.slint";
 import { YInput } from "components/y_input.slint";
 import { ListView } from "std-widgets.slint";
 import { Icon, Icons } from "components/icon.slint";
@@ -1290,26 +1291,7 @@ export component SettingsScreen inherits Rectangle {
                                                 font-size: Theme.fs-body;
                                                 font-weight: 500;
                                             }
-                                            if root.ai-status.model-tier != "" : Rectangle {
-                                                width: tier-txt.preferred-width + 12px;
-                                                height: 20px;
-                                                border-radius: 10px;
-                                                background: root.ai-status.model-tier == "Large" ? AppIdentity.tint
-                                                          : root.ai-status.model-tier == "Medium" ? Theme.tint-cyan
-                                                          : root.ai-status.model-tier == "Small" ? Theme.tint-amber
-                                                          : Theme.border-subtle;
-                                                tier-txt := Text {
-                                                    text: root.ai-status.model-tier;
-                                                    color: root.ai-status.model-tier == "Large" ? AppIdentity.accent
-                                                         : root.ai-status.model-tier == "Medium" ? AppIdentity.accent
-                                                         : root.ai-status.model-tier == "Small" ? Theme.amber
-                                                         : Theme.text-secondary;
-                                                    font-size: Theme.fs-micro;
-                                                    font-weight: 600;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
-                                                }
-                                            }
+                                            if root.ai-status.model-tier != "" : ModelTierBadge { tier: root.ai-status.model-tier; }
                                         }
                                     }
 
@@ -1411,7 +1393,8 @@ export component SettingsScreen inherits Rectangle {
                                                 width: perm-tag.preferred-width + 16px;
                                                 height: 24px;
                                                 border-radius: Theme.r-lg;
-                                                background: root.tool-permission == "safe" ? Theme.tint-cyan
+                                                // Safe in the accent, not the minds' teal (colour system).
+                                                background: root.tool-permission == "safe" ? Theme.tint-accent
                                                     : (root.tool-permission == "standard" ? Theme.tint-amber
                                                     : Theme.color-danger-dim);
                                                 border-width: 1px;
@@ -1422,7 +1405,7 @@ export component SettingsScreen inherits Rectangle {
                                                     text: root.tool-permission == "safe" ? "Safe"
                                                         : (root.tool-permission == "standard" ? "Standard"
                                                         : "Sensitive");
-                                                    color: root.tool-permission == "safe" ? AppIdentity.accent
+                                                    color: root.tool-permission == "safe" ? Theme.accent
                                                         : (root.tool-permission == "standard" ? Theme.amber
                                                         : Theme.color-emotional);
                                                     font-size: Theme.fs-micro;
@@ -2006,26 +1989,9 @@ export component SettingsScreen inherits Rectangle {
                                         }
 
                                         // Tier badge
-                                        if model.tier != "" : Rectangle {
-                                            width: mtier-txt.preferred-width + 12px;
-                                            height: 20px;
-                                            y: (parent.height - 20px) / 2;
-                                            border-radius: 10px;
-                                            background: model.tier == "Large" ? AppIdentity.tint
-                                                      : model.tier == "Medium" ? Theme.tint-cyan
-                                                      : model.tier == "Small" ? Theme.tint-amber
-                                                      : Theme.border-subtle;
-                                            mtier-txt := Text {
-                                                text: model.tier;
-                                                color: model.tier == "Large" ? AppIdentity.accent
-                                                     : model.tier == "Medium" ? AppIdentity.accent
-                                                     : model.tier == "Small" ? Theme.amber
-                                                     : Theme.text-secondary;
-                                                font-size: Theme.fs-micro;
-                                                font-weight: 600;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
+                                        if model.tier != "" : ModelTierBadge {
+                                            tier: model.tier;
+                                            y: (parent.height - self.height) / 2;
                                         }
                                     }
                                 }

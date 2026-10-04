@@ -83,18 +83,19 @@ export component ToastBanner inherits Rectangle {
                 // rounded outline around it.
                 background: Theme.bg-card.transparentize(8%);
                 border-width: 1px;
-                border-color: toast.urgency == 2 ? Theme.color-emotional.transparentize(60%) : Theme.cyan.transparentize(80%);
+                border-color: toast.urgency == 2 ? Theme.color-emotional.transparentize(60%) : Theme.accent.transparentize(80%);
                 drop-shadow-blur: 24px;
                 drop-shadow-color: Theme.overlay-backdrop;
                 clip: true;
 
-                // Urgency accent bar down the left edge.
+                // Urgency accent bar down the left edge. An ordinary toast is the accent: it
+                // was teal, and teal is only for minds (colour system).
                 Rectangle {
                     x: 0; y: 0;
                     width: 3px;
                     height: parent.height;
                     background: toast.urgency == 2 ? Theme.color-emotional :
-                                toast.urgency == 1 ? Theme.amber : Theme.cyan;
+                                toast.urgency == 1 ? Theme.amber : Theme.accent;
                 }
 
                 // The body is a click target — it opens the app that sent this. Declared before
@@ -122,12 +123,12 @@ export component ToastBanner inherits Rectangle {
                             height: 34px;
                             border-radius: 17px;
                             background: toast.urgency == 2 ? Theme.color-emotional.transparentize(85%) :
-                                        toast.urgency == 1 ? Theme.amber.transparentize(85%) : Theme.cyan.transparentize(85%);
+                                        toast.urgency == 1 ? Theme.amber.transparentize(85%) : Theme.accent.transparentize(85%);
 
                             Text {
                                 text: toast.icon-char;
                                 color: toast.urgency == 2 ? Theme.color-emotional :
-                                       toast.urgency == 1 ? Theme.amber : Theme.cyan;
+                                       toast.urgency == 1 ? Theme.amber : Theme.accent;
                                 font-size: Theme.fs-body;
                                 font-weight: 700;
                                 horizontal-alignment: center;
