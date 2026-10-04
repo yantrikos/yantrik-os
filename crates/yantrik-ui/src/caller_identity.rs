@@ -225,6 +225,10 @@ fn program_words(facts: &ProcessFacts) -> Vec<String> {
                     }
                     break;
                 }
+                // `env FOO=bar prog`: the assignments are not the program.
+                if name == "env" && arg.contains('=') {
+                    continue;
+                }
                 if !arg.starts_with('-') {
                     parts.push(arg);
                     break;
@@ -425,6 +429,9 @@ mod caller_identity_tests {
         let minds = vec![Mind { id: "mind".into(), name: "Yantrik Mind".into(), pid: None }];
         let flagged = vec![facts(9000, "/usr/bin/python3.13", "python3 harness_arena.py --minds")];
         assert_eq!(identify(flagged, &minds).attached_mind, None, "an argument is not the program");
+        let named = vec![Mind { id: "openclaw".into(), name: "OpenClaw".into(), pid: None }];
+        let via_env = vec![facts(9200, "/usr/bin/env", "env NODE_ENV=production openclaw-gateway --port 1")];
+        assert_eq!(identify(via_env, &named).attached_mind.as_deref(), Some("OpenClaw"), "env's assignments are skipped");
     }
 
     #[test]
