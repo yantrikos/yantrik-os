@@ -8,6 +8,10 @@
 // (#400). What installing used to ask on the way (interests, how to be reached, the AI) is
 // asked here instead, on the installed machine's first boot, as optional setup that opens on
 // a welcome with a Skip (`after-install`).
+//
+// Colour: headings, chips, choices, focus and progress are the accent. They were teal, and teal
+// is the minds' colour and nothing else's (colour system; design/minds-surfaces-spec-
+// 2026-10-02.md, "Colour roles"). The orb, which is the mind arriving, keeps its own teal.
 
 import { Theme } from "theme.slint";
 import { Orb } from "components/orb.slint";
@@ -27,14 +31,14 @@ component InterestChip inherits Rectangle {
     height: 34px;
     border-radius: 17px;
     border-width: 1px;
-    border-color: selected ? Theme.cyan : Theme.border-default;
-    background: selected ? Theme.cyan-glow : Theme.hover-fill;
+    border-color: selected ? Theme.accent : Theme.border-default;
+    background: selected ? Theme.accent-glow : Theme.hover-fill;
     animate background { duration: Theme.dur-normal; }
     animate border-color { duration: Theme.dur-normal; }
 
     chip-text := Text {
         text: label;
-        color: selected ? Theme.cyan-light : Theme.text-secondary;
+        color: selected ? Theme.accent-light : Theme.text-secondary;
         font-size: Theme.font-label;
         font-weight: selected ? 600 : 400;
         horizontal-alignment: center;
@@ -61,8 +65,8 @@ component NotifOption inherits Rectangle {
     height: 52px;
     border-radius: Theme.r-md;
     border-width: 1px;
-    border-color: active ? Theme.cyan : Theme.border-default;
-    background: active ? Theme.cyan-glow : Theme.border-subtle;
+    border-color: active ? Theme.accent : Theme.border-default;
+    background: active ? Theme.accent-glow : Theme.border-subtle;
     animate background { duration: Theme.dur-normal; }
     animate border-color { duration: Theme.dur-normal; }
 
@@ -80,14 +84,14 @@ component NotifOption inherits Rectangle {
                 height: 16px;
                 border-radius: 8px;
                 border-width: 1.5px;
-                border-color: active ? Theme.cyan : Theme.border-strong;
+                border-color: active ? Theme.accent : Theme.border-strong;
                 Rectangle {
                     x: 4px;
                     y: 4px;
                     width: 8px;
                     height: 8px;
                     border-radius: 4px;
-                    background: active ? Theme.cyan : transparent;
+                    background: active ? Theme.accent : transparent;
                     animate background { duration: Theme.dur-normal; }
                 }
             }
@@ -301,7 +305,7 @@ export component OnboardingScreen inherits Rectangle {
                     : phase == 8 ? "Set up your AI provider."
                     : phase == 9 ? "Testing your AI..."
                     : "You're all set.";
-                color: Theme.cyan;
+                color: Theme.accent;
                 font-size: phase < 4 ? 28px : 22px;
                 font-weight: 300;
                 letter-spacing: 2px;
@@ -439,7 +443,7 @@ export component OnboardingScreen inherits Rectangle {
 
                 Text {
                     text: interest-count + " selected";
-                    color: interest-count >= 3 ? Theme.cyan : Theme.text-dim;
+                    color: interest-count >= 3 ? Theme.accent : Theme.text-dim;
                     font-size: Theme.fs-caption;
                     horizontal-alignment: center;
                 }
@@ -600,9 +604,9 @@ export component OnboardingScreen inherits Rectangle {
                             width: parent.width * root.hw-scan-progress;
                             height: 4px;
                             border-radius: 2px;
-                            background: Theme.cyan;
+                            background: Theme.accent;
                             drop-shadow-blur: 6px;
-                            drop-shadow-color: Theme.cyan-glow;
+                            drop-shadow-color: Theme.accent-glow;
                             animate width { duration: Theme.dur-normal; }
                         }
                     }
@@ -770,7 +774,7 @@ export component OnboardingScreen inherits Rectangle {
                         border-radius: Theme.r-lg;
                         background: Theme.hover-fill;
                         border-width: 1px;
-                        border-color: Theme.cyan-glow;
+                        border-color: Theme.accent-glow;
 
                         summary-col := VerticalLayout {
                             padding: Theme.sp-4;
@@ -778,7 +782,7 @@ export component OnboardingScreen inherits Rectangle {
                             Text {
                                 text: root.ai-hw-gpu-ok ? "GPU available — local inference recommended"
                                     : "No GPU — cloud provider recommended";
-                                color: Theme.cyan;
+                                color: Theme.accent;
                                 font-size: Theme.fs-body;
                                 font-weight: 500;
                                 horizontal-alignment: center;
@@ -830,9 +834,9 @@ export component OnboardingScreen inherits Rectangle {
                         }
                         Rectangle {
                             border-radius: Theme.r-lg;
-                            background: root.ai-mode == "local" ? Theme.cyan-glow : Theme.hover-fill;
+                            background: root.ai-mode == "local" ? Theme.accent-glow : Theme.hover-fill;
                             border-width: 1px;
-                            border-color: root.ai-hw-recommend == "local" ? Theme.cyan : Theme.border-strong;
+                            border-color: root.ai-hw-recommend == "local" ? Theme.accent : Theme.border-strong;
                             animate background { duration: Theme.dur-normal; }
 
                             VerticalLayout {
@@ -847,12 +851,12 @@ export component OnboardingScreen inherits Rectangle {
                                         width: rec-local-txt.preferred-width + 16px;
                                         height: 20px;
                                         border-radius: 10px;
-                                        background: Theme.tint-cyan;
+                                        background: Theme.tint-accent;
                                         border-width: 1px;
-                                        border-color: Theme.cyan-dim;
+                                        border-color: Theme.accent-dim;
                                         rec-local-txt := Text {
                                             text: "Recommended";
-                                            color: Theme.cyan;
+                                            color: Theme.accent;
                                             font-size: Theme.fs-micro;
                                             font-weight: 600;
                                             horizontal-alignment: center;
@@ -896,9 +900,9 @@ export component OnboardingScreen inherits Rectangle {
                         }
                         Rectangle {
                             border-radius: Theme.r-lg;
-                            background: root.ai-mode == "cloud" ? Theme.cyan-glow : Theme.hover-fill;
+                            background: root.ai-mode == "cloud" ? Theme.accent-glow : Theme.hover-fill;
                             border-width: 1px;
-                            border-color: root.ai-hw-recommend == "cloud" ? Theme.cyan : Theme.border-strong;
+                            border-color: root.ai-hw-recommend == "cloud" ? Theme.accent : Theme.border-strong;
                             animate background { duration: Theme.dur-normal; }
 
                             VerticalLayout {
@@ -912,12 +916,12 @@ export component OnboardingScreen inherits Rectangle {
                                         width: rec-cloud-txt.preferred-width + 16px;
                                         height: 20px;
                                         border-radius: 10px;
-                                        background: Theme.tint-cyan;
+                                        background: Theme.tint-accent;
                                         border-width: 1px;
-                                        border-color: Theme.cyan-dim;
+                                        border-color: Theme.accent-dim;
                                         rec-cloud-txt := Text {
                                             text: "Recommended";
-                                            color: Theme.cyan;
+                                            color: Theme.accent;
                                             font-size: Theme.fs-micro;
                                             font-weight: 600;
                                             horizontal-alignment: center;
@@ -1100,15 +1104,15 @@ export component OnboardingScreen inherits Rectangle {
                             }
                             Rectangle {
                                 border-radius: Theme.r-md;
-                                background: root.ai-selected-provider == prov-item.id ? Theme.cyan-glow : Theme.hover-fill;
+                                background: root.ai-selected-provider == prov-item.id ? Theme.accent-glow : Theme.hover-fill;
                                 border-width: 1px;
-                                border-color: root.ai-selected-provider == prov-item.id ? Theme.cyan : Theme.border-strong;
+                                border-color: root.ai-selected-provider == prov-item.id ? Theme.accent : Theme.border-strong;
                                 animate background { duration: Theme.dur-fast; }
                                 animate border-color { duration: Theme.dur-fast; }
 
                                 Text {
                                     text: prov-item.label;
-                                    color: root.ai-selected-provider == prov-item.id ? Theme.cyan : Theme.text-secondary;
+                                    color: root.ai-selected-provider == prov-item.id ? Theme.accent : Theme.text-secondary;
                                     font-size: Theme.fs-body;
                                     font-weight: root.ai-selected-provider == prov-item.id ? 600 : 400;
                                     horizontal-alignment: center;

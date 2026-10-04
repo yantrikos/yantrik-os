@@ -6,6 +6,7 @@ import { Icon, Icons } from "components/icon.slint";
 import { AppHeader } from "components/app_header.slint";
 import { AppColor, AppIdentity } from "components/app_color.slint";
 import { YantrikMark } from "components/yantrik_mark.slint";
+import { ModelTierBadge } from "components/model_tier_badge.slint";
 
 // What is installed, and nothing else.
 //
@@ -35,18 +36,19 @@ component ChannelChip inherits Rectangle {
     width: chip-text.preferred-width + 24px;
     height: 26px;
     border-radius: 13px;
-    background: root.selected ? Theme.tint-cyan
+    // Selected is the accent, as everywhere; teal is the minds' colour (colour system).
+    background: root.selected ? Theme.tint-accent
               : (chip-ta.has-hover && root.enabled) ? Theme.hover-fill-strong
               : Theme.hover-fill;
     border-width: 1px;
-    border-color: root.selected ? Theme.cyan-dim : Theme.border-subtle;
+    border-color: root.selected ? Theme.accent-dim : Theme.border-subtle;
     opacity: root.enabled ? 1.0 : 0.45;
 
     chip-text := Text {
         text: root.label;
         font-size: Theme.fs-micro;
         font-weight: root.selected ? 700 : 500;
-        color: root.selected ? Theme.cyan : Theme.text-secondary;
+        color: root.selected ? Theme.accent : Theme.text-secondary;
         horizontal-alignment: center;
         vertical-alignment: center;
     }
@@ -214,15 +216,16 @@ export component AboutScreen inherits Rectangle {
                                 width: v-label.preferred-width + 16px;
                                 height: 24px;
                                 border-radius: 12px;
-                                background: Theme.tint-cyan;
+                                // The accent, not teal: a version is not a mind (colour system).
+                                background: Theme.tint-accent;
                                 border-width: 1px;
-                                border-color: Theme.cyan-dim;
+                                border-color: Theme.accent-dim;
 
                                 v-label := Text {
                                     // Not "v" + version: a git describe already starts with
                                     // the tag, so prefixing gave "vv0.1.0-258-g64165ad".
                                     text: root.version-text != "" ? root.version-text : "unknown";
-                                    color: Theme.cyan;
+                                    color: Theme.accent;
                                     font-size: Theme.fs-micro;
                                     font-weight: 600;
                                     horizontal-alignment: center;
@@ -241,14 +244,18 @@ export component AboutScreen inherits Rectangle {
                 }
 
                 // ── DEVICE section header ──
+                //
+                // Every section marker on this screen is the accent bar the other screens' headers
+                // carry. DEVICE was teal, which is the minds' colour, RUNTIME amber, which means
+                // "needs you", and UPDATES and COMPONENTS a legacy blue (colour system).
                 HorizontalLayout {
                     spacing: 8px;
                     Rectangle {
                         width: 3px; height: 14px;
                         border-radius: 1.5px;
-                        background: Theme.cyan;
+                        background: Theme.accent;
                         drop-shadow-blur: 4px;
-                        drop-shadow-color: Theme.cyan-glow;
+                        drop-shadow-color: Theme.accent-glow;
                     }
                     Text {
                         text: "DEVICE";
@@ -395,9 +402,9 @@ export component AboutScreen inherits Rectangle {
                     Rectangle {
                         width: 3px; height: 14px;
                         border-radius: 1.5px;
-                        background: Theme.amber;
+                        background: Theme.accent;
                         drop-shadow-blur: 4px;
-                        drop-shadow-color: Theme.amber-glow;
+                        drop-shadow-color: Theme.accent-glow;
                     }
                     Text {
                         text: "RUNTIME";
@@ -559,26 +566,9 @@ export component AboutScreen inherits Rectangle {
                                         font-weight: 500;
                                         vertical-alignment: center;
                                     }
-                                    if root.ai-model-tier != "" : Rectangle {
-                                        width: about-tier-txt.preferred-width + 12px;
-                                        height: 20px;
-                                        y: (parent.height - 20px) / 2;
-                                        border-radius: 10px;
-                                        background: root.ai-model-tier == "Large" ? AppIdentity.tint
-                                                  : root.ai-model-tier == "Medium" ? Theme.tint-cyan
-                                                  : root.ai-model-tier == "Small" ? Theme.tint-amber
-                                                  : Theme.border-default;
-                                        about-tier-txt := Text {
-                                            text: root.ai-model-tier;
-                                            color: root.ai-model-tier == "Large" ? AppIdentity.accent
-                                                 : root.ai-model-tier == "Medium" ? Theme.cyan
-                                                 : root.ai-model-tier == "Small" ? Theme.amber
-                                                 : Theme.text-secondary;
-                                            font-size: Theme.fs-micro;
-                                            font-weight: 600;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
-                                        }
+                                    if root.ai-model-tier != "" : ModelTierBadge {
+                                        tier: root.ai-model-tier;
+                                        y: (parent.height - self.height) / 2;
                                     }
                                 }
                             }
@@ -677,9 +667,9 @@ export component AboutScreen inherits Rectangle {
                     Rectangle {
                         width: 3px; height: 14px;
                         border-radius: 1.5px;
-                        background: Theme.holo-blue;
+                        background: Theme.accent;
                         drop-shadow-blur: 4px;
-                        drop-shadow-color: Theme.holo-blue.transparentize(75%);
+                        drop-shadow-color: Theme.accent-glow;
                     }
                     Text {
                         text: "UPDATES";
@@ -941,9 +931,9 @@ export component AboutScreen inherits Rectangle {
                     Rectangle {
                         width: 3px; height: 14px;
                         border-radius: 1.5px;
-                        background: Theme.holo-blue;
+                        background: Theme.accent;
                         drop-shadow-blur: 4px;
-                        drop-shadow-color: Theme.holo-blue.transparentize(75%);
+                        drop-shadow-color: Theme.accent-glow;
                     }
                     Text {
                         text: "COMPONENTS";

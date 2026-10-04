@@ -8,6 +8,8 @@
 // The AI IS the shell — Intent Lens is the primary interaction.
 
 import { Theme, ThemeMode, ThemeOverrides, AccentPreset } from "theme.slint";
+// A window frame's glyph wears its app's colour from the one table, not the minds' teal.
+import { AppColor } from "components/app_color.slint";
 import { GroundedDock, DockButton, DockWindow } from "components/grounded_dock.slint";
 import { StatusBar } from "components/status_bar.slint";
 import { ShellOverlays } from "components/shell_overlays.slint";
@@ -2127,7 +2129,7 @@ export component App inherits Window {
             win-w <=> root.window-w;
             win-h <=> root.window-h;
             icon-path: Icons.files;
-            icon-color: Theme.cyan;
+            icon-color: AppColor.for-app("files");
             title: Tr.title-files;
             close => {
                 if (root.minimized-screen == 8) { root.minimized-screen = 0; }
@@ -2386,7 +2388,7 @@ export component App inherits Window {
             win-w <=> root.window-w;
             win-h <=> root.window-h;
             icon-path: Icons.doc;
-            icon-color: Theme.cyan;
+            icon-color: AppColor.for-app("about");
             title: Tr.title-about;
             close => {
                 if (root.minimized-screen == 16) { root.minimized-screen = 0; }
@@ -2464,7 +2466,7 @@ export component App inherits Window {
             win-w <=> root.window-w;
             win-h <=> root.window-h;
             icon-path: Icons.packages;
-            icon-color: Theme.cyan;
+            icon-color: AppColor.for-app("packages");
             title: Tr.title-packages;
             close => {
                 if (root.minimized-screen == 21) { root.minimized-screen = 0; }
@@ -2558,7 +2560,7 @@ export component App inherits Window {
             win-w <=> root.window-w;
             win-h <=> root.window-h;
             icon-path: Icons.hybrid;
-            icon-color: Theme.cyan;
+            icon-color: AppColor.for-app("devices");
             title: Tr.title-devices;
             close => {
                 if (root.minimized-screen == 27) { root.minimized-screen = 0; }

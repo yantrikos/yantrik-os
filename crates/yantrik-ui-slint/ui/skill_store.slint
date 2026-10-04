@@ -40,16 +40,16 @@ export component SkillStore inherits Rectangle {
         // ── Header ──
         HorizontalLayout {
             spacing: 8px;
+            // The accent marker and secondary text of the other Settings headers. Teal is the
+            // minds' colour (colour system), and a skill list is not a mind.
             Rectangle {
                 width: 3px; height: 14px;
                 border-radius: 1.5px;
-                background: Theme.cyan;
-                drop-shadow-blur: 4px;
-                drop-shadow-color: Theme.cyan-glow;
+                background: Theme.accent;
             }
             Text {
                 text: "SKILL STORE";
-                color: Theme.cyan;
+                color: Theme.text-secondary;
                 font-size: Theme.fs-micro;
                 font-weight: 600;
                 letter-spacing: 3px;
@@ -87,7 +87,7 @@ export component SkillStore inherits Rectangle {
             border-radius: 8px;
             background: Theme.hover-fill;
             border-width: 1px;
-            border-color: search-input.has-focus ? Theme.cyan-dim : Theme.hover-fill-strong;
+            border-color: search-input.has-focus ? Theme.accent-dim : Theme.hover-fill-strong;
             clip: true;
 
             HorizontalLayout {
@@ -142,11 +142,13 @@ export component SkillStore inherits Rectangle {
                     root.filter-category(cat);
                 }
 
+                // The selected category is the accent: selected and ON are the accent, and teal
+                // is only for minds (colour system).
                 Rectangle {
                     border-radius: 6px;
-                    background: root.active-category == cat ? Theme.cyan-dim : (cat-ta.has-hover ? Theme.hover-fill : transparent);
+                    background: root.active-category == cat ? Theme.tint-accent : (cat-ta.has-hover ? Theme.hover-fill : transparent);
                     border-width: root.active-category == cat ? 1px : 0px;
-                    border-color: Theme.cyan;
+                    border-color: Theme.accent-dim;
 
                     HorizontalLayout {
                         padding-left: 8px;
@@ -154,7 +156,7 @@ export component SkillStore inherits Rectangle {
 
                         cat-label := Text {
                             text: cat;
-                            color: root.active-category == cat ? Theme.cyan : Theme.text-dim;
+                            color: root.active-category == cat ? Theme.accent : Theme.text-dim;
                             font-size: Theme.fs-micro;
                             font-weight: root.active-category == cat ? 600 : 400;
                             vertical-alignment: center;
@@ -187,7 +189,9 @@ export component SkillStore inherits Rectangle {
                         border-radius: 10px;
                         background: skill-ta.has-hover ? Theme.border-subtle : Theme.bg-card;
                         border-width: 1px;
-                        border-color: skill.enabled ? Theme.color-success-dim : Theme.hover-fill;
+                        // An enabled skill is ON, and ON is the accent. It was the success colour,
+                        // whose dark value is a teal (colour system: teal is only for minds).
+                        border-color: skill.enabled ? Theme.accent-dim : Theme.hover-fill;
 
                         HorizontalLayout {
                             padding: 12px;
@@ -198,12 +202,12 @@ export component SkillStore inherits Rectangle {
                                 width: 40px;
                                 height: 40px;
                                 border-radius: 10px;
-                                background: skill.enabled ? Theme.color-success-dim : Theme.hover-fill;
+                                background: skill.enabled ? Theme.tint-accent : Theme.hover-fill;
 
                                 Icon {
                                     commands: Icons.glyph(skill.icon);
                                     size: 18px;
-                                    tint: skill.enabled ? Theme.color-success : Theme.text-dim;
+                                    tint: skill.enabled ? Theme.accent : Theme.text-dim;
                                     x: (parent.width - self.width) / 2;
                                     y: (parent.height - self.height) / 2;
                                 }
@@ -257,7 +261,7 @@ export component SkillStore inherits Rectangle {
                                 width: 44px;
                                 height: 24px;
                                 border-radius: 12px;
-                                background: skill.enabled ? Theme.color-success : Theme.bg-card;
+                                background: skill.enabled ? Theme.accent : Theme.bg-card;
 
                                 animate background { duration: 150ms; }
 

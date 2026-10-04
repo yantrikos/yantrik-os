@@ -92,7 +92,8 @@ export component BondScreen inherits Rectangle {
                 // Level name
                 Text {
                     text: data.bond-level;
-                    color: Theme.amber-light;
+                    // A heading, not a state: primary text. Amber is only "needs you".
+                    color: Theme.text-primary;
                     font-size: Theme.fs-display;
                     font-weight: 600;
                     horizontal-alignment: center;

@@ -178,25 +178,69 @@ fn mind_for(chain: &[ProcessFacts], minds: &[Mind]) -> Option<String> {
             return Some(mind.name.clone());
         }
     }
+    // By name, for every mind: a harness's tools can run under a process the recorded pid is not an
+    // ancestor of (OpenClaw's go through its own gateway daemon), and only the name finds them.
+    // But only in what the PROGRAM is -- its executable, argv0, and for an interpreter the script or
+    // module it runs -- never in later arguments, and only as whole words. On VM 520 (4 October) the
+    // gate runner, `python3 harness_arena.py --minds mind`, matched "Yantrik Mind" by the word "mind"
+    // in its arguments: the shell refused its never-ask switch as "a mind or an agent", on and off,
+    // and every gate needed a wrapper to run.
     for facts in chain {
         if is_bridge(facts) || is_this_desktop(facts) {
             continue;
         }
-        let haystack = facts.haystack();
-        if haystack.is_empty() {
+        let words = program_words(facts);
+        if words.is_empty() {
             continue;
         }
         for mind in minds {
             if name_tokens(&mind.name)
                 .into_iter()
                 .chain(name_tokens(&mind.id))
-                .any(|token| haystack.contains(&token))
+                .any(|token| words.iter().any(|w| *w == token))
             {
                 return Some(mind.name.clone());
             }
         }
     }
     None
+}
+
+/// The words that say what a process IS: its executable path, its argv0, and -- when that is an
+/// interpreter -- the script or `-m` module it was given. Arguments after that are what it was
+/// asked to do, which can name anything, a mind included. Lower-case, split on non-alphanumerics.
+fn program_words(facts: &ProcessFacts) -> Vec<String> {
+    const INTERPRETERS: [&str; 9] = ["python", "node", "bash", "sh", "perl", "ruby", "deno", "bun", "env"];
+    let args: Vec<&str> = facts.short_cmdline.split_whitespace().collect();
+    let mut parts: Vec<&str> = vec![facts.exe.as_str()];
+    if let Some(argv0) = args.first() {
+        parts.push(argv0);
+        let name = basename(argv0).trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+        if INTERPRETERS.contains(&name) {
+            let mut rest = args.iter().skip(1);
+            while let Some(arg) = rest.next() {
+                if *arg == "-m" {
+                    if let Some(module) = rest.next() {
+                        parts.push(module);
+                    }
+                    break;
+                }
+                // `env FOO=bar prog`: the assignments are not the program.
+                if name == "env" && arg.contains('=') {
+                    continue;
+                }
+                if !arg.starts_with('-') {
+                    parts.push(arg);
+                    break;
+                }
+            }
+        }
+    }
+    parts
+        .iter()
+        .flat_map(|p| p.to_ascii_lowercase().split(|c: char| !c.is_ascii_alphanumeric()).map(str::to_string).collect::<Vec<_>>())
+        .filter(|w| !w.is_empty())
+        .collect()
 }
 
 /// The shell and the programs it ships, which are the ancestry of everything a person starts.
@@ -349,6 +393,45 @@ mod caller_identity_tests {
         assert_eq!(who.attached_mind.as_deref(), Some("Hermes Agent"));
         assert!(!who.line().starts_with("a program started from a terminal"), "{}", who.line());
         assert!(who.line().ends_with("the attached mind"), "{}", who.line());
+    }
+
+    /// The gate runner names the mind it drives in its ARGUMENTS; that is not what the program is,
+    /// so it is not that mind. Its descendants of the mind's own pid still are (VM 520, 4 October).
+    #[test]
+    fn a_runner_naming_a_mind_in_its_arguments_is_not_that_mind() {
+        let minds = vec![Mind { id: "mind".into(), name: "Yantrik Mind".into(), pid: Some(4242) }];
+        let chain = vec![
+            facts(9001, "/usr/bin/python3.13", "python3 yos act shell set_approvals_off_for_test state=on"),
+            facts(9000, "/usr/bin/python3.13", "python3 -u harness_arena.py --minds mind --tasks T1"),
+            facts(8990, "/usr/bin/bash", "bash .gate2.sh"),
+        ];
+        assert_eq!(identify(chain.clone(), &minds).attached_mind, None);
+        let mut under = chain;
+        under.push(facts(4242, "/opt/yantrik-mind/bin/yantrik-mind", "yantrik-mind --headless"));
+        assert_eq!(identify(under, &minds).attached_mind.as_deref(), Some("Yantrik Mind"));
+    }
+
+    /// OpenClaw's tool calls come through its own gateway daemon, which the recorded pid (its
+    /// adapter) is not an ancestor of: the program's name is what finds it (security review of
+    /// #612). Whole words, so "--minds" is never the word "mind".
+    #[test]
+    fn a_mind_whose_tools_run_under_another_daemon_is_still_found_by_its_program() {
+        let minds = vec![Mind { id: "openclaw".into(), name: "OpenClaw".into(), pid: Some(777) }];
+        let chain = vec![
+            facts(9101, "/usr/bin/python3.13", "python3 yos act files move"),
+            facts(9100, "/usr/bin/python3.13", "python3 /opt/yantrik/bin/yos-mcp"),
+            facts(9050, "/usr/bin/node", "node /usr/lib/node_modules/openclaw/dist/index.js gateway"),
+        ];
+        assert_eq!(identify(chain, &minds).attached_mind.as_deref(), Some("OpenClaw"));
+        let hermes = vec![facts(696, "/usr/bin/python3", "python -m hermes_cli.main gateway run")];
+        let named = vec![Mind { id: "hermes".into(), name: "Hermes Agent".into(), pid: Some(1) }];
+        assert_eq!(identify(hermes, &named).attached_mind.as_deref(), Some("Hermes Agent"), "an -m module is the program");
+        let minds = vec![Mind { id: "mind".into(), name: "Yantrik Mind".into(), pid: None }];
+        let flagged = vec![facts(9000, "/usr/bin/python3.13", "python3 harness_arena.py --minds")];
+        assert_eq!(identify(flagged, &minds).attached_mind, None, "an argument is not the program");
+        let named = vec![Mind { id: "openclaw".into(), name: "OpenClaw".into(), pid: None }];
+        let via_env = vec![facts(9200, "/usr/bin/env", "env NODE_ENV=production openclaw-gateway --port 1")];
+        assert_eq!(identify(via_env, &named).attached_mind.as_deref(), Some("OpenClaw"), "env's assignments are skipped");
     }
 
     #[test]

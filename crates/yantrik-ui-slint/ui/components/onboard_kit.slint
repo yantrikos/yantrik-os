@@ -3,6 +3,8 @@
 // They lived privately inside onboarding.slint. The installer became a screen of its own
 // (installer.slint) and needs the same two controls, and a second private copy is how two
 // screens that are meant to look like one flow start to drift.
+//
+// Colour: a focused field is the accent, not teal; teal is only for minds (colour system).
 
 import { Theme } from "theme.slint";
 import { YButton } from "y_button.slint";
@@ -79,11 +81,11 @@ export component OnboardField inherits Rectangle {
             background: Theme.bg-input;
             border-width: 1px;
             border-color: root.error != "" ? Theme.amber
-                : field-input.has-focus ? Theme.cyan : Theme.border-default;
+                : field-input.has-focus ? Theme.accent : Theme.border-default;
             clip: true;
             animate border-color { duration: Theme.dur-normal; }
             drop-shadow-blur: field-input.has-focus ? 6px : 0;
-            drop-shadow-color: Theme.cyan.transparentize(80%);
+            drop-shadow-color: Theme.accent.transparentize(80%);
             animate drop-shadow-blur { duration: Theme.dur-normal; }
 
             TouchArea {
@@ -113,7 +115,7 @@ export component OnboardField inherits Rectangle {
                 vertical-alignment: center;
                 single-line: true;
                 input-type: root.is-password && !root.reveal ? InputType.password : InputType.text;
-                selection-background-color: Theme.cyan.transparentize(60%);
+                selection-background-color: Theme.accent.transparentize(60%);
                 edited => { root.edited(self.text); }
                 accepted => { root.accepted(); }
             }

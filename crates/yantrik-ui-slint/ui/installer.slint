@@ -11,6 +11,9 @@
 // Steps, as `step` holds them and as the control surface names them (control_installer.rs):
 //   0 welcome · 1 you · 2 disk · 3 review · 4 installing · 5 installed
 //
+// Colour: steps, selections, focus and progress are the accent. They were teal, and teal is the
+// minds' colour and nothing else's (colour system; design/minds-surfaces-spec-2026-10-02.md).
+//
 // Every rule a field is held to comes from Rust (installer_rules.rs) through the pure callbacks
 // below, so the message under a field, the Next button that stays disabled, and the refusal an
 // agent gets from `installer_install` are one rule, not three copies of it.
@@ -48,19 +51,19 @@ component StepMark inherits HorizontalLayout {
             height: 22px;
             border-radius: 11px;
             border-width: 1px;
-            border-color: root.current >= root.number ? Theme.cyan : Theme.border-strong;
-            background: root.current > root.number ? Theme.cyan-glow : transparent;
+            border-color: root.current >= root.number ? Theme.accent : Theme.border-strong;
+            background: root.current > root.number ? Theme.accent-glow : transparent;
 
             if root.current > root.number : Icon {
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
                 commands: Icons.check;
                 size: 12px;
-                tint: Theme.cyan;
+                tint: Theme.accent;
             }
             if root.current <= root.number : Text {
                 text: root.number + 1;
-                color: root.current == root.number ? Theme.cyan : Theme.text-dim;
+                color: root.current == root.number ? Theme.accent : Theme.text-dim;
                 font-size: Theme.fs-micro;
                 font-weight: 600;
                 horizontal-alignment: center;
@@ -132,7 +135,7 @@ component LinkText inherits Rectangle {
     height: label.preferred-height;
     label := Text {
         text: root.text;
-        color: root.strong || root.active || touch.has-hover ? Theme.cyan : Theme.text-secondary;
+        color: root.strong || root.active || touch.has-hover ? Theme.accent : Theme.text-secondary;
         font-size: Theme.fs-caption;
     }
     touch := TouchArea {
@@ -156,7 +159,7 @@ component StageRow inherits HorizontalLayout {
         Icon {
             commands: root.done ? Icons.check : Icons.clock;
             size: 14px;
-            tint: root.done ? Theme.color-success : root.active ? Theme.cyan : Theme.text-dim;
+            tint: root.done ? Theme.color-success : root.active ? Theme.accent : Theme.text-dim;
         }
     }
     Text {
@@ -292,7 +295,7 @@ export component InstallerScreen inherits Rectangle {
     Rectangle {
         width: 100%;
         height: 100%;
-        background: @radial-gradient(circle, Theme.cyan.transparentize(93%) 0%, Theme.bg-deep.transparentize(100%) 55%);
+        background: @radial-gradient(circle, Theme.accent.transparentize(93%) 0%, Theme.bg-deep.transparentize(100%) 55%);
     }
 
     flick := Flickable {
@@ -324,7 +327,7 @@ export component InstallerScreen inherits Rectangle {
                     : root.step == 3 ? "Ready to install"
                     : root.step == 4 ? "Installing Yantrik OS"
                     : "Yantrik OS is installed";
-                color: Theme.cyan;
+                color: Theme.accent;
                 font-size: root.step == 0 ? 32px : 24px;
                 font-weight: 300;
                 letter-spacing: 2px;
@@ -362,7 +365,7 @@ export component InstallerScreen inherits Rectangle {
                         border-radius: Theme.r-xl;
                         background: Theme.bg-input;
                         border-width: 1px;
-                        border-color: root.keyboard-open || kb-touch.has-hover ? Theme.cyan : Theme.border-default;
+                        border-color: root.keyboard-open || kb-touch.has-hover ? Theme.accent : Theme.border-default;
 
                         kb-touch := TouchArea {
                             mouse-cursor: pointer;
@@ -403,7 +406,7 @@ export component InstallerScreen inherits Rectangle {
                                 for choice in root.keyboards : Rectangle {
                                     height: 38px;
                                     border-radius: Theme.r-md;
-                                    background: choice.code == root.keyboard ? Theme.cyan-glow
+                                    background: choice.code == root.keyboard ? Theme.accent-glow
                                         : row-touch.has-hover ? Theme.hover-fill : transparent;
                                     row-touch := TouchArea {
                                         mouse-cursor: pointer;
@@ -420,7 +423,7 @@ export component InstallerScreen inherits Rectangle {
                                         Text {
                                             text: choice.label;
                                             horizontal-stretch: 1;
-                                            color: choice.code == root.keyboard ? Theme.cyan : Theme.text-primary;
+                                            color: choice.code == root.keyboard ? Theme.accent : Theme.text-primary;
                                             font-size: Theme.fs-body;
                                             vertical-alignment: center;
                                             overflow: elide;
@@ -521,7 +524,7 @@ export component InstallerScreen inherits Rectangle {
                             spacing: 6px;
                             VerticalLayout {
                                 alignment: center;
-                                Icon { commands: Icons.eye; size: 14px; tint: root.show-password ? Theme.cyan : Theme.text-dim; }
+                                Icon { commands: Icons.eye; size: 14px; tint: root.show-password ? Theme.accent : Theme.text-dim; }
                             }
                             VerticalLayout {
                                 alignment: center;
@@ -606,9 +609,9 @@ export component InstallerScreen inherits Rectangle {
                         property <bool> chosen: root.selected-disk == disk.name;
                         height: 68px;
                         border-radius: Theme.r-lg;
-                        background: self.chosen ? Theme.cyan-glow : disk-touch.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                        background: self.chosen ? Theme.accent-glow : disk-touch.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
                         border-width: self.chosen ? 2px : 1px;
-                        border-color: self.chosen ? Theme.cyan : Theme.border-default;
+                        border-color: self.chosen ? Theme.accent : Theme.border-default;
                         animate background, border-color { duration: Theme.dur-normal; }
 
                         disk-touch := TouchArea {
@@ -625,11 +628,11 @@ export component InstallerScreen inherits Rectangle {
                                 Rectangle {
                                     width: 18px; height: 18px; border-radius: 9px;
                                     border-width: 2px;
-                                    border-color: root.selected-disk == disk.name ? Theme.cyan : Theme.border-strong;
+                                    border-color: root.selected-disk == disk.name ? Theme.accent : Theme.border-strong;
                                     Rectangle {
                                         x: 4px; y: 4px; width: 10px; height: 10px;
                                         border-radius: 5px;
-                                        background: root.selected-disk == disk.name ? Theme.cyan : transparent;
+                                        background: root.selected-disk == disk.name ? Theme.accent : transparent;
                                     }
                                 }
                             }
@@ -696,12 +699,12 @@ export component InstallerScreen inherits Rectangle {
                                     width: 16px; height: 16px;
                                     border-radius: 4px;
                                     border-width: 1.5px;
-                                    border-color: root.encrypt ? Theme.cyan : Theme.border-strong;
-                                    background: root.encrypt ? Theme.cyan.transparentize(80%) : transparent;
+                                    border-color: root.encrypt ? Theme.accent : Theme.border-strong;
+                                    background: root.encrypt ? Theme.accent.transparentize(80%) : transparent;
                                     if root.encrypt : Icon {
                                         commands: Icons.check;
                                         size: 12px;
-                                        tint: Theme.cyan;
+                                        tint: Theme.accent;
                                     }
                                 }
                             }
@@ -711,7 +714,7 @@ export component InstallerScreen inherits Rectangle {
                                 Icon {
                                     commands: Icons.lock;
                                     size: 14px;
-                                    tint: root.encrypt ? Theme.cyan : Theme.text-dim;
+                                    tint: root.encrypt ? Theme.accent : Theme.text-dim;
                                 }
                             }
                             VerticalLayout {
@@ -922,7 +925,7 @@ export component InstallerScreen inherits Rectangle {
                             width: parent.width * clamp(root.install-progress, 0, 100) / 100;
                             height: parent.height;
                             border-radius: 3px;
-                            background: Theme.cyan;
+                            background: Theme.accent;
                             animate width { duration: 300ms; }
                         }
                     }
@@ -930,7 +933,7 @@ export component InstallerScreen inherits Rectangle {
                     HorizontalLayout {
                         Text {
                             text: root.install-progress + "%";
-                            color: Theme.cyan;
+                            color: Theme.accent;
                             font-size: Theme.fs-headline;
                             font-weight: 600;
                         }

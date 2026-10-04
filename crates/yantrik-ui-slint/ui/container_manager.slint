@@ -8,6 +8,7 @@ import { AgentProposalCard, AgentProposal } from "components/agent_proposal.slin
 import { AppColor, AppIdentity } from "components/app_color.slint";
 import { YEmptyState } from "components/y_empty_state.slint";
 import { YNoticeBar } from "components/notice_bar.slint";
+import { YButton } from "components/y_button.slint";
 
 // ── Data structs ──
 
@@ -35,41 +36,12 @@ export struct VolumeData {
     mount-point: string,
     size-text: string,
 }
-// ── Action button component ──
 
-component ActionButton inherits TouchArea {
-    in property <string> label;
-    in property <bool> danger: false;
-    in property <bool> primary: false;
-    height: 36px;
-
-    Rectangle {
-        border-radius: Theme.radius-card;
-        background: primary ? AppIdentity.accent
-                  : danger ? Theme.color-danger-dim
-                  : (parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated);
-        border-width: 1px;
-        border-color: primary ? Theme.accent-dim
-                    : danger ? Theme.color-danger
-                    : Theme.border-subtle;
-
-        HorizontalLayout {
-            padding-left: Theme.sp-3;
-            padding-right: Theme.sp-3;
-            alignment: center;
-
-            Text {
-                text: label;
-                color: primary ? Theme.text-on-accent
-                     : danger ? Theme.color-danger
-                     : Theme.text-primary;
-                font-size: Theme.font-small;
-                font-weight: 500;
-                vertical-alignment: center;
-            }
-        }
-    }
-}
+// Buttons are the kit's YButton. This screen drew its own, and its primary wore the app's
+// identity colour: Containers is teal, and teal is the minds' colour (colour system), so
+// "Run New" read as a mind's control. A primary is the accent in every app; secondary is an
+// outline; Remove is the one destructive red. All are compact: the 12px label these buttons
+// always had, so five fit a row and "Run New" fits beside its field.
 
 // ── Status badge component ──
 
@@ -80,12 +52,13 @@ component StatusBadge inherits Rectangle {
     border-radius: self.height / 2;
     background: status == "running" ? Theme.color-success-dim
               : status == "paused" ? Theme.color-warning-dim
-              : status == "restarting" ? Theme.accent-dim
+              : status == "restarting" ? Theme.tint-accent
               : Theme.color-danger-dim;
     border-width: 1px;
+    // Restarting is a state, so the accent, not the app's teal identity (teal is the minds').
     border-color: status == "running" ? Theme.color-success.transparentize(60%)
                : status == "paused" ? Theme.color-warning.transparentize(60%)
-               : status == "restarting" ? AppIdentity.accent.transparentize(60%)
+               : status == "restarting" ? Theme.accent.transparentize(60%)
                : Theme.color-danger.transparentize(60%);
 
     Text {
@@ -95,7 +68,7 @@ component StatusBadge inherits Rectangle {
             : "Stopped";
         color: status == "running" ? Theme.color-success
              : status == "paused" ? Theme.color-warning
-             : status == "restarting" ? AppIdentity.accent
+             : status == "restarting" ? Theme.accent
              : Theme.color-danger;
         font-size: Theme.fs-micro;
         font-weight: 600;
@@ -175,35 +148,38 @@ component ContainerRow inherits Rectangle {
                 spacing: Theme.sp-1;
                 alignment: center;
 
-                if data.status == "running" || data.status == "restarting" : ActionButton {
+                if data.status == "running" || data.status == "restarting" : YButton {
                     label: "Stop";
-                    width: 56px;
+                    variant: 1;
+                    size: 0;
                     clicked => { stop-clicked(); }
                 }
 
-                if data.status == "stopped" || data.status == "paused" : ActionButton {
+                if data.status == "stopped" || data.status == "paused" : YButton {
                     label: "Start";
-                    primary: true;
-                    width: 56px;
+                    variant: 0;
+                    size: 0;
                     clicked => { start-clicked(); }
                 }
 
-                ActionButton {
+                YButton {
                     label: "Restart";
-                    width: 64px;
+                    variant: 1;
+                    size: 0;
                     clicked => { restart-clicked(); }
                 }
 
-                ActionButton {
+                YButton {
                     label: "Logs";
-                    width: 52px;
+                    variant: 1;
+                    size: 0;
                     clicked => { logs-clicked(); }
                 }
 
-                ActionButton {
+                YButton {
                     label: "Remove";
-                    danger: true;
-                    width: 68px;
+                    variant: 3;
+                    size: 0;
                     clicked => { remove-clicked(); }
                 }
             }
@@ -263,10 +239,10 @@ component ImageRow inherits Rectangle {
                 }
             }
 
-            ActionButton {
+            YButton {
                 label: "Remove";
-                danger: true;
-                width: 68px;
+                variant: 3;
+                size: 0;
                 clicked => { remove-clicked(); }
             }
         }
@@ -325,10 +301,10 @@ component VolumeRow inherits Rectangle {
                 }
             }
 
-            ActionButton {
+            YButton {
                 label: "Remove";
-                danger: true;
-                width: 68px;
+                variant: 3;
+                size: 0;
                 clicked => { remove-clicked(); }
             }
         }
@@ -582,10 +558,10 @@ export component ContainerManagerScreen inherits Rectangle {
                                 }
                             }
 
-                            ActionButton {
+                            YButton {
                                 label: "Run New";
-                                primary: true;
-                                width: 72px;
+                                variant: 0;
+                                size: 0;
                                 clicked => {
                                     if run-image-input != "" {
                                         ct-run(run-image-input);
@@ -696,10 +672,10 @@ export component ContainerManagerScreen inherits Rectangle {
                             }
                         }
 
-                        ActionButton {
+                        YButton {
                             label: "Pull";
-                            primary: true;
-                            width: 56px;
+                            variant: 0;
+                            size: 0;
                             clicked => {
                                 if pull-image-input != "" {
                                     ct-pull(pull-image-input);
@@ -806,10 +782,10 @@ export component ContainerManagerScreen inherits Rectangle {
                             }
                         }
 
-                        ActionButton {
+                        YButton {
                             label: "Create";
-                            primary: true;
-                            width: 64px;
+                            variant: 0;
+                            size: 0;
                             clicked => {
                                 if create-volume-input != "" {
                                     ct-create-volume(create-volume-input);
@@ -909,9 +885,10 @@ export component ContainerManagerScreen inherits Rectangle {
                             horizontal-stretch: 1;
                         }
 
-                        ActionButton {
+                        YButton {
                             label: "Close";
-                            width: 56px;
+                            variant: 1;
+                            size: 0;
                             clicked => { show-logs = false; }
                         }
                     }
