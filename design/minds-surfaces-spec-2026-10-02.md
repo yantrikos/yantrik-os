@@ -107,7 +107,7 @@ The object that connects them is the **work card**: a run's mind, state, desk pr
 ## 3. The dock, overloaded
 **Base**
 - Centred, 48px tall, 12px off the bottom, 16px radius, #101417 with a neutral border, 4px padding.
-- 40×40 buttons with 24px icons and 4px gaps.
+- 40×40 buttons with 32px app tiles (20px glyphs on whole pixels) and 4px gaps. Changed from "24px icons" on 3 Oct 2026: a 24px tile left a 13px glyph, which Pranab saw on VM 520 as "not crisp but blunt".
 - Maximum width: min(880px, viewport − 32px).
 
 **Order**

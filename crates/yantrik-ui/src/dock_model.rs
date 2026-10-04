@@ -206,13 +206,17 @@ mod tests {
         assert!(d < at - 3, "and dock_model sits above the note, not between it and windows");
     }
 
-    /// The dock's icons are the spec's 24px, and nothing claims the spec allows more (#585 S1).
+    /// The dock's tiles are the spec's 32px (§3, changed from 24px on 3 October: a 24px tile left a
+    /// 13px glyph, "not crisp but blunt"), and the token and the spec say the same (#585 S1).
     #[test]
-    fn dock_icons_are_the_specs_24px() {
-        let theme = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../yantrik-design-tokens/slint/theme.slint")).unwrap();
+    fn dock_icons_are_the_specs_32px() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let theme = std::fs::read_to_string(root.join("../yantrik-design-tokens/slint/theme.slint")).unwrap();
         let line = theme.lines().find(|l| l.contains("out property <length> dock-icon:")).unwrap();
-        assert!(line.contains(": 24px;"), "{line}");
+        assert!(line.contains(": 32px;"), "{line}");
         assert!(!theme.contains("spec allows 24-36px"));
+        let spec = std::fs::read_to_string(root.join("../../design/minds-surfaces-spec-2026-10-02.md")).unwrap();
+        assert!(spec.contains("40×40 buttons with 32px app tiles"), "the spec says 32px too");
     }
 
     /// One wheel area under the whole bar, and every dock button forwards the wheel: a button's own
