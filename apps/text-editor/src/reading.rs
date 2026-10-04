@@ -18,7 +18,7 @@ pub const DESCRIBE_CHARS: usize = 4_000;
 /// Room kept for a `line_cut` note on top of the measured envelope.
 const CUT_NOTE: usize = 140;
 
-/// The least text a page carries even when a long path eats the envelope; a page that could hold
+/// The least text a page carries even when a long file path eats the envelope; a page that could hold
 /// nothing would page forever.
 const MIN_TEXT: usize = 1_000;
 
@@ -43,7 +43,7 @@ fn cut_to(line: &str, budget: usize) -> &str {
 /// One page of `text`, starting at 1-based `from_line`.
 ///
 /// `path` is the document as this caller may see it, and `call_args` what the next call has to
-/// repeat before `from_line` (`tab 2 and `, `path "~/x" and `), so `how_to_see_the_rest` can be
+/// repeat before `from_line` (`tab 2 and `), so `how_to_see_the_rest` can be
 /// followed verbatim. Lines are counted as `describe.lines` counts them: one more than the
 /// newlines. A page always carries at least one line; a line longer than a page is cut, and
 /// `line_cut` says so rather than let the cut pass for the line's end.

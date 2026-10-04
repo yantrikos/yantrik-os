@@ -534,7 +534,7 @@ fn every_action_says_what_it_does(published: &[(Action, Handler)]) {
 /// VM 520, 4 October: a mind asked to read ~/mdg/MDG-spec.md (9,557 bytes) found no action that
 /// read a document, and `describe` showed only its first 4,000 characters without saying so.
 /// Through the real surface: `describe` and `open` now say the content is cut and name the call,
-/// and `read` pages the tab in front, another tab, and a file it does not open.
+/// and `read` pages the tab in front, another tab, and a file once `open` has opened it.
 fn read_pages_a_tab_another_tab_and_a_file(
     ui: &TextEditorApp,
     s: &State,
@@ -562,17 +562,22 @@ fn read_pages_a_tab_another_tab_and_a_file(
     act_on(published, "close", serde_json::json!({})).expect("close the long tab");
     act_on(published, "discard", serde_json::json!({})).expect("discard the long tab");
 
-    // A file by path, never opened; and `open` of it says what `describe` will leave out.
+    // A file is `open`ed (standard) and then read; `read` itself never takes a path, because a
+    // safe read runs unasked and a path would reach every text file in the home.
     let file = dir.join("MDG-spec.md");
     std::fs::write(&file, &spec).unwrap();
     let tabs = s.borrow().docs.len();
     let by_path = serde_json::json!({ "path": file.display().to_string() });
-    assert_eq!(walk(published, by_path.clone()), spec, "the file, read whole");
-    assert_eq!(s.borrow().docs.len(), tabs, "reading by path opens nothing");
-    assert!(act_on(published, "read", serde_json::json!({ "path": file.display().to_string(), "tab": 0 })).is_err());
+    let refused = act_on(published, "read", by_path.clone()).expect_err("a path is refused");
+    assert!(refused.contains("takes no `path`") && refused.contains("`open`"), "{refused}");
+    assert_eq!(s.borrow().docs.len(), tabs, "a refused read opens nothing");
     let opened = act_on(published, "open", by_path).expect("open the spec");
     assert_eq!(opened["content_cut"], true, "{opened}");
-    assert!(opened["read_with"].as_str().unwrap().starts_with("read from_line "), "{opened}");
+    let read_with = opened["read_with"].as_str().unwrap().to_string();
+    let from: usize = read_with.strip_prefix("read from_line ").expect(&read_with).parse().unwrap();
+    let rest = act_on(published, "read", serde_json::json!({ "from_line": from })).expect("the named call");
+    assert!(spec.lines().nth(from - 1).map_or(false, |l| rest["text"].as_str().unwrap().starts_with(l)), "{rest}");
+    assert_eq!(walk(published, serde_json::json!({})), spec, "the opened file, read whole");
     act_on(published, "close", serde_json::json!({})).expect("close the spec");
 
     // A short tab: describe is whole and says so.
@@ -677,9 +682,9 @@ fn read_cuts_a_line_longer_than_a_page_and_says_so() {
 #[test]
 fn read_names_the_whole_next_call_and_describe_names_where_its_content_stops() {
     let spec = spec_like(240);
-    let page = reading::page(&spec, serde_json::json!("/home/p/x.md"), 1, "path \"~/x.md\" and ");
+    let page = reading::page(&spec, serde_json::json!("/home/p/x.md"), 1, "tab 2 and ");
     let hint = page["how_to_see_the_rest"].as_str().unwrap();
-    assert!(hint.contains("call read with path \"~/x.md\" and from_line "), "{hint}");
+    assert!(hint.contains("call read with tab 2 and from_line "), "{hint}");
     assert!(page.to_string().len() < 4_000);
     let cut = reading::describe_cut(&spec).expect("9.5 KB is cut at 4,000 characters");
     let shown = reading::describe_content(&spec);
@@ -1071,13 +1076,16 @@ fn an_agent_names_only_files_in_the_home(ui: &TextEditorApp, s: &State, publishe
     // answer "does it contain X?" by its count.
     let hidden = "its text is left alone; `select_tab` another or `new` one.";
     refused("save_as", serde_json::json!({ "path": "~/Documents/copied-out.txt" }), hidden);
-    // Nor does `read` page it out, or reach a file by path that `open` would refuse.
-    refused("read", serde_json::json!({ "path": "/etc/hostname" }), " is outside");
-    refused("read", serde_json::json!({ "path": "~/.ssh/id_ed25519" }), " is protected");
+    // Nor does `read` page it out, by default or by its number, and it reaches no file by path.
+    refused("read", serde_json::json!({ "path": "~/.ssh/id_ed25519" }), "then `read` it.");
     let active = s.borrow().active;
+    refused(
+        "read",
+        serde_json::json!({ "tab": active }),
+        &format!("Tab {active} holds a file an agent is not shown, and its text is left alone; read another tab or `new` one."),
+    );
     for (name, args) in [
         ("read", serde_json::json!({})),
-        ("read", serde_json::json!({ "tab": active })),
         ("find", serde_json::json!({ "text": "omega" })),
         ("find-next", serde_json::json!({})),
         ("find-prev", serde_json::json!({})),

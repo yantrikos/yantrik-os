@@ -1345,10 +1345,15 @@ fn surface(ui: &TextEditorApp, s: &State) -> Vec<(Action, Handler)> {
         // and `describe` would have shown it only the first 4,000 characters. A mind keeps about
         // 4,000 characters of a safe read and 900 of anything graded higher, so the grade is what
         // lets a page reach it whole.
+        //
+        // Open tabs only, never a path: a safe read is run unasked by plan mode, phone turns and
+        // read-only roles, and a path would reach every text file in the home, credential files
+        // the protected list does not name included. A file not yet open goes through `open`,
+        // which is `standard`, and is then read here.
         act(
             "read",
-            "Read a document's text one page at a time, changing nothing: the tab in front, \
-             another open tab, or a file by path without opening it. The answer names the \
+            "Read an open tab's text one page at a time, changing nothing: the tab in front or \
+             another by number. A file not open yet is `open`ed first. The answer names the \
              `from_line` of the next page.",
         )
         .arg(
@@ -1363,32 +1368,19 @@ fn surface(ui: &TextEditorApp, s: &State) -> Vec<(Action, Handler)> {
                  brought forward. Leave it out to read the tab in front.",
             ),
         )
-        .arg(
-            arg(
-                "path",
-                "A file to read without opening it: an absolute path or one starting `~/`, by the \
-                 same rule as `open`. Leave it out to read a tab.",
-            )
-            .optional(),
-        )
         .risk("safe"),
         |ui, s, args| {
+            // Said, not ignored: a `path` passed anyway would otherwise quietly read whatever tab
+            // is in front and pass it off as the file asked for.
+            if args.get("path").is_some() {
+                return Err(refuse(
+                    ui,
+                    "`read` reads tabs that are already open and takes no `path`; `open` the \
+                     file first, then `read` it.",
+                ));
+            }
             let from_line = number(args, "from_line").unwrap_or(1).max(1) as usize;
             let tab = number(args, "tab");
-            let path = args.get("path").and_then(|v| v.as_str()).map(str::trim).filter(|p| !p.is_empty());
-            if let Some(p) = path {
-                if tab.is_some() {
-                    return Err(refuse(ui, "`read` takes a `path` or a `tab`, not both."));
-                }
-                // Exactly `open`'s check, so a file read unopened is one `open` then `describe`
-                // could have shown anyway.
-                let full = expanded(p);
-                agent_rule::may_read(&full).map_err(|e| refuse(ui, e))?;
-                let text = document::read(&full)
-                    .map_err(|e| refuse(ui, format!("{}: {e}", full.display())))?;
-                let shown = serde_json::json!(full.display().to_string());
-                return Ok(reading::page(&text, shown, from_line, &format!("path {p:?} and ")));
-            }
             let b = s.borrow();
             let open = b.docs.len();
             let index = match tab {
@@ -1405,7 +1397,16 @@ fn surface(ui: &TextEditorApp, s: &State) -> Vec<(Action, Handler)> {
             let d = &b.docs[index];
             if agent_rule::hidden_from_caller(d.path.as_deref()).is_some() {
                 drop(b);
-                return Err(refuse(ui, HIDDEN_REFUSAL));
+                return Err(refuse(
+                    ui,
+                    match tab {
+                        None => HIDDEN_REFUSAL.to_string(),
+                        Some(i) => format!(
+                            "Tab {i} holds a file an agent is not shown, and its text is left \
+                             alone; read another tab or `new` one."
+                        ),
+                    },
+                ));
             }
             let call = tab.map(|i| format!("tab {i} and ")).unwrap_or_default();
             Ok(reading::page(&d.text, shown_path(d), from_line, &call))
