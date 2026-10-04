@@ -268,6 +268,30 @@ fn a_missing_folder_says_how_to_make_it_and_that_nothing_is_lost() {
     assert!(err.ends_with("does not exist"), "the reason still ends it: {err}");
 }
 
+/// Credential stores and the harnesses' key-bearing state are protected, for reading and writing
+/// alike; names that merely start the same are not (security review of #617).
+#[test]
+fn credential_files_are_protected_and_lookalikes_are_not() {
+    for p in [
+        "/home/ann/.aws/credentials",
+        "/home/ann/.git-credentials",
+        "/home/ann/.netrc",
+        "/home/ann/.config/gh/hosts.yml",
+        "/home/ann/.docker/config.json",
+        "/home/ann/.kube/config",
+        "/home/ann/.npmrc",
+        "/home/ann/.cargo/credentials.toml",
+        "/home/ann/.local/share/keyrings/login.keyring",
+        "/home/ann/.claude.json",
+        "/home/ann/.hermes/config.yaml",
+    ] {
+        assert!(is_protected(Path::new(p)), "{p} must be protected");
+    }
+    for p in ["/home/ann/.aws-notes.txt", "/home/ann/.docker/other.json", "/home/ann/notes/.netrc-howto.md", "/home/ann/pictures/.pi-day.png"] {
+        assert!(!is_protected(Path::new(p)), "{p} is not a credential store");
+    }
+}
+
 #[test]
 fn protected_names_match_whole_components_only() {
     assert!(is_protected(Path::new("/home/ann/.ssh/id_ed25519")));

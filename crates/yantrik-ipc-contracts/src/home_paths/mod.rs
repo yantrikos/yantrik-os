@@ -65,6 +65,31 @@ pub const PROTECTED: &[&str] = &[
     ".config/systemd",
     ".local/share/applications",
     ".config/mimeapps.list",
+    // Credentials. The list above was built against code that runs as the person; it left every
+    // token and password file in the home readable to any agent's `open`, and a safe editor
+    // `read` would have handed them to phone turns unasked (security review of #617, 4 October).
+    ".aws",
+    ".azure",
+    ".config/gcloud",
+    ".config/gh",
+    ".docker/config.json",
+    ".kube",
+    ".git-credentials",
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    ".cargo/credentials",
+    ".cargo/credentials.toml",
+    ".vault-token",
+    ".terraform.d/credentials.tfrc.json",
+    ".password-store",
+    ".local/share/keyrings",
+    // The agent harnesses' own state, which carries their API keys and session credentials.
+    ".claude",
+    ".claude.json",
+    ".hermes",
+    ".openclaw",
+    ".pi",
 ];
 
 /// What `.config/...` in [`PROTECTED`] names, found under `$XDG_CONFIG_HOME` instead.
