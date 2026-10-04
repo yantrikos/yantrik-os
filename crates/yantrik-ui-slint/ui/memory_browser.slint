@@ -38,6 +38,11 @@ export component MemoryBrowser inherits Rectangle {
     // when it opens and when its search is cleared (VM 520 sweep, 4 October -- it was blank
     // until something was typed, over about 1,036 stored memories).
     in property <bool> showing-recent: false;
+    // No answer came within a few seconds (wire/memory_wait.rs). VM 520, 4 October: the screen
+    // sat on "searching" over a blank page while the companion was busy with its own turns.
+    in property <bool> busy: false;
+    // What Retry asks again: the last query, or "" for the newest memories.
+    property <string> last-query: "";
     callback search(string);
     callback back-pressed();
 
@@ -72,12 +77,12 @@ export component MemoryBrowser inherits Rectangle {
             subtitle: "\{root.total-memories} stored";
             show-search: true;
             search-placeholder: "Search memories";
-            status: root.is-searching ? "searching" : "";
+            status: root.is-searching ? "searching" : root.busy ? "busy" : "";
             back => { root.back-pressed(); }
-            search-accepted(q) => { root.search(q); }
+            search-accepted(q) => { root.last-query = q; root.search(q); }
             // Clearing the field goes back to the newest memories, rather than leaving the last
             // search's matches under an empty box.
-            search-edited(q) => { if (q == "") { root.search(""); } }
+            search-edited(q) => { if (q == "") { root.last-query = ""; root.search(""); } }
         }
 
         // What the rows are: the newest, or what a search found.
@@ -212,7 +217,27 @@ export component MemoryBrowser inherits Rectangle {
         //
         // With nothing searched, the count is said beside the prompt, so an empty list is never
         // read as an empty store.
-        if results.length == 0 && !is-searching : YEmptyState {
+        // Still waiting, and nothing to show yet: say so, never a blank page.
+        if results.length == 0 && is-searching : YEmptyState {
+            vertical-stretch: 1;
+            icon-path: Icons.chip;
+            title: "Reading your memories";
+            description: root.total-memories > 0 ? "\{root.total-memories} stored." : "";
+        }
+
+        // No answer in time. The count is still the count, and Retry asks again.
+        if results.length == 0 && !is-searching && root.busy : YEmptyState {
+            vertical-stretch: 1;
+            icon-path: Icons.chip;
+            title: "Memories are busy \u{2014} try again";
+            description: root.total-memories > 0
+                ? "\{root.total-memories} stored. Yantrik is in the middle of something; they will be here in a moment."
+                : "Yantrik is in the middle of something; try again in a moment.";
+            action-label: "Retry";
+            action-clicked => { root.search(root.last-query); }
+        }
+
+        if results.length == 0 && !is-searching && !root.busy : YEmptyState {
             vertical-stretch: 1;
             icon-path: root.showing-recent ? Icons.chip : Icons.search;
             title: root.showing-recent ? "Search your memories" : "Nothing matched";

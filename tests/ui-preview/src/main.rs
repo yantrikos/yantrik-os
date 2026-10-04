@@ -48,6 +48,7 @@ mod rail_tests;
 mod calendar_tests;
 mod top_bar_tests;
 mod icon_tests;
+mod memory_busy_tests;
 use slint::{
     platform::{
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
@@ -92,6 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-context-rail") { return rail_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-calendar") { return calendar_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-recipes") { return recipes_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-memory-busy") { return memory_busy_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-formations") { return formations_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-lens-agents") { return agents_tests::run_lens(&window, output); }
     if args.iter().any(|a| a == "verify-screen-controls") { return screen_controls_tests::run(&window, output); }

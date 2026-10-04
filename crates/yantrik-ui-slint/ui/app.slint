@@ -392,6 +392,8 @@ export component App inherits Window {
     in property <bool> is-searching-memories: false;
     // The Memory screen's rows are the newest memories, not search results (wire/callbacks.rs).
     in property <bool> memory-showing-recent: false;
+    // No answer came in time: the Memory screen says so and offers Retry (wire/memory_wait.rs).
+    in property <bool> memory-busy: false;
 
     // Voice state
     in-out property <bool> voice-active: false;
@@ -1883,6 +1885,7 @@ export component App inherits Window {
                 results: root.memory-results;
                 is-searching: root.is-searching-memories;
                 showing-recent: root.memory-showing-recent;
+                busy: root.memory-busy;
                 total-memories: root.memory-count;
                 search(query) => { root.search-memories(query); }
                 back-pressed => {

@@ -136,6 +136,8 @@ mod notifications;
 mod notification_sender;
 // The Memory screen's newest memories, by recall's own domain rule.
 mod recent_memories;
+// The newest memories read from the store directly, never queued behind the companion.
+mod memory_reader;
 mod onboarding;
 mod perception;
 mod icons;

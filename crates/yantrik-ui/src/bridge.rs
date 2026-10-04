@@ -329,6 +329,8 @@ pub struct CompanionBridge {
     /// The Settings incognito switch, and Private mode: the companion is incognito while either is on.
     incognito_setting: AtomicBool,
     private: AtomicBool,
+    /// The memory store's path, for reads that must not wait on the worker (`recent_memories`).
+    memory_db: String,
 }
 
 /// A companion you can use from another thread.
@@ -654,6 +656,7 @@ impl CompanionBridge {
         }
         let decisions = yantrik_companion::decisions::Decisions::default();
         let decisions_w = decisions.clone();
+        let memory_db = config.yantrikdb.db_path.clone();
         let self_tx = cmd_tx.clone();
         let board_w = board.clone();
         let worker_handle = std::thread::spawn(move || {
@@ -672,6 +675,7 @@ impl CompanionBridge {
             decisions,
             incognito_setting: AtomicBool::new(false),
             private: AtomicBool::new(private),
+            memory_db,
         }
     }
 
@@ -746,9 +750,25 @@ impl CompanionBridge {
     }
 
     /// The newest `limit` memories, newest first.
+    ///
+    /// Read on a thread of its own from the store directly (`crate::memory_reader`), not through
+    /// the worker: the worker serves one command at a time, and on VM 520 (4 October) the Memory
+    /// screen sat on "searching" behind its background LLM turns. Only when the store can be read
+    /// no other way (encrypted, or the worker has not opened it yet) is the worker asked, and the
+    /// screen's own timeout covers that wait.
     pub fn recent_memories(&self, limit: usize) -> Receiver<Vec<MemoryResult>> {
         let (reply_tx, reply_rx) = crossbeam_channel::unbounded();
-        let _ = self.cmd_tx.send(CompanionCommand::RecentMemories { limit, reply_tx });
+        let db_path = self.memory_db.clone();
+        let cmd_tx = self.cmd_tx.clone();
+        std::thread::spawn(move || match crate::memory_reader::newest(&db_path, limit) {
+            Ok(items) => {
+                let _ = reply_tx.send(items);
+            }
+            Err(why) => {
+                tracing::debug!(reason = %why, "newest memories asked of the worker");
+                let _ = cmd_tx.send(CompanionCommand::RecentMemories { limit, reply_tx });
+            }
+        });
         reply_rx
     }
 
@@ -3184,6 +3204,9 @@ fn build_companion(config: CompanionConfig) -> Result<CompanionService, String> 
     let mut db =
         yantrikdb_core::YantrikDB::new(&config.yantrikdb.db_path, config.yantrikdb.embedding_dim)
             .map_err(|e| format!("failed to create YantrikDB: {e}"))?;
+    // Whether the Memory screen may read the store's rows itself (crate::memory_reader): only
+    // when its text is kept in the clear.
+    crate::memory_reader::set_plain(!db.is_encrypted());
     db.set_embedder(match embedder_identity {
         Some(id) => Box::new(yantrik_companion::embedder_bridge::EmbedderBridge::with_identity(embedder, id)),
         None => Box::new(yantrik_companion::embedder_bridge::EmbedderBridge::new(embedder)),

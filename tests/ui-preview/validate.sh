@@ -22,6 +22,7 @@ run target/ui-validation/minds.png 1280 800 verify-minds
 run target/ui-validation/jump-to-present.png 480 400 verify-jump-to-present
 run target/ui-validation/context-rail.png 900 500 verify-context-rail
 run target/ui-validation/calendar.png 1100 720 verify-calendar
+run target/ui-validation/memory-busy.png 1280 800 verify-memory-busy
 run target/ui-validation/provider-panel.png 1280 800 verify-provider-panel
 run target/ui-validation/handoff-card.png 1280 800 verify-handoff-card
 run target/ui-validation/accounts-page.png 1280 800 verify-accounts-page

@@ -419,8 +419,10 @@ fn wire_memory_search(ui: &App, ctx: &AppContext) {
 
         if let Some(ui) = ui_weak.upgrade() {
             ui.set_is_searching_memories(true);
+            ui.set_memory_busy(false);
             ui.set_memory_showing_recent(recent);
         }
+        let started = std::time::Instant::now();
 
         let reply_rx = if recent {
             bridge.recent_memories(RECENT_MEMORIES)
@@ -431,7 +433,22 @@ fn wire_memory_search(ui: &App, ctx: &AppContext) {
         let handle = timer_inner.clone();
         let timer = Timer::default();
         timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
-            if let Ok(results) = reply_rx.try_recv() {
+            // An end to every wait (VM 520, 4 October): an answer, or after a few seconds the
+            // screen's "busy" state with Retry. It sat on "searching" over a blank page before.
+            let results = match super::memory_wait::poll(started, std::time::Instant::now(), reply_rx.try_recv().ok()) {
+                super::memory_wait::Wait::Pending => return,
+                super::memory_wait::Wait::Busy => {
+                    tracing::info!("memory screen: no answer in time, offering Retry");
+                    if let Some(ui) = weak.upgrade() {
+                        ui.set_is_searching_memories(false);
+                        ui.set_memory_busy(true);
+                    }
+                    *handle.borrow_mut() = None;
+                    return;
+                }
+                super::memory_wait::Wait::Answered(results) => results,
+            };
+            {
                 if let Some(ui) = weak.upgrade() {
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
