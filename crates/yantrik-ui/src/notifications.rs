@@ -215,8 +215,10 @@ pub fn urgency_int(urgency: Urgency) -> i32 {
     urgency.hint_byte() as i32
 }
 
-/// The small line under a row that says who sent it — the approval card's two facts, in the
-/// card's words, on one line.
+/// The full line about who sent a notification — the approval card's two facts, in the card's
+/// words, on one line. The card leads with `notification_sender::sender_summary` and shows this
+/// one behind its Details control (VM 520 sweep, 4 October: a pid on every card is a
+/// debugger's line, not a person's).
 ///
 /// Notification 134 on 22 September read `Yantrik` and said something false; the mind that
 /// sent it was in `ps` the whole time, and the row had no way to say so. The row's name is
@@ -232,7 +234,12 @@ pub fn sender_line(n: &Notification) -> String {
         return String::new();
     };
     let claim = match &sender.claimed {
-        Some(name) => format!("\u{201c}{name}\u{201d} says the caller \u{b7} "),
+        // One line whatever the caller sent: the card draws this behind Details with word wrap,
+        // and a newline in the claim would otherwise draw a line of the caller's choosing.
+        Some(name) => format!(
+            "\u{201c}{}\u{201d} says the caller \u{b7} ",
+            crate::notification_sender::one_line(name)
+        ),
         None => String::new(),
     };
     if sender.pid == 0 {
@@ -254,6 +261,7 @@ pub fn to_slint_data(n: &Notification) -> crate::NotificationData {
         time_ago: crate::bridge::format_time_ago(seconds_since(&n.created_at)).into(),
         is_read: n.read,
         sender_line: sender_line(n).into(),
+        sender_short: crate::notification_sender::sender_summary(n).into(),
         is_group_header: false,
         group_name: n.app.clone().into(),
         group_icon: first_letter(&n.app),
@@ -322,6 +330,7 @@ pub fn sync_to_ui(mirror: &NotificationMirror, ui_weak: &slint::Weak<crate::App>
             time_ago: slint::SharedString::default(),
             is_read: true,
             sender_line: slint::SharedString::default(),
+            sender_short: slint::SharedString::default(),
             is_group_header: true,
             group_name: first.app.clone().into(),
             group_icon: first_letter(&first.app),
@@ -377,6 +386,7 @@ mod tests {
             verified: "python -m hermes_cli.main gateway run --replace (pid 689)".into(),
             pid: 689,
             exe: "/home/yantrik/.hermes/hermes-agent/venv/bin/python".into(),
+            desktop: false,
         });
         let line = sender_line(&n);
         assert!(line.starts_with("\u{201c}Yantrik\u{201d} says the caller"), "{line}");
@@ -390,6 +400,7 @@ mod tests {
             verified: "a program started from a terminal: yantrik-terminal (pid 812)".into(),
             pid: 812,
             exe: "/opt/yantrik/bin/yantrik-terminal".into(),
+            desktop: false,
         });
         assert_eq!(
             sender_line(&n),
@@ -402,6 +413,7 @@ mod tests {
             verified: "could not be identified".into(),
             pid: 0,
             exe: String::new(),
+            desktop: false,
         });
         assert_eq!(
             sender_line(&n),

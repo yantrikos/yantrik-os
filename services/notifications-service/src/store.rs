@@ -679,6 +679,7 @@ mod tests {
             verified: "python -m hermes_cli.main gateway run (pid 689)".into(),
             pid: 689,
             exe: "/home/yantrik/.hermes/hermes-agent/venv/bin/python".into(),
+            desktop: false,
         };
         let first = store.add_from(req("hermes_cli.main", "Studio finished"), Some(hermes.clone()));
         assert_eq!(first.sender.as_ref(), Some(&hermes));
@@ -688,6 +689,7 @@ mod tests {
             verified: "yantrik-ui config.yaml (pid 7456)".into(),
             pid: 7456,
             exe: "/opt/yantrik/bin/yantrik-ui".into(),
+            desktop: true,
         };
         let replaced = store.add_from(
             AddRequest { replaces_id: Some(first.id.clone()), ..req("Yantrik", "Update available") },

@@ -256,6 +256,17 @@ pub struct Sender {
     /// more; this is the path a person checks afterwards.
     #[serde(default)]
     pub exe: String,
+    /// The process on the socket itself — not the first recognisable one `verified` and `exe`
+    /// are about — was the installed desktop: the shell or this service, judged by the service
+    /// at the moment of the call. The only thing that earns a card the desktop's own plain
+    /// "Sent by yantrik-ui · verified".
+    ///
+    /// Not `exe`, because `exe` names the first recognisable ancestor: a mind calling through a
+    /// bridge the shell spawned has `yos` on the socket and `yantrik-ui` above it, and its `exe`
+    /// is the shell's (security re-review of #611). `false` on a record written before this
+    /// existed, which is the direction to fail in.
+    #[serde(default)]
+    pub desktop: bool,
 }
 
 /// What a sender posts.
@@ -337,10 +348,16 @@ mod tests {
             verified: "python -m hermes_cli.main gateway run (pid 689)".into(),
             pid: 689,
             exe: "/home/yantrik/.hermes/hermes-agent/venv/bin/python".into(),
+            desktop: false,
         });
         let text = serde_json::to_string(&n).unwrap();
         let back: Notification = serde_json::from_str(&text).unwrap();
         assert_eq!(back.sender, n.sender);
+
+        // A sender record written before `desktop` existed reads as not the desktop.
+        let old_sender = r#"{"claimed":"Yantrik","verified":"yantrik-ui config.yaml (pid 7)","pid":7,"exe":"/opt/yantrik/bin/yantrik-ui"}"#;
+        let s: Sender = serde_json::from_str(old_sender).expect("an old sender parses");
+        assert!(!s.desktop);
     }
 
     #[test]

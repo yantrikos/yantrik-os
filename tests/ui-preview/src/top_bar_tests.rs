@@ -164,6 +164,7 @@ fn note(id: &str, app: &str, summary: &str, body: &str, ago: &str, read: bool, a
         )),
         source: "yantrik".into(),
         sender_line: "".into(),
+        sender_short: "".into(),
     }
 }
 

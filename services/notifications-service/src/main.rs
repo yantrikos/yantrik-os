@@ -54,9 +54,11 @@ mod freedesktop;
 mod reminders;
 mod store;
 
+use std::path::Path;
 use std::sync::Arc;
 
 use yantrik_ipc_contracts::notifications::*;
+use yantrik_ipc_transport::owner;
 use yantrik_ipc_transport::peer_identity::{self, Program};
 use yantrik_ipc_transport::PeerCred;
 #[cfg(test)]
@@ -475,9 +477,6 @@ fn notification_actions() -> Vec<Action> {
 /// claims it is filed under its own program, and the claim is kept beside it.
 const OS_NAME: &str = "Yantrik";
 
-/// The desktop itself: the shell, and this service. The only callers `Yantrik` belongs to.
-const DESKTOP_BINARIES: &[&str] = &["yantrik-ui", "notifications-service"];
-
 /// The store's last resort for a row with no name, as it always was.
 const NAMELESS: &str = "unknown";
 
@@ -488,10 +487,22 @@ const NAMELESS: &str = "unknown";
 /// bridge the shell spawned has `yantrik-ui` above it but `yos` on the socket, and it is the
 /// mind, not the shell — the card's walk names the shell for it, which is right for a card and
 /// wrong for handing out the shell's name.
+///
+/// And judged by where that binary IS, not what it is called (security re-review of #611): one
+/// of the desktop's binaries (`owner::DESKTOP_BINARIES`) in the install directory, or in the
+/// directory this service itself was started from, which is what keeps a developer's build of
+/// the shell, run beside its own build of this service, the desktop. A copy at
+/// `/tmp/yantrik-ui` has the right name and gets nothing for it: the name `Yantrik` on the
+/// toast and the row is what #114 is about.
 fn is_the_desktop(who: &Program) -> bool {
-    who.direct
-        .as_ref()
-        .is_some_and(|f| DESKTOP_BINARIES.contains(&peer_identity::basename(&f.exe)))
+    let own_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf));
+    who.direct.as_ref().is_some_and(|f| desktop_exe(&f.exe, own_dir.as_deref()))
+}
+
+/// The rule behind `is_the_desktop`, with the service's own directory passed in so it can be
+/// tested without being installed.
+fn desktop_exe(exe: &str, own_dir: Option<&Path>) -> bool {
+    owner::is_installed_desktop_binary(exe) || own_dir.is_some_and(|d| owner::is_desktop_binary_in(exe, d))
 }
 
 /// What this machine can establish about whoever is on the socket, read now.
@@ -533,6 +544,9 @@ fn attribute(app_given: &str, who: &Program) -> (String, Sender) {
         verified: who.line(),
         pid: who.pid(),
         exe: who.exe(),
+        // The socket's own process, not `exe`'s recognisable ancestor: the card's plain
+        // "Sent by yantrik-ui · verified" is drawn from this alone.
+        desktop,
     };
     (app, sender)
 }
@@ -874,6 +888,12 @@ mod tests {
         ]);
         assert!(!is_the_desktop(&via_bridge));
         assert_ne!(attribute("Yantrik", &via_bridge).0, "Yantrik");
+        // And its record says so, though `exe` names the shell above it: `exe` is the first
+        // recognisable process, `desktop` is the one on the socket.
+        let (_, sender) = attribute("Yantrik", &via_bridge);
+        assert!(!sender.desktop);
+        assert_eq!(sender.exe, "/opt/yantrik/bin/yantrik-ui", "the walk still names the shell");
+        assert!(attribute("Yantrik", &shell()).1.desktop);
 
         // A caller nothing could be established about does not get it either.
         let (app, sender) = attribute("Yantrik", &Program::unknown());
@@ -883,6 +903,26 @@ mod tests {
         // Only the bare name is the desktop's. "Yantrik Companion" is a name like any other,
         // and the row beside it says who really sent it.
         assert_eq!(attribute("Yantrik Companion", &hermes()).0, "Yantrik Companion");
+    }
+
+    #[test]
+    fn the_desktops_name_goes_by_where_the_binary_is_not_what_it_is_called() {
+        // A copy of the shell outside the install directory, on the socket itself.
+        let copy = peer_identity::choose(vec![facts(31, "/tmp/yantrik-ui", "yantrik-ui")]);
+        assert!(!is_the_desktop(&copy));
+        assert_eq!(attribute("", &copy).0, "yantrik-ui", "filed under its own name, not Yantrik");
+        assert_ne!(attribute("Yantrik", &copy).0, "Yantrik");
+        assert!(!attribute("Yantrik", &copy).1.desktop);
+        // A script titled `yantrik-ui` is its interpreter.
+        let script = peer_identity::choose(vec![facts(32, "/usr/bin/python3.11", "yantrik-ui")]);
+        assert!(!is_the_desktop(&script));
+
+        // A developer's build counts beside this service's own build, and nowhere else.
+        let build = Path::new("/home/yantrik/targets/dev/release");
+        assert!(desktop_exe("/home/yantrik/targets/dev/release/yantrik-ui", Some(build)));
+        assert!(!desktop_exe("/tmp/yantrik-ui", Some(build)));
+        assert!(!desktop_exe("/home/yantrik/targets/dev/release/yantrik-ui", None));
+        assert!(desktop_exe("/opt/yantrik/bin/yantrik-ui (deleted)", None), "replaced by an update");
     }
 
     #[test]

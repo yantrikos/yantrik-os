@@ -43,7 +43,13 @@ export struct NotificationData {
     // itself, and what the kernel-stamped pid on the socket resolved to. A notification that
     // said `Yantrik` and something false had no second voice (#114). Empty when the store
     // recorded nothing — an old record, or one from the freedesktop door — and then not drawn.
+    // Shown behind the card's Details control; `sender-short` is what the card leads with.
     sender-line: string,
+    // The same two facts in a few words, the verified program first: "Sent by yantrik-ui ·
+    // verified" for the installed desktop only, else "Sent by python3 evil.py (verified) · calls
+    // itself “Yantrik”", with the claim cut short so it can only elide itself
+    // (notification_sender.rs).
+    sender-short: string,
 }
 
 export component NotificationCenter inherits Rectangle {
@@ -226,8 +232,10 @@ export component NotificationCenter inherits Rectangle {
                     }
 
                     // Notification card
-                    if !notif.is-group-header : Rectangle {
+                    if !notif.is-group-header : card := Rectangle {
                         property <bool> hovered: cta.has-hover;
+                        // The full sender line, opened from the card's Details control.
+                        in-out property <bool> details-open: false;
                         background: hovered ? Theme.hover-fill : notif.is-read ? Theme.bg-card : Theme.bg-elevated;
                         border-radius: Theme.r-lg;
                         border-width: notif.urgency == 2 ? 1px : 0px;
@@ -290,16 +298,48 @@ export component NotificationCenter inherits Rectangle {
                                 wrap: word-wrap;
                             }
 
-                            // Who sent it — the same "says the caller" / "verified by this
-                            // machine" the approval card draws, because the name on the row
-                            // is only what the sender said. One elided line, at the card's
-                            // size for it, so a long command line cannot push the buttons.
-                            if notif.sender-line != "" : Text {
+                            // Who sent it. The name on the row is only what the sender said;
+                            // this says which program the kernel-stamped pid resolved to, and
+                            // whether the two disagree (#114) -- the defence against a program
+                            // posting as "Yantrik".
+                            //
+                            // VM 520 sweep, 4 October: this was the approval card's full line on
+                            // every card, "“Yantrik” says the caller · verified by this machine:
+                            // yantrik-ui config.yaml (pid 189858)". The card now leads with the
+                            // short form and keeps the full line, pid and all, one press away
+                            // under Details, for whoever wants to check it against ps. The
+                            // verified program leads and the caller's claim (cut short) trails,
+                            // so the elision can only ever eat the claim, never the fact.
+                            if notif.sender-short != "" : HorizontalLayout {
+                                spacing: Theme.sp-2;
+                                Text {
+                                    text: notif.sender-short;
+                                    color: Theme.text-dim;
+                                    font-size: Theme.fs-micro;
+                                    wrap: no-wrap;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+                                if notif.sender-line != "" : TouchArea {
+                                    width: details-label.preferred-width + Theme.sp-2;
+                                    mouse-cursor: pointer;
+                                    accessible-role: button;
+                                    accessible-label: card.details-open ? "Hide sender details" : "Show sender details";
+                                    clicked => { card.details-open = !card.details-open; }
+                                    details-label := Text {
+                                        text: card.details-open ? "Hide details" : "Details";
+                                        color: parent.has-hover ? Theme.text-secondary : Theme.text-dim;
+                                        font-size: Theme.fs-micro;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                            if card.details-open && notif.sender-line != "" : Text {
                                 text: notif.sender-line;
                                 color: Theme.text-dim;
                                 font-size: Theme.fs-micro;
-                                wrap: no-wrap;
-                                overflow: elide;
+                                wrap: word-wrap;
                             }
 
                             // The sender's own buttons. For a freedesktop notification, pressing
