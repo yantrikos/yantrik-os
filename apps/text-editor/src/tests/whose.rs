@@ -79,17 +79,17 @@ fn recovery_is_bounded_by_the_budget_and_keeps_no_token() {
     document::checkpoint(&path, &many).unwrap();
     assert_eq!(document::recover(&path).unwrap().len(), 20, "more than eight drafts come back");
 
+    // Checked on the parsed drafts rather than through a 65 MiB file: a test writing and syncing
+    // that much stalled the window test's own save, run alongside it, past its wait.
     let too_many: Vec<Document> =
         (0..=document::MAX_TABS).map(|i| tab(None, &format!("d{i}"), "", &Opener::Person)).collect();
-    document::checkpoint(&path, &too_many).unwrap();
-    let err = document::recover(&path).unwrap_err();
+    let err = document::admit(too_many).unwrap_err();
     assert!(err.contains("too many documents"), "{err}");
 
     let file = "y".repeat(document::MAX_BYTES);
-    let over: Vec<Document> = (0..65).map(|_| tab(None, &file, "", &Opener::Person)).collect();
-    document::checkpoint(&path, &over).unwrap();
-    let err = document::recover(&path).unwrap_err();
-    assert!(err.contains("more text than the editor keeps open"), "{err}");
+    let over: Vec<Document> = (0..65).map(|_| tab(None, "", &file, &Opener::Person)).collect();
+    let err = document::admit(over).unwrap_err();
+    assert!(err.contains("more text than the editor keeps open"), "baselines count too: {err}");
 
     // Larger than the editor could have written: not read at all, never parsed.
     std::fs::write(&path, vec![b' '; 4097]).unwrap();

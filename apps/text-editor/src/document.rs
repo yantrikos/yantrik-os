@@ -358,8 +358,13 @@ pub fn recover_within(path: &Path, limit: usize) -> Result<Vec<Document>, String
     if bytes.len() > limit {
         return Err("Recovery file is larger than the editor ever writes; it was not read.".into());
     }
-    let mut docs: Vec<Document> = serde_json::from_slice(&bytes)
+    let docs: Vec<Document> = serde_json::from_slice(&bytes)
         .map_err(|e| format!("Recovery file could not be read: {e}"))?;
+    admit(docs)
+}
+/// What the recovery file's drafts must be to be opened again: no more of them than the strip
+/// holds, within the budget, and each valid text.
+pub fn admit(mut docs: Vec<Document>) -> Result<Vec<Document>, String> {
     if docs.len() > MAX_TABS {
         return Err("Recovery contains too many documents.".into());
     }
