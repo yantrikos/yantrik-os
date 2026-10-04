@@ -132,8 +132,6 @@ mod cheat_sheet;
 #[cfg(test)]
 mod rc_keys;
 mod notifications;
-// The short "Sent by … · verified" line on a notification card.
-mod notification_sender;
 // The Memory screen's newest memories, by recall's own domain rule.
 mod recent_memories;
 mod onboarding;

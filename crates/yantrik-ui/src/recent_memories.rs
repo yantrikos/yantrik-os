@@ -10,10 +10,15 @@ use yantrik_companion::memory_evolution::is_excluded_domain;
 /// Rows read per page while collecting.
 const PAGE: usize = 100;
 
+/// Pages read at most: the newest thousand rows. This runs on the companion's worker thread, so
+/// a store that is nearly all audit lines must not keep it reading to the end of the table; a
+/// screen showing fewer than `limit` after that is honest about what the newest rows hold.
+const MAX_PAGES: usize = 10;
+
 /// Collect up to `limit` of the newest memories whose domain recall would keep, reading `fetch`
-/// a page at a time until there are enough or the store runs out. A page of nothing but audit
-/// lines does not make the screen come back short (security review of #611: one fetch of
-/// `limit * 5` did, whenever the newest hundred rows were all excluded).
+/// a page at a time until there are enough, the store runs out, or [`MAX_PAGES`] have been read.
+/// A page of nothing but audit lines does not make the screen come back short (security review
+/// of #611: one fetch of `limit * 5` did, whenever the newest hundred rows were all excluded).
 ///
 /// `fetch(offset, page)` returns that page, newest first, and the total row count.
 pub fn collect<T, E>(
@@ -23,7 +28,10 @@ pub fn collect<T, E>(
 ) -> Result<Vec<T>, E> {
     let mut kept = Vec::with_capacity(limit);
     let mut offset = 0;
-    while kept.len() < limit {
+    for _ in 0..MAX_PAGES {
+        if kept.len() >= limit {
+            break;
+        }
         let (rows, total) = fetch(offset, PAGE)?;
         let read = rows.len();
         kept.extend(rows.into_iter().filter(|m| !is_excluded_domain(domain_of(m))));
@@ -65,6 +73,21 @@ mod tests {
         let got = collect(20, |r: &(usize, &str)| r.1, |o, s| page(&rows, o, s)).unwrap();
         assert_eq!(got.len(), 20);
         assert!(got.iter().all(|r| r.1 == "work" || r.1 == "people"), "{got:?}");
+    }
+
+    #[test]
+    fn reading_stops_after_ten_pages() {
+        // A store that is all audit lines past the first thousand rows: the worker reads ten
+        // pages and stops, rather than walking the whole table.
+        let rows = store(5000, |i| if i < 4990 { "audit/tools" } else { "general" });
+        let mut pages = 0;
+        let got = collect(20, |r: &(usize, &str)| r.1, |o, s| {
+            pages += 1;
+            page(&rows, o, s)
+        })
+        .unwrap();
+        assert_eq!(pages, MAX_PAGES);
+        assert!(got.is_empty());
     }
 
     #[test]

@@ -57,7 +57,6 @@ mod store;
 use std::sync::Arc;
 
 use yantrik_ipc_contracts::notifications::*;
-use yantrik_ipc_transport::owner;
 use yantrik_ipc_transport::peer_identity::{self, Program};
 use yantrik_ipc_transport::PeerCred;
 #[cfg(test)]
@@ -476,6 +475,9 @@ fn notification_actions() -> Vec<Action> {
 /// claims it is filed under its own program, and the claim is kept beside it.
 const OS_NAME: &str = "Yantrik";
 
+/// The desktop itself: the shell, and this service. The only callers `Yantrik` belongs to.
+const DESKTOP_BINARIES: &[&str] = &["yantrik-ui", "notifications-service"];
+
 /// The store's last resort for a row with no name, as it always was.
 const NAMELESS: &str = "unknown";
 
@@ -486,12 +488,10 @@ const NAMELESS: &str = "unknown";
 /// bridge the shell spawned has `yantrik-ui` above it but `yos` on the socket, and it is the
 /// mind, not the shell — the card's walk names the shell for it, which is right for a card and
 /// wrong for handing out the shell's name.
-///
-/// The desktop's binaries, and the rule, are `yantrik_ipc_transport::owner`'s: the shell's
-/// notification card asks the stricter installed-path question of the same list, so the two
-/// cannot drift apart.
 fn is_the_desktop(who: &Program) -> bool {
-    who.direct.as_ref().is_some_and(|f| owner::is_desktop_binary(&f.exe))
+    who.direct
+        .as_ref()
+        .is_some_and(|f| DESKTOP_BINARIES.contains(&peer_identity::basename(&f.exe)))
 }
 
 /// What this machine can establish about whoever is on the socket, read now.
