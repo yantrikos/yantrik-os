@@ -147,6 +147,19 @@ jobs:
           sudo docker image prune --all --force > /dev/null 2>&1 || true
           df -h / | tail -1
 
+      - name: Swap for the generated UI crate
+        # rustc holds ~14 GB compiling yantrik-ui-slint (Cargo.toml's profile note), and a hosted
+        # runner has 16 GB. As the shell's UI grew, the release build was killed twice on 4 October
+        # (exit 143, no compiler error, ~13 min in, during the last crates). Swap on the runner's
+        # scratch disk lets the peak spill instead of ending the run.
+        run: |
+          sudo swapoff -a || true
+          sudo fallocate -l 12G /mnt/yantrik-swap
+          sudo chmod 600 /mnt/yantrik-swap
+          sudo mkswap /mnt/yantrik-swap > /dev/null
+          sudo swapon /mnt/yantrik-swap
+          free -h
+
       - name: System dependencies
         run: |
           sudo apt-get update
