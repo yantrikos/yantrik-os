@@ -33,9 +33,9 @@ import time
 HOME = os.path.expanduser("~")
 # The shell editor's document between minds: empty, saved, and the same for every mind.
 BLANK_DOC = os.path.join(HOME, ".arena-blank.txt")
-# Since yantrik-os #188/#191 a CLI `delete_event` raises a card for the person, so an unattended
-# reset cannot remove its own events. --keep-events leaves them (each run's titles are unique) and
-# says how many, until the OS offers a door for a requester's own events (yantrik-os #201).
+# Since yantrik-os #188/#191 a CLI `delete_event` raises a card for the person, and an event a mind
+# made at the arena's request is the mind's (#201), so the reset removes the arena's events from the
+# calendar store itself (`remove_arena_event_files`). --keep-events leaves them and says how many.
 KEEP_EVENTS = False
 TURN_TIMEOUT_S = 300
 SETTLE_S = 5  # a reply unchanged this long, and not streaming, is finished
@@ -201,6 +201,38 @@ def show_arena_month():
     return False
 
 
+CALENDAR_STORE = os.path.join(HOME, ".local", "share", "yantrik", "calendar")
+# Every arena task plays on this day, and every event it asks for is titled "Arena <tag>...".
+ARENA_DAY = "2026-09-30"
+
+
+def remove_arena_event_files():
+    """Delete the calendar store's arena events: a plain file, titled "Arena ...", starting on the
+    arena's day. Nothing else is touched -- not a link, not a file that does not parse, not an event
+    on any other day or under any other title -- and the count is returned."""
+    removed = 0
+    try:
+        names = os.listdir(CALENDAR_STORE)
+    except OSError:
+        return 0
+    for name in names:
+        path = os.path.join(CALENDAR_STORE, name)
+        if not name.endswith(".json") or os.path.islink(path) or not os.path.isfile(path):
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                ev = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if str(ev.get("title", "")).startswith("Arena ") and str(ev.get("start", "")).startswith(ARENA_DAY):
+            try:
+                os.remove(path)
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
 def calendar_day(day):
     # Opened HERE, at the moment of reading, not only at reset: Reading D's first attempt found the
     # calendar closed when T2 read its truth, read an empty day, and failed a correct answer.
@@ -310,11 +342,16 @@ def reset_world(tag):
     arena_events = [e for e in calendar_day(30) if e.get("title", "").startswith("Arena ")]
     if KEEP_EVENTS:
         if arena_events:
-            print(f"  (reset: keeping {len(arena_events)} arena event(s) on 30 Sep -- deleting one now "
-                  f"asks the person; yantrik-os #201)", flush=True)
-    else:
-        for e in arena_events:
-            act("calendar", "delete_event", id=e["id"])
+            print(f"  (reset: keeping {len(arena_events)} arena event(s) on 30 Sep -- --keep-events)", flush=True)
+    elif arena_events:
+        # What a mind made at the arena's request is the mind's to the calendar (#201), so
+        # `delete_own_event` above leaves it, and `delete_event` would put a card in front of the
+        # person -- which never-ask mode refuses. They piled up on VM 520 (13 by 4 October, with a
+        # red "harness_arena.py asked, and it did not create it" in the calendar). The arena is the
+        # person's own test tool running as the person's account: it removes them from the store,
+        # which calendar-service reads afresh on every call.
+        gone = remove_arena_event_files()
+        print(f"  (reset: removed {gone} arena event file(s) from the calendar store)", flush=True)
     subprocess.run(["pkill", "-x", "yantrik-notes"], capture_output=True)
     close_editor()
     # The shell has an editor of its own (`editor_*`), and its document outlived every mind: Reading
@@ -987,7 +1024,7 @@ def run_main():
     ap.add_argument("--no-gates", action="store_true",
                     help="with --reps, skip the control and preflight that otherwise run first")
     ap.add_argument("--keep-events", action="store_true",
-                    help="leave the arena's own calendar events instead of asking the person to delete them")
+                    help="leave the arena's calendar events (\"Arena ...\" on 30 Sep 2026) instead of removing them from the store")
     a = ap.parse_args()
     global KEEP_EVENTS
     KEEP_EVENTS = a.keep_events
