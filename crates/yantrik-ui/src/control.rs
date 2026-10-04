@@ -1100,9 +1100,14 @@ pub fn publish(
             // failed spawn is logged, not returned). The branches that only switch one of the
             // desktop's own screens settle on return, and now say which happened — the caller was
             // told `launching` either way, and waited for a window that was never coming (#45).
-            Action::new("open_app", "Launch an app, or focus it if it is already running")
-                .arg(Param::text("name").describe("App id, e.g. notes, email, terminal, files"))
-                .defers(),
+            // Settled on return: the answer waits for the window (and a miss is a refusal), so what
+            // comes back is the outcome, not a promise — `defers` told every caller `settled: false`
+            // about a window it had already seen (VM 520, 3 October), as files_go did (#596).
+            Action::new(
+                "open_app",
+                "Launch an app, or focus it if it is already running; the answer says where its window                  is, what the app shows, and the actions to drive it",
+            )
+            .arg(Param::text("name").describe("App id, e.g. notes, email, terminal, files")),
             move |args| {
                 let ui = open_ui()?;
                 let name = args["name"].as_str().unwrap_or_default().trim().to_string();
@@ -1173,7 +1178,15 @@ pub fn publish(
                             crate::mind_landing::BUDGET,
                             crate::mind_landing::STEP,
                         );
-                        crate::mind_landing::answer(answer, &name, seen)
+                        let mut landed = crate::mind_landing::answer(answer, &name, seen)?;
+                        // What is in the window now and how to drive it (app_glance), so the next
+                        // call can be the right one rather than another look.
+                        if let Some(surface) = landed["describe_as"].as_str().map(str::to_string) {
+                            if let Some(glance) = crate::app_glance::glance(&surface) {
+                                landed["app"] = glance;
+                            }
+                        }
+                        Ok(landed)
                     };
                     return yantrik_app_runtime::control::answer_later(wait)
                         .map(|()| serde_json::json!({ "answering": "off the UI thread" }))

@@ -119,6 +119,7 @@ mod mind_panel;
 mod mind_view;
 /// Whether the window a launch promised appeared, and where: `open_app`'s answer reads it back.
 mod mind_landing;
+mod app_glance;
 /// The agent terminal's visible half: a terminal in Mind View showing a mind's commands.
 mod mind_agent_terminal;
 mod open_url;

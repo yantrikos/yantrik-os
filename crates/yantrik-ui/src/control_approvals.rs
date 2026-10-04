@@ -1033,7 +1033,7 @@ fn target_line(args: &serde_json::Value, naming: &Naming) -> String {
 /// The window first, as every client resolves a name (docs/surface-protocol.md, "Resolving a
 /// name"): it is what the person is looking at, and it is the one an act would reach. A socket
 /// file nobody listens on is a closed window, not an answer.
-fn surface_address(dir: &std::path::Path, surface: &str) -> Option<String> {
+pub(crate) fn surface_address(dir: &std::path::Path, surface: &str) -> Option<String> {
     [format!("app-{surface}.sock"), format!("{surface}.sock")]
         .into_iter()
         .map(|name| dir.join(name))
