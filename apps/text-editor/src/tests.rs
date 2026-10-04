@@ -7,6 +7,7 @@ use slint::platform::{
 };
 use std::sync::Arc;
 use std::{collections::VecDeque, sync::Mutex, time::Instant};
+mod whose;
 type Queue = Arc<Mutex<VecDeque<Box<dyn FnOnce() + Send>>>>;
 struct Proxy(Queue);
 impl EventLoopProxy for Proxy {
@@ -377,14 +378,22 @@ fn real_editor_keyboard_tabs_search_save_close_and_recovery() {
         ui.get_recovery_status() == "Draft recovery up to date"
     });
     assert_eq!(document::recover(&recovery).unwrap().len(), 2);
-    for _ in 0..6 {
+    // There is no cap at eight any more: small tabs keep opening, the strip shrinks them and
+    // then scrolls, and the active one is scrolled into sight (rendered below, not just counted).
+    for _ in 0..22 {
         ui.invoke_action("new".into());
     }
-    assert_eq!(s.borrow().docs.len(), 8);
-    ui.invoke_action("new".into());
-    assert_eq!(s.borrow().docs.len(), 8);
+    assert_eq!(s.borrow().docs.len(), 24, "{}", ui.get_notice());
+    assert_eq!(ui.get_active_tab(), 23);
+    tick(&queue, &window);
+    save(&window, "editor-many-tabs.png");
     ui.invoke_select_tab(0);
     assert!(ui.get_content().contains("Xelvin"));
+    tick(&queue, &window);
+    for _ in 0..16 {
+        ui.invoke_close_tab(2);
+    }
+    assert_eq!(s.borrow().docs.len(), 8);
     // Real pointer/keyboard view with a small source file, rendered in both themes.
     let demo = dir.join("hello.rs");
     std::fs::write(&demo,"// A small idea, ready to grow.\n\nfn main() {\n    let message = \"Hello, Yantrik\";\n    println!(\"{}\", message);\n}\n").unwrap();
@@ -437,6 +446,7 @@ fn real_editor_keyboard_tabs_search_save_close_and_recovery() {
         &published,
         &dir,
     );
+    whose::tabs_know_who_opened_them(&ui, &s, &published, &dir);
 
     let mut b = s.borrow_mut();
     b.recovery_timer.stop();

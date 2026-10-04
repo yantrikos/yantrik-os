@@ -43,9 +43,14 @@ pub fn may_write(path: &Path) -> Result<(), String> {
 /// person opened from a place an agent may not read is not read back to one through `describe`.
 /// A tab with no file yet holds only what was typed or given to it, and is shown.
 pub fn hidden_from_caller(path: Option<&Path>) -> Option<String> {
-    let path = path?;
     if !agent_is_calling() {
         return None;
     }
-    home_paths::may_read_file(&path.to_string_lossy(), &home()).err()
+    hidden_from_agents(path)
+}
+
+/// Why a tab's file is one no agent is shown, whoever is calling now. For text that outlives the
+/// call it is written in, such as the `notice` a later `describe` reads back to anyone.
+pub fn hidden_from_agents(path: Option<&Path>) -> Option<String> {
+    home_paths::may_read_file(&path?.to_string_lossy(), &home()).err()
 }

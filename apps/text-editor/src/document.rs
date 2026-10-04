@@ -1,4 +1,5 @@
 //! Bounded UTF-8 documents, conflict-aware atomic saves and private recovery.
+use crate::owner::Opener;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -8,7 +9,19 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 pub const MAX_BYTES: usize = 1024 * 1024;
-pub const MAX_TABS: usize = 8;
+/// How much text all open tabs may hold between them.
+///
+/// There used to be a fixed eight tabs, with no reason written down for eight ("But why
+/// limit?", Pranab, 4 October 2026). What a tab costs is the text it holds, at most `MAX_BYTES`
+/// each, so the rule is now about bytes: a tab is opened or created unless the open tabs and the
+/// new one together would hold more than this.
+pub const MAX_OPEN_BYTES: usize = 64 * MAX_BYTES;
+/// The most tabs open at once, however small, so the tab strip and the recovery file stay
+/// bounded. Above the 64 a full budget of 1 MiB files fills, so the budget is what bites first.
+pub const MAX_TABS: usize = 128;
+/// The most the recovery file is read: every dirty tab's text and baseline under the budget,
+/// with room for JSON escaping. The file is untrusted input, so the read stays bounded.
+pub const RECOVERY_LIMIT: usize = MAX_OPEN_BYTES * 4 + 65536;
 static SERIAL: AtomicU64 = AtomicU64::new(0);
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Document {
@@ -16,6 +29,11 @@ pub struct Document {
     pub text: String,
     pub baseline: String,
     pub recovered: bool,
+    /// Who opened this tab (VM 520, 4 October: a mind closed the person's tab to make room).
+    /// It belongs to the tab, not the file, so it survives `save` and `save_as`; drafts written
+    /// before it existed are read back as the person's.
+    #[serde(default)]
+    pub opened_by: Opener,
     #[serde(skip)]
     pub undo: Vec<String>,
     #[serde(skip)]
@@ -28,6 +46,7 @@ impl Document {
             text: String::new(),
             baseline: String::new(),
             recovered: false,
+            opened_by: Opener::Person,
             undo: vec![],
             redo: vec![],
         }
@@ -38,6 +57,7 @@ impl Document {
             text: self.text.clone(),
             baseline: self.baseline.clone(),
             recovered: self.recovered,
+            opened_by: self.opened_by.clone(),
             undo: vec![],
             redo: vec![],
         }
@@ -82,6 +102,7 @@ impl Document {
             baseline: text.clone(),
             text,
             recovered: false,
+            opened_by: Opener::Person,
             undo: vec![],
             redo: vec![],
         })
@@ -145,6 +166,7 @@ impl Document {
             text: self.text.clone(),
             baseline: self.text.clone(),
             recovered: false,
+            opened_by: self.opened_by.clone(),
             undo: vec![],
             redo: vec![],
         })
@@ -277,7 +299,19 @@ pub fn recovery_path() -> PathBuf {
         })
         .join("yantrik/editor/drafts.json")
 }
+/// The text all of `docs` hold between them, as `MAX_OPEN_BYTES` counts it.
+pub fn open_bytes(docs: &[Document]) -> usize {
+    docs.iter().map(|d| d.text.len()).sum()
+}
+/// Whether one more tab holding `adding` bytes fits beside `docs`.
+pub fn room_for(docs: &[Document], adding: usize) -> bool {
+    docs.len() < MAX_TABS && open_bytes(docs).saturating_add(adding) <= MAX_OPEN_BYTES
+}
 pub fn recover(path: &Path) -> Result<Vec<Document>, String> {
+    recover_within(path, RECOVERY_LIMIT)
+}
+/// `recover`, reading at most `limit` bytes; the tests use a small one.
+pub fn recover_within(path: &Path, limit: usize) -> Result<Vec<Document>, String> {
     if !path.exists() {
         return Ok(vec![]);
     }
@@ -287,13 +321,19 @@ pub fn recover(path: &Path) -> Result<Vec<Document>, String> {
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
         .map_err(|e| e.to_string())?
-        .take((MAX_BYTES * MAX_TABS * 4 + 65536) as u64)
+        .take(limit as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
+    if bytes.len() > limit {
+        return Err("Recovery file is larger than the editor ever writes; it was not read.".into());
+    }
     let mut docs: Vec<Document> = serde_json::from_slice(&bytes)
         .map_err(|e| format!("Recovery file could not be read: {e}"))?;
     if docs.len() > MAX_TABS {
         return Err("Recovery contains too many documents.".into());
+    }
+    if open_bytes(&docs) > MAX_OPEN_BYTES {
+        return Err("Recovery holds more text than the editor keeps open at once.".into());
     }
     for d in &mut docs {
         validate(&d.text)?;

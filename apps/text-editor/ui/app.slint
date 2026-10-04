@@ -23,6 +23,8 @@ export component TextEditorApp inherits AppWindow {
     ];
     header-action(id) => { if(id == "find") {root.show-find = !root.show-find; if(root.show-find){find-field.focus();}} else {root.action(id);} }
     in property <[DocumentTab]> tabs;
+    // Which of `tabs` is in front, so the strip can scroll it into sight.
+    in property <int> active-tab;
     in-out property <string> content;
     in property <string> document-title: "Untitled";
     in property <string> path-label: "A little space for your next idea";
@@ -100,12 +102,38 @@ export component TextEditorApp inherits AppWindow {
     key-pressed(event) => { return root.shortcut(event); }
     VerticalLayout {
         spacing: 0px;
-        Rectangle {
+        // The tab strip. Tabs were capped at eight, which a row of shrinking tabs could always
+        // fit; the cap is now a byte budget (up to 128 tabs), so tabs shrink to `min-tab` with
+        // their titles elided and past that the strip scrolls sideways, following the active tab
+        // so a tab a mind just opened is in sight.
+        tab-bar := Rectangle {
             height: 43px; background: Theme.bg-surface;
-            HorizontalLayout {
-                padding-left: 12px; padding-right: 8px; spacing: 4px;
+            property <length> gap: 4px;
+            property <length> plus-slot: plus.preferred-width + 8px;
+            property <length> min-tab: 96px;
+            property <int> count: root.tabs.length;
+            property <length> tab-w: clamp((strip.width - self.plus-slot - self.count * self.gap) / max(1, self.count), self.min-tab, 178px);
+            strip := Flickable {
+                x: 12px; width: parent.width - 20px; height: parent.height;
+                viewport-height: self.height;
+                viewport-width: max(self.width, tab-bar.count * (tab-bar.tab-w + tab-bar.gap) + tab-bar.plus-slot);
+                property <int> shown: root.active-tab;
+                // The last tab brings the + after it into sight too.
+                property <length> shown-w: tab-bar.tab-w + (self.shown == tab-bar.count - 1 ? tab-bar.plus-slot : 0px);
+                changed shown => {
+                    if (self.shown * (tab-bar.tab-w + tab-bar.gap) + self.viewport-x < 0) {
+                        self.viewport-x = -(self.shown * (tab-bar.tab-w + tab-bar.gap));
+                    } else if (self.shown * (tab-bar.tab-w + tab-bar.gap) + self.shown-w + self.viewport-x > self.width) {
+                        self.viewport-x = self.width - self.shown * (tab-bar.tab-w + tab-bar.gap) - self.shown-w;
+                    }
+                }
+                // Closing tabs shortens the strip; never leave it scrolled past its end.
+                changed viewport-width => {
+                    self.viewport-x = min(0px, max(self.viewport-x, self.width - self.viewport-width));
+                }
                 for tab[i] in root.tabs : Rectangle {
-                    min-width: 0px; preferred-width: 178px; max-width: 178px; horizontal-stretch: 1; height: 38px;
+                    x: i * (tab-bar.tab-w + tab-bar.gap); y: (parent.height - self.height) / 2;
+                    width: tab-bar.tab-w; height: 38px;
                     border-radius: 7px; background: tab.active ? Theme.bg-elevated : area.has-hover ? Theme.hover-fill : transparent;
                     area := TouchArea { clicked => { root.select-tab(i); } }
                     HorizontalLayout {
@@ -116,8 +144,11 @@ export component TextEditorApp inherits AppWindow {
                     }
                     if tab.active : Rectangle { y: parent.height - 2px; height: 2px; background: Theme.accent; }
                 }
-                YIconButton { icon-path: Icons.plus; variant: 2; clicked => {root.action("new");} }
-                Rectangle {horizontal-stretch:1;}
+                plus := YIconButton {
+                    x: tab-bar.count * (tab-bar.tab-w + tab-bar.gap); y: (parent.height - self.height) / 2;
+                    width: self.preferred-width; height: self.preferred-height;
+                    icon-path: Icons.plus; variant: 2; clicked => {root.action("new");}
+                }
             }
         }
         Rectangle {
