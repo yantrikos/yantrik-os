@@ -56,6 +56,11 @@ fn the_open_budget_is_bytes_not_eight_tabs() {
     big.push(Document::blank());
     assert!(document::fits(&big, 63, document::MAX_BYTES), "filling the last MiB");
     assert!(!document::fits(&big, 63, document::MAX_BYTES + 1));
+    // A tab emptied of a 1 MiB file still holds the file as its baseline, and is counted so.
+    let emptied = tab(None, "", &file, &Opener::Person);
+    assert_eq!(document::weight(&emptied), document::MAX_BYTES);
+    let hollow: Vec<Document> = (0..64).map(|_| emptied.clone()).collect();
+    assert!(!document::room_for(&hollow, 1), "64 emptied 1 MiB files fill the budget");
     let many: Vec<Document> = (0..document::MAX_TABS).map(|_| Document::blank()).collect();
     assert!(!document::room_for(&many, 0), "the strip's ceiling still holds");
     assert!(
@@ -125,15 +130,13 @@ fn a_worst_case_tab_fits_its_share_of_the_recovery_bound() {
     document::validate(&worst.text).unwrap();
     document::validate(&worst.baseline).unwrap();
     let written = serde_json::to_vec(&[&worst]).unwrap().len();
-    assert!(
-        written <= 2 * (worst.text.len() + worst.baseline.len()) + document::RECOVERY_PER_TAB,
-        "{written}"
-    );
+    assert!(written <= 4 * document::weight(&worst) + document::RECOVERY_PER_TAB, "{written}");
+    // Summed over tabs whose weights fit the budget, that is inside the limit.
     assert!(
         document::RECOVERY_LIMIT
-            >= 2 * (document::MAX_OPEN_BYTES + document::MAX_TABS * document::MAX_BYTES)
-                + document::MAX_TABS * document::RECOVERY_PER_TAB
+            >= 4 * document::MAX_OPEN_BYTES + document::MAX_TABS * document::RECOVERY_PER_TAB
     );
+    assert!(document::RECOVERY_LIMIT < 260 * document::MAX_BYTES, "{}", document::RECOVERY_LIMIT);
 }
 
 #[test]
@@ -359,6 +362,42 @@ pub(super) fn tabs_know_who_opened_them(
     }
     act_on(published, "redo", serde_json::json!({})).expect("the person's line is still there");
     assert_eq!(s.borrow().docs[0].text, "the person's next line\n");
+
+    // Open a 1 MiB file, empty it, repeat: the emptied tabs still hold their files as baselines,
+    // so this reaches the budget at 64 files instead of running on to the 128-tab ceiling
+    // (confirm pass on #620). The first 61 are put in place as that loop leaves them, since each
+    // edit through the window checkpoints every draft; the last rounds go the real way.
+    let file = format!("{}\n", "a".repeat(127)).repeat(document::MAX_BYTES / 128);
+    {
+        let mut b = s.borrow_mut();
+        b.docs = (0..61)
+            .map(|i| Document {
+                path: Some(dir.join(format!("hollow-seed-{i}.txt"))),
+                text: String::new(),
+                baseline: file.clone(),
+                ..Document::blank()
+            })
+            .collect();
+        b.active = 0;
+        paint(ui, &mut b, true);
+    }
+    let mut opened = 61;
+    for i in 0..5 {
+        let path = dir.join(format!("hollow-{i}.txt"));
+        std::fs::write(&path, &file).unwrap();
+        let tabs_before = s.borrow().docs.len();
+        open(ui, s, path);
+        assert!(settle(ui, s));
+        if s.borrow().docs.len() == tabs_before {
+            assert!(ui.get_notice().contains("would hold more than the 64 MiB"), "{}", ui.get_notice());
+            break;
+        }
+        opened += 1;
+        act_on(published, "set_content", serde_json::json!({ "text": "" })).expect("empty it");
+        assert_eq!(s.borrow().docs[s.borrow().active].baseline.len(), document::MAX_BYTES);
+    }
+    assert_eq!(opened, 64, "the budget, not the tab ceiling, stopped it");
+    assert_eq!(document::open_bytes(&s.borrow().docs), document::MAX_OPEN_BYTES);
 
     let mut b = s.borrow_mut();
     b.docs = vec![Document::blank()];
