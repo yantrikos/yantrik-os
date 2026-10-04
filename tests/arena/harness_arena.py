@@ -949,7 +949,19 @@ class ApprovalsOff:
 
     def __exit__(self, *exc):
         signal.signal(signal.SIGTERM, self._previous)
-        out = yos("act", "shell", "set_approvals_off_for_test", "state=off")
+        # The shell refuses this switch while a mind is still driving the desktop (a harness runs as
+        # the person's account, so "a mind is the requester now" is the only way it can tell them
+        # apart). The last task's turn can still be letting go when the run ends: on VM 520
+        # (4 October) the first try was refused and the same call a moment later went through. So
+        # try again for up to a minute before leaving it to the shell's own deadline.
+        out, deadline = "", time.time() + 60
+        while True:
+            out = yos("act", "shell", "set_approvals_off_for_test", "state=off")
+            if not (describe("shell") or {}).get("approvals_off_for_test", {}).get("on"):
+                break
+            if time.time() >= deadline:
+                break
+            time.sleep(3)
         if (describe("shell") or {}).get("approvals_off_for_test", {}).get("on"):
             print(f"!! approvals are still off after the run ({out.strip()[:120]}); the shell ends that by "
                   f"itself within {APPROVALS_OFF_MINUTES} minutes", flush=True)
