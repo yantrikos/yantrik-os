@@ -51,6 +51,7 @@
 //! shell draws them in the card's words. Nothing in the request can set any of it.
 
 mod freedesktop;
+mod names;
 mod reminders;
 mod store;
 
@@ -58,6 +59,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use yantrik_ipc_contracts::notifications::*;
+use names::borrows_the_desktops_name;
 use yantrik_ipc_transport::owner;
 use yantrik_ipc_transport::peer_identity::{self, Program};
 use yantrik_ipc_transport::PeerCred;
@@ -551,46 +553,6 @@ fn dir_vouches(debug: bool, uid: u32, mode: u32) -> bool {
     debug || (uid == 0 && mode & 0o022 == 0)
 }
 
-/// Does a name the caller gave borrow the desktop's own?
-///
-/// Not only `Yantrik` exactly (security review of #614): anything that, case folded, starts with
-/// it ("Yantrik Security", "YANTRIK-update"), and anything that spells it with lookalike letters
-/// ("Yаntrik" with a Cyrillic а, "Υantrik" with a Greek Υ) anywhere in the name. Separators and
-/// invisible characters are dropped first, so "Y a n t r i k" and "Yan\u{200B}trik" are caught too.
-/// A name that only mentions the desktop in plain letters after its own ("Notes for Yantrik")
-/// is the caller's to use.
-fn borrows_the_desktops_name(claim: &str) -> bool {
-    let mut skeleton = String::new();
-    let mut lookalike = false;
-    for c in claim.chars() {
-        if c.is_ascii_alphanumeric() {
-            skeleton.push(match c.to_ascii_lowercase() {
-                '1' | 'l' => 'i',
-                other => other,
-            });
-        } else if let Some(latin) = confusable(c) {
-            lookalike = true;
-            skeleton.push(latin);
-        }
-        // Everything else -- spaces, punctuation, zero-width and combining marks -- is dropped.
-    }
-    skeleton.starts_with("yantrik") || (lookalike && skeleton.contains("yantrik"))
-}
-
-/// The Latin letter of "yantrik" a Cyrillic or Greek letter is drawn like, if it is one.
-fn confusable(c: char) -> Option<char> {
-    Some(match c {
-        'у' | 'У' | 'ү' | 'Ү' | 'γ' | 'Υ' | 'ʏ' => 'y',
-        'а' | 'А' | 'α' | 'Α' => 'a',
-        'п' | 'η' | 'Ν' | 'ո' => 'n',
-        'т' | 'Т' | 'τ' | 'Τ' => 't',
-        'г' | 'ʀ' => 'r',
-        'і' | 'І' | 'ї' | 'Ї' | 'ι' | 'Ι' | 'ı' | 'ӏ' | 'Ӏ' => 'i',
-        'к' | 'К' | 'κ' | 'Κ' | 'ķ' => 'k',
-        _ => return None,
-    })
-}
-
 /// What this machine can establish about whoever is on the socket, read now.
 ///
 /// Now and not later: the peer is waiting for this call's answer, so it is alive, and for a
@@ -1008,25 +970,14 @@ mod tests {
     }
 
     #[test]
-    fn a_name_that_starts_with_the_desktops_or_spells_it_in_lookalikes_is_refused() {
-        for claim in [
-            "Yantrik Security",
-            "YANTRIK-update",
-            "yantrik",
-            "Y a n t r i k",
-            "Yan\u{200B}trik",
-            "Y\u{0430}ntrik",          // Cyrillic а
-            "\u{03A5}antrik Alerts",   // Greek Υ
-            "Yantr1k",
-            "Your Y\u{0430}ntrik bill", // a lookalike anywhere
-            "\u{0423}\u{0430}\u{043F}\u{0442}\u{0433}\u{0456}\u{043A}", // all Cyrillic
-        ] {
-            assert!(borrows_the_desktops_name(claim), "{claim:?}");
-            assert_eq!(attribute(claim, &hermes(), true).0, "hermes_cli.main", "{claim:?}");
+    fn a_name_that_borrows_the_desktops_is_refused_and_filed_under_the_program() {
+        // The rule itself, and its lookalike cases, are names.rs's; this is where it is applied.
+        for claim in ["Yantrik Security", "Y\u{0430}ntrik", "\u{FF39}\u{FF41}\u{FF4E}\u{FF54}\u{FF52}\u{FF49}\u{FF4B}"] {
+            let (app, sender) = attribute(claim, &hermes(), true);
+            assert_eq!(app, "hermes_cli.main", "{claim:?}");
+            assert_eq!(sender.claimed.as_deref(), Some(claim), "the claim is still kept");
         }
-        for claim in ["Studio", "Downloads", "Notes for Yantrik", "Tantrik", "Yanni"] {
-            assert!(!borrows_the_desktops_name(claim), "{claim:?}");
-        }
+        assert_eq!(attribute("Notes for Yantrik", &hermes(), true).0, "Notes for Yantrik");
         // The desktop itself may still use any of them.
         assert_eq!(attribute("Yantrik Security", &shell(), true).0, "Yantrik Security");
     }

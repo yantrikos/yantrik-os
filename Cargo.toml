@@ -125,6 +125,9 @@ uuid7 = "1"
 
 # Text / parsing
 regex = "1"
+# NFKD and combining marks, for telling a lookalike of the desktop's name from a name of its own
+# (notifications-service, #614).
+unicode-normalization = "0.1"
 html2text = "0.12"
 mailparse = "0.15"
 base64 = "0.22"

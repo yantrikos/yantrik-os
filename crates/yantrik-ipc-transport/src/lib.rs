@@ -13,6 +13,8 @@ pub mod gate;
 pub mod mind_door;
 pub mod owner;
 pub mod peer_identity;
+/// A caller's words as one plain line: no control or bidi characters (#614).
+pub mod plain_text;
 /// Private mode: while it is on, no agent sees or does anything on this desktop.
 pub mod privacy;
 // An agent's reach: what a role from the agent catalog may touch (design/desk-and-mind, section 5).

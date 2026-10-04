@@ -473,13 +473,11 @@ fn maybe_toast(ui: &App, n: &Notification) {
         })
         .collect();
 
-    // The name on a toast is the caller's own, so for any sender that is not the desktop the
-    // verified program goes beside it, briefly: a toast had no sender line at all, and a name
-    // the caller chose was the only thing on it (security review of #614).
-    let app_name = match crate::notification_sender::toast_program(n) {
-        Some(program) => format!("{} \u{b7} {program}", n.app),
-        None => n.app.clone(),
-    };
+    // The name on a toast is the caller's own, so it is cleaned and cut like a claim, and for any
+    // sender that is not the desktop the verified program goes beside it, briefly ("via D-Bus,
+    // not verified" when there is no record): a toast had no sender line at all, and a name the
+    // caller chose was the only thing on it (security reviews of #614).
+    let app_name = crate::notification_sender::toast_name(n);
 
     crate::wire::toast::push(
         ui,
@@ -489,8 +487,7 @@ fn maybe_toast(ui: &App, n: &Notification) {
             summary: n.title.clone().into(),
             body: super::toast::brief(&n.body).into(),
             urgency: notifications::urgency_int(n.urgency),
-            icon_char: n
-                .app
+            icon_char: crate::notification_sender::one_line(&n.app)
                 .chars()
                 .next()
                 .unwrap_or('N')

@@ -16,8 +16,29 @@ pid and uid) and walks `/proc` from that pid to the first program a person would
 - `desktop`: whether the process on the socket itself was the desktop (see below).
 
 The name on the row and the toast is the caller's own, except that only the desktop may use
-`Yantrik`. Any other caller whose name starts with "Yantrik" once case is folded, or that spells
-it with Cyrillic or Greek lookalike letters, is filed under its verified program's name instead.
+`Yantrik`. Before a name is compared it is folded:
+- NFKD, so fullwidth and mathematical letters become plain ones;
+- combining marks are dropped, so "Ý" becomes "Y";
+- Cyrillic, Greek and Latin letters that look like the letters of "yantrik" become those
+  letters;
+- case is folded, and separators and invisible characters are dropped.
+
+Any caller other than the desktop is refused the name, and filed under its verified program's
+name, when the folded name starts with "yantrik", or contains it anywhere and needed folding to
+get there (`services/notifications-service/src/names.rs`).
+
+Command lines, executable names and claims are all text the caller chose. Before any card, toast
+or notification line shows them, they pass through one cleaning rule
+(`yantrik_ipc_transport::plain_text::one_line`): control and bidi characters become spaces. So a
+newline in an argv cannot draw a second line under "verified".
+
+## The D-Bus door
+
+Notifications arriving over `org.freedesktop.Notifications` (`notify-send`, browsers) carry **no
+sender record**: the service has not asked the bus who was behind the call, and any program of
+the person's own can post there under any name. The borrowed-name rule applies at this door too
+(a refused name falls back to the `desktop-entry` hint, then "unknown"). The card and the toast
+say "via D-Bus, not verified" beside whatever name is kept.
 
 ## "The desktop"
 

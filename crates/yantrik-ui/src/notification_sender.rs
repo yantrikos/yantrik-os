@@ -24,9 +24,14 @@
 //! directory. Everyone else says `(verified)`, names the real executable whenever it is not
 //! what the command line calls itself, keeps a terminal origin in sight, and puts any claim
 //! last, cut short and on one line.
-use yantrik_ipc_contracts::notifications::{Notification, Sender};
+use yantrik_ipc_contracts::notifications::{Notification, Sender, Source};
 use yantrik_ipc_transport::owner;
 use yantrik_ipc_transport::peer_identity::{basename, clip};
+
+/// The one cleaning rule for a caller's words, shared with the services: control and bidi
+/// characters become spaces, whitespace collapses. It lives in yantrik-ipc-transport so that
+/// `peer_identity::parse_cmdline` cleans an argv by the same rule (security review of #614).
+pub use yantrik_ipc_transport::plain_text::one_line;
 
 /// The prefix `peer_identity::line_about` puts on a program somebody started from a terminal.
 const FROM_TERMINAL: &str = "a program started from a terminal: ";
@@ -41,11 +46,18 @@ const PROGRAM_CHARS: usize = 32;
 /// How much of an executable's path is shown when its name alone would mislead.
 const PATH_CHARS: usize = 32;
 
-/// The card's short line. Empty when there is no sender record (an old notification, or one from
-/// the freedesktop door), as `sender_line` is.
+/// What the card and the toast say for a notification with no sender record. One that came over
+/// `org.freedesktop.Notifications` carries none: the door has not asked the bus who was behind
+/// it, so any same-user program can post there under any name (security review of #614).
+const VIA_DBUS: &str = "via D-Bus, not verified";
+
+/// The same for a record of ours written before senders were recorded at all (#114).
+const NO_RECORD: &str = "not verified";
+
+/// The card's short line.
 pub fn sender_summary(n: &Notification) -> String {
     let Some(sender) = &n.sender else {
-        return String::new();
+        return capitalised(no_record(n));
     };
     let claim = sender.claimed.as_deref().map(clean_claim).filter(|c| !c.is_empty());
     if sender.pid == 0 {
@@ -71,6 +83,28 @@ pub fn sender_summary(n: &Notification) -> String {
     }
 }
 
+/// What a notification with no sender record is said to be.
+fn no_record(n: &Notification) -> &'static str {
+    match n.source {
+        Source::Freedesktop => VIA_DBUS,
+        Source::Yantrik => NO_RECORD,
+    }
+}
+
+fn capitalised(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// An executable's file name as it may be drawn: cleaned, because a file name is the caller's to
+/// choose, newlines and bidi controls included.
+fn shown_name(exe: &str) -> String {
+    one_line(basename(exe))
+}
+
 /// What a sender that is not the desktop is called, and what goes inside its "(… verified)".
 fn who_and_tag(sender: &Sender) -> (String, String) {
     let exe = sender.exe.strip_suffix(" (deleted)").unwrap_or(&sender.exe);
@@ -78,18 +112,18 @@ fn who_and_tag(sender: &Sender) -> (String, String) {
     // socket was not the shell: a bridge, a mind or a helper the shell started. Naming it
     // `yantrik-ui` would be the bridge case the review found.
     if owner::is_installed_desktop_binary(exe) {
-        return (format!("a program {} started", basename(exe)), String::new());
+        return (bridged_by(exe), String::new());
     }
     let verified = sender.verified.strip_prefix(FROM_TERMINAL).unwrap_or(&sender.verified);
-    let label = verified.rfind(" (pid ").map_or(verified, |at| &verified[..at]).trim();
-    let label = if label.is_empty() { basename(exe).to_string() } else { clip(label, PROGRAM_CHARS) };
-    let argv0 = label.split_whitespace().next().unwrap_or("");
-    let name = basename(exe);
+    let label = one_line(verified.rfind(" (pid ").map_or(verified, |at| &verified[..at]));
+    let name = shown_name(exe);
+    let label = if label.is_empty() { name.clone() } else { clip(&label, PROGRAM_CHARS) };
+    let argv0 = label.split_whitespace().next().unwrap_or("").to_string();
     let tag = if exe.is_empty() {
         String::new()
-    } else if owner::DESKTOP_BINARIES.contains(&name) {
+    } else if owner::DESKTOP_BINARIES.contains(&basename(exe)) {
         // Called after the desktop but not it: where it really is, so it cannot pass for it.
-        format!("exe {}, ", clip_left(exe, PATH_CHARS))
+        format!("exe {}, ", clip_left(&one_line(exe), PATH_CHARS))
     } else if name != argv0 {
         // A command line is the caller's to write; the executable is the kernel's word.
         format!("exe {name}, ")
@@ -99,11 +133,18 @@ fn who_and_tag(sender: &Sender) -> (String, String) {
     (label, tag)
 }
 
+/// "a program yantrik-ui started": for a caller whose first recognisable ancestor is the
+/// installed desktop, though the desktop was not the process on the socket. Shared with the
+/// shell's own approval notification (`approvals::Verified::who`), which meets the same case.
+pub fn bridged_by(exe: &str) -> String {
+    format!("a program {} started", shown_name(exe))
+}
+
 /// The installed desktop's own name for itself, from its executable.
 fn exe_name(sender: &Sender) -> String {
     let exe = sender.exe.strip_suffix(" (deleted)").unwrap_or(&sender.exe);
-    let name = basename(exe);
-    if name.is_empty() { owner::SHELL_BINARY.to_string() } else { name.to_string() }
+    let name = shown_name(exe);
+    if name.is_empty() { owner::SHELL_BINARY.to_string() } else { name }
 }
 
 /// The claim as one plain line, cut to [`CLAIM_CHARS`].
@@ -121,14 +162,27 @@ pub fn plain(text: &str, max: usize) -> String {
 /// How much of the program a toast names beside the sender's name.
 const TOAST_PROGRAM_CHARS: usize = 20;
 
+/// The name a toast shows: the sender's name, cleaned and cut like a claim (it is one, or the
+/// verified program's name), then the verified program beside it when the sender is not the
+/// desktop itself. `n.app` is up to 64 characters of the caller's choosing, and it came first.
+pub fn toast_name(n: &Notification) -> String {
+    let name = clean_claim(&n.app);
+    match toast_program(n) {
+        Some(program) => format!("{name} \u{b7} {program}"),
+        None => name,
+    }
+}
+
 /// What a toast adds beside the name on it, briefly: the verified program, for any sender that
-/// is not the desktop itself. `None` for the desktop and for a notification with no sender
-/// record (whose name is all there is to show), "not verified" when nothing was established.
+/// is not the desktop itself. `None` for the desktop; "via D-Bus, not verified" or "not
+/// verified" when there is no record to name a program from or nothing was established.
 ///
 /// A toast had no sender line at all (security review of #614), so a name the caller chose was
 /// the only thing on it.
 pub fn toast_program(n: &Notification) -> Option<String> {
-    let sender = n.sender.as_ref()?;
+    let Some(sender) = n.sender.as_ref() else {
+        return Some(no_record(n).to_string());
+    };
     if sender.pid == 0 {
         return Some("not verified".to_string());
     }
@@ -138,31 +192,14 @@ pub fn toast_program(n: &Notification) -> Option<String> {
     let (program, _) = who_and_tag(sender);
     let exe = sender.exe.strip_suffix(" (deleted)").unwrap_or(&sender.exe);
     let argv0 = program.split_whitespace().next().unwrap_or("");
+    let name = shown_name(exe);
     // The executable when the command line calls itself something else; else the program.
-    let shown = if !exe.is_empty() && basename(exe) != argv0 && !owner::is_installed_desktop_binary(exe) {
-        basename(exe).to_string()
+    let shown = if !exe.is_empty() && name != argv0 && !owner::is_installed_desktop_binary(exe) {
+        name
     } else {
         program
     };
-    (!shown.eq_ignore_ascii_case(&n.app)).then(|| clip(&shown, TOAST_PROGRAM_CHARS))
-}
-
-/// A caller's words made safe to draw on one line: control and bidirectional-formatting
-/// characters become spaces and runs of space collapse. A Slint Text breaks on `\n`, so an
-/// embedded newline could forge a second line, and a bidi override could reorder what the line
-/// seems to say. Also used on the full Details line (`notifications::sender_line`), which
-/// carries the same claim.
-pub fn one_line(text: &str) -> String {
-    let spaced: String = text
-        .chars()
-        .map(|c| if c.is_control() || is_bidi_control(c) { ' ' } else { c })
-        .collect();
-    spaced.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// Unicode's bidirectional formatting characters: marks, embeddings, overrides and isolates.
-fn is_bidi_control(c: char) -> bool {
-    matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+    (!shown.eq_ignore_ascii_case(n.app.trim())).then(|| clip(&shown, TOAST_PROGRAM_CHARS))
 }
 
 /// Keep the END of a path, where its name is: `…/release/yantrik-ui`.
@@ -178,7 +215,8 @@ fn clip_left(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use yantrik_ipc_contracts::notifications::{Source, Urgency};
+    use yantrik_ipc_contracts::notifications::Urgency;
+    use yantrik_ipc_transport::plain_text::is_bidi_control;
 
     fn note(claimed: Option<&str>, verified: &str, pid: i32, exe: &str, desktop: bool) -> Notification {
         Notification {
@@ -339,8 +377,45 @@ mod tests {
         assert_eq!(toast_program(&note(None, "could not be identified", 0, "", false)).as_deref(), Some("not verified"));
         // No record: nothing to add.
         let mut n = note(None, "x (pid 1)", 1, "/x", false);
+        // No record of ours (written before senders were kept): said, not left blank.
         n.sender = None;
-        assert_eq!(toast_program(&n), None);
+        assert_eq!(toast_program(&n).as_deref(), Some("not verified"));
+    }
+
+    #[test]
+    fn a_notification_over_dbus_says_so_on_the_card_and_the_toast() {
+        // `notify-send -a Yantrik …`: no sender record at all. The service now refuses the
+        // name at the door; whatever name it keeps, both surfaces say where it came from.
+        let mut n = note(None, "", 0, "", false);
+        n.sender = None;
+        n.source = Source::Freedesktop;
+        n.app = "notify-send".into();
+        assert_eq!(sender_summary(&n), "Via D-Bus, not verified");
+        assert_eq!(toast_program(&n).as_deref(), Some("via D-Bus, not verified"));
+        assert_eq!(toast_name(&n), "notify-send \u{b7} via D-Bus, not verified");
+    }
+
+    #[test]
+    fn the_toasts_name_is_cleaned_and_cut_before_the_program() {
+        let mut n = note(Some("x"), "python3 evil.py (pid 66)", 66, "/usr/bin/python3", false);
+        n.app = format!("Studio\nYantrik \u{b7} verified{}", "z".repeat(60));
+        let name = toast_name(&n);
+        assert!(!name.chars().any(|c| c.is_control() || is_bidi_control(c)), "{name:?}");
+        assert!(name.ends_with("\u{b7} python3 evil.py"), "the program is never cut off: {name}");
+        let before = name.split(" \u{b7} python3").next().unwrap();
+        assert!(before.chars().count() <= CLAIM_CHARS + 1, "{name}");
+    }
+
+    #[test]
+    fn an_executables_file_name_cannot_forge_a_line_either() {
+        // A file name may hold a newline or a bidi override; it is the caller's to choose.
+        let n = note(None, "evil (pid 70)", 70, "/tmp/ev\nil\u{202E}x", false);
+        let line = sender_summary(&n);
+        assert!(!line.chars().any(|c| c.is_control() || is_bidi_control(c)), "{line:?}");
+        assert_eq!(line, "Sent by evil (exe ev il x, verified)");
+        let toast = toast_program(&n).unwrap();
+        assert!(!toast.chars().any(|c| c.is_control() || is_bidi_control(c)), "{toast:?}");
+        assert_eq!(bridged_by("/opt/yantrik/bin/yantrik-ui"), "a program yantrik-ui started");
     }
 
     #[test]
@@ -356,6 +431,6 @@ mod tests {
         let mut n = note(None, "could not be identified", 0, "", false);
         assert_eq!(sender_summary(&n), "Sender not verified");
         n.sender = None;
-        assert_eq!(sender_summary(&n), "");
+        assert_eq!(sender_summary(&n), "Not verified", "an old record of ours, without a sender");
     }
 }

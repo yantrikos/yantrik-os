@@ -242,12 +242,15 @@ pub fn sender_line(n: &Notification) -> String {
         ),
         None => String::new(),
     };
+    // The command line in it is the caller's argv. The service cleans it now, but a record
+    // stored before that was not (third-pass security review of #614).
+    let verified = crate::notification_sender::one_line(&sender.verified);
     if sender.pid == 0 {
         // The card's words for the same situation; "verified: could not be identified" would
         // read as if something had been verified.
-        return format!("{claim}{} by this machine", sender.verified);
+        return format!("{claim}{verified} by this machine");
     }
-    format!("{claim}verified by this machine: {}", sender.verified)
+    format!("{claim}verified by this machine: {verified}")
 }
 
 /// Convert one notification to the Slint row.

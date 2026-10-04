@@ -98,7 +98,8 @@ impl ProcessFacts {
             return self.short_cmdline.clone();
         }
         if !self.exe.is_empty() {
-            return basename(&self.exe).to_string();
+            // A file name is the caller's to choose, newlines and bidi controls included.
+            return crate::plain_text::one_line(basename(&self.exe));
         }
         format!("pid {}", self.pid)
     }
@@ -489,7 +490,10 @@ pub fn parse_cmdline(raw: &[u8]) -> String {
             }
         })
         .collect();
-    clip(&joined.join(" "), CMDLINE_CHARS)
+    // An argv is the caller's to write: a newline or a bidi override in it would otherwise reach
+    // every card and notification line that prints it, under "verified" (security review of
+    // #614). Cleaned before it is cut, so the cut counts what is drawn.
+    clip(&crate::plain_text::one_line(&joined.join(" ")), CMDLINE_CHARS)
 }
 
 /// The last path component, or the whole string when there is no separator.
@@ -583,6 +587,14 @@ mod tests {
         let long = parse_cmdline(&[b"yos\0act\0notes\0append\0text=".to_vec(), vec![b'x'; 200]].concat());
         assert!(long.chars().count() <= CMDLINE_CHARS + 1, "{long}");
         assert!(long.ends_with('\u{2026}'), "a cut line has to look cut: {long}");
+
+        // An argv is the caller's to write: no newline, tab or bidi control survives it, so a
+        // process cannot draw a second line under "verified" (security review of #614).
+        let forged = parse_cmdline("evil.py\0ok\n\u{201c}Yantrik\u{201d} says\u{202E}x\0".as_bytes());
+        assert_eq!(forged, "evil.py ok \u{201c}Yantrik\u{201d} says x");
+        // And a file name with them in it, named as the binary.
+        let named = ProcessFacts { pid: 9, exe: "/tmp/yantrik\nui".into(), short_cmdline: String::new(), started: 1 };
+        assert_eq!(named.label(), "yantrik ui");
     }
 
     // ── Choosing what to name ──

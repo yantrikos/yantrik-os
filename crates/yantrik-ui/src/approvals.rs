@@ -274,8 +274,14 @@ impl Verified {
             return self.attached_mind.trim().to_string();
         }
         let exe = self.exe.strip_suffix(" (deleted)").unwrap_or(&self.exe);
-        let name = yantrik_ipc_transport::peer_identity::basename(exe);
-        if name.is_empty() { "an unidentified program".to_string() } else { name.to_string() }
+        // The first recognisable process up the chain was the installed shell, so the caller is
+        // something it started -- a bridge, a mind -- and not the shell, which raises no cards of
+        // its own. Said the way the notification card says it (third-pass review of #614).
+        if yantrik_ipc_transport::owner::is_installed_desktop_binary(exe) {
+            return crate::notification_sender::bridged_by(exe);
+        }
+        let name = crate::notification_sender::one_line(yantrik_ipc_transport::peer_identity::basename(exe));
+        if name.is_empty() { "an unidentified program".to_string() } else { name }
     }
 
     /// What `describe shell` publishes beside `requester`. Facts and no prose: a caller reading
@@ -1385,6 +1391,13 @@ mod approvals_tests {
             ..verified()
         };
         assert_eq!(program.who(), "python3.11");
+        // A call through the shell's bridge with no attached mind: the walk names the shell, but
+        // the shell is not what is asking.
+        let bridged = Verified { exe: "/opt/yantrik/bin/yantrik-ui".into(), ..program.clone() };
+        assert_eq!(bridged.who(), "a program yantrik-ui started");
+        // A file name is cleaned like any other text the caller chose.
+        let odd = Verified { exe: "/tmp/ev\nil".into(), ..program.clone() };
+        assert_eq!(odd.who(), "ev il");
         // Nothing established.
         assert_eq!(Verified::default().who(), "an unidentified program");
     }
