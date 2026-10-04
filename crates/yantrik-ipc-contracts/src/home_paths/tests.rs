@@ -257,6 +257,17 @@ fn an_agent_writes_into_folders_that_are_there_and_never_through_a_link() {
     }
 }
 
+/// A missing folder's refusal says how to get past it, in the path a caller can hand straight to
+/// files_new_folder (VM 520, 4 October: a mind made the folder and never saved again).
+#[test]
+fn a_missing_folder_says_how_to_make_it_and_that_nothing_is_lost() {
+    let (_d, home) = home();
+    let err = may_write_file("~/longtask/recipes/index.html", &home).unwrap_err();
+    assert!(err.contains("files_new_folder, name \"~/longtask/recipes\""), "{err}");
+    assert!(err.contains("send the same save again") && err.contains("nothing written so far is lost"), "{err}");
+    assert!(err.ends_with("does not exist"), "the reason still ends it: {err}");
+}
+
 #[test]
 fn protected_names_match_whole_components_only() {
     assert!(is_protected(Path::new("/home/ann/.ssh/id_ed25519")));
