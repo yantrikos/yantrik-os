@@ -444,7 +444,10 @@ esac
 
 # ── 15. GRUB ──
 step "Installing bootloader..."
-printf 'GRUB_DEFAULT=0\nGRUB_TIMEOUT=3\nGRUB_DISTRIBUTOR="Yantrik OS"\nGRUB_CMDLINE_LINUX_DEFAULT="quiet splash"\nGRUB_CMDLINE_LINUX=""\n' > "$M/etc/default/grub"
+# This installer never encrypts, so there is nothing to ask for at boot: the desktop installer's
+# unencrypted line (installer_unlock.rs, cmdline_default(false)). plymouth is in the image for the
+# encrypted pre-boot screen and stays off here; `splash` would start it at every boot and shutdown.
+printf 'GRUB_DEFAULT=0\nGRUB_TIMEOUT=3\nGRUB_DISTRIBUTOR="Yantrik OS"\nGRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3 plymouth.enable=0"\nGRUB_CMDLINE_LINUX=""\n' > "$M/etc/default/grub"
 
 if $IS_EFI; then
     # Two installs, as the desktop installer does (crates/yantrik-ui/src/wire/installer.rs). The

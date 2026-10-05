@@ -115,6 +115,18 @@ mod tests {
         assert!(cmdline_default(false).contains("plymouth.enable=0"), "and plymouth, now in the image, stays off");
     }
 
+    /// The text installer never encrypts, so its boot line is the unencrypted one: never `splash`,
+    /// which with plymouth in the image would start plymouthd at every boot and shutdown.
+    #[test]
+    fn the_text_installer_boots_as_an_unencrypted_install() {
+        let script = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/yantrik-os/yantrik-install.sh"));
+        let lines: Vec<&str> = script.lines().filter(|l| l.contains("GRUB_CMDLINE_LINUX_DEFAULT")).collect();
+        assert_eq!(lines.len(), 1, "one boot line in yantrik-install.sh: {lines:?}");
+        let wanted = format!("GRUB_CMDLINE_LINUX_DEFAULT=\"{}\"", cmdline_default(false));
+        assert!(lines[0].contains(&wanted), "yantrik-install.sh writes {wanted}: {}", lines[0]);
+        assert!(!lines[0].split(|c: char| c.is_whitespace() || c == '"').any(|w| w == "splash"));
+    }
+
     const BASE: &str = "cryptroot/crypttab\nusr/sbin/cryptsetup\nusr/lib/cryptsetup/askpass\n";
     const KEYSCRIPT_AND_MARKER: &str = "usr/lib/yantrik/boot-unlock/askpass\nscripts/local-bottom/yantrik-unlock\n";
     const THEME: &str = "usr/bin/plymouth\nusr/sbin/plymouthd\n\

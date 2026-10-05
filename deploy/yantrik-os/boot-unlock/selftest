@@ -12,7 +12,8 @@
 #   - the marker is written only after a person was asked, the root is open, and crypttab and the
 #     initramfs leave no other way in (key file, other keyscript, clevis, dropbear); root's only;
 #   - the session's helper answers `typed <user>` once, and `no` to everything else;
-#   - enrol records a digest of the account's shadow entry, never a password.
+#   - enrol records a digest of the account's shadow entry, never a password;
+#   - the text installer's boot line is the desktop installer's unencrypted one.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SH="${SH:-sh}"
@@ -150,6 +151,11 @@ seed 20 45 "$HASH"; printf 'uptime=x\n' > "$T/run/yantrik-unlock/typed"
 check "a marker that says nothing usable: no" '[ "$(consume)" = no ]'
 rm -rf "$T/etc"; mkdir -p "$T/etc"; printf 'pranab:!$y$locked:1::::::\n' > "$T/etc/shadow"
 check "enrol refuses an account with no password" '! env YANTRIK_UNLOCK_CONF="$T/etc/boot-unlock.conf" YANTRIK_UNLOCK_SHADOW="$T/etc/shadow" $SH "$HERE/enrol" pranab 2>/dev/null && [ ! -e "$T/etc/boot-unlock.conf" ]'
+
+# ── the text installer never encrypts: it boots as the desktop installer's unencrypted line ──
+INSTALL_SH="$HERE/../yantrik-install.sh"
+UNLOCK_RS="$HERE/../../../crates/yantrik-ui/src/wire/installer_unlock.rs"
+check "the text installer writes quiet loglevel=3 plymouth.enable=0, as cmdline_default(false)" 'grep -qF "GRUB_CMDLINE_LINUX_DEFAULT=\"quiet loglevel=3 plymouth.enable=0\"" "$INSTALL_SH" && grep -qF "\"quiet loglevel=3 plymouth.enable=0\"" "$UNLOCK_RS" && ! grep "GRUB_CMDLINE_LINUX_DEFAULT" "$INSTALL_SH" | grep -q splash'
 
 # ── staging ──
 root="$T/rootfs"
