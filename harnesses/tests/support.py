@@ -118,6 +118,10 @@ class FakeDesktop:
         self.events: Dict[int, List[Dict[str, Any]]] = {}
         self.stopped: set = set()       # turns the desktop cancelled; still open until closed
         self.notices: Dict[str, List[Any]] = {"cancelled": [], "ended": [], "answers": []}
+        # The person's web search service, as the real host tells it: in the attach reply, and
+        # in the next poll after `set_web_search`. None is a desktop that predates it.
+        self.web_search: Optional[Dict[str, Any]] = None
+        self._web_search_due = False
         # Questions turns asked (#25), by (turn id, request id), and whether a desktop that keeps
         # runs is being played; one that does not refuses every question, as the host does.
         self.questions: Dict[Tuple[int, str], Dict[str, Any]] = {}
@@ -261,6 +265,11 @@ class FakeDesktop:
             except OSError:
                 pass
 
+    def set_web_search(self, web_search: Dict[str, Any]) -> None:
+        with self.lock:
+            self.web_search = web_search
+            self._web_search_due = True
+
     def _handle(self, method: str, params: Dict[str, Any]):
         with self.lock:
             if method == "harness.attach":
@@ -269,6 +278,9 @@ class FakeDesktop:
                 self._next_session += 1
                 self.sessions[session] = str(params.get("id"))
                 if not self.resumes:
+                    if self.web_search is not None:
+                        self._web_search_due = False
+                        return {"session": session, "web_search": self.web_search}, None
                     return {"session": session}, None
                 resumed = []
                 for item in params.get("resume") or []:
@@ -295,6 +307,9 @@ class FakeDesktop:
                     if self.notices[key]:
                         reply[key] = self.notices[key]
                         self.notices[key] = []
+                if self._web_search_due and self.web_search is not None:
+                    reply["web_search"] = self.web_search
+                    self._web_search_due = False
                 if self.queue:
                     turn = self.queue.pop(0)
                     self.open_turns.add(turn["turn_id"])

@@ -1,0 +1,149 @@
+// Settings → Network → Web search.
+//
+// Which service the person's minds and tools search through: built-in DuckDuckGo, or a SearXNG
+// they run themselves. One setting for everything that searches (crates/yantrik-web-search): the
+// companion's tools read it, and every attached harness is told it.
+//
+// Every sentence a line shows that depends on state is made in Rust (wire/web_search): the card
+// draws and reports presses, it does not decide. Save is offered only after a Test that found at
+// least one result, and the egress button only when Rust says the proxy is enforcing with no rule
+// for this address. Nothing here writes a rule or a setting by itself.
+
+import { Theme } from "theme.slint";
+import { YButton } from "y_button.slint";
+import { YInput } from "y_input.slint";
+import { YSegmented } from "../../../yantrik-ui-kit/slint/y_segmented.slint";
+
+export global WebSearchState {
+    // What is chosen on screen: "builtin" or "searxng". Saved only by Save.
+    in-out property <string> service: "builtin";
+    // The address in the field, as typed.
+    in-out property <string> url;
+    // Why the address cannot be used, or "" (the clear-text rule is said here).
+    in-out property <string> url-error;
+    in-out property <bool> testing;
+    // The last Test's report: results, engines, what was unresponsive, or what to fix.
+    in-out property <string> test-line;
+    in-out property <bool> test-ok;
+    in-out property <bool> can-save;
+    // "Saved: SearXNG at http://… · 5 Oct, 14:02", or "".
+    in-out property <string> saved-line;
+    in-out property <string> save-error;
+    // What the egress proxy means for this address, after a save: "" when there is nothing to say.
+    in-out property <string> egress-line;
+    // Offer "Allow minds to reach this search service": enforce mode, no covering rule.
+    in-out property <bool> egress-offer;
+    in-out property <bool> egress-busy;
+
+    callback choose(string);
+    callback url-edited(string);
+    callback test();
+    callback save();
+    callback allow-egress();
+}
+
+component Line inherits Text {
+    color: Theme.text-secondary;
+    font-size: 12px;
+    wrap: word-wrap;
+    // Its wrapped height, at the width it is given, so the card grows with it.
+    min-height: self.preferred-height;
+}
+
+export component WebSearchCard inherits Rectangle {
+    background: Theme.bg-card;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+
+    // The layout sizes the card: a fixed height from `preferred-height` undercounts wrapped lines.
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+
+        HorizontalLayout {
+            spacing: 18px;
+            VerticalLayout {
+                spacing: 6px;
+                horizontal-stretch: 1;
+                Text { text: "Web search"; color: Theme.text-primary; font-size: 14px; font-weight: 600; }
+                Line { text: "Where your minds and the companion's tools send web searches."; }
+            }
+            YSegmented {
+                label: "Web search service";
+                items: ["Built-in (DuckDuckGo)", "SearXNG (self-hosted)"];
+                selected: WebSearchState.service == "searxng" ? 1 : 0;
+                chosen(i) => { WebSearchState.choose(i == 1 ? "searxng" : "builtin"); }
+            }
+        }
+
+        if WebSearchState.service == "builtin" : Line {
+            text: "Searches DuckDuckGo directly, with no account. It can be rate-limited during heavy research, and a search then comes back empty.";
+        }
+
+        if WebSearchState.service == "searxng" : VerticalLayout {
+            spacing: 10px;
+            Line {
+                text: "SearXNG is a private search service you run yourself, on this machine or another one on your network. It asks several search engines on your behalf, keeps no history, and doesn't get blocked the way a single engine does when your minds research. Your searches go to the address below and nowhere else.";
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                YInput {
+                    horizontal-stretch: 1;
+                    placeholder: "http://192.168.1.20:8888";
+                    value <=> WebSearchState.url;
+                    has-error: WebSearchState.url-error != "";
+                    error-text: WebSearchState.url-error;
+                    edited(text) => { WebSearchState.url-edited(text); }
+                    accepted(text) => { WebSearchState.test(); }
+                }
+                VerticalLayout {
+                    alignment: start;
+                    YButton {
+                        label: WebSearchState.testing ? "Testing…" : "Test";
+                        variant: 1;
+                        loading: WebSearchState.testing;
+                        disabled: WebSearchState.testing || WebSearchState.url == "";
+                        clicked => { WebSearchState.test(); }
+                    }
+                }
+            }
+            if WebSearchState.test-line != "" : Line {
+                text: WebSearchState.test-line;
+                color: WebSearchState.test-ok ? Theme.text-primary : Theme.color-emotional;
+            }
+            Line {
+                text: "Test searches for \"yantrik\" and needs at least one result before you can save. Setting up SearXNG: https://docs.searxng.org";
+                color: Theme.text-dim;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: start;
+            YButton {
+                label: "Save";
+                disabled: !WebSearchState.can-save;
+                clicked => { WebSearchState.save(); }
+            }
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                if WebSearchState.save-error != "" : Line { text: WebSearchState.save-error; color: Theme.color-emotional; }
+                if WebSearchState.save-error == "" && WebSearchState.saved-line != "" : Line { text: WebSearchState.saved-line; }
+            }
+        }
+
+        if WebSearchState.egress-line != "" : Line { text: WebSearchState.egress-line; }
+        if WebSearchState.egress-offer : HorizontalLayout {
+            alignment: start;
+            YButton {
+                label: "Allow minds to reach this search service";
+                variant: 1;
+                loading: WebSearchState.egress-busy;
+                disabled: WebSearchState.egress-busy;
+                clicked => { WebSearchState.allow-egress(); }
+            }
+        }
+    }
+}

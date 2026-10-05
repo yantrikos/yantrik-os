@@ -220,6 +220,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         }
     });
     let _ = HOST.set(host.clone());
+    // The person's web search service, told to every harness at attach and on each change
+    // (wire/web_search). Set before the socket opens, so the first harness to attach hears it.
+    host.set_web_search(crate::wire::web_search::to_protocol(&crate::wire::settings::web_search()));
 
     // The agent terminal's side of agents (design/agents-workspace-2026-09-23.md, decision 3):
     // `agent_run` and the rest believe a token only as this host issued it and only from under

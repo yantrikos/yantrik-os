@@ -13,10 +13,10 @@ one of the candidates.
 Seven methods on the `harness` socket, all spoken by the harness:
 
 ```text
-harness.attach   {id, name, detail?, tools?, memory?, conversations?}  → {session}
+harness.attach   {id, name, detail?, tools?, memory?, conversations?}  → {session, web_search?}
 harness.poll     {session}              → {turn_id, text, context, conversation, agent_token, origin?} | {}
                                           … either may also carry cancelled: [turn_id], ended: [conversation],
-                                            answers: [{turn_id, request_id, answer}]
+                                            answers: [{turn_id, request_id, answer}], web_search
 harness.chunk    {session, turn_id, delta}             → {}
 harness.event    {session, turn_id, event}             → {}      (optional — see below)
 harness.complete {session, turn_id}                    → {}
@@ -27,8 +27,8 @@ harness.detach   {session}                             → {}
 Attach, then loop: ask for a turn, stream the answer back in pieces, say you are done.
 `crates/yantrik-harness/examples/echo_harness.rs` is a working one end to end, and the only part
 a real harness replaces is the function that produces the answer. `harness.event`,
-`conversations`, `conversation`, `agent_token`, `cancelled`, `ended`, `answers` and `origin` are all
-optional to use: a harness that knows none of them works exactly as it always did.
+`conversations`, `conversation`, `agent_token`, `cancelled`, `ended`, `answers`, `origin` and
+`web_search` are all optional to use: a harness that knows none of them works exactly as it always did.
 
 A turn may carry `origin`, where the person asked it from (design/channels-2026-09-29.md):
 `{"channel": "lens"|"telegram"|"signal"|…, "remote": bool, "person", "carries": ["text","voice","photo"],
@@ -364,6 +364,38 @@ new token, and keeps `concurrent = False` per conversation: a second message to 
 conversation still gets "still working on the previous request", while different conversations
 run at once. `/stop` and `/new` act on their own conversation only. Against a desktop too old for
 `harness.event`, the events are skipped after one log line and the trail lines carry on.
+
+## Web search
+
+The person chooses one web search service for every mind, in Settings → Network → Web search:
+built-in, or a SearXNG they run themselves. The desktop tells each harness which:
+
+```text
+{"service": "searxng", "url": "http://192.168.4.42:8888"}
+{"service": "builtin"}
+```
+
+- **When it is sent.** In the `harness.attach` reply, as `web_search`, and again in the next
+  `harness.poll` reply after the person changes it (on its own or beside a turn), once per
+  change. A harness can switch without restarting. A desktop that predates this sends neither.
+- **`service`** is `builtin` (search the way you always have) or `searxng`.
+- **`url`**, only with `searxng`, is the base address, already checked by the desktop: `http` or
+  `https`, plain `http` only to this machine or the local network, no user name or password, no
+  query or fragment, no trailing slash, at most 256 characters. Search with
+  `GET <url>/search?q=<query>&format=json` and read `results[]` (`title`, `url`, `content`) and
+  `unresponsive_engines`. Settings only saves an address after a test search there found results.
+- **You SHOULD use it** for the searches you make for the person, instead of your own default,
+  and fall back to your own way only when it fails, saying so in what you return.
+- **You MUST NOT** send the queries you make there anywhere else: not to a log that leaves the
+  machine, not to telemetry, not to another search service "as well". The person chose where
+  their searches go. Treat the address as you would `memory_url`: configuration, not something
+  to show the model or write into a transcript.
+- **The egress proxy** still applies to a mind running as its own account. When it enforces,
+  Settings offers the person a button that adds the one rule for this address; a harness never
+  asks for one.
+
+`harnesses/lib/yantrik_harness.py` keeps the latest as `harness.web_search` and calls a handler's
+`web_search_changed(web_search)` when it arrives, if the handler has one.
 
 ## Rules worth knowing
 

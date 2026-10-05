@@ -466,6 +466,12 @@ class Handler:
         restarted — and it will never be asked anything again. Let go of what it holds. Called on
         the poll loop's thread, so it must not block: close a process on a thread of its own."""
 
+    def web_search_changed(self, web_search: Dict[str, Any]) -> None:
+        """The person's web search service, at attach and whenever they change it
+        (docs/harness.md, "Web search"): `{"service": "searxng", "url": ...}` or
+        `{"service": "builtin"}`. Search there; never send the queries anywhere else. Called on
+        the poll loop's thread, so it must not block."""
+
 
 class PerConversation(Handler):
     """One handler per conversation, made when the conversation's first turn arrives.
@@ -554,6 +560,16 @@ class PerConversation(Handler):
         if entry is not None:
             self._retire(entry[0])
 
+    def web_search_changed(self, web_search: Dict[str, Any]) -> None:
+        """Every held conversation's handler hears it. One made later reads
+        `turn.harness.web_search` on its first turn."""
+        with self._lock:
+            minds = [entry[0] for entry in self._held.values()]
+        for mind in minds:
+            changed = getattr(mind, "web_search_changed", None)
+            if changed is not None:
+                changed(dict(web_search))
+
     def close(self) -> None:
         """Close every conversation's handler, and wait for them: the harness is exiting."""
         with self._lock:
@@ -623,6 +639,10 @@ class Harness:
         self._seen: set = set()
         # What the last attach offered back to the desktop (#246), to know what it took back.
         self._asked_resume: List[Dict[str, Any]] = []
+        # The person's web search service, as the desktop last said (docs/harness.md, "Web
+        # search"): {"service": "searxng", "url": ...} or {"service": "builtin"}; None from a
+        # desktop that does not say. Read it with `searxng_url()`.
+        self.web_search: Optional[Dict[str, Any]] = None
 
     # ── running ─────────────────────────────────────────────────────────
 
@@ -660,8 +680,40 @@ class Harness:
         finally:
             self._shutdown()
 
+    def searxng_url(self) -> Optional[str]:
+        """The person's SearXNG to search through, or None for the harness's own way."""
+        given = self.web_search or {}
+        return given.get("url") if given.get("service") == "searxng" else None
+
+    def _web_search(self, reply: Dict[str, Any]) -> None:
+        """Take the web search service from an attach or poll reply that carries one."""
+        given = reply.get("web_search")
+        if not isinstance(given, dict):
+            return
+        service = given.get("service")
+        url = given.get("url")
+        if service == "searxng" and isinstance(url, str) and url:
+            now: Dict[str, Any] = {"service": "searxng", "url": url}
+        elif service == "builtin":
+            now = {"service": "builtin"}
+        else:
+            return
+        if now == self.web_search:
+            return
+        self.web_search = now
+        # The service only: where searches go is the person's business, not the log's.
+        self.log("web search: %s" % now["service"])
+        changed = getattr(self.handler, "web_search_changed", None)
+        if changed is None:
+            return
+        try:
+            changed(dict(now))
+        except Exception as exc:  # noqa: BLE001 — a handler's hook must not kill the loop
+            self.log("web_search_changed raised: %s" % exc)
+
     def _notices(self, reply: Dict[str, Any]) -> None:
         """What the desktop stopped waiting for: turns it cancelled, conversations it ended."""
+        self._web_search(reply)
         for turn_id in reply.get("cancelled") or []:
             with self._lock:
                 turn = self._open.get(turn_id)
@@ -738,6 +790,7 @@ class Harness:
         self._complained_about_socket = False
         self._events_ok = True
         self.log("attached as `%s` (session %s)" % (self.id, self.session))
+        self._web_search(reply)
         # What the desktop took back carries on under the same tokens (#246). Everything else
         # the last session held, a process and a history for each conversation, was for agents
         # that desktop issued, and its tokens name nothing now.

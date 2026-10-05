@@ -19,7 +19,8 @@ mod control;
 mod ledger;
 mod local;
 mod peer;
-mod policy;
+// The policy is the library half (lib.rs), so the desktop checks a rule the way this does.
+use yantrik_egress::policy;
 mod proxy;
 mod request;
 mod state;

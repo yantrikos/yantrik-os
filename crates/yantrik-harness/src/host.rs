@@ -53,7 +53,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::event::{AgentId, Event};
-use crate::protocol::{self, Assignment, Attach};
+use crate::protocol::{self, Assignment, Attach, WebSearch};
 use crate::run_store::{RunError, RunState, RunStore};
 use crate::{Answer, Capabilities, Chunk, Harness, Health, Turn};
 
@@ -369,6 +369,9 @@ struct Attached {
     /// Answers the person gave to questions its runs asked, to hand over on its next poll:
     /// `{turn_id, request_id, answer}`, each already consumed in the run store, so exactly once.
     answers: Vec<serde_json::Value>,
+    /// The person changed their web search service since this harness was last told: its next
+    /// poll carries `web_search`.
+    web_search_changed: bool,
 }
 
 /// Who is on the other end of a call, as the kernel said at accept (`SO_PEERCRED`). Both `None`
@@ -637,6 +640,8 @@ pub struct Host {
     paused: Arc<std::sync::RwLock<Option<String>>>,
     /// Told when an answer finishes for a chat the person had left. See [`Host::with_late_answer`].
     late_answer: Option<Arc<dyn Fn(LateAnswer) + Send + Sync>>,
+    /// The person's web search service, told to every harness: see [`Host::set_web_search`].
+    web_search: Arc<std::sync::RwLock<Option<WebSearch>>>,
 }
 
 /// How the host decides who carries a memory credential, and how it digests one. The decision
@@ -674,6 +679,7 @@ impl Host {
             memory: None,
             paused: Arc::new(std::sync::RwLock::new(None)),
             late_answer: None,
+            web_search: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -684,6 +690,28 @@ impl Host {
     pub fn with_late_answer(mut self, hook: impl Fn(LateAnswer) + Send + Sync + 'static) -> Host {
         self.late_answer = Some(Arc::new(hook));
         self
+    }
+
+    /// The person's web search service (Settings → Network → Web search). Every harness that
+    /// attaches is told it in the attach reply, and every harness attached now is told again in
+    /// its next poll reply, so it can switch without restarting. Setting the same value again
+    /// tells nobody anything.
+    pub fn set_web_search(&self, web_search: WebSearch) {
+        {
+            let Ok(mut current) = self.web_search.write() else { return };
+            if current.as_ref() == Some(&web_search) {
+                return;
+            }
+            *current = Some(web_search);
+        }
+        for harness in self.lock().attached.values_mut() {
+            harness.web_search_changed = true;
+        }
+    }
+
+    /// What harnesses are being told about web search, if the shell has said.
+    pub fn web_search(&self) -> Option<WebSearch> {
+        self.web_search.read().ok().and_then(|w| w.clone())
     }
 
     /// Stop every turn to every mind, built-in included, saying `why` to whoever asks (`Some`), or
@@ -1524,6 +1552,8 @@ impl Host {
                 cancelled: Vec::new(),
                 ended: Vec::new(),
                 answers: Vec::new(),
+                // The attach reply carries it.
+                web_search_changed: false,
             },
         );
 
@@ -1535,6 +1565,9 @@ impl Host {
             state.active = id;
         }
         let mut reply = serde_json::json!({ "session": session });
+        if let Some(web_search) = self.web_search() {
+            reply["web_search"] = serde_json::to_value(web_search).unwrap_or_default();
+        }
         if !resumed.is_empty() || !refused.is_empty() {
             reply["resumed"] = resumed.into();
             reply["refused"] = refused.into();
@@ -1776,6 +1809,11 @@ impl Host {
         }
         if !harness.answers.is_empty() {
             reply["answers"] = serde_json::json!(std::mem::take(&mut harness.answers));
+        }
+        if std::mem::take(&mut harness.web_search_changed) {
+            if let Some(web_search) = self.web_search() {
+                reply["web_search"] = serde_json::to_value(web_search).unwrap_or_default();
+            }
         }
         Ok(reply)
     }
@@ -3929,5 +3967,51 @@ mod tests {
         let next = poll(&host, &session);
         assert_eq!(next["conversation"], agent.conversation());
         assert!(!host.interrupt(&AgentId::new("pi", "c-nobody")), "nothing in flight there");
+    }
+
+    /// The person's web search service reaches every harness: in the attach reply, and in the
+    /// next poll after it changes, once. A host the shell has told nothing says nothing, so the
+    /// wire is what it was for a harness that never heard of the field.
+    #[test]
+    fn web_search_is_told_at_attach_and_again_on_change() {
+        let host = host();
+        let quiet = host.handle(protocol::ATTACH, &json!({ "id": "old", "name": "old" })).unwrap();
+        assert!(quiet.get("web_search").is_none(), "{quiet}");
+
+        host.set_web_search(protocol::WebSearch::searxng("http://192.168.4.42:8888"));
+        let reply = host.handle(protocol::ATTACH, &json!({ "id": "mind", "name": "Mind" })).unwrap();
+        assert_eq!(reply["web_search"], json!({ "service": "searxng", "url": "http://192.168.4.42:8888" }));
+        let session = reply["session"].as_str().unwrap().to_string();
+        assert!(poll(&host, &session).get("web_search").is_none(), "told at attach, not again");
+
+        host.set_web_search(protocol::WebSearch::builtin());
+        assert_eq!(poll(&host, &session)["web_search"], json!({ "service": "builtin" }));
+        assert!(poll(&host, &session).get("web_search").is_none(), "once per change");
+        host.set_web_search(protocol::WebSearch::builtin());
+        assert!(poll(&host, &session).get("web_search").is_none(), "the same value again is not a change");
+
+        // A harness attached before any of this hears the latest on its next poll too.
+        let old = quiet["session"].as_str().unwrap();
+        assert_eq!(poll(&host, old)["web_search"], json!({ "service": "builtin" }));
+    }
+
+    /// An older harness, which reads nothing but its own fields, takes turns exactly as before
+    /// while the replies around it carry `web_search`.
+    #[test]
+    fn a_harness_that_ignores_web_search_still_takes_turns() {
+        let host = host();
+        host.set_web_search(protocol::WebSearch::searxng("http://127.0.0.1:8888"));
+        let session = attach(&host, "echo");
+        host.set_active("echo").unwrap();
+        host.set_web_search(protocol::WebSearch::builtin());
+        let _answer = host.send(Turn::new("hello"));
+        let turn = poll(&host, &session);
+        assert_eq!(turn["text"], "hello");
+        assert_eq!(turn["web_search"], json!({ "service": "builtin" }), "riding on the turn it was due with");
+        let turn_id = turn["turn_id"].as_u64().unwrap();
+        // Read the way an older harness reads it: the fields it knows, the rest ignored.
+        let assignment: protocol::Assignment = serde_json::from_value(turn).unwrap();
+        assert_eq!(assignment.turn_id, turn_id);
+        complete(&host, &session, turn_id);
     }
 }
