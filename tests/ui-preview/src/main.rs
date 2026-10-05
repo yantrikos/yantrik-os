@@ -44,6 +44,7 @@ mod minds_tests;
 mod jump_tests;
 mod handoff_card_tests;
 mod accounts_page_tests;
+mod web_search_tests;
 mod ai_map_tests;
 mod provider_panel_tests;
 mod rail_tests;
@@ -95,6 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-jump-to-present") { return jump_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-handoff-card") { return handoff_card_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-accounts-page") { return accounts_page_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-web-search") { return web_search_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-ai-map") { return ai_map_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-providers-in-use") { return ai_map_tests::run_providers(&window, output); }
     if args.iter().any(|a| a == "verify-provider-panel") { return provider_panel_tests::run(&window, output); }

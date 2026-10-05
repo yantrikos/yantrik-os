@@ -971,3 +971,16 @@ export component ApprovalCardProbe inherits Window {
     out property <length> card-h: card.preferred-height + 16px;
     card := ApprovalCard { x: 8px; y: 8px; width: parent.width - 16px; data: root.data; }
 }
+
+// Settings → Network with the Web search group (components/web_search_card.slint), filled through
+// WebSearchState as wire/web_search fills it, for verify-web-search in dark and light.
+export { WebSearchState } from "components/web_search_card.slint";
+export component WebSearchProbe inherits Window {
+    width: 1280px; height: 900px; background: Theme.bg-deep;
+    in property <bool> light;
+    changed light => { ThemeMode.dark = !root.light; }
+    SettingsScreen {
+        width: 100%; height: 100%;
+        active-category: 3;
+    }
+}

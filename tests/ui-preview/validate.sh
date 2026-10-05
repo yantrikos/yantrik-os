@@ -26,6 +26,7 @@ run target/ui-validation/memory-busy.png 1280 800 verify-memory-busy
 run target/ui-validation/provider-panel.png 1280 800 verify-provider-panel
 run target/ui-validation/handoff-card.png 1280 800 verify-handoff-card
 run target/ui-validation/accounts-page.png 1280 800 verify-accounts-page
+run target/ui-validation/web-search.png 1280 900 verify-web-search
 run target/ui-validation/ai-map.png 1280 800 verify-ai-map
 run target/ui-validation/free-ai.png 600 1800 verify-free-ai
 run target/ui-validation/providers-in-use.png 1280 2400 verify-providers-in-use
