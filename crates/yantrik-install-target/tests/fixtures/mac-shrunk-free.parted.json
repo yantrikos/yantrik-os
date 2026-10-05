@@ -1,0 +1,54 @@
+{
+   "disk": {
+      "path": "/dev/sda",
+      "size": "1953525168s",
+      "model": "ATA APPLE HDD HTS541010A9E662",
+      "transport": "scsi",
+      "logical-sector-size": 512,
+      "physical-sector-size": 4096,
+      "label": "gpt",
+      "uuid": "6f3c2e4a-1d2b-4c5e-9a8b-7c6d5e4f3a2b",
+      "max-partitions": 128,
+      "partitions": [
+         {
+            "number": 0,
+            "start": "34s",
+            "end": "39s",
+            "size": "6s",
+            "type": "free"
+         },
+         {
+            "number": 1,
+            "start": "40s",
+            "end": "409639s",
+            "size": "409600s",
+            "type": "primary",
+            "type-uuid": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+            "uuid": "00000001-aaaa-4bbb-8ccc-000000000001",
+            "name": "EFI System Partition",
+            "filesystem": "fat32",
+            "flags": [
+               "boot",
+               "esp"
+            ]
+         },
+         {
+            "number": 2,
+            "start": "409640s",
+            "end": "1543378391s",
+            "size": "1542968752s",
+            "type": "primary",
+            "type-uuid": "7c3457ef-0000-11aa-aa11-00306543ecac",
+            "uuid": "00000002-aaaa-4bbb-8ccc-000000000002",
+            "name": "Container"
+         },
+         {
+            "number": 0,
+            "start": "1543378392s",
+            "end": "1953525134s",
+            "size": "410146743s",
+            "type": "free"
+         }
+      ]
+   }
+}

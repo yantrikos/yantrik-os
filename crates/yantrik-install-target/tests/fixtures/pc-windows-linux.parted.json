@@ -1,0 +1,103 @@
+{
+   "disk": {
+      "path": "/dev/nvme0n1",
+      "size": "1000215216s",
+      "model": "Samsung SSD 980 PRO 512GB",
+      "transport": "scsi",
+      "logical-sector-size": 512,
+      "physical-sector-size": 4096,
+      "label": "gpt",
+      "uuid": "6f3c2e4a-1d2b-4c5e-9a8b-7c6d5e4f3a2b",
+      "max-partitions": 128,
+      "partitions": [
+         {
+            "number": 0,
+            "start": "34s",
+            "end": "2047s",
+            "size": "2014s",
+            "type": "free"
+         },
+         {
+            "number": 1,
+            "start": "2048s",
+            "end": "206847s",
+            "size": "204800s",
+            "type": "primary",
+            "type-uuid": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+            "uuid": "00000001-aaaa-4bbb-8ccc-000000000001",
+            "name": "EFI system partition",
+            "filesystem": "fat32",
+            "flags": [
+               "boot",
+               "esp"
+            ]
+         },
+         {
+            "number": 2,
+            "start": "206848s",
+            "end": "239615s",
+            "size": "32768s",
+            "type": "primary",
+            "type-uuid": "e3c9e316-0b5c-4db8-817d-f92df00215ae",
+            "uuid": "00000002-aaaa-4bbb-8ccc-000000000002",
+            "name": "Microsoft reserved partition",
+            "flags": [
+               "msftres"
+            ]
+         },
+         {
+            "number": 3,
+            "start": "239616s",
+            "end": "500000000s",
+            "size": "499760385s",
+            "type": "primary",
+            "type-uuid": "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7",
+            "uuid": "00000003-aaaa-4bbb-8ccc-000000000003",
+            "name": "Basic data partition",
+            "filesystem": "ntfs",
+            "flags": [
+               "msftdata"
+            ]
+         },
+         {
+            "number": 0,
+            "start": "500000001s",
+            "end": "500002815s",
+            "size": "2815s",
+            "type": "free"
+         },
+         {
+            "number": 4,
+            "start": "500002816s",
+            "end": "502099967s",
+            "size": "2097152s",
+            "type": "primary",
+            "type-uuid": "de94bba4-06d1-4d40-a16a-bfd50179d6ac",
+            "uuid": "00000004-aaaa-4bbb-8ccc-000000000004",
+            "name": "",
+            "flags": [
+               "hidden",
+               "diag"
+            ]
+         },
+         {
+            "number": 5,
+            "start": "502099968s",
+            "end": "804810751s",
+            "size": "302710784s",
+            "type": "primary",
+            "type-uuid": "0fc63daf-8483-4772-8e79-3d69d8477de4",
+            "uuid": "00000005-aaaa-4bbb-8ccc-000000000005",
+            "name": "home",
+            "filesystem": "ext4"
+         },
+         {
+            "number": 0,
+            "start": "804810752s",
+            "end": "1000215182s",
+            "size": "195404431s",
+            "type": "free"
+         }
+      ]
+   }
+}

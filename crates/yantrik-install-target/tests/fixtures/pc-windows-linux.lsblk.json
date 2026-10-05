@@ -1,0 +1,48 @@
+{
+   "blockdevices": [
+      {
+         "path": "/dev/nvme0n1",
+         "name": "nvme0n1",
+         "fstype": null,
+         "label": null,
+         "mountpoint": null,
+         "children": [
+            {
+               "path": "/dev/nvme0n1p1",
+               "name": "nvme0n1p1",
+               "fstype": "vfat",
+               "label": "SYSTEM",
+               "mountpoint": null
+            },
+            {
+               "path": "/dev/nvme0n1p2",
+               "name": "nvme0n1p2",
+               "fstype": null,
+               "label": null,
+               "mountpoint": null
+            },
+            {
+               "path": "/dev/nvme0n1p3",
+               "name": "nvme0n1p3",
+               "fstype": "ntfs",
+               "label": "Windows",
+               "mountpoint": null
+            },
+            {
+               "path": "/dev/nvme0n1p4",
+               "name": "nvme0n1p4",
+               "fstype": "ntfs",
+               "label": "Recovery",
+               "mountpoint": null
+            },
+            {
+               "path": "/dev/nvme0n1p5",
+               "name": "nvme0n1p5",
+               "fstype": "ext4",
+               "label": "home",
+               "mountpoint": null
+            }
+         ]
+      }
+   ]
+}
