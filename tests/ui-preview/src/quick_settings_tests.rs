@@ -291,6 +291,19 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     for _ in 0..7 { tap(Key::DownArrow.into()); }
     tap(" ".into());
     assert_eq!(take(), ["profile power-saver"], "the seventh stop on a laptop is Power mode; Balanced steps to Power saver");
+    // Until the daemon answers, the tile says it is switching and takes no press: a second press
+    // cannot ask again over the first, and the tile never shows a profile nobody has confirmed
+    // (toggle_truth.rs). The shell clears it with what the daemon reads back.
+    let asked = draw();
+    ui.set_power_profile_pending("power-saver".into());
+    let pending = draw();
+    tap(" ".into());
+    assert!(take().is_empty(), "a pending Power mode tile takes no press");
+    assert!(ui.get_power_profile() == "balanced", "the tile still shows the confirmed profile while pending");
+    assert!(changed(&asked, &pending, 1280, (920, 1280), (32, 480)) > 20, "the pending tile looks different: it says Switching");
+    ui.set_power_profile_pending("".into());
+    draw();
+    println!("ran: Power mode pending");
 
     // The footer: Lock and Power put Quick Settings away and do their own thing; Power opens the
     // power popover. (Laptop shape: the footer's four icons are at y=465, Power the last.)

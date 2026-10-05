@@ -352,6 +352,9 @@ export component App inherits Window {
     // then not drawn). Performance is offered only on hardware that has it.
     in property <string> power-profile: "";
     in property <bool> power-performance-offered: false;
+    // The profile asked for while the daemon has not answered: the choice shows it as pending and
+    // takes no press until the shell clears it with what the daemon reads back (toggle_truth.rs).
+    in property <string> power-profile-pending: "";
     callback set-power-profile(string);
     // The battery popover under the bar. `battery-anchor-x` is where the indicator was when it
     // was pressed.
@@ -2951,6 +2954,7 @@ export component App inherits Window {
             battery-time-text: root.battery-time-text;
             power-profile: root.power-profile;
             power-performance-offered: root.power-performance-offered;
+            power-profile-pending: root.power-profile-pending;
             set-power-profile(p) => { root.set-power-profile(p); }
             brightness-available: root.brightness-available;
             brightness-level <=> root.brightness-level;

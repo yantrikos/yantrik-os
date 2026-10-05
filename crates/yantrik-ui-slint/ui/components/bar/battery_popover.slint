@@ -22,6 +22,9 @@ export component BatteryPopover inherits YPopover {
     in property <string> time-text: "";
     // "" when there is no power-profiles-daemon.
     in property <string> power-profile: "";
+    // The profile asked for and not yet confirmed: its button spins and no choice takes a press
+    // until the daemon answers (toggle_truth.rs).
+    in property <string> profile-pending: "";
     in property <bool> performance-offered: false;
     callback profile-chosen(string);
     in property <bool> brightness-available: false;
@@ -79,16 +82,22 @@ export component BatteryPopover inherits YPopover {
             YButton {
                 label: "Power Saver";
                 variant: root.power-profile == "power-saver" ? 0 : 1;
+                loading: root.profile-pending == "power-saver";
+                disabled: root.profile-pending != "";
                 clicked => { root.profile-chosen("power-saver"); }
             }
             YButton {
                 label: "Balanced";
                 variant: root.power-profile == "balanced" ? 0 : 1;
+                loading: root.profile-pending == "balanced";
+                disabled: root.profile-pending != "";
                 clicked => { root.profile-chosen("balanced"); }
             }
             if root.performance-offered : YButton {
                 label: "Performance";
                 variant: root.power-profile == "performance" ? 0 : 1;
+                loading: root.profile-pending == "performance";
+                disabled: root.profile-pending != "";
                 clicked => { root.profile-chosen("performance"); }
             }
         }

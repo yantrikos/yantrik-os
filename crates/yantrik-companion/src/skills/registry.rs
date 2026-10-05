@@ -211,37 +211,42 @@ impl SkillRegistry {
     // ── Mutations ──
 
     /// Enable a skill. Returns list of dependency skill IDs that were auto-enabled.
-    pub fn enable(&mut self, conn: &Connection, skill_id: &str) -> Vec<String> {
+    ///
+    /// Each write is made before the switch it stands for moves, and the first one the database
+    /// refuses stops here with its reason: the registry never says "on" for a skill the next start
+    /// will read as off. A dependency already written stays enabled, as the database says.
+    pub fn enable(&mut self, conn: &Connection, skill_id: &str) -> Result<Vec<String>, String> {
         let mut auto_enabled = Vec::new();
 
         // First, resolve dependencies
         let deps = if let Some(entry) = self.skills.get(skill_id) {
             entry.manifest.requires.clone()
         } else {
-            return auto_enabled;
+            return Err(format!("there is no skill `{skill_id}`"));
         };
 
         for dep_id in &deps {
             if let Some(dep) = self.skills.get(dep_id) {
                 if !dep.enabled {
-                    self.set_enabled(conn, dep_id, true);
+                    self.set_enabled(conn, dep_id, true)?;
                     auto_enabled.push(dep_id.clone());
                 }
             }
         }
 
         // Enable the skill itself
-        self.set_enabled(conn, skill_id, true);
-        auto_enabled
+        self.set_enabled(conn, skill_id, true)?;
+        Ok(auto_enabled)
     }
 
     /// Disable a skill.
-    pub fn disable(&mut self, conn: &Connection, skill_id: &str) {
-        self.set_enabled(conn, skill_id, false);
+    pub fn disable(&mut self, conn: &Connection, skill_id: &str) -> Result<(), String> {
+        self.set_enabled(conn, skill_id, false)
     }
 
-    /// Toggle a skill. Returns (new_enabled_state, auto_enabled_deps).
-    pub fn toggle(&mut self, conn: &Connection, skill_id: &str) -> (bool, Vec<String>) {
+    /// Toggle a skill. Returns (new_enabled_state, auto_enabled_deps), or why the database did
+    /// not take it, with the skill left as it was.
+    pub fn toggle(&mut self, conn: &Connection, skill_id: &str) -> Result<(bool, Vec<String>), String> {
         let currently_enabled = self
             .skills
             .get(skill_id)
@@ -249,24 +254,27 @@ impl SkillRegistry {
             .unwrap_or(false);
 
         if currently_enabled {
-            self.disable(conn, skill_id);
-            (false, Vec::new())
+            self.disable(conn, skill_id)?;
+            Ok((false, Vec::new()))
         } else {
-            let deps = self.enable(conn, skill_id);
-            (true, deps)
+            let deps = self.enable(conn, skill_id)?;
+            Ok((true, deps))
         }
     }
 
-    fn set_enabled(&mut self, conn: &Connection, skill_id: &str, enabled: bool) {
-        if let Some(entry) = self.skills.get_mut(skill_id) {
-            entry.enabled = enabled;
-        }
-        let _ = conn.execute(
+    /// The database first, then memory: a write it refuses leaves the switch where it was.
+    fn set_enabled(&mut self, conn: &Connection, skill_id: &str, enabled: bool) -> Result<(), String> {
+        conn.execute(
             "INSERT INTO skill_states (skill_id, enabled, updated_at)
              VALUES (?1, ?2, unixepoch('now'))
              ON CONFLICT(skill_id) DO UPDATE SET enabled = ?2, updated_at = unixepoch('now')",
             rusqlite::params![skill_id, enabled as i64],
-        );
+        )
+        .map_err(|e| format!("the skills database did not take it: {e}"))?;
+        if let Some(entry) = self.skills.get_mut(skill_id) {
+            entry.enabled = enabled;
+        }
+        Ok(())
     }
 
     /// Update user config for a skill.
@@ -383,3 +391,7 @@ impl SkillRegistry {
         self.skills.values().filter(|e| e.enabled).count()
     }
 }
+
+#[cfg(test)]
+#[path = "registry_tests.rs"]
+mod registry_tests;
