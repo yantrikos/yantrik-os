@@ -15,7 +15,7 @@ The honest reading has three parts:
 - that lever is not new (Meta's Large Concept Models; gist/ICAE context compression);
 - it is not specific to MDG.
 
-What would be genuinely new is evidence that the typed temporal, epistemic and provenance graph beats an equally packed, equally learned compression of text. That has not been shown, and §6 below sets out exactly how to test it on your 3090 Tis.
+What would be genuinely new is evidence that the typed temporal, epistemic and provenance graph beats an equally packed, equally learned compression of text. That has not been shown by the pre-registered runs. One **exploratory** follow-up, run post hoc at 3× the training budget, gave a lead. MDG-packed reached **98.0 ± 0.2%** on all 3 seeds. Packed compact English reached **88.1 ± 6.5%**: it learned the "when did X last go to Y" skill in only 1 of 3 seeds. That points to typed codes making facts *more reliably learnable*, possibly just because they disambiguate roles (e.g. event time vs cause reference). It is n=3, post hoc and not significant (Welch t ≈ 2.6), so it is a lead, not a finding. §6 below sets out exactly how to test it on your 3090 Tis.
 
 On the prior art: the components of MDG are all well covered:
 - graph meaning: AMR/UMR;
@@ -256,7 +256,26 @@ Approximate chance levels: `where_*` 20% (5 places); `holder_now` / `root_cause`
 **What this says.** Writing the same facts as typed codes instead of compact English barely shortens the sequence once the text gets a domain tokenizer. Most of what the spec's "learned codes" would achieve at the token level, a 200-merge BPE already achieves. The big win is changing the *unit of position* from token to proposition. That lever works for compact text as well as for MDG, provided something segments the text into propositions; here the segmentation is an oracle, which is itself a form of help.
 
 ### Exploratory, post-hoc (NOT pre-registered): is the token-level failure just under-training?
-*Running at the time of this commit; results will be added below when complete (24k steps = 3× the budget, seed 0 only, conditions compact_bpe, mdg_seq_bpe, mdg_packed, compact_packed).*
+These runs were added *after* seeing the main results, so they are hypothesis-generating, not confirmatory. Settings are the same except for **24,000 steps (3× the budget)**. The packed conditions have 3 seeds; the BPE token conditions have seed 0 only. Raw data: `experiment/results_explore_24k/`, table: `experiment/results_explore_24k.md`.
+
+| condition | seeds | accuracy % | per-seed | positions |
+|---|---|---|---|---|
+| compact_bpe | 1 | 32.3 | 32.3 | 76.9 |
+| mdg_seq_bpe | 1 | 37.6 | 37.6 | 72.6 |
+| mdg_packed | 3 | **98.0 ± 0.2** | 97.8, 98.1, 98.2 | 30.0 |
+| compact_packed | 3 | **88.1 ± 6.5** | 86.0, 82.8, 95.4 | 30.0 |
+
+Per seed, the packed conditions differ on two question types:
+
+| run | when_moved | root_cause | holder_now | others |
+|---|---|---|---|---|
+| mdg_packed s0 / s1 / s2 | 99.8 / 100.0 / 100.0 | 99.6 / 100.0 / 99.7 | 89.1 / 89.5 / 90.8 | ≥98.3 |
+| compact_packed s0 / s1 / s2 | 34.5 / **5.5** / 99.7 | 99.7 / 99.8 / **85.2** | 86.8 / 93.5 / 90.5 | ≥95.9 |
+
+What this shows, cautiously:
+1. **The token-level failure is not fixed by 3× more training at this model size.** Both BPE'd sequences stay near chance. The packing advantage at this scale is therefore not just "trained a bit longer". It probably reflects a tiny 3-layer model being unable to compose token-level bindings (name → verb → place → time across positions) without many more layers or steps. A bigger model should close much of this gap, and that is the first thing R2 must check.
+2. **A lead for the typed schema.** At equal positions, MDG facts were learned *reliably*: all 3 seeds solved every skill except the shared `holder_now` ceiling of ~90%. The same facts written as packed words solved `when_moved` in only 1 of 3 seeds, and one seed regressed on `root_cause`. The mean gap is +9.9 pts (Welch t ≈ 2.6, n=3 vs 3), which is not significant at conventional levels, and the variance difference (sd 0.2 vs 6.5) is the more striking feature. One plausible mechanism is **typed codes that disambiguate roles**. In compact text the same word `t5` serves both as an event's own time and as a cause reference ("… because of t5"). MDG uses distinct `T5` and `C_T5` codes, and a single relation code rather than "goes to" / "is in". This can be tested directly: give the text baseline distinct cause-reference words and see whether the gap closes. If it closes, the "typed advantage" is just disambiguated vocabulary, which text can also have.
+3. This does **not** change the pre-registered verdicts above (K1 uninformative, K2 not established, K3 against). It changes what R2 should prioritise.
 
 ### Limitations (read before quoting any number)
 - **Tiny scale.**
@@ -276,6 +295,7 @@ Approximate chance levels: `where_*` 20% (5 places); `holder_now` / `root_cause`
 ## 6. What would change the conclusion, and the next 3 experiments
 
 **Would move me toward "MDG works":**
+- The exploratory reliability gap (98.0 ± 0.2 vs 88.1 ± 6.5 at 24k steps) replicates with ≥5 pre-registered seeds, *and* survives giving the text baseline role-disambiguated words (e.g. `cause-t5` vs `t5`). If disambiguated text closes the gap, the advantage belongs to "unambiguous symbols", which any well-designed text format can have, not to MDG as such.
 - With ≥5 seeds, `mdg_packed` beats `compact_packed` by more than the noise, *and* the gap grows on epistemic/conflict/provenance questions where typed slots should matter.
 - MDG keeps an accuracy-per-FLOP advantage over a **learned** text compressor (gist/ICAE-style, one or a few vectors per sentence) after both are trained to convergence.
 - MDG generalises better out of distribution (longer worlds, unseen entity names, new event compositions), which is the compositionality claim of §14/§27.
@@ -292,6 +312,7 @@ Approximate chance levels: `where_*` 20% (5 places); `holder_now` / `root_cause`
      - (a) a per-sentence encoder that pools each compact sentence to one vector (learned segmentation-free variant: fixed-size windows);
      - (b) gist tokens: k learned summary positions per window.
    - Decision rule: MDG must Pareto-dominate (b) at ≥30% fewer positions, else K1 fails.
+   - Pre-register the packed-reliability comparison from the exploratory runs: `mdg_packed` vs `compact_packed` vs `compact_packed_disambiguated`, 5 seeds each. CPU is enough for this sub-test (~30 min per run at 24k steps).
 2. **R3: test the dimensions only MDG has.**
    - Extend `worlds.py` with sources of differing reliability, contradictory reports, beliefs ("Bob thinks the key is in the office"), retractions and confidence.
    - Ask "what is true", "what does X believe", "which source is wrong" and "how confident".
