@@ -1085,7 +1085,7 @@ export component InstallerScreen inherits Rectangle {
                                 }
                                 Text {
                                     text: root.encrypt
-                                        ? "Asked for each time the computer starts. Without it, nobody can read the disk."
+                                        ? "Asked for each time the computer starts, on a screen that shows your name and keyboard layout before the disk is unlocked. Without the password, nobody can read the disk."
                                         : "Anyone who takes the disk out can read everything on it.";
                                     color: root.encrypt ? Theme.text-dim : Theme.amber;
                                     font-size: Theme.fs-caption;

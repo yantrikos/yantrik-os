@@ -115,6 +115,14 @@ mod tests {
         assert!(cmdline_default(false).contains("plymouth.enable=0"), "and plymouth, now in the image, stays off");
     }
 
+    /// The pre-boot screen shows the account's name and layout, written into the initramfs on the
+    /// unencrypted /boot: the installer says so where encryption is chosen.
+    #[test]
+    fn the_installer_says_the_pre_boot_screen_shows_name_and_layout() {
+        let slint = include_str!("../../../yantrik-ui-slint/ui/installer.slint");
+        assert!(slint.contains("on a screen that shows your name and keyboard layout before the disk is unlocked"));
+    }
+
     /// The text installer never encrypts, so its boot line is the unencrypted one: never `splash`,
     /// which with plymouth in the image would start plymouthd at every boot and shutdown.
     #[test]
