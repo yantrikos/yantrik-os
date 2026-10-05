@@ -289,13 +289,31 @@ pub fn disk_problem(selected: &str, macos_disks: &str, confirmed: &str) -> Optio
     None
 }
 
-/// The disk the installer chooses before anyone does, out of `(name, holds_macos)` in the
-/// order they are listed: the first that does not hold macOS. `None` when every disk does: a
-/// Mac's system disk is never chosen for anyone, so the person picks it and confirms it.
+/// One disk the installer could erase, as [`default_disk`] weighs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EraseCandidate<'a> {
+    pub name: &'a str,
+    /// An HFS+ or APFS filesystem, or an Apple partition type, is on it: a Mac's system.
+    pub holds_macos: bool,
+    /// On USB, or marked removable: it may be someone's backup stick.
+    pub external: bool,
+    /// The installer is running from it.
+    pub runs_installer: bool,
+}
+
+/// The disk to erase that the installer chooses before anyone does, or `None`, and the person
+/// picks one. Only when exactly one disk is internal (not on USB, not removable), holds no
+/// macOS, and is not the one the installer runs from: then there is nothing to guess.
 ///
-/// On a Mac mini kept on macOS with Yantrik going to an external USB SSD, that is the SSD.
-pub fn default_disk<'a>(disks: &[(&'a str, bool)]) -> Option<&'a str> {
-    disks.iter().find(|(_, macos)| !macos).map(|(name, _)| *name)
+/// Never a USB or removable disk. The VM rehearsal of the Mac this is for found the USB decoy,
+/// someone's backup, chosen for erasing the moment the person switched to "Erase a whole disk".
+/// An external USB SSD is still offered, and chosen by the person.
+pub fn default_disk<'a>(disks: &[EraseCandidate<'a>]) -> Option<&'a str> {
+    let mut plain = disks.iter().filter(|d| !d.holds_macos && !d.external && !d.runs_installer);
+    match (plain.next(), plain.next()) {
+        (Some(only), None) => Some(only.name),
+        _ => None,
+    }
 }
 
 /// A kernel line in grub.cfg that finds the root by device name (`root=/dev/sdb2`) rather than
@@ -319,14 +337,30 @@ pub fn root_by_device(grub_cfg: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn disk(name: &str) -> EraseCandidate<'_> {
+        EraseCandidate { name, holds_macos: false, external: false, runs_installer: false }
+    }
+
     #[test]
-    fn a_macs_system_disk_is_never_chosen_for_anyone() {
-        // Mac mini: macOS on the internal disk, an external USB SSD beside it.
-        assert_eq!(default_disk(&[("sda", true), ("sdb", false)]), Some("sdb"));
-        // A PC: the first disk, as before.
-        assert_eq!(default_disk(&[("nvme0n1", false), ("sda", false)]), Some("nvme0n1"));
-        // Nothing but macOS: nobody's disk is picked for them.
-        assert_eq!(default_disk(&[("sda", true)]), None);
+    fn only_a_lone_internal_disk_without_macos_is_chosen_for_erasing() {
+        let mac = EraseCandidate { holds_macos: true, ..disk("sda") };
+        let usb = EraseCandidate { external: true, ..disk("sdb") };
+        let own = EraseCandidate { runs_installer: true, ..disk("sdc") };
+        // The VM rehearsal: the Mac's disk (macOS, and the installer runs from YKINSTALL on it)
+        // and a USB backup stick. Neither is chosen for anyone.
+        let mac_running_installer = EraseCandidate { runs_installer: true, ..mac };
+        assert_eq!(default_disk(&[mac_running_installer, usb]), None);
+        assert_eq!(default_disk(&[mac, usb]), None, "a USB disk is never chosen for erasing");
+        assert_eq!(default_disk(&[usb]), None);
+        assert_eq!(default_disk(&[own]), None, "never the disk the installer runs from");
+        // A PC with one internal disk, with or without a USB stick beside it: that disk.
+        assert_eq!(default_disk(&[disk("nvme0n1")]), Some("nvme0n1"));
+        assert_eq!(default_disk(&[usb, disk("nvme0n1"), own]), Some("nvme0n1"));
+        assert_eq!(default_disk(&[mac, disk("sdd")]), Some("sdd"), "a second internal disk beside macOS");
+        // Two internal disks: a guess, so none.
+        assert_eq!(default_disk(&[disk("nvme0n1"), disk("sda")]), None);
+        // Nothing but macOS, or nothing at all: nobody's disk is picked for them.
+        assert_eq!(default_disk(&[mac]), None);
         assert_eq!(default_disk(&[]), None);
         assert!(is_macos_fstype("apfs") && is_macos_fstype("hfsplus"));
         assert!(!is_macos_fstype("vfat") && !is_macos_fstype("ext4") && !is_macos_fstype(""));

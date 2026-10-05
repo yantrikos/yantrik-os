@@ -96,6 +96,33 @@ fn installing_into_the_placeholder_names_only_it() {
     assert!(e.contains("running from"), "{e}");
 }
 
+/// The VM rehearsal of this layout found the screen saying "Yantrik OS will be installed into
+/// /dev/sda1 …" under the EFI partition. A refused segment's sentence, and its card, are why
+/// it is refused; only what may be chosen says what installing does.
+#[test]
+fn a_refused_segment_says_why_and_never_that_it_will_be_installed_into() {
+    let mut all = classify::segments(&mac(), true);
+    all.extend(classify::segments(&decoy(), true));
+    let mut ykinstall_unmounted = mac();
+    ykinstall_unmounted.parts[2].mountpoint.clear();
+    all.extend(classify::segments(&ykinstall_unmounted, true));
+    let mut refused = 0;
+    for s in &all {
+        if s.eligible {
+            assert!(s.sentence.starts_with("Yantrik OS will be installed into"), "{s:?}");
+            assert!(s.card.starts_with("Install into"), "{s:?}");
+            continue;
+        }
+        refused += 1;
+        assert!(!s.reason.is_empty(), "{s:?}");
+        assert_eq!((s.sentence.as_str(), s.card.as_str()), (s.reason.as_str(), s.reason.as_str()), "{}", s.id);
+        assert!(!s.sentence.contains("will be installed into") && !s.card.contains("Install into"), "{s:?}");
+    }
+    assert_eq!(refused, all.len() - 2, "only YANTRIK, once in each copy of the Mac, may be chosen");
+    let esp = find(&all, "sda1");
+    assert!(esp.sentence.starts_with("/dev/sda1 is the EFI system partition"), "{}", esp.sentence);
+}
+
 #[test]
 fn booted_from_usb_ykinstall_is_just_a_fat_partition_and_still_refused() {
     let mut t = mac();

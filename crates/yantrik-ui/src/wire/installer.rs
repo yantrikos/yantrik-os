@@ -237,9 +237,10 @@ fn prepare(ui: &App) {
         let disks = detect_disks();
         let _ = slint::invoke_from_event_loop(move || {
             let Some(ui) = weak.upgrade() else { return };
-            // A disk is preselected: on the machine most people install on there is exactly
-            // one, and the Disk screen says plainly that it will be erased. Never one that holds
-            // macOS (installer_rules::default_disk): on a Mac kept on macOS, the external disk.
+            // A disk is preselected only when there is nothing to guess: exactly one internal
+            // disk without macOS that the installer is not running from (on the machine most
+            // people install on there is one). Never a USB or removable disk, which may be a
+            // backup (installer_rules::default_disk); the person chooses those.
             if let Some(first) = preselect(&disks) {
                 if ui.get_onboard_selected_disk().is_empty() {
                     ui.set_onboard_selected_disk(first.name.clone().into());
@@ -1042,17 +1043,46 @@ fn auto_detect_disk() -> Result<String, String> {
         }
         None if disks.is_empty() => Err("No suitable disk found. Ensure a hard disk is attached.".into()),
         None => Err(format!(
-            "Every disk here holds macOS ({}); choose one and confirm that it may be erased.",
+            "No disk was chosen, and none is chosen for anyone unless exactly one internal disk without \
+             macOS is here; choose one of {} and confirm it may be erased. Nothing was written.",
             disks.iter().map(|d| d.name.as_str()).collect::<Vec<_>>().join(", ")
         )),
     }
 }
 
-/// The disk chosen before anyone chooses: installer_rules::default_disk over the listing.
+/// The disk chosen for erasing before anyone chooses (installer_rules::default_disk over the
+/// listing): the one internal disk without macOS that the installer is not running from, or
+/// none. Never a USB or removable disk.
 pub(crate) fn preselect(disks: &[DiskInfo]) -> Option<&DiskInfo> {
-    let pairs: Vec<(&str, bool)> = disks.iter().map(|d| (d.name.as_str(), d.holds_macos)).collect();
-    let name = installer_rules::default_disk(&pairs)?;
+    let weighed: Vec<installer_rules::EraseCandidate> = disks
+        .iter()
+        .map(|d| installer_rules::EraseCandidate {
+            name: d.name.as_str(),
+            holds_macos: d.holds_macos,
+            external: d.external,
+            runs_installer: d.runs_installer,
+        })
+        .collect();
+    let name = installer_rules::default_disk(&weighed)?;
     disks.iter().find(|d| d.name == name)
+}
+
+/// The disk `/run/live/medium` is on, the one the installer runs from; `None` when nothing is
+/// mounted there or it cannot be told.
+fn live_disk() -> Option<String> {
+    let run = |cmd: &str, args: &[&str]| {
+        Command::new(cmd)
+            .args(args)
+            .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let source = run("findmnt", &["-n", "-o", "SOURCE", "/run/live/medium"])?;
+    let parent = run("lsblk", &["-no", "PKNAME", &source]).and_then(|p| p.lines().next().map(str::to_string));
+    Some(parent.unwrap_or_else(|| source.trim_start_matches("/dev/").to_string()))
 }
 
 /// Whether `/dev/<disk>` holds macOS, asked of the disk now: by its partitions' GPT types and
@@ -1299,6 +1329,11 @@ pub(crate) struct DiskInfo {
     /// An HFS+ or APFS filesystem is on it: a Mac's system. Never preselected, and erased only
     /// on a confirmation that names it (installer_rules::disk_problem).
     pub(crate) holds_macos: bool,
+    /// On USB or marked removable (or that could not be told): offered, never preselected.
+    pub(crate) external: bool,
+    /// The installer is running from it. The listing leaves such a disk out; this says so
+    /// again where it cannot (the fallback listing), and the preselection never takes it.
+    pub(crate) runs_installer: bool,
 }
 
 /// Detect available disks and return structured info. Also what the onboarding
@@ -1411,7 +1446,11 @@ fn disks_from_lsblk(json: &str) -> Vec<DiskInfo> {
             }
         };
         let contents = if holds_macos { format!("macOS · {contents}") } else { contents };
-        disks.push(DiskInfo { name, size, model, contents, has_data, holds_macos });
+        // A removable flag that cannot be read counts as removable: it only keeps the disk from
+        // being chosen for anyone.
+        let external = dev["tran"].as_str() == Some("usb") || flag(&dev["rm"]);
+        // The disk the installer runs from was left out above.
+        disks.push(DiskInfo { name, size, model, contents, has_data, holds_macos, external, runs_installer: false });
     }
     disks
 }
@@ -1427,6 +1466,7 @@ fn detect_disks_fallback() -> Vec<DiskInfo> {
     let Ok(output) = output else { return disks; };
 
     let text = String::from_utf8_lossy(&output.stdout);
+    let live = live_disk();
     for line in text.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() < 5 { continue; }
@@ -1442,6 +1482,8 @@ fn detect_disks_fallback() -> Vec<DiskInfo> {
             contents: "contents unknown".to_string(),
             has_data: true,
             holds_macos: disk_holds_macos(&format!("/dev/{name}")),
+            external: disk_is_external(&format!("/dev/{name}")),
+            runs_installer: live.as_deref() == Some(name),
         });
     }
     disks
@@ -1635,7 +1677,7 @@ llm:
     ]}"#;
 
     #[test]
-    fn on_a_mac_the_external_disk_is_offered_and_macos_is_never_preselected() {
+    fn on_a_mac_the_external_disk_is_offered_but_neither_it_nor_macos_is_preselected() {
         let disks = disks_from_lsblk(MAC_MINI);
         let names: Vec<&str> = disks.iter().map(|d| d.name.as_str()).collect();
         assert_eq!(names, ["sda", "sdb"], "the boot stick and an empty card reader are not candidates");
@@ -1643,11 +1685,52 @@ llm:
         assert!(disks[0].contents.starts_with("macOS · "), "{}", disks[0].contents);
         assert!(!disks[1].holds_macos);
         assert_eq!(disks[1].model, "USB · Samsung PSSD T7");
-        assert_eq!(preselect(&disks).map(|d| d.name.as_str()), Some("sdb"));
+        assert!(disks[1].external && !disks[0].external);
+        // A USB disk is offered for erasing, and the person chooses it: it may be a backup.
+        assert_eq!(preselect(&disks).map(|d| d.name.as_str()), None);
 
         // With only the Mac's own disk, nothing is chosen for the person.
         let only_mac: Vec<DiskInfo> = disks.into_iter().filter(|d| d.holds_macos).collect();
         assert!(preselect(&only_mac).is_none());
+    }
+
+    /// The VM rehearsal of the Mac this is for: booted live from YKINSTALL on the internal disk,
+    /// with a USB stick holding someone's backup. Switching to "Erase a whole disk" chose the
+    /// stick. Nothing is chosen now: the internal disk runs the installer, and the stick is USB.
+    #[test]
+    fn booted_from_ykinstall_with_a_usb_backup_beside_it_nothing_is_chosen_for_erasing() {
+        let json = r#"{"blockdevices": [
+            {"name":"sda","size":"931.5G","model":"APPLE HDD","type":"disk","ro":false,"rm":false,"fstype":null,"tran":"sata","mountpoint":null,
+             "children":[
+                {"name":"sda1","size":"200M","type":"part","ro":false,"rm":false,"fstype":"vfat","mountpoint":null},
+                {"name":"sda2","size":"792G","type":"part","ro":false,"rm":false,"fstype":"apfs","mountpoint":null},
+                {"name":"sda3","size":"8G","type":"part","ro":false,"rm":false,"fstype":"vfat","mountpoint":"/run/live/medium"},
+                {"name":"sda4","size":"199G","type":"part","ro":false,"rm":false,"fstype":"vfat","mountpoint":null}
+             ]},
+            {"name":"sdb","size":"2G","model":"USB DISK","type":"disk","ro":false,"rm":true,"fstype":null,"tran":"usb","mountpoint":null,
+             "children":[{"name":"sdb2","size":"1G","type":"part","ro":false,"rm":true,"fstype":"vfat","mountpoint":null}]}
+        ]}"#;
+        let disks = disks_from_lsblk(json);
+        let names: Vec<&str> = disks.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["sdb"], "the disk the installer runs from is not offered for erasing");
+        assert!(disks[0].external);
+        assert_eq!(preselect(&disks).map(|d| d.name.as_str()), None);
+        // The same stick reported by an older lsblk with no transport, removable only: still USB.
+        let no_tran = json.replace(r#""tran":"usb","#, "");
+        assert_eq!(preselect(&disks_from_lsblk(&no_tran)).map(|d| d.name.as_str()), None);
+        // A flag lsblk did not write counts as removable.
+        let no_rm = json.replace(r#""rm":true,"fstype":null,"tran":"usb","#, r#""fstype":null,"#);
+        assert!(disks_from_lsblk(&no_rm).iter().all(|d| d.external), "{no_rm}");
+    }
+
+    #[test]
+    fn a_pc_with_one_internal_disk_has_it_chosen_and_one_with_two_has_neither() {
+        let one = r#"{"blockdevices":[
+            {"name":"nvme0n1","size":"476.9G","model":"Samsung SSD 980","type":"disk","ro":false,"rm":false,"fstype":null,"tran":"nvme"},
+            {"name":"sdb","size":"58G","model":"Backup","type":"disk","ro":false,"rm":true,"fstype":null,"tran":"usb"}
+        ]}"#;
+        assert_eq!(preselect(&disks_from_lsblk(one)).map(|d| d.name.as_str()), Some("nvme0n1"));
+        assert_eq!(preselect(&disks_from_lsblk(LSBLK)).map(|d| d.name.as_str()), None, "two internal disks: a guess");
     }
 
     #[test]

@@ -26,10 +26,12 @@ pub struct Segment {
     pub eligible: bool,
     /// Why it cannot be chosen; empty when it can.
     pub reason: String,
-    /// What the Disk screen says once it is chosen.
+    /// What the Disk screen says about it: once chosen, what installing does; for one that
+    /// cannot be chosen, why not (the same words as `reason`), never an install sentence.
     pub sentence: String,
     /// What an approval card says installing into it does, naming the device and what is on
-    /// it: "Install into /dev/sda4 (199 GB, YANTRIK, FAT32); nothing else changes".
+    /// it: "Install into /dev/sda4 (199 GB, YANTRIK, FAT32); nothing else changes". For one that
+    /// cannot be chosen, its refusal, as `sentence`.
     pub card: String,
     /// `/dev/sda3`; empty for free space.
     pub device: String,
@@ -37,6 +39,12 @@ pub struct Segment {
     pub internal: bool,
     pub start: u64,
     pub end: u64,
+}
+
+/// What installing does, for what may be chosen; for what may not, why not. A refused
+/// segment never carries words that read as though it would be installed into.
+fn or_refusal(refused: &str, install: impl FnOnce() -> String) -> String {
+    if refused.is_empty() { install() } else { refused.to_string() }
 }
 
 fn sentence(what: &str, bytes: u64) -> String {
@@ -72,8 +80,10 @@ pub fn segments(t: &DiskTable, efi_boot: bool) -> Vec<Segment> {
             share: share(p.run.sectors()),
             kept: kind.kept(),
             eligible: reason.is_empty(),
-            sentence: sentence(&p.path, bytes),
-            card: format!("Install into {} ({}, {}); nothing else changes", p.path, human(bytes), contents(p, &kind)),
+            sentence: or_refusal(&reason, || sentence(&p.path, bytes)),
+            card: or_refusal(&reason, || {
+                format!("Install into {} ({}, {}); nothing else changes", p.path, human(bytes), contents(p, &kind))
+            }),
             reason,
             device: p.path.clone(),
             internal,
@@ -98,12 +108,14 @@ pub fn segments(t: &DiskTable, efi_boot: bool) -> Vec<Segment> {
             share: share(run.sectors()),
             kept: false,
             eligible: reason.is_empty(),
-            sentence: sentence(&format!("a new partition in the free space on {}", t.path), usable),
-            card: format!(
-                "Install into a new partition in the free space on {} ({}); nothing else changes",
-                t.path,
-                human(usable)
-            ),
+            sentence: or_refusal(&reason, || sentence(&format!("a new partition in the free space on {}", t.path), usable)),
+            card: or_refusal(&reason, || {
+                format!(
+                    "Install into a new partition in the free space on {} ({}); nothing else changes",
+                    t.path,
+                    human(usable)
+                )
+            }),
             reason,
             device: String::new(),
             internal,

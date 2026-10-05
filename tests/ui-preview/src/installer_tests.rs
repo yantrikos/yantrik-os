@@ -30,9 +30,26 @@ pub fn run(window: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn s
     Ok(())
 }
 
-/// One stretch of the Mac's disk as crates/yantrik-install-target describes it.
+/// One stretch of the Mac's disk as crates/yantrik-install-target describes it: what may be
+/// chosen says what installing does, what may not says why not, in both its sentence and card.
 fn seg(id: &str, kind: &str, title: &str, size: &str, share: f32, kept: bool, eligible: bool) -> InstallerSegment {
     let device = if kind == "free" { "a new partition in the free space on /dev/sda".to_string() } else { format!("/dev/{id}") };
+    let reason = match kind {
+        "esp" => format!("{device} is the EFI system partition; Yantrik OS puts its boot loader beside what is there, and never installs into it or formats it"),
+        "macos" => format!("{device} holds macOS (APFS); it is kept"),
+        "medium" => format!("{device} is what this installer is running from"),
+        "free" => format!("the free space at sectors 1950152680-1953525134 is {size}; Yantrik OS needs at least 20 GB"),
+        _ => format!("{device} is kept"),
+    };
+    let (reason, sentence, card) = if eligible {
+        (
+            String::new(),
+            format!("Yantrik OS will be installed into {device} ({size}). Nothing else on this disk changes."),
+            format!("Install into {device} ({size}, {title}); nothing else changes"),
+        )
+    } else {
+        (reason.clone(), reason.clone(), reason)
+    };
     InstallerSegment {
         id: id.into(),
         disk: "sda".into(),
@@ -42,9 +59,9 @@ fn seg(id: &str, kind: &str, title: &str, size: &str, share: f32, kept: bool, el
         share,
         kept,
         eligible,
-        reason: if eligible { "".into() } else { "kept".into() },
-        sentence: format!("Yantrik OS will be installed into {device} ({size}). Nothing else on this disk changes.").into(),
-        card: format!("Install into {device} ({size}, {title}); nothing else changes").into(),
+        reason: reason.into(),
+        sentence: sentence.into(),
+        card: card.into(),
     }
 }
 

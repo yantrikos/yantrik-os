@@ -149,8 +149,11 @@ pub fn add(surface: ControlSurface, ui: &App) -> ControlSurface {
             let Some(ui) = explain_weak.upgrade() else {
                 return "Choose where the installer writes; the installer could not be read to say more".into();
             };
-            let offered: Vec<(String, String)> =
-                ui.get_onboard_segments().iter().map(|s| (s.id.to_string(), s.card.to_string())).collect();
+            let offered: Vec<(String, String, bool)> = ui
+                .get_onboard_segments()
+                .iter()
+                .map(|s| (s.id.to_string(), s.card.to_string(), s.eligible))
+                .collect();
             crate::control_installer_consent::choose_card(args, &offered, ui.get_onboard_selected_disk().as_str())
         }),
         move |args| {

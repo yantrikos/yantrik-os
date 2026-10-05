@@ -714,7 +714,7 @@ export component InstallerScreen inherits Rectangle {
             // ── 2 · Disk ─────────────────────────────────────────
             if root.step == 2 : HorizontalLayout {
                 alignment: center;
-                VerticalLayout {
+                disk-column := VerticalLayout {
                     width: 460px;
                     spacing: Theme.sp-3;
 
@@ -847,6 +847,44 @@ export component InstallerScreen inherits Rectangle {
                             color: root.eligible-targets == "" ? Theme.amber : Theme.text-dim;
                             font-size: Theme.fs-caption;
                             wrap: word-wrap;
+                        }
+
+                        // Why everything else is kept, in the planner's own words (the same the
+                        // control surface gives). A list, not labels on the bar: a segment like
+                        // the installer's own 8 GB partition is too thin to carry one.
+                        // No spacing between the entries themselves: the empty slot an eligible
+                        // segment leaves would add a gap. Each refused entry pads its own top.
+                        if root.segments.length > 0 : VerticalLayout {
+                            spacing: 0px;
+                            Text {
+                                text: "Kept, and why";
+                                color: Theme.text-secondary;
+                                font-size: Theme.fs-caption;
+                                font-weight: 600;
+                            }
+                            for s in root.segments : VerticalLayout {
+                                if !s.eligible : VerticalLayout {
+                                    padding-top: 6px;
+                                    spacing: 1px;
+                                    Text {
+                                        text: (s.kind == "free" ? "Free space on /dev/" + s.disk : s.title + " (/dev/" + s.id + ")") + " · " + s.size;
+                                        color: Theme.text-primary;
+                                        font-size: Theme.fs-caption;
+                                        font-weight: 500;
+                                        overflow: elide;
+                                    }
+                                    // The column's width, said outright: a wrapped text nested in
+                                    // a repeated layout is otherwise measured as one line, and the
+                                    // next entry is drawn over its second.
+                                    Text {
+                                        width: disk-column.width;
+                                        text: s.reason;
+                                        color: Theme.text-dim;
+                                        font-size: Theme.fs-caption;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                            }
                         }
                     }
 
