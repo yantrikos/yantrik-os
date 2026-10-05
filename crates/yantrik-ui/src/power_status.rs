@@ -120,13 +120,6 @@ pub(crate) fn apply_profile(ui: &App, profile: Option<&PowerProfileInfo>) {
     }
 }
 
-/// Show what the daemon says is in effect, from any thread.
-pub(crate) fn apply_profile_later(weak: slint::Weak<App>, now: Option<yantrik_os::power_profile::PowerProfiles>) {
-    let _ = weak.upgrade_in_event_loop(move |ui| {
-        apply_profile(&ui, now.map(|p| PowerProfileInfo { active: p.active, offered: p.offered }).as_ref());
-    });
-}
-
 /// What to show once the daemon has answered a choice, and why it is not what was asked when it
 /// is not. A refusal, a two-second timeout, or a read-back naming another profile all show the
 /// profile the daemon now reads as in effect, never the one asked for (toggle_truth).
@@ -145,32 +138,19 @@ pub(crate) fn settled(
     }
 }
 
-/// The popover's and the tile's choice. The daemon is asked off the UI thread (a bus call is
-/// milliseconds, but not none, and two seconds when it does not answer); until it answers the
-/// choice is shown pending and takes no press, and then the shell shows what the daemon says is
-/// in effect, not what was asked.
+/// The popover's and the tile's choice, through [`crate::power_choice::choose`] like a caller's:
+/// pending until the daemon answers, then what it says is in effect. The daemon is asked off the
+/// UI thread (a bus call is milliseconds, but not none, and two seconds when it does not answer).
 pub(crate) fn wire(ui: &App) {
     let weak = ui.as_weak();
     ui.on_set_power_profile(move |profile| {
-        if let Some(ui) = weak.upgrade() {
-            if ui.get_power_profile_pending() != "" {
-                return;
-            }
-            ui.set_power_profile_pending(profile.clone());
-        }
-        let weak = weak.clone();
-        let profile = profile.to_string();
-        std::thread::spawn(move || {
-            let out = settled(&profile, yantrik_os::power_profile::set(&profile), yantrik_os::power_profile::read);
-            let _ = weak.upgrade_in_event_loop(move |ui| {
-                ui.set_power_profile_pending("".into());
-                let shown = out.shown.map(|p| PowerProfileInfo { active: p.active, offered: p.offered });
-                apply_profile(&ui, shown.as_ref());
-                if let Some(why) = &out.refused {
-                    crate::toggle_truth::say_refused("Power mode", why);
-                }
+        let Some(ui) = weak.upgrade() else { return };
+        // A press while a choice is pending is not taken; the tile says so by showing Switching….
+        if let Ok(work) = crate::power_choice::choose(&ui, &profile) {
+            std::thread::spawn(move || {
+                let _ = work();
             });
-        });
+        }
     });
 }
 
