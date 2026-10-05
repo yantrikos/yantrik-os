@@ -46,6 +46,8 @@ component Line inherits Text {
     color: Theme.text-secondary;
     font-size: 12px;
     wrap: word-wrap;
+    // Its wrapped height, at the width it is given, so the card grows with it.
+    min-height: self.preferred-height;
 }
 
 export component WebSearchCard inherits Rectangle {
@@ -53,12 +55,10 @@ export component WebSearchCard inherits Rectangle {
     border-radius: 10px;
     border-width: 1px;
     border-color: Theme.border-subtle;
-    height: body.preferred-height + 32px;
 
-    body := VerticalLayout {
-        x: 16px;
-        y: 16px;
-        width: parent.width - 32px;
+    // The layout sizes the card: a fixed height from `preferred-height` undercounts wrapped lines.
+    VerticalLayout {
+        padding: 16px;
         spacing: 10px;
 
         HorizontalLayout {
