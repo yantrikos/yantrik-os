@@ -2832,6 +2832,11 @@ reconcile_mind_egress() {
 # Who may write: root, or the desktop's owner through this updater's own sudo rule (sudo names the
 # caller, SUDO_UID). Never the mind account, never the egress account: neither can run this as
 # root, and a sudo from either is refused here too. Every add and revoke is journalled.
+#
+# Every rewrite (add, revoke, publish) holds MIND_GRANTS_LOCK from its read to its last write, so
+# a publish that read a grant cannot write it back after a revoke took it out. A revoke writes
+# /run (what readers believe) first and the always-list second; an add and a publish write the
+# always-list first and /run second. The /run write is tried twice.
 MIND_GRANTS_RUN=/run/yantrik-mind-egress/grants.json
 MIND_GRANTS_ALWAYS=/var/lib/yantrik/mind-grants.json
 MIND_GRANTS_LOCK=/run/yantrik-mind-grants.lock
@@ -2845,6 +2850,8 @@ op, now, always_path, run_path, args = sys.argv[1], int(sys.argv[2]), sys.argv[3
 CAPABILITIES = {"web_search_own_words"}
 AGENTS = {"mind"}
 DAY, MOST, BIGGEST = 86400, 64, 65536
+# A grant dated more than this far in the future was written under a clock that was ahead: dropped.
+SKEW = 300
 KEYS = {"id", "agent", "capability", "scope", "scope_id", "granted_at", "expires_at", "granted_by"}
 SCOPE_ID = re.compile(r"[A-Za-z0-9._:-]{1,64}\Z")
 GRANT_ID = re.compile(r"g-[0-9a-f]{12}\Z")
@@ -2892,13 +2899,17 @@ def load(path, scopes):
         doc = json.loads(raw) if len(raw) <= BIGGEST else None
     except ValueError:
         doc = None
-    if not isinstance(doc, dict) or doc.get("version") != 1 or not isinstance(doc.get("grants"), list):
+    # `true` and `1.0` are == 1 in Python; the version is the integer 1 or the file is not read.
+    if not isinstance(doc, dict) or type(doc.get("version")) is not int or doc["version"] != 1 \
+            or not isinstance(doc.get("grants"), list):
         print(f"{path} is not version 1 grants; read as none", file=sys.stderr)
         return []
     kept = []
     for g in doc["grants"]:
         if not valid(g):
             print(f"{path}: a grant that does not check was dropped", file=sys.stderr)
+        elif g["granted_at"] > now + SKEW:
+            print(f"{path}: a grant dated in the future was dropped", file=sys.stderr)
         elif g["scope"] in scopes and (g["expires_at"] is None or g["expires_at"] > now):
             kept.append(g)
     return kept
@@ -2996,9 +3007,29 @@ mind_grant_journal() { # <message>
 }
 
 # Rewrite both files through PY_MIND_GRANTS with <op> and its arguments: expired grants are
-# dropped every time. Both directories are checked first; a bad /run directory leaves no grants
-# file in force (the old one removed), a bad /var/lib one is refused outright.
+# dropped every time. Holds MIND_GRANTS_LOCK from the read to the last write, whoever calls: add,
+# revoke and publish (mind-egress apply, under its own lock too) all queue on it.
 mind_grant_write() { # <op> [args]
+  if command -v flock >/dev/null 2>&1; then
+    # A lock that cannot be opened is no rewrite at all, never one without the lock.
+    { flock 8 && mind_grant_write_locked "$@"; } 8>"$MIND_GRANTS_LOCK"
+    return $?
+  fi
+  mind_grant_write_locked "$@"
+}
+
+# The /run file, tried twice: a failure there leaves readers with the old grants.
+mind_grant_put_run() { # <doc>
+  printf '%s\n' "$1" | write_file_atomic "$MIND_GRANTS_RUN" && return 0
+  warn "could not write $MIND_GRANTS_RUN; trying once more"
+  printf '%s\n' "$1" | write_file_atomic "$MIND_GRANTS_RUN"
+}
+
+# Both directories are checked first; a bad /run directory leaves no grants file in force (the old
+# one removed), a bad /var/lib one is refused outright. A revoke writes /run first, so the grant is
+# out of what readers believe even if the always-list then fails; an add or a publish writes the
+# always-list first, so /run never holds an always grant the next boot would not put back.
+mind_grant_write_locked() { # <op> [args]
   local out always_doc run_doc note
   mind_grant_dir_ok "$(dirname "$MIND_GRANTS_ALWAYS")" \
     || { warn "$(dirname "$MIND_GRANTS_ALWAYS") is not a directory only root writes; no grant changed"; return 1; }
@@ -3011,11 +3042,26 @@ mind_grant_write() { # <op> [args]
   always_doc="$(printf '%s\n' "$out" | sed -n 1p)"
   run_doc="$(printf '%s\n' "$out" | sed -n 2p)"
   note="$(printf '%s\n' "$out" | sed -n 3p | LC_ALL=C tr -c '[:print:]' '?')"
-  printf '%s\n' "$always_doc" | write_file_atomic "$MIND_GRANTS_ALWAYS" || return 1
-  printf '%s\n' "$run_doc" | write_file_atomic "$MIND_GRANTS_RUN" || return 1
+  if [ "$1" = revoke ]; then
+    mind_grant_put_run "$run_doc" || { warn "the grant is still in force: $MIND_GRANTS_RUN could not be written"; return 1; }
+    printf '%s\n' "$always_doc" | write_file_atomic "$MIND_GRANTS_ALWAYS" \
+      || { warn "revoked in $MIND_GRANTS_RUN, but $MIND_GRANTS_ALWAYS could not be written; revoke it again"; return 1; }
+  else
+    printf '%s\n' "$always_doc" | write_file_atomic "$MIND_GRANTS_ALWAYS" || return 1
+    mind_grant_put_run "$run_doc" || return 1
+  fi
   [ "$1" = publish ] && { info "$note"; return 0; }
   mind_grant_journal "$note (caller uid $(mind_grant_caller))"
 }
+
+# The query a search asked with, read from stdin (never argv: /proc/*/cmdline and sudo's log show
+# argv), at most 4 KiB, as one escaped journal field: its SHA-256 over the bytes as sent, and the
+# text with every character outside printable ASCII written as a \u escape.
+PY_MIND_GRANT_QUERY='
+import hashlib, json, sys
+raw = sys.stdin.buffer.read(4096)
+print("sha256=%s query=%s" % (hashlib.sha256(raw).hexdigest(), json.dumps(raw.decode("utf-8", "replace"), ensure_ascii=True)))
+'
 
 # At boot (from mind-egress apply) and every reconcile: the /run file put back from the always-list.
 mind_grant_publish() {
@@ -3042,38 +3088,37 @@ cmd_mind_grant() {
       python3 -I -c "$PY_MIND_GRANTS" list "$(date +%s)" "" "$MIND_GRANTS_RUN" "${MIND_GRANTS_OWNER:-0}"
       return 0 ;;
     add|revoke) ;;
-    *) fail "usage: yantrik-update mind-grant add --scope run|session|always [--run-id ID|--session-id ID] [--ttl 4h] | list | revoke ID|all" ;;
+    *) fail "usage: yantrik-update mind-grant add --scope run|session|always [--run-id ID|--session-id ID] [--ttl 4h] [--query-stdin] | list | revoke ID|all" ;;
   esac
-  local scope="" id="" ttl="" capability=web_search_own_words agent=mind query="" target=""
+  local scope="" id="" ttl="" capability=web_search_own_words agent=mind query_stdin="" target=""
   while [ $# -gt 0 ]; do
-    case "$1" in --*) [ $# -ge 2 ] || fail "mind-grant: $1 needs a value" ;; esac
+    case "$1" in --query-stdin) ;; --*) [ $# -ge 2 ] || fail "mind-grant: $1 needs a value" ;; esac
     case "$1" in
       --scope) scope="${2:-}"; shift 2 ;;
       --run-id|--session-id) id="${2:-}"; shift 2 ;;
       --ttl) ttl="$(mind_grant_seconds "${2:-}")" || fail "--ttl is like 4h, 30m or 900"; shift 2 ;;
       --capability) capability="${2:-}"; shift 2 ;;
       --agent) agent="${2:-}"; shift 2 ;;
-      --query) query="${2:-}"; shift 2 ;;
+      # The query the card showed, on stdin: never on the command line.
+      --query-stdin) query_stdin=1; shift ;;
+      --query) fail "mind-grant: the query comes on stdin (--query-stdin), never on the command line" ;;
       -*) fail "mind-grant: unknown option $1" ;;
       *) target="$1"; shift ;;
     esac
   done
   # As root: through this updater's own sudo rule when the person runs it.
   [ "$(id -u)" = 0 ] || elevate "$sub" ${scope:+--scope "$scope"} ${id:+--run-id "$id"} ${ttl:+--ttl "$ttl"} \
-    --capability "$capability" --agent "$agent" ${query:+--query "$query"} ${target:+"$target"}
+    --capability "$capability" --agent "$agent" ${query_stdin:+--query-stdin} ${target:+"$target"}
   [ "$(id -u)" = 0 ] || fail "mind-grant $sub runs as root; run: sudo yantrik-update mind-grant $sub"
   local caller owner_uid
   caller="$(mind_grant_caller)"
   owner_uid="$(id -u "$(desktop_owner)" 2>/dev/null)"
   mind_grant_caller_ok "$caller" "$owner_uid" "$(id -u yantrik-mind 2>/dev/null)" "$(id -u yantrik-egress 2>/dev/null)" \
     || { mind_grant_journal "refused a grant $sub from uid $caller: only root and the desktop's owner write grants"; return 1; }
-  if command -v flock >/dev/null 2>&1 && exec 8>"$MIND_GRANTS_LOCK"; then
-    flock 8
-  fi
   case "$sub" in
     add)
       [ "$scope" = always ] || ttl="${ttl:-86400}"
-      [ -z "$query" ] || mind_grant_journal "asked for by the search: $(printf '%s' "$query" | head -c 300 | LC_ALL=C tr -c '[:print:]' '?')"
+      [ -z "$query_stdin" ] || mind_grant_journal "asked for by the search: $(python3 -I -c "$PY_MIND_GRANT_QUERY" | LC_ALL=C tr -c '[:print:]' '?')"
       mind_grant_write add "$agent" "$capability" "$scope" "$id" "$ttl" ;;
     revoke)
       [ -n "$target" ] || fail "usage: yantrik-update mind-grant revoke ID|all"
@@ -4511,6 +4556,7 @@ c.sendall((json.dumps({"ok": True, "seeded": req["rules"]}) + "\n").encode())' "
   mkdir -p "$mg/run" "$mg/lib"
   mg_run() { # mg_run <op> [args]: mind_grant_write against scratch files; the journal into $mg/journal
     ( MIND_GRANTS_RUN="$mg/run/yantrik-mind-egress/grants.json" MIND_GRANTS_ALWAYS="$mg/lib/yantrik/mind-grants.json"
+      MIND_GRANTS_LOCK="$mg/lock"
       logger() { printf '%s\n' "$*" >> "$mg/journal"; }
       mind_grant_write "$@" ) >/dev/null 2>"$mg/err"
   }
@@ -4608,6 +4654,125 @@ open(sys.argv[1], "w").write(json.dumps(d))' "$mgr"
     "$(grep -q s-5 "$mg/run/elsewhere/grants.json" 2>/dev/null && echo written || echo absent)"
   is "mind-grant: the boot unit's apply publishes them" "yes" \
     "$(declare -f cmd_mind_egress | grep -q mind_grant_publish && echo yes || echo no)"
+
+  # The review of #667. A fresh pair of directories for each, the same helpers.
+  local gq="$root/grants2"
+  gq_reset() { rm -rf "$gq"; mkdir -p "$gq/run" "$gq/lib"; : > "$gq/journal"; }
+  gq_run() { # gq_run <op> [args], as mg_run, against $gq; the writes, in order, into $gq/writes
+    ( MIND_GRANTS_RUN="$gq/run/yantrik-mind-egress/grants.json" MIND_GRANTS_ALWAYS="$gq/lib/yantrik/mind-grants.json"
+      MIND_GRANTS_LOCK="$gq/lock"
+      logger() { printf '%s\n' "$*" >> "$gq/journal"; }
+      eval "real_write_file_atomic() $(declare -f write_file_atomic | tail -n +2)"
+      # GQ_FAIL_RUN=n: the first n writes of the /run file fail; GQ_FAIL_ALWAYS=1: the always-list's does.
+      write_file_atomic() {
+        local n; n="$(cat "$gq/run-fails" 2>/dev/null || echo 0)"
+        case "$1" in
+          */yantrik-mind-egress/grants.json)
+            echo run >> "$gq/writes"
+            if [ "$n" -lt "${GQ_FAIL_RUN:-0}" ]; then echo $((n + 1)) > "$gq/run-fails"; cat >/dev/null; return 1; fi ;;
+          *) echo always >> "$gq/writes"
+            if [ -n "${GQ_FAIL_ALWAYS:-}" ]; then cat >/dev/null; return 1; fi ;;
+        esac
+        real_write_file_atomic "$1"
+      }
+      mind_grant_write "$@" ) >/dev/null 2>"$gq/err"
+  }
+  local gqr="$gq/run/yantrik-mind-egress/grants.json" gqa="$gq/lib/yantrik/mind-grants.json"
+  gq_has() { grep -q "\"$2\"" "$1" 2>/dev/null && echo yes || echo no; } # gq_has <file> <grant id>
+
+  # L3: the version is the integer 1; `true` and `1.0` are not.
+  gq_reset; gq_run add mind web_search_own_words always "" ""
+  local v; for v in true 1.0 '"1"'; do
+    python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); d["version"]=json.loads(sys.argv[2]); open(sys.argv[1],"w").write(json.dumps(d))' "$gqa" "$v"
+    is "mind-grant: an always-list with version $v is read as none" "0 0" \
+      "$(gq_run publish; mg_count "$gqr" any) $(MIND_GRANTS_RUN="$gqr" MIND_GRANTS_OWNER="$(id -u)" cmd_mind_grant list 2>/dev/null | grep -c ' always ')"
+    t "mind-grant: ... and says so" "is not version 1 grants" "$(cat "$gq/err")"
+  done
+
+  # L2: a grant dated more than 300 s ahead is dropped by the writer and by list; 300 s is kept.
+  gq_reset; gq_run add mind web_search_own_words always "" ""
+  python3 -I -c '
+import json, sys, time
+now = int(time.time())
+d = json.load(open(sys.argv[1]))
+g = d["grants"][0]
+d["grants"] = [dict(g, id="g-00000000f001", granted_at=4000000000),
+               dict(g, id="g-00000000f002", granted_at=now + 400),
+               dict(g, id="g-00000000f003", granted_at=now + 250)]
+open(sys.argv[1], "w").write(json.dumps(d))' "$gqa"
+  gq_run publish
+  is "mind-grant: a grant dated 4000000000 is dropped" "no no" "$(gq_has "$gqr" g-00000000f001) $(gq_has "$gqa" g-00000000f001)"
+  is "mind-grant: ... and one 400 s ahead" "no" "$(gq_has "$gqr" g-00000000f002)"
+  is "mind-grant: ... one 250 s ahead is clock skew, kept" "yes" "$(gq_has "$gqr" g-00000000f003)"
+  t "mind-grant: ... the drop says why" "a grant dated in the future was dropped" "$(cat "$gq/err")"
+  python3 -I -c '
+import json, sys
+d = json.load(open(sys.argv[1])); d["grants"][0]["granted_at"] = 4000000000; open(sys.argv[1], "w").write(json.dumps(d))' "$gqr"
+  is "mind-grant: list drops a future grant too" "0" \
+    "$(MIND_GRANTS_RUN="$gqr" MIND_GRANTS_OWNER="$(id -u)" cmd_mind_grant list 2>/dev/null | grep -c g-)"
+
+  # M3: a publish that read the grants before a revoke cannot write the revoked grant back. The
+  # publish is held between its read and its writes (python3, stood in for, waits for $gq/go);
+  # the revoke is started then, and must wait for the publish's lock rather than finish first.
+  gq_reset; gq_run add mind web_search_own_words always "" ""
+  local rid; rid="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["grants"][0]["id"])' "$gqa")"
+  (
+    python3() {
+      command python3 "$@"; local rc=$?
+      : > "$gq/read"
+      local i=0; while [ ! -e "$gq/go" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+      return $rc
+    }
+    gq_run publish
+  ) & local publisher=$!
+  local i=0; while [ ! -e "$gq/read" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  ( gq_run revoke "$rid"; echo "$?" > "$gq/revoke-rc" ) & local revoker=$!
+  sleep 0.5
+  is "mind-grant: a revoke waits while a publish holds the lock" "waiting" "$([ -e "$gq/revoke-rc" ] && echo finished || echo waiting)"
+  : > "$gq/go"; wait "$publisher"; wait "$revoker"
+  is "mind-grant: publish racing a revoke: the grant stays revoked" "0 no no" \
+    "$(cat "$gq/revoke-rc") $(gq_has "$gqr" "$rid") $(gq_has "$gqa" "$rid")"
+  is "mind-grant: add, revoke and publish all take the lock in the writer" "yes no" \
+    "$(declare -f mind_grant_write | grep -q 'flock 8' && echo yes || echo no) $(declare -f cmd_mind_grant | grep -q flock && echo yes || echo no)"
+
+  # L6: an add writes the always-list, then /run; a revoke /run, then the always-list.
+  gq_reset; gq_run add mind web_search_own_words always "" ""
+  is "mind-grant: an add writes the always-list first, then /run" "always run" "$(tr '\n' ' ' < "$gq/writes" | sed 's/ $//')"
+  rid="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["grants"][0]["id"])' "$gqa")"
+  : > "$gq/writes"; gq_run revoke "$rid"
+  is "mind-grant: a revoke writes /run first, then the always-list" "run always" "$(tr '\n' ' ' < "$gq/writes" | sed 's/ $//')"
+  gq_reset; gq_run add mind web_search_own_words always "" ""
+  rid="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["grants"][0]["id"])' "$gqa")"
+  GQ_FAIL_ALWAYS=1 gq_run revoke "$rid"
+  is "mind-grant: a revoke whose always-list write fails: refused, but out of /run" "1 no yes" \
+    "$? $(gq_has "$gqr" "$rid") $(gq_has "$gqa" "$rid")"
+  t "mind-grant: ... and says to revoke again" "revoke it again" "$(cat "$gq/err")"
+  gq_reset; gq_run add mind web_search_own_words always "" ""
+  rid="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["grants"][0]["id"])' "$gqa")"
+  rm -f "$gq/run-fails"; : > "$gq/writes"; GQ_FAIL_RUN=1 gq_run revoke "$rid"
+  is "mind-grant: a /run write that fails once is tried again" "0 run run always no no" \
+    "$? $(tr '\n' ' ' < "$gq/writes")$(gq_has "$gqr" "$rid") $(gq_has "$gqa" "$rid")"
+  gq_reset; gq_run add mind web_search_own_words always "" ""
+  rid="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["grants"][0]["id"])' "$gqa")"
+  rm -f "$gq/run-fails"; : > "$gq/writes"; GQ_FAIL_RUN=2 gq_run revoke "$rid"
+  is "mind-grant: a revoke whose /run write fails twice: refused, both files unchanged" "1 run run yes yes" \
+    "$? $(tr '\n' ' ' < "$gq/writes")$(gq_has "$gqr" "$rid") $(gq_has "$gqa" "$rid")"
+  gq_reset; rm -f "$gq/run-fails"; GQ_FAIL_RUN=1 gq_run add mind web_search_own_words session s-9 600
+  is "mind-grant: an add whose /run write fails once is tried again" "0 always run run 1" \
+    "$? $(tr '\n' ' ' < "$gq/writes")$(mg_count "$gqr" session)"
+
+  # L5: the query comes on stdin, never argv, and is journalled escaped with its SHA-256.
+  local q; q="$(printf 'rust\033[2J \342\200\256x \360\237\215\225')"
+  is "mind-grant: the query's journal field: its SHA-256 and every character escaped" \
+    "sha256=$(printf '%s' "$q" | sha256sum | cut -d' ' -f1) query=\"rust\\u001b[2J \\u202ex \\ud83c\\udf55\"" \
+    "$(printf '%s' "$q" | python3 -I -c "$PY_MIND_GRANT_QUERY")"
+  is "mind-grant: ... at most 4 KiB of it read" "4096" \
+    "$(head -c 9000 /dev/zero | tr '\0' a | python3 -I -c "$PY_MIND_GRANT_QUERY" | sed 's/.*query="//; s/"$//' | tr -d '\n' | wc -c)"
+  ( cmd_mind_grant add --scope always --query "rust editions" ) >/dev/null 2>"$gq/err"
+  is "mind-grant: a query on the command line is refused" "1" "$?"
+  t "mind-grant: ... and says to send it on stdin" "on stdin" "$(cat "$gq/err")"
+  is "mind-grant: the elevated run is told to read stdin, and given no query" "yes no" \
+    "$(declare -f cmd_mind_grant | grep -q 'query_stdin:+--query-stdin' && echo yes || echo no) $(declare -f cmd_mind_grant | grep -q -- '--query "\$query"' && echo yes || echo no)"
 
   # The blanket sudo rules taken away once the narrow one is in place (#397), cloud-init's included.
   local sd="$root/sudoers.d"; mkdir -p "$sd"
