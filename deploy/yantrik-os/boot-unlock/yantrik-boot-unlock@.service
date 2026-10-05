@@ -1,0 +1,15 @@
+[Unit]
+Description=Yantrik OS: answer whether a typed password unlocked the disk in this boot
+
+[Service]
+ExecStart=/usr/lib/yantrik/boot-unlock/consume
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+RuntimeMaxSec=10
+PrivateNetwork=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=-/run/yantrik-unlock
+NoNewPrivileges=yes

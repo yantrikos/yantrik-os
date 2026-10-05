@@ -1,0 +1,63 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# yantrik-unlock (initramfs local-bottom) — "a person typed the password in this boot"
+# ═══════════════════════════════════════════════════════════════════════════════════════
+#
+# Runs once the root is open and mounted, before switch_root. When the keyscript asked a person
+# (`asked`), the root is open, and nothing but that keyscript could have opened it, it leaves
+# /run/yantrik-unlock/typed: root's, 0600, in a 0700 directory, holding only the uptime it was
+# written at. /run is carried across switch_root, and the session's root helper (consume) takes
+# it once. Anything else, and there is no marker: the lock screen asks, as it always has.
+#
+# Never a marker when the root could have been opened without the person at the keyboard: a key
+# file or another keyscript in crypttab, clevis (TPM, network), or a remote unlock over dropbear.
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "${1:-}" in prereqs) prereqs; exit 0 ;; esac
+
+RUN_DIR="${YANTRIK_UNLOCK_RUN:-/run/yantrik-unlock}"
+ROOT="${YANTRIK_UNLOCK_INITRD:-}"
+NAME=yantrik-root
+KEYSCRIPT=/usr/lib/yantrik/boot-unlock/askpass
+
+asked="$RUN_DIR/asked"
+[ -e "$asked" ] || exit 0
+rm -f "$asked"
+
+# The one crypttab line for the root: the key is asked for (none), by this keyscript.
+person_only_crypttab() {
+    [ -r "$ROOT/cryptroot/crypttab" ] || return 1
+    lines="$(grep -E "^[[:space:]]*$NAME[[:space:]]" "$ROOT/cryptroot/crypttab")"
+    [ "$(printf '%s\n' "$lines" | grep -c .)" = 1 ] || return 1
+    set -- $lines
+    [ "${3:-}" = none ] || return 1
+    case ",${4:-}," in *",keyscript=$KEYSCRIPT,"*) ;; *) return 1 ;; esac
+    return 0
+}
+
+# Anything in this initramfs that could feed the disk a key without a person typing it here.
+other_unlockers() {
+    for f in usr/bin/clevis bin/clevis usr/sbin/dropbear sbin/dropbear bin/cryptroot-unlock \
+             usr/bin/cryptroot-unlock lib/cryptsetup/scripts/decrypt_keyctl; do
+        [ -e "$ROOT/$f" ] && return 0
+    done
+    ls "$ROOT"/scripts/local-top/*clevis* >/dev/null 2>&1 && return 0
+    return 1
+}
+
+root_open() {
+    [ -n "${YANTRIK_UNLOCK_MAPPER:-}" ] && { [ -e "$YANTRIK_UNLOCK_MAPPER" ]; return; }
+    [ -b "/dev/mapper/$NAME" ]
+}
+
+if root_open && person_only_crypttab && ! other_unlockers; then
+    up="$(awk '{ sub(/\..*/, "", $1); print $1; exit }' /proc/uptime 2>/dev/null)"
+    case "$up" in ''|*[!0-9]*) exit 0 ;; esac
+    (
+        umask 077
+        mkdir -p "$RUN_DIR" && chmod 0700 "$RUN_DIR" \
+            && printf 'uptime=%s\n' "$up" > "$RUN_DIR/typed.new" \
+            && mv -f "$RUN_DIR/typed.new" "$RUN_DIR/typed"
+    ) 2>/dev/null
+fi
+exit 0

@@ -1,0 +1,29 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# enrol USER — whose password opens this machine's disk, for the one-password start
+# ═══════════════════════════════════════════════════════════════════════════════════════
+#
+# Run as root by the installer, inside the installed system, after USER's password is set and
+# the disk encrypted with that same password. Writes /etc/yantrik/boot-unlock.conf, root's and
+# 0600:
+#
+#   user=<USER>        the account a typed disk password signs in (consume), and whose name the
+#                      pre-boot screen shows (initramfs-hook)
+#   shadow=<sha256>    a digest of USER's /etc/shadow password field as it is now. Once the
+#                      password changes the digest no longer matches, the disk's passphrase is
+#                      no longer known to be the account's password, and the lock screen asks.
+#
+# No password is read, written or passed here; only what /etc/shadow already holds, digested.
+set -eu
+CONF="${YANTRIK_UNLOCK_CONF:-/etc/yantrik/boot-unlock.conf}"
+SHADOW="${YANTRIK_UNLOCK_SHADOW:-/etc/shadow}"
+user="${1:?usage: enrol USER}"
+case "$user" in *[!a-z0-9_-]*|[!a-z_]*) echo "enrol: not an account name: $user" >&2; exit 1 ;; esac
+field="$(awk -F: -v u="$user" '$1 == u { print $2; exit }' "$SHADOW")"
+case "$field" in ''|'*'|'!'*) echo "enrol: $user has no password to enrol" >&2; exit 1 ;; esac
+digest="$(printf '%s\n' "$field" | sha256sum | cut -d' ' -f1)"
+mkdir -p "$(dirname "$CONF")"
+umask 077
+printf 'user=%s\nshadow=%s\n' "$user" "$digest" > "$CONF.new"
+chmod 0600 "$CONF.new"
+mv -f "$CONF.new" "$CONF"

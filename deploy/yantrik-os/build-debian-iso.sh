@@ -310,6 +310,13 @@ apt-get install -y -qq \
 # the live system. No `|| true`: without them an encrypted install cannot boot.
 apt-get install -y -qq     cryptsetup     cryptsetup-initramfs     console-setup
 
+# The pre-boot screen the disk's password is typed on (stage-boot-unlock.sh): plymouth draws it
+# on whatever framebuffer the firmware left (simpledrm/efifb on a Mac mini, no GPU driver),
+# plymouth-label and DejaVu write its words, busybox runs the keyscript in the initramfs. Without
+# any of them the keyscript asks in text, with the same words; so `|| true` is not needed to
+# boot, but they are expected, and the stage below checks.
+apt-get install -y -qq     plymouth     plymouth-label     fonts-dejavu-core     busybox
+
 # ── Calamares installer ──
 apt-get install -y -qq \
     2>/dev/null || {
@@ -386,6 +393,22 @@ case "$MISE_SAYS" in
     *) fail "mise ${MISE_VERSION} does not run inside the image (it said: ${MISE_SAYS:-nothing})" ;;
 esac
 ok "mise ${MISE_VERSION} (sha256 checked) in /usr/local/bin"
+
+# ── The one-password start (an encrypted install asks once, before boot) ──
+# The keyscript, the initramfs hook and marker, the session's root helper and the plymouth theme.
+# Nothing in them acts unless an install names the keyscript in crypttab, so the live system
+# and an unencrypted install are unchanged.
+sudo sh "$SCRIPT_DIR/stage-boot-unlock.sh" "$ROOTFS" \
+    || fail "stage-boot-unlock.sh failed — an encrypted install would ask for its password in plain text"
+sudo chroot "$ROOTFS" plymouth-set-default-theme yantrik \
+    || warn "plymouth could not select the Yantrik theme; the installed initramfs hook still names it"
+for required in usr/lib/yantrik/boot-unlock/askpass usr/lib/yantrik/boot-unlock/consume \
+                etc/initramfs-tools/hooks/yantrik-unlock etc/initramfs-tools/scripts/local-bottom/yantrik-unlock \
+                usr/share/plymouth/themes/yantrik/yantrik.script usr/sbin/plymouthd \
+                etc/systemd/system/sockets.target.wants/yantrik-boot-unlock.socket; do
+    [ -e "$ROOTFS/$required" ] || fail "$required missing from the image — the one-password start would not work"
+done
+ok "Pre-boot unlock screen, keyscript and signed-in marker staged"
 
 # ── Intel Macs (the Mac mini 2012 is the first real machine this image runs on) ──
 # Fan control, and the Broadcom BCM4331 Wi-Fi driver fetched from Debian on the machine once it
@@ -1363,24 +1386,24 @@ set menu_color_highlight=white/blue
 # installer mode. Both entries used to pass it, so there was no way to boot this image and
 # simply try the desktop — an ISO that can only be installed is one nobody evaluates first.
 menuentry "Install Yantrik OS" {
-    linux /live/vmlinuz boot=live yantrik.install=true live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 quiet
+    linux /live/vmlinuz boot=live yantrik.install=true live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 plymouth.enable=0 quiet
     initrd /live/initrd
 }
 
 menuentry "Try Yantrik OS (live, no install)" {
-    linux /live/vmlinuz boot=live live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 quiet
+    linux /live/vmlinuz boot=live live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 plymouth.enable=0 quiet
     initrd /live/initrd
 }
 
 menuentry "Install Yantrik OS (Safe Mode — software rendering)" {
-    linux /live/vmlinuz boot=live yantrik.install=true live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 nomodeset quiet
+    linux /live/vmlinuz boot=live yantrik.install=true live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 plymouth.enable=0 nomodeset quiet
     initrd /live/initrd
 }
 
 # No `quiet`, so the kernel and systemd say what they are doing on the serial line. This is
 # the entry a bug report is made from, and the one an automated boot check selects.
 menuentry "Try Yantrik OS (verbose, serial console)" {
-    linux /live/vmlinuz boot=live live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 nomodeset systemd.log_level=info
+    linux /live/vmlinuz boot=live live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 plymouth.enable=0 nomodeset systemd.log_level=info
     initrd /live/initrd
 }
 GRUBCFG

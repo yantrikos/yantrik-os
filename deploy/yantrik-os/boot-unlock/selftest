@@ -1,0 +1,161 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# selftest — the one-password start, against stubs: no initramfs, no plymouth, no root
+# ═══════════════════════════════════════════════════════════════════════════════════════
+#
+#   sh deploy/yantrik-os/boot-unlock/selftest            (SH=busybox\ sh to run under busybox)
+#
+# Holds that:
+#   - the keyscript asks with the hint, says why on a retry, uses the Yantrik screen when it is
+#     up and the console prompt, with the same words, when it is not or when it fails;
+#   - the password goes to the keyscript's standard output and is written nowhere else;
+#   - the marker is written only after a person was asked, the root is open, and crypttab and the
+#     initramfs leave no other way in (key file, other keyscript, clevis, dropbear); root's only;
+#   - the session's helper answers `typed <user>` once, and `no` to everything else;
+#   - enrol records a digest of the account's shadow entry, never a password.
+set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SH="${SH:-sh}"
+T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT
+FAILS=0
+ok() { echo "ok   $*"; }
+bad() { echo "FAIL $*"; FAILS=$((FAILS + 1)); }
+check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
+SECRET='correct horse "battery" $staple'
+
+# ── stubs ──
+mkdir -p "$T/bin"
+cat > "$T/bin/console-askpass" <<'STUB'
+#!/bin/sh
+printf '%s' "$1" > "$STUB_LOG/console-prompt"
+printf '%s' "$STUB_SECRET"
+STUB
+cat > "$T/bin/plymouth" <<'STUB'
+#!/bin/sh
+case "$1" in
+    --ping) [ "${STUB_PLYMOUTH:-down}" != down ] ;;
+    ask-for-password)
+        printf "%s" "${2#--prompt=}" > "$STUB_LOG/plymouth-prompt"
+        [ "$STUB_PLYMOUTH" = up ] || exit 1
+        printf '%s' "$STUB_SECRET" ;;
+    quit) : > "$STUB_LOG/plymouth-quit" ;;
+esac
+STUB
+chmod +x "$T/bin/console-askpass" "$T/bin/plymouth"
+
+keyscript() { # plymouth-state tried -> stdout
+    rm -rf "$T/log" "$T/run"; mkdir -p "$T/log"
+    env PATH="$T/bin:$PATH" STUB_LOG="$T/log" STUB_SECRET="$SECRET" STUB_PLYMOUTH="$1" \
+        CRYPTTAB_TRIED="$2" CRYPTTAB_NAME=yantrik-root CRYPTTAB_KEY=none \
+        YANTRIK_UNLOCK_RUN="$T/run/yantrik-unlock" YANTRIK_CONSOLE_ASKPASS="$T/bin/console-askpass" \
+        $SH "$HERE/askpass" none
+}
+HINT="Type your password to start Yantrik OS"
+
+out="$(keyscript up 0)"
+check "the Yantrik screen asks first, with the hint" '[ "$(cat "$T/log/plymouth-prompt")" = "$HINT" ] && [ ! -e "$T/log/console-prompt" ]'
+check "what is typed goes to cryptsetup, exactly" '[ "$out" = "$SECRET" ]'
+check "the asked marker is root-only and empty" '[ "$(stat -c %a "$T/run/yantrik-unlock")" = 700 ] && [ -f "$T/run/yantrik-unlock/asked" ] && [ ! -s "$T/run/yantrik-unlock/asked" ]'
+check "the password is written nowhere" '! grep -rqF "battery" "$T/run" "$T/log/plymouth-prompt"'
+
+out="$(keyscript up 2)"
+check "a retry says why, then the hint" '[ "$(cat "$T/log/plymouth-prompt")" = "That password did not open the disk. $HINT" ]'
+
+out="$(keyscript down 0)"
+check "no Yantrik screen: the text prompt asks, with the hint" '[ "$(cat "$T/log/console-prompt")" = "$HINT: " ] && [ "$out" = "$SECRET" ]'
+
+out="$(keyscript broken 1)"
+check "a Yantrik screen that fails is put away and the text prompt asks" '[ -e "$T/log/plymouth-quit" ] && [ "$(cat "$T/log/console-prompt")" = "That password did not open the disk. $HINT: " ] && [ "$out" = "$SECRET" ]'
+check "the password is written nowhere, after a fallback either" '! grep -rqF "battery" "$T/run" "$T/log/plymouth-prompt" "$T/log/console-prompt"'
+
+# The source itself: the keyscript never captures, stores or logs what is typed.
+check "the keyscript holds nothing typed (no read, tee, capture or redirect of the answer)" \
+    '! grep -nE "(^|[^a-z])read |tee |\\\$\\((plymouth|\"\\\$CONSOLE_ASKPASS\")|ask-for-password[^|;]*(>|\\|)|logger|echo .*PASS" "$HERE/askpass"'
+for f in local-bottom consume enrol initramfs-hook; do
+    check "$f never touches a password prompt" '! grep -nE "ask-for-password|askpass \"|cryptsetup open|--key-file" "$HERE/$f"'
+done
+
+# ── local-bottom ──
+initrd() { # crypttab-line [extra files...]
+    rm -rf "$T/initrd" "$T/run"; mkdir -p "$T/initrd/cryptroot" "$T/run/yantrik-unlock"
+    printf '%s\n' "$1" > "$T/initrd/cryptroot/crypttab"; shift
+    for f in "$@"; do mkdir -p "$T/initrd/$(dirname "$f")"; : > "$T/initrd/$f"; done
+    : > "$T/mapper"
+}
+bottom() {
+    env YANTRIK_UNLOCK_RUN="$T/run/yantrik-unlock" YANTRIK_UNLOCK_INITRD="$T/initrd" \
+        YANTRIK_UNLOCK_MAPPER="$T/mapper" $SH "$HERE/local-bottom"
+}
+GOOD='yantrik-root UUID=0f0e none luks,initramfs,keyscript=/usr/lib/yantrik/boot-unlock/askpass'
+
+initrd "$GOOD"; : > "$T/run/yantrik-unlock/asked"; bottom
+check "a typed unlock leaves the marker, root-only, with its uptime" '[ -f "$T/run/yantrik-unlock/typed" ] && [ "$(stat -c %a "$T/run/yantrik-unlock/typed")" = 600 ] && grep -qE "^uptime=[0-9]+$" "$T/run/yantrik-unlock/typed" && [ ! -e "$T/run/yantrik-unlock/asked" ]'
+
+initrd "$GOOD"; bottom
+check "nobody was asked: no marker" '[ ! -e "$T/run/yantrik-unlock/typed" ]'
+initrd "$GOOD"; : > "$T/run/yantrik-unlock/asked"; rm -f "$T/mapper"; bottom
+check "the root is not open: no marker" '[ ! -e "$T/run/yantrik-unlock/typed" ]'
+for case in \
+    "a key file|yantrik-root UUID=0f0e /etc/keys/root.key luks,initramfs" \
+    "a key file beside the keyscript|yantrik-root UUID=0f0e /etc/keys/root.key luks,keyscript=/usr/lib/yantrik/boot-unlock/askpass" \
+    "another keyscript|yantrik-root UUID=0f0e none luks,keyscript=/lib/cryptsetup/scripts/decrypt_keyctl" \
+    "no keyscript (cryptsetup asks itself)|yantrik-root UUID=0f0e none luks,initramfs"; do
+    initrd "${case#*|}"; : > "$T/run/yantrik-unlock/asked"; bottom
+    check "${case%%|*}: no marker" '[ ! -e "$T/run/yantrik-unlock/typed" ]'
+done
+for other in usr/bin/clevis usr/sbin/dropbear bin/cryptroot-unlock scripts/local-top/clevis; do
+    initrd "$GOOD" "$other"; : > "$T/run/yantrik-unlock/asked"; bottom
+    check "$other in the initramfs: no marker" '[ ! -e "$T/run/yantrik-unlock/typed" ]'
+done
+initrd "$GOOD
+$GOOD"; : > "$T/run/yantrik-unlock/asked"; bottom
+check "two crypttab lines for the root: no marker" '[ ! -e "$T/run/yantrik-unlock/typed" ]'
+
+# ── consume ──
+me="$(id -u)"
+seed() { # marker-uptime now shadow-field
+    rm -rf "$T/run" "$T/etc"; mkdir -p "$T/run/yantrik-unlock" "$T/etc"; chmod 700 "$T/run/yantrik-unlock"
+    (umask 077; printf 'uptime=%s\n' "$1" > "$T/run/yantrik-unlock/typed")
+    printf '%s 0.00\n' "$2" > "$T/uptime"
+    printf 'root:*:1::::::\npranab:%s:20000:0:99999:7:::\n' "$3" > "$T/etc/shadow"
+    env YANTRIK_UNLOCK_CONF="$T/etc/boot-unlock.conf" YANTRIK_UNLOCK_SHADOW="$T/etc/shadow" \
+        $SH "$HERE/enrol" pranab
+}
+consume() {
+    env YANTRIK_UNLOCK_RUN="$T/run/yantrik-unlock" YANTRIK_UNLOCK_CONF="$T/etc/boot-unlock.conf" \
+        YANTRIK_UNLOCK_SHADOW="$T/etc/shadow" YANTRIK_UNLOCK_UPTIME="$T/uptime" \
+        YANTRIK_UNLOCK_ROOT_UID="$me" $SH "$HERE/consume"
+}
+HASH='$y$j9T$salt$hashhashhash'
+seed 20 45 "$HASH"
+check "enrol keeps a digest of the shadow entry, root-only, and no hash or password" '[ "$(stat -c %a "$T/etc/boot-unlock.conf")" = 600 ] && grep -qE "^shadow=[0-9a-f]{64}$" "$T/etc/boot-unlock.conf" && ! grep -qF "hashhash" "$T/etc/boot-unlock.conf"'
+check "the first question after a typed unlock is answered typed <user>" '[ "$(consume)" = "typed pranab" ]'
+check "and it is used up: the second is no" '[ "$(consume)" = no ] && [ -z "$(ls "$T/run/yantrik-unlock")" ]'
+seed 20 45 "$HASH"; rm -f "$T/run/yantrik-unlock/typed"
+check "no marker: no" '[ "$(consume)" = no ]'
+seed 20 400 "$HASH"
+check "a marker older than five minutes: no, and used up" '[ "$(consume)" = no ] && [ ! -e "$T/run/yantrik-unlock/typed" ]'
+seed 20 45 "$HASH"; sed -i "s/^pranab:[^:]*:/pranab:\$y\$j9T\$other\$changed:/" "$T/etc/shadow"
+check "the password changed since enrolment: no" '[ "$(consume)" = no ]'
+seed 20 45 "$HASH"; chmod 644 "$T/run/yantrik-unlock/typed"
+check "a marker anyone could read or write: no" '[ "$(consume)" = no ]'
+seed 20 45 "$HASH"; chmod 755 "$T/run/yantrik-unlock"
+check "a marker directory anyone could enter: no" '[ "$(consume)" = no ]'
+seed 20 45 "$HASH"; rm "$T/run/yantrik-unlock/typed"; ln -s "$T/uptime" "$T/run/yantrik-unlock/typed"
+check "a marker that is a link: no" '[ "$(consume)" = no ]'
+seed 20 45 "$HASH"; rm -f "$T/etc/boot-unlock.conf"
+check "nobody enrolled: no" '[ "$(consume)" = no ]'
+seed 20 45 "$HASH"; printf 'uptime=x\n' > "$T/run/yantrik-unlock/typed"
+check "a marker that says nothing usable: no" '[ "$(consume)" = no ]'
+rm -rf "$T/etc"; mkdir -p "$T/etc"; printf 'pranab:!$y$locked:1::::::\n' > "$T/etc/shadow"
+check "enrol refuses an account with no password" '! env YANTRIK_UNLOCK_CONF="$T/etc/boot-unlock.conf" YANTRIK_UNLOCK_SHADOW="$T/etc/shadow" $SH "$HERE/enrol" pranab 2>/dev/null && [ ! -e "$T/etc/boot-unlock.conf" ]'
+
+# ── staging ──
+root="$T/rootfs"
+$SH "$HERE/../stage-boot-unlock.sh" "$root" >/dev/null
+check "the stage puts every piece where crypttab, initramfs-tools, systemd and plymouth look" \
+    '[ -x "$root/usr/lib/yantrik/boot-unlock/askpass" ] && [ -x "$root/etc/initramfs-tools/hooks/yantrik-unlock" ] && [ -x "$root/etc/initramfs-tools/scripts/local-bottom/yantrik-unlock" ] && [ "$(stat -c %a "$root/usr/lib/yantrik/boot-unlock/consume")" = 700 ] && [ -L "$root/etc/systemd/system/sockets.target.wants/yantrik-boot-unlock.socket" ] && [ -f "$root/usr/share/plymouth/themes/yantrik/yantrik.script" ] && cmp -s "$HERE/theme/field.png" "$root/usr/share/plymouth/themes/yantrik/field.png"'
+check "the theme has the lines the hook fills in" 'grep -qx "name_text = \"\";" "$HERE/theme/yantrik.script" && grep -qx "layout_text = \"\";" "$HERE/theme/yantrik.script"'
+
+[ "$FAILS" = 0 ] && echo "boot-unlock selftest: all passed" || { echo "boot-unlock selftest: $FAILS failed"; exit 1; }

@@ -98,6 +98,7 @@ pub mod installer_partition;
 pub mod installer_probe;
 pub mod installer_locale;
 pub mod installer_ownership;
+pub mod installer_unlock;
 pub mod wifi_driver;
 pub mod login;
 pub mod minds_panel;

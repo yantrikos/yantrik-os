@@ -244,10 +244,11 @@ pub fn fstab_text(root_uuid: &str, efi_uuid: Option<&str>, boot_uuid: Option<&st
 }
 
 /// The installed system's /etc/crypttab: the root, opened with a passphrase asked for at boot
-/// (`none`), in the initramfs. No `discard`: it would tell the disk, and anyone reading it
-/// later, which blocks hold nothing.
-pub fn crypttab_text(luks_uuid: &str) -> String {
-    format!("{CRYPT_NAME} UUID={luks_uuid} none luks,initramfs\n")
+/// (`none`), in the initramfs, through the Yantrik keyscript when the disk carries it
+/// (installer_unlock.rs). No `discard`: it would tell the disk, and anyone reading it later,
+/// which blocks hold nothing.
+pub fn crypttab_text(luks_uuid: &str, has_keyscript: bool) -> String {
+    format!("{CRYPT_NAME} UUID={luks_uuid} none {}\n", super::installer_unlock::crypttab_options(has_keyscript))
 }
 
 /// Write fstab and, for an encrypted root, crypttab and the initramfs settings that make it ask.
@@ -265,7 +266,11 @@ pub fn write_system_files(layout: &Layout, mount_dir: &str) -> Result<(), String
     let Some(luks) = &layout.luks_part else {
         return Ok(());
     };
-    sudo_write(&format!("{mount_dir}/etc/crypttab"), &crypttab_text(&uuid_of(luks)?))?;
+    let has_keyscript = super::installer_unlock::keyscript_installed(mount_dir);
+    if !has_keyscript {
+        tracing::warn!("Installer: no Yantrik keyscript on this image; cryptsetup's own prompt will ask at boot");
+    }
+    sudo_write(&format!("{mount_dir}/etc/crypttab"), &crypttab_text(&uuid_of(luks)?, has_keyscript))?;
     // Nothing else to write: cryptsetup-initramfs's own conf-hook turns on KEYMAP=y, so the
     // keymap in /etc/default/keyboard goes into the initramfs beside the unlock. Rewriting the
     // package's configuration files would only stop a later upgrade at a conffile prompt.
@@ -276,6 +281,8 @@ pub fn write_system_files(layout: &Layout, mount_dir: &str) -> Result<(), String
 /// Check that each initramfs on the installed /boot opens the root. Without it the machine
 /// installs, reboots, and stops at "cannot find root" with nothing asking for a passphrase.
 pub fn verify_initramfs(mount_dir: &str) -> Result<(), String> {
+    let names_keyscript = std::fs::read_to_string(format!("{mount_dir}/etc/crypttab"))
+        .is_ok_and(|t| t.contains(super::installer_unlock::KEYSCRIPT));
     let images: Vec<String> = std::fs::read_dir(format!("{mount_dir}/boot"))
         .map_err(|e| format!("reading the installed /boot: {e}"))?
         .filter_map(|e| e.ok())
@@ -291,6 +298,13 @@ pub fn verify_initramfs(mount_dir: &str) -> Result<(), String> {
             return Err(format!(
                 "{image} has no {missing}; the encrypted disk would not open at boot"
             ));
+        }
+        let prompt = super::installer_unlock::prompt_in(&listing, names_keyscript)
+            .map_err(|missing| format!("{image} has no {missing}; the encrypted disk would not open at boot"))?;
+        let marker = super::installer_unlock::marker_in(&listing);
+        tracing::info!(%image, ?prompt, marker, "Installer: how the installed system asks for the disk's password");
+        if names_keyscript && !marker {
+            tracing::warn!(%image, "Installer: no boot-unlock marker in the initramfs; the lock screen will ask after boot");
         }
     }
     Ok(())
@@ -401,9 +415,17 @@ mod tests {
 
     #[test]
     fn crypttab_asks_for_the_passphrase_in_the_initramfs() {
-        let line = crypttab_text("0f0e-uuid");
+        let line = crypttab_text("0f0e-uuid", false);
         let fields: Vec<&str> = line.split_whitespace().collect();
         assert_eq!(fields, ["yantrik-root", "UUID=0f0e-uuid", "none", "luks,initramfs"]);
+        assert!(!line.contains("discard"));
+        // With the Yantrik keyscript the key is still `none`: asked for, never a file.
+        let line = crypttab_text("0f0e-uuid", true);
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        assert_eq!(
+            fields,
+            ["yantrik-root", "UUID=0f0e-uuid", "none", "luks,initramfs,keyscript=/usr/lib/yantrik/boot-unlock/askpass"]
+        );
         assert!(!line.contains("discard"));
     }
 

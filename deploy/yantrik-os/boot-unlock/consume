@@ -1,0 +1,53 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# consume — answer, once per boot, whether a person typed the disk's password in this boot
+# ═══════════════════════════════════════════════════════════════════════════════════════
+#
+# Run as root by yantrik-boot-unlock@.service, one per connection to
+# /run/yantrik-boot-unlock.sock, with the connection as its standard input and output. The shell
+# asks when it starts; the answer is one line:
+#
+#   typed <user>   the root was opened in this boot by its keyscript, asking a person
+#                  (local-bottom's marker), less than WINDOW seconds ago, and <user>'s password is
+#                  still the one enrolled at install (so it is still the disk's passphrase)
+#   no             anything else: the shell starts locked, as it always has
+#
+# The marker is taken by a rename, which only one asker can win, and deleted before the answer:
+# whoever asks first gets it, and every later question in this boot is `no`. A process of the
+# person's own that asks first therefore only makes the shell lock, never open.
+#
+# Nothing here reads, holds or compares a password. The enrolment is a digest of the account's
+# /etc/shadow entry (enrol), so a changed password stops matching and the lock screen asks.
+RUN_DIR="${YANTRIK_UNLOCK_RUN:-/run/yantrik-unlock}"
+CONF="${YANTRIK_UNLOCK_CONF:-/etc/yantrik/boot-unlock.conf}"
+SHADOW="${YANTRIK_UNLOCK_SHADOW:-/etc/shadow}"
+UPTIME="${YANTRIK_UNLOCK_UPTIME:-/proc/uptime}"
+ROOT_UID="${YANTRIK_UNLOCK_ROOT_UID:-0}"
+WINDOW=300
+
+no() { echo no; exit 0; }
+
+owned_private() { # path mode
+    [ ! -L "$1" ] && [ "$(stat -c '%u %a' "$1" 2>/dev/null)" = "$ROOT_UID $2" ]
+}
+
+[ -d "$RUN_DIR" ] && owned_private "$RUN_DIR" 700 || no
+taken="$RUN_DIR/typed.taken.$$"
+mv "$RUN_DIR/typed" "$taken" 2>/dev/null || no
+ok=1
+owned_private "$taken" 600 || ok=0
+at="$(sed -n 's/^uptime=\([0-9][0-9]*\)$/\1/p' "$taken" 2>/dev/null | head -n1)"
+rm -f "$taken"
+[ "$ok" = 1 ] && [ -n "$at" ] || no
+
+now="$(awk '{ sub(/\..*/, "", $1); print $1; exit }' "$UPTIME" 2>/dev/null)"
+case "$now" in ''|*[!0-9]*) no ;; esac
+[ "$now" -ge "$at" ] && [ $((now - at)) -lt "$WINDOW" ] || no
+
+owned_private "$CONF" 600 || no
+user="$(sed -n 's/^user=\([a-z_][a-z0-9_-]*\)$/\1/p' "$CONF" | head -n1)"
+want="$(sed -n 's/^shadow=\([0-9a-f]\{64\}\)$/\1/p' "$CONF" | head -n1)"
+[ -n "$user" ] && [ -n "$want" ] || no
+have="$(awk -F: -v u="$user" '$1 == u { print $2; exit }' "$SHADOW" 2>/dev/null | sha256sum | cut -d' ' -f1)"
+[ "$have" = "$want" ] || no
+echo "typed $user"

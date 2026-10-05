@@ -15,6 +15,7 @@ use crate::wire::installer_disk;
 use crate::wire::installer_locale;
 use crate::wire::installer_ownership;
 use crate::wire::installer_partition;
+use crate::wire::installer_unlock;
 use crate::wire::settings::{ProviderStore, ProviderStoreEntry};
 use crate::{App, InstallerDisk, KeyboardChoice};
 
@@ -525,6 +526,11 @@ fn install_to_target(
     // ── Step 8: Create user account ─────────────────────────────
     progress(65, "Creating user account...");
     create_user(mount_dir, state)?;
+    // Encrypted, the disk's password is this account's: typed once at boot, it signs them in
+    // (installer_unlock.rs). Only once the password is set, since what is enrolled is its digest.
+    if layout.encrypted() && !state.password.is_empty() {
+        installer_unlock::enrol(mount_dir, if state.username.is_empty() { "yantrik" } else { &state.username });
+    }
 
     // The OS's own code is root's on an installed machine (#397): the shell, the updater and every
     // binary used to belong to the desktop's user, so anything running as them could replace the
@@ -610,11 +616,14 @@ fn install_to_target(
         ),
     );
 
-    // Configure GRUB defaults. loglevel=3: `quiet` still prints the kernel's error-level lines,
-    // and on real hardware (and in a VM) those scroll over the disk's passphrase prompt.
+    // Configure GRUB defaults. The kernel's line is installer_unlock's: the pre-boot screen on an
+    // encrypted install, and the quiet that keeps kernel lines off the password prompt.
     let _ = sudo_write(
         &format!("{mount_dir}/etc/default/grub"),
-        "GRUB_DEFAULT=0\nGRUB_TIMEOUT=3\nGRUB_DISTRIBUTOR=\"Yantrik OS\"\nGRUB_CMDLINE_LINUX_DEFAULT=\"quiet splash loglevel=3\"\nGRUB_CMDLINE_LINUX=\"console=ttyS0,115200 console=tty1\"\nGRUB_TERMINAL=\"console serial\"\nGRUB_SERIAL_COMMAND=\"serial --speed=115200\"\n",
+        &format!(
+            "GRUB_DEFAULT=0\nGRUB_TIMEOUT=3\nGRUB_DISTRIBUTOR=\"Yantrik OS\"\nGRUB_CMDLINE_LINUX_DEFAULT=\"{}\"\nGRUB_CMDLINE_LINUX=\"console=ttyS0,115200 console=tty1\"\nGRUB_TERMINAL=\"console serial\"\nGRUB_SERIAL_COMMAND=\"serial --speed=115200\"\n",
+            installer_unlock::cmdline_default(layout.encrypted())
+        ),
     );
 
     progress(85, "Updating GRUB configuration...");
