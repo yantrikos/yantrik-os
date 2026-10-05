@@ -154,8 +154,9 @@ pub fn empty_check(path: &str, bytes: u64, run: Runner) -> Checked {
 }
 
 /// What on a placeholder is not macOS's own housekeeping, from `find -printf '%y %P\0'`: the
-/// Spotlight index, the FSEvents log, `.DS_Store`, AppleDouble `._` files, and `.Trashes` with
-/// nothing in it but folders. A file in `.Trashes` was someone's, and counts.
+/// Spotlight index, the FSEvents log, `.TemporaryItems`, `.VolumeIcon.icns`, `.DS_Store`,
+/// AppleDouble `._` files, and `.Trashes` with nothing in it but folders: what macOS leaves on a
+/// FAT volume it made and mounted. A file in `.Trashes` was someone's, and counts.
 pub fn foreign_files(listing: &str) -> Vec<String> {
     listing
         .split('\0')
@@ -164,7 +165,8 @@ pub fn foreign_files(listing: &str) -> Vec<String> {
             let (kind, path) = entry.split_once(' ').unwrap_or(("?", entry));
             let top = path.split('/').next().unwrap_or(path);
             let base = path.rsplit('/').next().unwrap_or(path);
-            let housekeeping = matches!(top, ".fseventsd" | ".Spotlight-V100")
+            let housekeeping = matches!(top, ".fseventsd" | ".Spotlight-V100" | ".TemporaryItems")
+                || path == ".VolumeIcon.icns"
                 || base == ".DS_Store"
                 || base.starts_with("._")
                 || (top == ".Trashes" && kind == "d");

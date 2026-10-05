@@ -228,6 +228,20 @@ fn only_a_plain_protective_mbr_is_accepted() {
 #[test]
 fn macos_housekeeping_is_told_from_a_persons_files() {
     let listing = "d .fseventsd\0f ._photo\0f .DS_Store\0d .Trashes\0f notes.txt\0d .TemporaryItems\0";
-    assert_eq!(foreign_files(listing), ["notes.txt", ".TemporaryItems"]);
+    assert_eq!(foreign_files(listing), ["notes.txt"]);
     assert!(foreign_files("").is_empty());
+    // Only the volume's own icon, at its top: one deeper is a file someone put there.
+    assert_eq!(foreign_files("f Icons/.VolumeIcon.icns\0"), ["Icons/.VolumeIcon.icns"]);
+}
+
+#[test]
+fn a_fresh_placeholder_macos_made_and_mounted_is_empty() {
+    // What Disk Utility and Finder leave on a FAT volume named YANTRIK once it has been mounted.
+    let listing = "d .fseventsd\0f .fseventsd/fseventsd-uuid\0f .fseventsd/0000000000a1b2c3\0\
+                   d .Spotlight-V100\0d .Spotlight-V100/Store-V2\0f .Spotlight-V100/VolumeConfiguration.plist\0\
+                   d .TemporaryItems\0d .TemporaryItems/folders.501\0f .TemporaryItems/folders.501/Cleanup At Startup\0\
+                   f .VolumeIcon.icns\0f ._.VolumeIcon.icns\0f .DS_Store\0f ._.DS_Store\0d .Trashes\0d .Trashes/501\0";
+    assert!(foreign_files(listing).is_empty(), "{:?}", foreign_files(listing));
+    let fake = Fake::new(&[("mkdir", Ran::exited(0, "")), ("mount -o ro", Ran::exited(0, "")), ("find", Ran::exited(0, listing)), ("umount", Ran::exited(0, ""))]);
+    assert_eq!(look_inside(&placeholder(), &|c, a| fake.run(c, a)), Checked::Empty);
 }
