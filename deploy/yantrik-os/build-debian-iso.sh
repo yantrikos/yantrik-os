@@ -411,7 +411,8 @@ for required in usr/lib/yantrik/boot-unlock/askpass usr/lib/yantrik/boot-unlock/
                 etc/systemd/system/sockets.target.wants/yantrik-boot-unlock.socket \
                 etc/systemd/system/multi-user.target.wants/yantrik-boot-unlock-expire.service \
                 usr/bin/jq usr/sbin/cryptsetup; do
-    [ -e "$ROOTFS/$required" ] || fail "$required missing from the image — the one-password start would not work"
+    # Inside the image: the .wants links are absolute, and would be read against the build host.
+    sudo chroot "$ROOTFS" test -e "/$required" || fail "$required missing from the image — the one-password start would not work"
 done
 sudo chroot "$ROOTFS" getent group yantrik-boot-unlock >/dev/null \
     || fail "group yantrik-boot-unlock missing from the image — the boot-unlock socket would not start"
