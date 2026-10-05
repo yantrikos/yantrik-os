@@ -402,12 +402,19 @@ sudo sh "$SCRIPT_DIR/stage-boot-unlock.sh" "$ROOTFS" \
     || fail "stage-boot-unlock.sh failed — an encrypted install would ask for its password in plain text"
 sudo chroot "$ROOTFS" plymouth-set-default-theme yantrik \
     || warn "plymouth could not select the Yantrik theme; the installed initramfs hook still names it"
+# The socket's group. Empty in the image; enrol makes the installed account its one member.
+sudo chroot "$ROOTFS" groupadd -f --system yantrik-boot-unlock \
+    || fail "could not make group yantrik-boot-unlock — the boot-unlock socket would not start"
 for required in usr/lib/yantrik/boot-unlock/askpass usr/lib/yantrik/boot-unlock/consume \
                 etc/initramfs-tools/hooks/yantrik-unlock etc/initramfs-tools/scripts/local-bottom/yantrik-unlock \
                 usr/share/plymouth/themes/yantrik/yantrik.script usr/sbin/plymouthd \
-                etc/systemd/system/sockets.target.wants/yantrik-boot-unlock.socket; do
+                etc/systemd/system/sockets.target.wants/yantrik-boot-unlock.socket \
+                etc/systemd/system/multi-user.target.wants/yantrik-boot-unlock-expire.service \
+                usr/bin/jq usr/sbin/cryptsetup; do
     [ -e "$ROOTFS/$required" ] || fail "$required missing from the image — the one-password start would not work"
 done
+sudo chroot "$ROOTFS" getent group yantrik-boot-unlock >/dev/null \
+    || fail "group yantrik-boot-unlock missing from the image — the boot-unlock socket would not start"
 ok "Pre-boot unlock screen, keyscript and signed-in marker staged"
 
 # ── The live system's shutdown says nothing about removing its medium ──

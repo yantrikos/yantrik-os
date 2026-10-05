@@ -202,7 +202,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq initramfs-tools cryptsetup-initramfs \
-            plymouth plymouth-label console-setup busybox fonts-dejavu-core kbd xkb-data > /dev/null
+            plymouth plymouth-label console-setup busybox fonts-dejavu-core kbd xkb-data jq > /dev/null
           sudo sh deploy/yantrik-os/boot-unlock/initramfs-check.sh --scratch-system
       - name: The live system's shutdown never ejects an internal disk or waits for ENTER
         run: sh deploy/yantrik-os/yantrik-live-medium-eject selftest

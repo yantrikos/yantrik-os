@@ -12,7 +12,8 @@
 # Stages (boot-unlock/):
 #   - askpass, the disk's keyscript; the installer names it in crypttab for an encrypted root;
 #   - the initramfs hook and local-bottom script, which do nothing unless crypttab names it;
-#   - consume and enrol, root's, and the socket that lets the session ask consume, once;
+#   - consume and enrol, root's, the socket that lets the session ask consume, once, and the
+#     service that deletes an unused marker once its window is over;
 #   - the Yantrik plymouth theme.
 # Nothing here changes a machine whose root is not encrypted by the installer.
 #
@@ -27,7 +28,7 @@ LIB=/usr/lib/yantrik/boot-unlock
 THEME=/usr/share/plymouth/themes/yantrik
 
 for f in askpass local-bottom initramfs-hook consume enrol yantrik-boot-unlock.socket \
-         yantrik-boot-unlock@.service theme/yantrik.plymouth theme/yantrik.script theme/field.png; do
+         yantrik-boot-unlock@.service yantrik-boot-unlock-expire.service theme/yantrik.plymouth theme/yantrik.script theme/field.png; do
     [ -f "$SRC/$f" ] || { echo "stage-boot-unlock: missing $SRC/$f" >&2; exit 1; }
 done
 
@@ -52,6 +53,7 @@ put 0755 "$SRC/initramfs-hook"   "$ROOTFS/etc/initramfs-tools/hooks/yantrik-unlo
 put 0755 "$SRC/local-bottom"     "$ROOTFS/etc/initramfs-tools/scripts/local-bottom/yantrik-unlock"
 put 0644 "$SRC/yantrik-boot-unlock.socket"   "$ROOTFS/etc/systemd/system/yantrik-boot-unlock.socket"
 put 0644 "$SRC/yantrik-boot-unlock@.service" "$ROOTFS/etc/systemd/system/yantrik-boot-unlock@.service"
+put 0644 "$SRC/yantrik-boot-unlock-expire.service" "$ROOTFS/etc/systemd/system/yantrik-boot-unlock-expire.service"
 put 0644 "$SRC/theme/yantrik.plymouth" "$ROOTFS$THEME/yantrik.plymouth"
 put 0644 "$SRC/theme/yantrik.script"   "$ROOTFS$THEME/yantrik.script"
 put 0644 "$SRC/theme/field.png"        "$ROOTFS$THEME/field.png"
@@ -60,5 +62,8 @@ put 0644 "$SRC/theme/field.png"        "$ROOTFS$THEME/field.png"
 install -d -m 0755 $own "$ROOTFS/etc/systemd/system/sockets.target.wants"
 ln -sfn /etc/systemd/system/yantrik-boot-unlock.socket \
     "$ROOTFS/etc/systemd/system/sockets.target.wants/yantrik-boot-unlock.socket"
+install -d -m 0755 $own "$ROOTFS/etc/systemd/system/multi-user.target.wants"
+ln -sfn /etc/systemd/system/yantrik-boot-unlock-expire.service \
+    "$ROOTFS/etc/systemd/system/multi-user.target.wants/yantrik-boot-unlock-expire.service"
 
-echo "stage-boot-unlock: keyscript, initramfs hook, marker, root helper (socket enabled) and plymouth theme staged in $ROOTFS"
+echo "stage-boot-unlock: keyscript, initramfs hook, marker, root helper (socket and expiry enabled) and plymouth theme staged in $ROOTFS"

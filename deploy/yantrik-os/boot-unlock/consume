@@ -4,25 +4,35 @@
 # ═══════════════════════════════════════════════════════════════════════════════════════
 #
 # Run as root by yantrik-boot-unlock@.service, one per connection to
-# /run/yantrik-boot-unlock.sock, with the connection as its standard input and output. The shell
+# /run/yantrik-boot-unlock.sock, with the connection as its standard input and output and the
+# instance name (systemd's `N-PID-UID`, the asker's SO_PEERCRED) as its argument. The shell
 # asks when it starts; the answer is one line:
 #
-#   typed <user>   the root was opened in this boot by its keyscript, asking a person
-#                  (local-bottom's marker), less than WINDOW seconds ago, and <user>'s password is
-#                  still the one enrolled at install (so it is still the disk's passphrase)
+#   typed <user>   the asker is <user>; the root was opened in this boot (same boot_id) by its
+#                  keyscript, asking a person (local-bottom's marker), less than WINDOW seconds
+#                  ago; <user>'s password is still the one enrolled at install; and the disk's
+#                  LUKS header still has exactly the one keyslot enrolled with it and no token,
+#                  so the only secret that opens the disk is still that password
 #   no             anything else: the shell starts locked, as it always has
 #
 # The marker is taken by a rename, which only one asker can win, and deleted before the answer:
-# whoever asks first gets it, and every later question in this boot is `no`. A process of the
-# person's own that asks first therefore only makes the shell lock, never open.
+# whoever asks first gets it, and every later question in this boot is `no`. An asker that is
+# not <user> is answered `no` and leaves the marker alone.
+#
+# `consume expire` (yantrik-boot-unlock-expire.service) waits out the marker's WINDOW and deletes
+# it, so an unused marker never outlives its five minutes.
 #
 # Nothing here reads, holds or compares a password. The enrolment is a digest of the account's
-# /etc/shadow entry (enrol), so a changed password stops matching and the lock screen asks.
+# /etc/shadow entry and one of the LUKS header's keyslots and tokens (enrol): a changed password,
+# an added keyslot or a changed disk passphrase stops matching, and the lock screen asks.
 RUN_DIR="${YANTRIK_UNLOCK_RUN:-/run/yantrik-unlock}"
 CONF="${YANTRIK_UNLOCK_CONF:-/etc/yantrik/boot-unlock.conf}"
 SHADOW="${YANTRIK_UNLOCK_SHADOW:-/etc/shadow}"
+PASSWD="${YANTRIK_UNLOCK_PASSWD:-/etc/passwd}"
 UPTIME="${YANTRIK_UNLOCK_UPTIME:-/proc/uptime}"
+BOOT_ID="${YANTRIK_UNLOCK_BOOT_ID:-/proc/sys/kernel/random/boot_id}"
 ROOT_UID="${YANTRIK_UNLOCK_ROOT_UID:-0}"
+NAME=yantrik-root
 WINDOW=300
 
 no() { echo no; exit 0; }
@@ -31,23 +41,62 @@ owned_private() { # path mode
     [ ! -L "$1" ] && [ "$(stat -c '%u %a' "$1" 2>/dev/null)" = "$ROOT_UID $2" ]
 }
 
+uptime_now() {
+    now="$(awk '{ sub(/\..*/, "", $1); print $1; exit }' "$UPTIME" 2>/dev/null)"
+    case "$now" in ''|*[!0-9]*) return 1 ;; esac
+    echo "$now"
+}
+
+# The same digest enrol records: the LUKS2 header's keyslots and tokens, read from the device
+# under the open root. Fails unless that header has exactly one keyslot and no token.
+luks_header() {
+    dev="$(cryptsetup status "$NAME" 2>/dev/null | sed -n 's/^[[:space:]]*device:[[:space:]]*\([^[:space:]]*\)$/\1/p' | head -n1)"
+    [ -n "$dev" ] || return 1
+    json="$(cryptsetup luksDump --disable-locks --dump-json-metadata "$dev" 2>/dev/null)" || return 1
+    printf '%s\n' "$json" | jq -e '(.keyslots | length) == 1 and (.tokens | length) == 0' >/dev/null 2>&1 || return 1
+    printf '%s\n' "$json" | jq -cS '{keyslots: .keyslots, tokens: .tokens}' 2>/dev/null | sha256sum | cut -d' ' -f1
+}
+
+if [ "${1:-}" = expire ]; then
+    [ -d "$RUN_DIR" ] && owned_private "$RUN_DIR" 700 || exit 0
+    at="$(sed -n 's/^uptime=\([0-9][0-9]*\)$/\1/p' "$RUN_DIR/typed" 2>/dev/null | head -n1)"
+    now="$(uptime_now)" || now=""
+    if [ -n "$at" ] && [ -n "$now" ] && [ $((at + WINDOW - now)) -gt 0 ]; then
+        ${YANTRIK_UNLOCK_SLEEP:-sleep} $((at + WINDOW - now))
+    fi
+    rm -f "$RUN_DIR/typed"
+    exit 0
+fi
+
+owned_private "$CONF" 600 || no
+user="$(sed -n 's/^user=\([a-z_][a-z0-9_-]*\)$/\1/p' "$CONF" | head -n1)"
+want="$(sed -n 's/^shadow=\([0-9a-f]\{64\}\)$/\1/p' "$CONF" | head -n1)"
+header="$(sed -n 's/^header=\([0-9a-f]\{64\}\)$/\1/p' "$CONF" | head -n1)"
+[ -n "$user" ] && [ -n "$want" ] && [ -n "$header" ] || no
+
+# Only the enrolled account may use the answer up; anyone else leaves it for them.
+uid="$(awk -F: -v u="$user" '$1 == u { print $3; exit }' "$PASSWD" 2>/dev/null)"
+peer="${1:-}"
+case "$peer" in *-*-*) peer="${peer##*-}" ;; *) peer="" ;; esac
+case "$uid" in ''|*[!0-9]*) no ;; esac
+case "$peer" in ''|*[!0-9]*) no ;; esac
+[ "$peer" = "$uid" ] || no
+
 [ -d "$RUN_DIR" ] && owned_private "$RUN_DIR" 700 || no
 taken="$RUN_DIR/typed.taken.$$"
 mv "$RUN_DIR/typed" "$taken" 2>/dev/null || no
 ok=1
 owned_private "$taken" 600 || ok=0
 at="$(sed -n 's/^uptime=\([0-9][0-9]*\)$/\1/p' "$taken" 2>/dev/null | head -n1)"
+boot="$(sed -n 's/^boot_id=\([0-9a-f-]\{36\}\)$/\1/p' "$taken" 2>/dev/null | head -n1)"
 rm -f "$taken"
-[ "$ok" = 1 ] && [ -n "$at" ] || no
+[ "$ok" = 1 ] && [ -n "$at" ] && [ -n "$boot" ] || no
 
-now="$(awk '{ sub(/\..*/, "", $1); print $1; exit }' "$UPTIME" 2>/dev/null)"
-case "$now" in ''|*[!0-9]*) no ;; esac
+[ "$boot" = "$(cat "$BOOT_ID" 2>/dev/null)" ] || no
+now="$(uptime_now)" || no
 [ "$now" -ge "$at" ] && [ $((now - at)) -lt "$WINDOW" ] || no
 
-owned_private "$CONF" 600 || no
-user="$(sed -n 's/^user=\([a-z_][a-z0-9_-]*\)$/\1/p' "$CONF" | head -n1)"
-want="$(sed -n 's/^shadow=\([0-9a-f]\{64\}\)$/\1/p' "$CONF" | head -n1)"
-[ -n "$user" ] && [ -n "$want" ] || no
 have="$(awk -F: -v u="$user" '$1 == u { print $2; exit }' "$SHADOW" 2>/dev/null | sha256sum | cut -d' ' -f1)"
 [ "$have" = "$want" ] || no
+[ "$(luks_header)" = "$header" ] || no
 echo "typed $user"

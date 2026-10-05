@@ -11,8 +11,10 @@
 #   - the password goes to the keyscript's standard output and is written nowhere else;
 #   - the marker is written only after a person was asked, the root is open, and crypttab and the
 #     initramfs leave no other way in (key file, other keyscript, clevis, dropbear); root's only;
-#   - the session's helper answers `typed <user>` once, and `no` to everything else;
-#   - enrol records a digest of the account's shadow entry, never a password;
+#   - the session's helper answers `typed <user>` once, to that account only, in the boot that
+#     wrote the marker, within its window, while the disk's LUKS header still has only the one
+#     keyslot enrolled and no token; `no` to everything else; an unused marker expires;
+#   - enrol records digests of the account's shadow entry and the LUKS header, never a password;
 #   - the text installer's boot line is the desktop installer's unencrypted one.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -91,7 +93,7 @@ bottom() {
 GOOD='yantrik-root UUID=0f0e none luks,initramfs,keyscript=/usr/lib/yantrik/boot-unlock/askpass'
 
 initrd "$GOOD"; : > "$T/run/yantrik-unlock/asked"; bottom
-check "a typed unlock leaves the marker, root-only, with its uptime" '[ -f "$T/run/yantrik-unlock/typed" ] && [ "$(stat -c %a "$T/run/yantrik-unlock/typed")" = 600 ] && grep -qE "^uptime=[0-9]+$" "$T/run/yantrik-unlock/typed" && [ ! -e "$T/run/yantrik-unlock/asked" ]'
+check "a typed unlock leaves the marker, root-only, with its uptime and this boot's boot_id" '[ -f "$T/run/yantrik-unlock/typed" ] && [ "$(stat -c %a "$T/run/yantrik-unlock/typed")" = 600 ] && grep -qE "^uptime=[0-9]+$" "$T/run/yantrik-unlock/typed" && grep -qx "boot_id=$(cat /proc/sys/kernel/random/boot_id)" "$T/run/yantrik-unlock/typed" && [ ! -e "$T/run/yantrik-unlock/asked" ]'
 
 initrd "$GOOD"; bottom
 check "nobody was asked: no marker" '[ ! -e "$T/run/yantrik-unlock/typed" ]'
@@ -114,31 +116,99 @@ $GOOD"; : > "$T/run/yantrik-unlock/asked"; bottom
 check "two crypttab lines for the root: no marker" '[ ! -e "$T/run/yantrik-unlock/typed" ]'
 
 # ── consume ──
-me="$(id -u)"
-seed() { # marker-uptime now shadow-field
-    rm -rf "$T/run" "$T/etc"; mkdir -p "$T/run/yantrik-unlock" "$T/etc"; chmod 700 "$T/run/yantrik-unlock"
-    (umask 077; printf 'uptime=%s\n' "$1" > "$T/run/yantrik-unlock/typed")
-    printf '%s 0.00\n' "$2" > "$T/uptime"
-    printf 'root:*:1::::::\npranab:%s:20000:0:99999:7:::\n' "$3" > "$T/etc/shadow"
-    env YANTRIK_UNLOCK_CONF="$T/etc/boot-unlock.conf" YANTRIK_UNLOCK_SHADOW="$T/etc/shadow" \
-        $SH "$HERE/enrol" pranab
+# Stubs: cryptsetup (status names the device in STUB_LUKS_DEV; luksDump of a JSON file prints it,
+# of anything else runs the real cryptsetup), groupadd and gpasswd (logged), sleep (logged).
+REAL_CRYPTSETUP="$(command -v cryptsetup 2>/dev/null || true)"
+cat > "$T/bin/cryptsetup" <<'STUB'
+#!/bin/sh
+case "$1" in
+    status)
+        [ -n "${STUB_LUKS_DEV:-}" ] || exit 4
+        printf '/dev/mapper/%s is active and is in use.\n  type:    LUKS2\n  device:  %s\n' "$2" "$STUB_LUKS_DEV" ;;
+    luksDump)
+        for last in "$@"; do :; done
+        if [ "$(head -c1 "$last")" = "{" ]; then cat "$last"; else exec "$STUB_REAL_CRYPTSETUP" "$@"; fi ;;
+    *) exit 1 ;;
+esac
+STUB
+printf '#!/bin/sh\necho "groupadd $*" >> "$STUB_LOG/groups"\n' > "$T/bin/groupadd"
+printf '#!/bin/sh\necho "gpasswd $*" >> "$STUB_LOG/groups"\n' > "$T/bin/gpasswd"
+printf '#!/bin/sh\necho "$*" > "$STUB_LOG/slept"\n' > "$T/bin/sleep-stub"
+chmod +x "$T/bin/cryptsetup" "$T/bin/groupadd" "$T/bin/gpasswd" "$T/bin/sleep-stub"
+
+# LUKS2 headers as luksDump --dump-json-metadata prints them: the one the installer makes, one
+# with a keyslot added (luksAddKey), one whose passphrase was changed (luksChangeKey: the slot's
+# salt is new), and one with a token.
+slot() { # salt
+    printf '{"type":"luks2","key_size":64,"af":{"type":"luks1","stripes":4000,"hash":"sha256"},"area":{"type":"raw","offset":"32768","size":"258048","encryption":"aes-xts-plain64","key_size":64},"kdf":{"type":"argon2id","time":4,"memory":1048576,"cpus":4,"salt":"%s"},"priority":1}' "$1"
 }
-consume() {
-    env YANTRIK_UNLOCK_RUN="$T/run/yantrik-unlock" YANTRIK_UNLOCK_CONF="$T/etc/boot-unlock.conf" \
-        YANTRIK_UNLOCK_SHADOW="$T/etc/shadow" YANTRIK_UNLOCK_UPTIME="$T/uptime" \
-        YANTRIK_UNLOCK_ROOT_UID="$me" $SH "$HERE/consume"
+header() { # keyslots tokens
+    printf '{"keyslots":{%s},"tokens":{%s},"segments":{"0":{"type":"crypt","offset":"16777216","size":"dynamic","iv_tweak":"0","encryption":"aes-xts-plain64","sector_size":512}},"digests":{"0":{"type":"pbkdf2","keyslots":["0"],"segments":["0"],"hash":"sha256","iterations":1000,"salt":"ZGln","digest":"ZGln"}},"config":{"json_size":"12288","keyslots_size":"16744448"}}\n' "$1" "$2"
+}
+header "\"0\":$(slot c2FsdEE=)" "" > "$T/luks.json"
+header "\"0\":$(slot c2FsdEE=),\"1\":$(slot c2FsdEI=)" "" > "$T/luks-added.json"
+header "\"0\":$(slot c2FsdEM=)" "" > "$T/luks-changed.json"
+header "\"0\":$(slot c2FsdEE=)" '"0":{"type":"systemd-tpm2","keyslots":["0"]}' > "$T/luks-token.json"
+
+BOOT=6f1c2a4e-0b7d-4c55-9a3e-2f1d0c9b8a77
+me="$(id -u)"
+seed() { # marker-uptime now shadow-field [luks-device]
+    rm -rf "${T:?}/run" "${T:?}/etc" "${T:?}/log"
+    mkdir -p "$T/run/yantrik-unlock" "$T/etc" "$T/log"; chmod 700 "$T/run/yantrik-unlock"
+    (umask 077; printf 'uptime=%s\nboot_id=%s\n' "$1" "$BOOT" > "$T/run/yantrik-unlock/typed")
+    printf '%s 0.00\n' "$2" > "$T/uptime"
+    printf '%s\n' "$BOOT" > "$T/boot_id"
+    printf 'root:*:1::::::\npranab:%s:20000:0:99999:7:::\n' "$3" > "$T/etc/shadow"
+    printf 'root:x:0:0:root:/root:/bin/sh\npranab:x:1000:1000:Pranab:/home/pranab:/bin/bash\nmind:x:1001:1001::/home/mind:/bin/sh\n' > "$T/etc/passwd"
+    LUKS_DEV="${4:-$T/luks.json}"
+    env PATH="$T/bin:$PATH" STUB_LOG="$T/log" STUB_LUKS_DEV="$LUKS_DEV" STUB_REAL_CRYPTSETUP="$REAL_CRYPTSETUP" \
+        YANTRIK_UNLOCK_CONF="$T/etc/boot-unlock.conf" YANTRIK_UNLOCK_SHADOW="$T/etc/shadow" \
+        $SH "$HERE/enrol" pranab 2>/dev/null
+}
+PEER=3-4242-1000
+consume() { # [instance]
+    env PATH="$T/bin:$PATH" STUB_LOG="$T/log" STUB_LUKS_DEV="$LUKS_DEV" STUB_REAL_CRYPTSETUP="$REAL_CRYPTSETUP" \
+        YANTRIK_UNLOCK_RUN="$T/run/yantrik-unlock" YANTRIK_UNLOCK_CONF="$T/etc/boot-unlock.conf" \
+        YANTRIK_UNLOCK_SHADOW="$T/etc/shadow" YANTRIK_UNLOCK_PASSWD="$T/etc/passwd" \
+        YANTRIK_UNLOCK_UPTIME="$T/uptime" YANTRIK_UNLOCK_BOOT_ID="$T/boot_id" \
+        YANTRIK_UNLOCK_SLEEP="$T/bin/sleep-stub" YANTRIK_UNLOCK_ROOT_UID="$me" $SH "$HERE/consume" "${1-$PEER}"
 }
 HASH='$y$j9T$salt$hashhashhash'
 seed 20 45 "$HASH"
-check "enrol keeps a digest of the shadow entry, root-only, and no hash or password" '[ "$(stat -c %a "$T/etc/boot-unlock.conf")" = 600 ] && grep -qE "^shadow=[0-9a-f]{64}$" "$T/etc/boot-unlock.conf" && ! grep -qF "hashhash" "$T/etc/boot-unlock.conf"'
+check "enrol keeps digests of the shadow entry and the LUKS header, root-only, and no hash, salt or password" '[ "$(stat -c %a "$T/etc/boot-unlock.conf")" = 600 ] && grep -qE "^shadow=[0-9a-f]{64}$" "$T/etc/boot-unlock.conf" && grep -qE "^header=[0-9a-f]{64}$" "$T/etc/boot-unlock.conf" && ! grep -qF "hashhash" "$T/etc/boot-unlock.conf" && ! grep -qF "c2Fsd" "$T/etc/boot-unlock.conf"'
+check "enrol makes the account the only member of yantrik-boot-unlock" 'grep -qx "groupadd -f --system yantrik-boot-unlock" "$T/log/groups" && grep -qx "gpasswd -M pranab yantrik-boot-unlock" "$T/log/groups"'
 check "the first question after a typed unlock is answered typed <user>" '[ "$(consume)" = "typed pranab" ]'
 check "and it is used up: the second is no" '[ "$(consume)" = no ] && [ -z "$(ls "$T/run/yantrik-unlock")" ]'
 seed 20 45 "$HASH"; rm -f "$T/run/yantrik-unlock/typed"
 check "no marker: no" '[ "$(consume)" = no ]'
 seed 20 400 "$HASH"
-check "a marker older than five minutes: no, and used up" '[ "$(consume)" = no ] && [ ! -e "$T/run/yantrik-unlock/typed" ]'
+check "a marker past its five minutes: no, and used up" '[ "$(consume)" = no ] && [ ! -e "$T/run/yantrik-unlock/typed" ]'
+seed 20 45 "$HASH"; printf '0b0b0b0b-0000-4000-8000-000000000000\n' > "$T/boot_id"
+check "a marker from another boot (boot_id): no" '[ "$(consume)" = no ]'
+seed 20 45 "$HASH"; (umask 077; printf 'uptime=20\n' > "$T/run/yantrik-unlock/typed")
+check "a marker without a boot_id: no" '[ "$(consume)" = no ]'
 seed 20 45 "$HASH"; sed -i "s/^pranab:[^:]*:/pranab:\$y\$j9T\$other\$changed:/" "$T/etc/shadow"
 check "the password changed since enrolment: no" '[ "$(consume)" = no ]'
+seed 20 45 "$HASH"; LUKS_DEV="$T/luks-added.json"
+check "a keyslot added to the disk (luksAddKey): no" '[ "$(consume)" = no ]'
+seed 20 45 "$HASH"; LUKS_DEV="$T/luks-changed.json"
+check "the disk passphrase changed, the account password not (luksChangeKey): no" '[ "$(consume)" = no ]'
+seed 20 45 "$HASH"; LUKS_DEV="$T/luks-token.json"
+check "a token on the disk (TPM, FIDO2, a key kept elsewhere): no" '[ "$(consume)" = no ]'
+seed 20 45 "$HASH"; LUKS_DEV=""
+check "the root's LUKS header cannot be read: no" '[ "$(consume)" = no ]'
+seed 20 45 "$HASH" "$T/luks-added.json"
+check "enrol over a header with two keyslots records no header digest" '! grep -q "^header=" "$T/etc/boot-unlock.conf" && grep -q "^user=pranab$" "$T/etc/boot-unlock.conf"'
+check "and then the answer is no" '[ "$(consume)" = no ]'
+for many in luks-added luks-token; do
+    seed 20 45 "$HASH"; LUKS_DEV="$T/$many.json"
+    sed -i "s/^header=.*/header=$(jq -cS "{keyslots: .keyslots, tokens: .tokens}" "$LUKS_DEV" | sha256sum | cut -d" " -f1)/" "$T/etc/boot-unlock.conf"
+    check "a header that matches its enrolled digest but has $([ $many = luks-added ] && echo "two keyslots" || echo "a token"): no" '[ "$(consume)" = no ]'
+done
+seed 20 45 "$HASH"
+check "an asker that is another account: no, and the marker is left for the person" '[ "$(consume 3-4242-1001)" = no ] && [ -f "$T/run/yantrik-unlock/typed" ] && [ "$(consume)" = "typed pranab" ]'
+seed 20 45 "$HASH"
+check "an asker systemd could not name: no" '[ "$(consume 3-unknown)" = no ] && [ "$(consume "")" = no ] && [ -f "$T/run/yantrik-unlock/typed" ]'
 seed 20 45 "$HASH"; chmod 644 "$T/run/yantrik-unlock/typed"
 check "a marker anyone could read or write: no" '[ "$(consume)" = no ]'
 seed 20 45 "$HASH"; chmod 755 "$T/run/yantrik-unlock"
@@ -147,10 +217,46 @@ seed 20 45 "$HASH"; rm "$T/run/yantrik-unlock/typed"; ln -s "$T/uptime" "$T/run/
 check "a marker that is a link: no" '[ "$(consume)" = no ]'
 seed 20 45 "$HASH"; rm -f "$T/etc/boot-unlock.conf"
 check "nobody enrolled: no" '[ "$(consume)" = no ]'
-seed 20 45 "$HASH"; printf 'uptime=x\n' > "$T/run/yantrik-unlock/typed"
+seed 20 45 "$HASH"; sed -i "/^header=/d" "$T/etc/boot-unlock.conf"
+check "an enrolment without a header digest (made before this check): no" '[ "$(consume)" = no ]'
+seed 20 45 "$HASH"; printf 'uptime=x\nboot_id=%s\n' "$BOOT" > "$T/run/yantrik-unlock/typed"
 check "a marker that says nothing usable: no" '[ "$(consume)" = no ]'
-rm -rf "$T/etc"; mkdir -p "$T/etc"; printf 'pranab:!$y$locked:1::::::\n' > "$T/etc/shadow"
-check "enrol refuses an account with no password" '! env YANTRIK_UNLOCK_CONF="$T/etc/boot-unlock.conf" YANTRIK_UNLOCK_SHADOW="$T/etc/shadow" $SH "$HERE/enrol" pranab 2>/dev/null && [ ! -e "$T/etc/boot-unlock.conf" ]'
+rm -rf "${T:?}/etc"; mkdir -p "$T/etc"; printf 'pranab:!$y$locked:1::::::\n' > "$T/etc/shadow"
+check "enrol refuses an account with no password" '! env PATH="$T/bin:$PATH" STUB_LOG="$T/log" YANTRIK_UNLOCK_CONF="$T/etc/boot-unlock.conf" YANTRIK_UNLOCK_SHADOW="$T/etc/shadow" $SH "$HERE/enrol" pranab 2>/dev/null && [ ! -e "$T/etc/boot-unlock.conf" ]'
+
+# The same two scenarios against a real LUKS2 header, where cryptsetup is here to make one.
+real="$T/luks-real.img"
+if [ -n "$REAL_CRYPTSETUP" ] && command -v jq >/dev/null && truncate -s 20M "$real" \
+    && printf 'first' > "$T/k1" && printf 'second' > "$T/k2" \
+    && "$REAL_CRYPTSETUP" luksFormat --disable-locks --type luks2 --batch-mode --pbkdf pbkdf2 \
+        --pbkdf-force-iterations 1000 --key-file "$T/k1" "$real" >/dev/null 2>&1; then
+    seed 20 45 "$HASH" "$real"
+    check "a real LUKS2 header with its one keyslot: typed <user>" '[ "$(consume)" = "typed pranab" ]'
+    seed 20 45 "$HASH" "$real"
+    "$REAL_CRYPTSETUP" luksAddKey --disable-locks --batch-mode --pbkdf pbkdf2 --pbkdf-force-iterations 1000 \
+        --key-file "$T/k1" "$real" "$T/k2" >/dev/null 2>&1
+    check "a real header after luksAddKey: no" '[ "$(consume)" = no ]'
+    "$REAL_CRYPTSETUP" luksKillSlot --disable-locks --batch-mode --key-file "$T/k1" "$real" 1 >/dev/null 2>&1
+    seed 20 45 "$HASH" "$real"
+    "$REAL_CRYPTSETUP" luksChangeKey --disable-locks --batch-mode --pbkdf pbkdf2 --pbkdf-force-iterations 1000 \
+        --key-file "$T/k1" "$real" "$T/k2" >/dev/null 2>&1
+    check "a real header after luksChangeKey, the account password unchanged: no" '[ "$(consume)" = no ] && [ "$("$REAL_CRYPTSETUP" luksDump --disable-locks --dump-json-metadata "$real" | jq ".keyslots | length")" = 1 ]'
+else
+    echo "skip a real LUKS2 header (no cryptsetup or jq here); the JSON headers above cover the same cases"
+fi
+
+# ── expiry ──
+expire() { rm -f "$T/log/slept"; consume expire; }
+seed 20 45 "$HASH"; expire
+check "an unused marker is deleted once what is left of its window has passed" '[ "$(cat "$T/log/slept")" = 275 ] && [ ! -e "$T/run/yantrik-unlock/typed" ]'
+seed 20 400 "$HASH"; expire
+check "a marker already past its window is deleted at once" '[ ! -e "$T/log/slept" ] && [ ! -e "$T/run/yantrik-unlock/typed" ]'
+seed 20 45 "$HASH"; rm -f "$T/run/yantrik-unlock/typed"; expire
+check "no marker: expiry does nothing" '[ ! -e "$T/log/slept" ]'
+check "expiry and the answer share one window, and expiry starts only with a marker" '[ "$(grep -c "^WINDOW=300$" "$HERE/consume")" = 1 ] && grep -qx "ExecStart=/usr/lib/yantrik/boot-unlock/consume expire" "$HERE/yantrik-boot-unlock-expire.service" && grep -qx "ConditionPathExists=/run/yantrik-unlock/typed" "$HERE/yantrik-boot-unlock-expire.service"'
+
+# ── who may ask ──
+check "only group yantrik-boot-unlock may connect, and consume is told the asker's uid" 'grep -qx "SocketGroup=yantrik-boot-unlock" "$HERE/yantrik-boot-unlock.socket" && grep -qx "SocketMode=0660" "$HERE/yantrik-boot-unlock.socket" && grep -qx "ExecStart=/usr/lib/yantrik/boot-unlock/consume %i" "$HERE/yantrik-boot-unlock@.service"'
 
 # ── the text installer never encrypts: it boots as the desktop installer's unencrypted line ──
 INSTALL_SH="$HERE/../yantrik-install.sh"
@@ -161,7 +267,7 @@ check "the text installer writes quiet loglevel=3 plymouth.enable=0, as cmdline_
 root="$T/rootfs"
 $SH "$HERE/../stage-boot-unlock.sh" "$root" >/dev/null
 check "the stage puts every piece where crypttab, initramfs-tools, systemd and plymouth look" \
-    '[ -x "$root/usr/lib/yantrik/boot-unlock/askpass" ] && [ -x "$root/etc/initramfs-tools/hooks/yantrik-unlock" ] && [ -x "$root/etc/initramfs-tools/scripts/local-bottom/yantrik-unlock" ] && [ "$(stat -c %a "$root/usr/lib/yantrik/boot-unlock/consume")" = 700 ] && [ -L "$root/etc/systemd/system/sockets.target.wants/yantrik-boot-unlock.socket" ] && [ -f "$root/usr/share/plymouth/themes/yantrik/yantrik.script" ] && cmp -s "$HERE/theme/field.png" "$root/usr/share/plymouth/themes/yantrik/field.png"'
+    '[ -x "$root/usr/lib/yantrik/boot-unlock/askpass" ] && [ -x "$root/etc/initramfs-tools/hooks/yantrik-unlock" ] && [ -x "$root/etc/initramfs-tools/scripts/local-bottom/yantrik-unlock" ] && [ "$(stat -c %a "$root/usr/lib/yantrik/boot-unlock/consume")" = 700 ] && [ -L "$root/etc/systemd/system/sockets.target.wants/yantrik-boot-unlock.socket" ] && [ -f "$root/etc/systemd/system/yantrik-boot-unlock-expire.service" ] && [ -L "$root/etc/systemd/system/multi-user.target.wants/yantrik-boot-unlock-expire.service" ] && [ -f "$root/usr/share/plymouth/themes/yantrik/yantrik.script" ] && cmp -s "$HERE/theme/field.png" "$root/usr/share/plymouth/themes/yantrik/field.png"'
 check "the theme has the lines the hook fills in" 'grep -qx "name_text = \"\";" "$HERE/theme/yantrik.script" && grep -qx "layout_text = \"\";" "$HERE/theme/yantrik.script"'
 
 [ "$FAILS" = 0 ] && echo "boot-unlock selftest: all passed" || { echo "boot-unlock selftest: $FAILS failed"; exit 1; }

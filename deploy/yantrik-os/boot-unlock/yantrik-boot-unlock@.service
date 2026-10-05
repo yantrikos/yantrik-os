@@ -2,7 +2,8 @@
 Description=Yantrik OS: answer whether a typed password unlocked the disk in this boot
 
 [Service]
-ExecStart=/usr/lib/yantrik/boot-unlock/consume
+# %i is systemd's N-PID-UID for an AF_UNIX connection, from the asker's SO_PEERCRED.
+ExecStart=/usr/lib/yantrik/boot-unlock/consume %i
 StandardInput=socket
 StandardOutput=socket
 StandardError=journal

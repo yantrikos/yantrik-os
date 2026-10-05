@@ -6,8 +6,9 @@
 # Runs once the root is open and mounted, before switch_root. When the keyscript asked a person
 # (`asked`), the root is open, and nothing but that keyscript could have opened it, it leaves
 # /run/yantrik-unlock/typed: root's, 0600, in a 0700 directory, holding only the uptime it was
-# written at. /run is carried across switch_root, and the session's root helper (consume) takes
-# it once. Anything else, and there is no marker: the lock screen asks, as it always has.
+# written at and this boot's boot_id. /run is carried across switch_root, and the session's root
+# helper (consume) takes it once. Anything else, and there is no marker: the lock screen asks, as
+# it always has.
 #
 # Never a marker when the root could have been opened without the person at the keyboard: a key
 # file or another keyscript in crypttab, clevis (TPM, network), or a remote unlock over dropbear.
@@ -16,6 +17,7 @@ prereqs() { echo "$PREREQ"; }
 case "${1:-}" in prereqs) prereqs; exit 0 ;; esac
 
 RUN_DIR="${YANTRIK_UNLOCK_RUN:-/run/yantrik-unlock}"
+BOOT_ID="${YANTRIK_UNLOCK_BOOT_ID:-/proc/sys/kernel/random/boot_id}"
 ROOT="${YANTRIK_UNLOCK_INITRD:-}"
 NAME=yantrik-root
 KEYSCRIPT=/usr/lib/yantrik/boot-unlock/askpass
@@ -53,10 +55,12 @@ root_open() {
 if root_open && person_only_crypttab && ! other_unlockers; then
     up="$(awk '{ sub(/\..*/, "", $1); print $1; exit }' /proc/uptime 2>/dev/null)"
     case "$up" in ''|*[!0-9]*) exit 0 ;; esac
+    boot="$(cat "$BOOT_ID" 2>/dev/null)"
+    [ -n "$boot" ] || exit 0
     (
         umask 077
         mkdir -p "$RUN_DIR" && chmod 0700 "$RUN_DIR" \
-            && printf 'uptime=%s\n' "$up" > "$RUN_DIR/typed.new" \
+            && printf 'uptime=%s\nboot_id=%s\n' "$up" "$boot" > "$RUN_DIR/typed.new" \
             && mv -f "$RUN_DIR/typed.new" "$RUN_DIR/typed"
     ) 2>/dev/null
 fi

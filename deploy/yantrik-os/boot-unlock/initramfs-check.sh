@@ -18,12 +18,12 @@
 # runner or a scratch container, as root, with the packages the image installs:
 #
 #   apt-get install initramfs-tools cryptsetup-initramfs plymouth plymouth-label console-setup \
-#       busybox fonts-dejavu-core kbd xkb-data
+#       busybox fonts-dejavu-core kbd xkb-data jq
 #   sh deploy/yantrik-os/boot-unlock/initramfs-check.sh --scratch-system
 set -u
 [ "${1:-}" = --scratch-system ] || { echo "usage: $0 --scratch-system  (writes to this system; see the header)" >&2; exit 2; }
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 2; }
-for tool in mkinitramfs lsinitramfs unmkinitramfs plymouth cryptsetup busybox setupcon; do
+for tool in mkinitramfs lsinitramfs unmkinitramfs plymouth cryptsetup busybox setupcon jq; do
     command -v "$tool" >/dev/null || { echo "missing $tool" >&2; exit 2; }
 done
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -52,7 +52,6 @@ printf 'XKBMODEL="pc105"\nXKBLAYOUT="de"\nXKBVARIANT=""\nXKBOPTIONS=""\nBACKSPAC
 setupcon --save-only >/dev/null 2>&1 || true
 id ykcheck >/dev/null 2>&1 || useradd -M -c "Asha Check" ykcheck
 usermod -p '$6$salt$abcdefghijklmnopqrstuv' ykcheck
-/usr/lib/yantrik/boot-unlock/enrol ykcheck || bad "enrol"
 
 # A kernel with no modules is enough for the hooks to run.
 mkdir -p "/lib/modules/$KVER"
@@ -69,6 +68,13 @@ LOOP="$(losetup -f --show "$T/luks.img")" || { echo "no loop device" >&2; exit 2
 printf 'throwaway' | cryptsetup luksFormat --type luks2 --batch-mode --pbkdf pbkdf2 --pbkdf-force-iterations 1000 \
     --key-file=- "$LOOP" || { echo "luksFormat failed" >&2; exit 2; }
 UUID="$(cryptsetup luksUUID "$LOOP")"
+# Enrolled against it, as the installer does with the root it just made: the account, and a
+# digest of the header's one keyslot.
+/usr/lib/yantrik/boot-unlock/enrol ykcheck "$LOOP" || bad "enrol"
+grep -qE "^header=[0-9a-f]{64}$" /etc/yantrik/boot-unlock.conf && ok "enrol records the LUKS header's digest" \
+    || bad "enrol records the LUKS header's digest"
+getent group yantrik-boot-unlock | grep -qE ":ykcheck$" && ok "enrol makes the account the one member of yantrik-boot-unlock" \
+    || bad "enrol makes the account the one member of yantrik-boot-unlock"
 udevadm settle 2>/dev/null || true
 [ -e "/dev/disk/by-uuid/$UUID" ] || { mkdir -p /dev/disk/by-uuid; ln -sfn "$LOOP" "/dev/disk/by-uuid/$UUID"; }
 
@@ -112,7 +118,7 @@ grep -q "keyscript=$KS" "$ROOT/cryptroot/crypttab" 2>/dev/null \
 for s in "$ROOT$KS" "$ROOT/scripts/local-bottom/yantrik-unlock"; do
     busybox sh -n "$s" && ok "$(basename "$s") parses under busybox" || bad "$(basename "$s") parses under busybox"
 done
-for applet in awk grep sed mv mkdir chmod; do
+for applet in awk grep sed mv mkdir chmod cat; do
     [ -e "$ROOT/bin/$applet" ] || [ -e "$ROOT/usr/bin/$applet" ] || [ -e "$ROOT/sbin/$applet" ] \
         && ok "$applet for the marker" || bad "$applet for the marker"
 done

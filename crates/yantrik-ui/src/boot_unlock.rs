@@ -7,9 +7,11 @@
 //! helper uses the marker up and answers `typed <user>` or `no` (boot-unlock/consume).
 //!
 //! The answer opens the desktop only for the account it names, the one whose password was
-//! enrolled at install and is still unchanged. Every other answer, and every failure to get one
-//! (no socket, a timeout, nonsense), is `no`, and the lock screen asks as it always has. The
-//! password itself is never here: the helper knows only that it was typed.
+//! enrolled at install and is still unchanged, while the disk's LUKS header still has only the
+//! one keyslot enrolled with it (so no other secret opens the disk). Only that account may ask
+//! (group yantrik-boot-unlock, and the helper checks the asker's uid). Every other answer, and
+//! every failure to get one (no socket, a timeout, nonsense), is `no`, and the lock screen asks as
+//! it always has. The password itself is never here: the helper knows only that it was typed.
 
 use std::io::Read;
 use std::os::unix::net::UnixStream;

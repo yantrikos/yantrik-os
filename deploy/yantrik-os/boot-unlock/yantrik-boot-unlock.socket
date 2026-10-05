@@ -1,13 +1,14 @@
 # Asked once by the shell at the start of a session: was this boot's disk unlocked by its person
-# typing the password? See /usr/lib/yantrik/boot-unlock/consume. Only the desktop's account
-# (group sudo) may ask, and asking can only ever use the answer up.
+# typing the password? See /usr/lib/yantrik/boot-unlock/consume. Only the enrolled account (the
+# one member of group yantrik-boot-unlock, made by enrol) may connect, consume answers only an
+# asker whose uid is that account's, and asking can only ever use the answer up.
 [Unit]
 Description=Yantrik OS: was the disk unlocked by a typed password in this boot
 
 [Socket]
 ListenStream=/run/yantrik-boot-unlock.sock
 SocketUser=root
-SocketGroup=sudo
+SocketGroup=yantrik-boot-unlock
 SocketMode=0660
 Accept=yes
 MaxConnections=4
