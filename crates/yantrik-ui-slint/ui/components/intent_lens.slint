@@ -219,6 +219,11 @@ export component ApprovalCard inherits Rectangle {
     // Not called `max-height`: that name belongs to the Rectangle this inherits from, where it
     // is a layout constraint, and Slint refuses to let a component shadow a built-in property.
     in property <length> height-limit: 10000px;
+    // Held by the host: Allow and the session row grant nothing while it is true, as while the
+    // card has yet to be read to its end. The pane's pinned card holds them for a moment after
+    // the card moves or changes under a resting pointer (agents_pinned.slint, `PinnedApproval`).
+    // Decline is never held. Every other host leaves it false.
+    in property <bool> held: false;
 
     // Details and source: closed by default for a sensitive request, open for a dangerous one
     // (sign-off item 4). A press is remembered for the request it was made on, so a card that
@@ -357,7 +362,7 @@ export component ApprovalCard inherits Rectangle {
         // read. And only a click on this card's own Allow reaches `allow()`, the one path to
         // `approval-allow` / `on_approval_allow` in the shell: nothing else on the card, and
         // nothing a caller sends, can press it.
-        property <bool> allow-ready: !self.overflowing || root.read-id == root.data.id;
+        property <bool> allow-ready: !root.held && (!self.overflowing || root.read-id == root.data.id);
         // A new request in this card starts at its top, however far the last one was scrolled.
         property <string> card-id: root.data.id;
         changed card-id => { above-flick.viewport-y = 0px; }
@@ -897,7 +902,7 @@ export component ApprovalCard inherits Rectangle {
                     variant: root.data.destructive ? 3 : 0;
                     pointer-only: true;
                     disabled: !card.allow-ready;
-                    tooltip: card.allow-ready ? "" : "Scroll to read the whole request first";
+                    tooltip: card.allow-ready ? "" : root.held ? "" : "Scroll to read the whole request first";
                     horizontal-stretch: 1;
                     clicked => { root.allow(); }
                 }

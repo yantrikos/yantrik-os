@@ -22,6 +22,7 @@ import { ApprovalRequest, ApprovalCard } from "components/intent_lens.slint";
 import { QuestionCard } from "components/question_card.slint";
 import { WorkCardData } from "components/work_card.slint";
 import { JumpToPresent } from "jump_to_present.slint";
+import { PinnedApproval } from "agents_pinned.slint";
 import { YContextMenu } from "components/y_context_menu.slint";
 import {
     WorkNavData, DeskCardData, DecisionData, ResultData, ChangeRowData, ChildRunData, RunFactData, MindMark,
@@ -142,6 +143,11 @@ export global AgentsState {
     in-out property <bool> has-agent: false;
     in-out property <AgentHeaderData> header;
     in-out property <[AgentItemData]> items: [];
+    // The one approval card the pane answers: the oldest request waiting for the agent shown,
+    // drawn pinned above the reply box (agents_pinned.slint), and how many more wait behind it.
+    // An empty id while nothing waits. A waiting card in `items` is only a line.
+    in-out property <ApprovalRequest> pinned;
+    in-out property <int> pinned-more: 0;
     in-out property <AgentDetailsData> details;
     in-out property <bool> popped: false;
     // New agent.
@@ -217,8 +223,8 @@ export global AgentsState {
     callback start-role(string, string);
     callback send(string, string);
     callback dismiss-notice();
-    // An approval card in a pane. Each names the one request id; the shell answers it through the
-    // same Allow and Deny the Lens's card calls, so answering here answers it there.
+    // The pane's pinned approval card. Each names the one request id; the shell answers it through
+    // the same Allow and Deny the Lens's card calls, so answering here answers it there.
     callback approval-allow(string);
     callback approval-allow-session(string);
     callback approval-deny(string);
@@ -281,15 +287,6 @@ component TerminalCells inherits Rectangle {
 
 component ItemView inherits Rectangle {
     in property <AgentItemData> item;
-    // How tall an approval card here may be: the pane's own scroller's visible height, less what
-    // sits around the card inside it. Every host passes it, so the card in a pane takes the same
-    // three cases as in the Lens and the corner (intent_lens.slint, `height-limit`): the whole
-    // card fits in view at once, and when its pinned lines do not, Allow waits until the card's
-    // own scroll has been to its end. Without it the card was as tall as it liked, the gate never
-    // applied, and the pane's scroll could put the arguments out of view with Allow still on
-    // screen. A host that forgot it would leave 0px: a card that scrolls in no room and so never
-    // allows, which fails closed (Decline stays live).
-    in property <length> card-limit;
     VerticalLayout {
         padding-top: 2px;
         padding-bottom: 2px;
@@ -455,16 +452,22 @@ component ItemView inherits Rectangle {
             wrap: word-wrap;
         }
 
-        // An approval: the shell's own card (the Lens's component), with Allow and Deny bound to
-        // the one request id. Waiting, it is the whole card; answered, the line it leaves. Only the
-        // shell makes this item — never a harness event or a line of the agent's text — so nothing
-        // an agent says can draw these buttons.
-        if root.item.kind == "approval" : ApprovalCard {
+        // An approval, answered: the line the shell's own card (the Lens's component) leaves.
+        // Only the shell makes this item — never a harness event or a line of the agent's text.
+        if root.item.kind == "approval" && root.item.approval.decision != "" : ApprovalCard {
             data: root.item.approval;
-            height-limit: root.card-limit;
-            allow => { AgentsState.approval-allow(root.item.approval.id); }
-            allow-session => { AgentsState.approval-allow-session(root.item.approval.id); }
-            deny => { AgentsState.approval-deny(root.item.approval.id); }
+        }
+        // An approval still waiting: one line where the card was. The card itself is pinned above
+        // the reply box (agents_pinned.slint), where the transcript's scroll cannot put its head
+        // out of view with Allow still on screen — the oldest one, and the others after it. No
+        // button is drawn in the transcript: nothing here can grant.
+        if root.item.kind == "approval" && root.item.approval.decision == "" : Text {
+            text: "Waiting on you: " + root.item.text
+                + (root.item.approval.id == AgentsState.pinned.id ? " — answer below"
+                    : AgentsState.pinned.id != "" ? " — next, after the one below" : "");
+            color: Theme.amber;
+            font-size: Theme.fs-caption;
+            wrap: word-wrap;
         }
 
         // A question the agent itself asked (#25): the shared card, drawn as the agent speaking.
@@ -551,6 +554,8 @@ export component AgentSession inherits Rectangle {
     // Another agent opened starts at its newest line.
     property <string> shown: AgentsState.header.id;
     changed shown => { session-follow.jump(); }
+    // The least of the transcript left in view above a tall pinned card: a couple of lines.
+    property <length> transcript-floor: 48px;
 
     VerticalLayout {
         padding: Theme.sp-3;
@@ -596,11 +601,15 @@ export component AgentSession inherits Rectangle {
             background: Theme.separator;
         }
 
-        Rectangle {
+        transcript := Rectangle {
             vertical-stretch: 1;
+            // The scroller and the pinned card under it are placed by hand (`y`), so neither is
+            // asked for a size by the layout this sits in: the card's limit is read from this
+            // box's height, and a card the layout measured would loop back into it.
             flick := Flickable {
+                y: 0px;
                 width: 100%;
-                height: 100%;
+                height: parent.height - pinned-box.height;
                 viewport-width: self.width;
                 viewport-height: items-col.preferred-height;
                 // A Rectangle between the Flickable and the layout, on purpose: a Flickable whose
@@ -614,18 +623,33 @@ export component AgentSession inherits Rectangle {
                         padding-right: 6px;
                         for item in AgentsState.items : ItemView {
                             item: item;
-                            // The scroller's height, less the item's own 2px above and below.
-                            card-limit: flick.height - 4px;
                         }
                     }
                 }
             }
             session-follow := JumpToPresent {
+                y: 0px;
                 width: 100%;
-                height: 100%;
+                height: flick.height;
                 viewport-y <=> flick.viewport-y;
                 viewport-height: flick.viewport-height;
                 visible-height: flick.height;
+            }
+            // The waiting card, outside the scroller and above the reply box: the room the
+            // transcript has, less a floor of it left in view and the gap over the card.
+            pinned-box := VerticalLayout {
+                y: parent.height - self.height;
+                width: parent.width;
+                height: AgentsState.pinned.id != "" ? self.preferred-height : 0px;
+                padding-top: AgentsState.pinned.id != "" ? Theme.sp-2 : 0px;
+                if AgentsState.pinned.id != "" : PinnedApproval {
+                    data: AgentsState.pinned;
+                    more: AgentsState.pinned-more;
+                    limit: transcript.height - root.transcript-floor - Theme.sp-2;
+                    allow(id) => { AgentsState.approval-allow(id); }
+                    allow-session(id) => { AgentsState.approval-allow-session(id); }
+                    deny(id) => { AgentsState.approval-deny(id); }
+                }
             }
         }
 
@@ -867,12 +891,15 @@ component NoticeBar inherits YNoticeBar {
 // One opened run: who and what, the changes recorded, what happened, and the run's details.
 //
 // The activity is the session's own items (ItemView), with consecutive calls folded into one line
-// by the shell (`group_calls`). An approval in it is the shell's own card, answered through the
-// same Allow and Deny the Lens uses.
+// by the shell (`group_calls`). A waiting approval in it is a line; its card is pinned under the
+// run (PinnedApproval), answered through the same Allow and Deny the Lens uses.
 component TaskDetail inherits Rectangle {
+    // The least of the run left in view above a tall pinned card.
+    property <length> activity-floor: 120px;
+
     flick := Flickable {
         width: parent.width;
-        height: parent.height;
+        height: parent.height - pinned-box.height;
         viewport-height: col.preferred-height;
         // A Rectangle between the Flickable and the layout, as every scroller here has: a layout
         // directly in a Flickable takes its own max-height as the Flickable's.
@@ -1028,9 +1055,6 @@ component TaskDetail inherits Rectangle {
                         spacing: 6px;
                         for item in AgentsState.items : ItemView {
                             item: item;
-                            // The scroller's height, less the column's 24px padding above and
-                            // below and the item's own 2px.
-                            card-limit: flick.height - 2 * 24px - 4px;
                         }
                     }
                     // A word to the mind, to the agent this run belongs to.
@@ -1062,6 +1086,26 @@ component TaskDetail inherits Rectangle {
 
                 RunDetails { facts: AgentsState.run-facts; }
             }
+        }
+    }
+
+    // The waiting card, under the run and outside its scroll, as in a session (AgentSession):
+    // the room left once the floor of the run and this box's own padding are counted.
+    pinned-box := VerticalLayout {
+        y: root.height - self.height;
+        width: root.width;
+        height: self.preferred-height;
+        padding-left: 24px;
+        padding-right: 24px;
+        padding-top: AgentsState.pinned.id != "" ? 8px : 0px;
+        padding-bottom: AgentsState.pinned.id != "" ? 16px : 0px;
+        if AgentsState.pinned.id != "" : PinnedApproval {
+            data: AgentsState.pinned;
+            more: AgentsState.pinned-more;
+            limit: root.height - root.activity-floor - 8px - 16px;
+            allow(id) => { AgentsState.approval-allow(id); }
+            allow-session(id) => { AgentsState.approval-allow-session(id); }
+            deny(id) => { AgentsState.approval-deny(id); }
         }
     }
 }

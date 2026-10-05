@@ -895,6 +895,10 @@ fn draw(g: &AgentsState, surface: &mut Surface, s: &Store, agent: Option<&AgentI
             g.set_header(AgentHeaderData::default());
             g.set_details(AgentDetailsData::default());
         }
+        if g.get_pinned().id != "" {
+            g.set_pinned(crate::ApprovalRequest::default());
+            g.set_pinned_more(0);
+        }
         if surface.agent.take().is_some() || surface.items.row_count() > 0 {
             publish_items(g, surface, Vec::new(), true);
         }
@@ -916,6 +920,16 @@ fn draw(g: &AgentsState, surface: &mut Surface, s: &Store, agent: Option<&AgentI
     let details = details_of(a, s.details(&a.meta.id).unwrap_or_default());
     if g.get_details() != details {
         g.set_details(details);
+    }
+    // The one card the pane answers, pinned above its reply box; every time, like the header,
+    // because it carries the countdown (wire/agents_pinned.rs).
+    let (first, more) = super::agents_pinned::pinned_for(&a.meta.id.0, &seen.approvals);
+    let pinned = super::agents_pinned::pinned_row(first, &a.meta.on_behalf());
+    if g.get_pinned() != pinned {
+        g.set_pinned(pinned);
+    }
+    if g.get_pinned_more() != more as i32 {
+        g.set_pinned_more(more as i32);
     }
 
     if surface.grouped {
@@ -2239,16 +2253,21 @@ mod tests {
         assert!(s.agent(&pi).unwrap().pending_approvals.is_empty());
     }
 
-    /// The pane's buttons go where the Lens's go, and nowhere else can a grant be made: the screen
-    /// binds each button to its card's request id, and the shell only presses the one callback.
+    /// The pane's buttons go where the Lens's go, and nowhere else can a grant be made: the pinned
+    /// card binds each button to its own request id, every host forwards it to the same callback,
+    /// and the shell only presses the one callback.
     #[test]
     fn a_panes_allow_and_deny_are_the_lenss_own_callbacks_on_the_one_request_id() {
         let slint = read("../yantrik-ui-slint/ui/agents.slint");
+        let pinned = read("../yantrik-ui-slint/ui/agents_pinned.slint");
+        let hosts = slint.matches(": PinnedApproval {").count();
+        assert!(hosts >= 2, "the session (and so a popped-out window) and the run's detail both pin the card");
         for (button, callback) in [("allow", "approval-allow"), ("allow-session", "approval-allow-session"), ("deny", "approval-deny")] {
-            let bound = format!("{button} => {{ AgentsState.{callback}(root.item.approval.id); }}");
-            assert!(slint.contains(&bound), "agents.slint binds `{button}` to the card's own request id: {bound}");
+            let bound = format!("{button}(id) => {{ AgentsState.{callback}(id); }}");
+            assert_eq!(slint.matches(&bound).count(), hosts, "every host forwards `{button}` to the shell: {bound}");
+            assert!(pinned.contains(&format!("root.{button}(root.data.id);")), "the pinned card names its own request id for `{button}`");
         }
-        assert!(slint.contains("if root.item.kind == \"approval\" : ApprovalCard {"), "the pane draws the shell's own card");
+        assert!(pinned.contains("ApprovalCard {\n            data: root.data;"), "the pane draws the shell's own card");
         let this = read("src/wire/agents.rs");
         let this = this.split("#[cfg(test)]").next().unwrap();
         for invoked in ["invoke_approval_allow(id)", "invoke_approval_allow_session(id)", "invoke_approval_deny(id)"] {
@@ -2257,17 +2276,29 @@ mod tests {
         assert!(!this.contains("approvals::grant") && !this.contains("approvals::deny("), "and grants nothing itself");
     }
 
-    /// A pane's card is limited by the pane's own visible height, so the read gate holds there as
-    /// in the Lens: every host of an item passes the limit, and the card reads it.
+    /// A waiting card is never in the transcript's scroll, where what was appended under it could
+    /// put its head out of view with Allow live: the transcript draws an answered card's line and
+    /// a waiting one's "Waiting on you", with no callback, and the card is pinned outside the
+    /// scroller with a limit, the read gate and the re-arm hold.
     #[test]
-    fn a_panes_card_is_limited_by_the_panes_visible_height() {
+    fn a_panes_waiting_card_is_pinned_outside_its_scroll() {
         let slint = read("../yantrik-ui-slint/ui/agents.slint");
-        let card = &slint[slint.find("if root.item.kind == \"approval\" : ApprovalCard {").unwrap()..];
+        let item = &slint[slint.find("component ItemView").unwrap()..slint.find("export component AgentSession").unwrap()];
+        let card = &item[item.find(": ApprovalCard {").unwrap()..];
         let card = &card[..card.find('}').unwrap()];
-        assert!(card.contains("height-limit: root.card-limit;"), "the pane's card takes the pane's limit");
-        let hosts = slint.matches(": ItemView {").count();
-        assert!(hosts >= 2, "the session and the run's detail both host items");
-        assert_eq!(slint.matches("card-limit: flick.height").count(), hosts, "every host passes its scroller's height");
+        assert!(item.contains("if root.item.kind == \"approval\" && root.item.approval.decision != \"\" : ApprovalCard {"));
+        assert!(!card.contains("=>"), "the transcript's card is the answered line, and binds no button: {card}");
+        assert!(item.contains("\"Waiting on you: \""), "a waiting card leaves one line in the transcript");
+        assert_eq!(item.matches(": ApprovalCard").count(), 1);
+        for host in slint.split(": PinnedApproval {").skip(1) {
+            assert!(host[..host.find('}').unwrap()].contains("limit: "), "every host gives the pinned card its room");
+        }
+        let pinned = read("../yantrik-ui-slint/ui/agents_pinned.slint");
+        assert!(pinned.contains("height-limit: root.limit"), "the card takes the host's room as its limit");
+        assert!(pinned.contains("held: root.held;"), "and the re-arm hold");
+        assert!(pinned.contains("property <duration> moment: 400ms;"));
+        let lens = read("../yantrik-ui-slint/ui/components/intent_lens.slint");
+        assert!(lens.contains("allow-ready: !root.held && (!self.overflowing || root.read-id == root.data.id);"));
     }
 
     /// The Lens's "open in Agents" is wired from its header to the shell, through every layer.
