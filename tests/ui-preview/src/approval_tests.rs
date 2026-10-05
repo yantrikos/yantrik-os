@@ -480,6 +480,14 @@ pub fn run_pointer_only(w: &MinimalSoftwareWindow, output: &str) -> Result<(), B
     std::thread::sleep(std::time::Duration::from_millis(300));
     save(&settle(w, width, height), output, width, height)?;
 
+    // The first key after the card appears, before any Tab: wherever the initial focus is, it is
+    // not on the affirmative, so Enter or Space straight away presses nothing.
+    for k in ["\n", "\r", " ", "\n"] {
+        key(w, k.into());
+    }
+    render(w, width, height);
+    assert_eq!((ui.get_allowed(), ui.get_denied()), (0, 0), "Enter as the first key on a new card answers nothing");
+
     // Shift+Tab and Tab both ways round the whole focus chain, with every confirming key at each
     // stop: if either button, or the row under them, could take focus it would be pressed here.
     let keys_round = || {

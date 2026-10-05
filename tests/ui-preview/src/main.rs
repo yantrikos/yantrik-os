@@ -25,6 +25,8 @@ mod lens_tests;
 mod chat_tests;
 mod approval_tests;
 mod approval_fit_tests;
+mod approval_expiry_tests;
+mod approval_precedence_tests;
 mod dock_tests;
 mod taskbar_menu_tests;
 mod alt_tab_tests;
@@ -126,6 +128,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-approval-card") { return approval_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-approval-pointer-only") { return approval_tests::run_pointer_only(&window, output); }
     if args.iter().any(|a| a == "verify-approval-fit") { return approval_fit_tests::run(&window, output, width, height); }
+    if args.iter().any(|a| a == "verify-approval-expired") { return approval_expiry_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-approval-precedence") { return approval_precedence_tests::run(&window, output); }
     if args.iter().any(|a| a == "lens-answer") { return lens_tests::run_lens(&window, output); }
     if args.iter().any(|a| a == "verify-monitor") { return monitor_tests::run(&window); }
     if args.iter().any(|a| a == "verify-weather") { return weather_tests::run(&window); }
