@@ -58,6 +58,9 @@ export component QuickSettings inherits YPopover {
     // "" when there is no power-profiles-daemon.
     in property <string> power-profile: "";
     in property <bool> power-performance-offered: false;
+    // The profile asked for and not yet confirmed by the daemon: the tile says so and takes no
+    // press until the daemon answers (toggle_truth.rs).
+    in property <string> power-profile-pending: "";
     in property <bool> bluetooth-present: false;
     in property <bool> bluetooth-on: false;
     callback toggle-dnd();
@@ -245,8 +248,9 @@ export component QuickSettings inherits YPopover {
             x: parent.col-x(root.i-power); y: parent.row-y(root.i-power); width: parent.col-w;
             icon: Icons.bolt;
             title: "Power mode";
-            subtitle: root.profile-words;
+            subtitle: root.power-profile-pending != "" ? "Switching…" : root.profile-words;
             on: root.power-profile != "balanced";
+            enabled: root.power-profile-pending == "";
             toggled => { root.power-profile-chosen(root.next-profile); }
             focus-arrived(s) => { root.cursor = s; }
         }

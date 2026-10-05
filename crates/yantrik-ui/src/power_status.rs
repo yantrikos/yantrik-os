@@ -127,21 +127,49 @@ pub(crate) fn apply_profile_later(weak: slint::Weak<App>, now: Option<yantrik_os
     });
 }
 
-/// The popover's choice. The daemon is asked off the UI thread (a bus call is milliseconds, but
-/// not none) and the shell then shows what the daemon says is in effect, not what was asked.
+/// What to show once the daemon has answered a choice, and why it is not what was asked when it
+/// is not. A refusal, a two-second timeout, or a read-back naming another profile all show the
+/// profile the daemon now reads as in effect, never the one asked for (toggle_truth).
+pub(crate) fn settled(
+    asked: &str,
+    answer: Result<yantrik_os::power_profile::PowerProfiles, String>,
+    read: impl FnOnce() -> Option<yantrik_os::power_profile::PowerProfiles>,
+) -> crate::toggle_truth::Settled<Option<yantrik_os::power_profile::PowerProfiles>> {
+    match answer {
+        Ok(now) if now.active == asked => crate::toggle_truth::Settled { shown: Some(now), refused: None },
+        Ok(now) => {
+            let why = format!("the daemon reads `{}` after being asked for `{asked}`", now.active);
+            crate::toggle_truth::Settled { shown: Some(now), refused: Some(why) }
+        }
+        Err(why) => crate::toggle_truth::Settled { shown: read(), refused: Some(why) },
+    }
+}
+
+/// The popover's and the tile's choice. The daemon is asked off the UI thread (a bus call is
+/// milliseconds, but not none, and two seconds when it does not answer); until it answers the
+/// choice is shown pending and takes no press, and then the shell shows what the daemon says is
+/// in effect, not what was asked.
 pub(crate) fn wire(ui: &App) {
     let weak = ui.as_weak();
     ui.on_set_power_profile(move |profile| {
+        if let Some(ui) = weak.upgrade() {
+            if ui.get_power_profile_pending() != "" {
+                return;
+            }
+            ui.set_power_profile_pending(profile.clone());
+        }
         let weak = weak.clone();
         let profile = profile.to_string();
         std::thread::spawn(move || {
-            let answer = yantrik_os::power_profile::set(&profile);
-            if let Err(why) = &answer {
-                tracing::warn!(%profile, %why, "Power profile not changed");
-            }
-            // On failure, show what is really in effect, so a refused choice does not stay lit.
-            let now = answer.ok().or_else(yantrik_os::power_profile::read);
-            apply_profile_later(weak, now);
+            let out = settled(&profile, yantrik_os::power_profile::set(&profile), yantrik_os::power_profile::read);
+            let _ = weak.upgrade_in_event_loop(move |ui| {
+                ui.set_power_profile_pending("".into());
+                let shown = out.shown.map(|p| PowerProfileInfo { active: p.active, offered: p.offered });
+                apply_profile(&ui, shown.as_ref());
+                if let Some(why) = &out.refused {
+                    crate::toggle_truth::say_refused("Power mode", why);
+                }
+            });
         });
     });
 }
