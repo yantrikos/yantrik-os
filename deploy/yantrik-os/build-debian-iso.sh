@@ -421,13 +421,32 @@ ok "Pre-boot unlock screen, keyscript and signed-in marker staged"
 # live-tools' system-shutdown hook ejected the disk the medium is on and waited for ENTER after
 # "Please remove the live-medium". On a Mac the installer is a partition of the internal disk
 # (YKINSTALL). Ours opens a disc's tray and otherwise does nothing (yantrik-live-medium-eject).
-if [ -e "$ROOTFS/bin/live-medium-eject" ] || [ -e "$ROOTFS/usr/bin/live-medium-eject" ]; then
-    sudo chroot "$ROOTFS" dpkg-divert --local --rename --divert /bin/live-medium-eject.live-tools \
-        --add /bin/live-medium-eject >/dev/null \
-        || fail "could not set live-tools' live-medium-eject aside"
-fi
+#
+# Diverted under both names. With merged /usr they are one file, but dpkg matches a diversion by
+# the path a package lists: live-tools ships /bin/live-medium-eject today, and a live-tools that
+# moved it to /usr/bin would, with only the /bin diversion, write its own over ours through the
+# /bin symlink. The first --rename moves the package's file aside; the second finds nothing left
+# to move and only records the name.
+for name in /bin/live-medium-eject /usr/bin/live-medium-eject; do
+    sudo chroot "$ROOTFS" dpkg-divert --local --rename --divert "$name.live-tools" --add "$name" >/dev/null \
+        || fail "could not set live-tools' $name aside"
+done
 sudo install -m 0755 -o root -g root "$SCRIPT_DIR/yantrik-live-medium-eject" "$ROOTFS/bin/live-medium-eject" \
     || fail "could not install yantrik-live-medium-eject"
+# Without merged /usr the two names are two files, and both are ours.
+[ "$ROOTFS/bin/live-medium-eject" -ef "$ROOTFS/usr/bin/live-medium-eject" ] \
+    || sudo install -m 0755 -o root -g root "$SCRIPT_DIR/yantrik-live-medium-eject" "$ROOTFS/usr/bin/live-medium-eject" \
+    || fail "could not install yantrik-live-medium-eject as /usr/bin/live-medium-eject"
+# dpkg-divert --truename is where dpkg writes a package's copy of a name: for both names it must
+# be the .live-tools path, never a path holding our script; and what the shutdown hook runs,
+# /bin/live-medium-eject (and /usr/bin/live-medium-eject), must be our script.
+for name in /bin/live-medium-eject /usr/bin/live-medium-eject; do
+    truename="$(sudo chroot "$ROOTFS" dpkg-divert --truename "$name")"
+    [ "$truename" = "$name.live-tools" ] \
+        || fail "dpkg would write live-tools' $name to $truename, over ours"
+    sudo cmp -s "$SCRIPT_DIR/yantrik-live-medium-eject" "$ROOTFS$name" \
+        || fail "$name is not yantrik-live-medium-eject"
+done
 ok "The live system's shutdown leaves an internal installer partition alone"
 
 # ── Intel Macs (the Mac mini 2012 is the first real machine this image runs on) ──
