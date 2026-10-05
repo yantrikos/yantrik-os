@@ -243,6 +243,57 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(self.desktop.text(second), "ok")
 
 
+class WebSearchTests(unittest.TestCase):
+    """The person's web search service reaches a library harness at attach and on change, and a
+    harness on a desktop that never says works as before (docs/harness.md, "Web search")."""
+
+    def setUp(self):
+        self.desktop = FakeDesktop()
+        self.addCleanup(self.desktop.stop)
+
+    def start(self, handler):
+        harness = Harness("test", "Test", handler, address=self.desktop.path, log=lambda m: None,
+                          heartbeat_seconds=30.0, poll_interval=0.02, retry_seconds=0.2)
+        thread = threading.Thread(target=harness.run, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 3)
+        self.addCleanup(harness.stop)
+        self.assertTrue(wait_for(lambda: bool(self.desktop.attachments)), "never attached")
+        return harness
+
+    def test_told_at_attach_and_again_on_change_without_a_restart(self):
+        heard = []
+
+        class Searcher(Echo):
+            def web_search_changed(self, web_search):
+                heard.append(web_search)
+
+        self.desktop.set_web_search({"service": "searxng", "url": "http://192.168.4.42:8888"})
+        harness = self.start(Searcher())
+        self.assertTrue(wait_for(lambda: harness.searxng_url() == "http://192.168.4.42:8888"))
+        self.desktop.set_web_search({"service": "builtin"})
+        self.assertTrue(wait_for(lambda: harness.web_search == {"service": "builtin"}))
+        self.assertIsNone(harness.searxng_url())
+        self.assertEqual(heard, [{"service": "searxng", "url": "http://192.168.4.42:8888"}, {"service": "builtin"}])
+        self.assertEqual(len(self.desktop.attachments), 1, "switched without attaching again")
+        turn = self.desktop.ask("still there?")
+        self.assertEqual(self.desktop.wait_closed(turn)[1], "complete")
+
+    def test_a_desktop_that_never_says_leaves_the_harness_as_it_was(self):
+        harness = self.start(Echo())
+        turn = self.desktop.ask("hello")
+        self.assertEqual(self.desktop.wait_closed(turn)[1], "complete")
+        self.assertIsNone(harness.web_search)
+        self.assertIsNone(harness.searxng_url())
+
+    def test_something_that_is_not_a_service_is_ignored(self):
+        self.desktop.set_web_search({"service": "gopher", "url": "gopher://x"})
+        harness = self.start(Echo())
+        turn = self.desktop.ask("hello")
+        self.desktop.wait_closed(turn)
+        self.assertIsNone(harness.web_search)
+
+
 class TrailTests(unittest.TestCase):
     def test_a_tool_call_is_one_line_naming_what_it_touched(self):
         self.assertEqual(tool_trail("os_act", {"app": "calendar", "action": "add_event"}),
