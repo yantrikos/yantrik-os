@@ -98,7 +98,8 @@ fn registry() -> &'static Mutex<HashMap<String, RunningApp>> {
     RUNNING.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn now_unix() -> u64 {
+/// Seconds since the epoch, the clock `since_unix` is on.
+pub fn now_unix() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 

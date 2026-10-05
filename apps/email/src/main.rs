@@ -636,13 +636,9 @@ impl Mail {
         self.state.borrow().account_id()
     }
 
-    /// The reason the service could not be used, if that is the state.
-    fn unreachable_reason(&self) -> Option<String> {
-        match &*self.state.borrow() {
-            MailState::Unreachable { reason } => Some(reason.clone()),
-            MailState::Starting => Some("it has not answered yet; Email is still starting".into()),
-            _ => None,
-        }
+    /// Why there is no mailbox to act on (`MailState::why_no_mailbox`).
+    fn why_no_mailbox(&self) -> String {
+        self.state.borrow().why_no_mailbox()
     }
 
     /// The `(id, folder it was listed from)` of a row on screen.
@@ -667,6 +663,18 @@ struct Loaded {
     mailbox_error: Option<String>,
 }
 
+impl Loaded {
+    /// A look that went no further than the state: no account, or no service.
+    fn of(state: MailState) -> Self {
+        Loaded { state, folders: Vec::new(), messages: Vec::new(), mailbox_error: None }
+    }
+
+    /// A look that ended without an answer from the service.
+    fn unreachable(reason: &str) -> Self {
+        Loaded::of(MailState::Unreachable { reason: reason.to_string() })
+    }
+}
+
 /// Ask the service what it has, and then — only if there is an account — open a folder.
 ///
 /// This is the one path both the first load and the Refresh button take, so the screen cannot
@@ -681,7 +689,7 @@ fn look_at_mail(folder: &str) -> Loaded {
 fn open_mailbox(state: MailState, folder: &str) -> Loaded {
     let account = state.account_id();
     if account.is_empty() {
-        return Loaded { state, folders: Vec::new(), messages: Vec::new(), mailbox_error: None };
+        return Loaded::of(state);
     }
 
     let folders = match list_folders_via_service(&account) {
@@ -783,37 +791,40 @@ fn first_look(app: &EmailApp, mail: &Rc<Mail>) {
     mail.syncing.set(true);
 
     let folder = mail.folder.borrow().clone();
-    let halfway = app.as_weak();
     let back = app.as_weak();
-    startup::off_the_ui_thread(
-        move || {
-            let state = state::decide(accounts_via_service());
-            if state.has_account() == Some(true) {
-                let known = state.clone();
-                let _ = halfway.upgrade_in_event_loop(move |ui| connecting(&ui, known));
-            }
-            open_mailbox(state, &folder)
-        },
-        move |loaded| {
-            let _ = back.upgrade_in_event_loop(move |ui| {
-                let Some(mail) = with_mail(|m| m.clone()) else { return };
-                mail.syncing.set(false);
-                ui.set_is_loading(false);
-                apply_loaded(&ui, &mail, loaded);
-            });
-        },
-    );
+    std::thread::spawn(move || {
+        startup::run_first_look(
+            || state::decide(accounts_via_service()),
+            |state| open_mailbox(state, &folder),
+            |stage| {
+                let _ = back.upgrade_in_event_loop(move |ui| show_stage(&ui, stage));
+            },
+        );
+    });
+}
+
+/// Put one stage of the first look on screen.
+fn show_stage(ui: &EmailApp, stage: startup::Stage) {
+    let Some(mail) = with_mail(|m| m.clone()) else { return };
+    match stage {
+        startup::Stage::Connecting(state) => connecting(ui, &mail, state),
+        startup::Stage::Done(loaded) => {
+            mail.syncing.set(false);
+            ui.set_is_loading(false);
+            apply_loaded(ui, &mail, loaded);
+        }
+    }
 }
 
 /// The account is known and its mailbox has not answered: the main view, empty, saying which
-/// account it is connecting to.
-fn connecting(ui: &EmailApp, state: MailState) {
-    let Some(mail) = with_mail(|m| m.clone()) else { return };
+/// account it is connecting to, with the folder's counts not known yet.
+fn connecting(ui: &EmailApp, mail: &Rc<Mail>, state: MailState) {
     let name = state.account_name();
     *mail.state.borrow_mut() = state;
     ui.set_service_state("up".into());
     ui.set_has_account(true);
     ui.set_account_name(name.clone().into());
+    set_header_counts(ui, Counted::connecting());
     ui.set_email_sync_status(format!("Connecting to {name}\u{2026}").into());
 }
 
@@ -856,7 +867,12 @@ fn show_folder_counts(ui: &EmailApp, mail: &Rc<Mail>) {
     let folder = mail.folder.borrow().clone();
     let all = mail.all_rows.borrow();
     let loaded_unread = all.iter().filter(|(_, _, it)| !it.is_read).count();
-    match Counted::of(&folder_records(ui), &folder, loaded_unread, all.len()) {
+    set_header_counts(ui, Counted::of(&folder_records(ui), &folder, loaded_unread, all.len()));
+}
+
+/// Put `counted` on the header.
+fn set_header_counts(ui: &EmailApp, counted: Counted) {
+    match counted {
         Counted::Known(counts) => {
             ui.set_email_folder_unread(counts.unread);
             ui.set_email_folder_total(counts.total);
@@ -955,10 +971,7 @@ fn row_flag(mail: &Rc<Mail>, id: &str, flag: impl Fn(&EmailListItem) -> bool) ->
 fn load_folder(ui: &EmailApp, mail: &Rc<Mail>, folder: &str) -> Result<usize, String> {
     let account = mail.account();
     if account.is_empty() {
-        return Err(match mail.unreachable_reason() {
-            Some(reason) => format!("the mail service could not be reached: {reason}"),
-            None => "no email account is configured".to_string(),
-        });
+        return Err(mail.why_no_mailbox());
     }
     ui.set_is_loading(true);
     let outcome = list_messages_via_service(&account, folder, 1);
@@ -1223,10 +1236,7 @@ fn run_search(ui: &EmailApp, mail: &Rc<Mail>, query: &str) -> Result<usize, Stri
     }
     let account = mail.account();
     if account.is_empty() {
-        let text = match mail.unreachable_reason() {
-            Some(reason) => format!("Cannot search: the mail service could not be reached: {reason}"),
-            None => "Cannot search: no email account is configured.".to_string(),
-        };
+        let text = format!("Cannot search: {}.", mail.why_no_mailbox());
         say(ui, text.clone());
         return Err(text);
     }
@@ -1456,7 +1466,9 @@ fn publish_control(app: &EmailApp, mail: &Rc<Mail>) {
             let base = View::new(mail_state.summary())
                 .with("service", mail_state.service_word())
                 .with("notice", ui.get_notice().to_string())
-                .with("account_store", mail_state.config_path().to_string());
+                .with("account_store", mail_state.config_path().to_string())
+                // True while a look at the mail service is out: the first one, or a Refresh.
+                .with("loading", mail.syncing.get());
 
             let base = match mail_state.has_account() {
                 // Deliberately null rather than false. With nothing answering, this app has not
@@ -1494,7 +1506,12 @@ fn publish_control(app: &EmailApp, mail: &Rc<Mail>) {
                 let search = ui
                     .get_email_search_active()
                     .then(|| (query.as_str(), ui.get_email_list().row_count()));
-                state::folder_summary(&folder, &counts, search)
+                if counts.is_connecting() {
+                    // The first look has the account and not yet its mailbox (`startup`).
+                    state::connecting_summary(&ui.get_account_name())
+                } else {
+                    state::folder_summary(&folder, &counts, search)
+                }
             };
 
             let list = ui.get_email_list();
@@ -1977,7 +1994,7 @@ fn wire(app: &EmailApp) {
             let Some(ui) = weak.upgrade() else { return };
             let account = mail.account();
             if account.is_empty() {
-                say(&ui, "Cannot send: no email account is configured.");
+                say(&ui, format!("Cannot send: {}.", mail.why_no_mailbox()));
                 return;
             }
             match send_message_via_service(&account, &to, &cc, &bcc, &subject, &body) {
