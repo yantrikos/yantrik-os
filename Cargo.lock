@@ -11964,6 +11964,7 @@ dependencies = [
  "yantrik-app-runtime",
  "yantrik-chat",
  "yantrik-companion",
+ "yantrik-egress",
  "yantrik-harness",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
@@ -11973,6 +11974,7 @@ dependencies = [
  "yantrik-ui-kit",
  "yantrik-ui-slint",
  "yantrik-version",
+ "yantrik-web-search",
  "yantrikdb",
 ]
 
