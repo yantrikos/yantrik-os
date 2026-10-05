@@ -398,7 +398,9 @@ for required in usr/lib/yantrik/yantrik-broadcom-wifi usr/lib/yantrik/yantrik-ma
                 etc/systemd/system/multi-user.target.wants/yantrik-broadcom-wifi.service \
                 etc/systemd/system/mbpfan.service.d/yantrik-apple.conf \
                 etc/NetworkManager/dispatcher.d/90-yantrik-broadcom-wifi; do
-    [ -e "$ROOTFS/$required" ] || fail "$required missing from the image"
+    # Inside the chroot: a unit's enable link is absolute, and from the host it would resolve
+    # against the build machine's /etc, not the image's.
+    sudo chroot "$ROOTFS" test -e "/$required" || fail "$required missing from the image"
 done
 sudo chroot "$ROOTFS" bash -n /usr/lib/yantrik/yantrik-broadcom-wifi \
     || fail "yantrik-broadcom-wifi does not parse"
@@ -692,7 +694,9 @@ else
     done
     [ -L "$ROOTFS/etc/systemd/user/default.target.wants/yantrik-mind.service" ] \
         || fail "yantrik-mind.service is not enabled in the image"
-    [ ! -e "$ROOTFS/etc/systemd/user/default.target.wants/yantrik-memory.service" ] \
+    # -L as well as -e: the enable link is absolute, so from the host -e alone never sees it.
+    { [ ! -e "$ROOTFS/etc/systemd/user/default.target.wants/yantrik-memory.service" ] \
+        && [ ! -L "$ROOTFS/etc/systemd/user/default.target.wants/yantrik-memory.service" ]; } \
         || fail "yantrik-memory.service is enabled — it would fight the mind for the memory file"
     ok "Yantrik Mind $(sed -n 's/^commit=//p' "$ROOTFS/opt/yantrik-mind/BUILD" 2>/dev/null) installed beside the OS, enabled for every user"
 fi
