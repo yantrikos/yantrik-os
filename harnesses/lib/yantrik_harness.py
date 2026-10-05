@@ -40,6 +40,7 @@ the "still working" answer.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import socket
@@ -47,6 +48,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
@@ -67,6 +69,26 @@ MAIN = "main"
 # A long output is sent as several `tool_output` events, each well under it.
 MAX_EVENT_BYTES = 64 * 1024
 EVENT_PIECE_BYTES = 48 * 1024
+# What one `redact` may carry (crates/yantrik-harness/src/redact.rs): at most this many needles,
+# each from 1 to this many characters in canonical form (NFC, then lowercased).
+REDACT_MAX_NEEDLES = 16
+REDACT_MAX_CHARS = 4096
+# ... and at least this many: a shorter text ("e", "not") would erase too much to be what was meant.
+REDACT_MIN_CHARS = 4
+# How much of a question's prompt the person is shown: the card shows this many characters, or
+# the 1999 before its ellipsis when the prompt is longer. A text to erase must be quoted in it.
+QUESTION_CHARS = 2000
+# Unicode White_Space, exactly (Rust's `char::is_whitespace`; Python's `str.isspace` differs).
+_WHITE_SPACE = frozenset(
+    [chr(c) for c in range(0x09, 0x0E)] + ["\u0020", "\u0085", "\u00a0", "\u1680"]
+    + [chr(c) for c in range(0x2000, 0x200B)] + ["\u2028", "\u2029", "\u202f", "\u205f", "\u3000"]
+)
+# A straight double quote opens only at the start, after whitespace or after one of these ...
+_OPENS_AFTER = frozenset("([{")
+# ... and closes only before whitespace, the end, or one of these.
+_CLOSES_BEFORE = frozenset(".,;:!?)]}")
+# The answer to a Keep/Erase question that lets the desktop erase its copies. Exact.
+ERASE = "Erase"
 # The environment variable the tools a harness starts for a conversation read their agent from.
 AGENT_TOKEN_ENV = "YANTRIK_AGENT_TOKEN"
 
@@ -231,6 +253,62 @@ def summary_line(text: str, limit: int = 160) -> str:
         if line:
             return line if len(line) <= limit else line[:limit - 1] + "…"
     return ""
+
+
+def canonical(text: str) -> str:
+    """The form texts are hashed and matched in: NFC, then Unicode default lowercasing."""
+    return unicodedata.normalize("NFC", str(text)).lower()
+
+
+def quoted_spans(question: str) -> List[str]:
+    """The quoted spans of a question as the person is shown it, each in canonical form — the same
+    rule as the desktop's (`redact::quoted_texts`), held to `harnesses/tests/fixtures/
+    redact_spans.json`. A text `turn.redact` may erase must be exactly one of these, at least
+    `REDACT_MIN_CHARS` long: ask "Forget “<the words>”?" quoting each text you will erase.
+
+    Over the shown prompt (its first 2000 characters, or the 1999 before the card's ellipsis):
+    - only double quotes delimit; single quotes, apostrophes, ‘ and ’ never do;
+    - a straight `"` opens only at the start, or after whitespace or one of `( [ {`; it closes at the
+      next `"`, and only when that one is followed by whitespace, one of `. , ; : ! ? ) ] }`, or the
+      end; inside it, “ and ” are ordinary;
+    - “ opens and ” closes, at the next ”; a backwards ”…“ is never a span; inside, `"` is ordinary;
+    - a span whose text starts or ends with whitespace is no span;
+    - left to right, no nesting, no escapes; where an opener makes no span, the scan goes on from
+      the character after it. Whitespace is Unicode White_Space."""
+    question = str(question)
+    shown = question if len(question) <= QUESTION_CHARS else question[:QUESTION_CHARS - 1]
+    spans: List[str] = []
+    i = 0
+    while i < len(shown):
+        c = shown[i]
+        close = None
+        if c == '"' and (i == 0 or shown[i - 1] in _WHITE_SPACE or shown[i - 1] in _OPENS_AFTER):
+            close = '"'
+        elif c == "\u201c":
+            close = "\u201d"
+        if close is not None:
+            j = shown.find(close, i + 1)
+            if j != -1:
+                after = shown[j + 1] if j + 1 < len(shown) else None
+                closes = close != '"' or after is None or after in _WHITE_SPACE or after in _CLOSES_BEFORE
+                text = shown[i + 1:j]
+                trimmed = not text or (text[0] not in _WHITE_SPACE and text[-1] not in _WHITE_SPACE)
+                if closes and trimmed:
+                    spans.append(canonical(text))
+                    i = j + 1
+                    continue
+        i += 1
+    return spans
+
+
+def needle(text: str) -> Dict[str, Any]:
+    """Words to erase, as the desktop takes them: the SHA-256 of their canonical form as UTF-8,
+    and its length in characters. The canonical form is NFC, then Unicode default lowercasing
+    (`unicodedata.normalize('NFC', t).lower()`, Rust's `str::to_lowercase` on the desktop), and the
+    length is counted after lowercasing ('İ' becomes two characters). The words themselves never
+    leave this process."""
+    canon = canonical(text)
+    return {"sha256": hashlib.sha256(canon.encode("utf-8")).hexdigest(), "len": len(canon)}
 
 
 def _pieces(text: str, budget: int = EVENT_PIECE_BYTES) -> List[str]:
@@ -422,6 +500,44 @@ class Turn:
         if ask is None:
             return None
         return ask(self, str(prompt), [str(o) for o in (options or [])], request_id, timeout)
+
+    def redact(self, request_id: str, texts: Sequence[str]) -> Dict[str, Any]:
+        """After the person answered `Erase` to this turn's Keep/Erase question `request_id`, ask the
+        desktop to erase the same words from its own copies: the agent's pane transcript and the
+        run store. Erase them from the mind's own memory first; this is the desktop's half.
+
+        Each text is hashed here (`needle`) and only the digest and length are sent. Matching is
+        exact after NFC and case-insensitive: pass each text once, in any case, and the desktop
+        erases every case it was written in. The desktop applies it only for a question this run
+        asked, answered by pressing the offered `Erase` (a typed "Erase" does not count), from this
+        session, while the turn is open or within five minutes of its end, and once per question;
+        and only when every text is exactly one quoted span of that question as the person was shown
+        it (`quoted_spans`: inside "…" or “…”, in its first 2000 characters), at least four
+        characters long. Ask "Forget “<the words>”?" quoting exactly what you will erase. The
+        question's own words are erased with them.
+
+        Returns the desktop's reply: `{"redacted": n, "where": ["transcript", "runs"]}` (with a
+        `"warning"` when it erased but something after the commit went wrong), or
+        `{"refused": why}` with nothing changed — "too much to search; …" means send it again
+        with fewer or shorter texts — or `{"unsent": why}` when it was not sent.
+        """
+        try:
+            needles = [needle(t) for t in texts if str(t)]
+        except UnicodeEncodeError:
+            # A lone surrogate has no UTF-8, so no digest: nothing the desktop could match.
+            return {"unsent": "a text to erase is not valid Unicode"}
+        if not needles:
+            return {"unsent": "nothing to erase"}
+        if len(needles) > REDACT_MAX_NEEDLES:
+            return {"unsent": "at most %d texts in one redact" % REDACT_MAX_NEEDLES}
+        if any(n["len"] > REDACT_MAX_CHARS for n in needles):
+            return {"unsent": "a text to erase is at most %d characters" % REDACT_MAX_CHARS}
+        if any(n["len"] < REDACT_MIN_CHARS for n in needles):
+            return {"unsent": "a needle is too short to erase safely"}
+        send = getattr(self.harness, "_redact", None)
+        if send is None:
+            return {"unsent": "this harness cannot send a redact"}
+        return send(self, str(request_id), needles)
 
     def _event(self, event: Dict[str, Any]) -> bool:
         if self.closed or self.dropped:
@@ -952,6 +1068,22 @@ class Harness:
             self.log("the desktop refused a %s event on turn %d: %s"
                      % (event.get("kind"), turn.turn_id, reply["refused"]))
         return True
+
+    def _redact(self, turn: Turn, request_id: str, needles: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """`Turn.redact`: one `redact` event. Sent even after the turn closed — the desktop takes
+        one within five minutes of a run's end. Nothing here logs the needles."""
+        if not self._events_ok:
+            return {"unsent": "this desktop does not take events"}
+        event = {"kind": "redact", "request_id": request_id, "needles": needles}
+        try:
+            reply = self._call(EVENT, {"session": turn.session, "turn_id": turn.turn_id,
+                                       "event": event}) or {}
+        except HarnessError as exc:
+            self.log("redact on turn %d was not delivered: %s" % (turn.turn_id, exc))
+            return {"unsent": str(exc)}
+        if reply.get("refused"):
+            self.log("the desktop refused a redact on turn %d: %s" % (turn.turn_id, reply["refused"]))
+        return reply
 
     def _ask(self, turn: Turn, prompt: str, options: List[str], request_id: Optional[str],
              timeout: Optional[float]) -> Optional[Any]:

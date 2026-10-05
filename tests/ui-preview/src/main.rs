@@ -25,6 +25,7 @@ mod lens_tests;
 mod chat_tests;
 mod approval_tests;
 mod approval_fit_tests;
+mod approval_pane_tests;
 mod dock_tests;
 mod taskbar_menu_tests;
 mod alt_tab_tests;

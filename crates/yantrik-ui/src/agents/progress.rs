@@ -6,7 +6,7 @@
 //! how long it has run, what it did last, when it was last heard from, and whether it is stuck.
 //! Nothing here asks the mind; nothing here needs its cooperation.
 
-use super::model::{Agent, CallState, Card};
+use super::model::{Agent, CallState, Card, Shown};
 
 /// The same call failing this many times in a row, for the same reason, is a task going round.
 pub const STUCK_REPEATS: usize = 3;
@@ -62,7 +62,9 @@ impl Stuck {
 /// What `agent` is doing right now, or None when it has no turn open.
 pub fn of(agent: &Agent, now: u64) -> Option<Progress> {
     let turn = agent.open_turn()?;
-    let cards: Vec<&Card> = turn.cards().collect();
+    // As shown: a call holding words the person had erased reads with the marker.
+    let shown: Vec<Shown<'_>> = turn.cards().map(Card::shown).collect();
+    let cards: Vec<&Card> = shown.iter().map(|c| &**c).collect();
     let running = cards.iter().rev().find(|c| c.running()).map(|c| call_line(c));
     // An approval card, a command at a prompt (#182), or a question it asked (#25): either way
     // the person is the one being waited on, and the quiet is theirs, not the task's.
@@ -173,8 +175,10 @@ impl Progress {
         out.push('.');
         if let Some(why) = &self.stuck {
             out.push_str(&format!("\nIt looks stuck: {why}."));
-        } else if let Some(question) = &self.question {
-            out.push_str(&format!("\nIt is waiting for your answer to its question: “{}”", brief(question, 120)));
+        } else if self.question.is_some() {
+            // Never the question's words: this sentence is copied on — into the Lens, and to another
+            // mind in a handover — where an erasure of them could not follow (docs/harness.md).
+            out.push_str("\nIt is waiting for your answer to a question in its pane.");
         } else if self.waiting_on_you {
             out.push_str("\nIt is waiting for you to answer an approval card.");
         } else if let Some(call) = &self.running {
@@ -240,6 +244,8 @@ mod tests {
             usage: Usage::default(),
             refused: 0,
             refusals: Vec::new(),
+            refusals_shown: None,
+            erasures: Vec::new(),
             approvals_asked: 0,
             approvals_answered: 0,
             pending_approvals: Vec::new(),
@@ -344,7 +350,8 @@ mod tests {
         assert_eq!((p.stuck.as_deref(), p.stuck_kind.as_ref()), (None, None), "a question waiting is not stuck");
         assert!(p.waiting_on_you, "it waits on the person");
         assert_eq!(p.question.as_deref(), Some("Keep or Erase the three memories about the old address?"));
-        assert!(p.told("Hermes").contains("waiting for your answer to its question: “Keep or Erase"), "{}", p.told("Hermes"));
+        assert!(p.told("Hermes").contains("waiting for your answer to a question in its pane"), "{}", p.told("Hermes"));
+        assert!(!p.told("Hermes").contains("old address"), "the question's words are not copied on");
 
         let silent = agent_with(vec![card("os_act", CallState::Ok, "", 10)], 0, 10);
         let p = of(&silent, 10 + 120).unwrap();

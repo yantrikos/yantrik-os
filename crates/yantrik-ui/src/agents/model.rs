@@ -395,6 +395,11 @@ impl Capped {
         self.total
     }
 
+    /// The bytes kept: the head and the tail.
+    pub fn kept(&self) -> usize {
+        self.head.len() + self.tail.len()
+    }
+
     /// How much fell between the head and the tail.
     pub fn dropped(&self) -> u64 {
         self.dropped
@@ -796,9 +801,65 @@ pub struct Card {
     pub output: Output,
     pub started: u64,
     pub ended: Option<u64>,
+    /// How the call is shown once the person had words erased that it holds. The call itself is
+    /// the record of what happened and keeps them; every view draws [`Card::shown`] instead.
+    pub mask: Option<Box<CardMask>>,
+}
+
+/// What a card shows in place of its own fields after an erasure: the same fields with the marker
+/// where the words were. No words and no digest of them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CardMask {
+    /// The erasure that made it: the Keep/Erase question the person answered.
+    pub request: String,
+    pub target: String,
+    pub args: serde_json::Value,
+    pub preview: String,
+    pub summary: String,
+    /// The kept output, as the card's own buffer holds it (a terminal's escapes included).
+    pub output: String,
+}
+
+/// A card as a view draws it: itself, or, after an erasure, a copy with its masked fields.
+pub enum Shown<'a> {
+    Plain(&'a Card),
+    Masked(Box<Card>),
+}
+
+impl std::ops::Deref for Shown<'_> {
+    type Target = Card;
+
+    fn deref(&self) -> &Card {
+        match self {
+            Shown::Plain(card) => card,
+            Shown::Masked(card) => card,
+        }
+    }
 }
 
 impl Card {
+    /// The card every view draws: the card, or its mask when words it holds were erased.
+    pub fn shown(&self) -> Shown<'_> {
+        let Some(mask) = &self.mask else { return Shown::Plain(self) };
+        Shown::Masked(Box::new(Card {
+            call: self.call.clone(),
+            name: self.name.clone(),
+            target: mask.target.clone(),
+            args: mask.args.clone(),
+            preview: mask.preview.clone(),
+            repeats: self.repeats,
+            state: self.state,
+            summary: mask.summary.clone(),
+            exit_code: self.exit_code,
+            provenance: self.provenance,
+            mark: self.mark,
+            output: Output::restore(self.output.kind, &mask.output, self.output.bytes.total(), self.output.lines()),
+            started: self.started,
+            ended: self.ended,
+            mask: None,
+        }))
+    }
+
     pub fn new(call: &str, name: &str, target: &str, args: serde_json::Value, provenance: Provenance, at: u64) -> Card {
         Card {
             call: call.to_string(),
@@ -815,6 +876,7 @@ impl Card {
             output: Output::default(),
             started: at,
             ended: None,
+            mask: None,
         }
     }
 
@@ -831,6 +893,22 @@ impl Card {
 
     pub fn running(&self) -> bool {
         self.state == CallState::Running
+    }
+
+    /// More of the call's output. A masked card's mask takes it too, so what is drawn keeps up;
+    /// output that arrives after an erasure is shown as it comes.
+    pub fn push_output(&mut self, stream: Stream, delta: &[u8]) {
+        self.output.push(stream, delta);
+        if let Some(mask) = self.mask.as_mut() {
+            mask.output.push_str(&String::from_utf8_lossy(delta));
+            if mask.output.len() > CARD_CAP {
+                let mut from = mask.output.len() - CARD_CAP;
+                while !mask.output.is_char_boundary(from) {
+                    from += 1;
+                }
+                mask.output.drain(..from);
+            }
+        }
     }
 
     /// Whether this is a command — something with a process, a PTY and an exit code.
@@ -1078,6 +1156,11 @@ pub struct Agent {
     /// While one does, the row stays `WaitingForYou` even when a settled card would
     /// otherwise send it back to work.
     pub job_waits: bool,
+    /// The refusal lines as shown, once an erasure masked any of them; the same length as
+    /// `refusals`, which keep their words.
+    pub refusals_shown: Option<Vec<String>>,
+    /// What was erased from this session at the person's request, oldest first: never the words.
+    pub erasures: Vec<Erasure>,
     /// Creation order, to break ties between agents started in the same second.
     pub seq: u64,
     /// Last time anything happened to it.
@@ -1085,7 +1168,28 @@ pub struct Agent {
     pub next_turn: u64,
 }
 
+/// One erasure at the person's request (a `redact`), as the session keeps it: the question they
+/// answered *Erase*, how many places it reached (the run store's and this session's), and when.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Erasure {
+    pub request: String,
+    pub places: usize,
+    pub at: u64,
+}
+
+impl Erasure {
+    /// How the pane and `describe` say it.
+    pub fn line(&self) -> String {
+        format!("Erased {} place{} at your request.", self.places, if self.places == 1 { "" } else { "s" })
+    }
+}
+
 impl Agent {
+    /// The refusal lines as a view shows them.
+    pub fn shown_refusals(&self) -> &[String] {
+        self.refusals_shown.as_deref().unwrap_or(&self.refusals)
+    }
+
     pub fn open_turn(&self) -> Option<&Turn> {
         self.turns.last().filter(|t| t.open())
     }

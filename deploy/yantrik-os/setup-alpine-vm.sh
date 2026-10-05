@@ -172,6 +172,7 @@ else
     echo "  10. Disk: vda, sys mode"
     echo "  11. After install: poweroff"
     echo "  12. Then deploy: scp -P 2222 deploy-stack.sh root@localhost:"
+    echo "                   scp -P 2222 <repo>/config/labwc/rc.xml root@localhost:labwc-rc.xml"
     echo "  13. SSH in:       ssh -p 2222 root@localhost ./deploy-stack.sh"
     echo "  14. Boot desktop: ./boot-desktop.sh"
     echo "════════════════════════════════════════════"

@@ -48,6 +48,7 @@
 pub mod event;
 pub mod host;
 pub mod protocol;
+pub mod redact;
 pub mod run_store;
 
 pub use event::{AgentId, Event};

@@ -16,6 +16,7 @@ export struct QuestionRequest {
     prompt: string,
     options: [string], // the answers offered as buttons; none: a free answer
     asked: string,     // when it was asked, "16:16"
+    removes: string,   // for a Keep/Erase question, what Erase removes, as the shell parsed it
 }
 
 export component QuestionCard inherits Rectangle {
@@ -28,7 +29,13 @@ export component QuestionCard inherits Rectangle {
     in property <string> closed;
     /// When it was asked ("16:16"): the same question asked twice is two cards, told apart by this.
     in property <string> asked;
-    callback answered(string);
+    /// For a Keep/Erase question: what pressing Erase will remove from this conversation, worked
+    /// out by the shell from the prompt's quoted spans (never the agent's words about it), one per
+    /// line — so the person sees exactly what goes, whatever the quote marks look like.
+    in property <string> removes;
+    // The answer, and whether it is one of the offered answers pressed (true) or one typed (false):
+    // a typed "Erase" is not a pressed one (docs/harness.md, `redact`).
+    callback answered(string, bool);
 
     // Waiting on the person, so its edge is the needs-you amber; once answered or closed it is an
     // ordinary inset. The card's behaviour is unchanged: the answer goes back once, through
@@ -36,6 +43,26 @@ export component QuestionCard inherits Rectangle {
     property <bool> waiting: root.answer == "" && root.closed == "";
     // "Write another answer" opens the same free-text box a question with no options has.
     property <bool> writing: false;
+
+    // What Erase removes is listed in full, and may be longer than the card can show: then the list
+    // scrolls, at most this tall, and Erase stays disabled until the person has seen all of it —
+    // it fits, or they scrolled it to its end once. They cannot erase what they were not shown.
+    property <length> removes-max: 160px;
+    property <bool> removes-shown: root.waiting && root.removes != "";
+    property <bool> removes-fits: removes-flick.viewport-height <= removes-flick.height + 1px;
+    property <bool> removes-at-end:
+        removes-flick.height - removes-flick.viewport-y >= removes-flick.viewport-height - 1px;
+    in-out property <bool> removes-read: false;
+    changed removes-at-end => {
+        if (self.removes-at-end) {
+            self.removes-read = true;
+        }
+    }
+    changed removes => {
+        self.removes-read = false;
+    }
+    /// Whether Erase may be pressed: there is no list, or the person has seen all of it.
+    out property <bool> erase-ready: !root.removes-shown || root.removes-fits || root.removes-at-end || root.removes-read;
 
     background: Theme.chat-bar;
     border-radius: Theme.chat-radius;
@@ -65,6 +92,36 @@ export component QuestionCard inherits Rectangle {
             color: Theme.text-primary;
             wrap: word-wrap;
         }
+        // The shell's own line, set apart from the agent's words above it. Always in the tree, so
+        // the gate below can read it; drawn, and given height, only while there is a list.
+        removes-box := Rectangle {
+            visible: root.removes-shown;
+            height: root.removes-shown ? min(removes-text.preferred-height + 2 * Theme.sp-2, root.removes-max) : 0px;
+            background: Theme.bg-input;
+            border-radius: 4px;
+            clip: true;
+            removes-flick := Flickable {
+                width: parent.width;
+                height: parent.height;
+                viewport-width: self.width;
+                viewport-height: removes-text.preferred-height + 2 * Theme.sp-2;
+                removes-text := Text {
+                    x: Theme.sp-2;
+                    y: Theme.sp-2;
+                    width: parent.width - 2 * Theme.sp-2;
+                    text: root.removes;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-caption;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        if root.removes-shown && !root.erase-ready : Text {
+            text: "Scroll to the end of the list to erase.";
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            wrap: word-wrap;
+        }
         if root.answer == "" && root.closed == "" && root.options.length > 0 : HorizontalLayout {
             spacing: Theme.sp-2;
             alignment: start;
@@ -72,7 +129,13 @@ export component QuestionCard inherits Rectangle {
                 label: option;
                 variant: 1;
                 size: 0;
-                clicked => { root.answered(option); }
+                // Erase only once everything it removes has been shown.
+                disabled: option == "Erase" && !root.erase-ready;
+                clicked => {
+                    if (option != "Erase" || root.erase-ready) {
+                        root.answered(option, true);
+                    }
+                }
             }
         }
         if root.waiting && root.options.length > 0 && !root.writing : Rectangle {
@@ -90,7 +153,7 @@ export component QuestionCard inherits Rectangle {
         }
         if root.waiting && (root.options.length == 0 || root.writing) : YInput {
             placeholder: "answer " + root.mind + "…";
-            accepted(text) => { root.answered(text); }
+            accepted(text) => { root.answered(text, false); }
         }
         if root.answer != "" : Text {
             text: "You answered: " + root.answer;

@@ -24,6 +24,8 @@
 //!   ending it expires whatever it was still waiting for.
 //! - Run ids keep counting across restarts: [`RunStore::next_run_id`] is where the host's counter
 //!   starts, so a run id never names two runs.
+//! - The text of a conversation can be erased at the person's request, and only then: see
+//!   [`RunStore::redact`] for the rule and for what is and is not touched.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -31,6 +33,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
+
+mod erase;
+pub use erase::{
+    Erased, Erasure, Redaction, Refusal, RunPlan, RunSize, ERASE_ANSWER, ERASE_WINDOW_MS, NOT_IN_QUESTION,
+    SECURE_DELETE_WARNING, TOO_MUCH_TIMES, TOO_MUCH_USED_UP,
+};
+#[cfg(test)]
+pub(crate) use erase::FAIL_RESTORE;
 
 /// Where a run is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,6 +200,22 @@ CREATE TABLE IF NOT EXISTS requests (
     answer      TEXT,
     asked_at    INTEGER NOT NULL,
     answered_at INTEGER,
+    by_option   INTEGER NOT NULL DEFAULT 0,
+    quoted      TEXT,
+    PRIMARY KEY (run_id, request_id)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS redactions (
+    run_id      INTEGER NOT NULL REFERENCES runs(run_id),
+    request_id  TEXT NOT NULL,
+    places      INTEGER NOT NULL,
+    at          INTEGER NOT NULL,
+    used_up     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (run_id, request_id)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS redact_too_much (
+    run_id      INTEGER NOT NULL REFERENCES runs(run_id),
+    request_id  TEXT NOT NULL,
+    times       INTEGER NOT NULL,
     PRIMARY KEY (run_id, request_id)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS runs_by_state ON runs(state);
@@ -200,7 +226,7 @@ pub struct RunStore {
     db: Mutex<Connection>,
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
@@ -221,6 +247,20 @@ impl RunStore {
     fn init(db: Connection) -> Result<RunStore, RunError> {
         db.pragma_update(None, "foreign_keys", "ON")?;
         db.execute_batch(SCHEMA)?;
+        // A store made before these columns: its answers count as typed and as quoting nothing,
+        // and its erasures as erasures.
+        for (table, column, kind) in [
+            ("requests", "by_option", "INTEGER NOT NULL DEFAULT 0"),
+            ("requests", "quoted", "TEXT"),
+            ("redactions", "used_up", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            let has = db
+                .prepare(&format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = '{column}'"))?
+                .exists([])?;
+            if !has {
+                db.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))?;
+            }
+        }
         Ok(RunStore { db: Mutex::new(db) })
     }
 
@@ -335,28 +375,38 @@ impl RunStore {
 
     /// Apply the person's answer to one request, exactly once. When it was the last question the
     /// run was waiting on, the run is running again. Returns the answer event's sequence number.
-    pub fn answer(&self, run_id: u64, request_id: &str, answer: &Value) -> Result<u64, RunError> {
+    /// `by_option`: the person pressed one of the offered answers rather than typing one; kept,
+    /// because only a pressed *Erase* lets a `redact` act (`RunStore::redact`).
+    pub fn answer(&self, run_id: u64, request_id: &str, answer: &Value, by_option: bool) -> Result<u64, RunError> {
         self.with(|db| {
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let at = now_ms();
             let state = state_in(&tx, run_id)?;
-            let request: Option<String> = tx
+            let request: Option<(String, String)> = tx
                 .query_row(
-                    "SELECT state FROM requests WHERE run_id = ?1 AND request_id = ?2",
+                    "SELECT state, prompt FROM requests WHERE run_id = ?1 AND request_id = ?2",
                     params![run_id as i64, request_id],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?;
-            match request.as_deref() {
+            // What the question quoted, as the person answered it: the digests of its quoted spans,
+            // and no more of its words than the prompt already holds. A `redact` is checked against
+            // this, so a later erasure that rewrites the prompt cannot make new "quoted" words.
+            let quoted = request.as_ref().map(|(_, prompt)| {
+                let prompt: Value = serde_json::from_str(prompt).unwrap_or(Value::Null);
+                let needles = crate::redact::quoted_needles(prompt["prompt"].as_str().unwrap_or_default());
+                serde_json::to_string(&needles).unwrap_or_else(|_| "[]".to_string())
+            });
+            match request.as_ref().map(|(state, _)| state.as_str()) {
                 None => return Err(RunError::NoSuchRequest { run_id, request_id: request_id.to_string() }),
                 Some("answered") => return Err(RunError::AlreadyAnswered { run_id, request_id: request_id.to_string() }),
                 Some(_) if state.is_final() => return Err(RunError::Ended { run_id, state }),
                 Some(_) => {}
             }
             tx.execute(
-                "UPDATE requests SET state = 'answered', answer = ?3, answered_at = ?4
+                "UPDATE requests SET state = 'answered', answer = ?3, answered_at = ?4, by_option = ?5, quoted = ?6
                  WHERE run_id = ?1 AND request_id = ?2 AND state = 'pending'",
-                params![run_id as i64, request_id, answer.to_string(), at],
+                params![run_id as i64, request_id, answer.to_string(), at, by_option, quoted],
             )?;
             let seq = append_in(&tx, run_id, "answer", &json!({"request_id": request_id, "answer": answer}), at)?;
             let pending: i64 = tx.query_row(
@@ -554,9 +604,9 @@ mod tests {
         store.ask(1, "approve-a", &json!({"text": "Delete 3 files?"})).unwrap();
         store.ask(2, "approve-a", &json!({"text": "Send the mail?"})).unwrap();
 
-        store.answer(1, "approve-a", &json!("yes")).unwrap();
+        store.answer(1, "approve-a", &json!("yes"), true).unwrap();
         assert_eq!(
-            store.answer(1, "approve-a", &json!("yes")),
+            store.answer(1, "approve-a", &json!("yes"), true),
             Err(RunError::AlreadyAnswered { run_id: 1, request_id: "approve-a".into() })
         );
         let answers = store.events(1, 0, PAGE_MAX).unwrap().events.into_iter().filter(|e| e.kind == "answer").count();
@@ -571,9 +621,9 @@ mod tests {
         // R asks A, the person answers twice, R reaches B: the duplicate must not release B.
         let store = store_with_runs(&[1]);
         store.ask(1, "a", &json!("first?")).unwrap();
-        store.answer(1, "a", &json!("yes")).unwrap();
+        store.answer(1, "a", &json!("yes"), true).unwrap();
         store.ask(1, "b", &json!("second?")).unwrap();
-        assert!(matches!(store.answer(1, "a", &json!("yes")), Err(RunError::AlreadyAnswered { .. })));
+        assert!(matches!(store.answer(1, "a", &json!("yes"), true), Err(RunError::AlreadyAnswered { .. })));
         assert_eq!(store.run(1).unwrap().unwrap().state, RunState::WaitingOnPerson);
         assert_eq!(store.pending_requests(1).unwrap(), vec![("b".to_string(), json!("second?"))]);
     }
@@ -583,9 +633,9 @@ mod tests {
         let store = store_with_runs(&[1]);
         store.ask(1, "a", &json!("?")).unwrap();
         store.ask(1, "b", &json!("?")).unwrap();
-        store.answer(1, "b", &json!(1)).unwrap();
+        store.answer(1, "b", &json!(1), true).unwrap();
         assert_eq!(store.run(1).unwrap().unwrap().state, RunState::WaitingOnPerson);
-        store.answer(1, "a", &json!(2)).unwrap();
+        store.answer(1, "a", &json!(2), true).unwrap();
         assert_eq!(store.run(1).unwrap().unwrap().state, RunState::Running);
     }
 
@@ -594,10 +644,10 @@ mod tests {
         let store = store_with_runs(&[1]);
         store.ask(1, "a", &json!("?")).unwrap();
         assert_eq!(store.ask(1, "a", &json!("?")), Err(RunError::RequestExists { run_id: 1, request_id: "a".into() }));
-        assert_eq!(store.answer(1, "zz", &json!(1)), Err(RunError::NoSuchRequest { run_id: 1, request_id: "zz".into() }));
-        assert_eq!(store.answer(9, "a", &json!(1)), Err(RunError::NoSuchRun(9)));
+        assert_eq!(store.answer(1, "zz", &json!(1), true), Err(RunError::NoSuchRequest { run_id: 1, request_id: "zz".into() }));
+        assert_eq!(store.answer(9, "a", &json!(1), true), Err(RunError::NoSuchRun(9)));
         store.transition(1, RunState::Cancelled).unwrap();
-        assert_eq!(store.answer(1, "a", &json!(1)), Err(RunError::Ended { run_id: 1, state: RunState::Cancelled }));
+        assert_eq!(store.answer(1, "a", &json!(1), true), Err(RunError::Ended { run_id: 1, state: RunState::Cancelled }));
         assert!(store.pending_requests(1).unwrap().is_empty(), "ending a run expires what it waited on");
     }
 
@@ -642,7 +692,7 @@ mod tests {
         assert_eq!(store.run(3).unwrap().unwrap().state, RunState::Done);
         let log = store.events(1, 0, PAGE_MAX).unwrap().events;
         assert_eq!(log[1].payload["delta"], "half an answer", "an orphaned run stays readable");
-        assert!(matches!(store.answer(2, "approve", &json!("yes")), Err(RunError::Ended { state: RunState::Orphaned, .. })));
+        assert!(matches!(store.answer(2, "approve", &json!("yes"), true), Err(RunError::Ended { state: RunState::Orphaned, .. })));
         assert_eq!(store.next_run_id().unwrap(), 4, "a run id never names two runs");
         assert_eq!(store.start(3, "scripted", "c", "conn-2"), Err(RunError::Exists(3)));
         assert_eq!(store.orphan_unfinished().unwrap(), 0);

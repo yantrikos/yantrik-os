@@ -1463,7 +1463,11 @@ fn surface(ui: &TextEditorApp, s: &State) -> Vec<(Action, Handler)> {
                 ));
             }
             let call = tab.map(|i| format!("tab {i} and ")).unwrap_or_default();
-            Ok(reading::page(&d.text, shown_path(d), from_line, &call))
+            // Whether the tab holds unsaved changes: a page of an edited buffer is not the file on
+            // disk, and a mind that vouches for a file by its disk timestamps must know the difference.
+            let mut page = reading::page(&d.text, shown_path(d), from_line, &call);
+            page["modified"] = serde_json::json!(d.dirty());
+            Ok(page)
         },
     );
 

@@ -1703,7 +1703,7 @@ export component App inherits Window {
             approval-deny(id) => { root.approval-deny(id); }
             // The mind's own questions (#25), answered through the same one path as in Agents.
             questions: root.lens-questions;
-            question-answer(agent, request, answer) => { AgentsState.answer-question(agent, request, answer); }
+            question-answer(agent, request, answer, pressed) => { AgentsState.answer-question(agent, request, answer, pressed); }
             // A chat reply's link to its run: the Agents pane of that one run. Or the desktop's
             // offer, while private, to leave Private mode (`private_mode::LEAVE_LINK`).
             open-run(run) => {

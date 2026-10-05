@@ -46,6 +46,9 @@
 //! - **`complete` and `fail` are the end.** Events after them are dropped and counted, and a call
 //!   the harness left open is settled for the reader as *interrupted*, so no card is left
 //!   spinning. The same happens when a harness detaches, restarts, goes quiet or is stopped.
+//! - **A `redact` erases only what the person said to erase**: words from a question this run
+//!   asked and the person answered *Erase*, from the session holding the run, within five minutes
+//!   of its end, once — and never the record of what happened. See `host::erase`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{self, Sender};
@@ -56,6 +59,9 @@ use crate::event::{AgentId, Event};
 use crate::protocol::{self, Assignment, Attach};
 use crate::run_store::{RunError, RunState, RunStore};
 use crate::{Answer, Capabilities, Chunk, Harness, Health, Turn};
+
+mod erase;
+pub use erase::{Redactor, ShellErased, ShellErasure, ShellPlan, ShellRedactor};
 
 /// The summary a call gets when its turn ended before it did.
 pub const INTERRUPTED: &str = "interrupted";
@@ -208,6 +214,8 @@ impl Flight {
                 }
             },
             Event::Thinking { .. } | Event::Status { .. } | Event::Usage { .. } | Event::Request { .. } => Ok(()),
+            // Taken before a turn's stream is looked at (`Host::redact`); never one of its events.
+            Event::Redact { .. } => Err("a `redact` is not part of a turn's stream".to_string()),
         }
     }
 
@@ -591,6 +599,10 @@ pub struct EventCounts {
     pub oversized: u64,
     /// A kind this build does not know. Ignored, not an error.
     pub unknown: u64,
+    /// `redact` events the acceptance rule held for, and that erased.
+    pub redacted: u64,
+    /// `redact` events refused, with nothing changed.
+    pub redact_refused: u64,
 }
 
 struct State {
@@ -637,6 +649,9 @@ pub struct Host {
     paused: Arc<std::sync::RwLock<Option<String>>>,
     /// Told when an answer finishes for a chat the person had left. See [`Host::with_late_answer`].
     late_answer: Option<Arc<dyn Fn(LateAnswer) + Send + Sync>>,
+    /// Erases the shell's own copy of a conversation (the agent's pane transcript) once a `redact`
+    /// is accepted, when the shell said how: see [`Host::with_redactor`].
+    redactor: Option<Redactor>,
 }
 
 /// How the host decides who carries a memory credential, and how it digests one. The decision
@@ -674,6 +689,7 @@ impl Host {
             memory: None,
             paused: Arc::new(std::sync::RwLock::new(None)),
             late_answer: None,
+            redactor: None,
         }
     }
 
@@ -773,8 +789,9 @@ impl Host {
     /// The person's answer to a question run `run_id` asked. It is consumed in the run store
     /// first, so it counts exactly once, and only then queued for the one harness answering that
     /// run, which gets it on its next poll. A connection that was replaced holds no runs, so it
-    /// can never receive it. Errors say why nothing was delivered.
-    pub fn answer(&self, run_id: u64, request_id: &str, answer: &serde_json::Value) -> Result<(), String> {
+    /// can never receive it. Errors say why nothing was delivered. `by_option`: the person pressed
+    /// one of the question's offered answers, rather than typing one (the run store keeps which).
+    pub fn answer(&self, run_id: u64, request_id: &str, answer: &serde_json::Value, by_option: bool) -> Result<(), String> {
         let store = self.runs.as_ref().ok_or("this desktop keeps no runs")?;
         let mut state = self.lock();
         self.reap(&mut state);
@@ -785,7 +802,7 @@ impl Host {
                 _ => format!("run {run_id} does not exist"),
             });
         };
-        store.answer(run_id, request_id, answer).map_err(|e| e.to_string())?;
+        store.answer(run_id, request_id, answer, by_option).map_err(|e| e.to_string())?;
         harness.answers.push(serde_json::json!({ "turn_id": run_id, "request_id": request_id, "answer": answer }));
         Ok(())
     }
@@ -793,7 +810,7 @@ impl Host {
     /// [`Host::answer`] for a question `agent` asked, found by the agent and the request id,
     /// which is what the shell's agent view knows: the run is the one in flight for that agent
     /// that is still waiting on `request_id`.
-    pub fn answer_for(&self, agent: &AgentId, request_id: &str, answer: &serde_json::Value) -> Result<(), String> {
+    pub fn answer_for(&self, agent: &AgentId, request_id: &str, answer: &serde_json::Value, by_option: bool) -> Result<(), String> {
         let store = self.runs.as_ref().ok_or("this desktop keeps no runs")?;
         let runs: Vec<u64> = {
             let mut state = self.lock();
@@ -814,7 +831,7 @@ impl Host {
             .into_iter()
             .find(|&run| store.pending_requests(run).is_ok_and(|p| p.iter().any(|(r, _)| r == request_id)))
             .ok_or_else(|| format!("`{agent}` is no longer waiting on that question"))?;
-        self.answer(run, request_id, answer)
+        self.answer(run, request_id, answer, by_option)
     }
 
     /// Cancel a run: the harness is told on its next poll, the person's listener is settled, and
@@ -1824,8 +1841,15 @@ impl Host {
         let mut state = self.lock();
         let st = &mut *state;
         let harness = Self::touch(&mut st.attached, params, peer, &*self.descends)?;
-        let counts = &mut st.events;
         let who = harness.announced.id.clone();
+        if raw.get("kind").and_then(|k| k.as_str()) == Some("redact") {
+            // Not part of the turn's stream: it may come after the turn closed, and it is never
+            // passed on to a reader. Its own rule, off the host's lock (`host::erase`).
+            let session = harness.session.clone();
+            drop(state);
+            return Ok(self.redact(turn_id, &who, &session, raw));
+        }
+        let counts = &mut st.events;
 
         let Some(flight) = harness.in_flight.get_mut(&turn_id) else {
             if harness.finished.contains(&turn_id) {
@@ -3836,8 +3860,8 @@ mod tests {
         assert_eq!(ask(&host, &s2, r2, "a"), json!({}), "request ids are per run");
         assert_eq!(store.run(r1).unwrap().unwrap().state, RunState::WaitingOnPerson);
 
-        host.answer(r1, "a", &json!("Allow")).unwrap();
-        let again = host.answer(r1, "a", &json!("Allow")).unwrap_err();
+        host.answer(r1, "a", &json!("Allow"), true).unwrap();
+        let again = host.answer(r1, "a", &json!("Allow"), true).unwrap_err();
         assert!(again.contains("already answered"), "{again}");
 
         let delivered = poll(&host, &s1);
@@ -3851,7 +3875,7 @@ mod tests {
     fn a_question_never_asked_a_repeated_one_and_one_without_an_id_are_refused() {
         let (host, _) = host_with_runs();
         let (session, _, run, _answer) = turn_in_flight(&host);
-        assert!(host.answer(run, "never", &json!(1)).unwrap_err().contains("never asked"));
+        assert!(host.answer(run, "never", &json!(1), true).unwrap_err().contains("never asked"));
         ask(&host, &session, run, "a");
         assert!(ask(&host, &session, run, "a")["refused"].as_str().unwrap().contains("already asked"));
         let blank = event(&host, &session, run, json!({ "kind": "request", "request_id": " ", "prompt": "?" })).unwrap();
@@ -3864,13 +3888,13 @@ mod tests {
         let (session, _, run, _answer) = turn_in_flight(&host);
         ask(&host, &session, run, "a");
         complete(&host, &session, run);
-        assert!(host.answer(run, "a", &json!("Allow")).unwrap_err().contains("ended (done)"));
+        assert!(host.answer(run, "a", &json!("Allow"), true).unwrap_err().contains("ended (done)"));
 
         let (session, _, run, _answer) = turn_in_flight(&host);
         ask(&host, &session, run, "b");
         host.handle(protocol::DETACH, &json!({ "session": session })).unwrap();
-        assert!(host.answer(run, "b", &json!("Allow")).unwrap_err().contains("ended (orphaned)"));
-        assert!(host.answer(777, "b", &json!("Allow")).unwrap_err().contains("does not exist"));
+        assert!(host.answer(run, "b", &json!("Allow"), true).unwrap_err().contains("ended (orphaned)"));
+        assert!(host.answer(777, "b", &json!("Allow"), true).unwrap_err().contains("does not exist"));
     }
 
     #[test]
@@ -3884,7 +3908,7 @@ mod tests {
                 { "conversation": agent.conversation(), "agent_token": token, "turn_id": run } ]}))
             .unwrap();
         let new = reply["session"].as_str().unwrap().to_string();
-        host.answer(run, "a", &json!("Allow")).unwrap();
+        host.answer(run, "a", &json!("Allow"), true).unwrap();
         assert!(host.handle(protocol::POLL, &json!({ "session": old })).is_err(), "the old connection is gone");
         assert_eq!(poll(&host, &new)["answers"][0]["request_id"], "a", "the one answering the run gets it");
     }
@@ -3894,7 +3918,7 @@ mod tests {
         let host = host();
         let (session, _, run, _answer) = turn_in_flight(&host);
         assert!(ask(&host, &session, run, "a")["refused"].as_str().unwrap().contains("keeps no runs"));
-        assert!(host.answer(run, "a", &json!(1)).is_err());
+        assert!(host.answer(run, "a", &json!(1), true).is_err());
     }
 
     #[test]
@@ -3902,14 +3926,14 @@ mod tests {
         let (host, store) = host_with_runs();
         let (session, agent, run, _answer) = turn_in_flight(&host);
         ask(&host, &session, run, "r1");
-        assert!(host.answer_for(&agent, "r9", &json!("Yes")).unwrap_err().contains("no longer waiting"));
-        host.answer_for(&agent, "r1", &json!("Yes")).unwrap();
+        assert!(host.answer_for(&agent, "r9", &json!("Yes"), true).unwrap_err().contains("no longer waiting"));
+        host.answer_for(&agent, "r1", &json!("Yes"), true).unwrap();
         assert_eq!(poll(&host, &session)["answers"][0], json!({ "turn_id": run, "request_id": "r1", "answer": "Yes" }));
-        assert!(host.answer_for(&agent, "r1", &json!("Yes")).unwrap_err().contains("no longer waiting"), "once");
+        assert!(host.answer_for(&agent, "r1", &json!("Yes"), true).unwrap_err().contains("no longer waiting"), "once");
         assert_eq!(store.run(run).unwrap().unwrap().state, RunState::Running);
         let stranger = AgentId::new("pi", "c-someone-else");
         ask(&host, &session, run, "r2");
-        assert!(host.answer_for(&stranger, "r2", &json!("Yes")).is_err(), "only the agent that asked");
+        assert!(host.answer_for(&stranger, "r2", &json!("Yes"), true).is_err(), "only the agent that asked");
     }
 
     #[test]

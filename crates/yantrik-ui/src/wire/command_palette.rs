@@ -216,9 +216,10 @@ fn wire_selected(ui: &App, ctx: &AppContext) {
             // next one, and never mentioned to the person who asked for it.
             crate::wire::screenshot::take_screenshot(ui.as_weak(), yantrik_os::screenshot::CaptureMode::FullScreen);
         } else if action == "system:toggle-theme" {
-            let current = ui.global::<crate::ThemeMode>().get_dark();
-            ui.global::<crate::ThemeMode>().set_dark(!current);
-            ui.set_settings_dark_mode(!current);
+            // The Quick Settings tile's own callback (wired in `wire::settings`), so the flag,
+            // the theme's colours and the saved setting move together. Setting the flag here
+            // left the palette's colours behind and lost the choice at the next restart.
+            ui.invoke_toggle_dark_mode();
         }
     });
 }
@@ -268,6 +269,17 @@ fn cmd(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// "Toggle Dark Mode" is the tile's callback and nothing beside it: no second path that sets
+    /// the flag without saving it or re-applying the theme.
+    #[test]
+    fn toggle_dark_mode_goes_through_the_tiles_callback() {
+        let source = include_str!("command_palette.rs");
+        let arm = &source[source.find("action == \"system:toggle-theme\"").unwrap()..];
+        let arm = &arm[..arm.find("\n        }").unwrap()];
+        assert!(arm.contains("ui.invoke_toggle_dark_mode()"), "the same path the tile and Settings take");
+        assert!(!arm.contains("set_dark(") && !arm.contains("set_settings_dark_mode("), "no second path beside the tile's");
+    }
 
     /// The palette does not offer a shelved app, by any of its names.
     ///

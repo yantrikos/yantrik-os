@@ -78,6 +78,12 @@ export struct AgentItemData {
     // `asked` is when it was asked ("16:16"), so two cards with the same words can be told apart.
     request: string,
     options: [string],
+    // For a card: some of its free text holds words the person had erased, and is drawn with the
+    // marker. `revealed`: the person asked, in this pane, to see it as it was.
+    masked: bool,
+    revealed: bool,
+    // For a Keep/Erase question: what Erase removes, as the shell parsed it from the prompt.
+    removes: string,
     answer: string,
     asked: string,
 }
@@ -223,7 +229,7 @@ export global AgentsState {
     callback approval-allow-session(string);
     callback approval-deny(string);
     // The person answered a question the agent asked (#25): agent id, request id, answer.
-    callback answer-question(string, string, string);
+    callback answer-question(string, string, string, bool);   // agent, request, answer, pressed
     // Show one agent on the Agents screen — the Lens's "open in Agents", a notification's Open,
     // `show_agent`.
     callback show-agent(string);
@@ -281,6 +287,15 @@ component TerminalCells inherits Rectangle {
 
 component ItemView inherits Rectangle {
     in property <AgentItemData> item;
+    // How tall an approval card here may be: the pane's own scroller's visible height, less what
+    // sits around the card inside it. Every host passes it, so the card in a pane takes the same
+    // three cases as in the Lens and the corner (intent_lens.slint, `height-limit`): the whole
+    // card fits in view at once, and when its pinned lines do not, Allow waits until the card's
+    // own scroll has been to its end. Without it the card was as tall as it liked, the gate never
+    // applied, and the pane's scroll could put the arguments out of view with Allow still on
+    // screen. A host that forgot it would leave 0px: a card that scrolls in no room and so never
+    // allows, which fails closed (Decline stays live).
+    in property <length> card-limit;
     VerticalLayout {
         padding-top: 2px;
         padding-bottom: 2px;
@@ -452,6 +467,7 @@ component ItemView inherits Rectangle {
         // an agent says can draw these buttons.
         if root.item.kind == "approval" : ApprovalCard {
             data: root.item.approval;
+            height-limit: root.card-limit;
             allow => { AgentsState.approval-allow(root.item.approval.id); }
             allow-session => { AgentsState.approval-allow-session(root.item.approval.id); }
             deny => { AgentsState.approval-deny(root.item.approval.id); }
@@ -465,7 +481,8 @@ component ItemView inherits Rectangle {
             answer: root.item.answer;
             closed: root.item.explain;
             asked: root.item.asked;
-            answered(a) => { AgentsState.answer-question(AgentsState.header.id, root.item.request, a); }
+            removes: root.item.removes;
+            answered(a, pressed) => { AgentsState.answer-question(AgentsState.header.id, root.item.request, a, pressed); }
         }
 
         // A call: the one card every view of a mind's calls shares (#125), with the call's own
@@ -481,6 +498,24 @@ component ItemView inherits Rectangle {
                 color: Theme.text-secondary;
                 font-size: Theme.fs-caption;
                 wrap: word-wrap;
+            }
+            // Words the person had erased are drawn with the marker; the call itself kept them.
+            // Only here, and only for the person, can it be shown as it was.
+            if root.item.masked : HorizontalLayout {
+                Rectangle {
+                    width: reveal.preferred-width;
+                    reveal := Text {
+                        text: root.item.revealed ? "Hide what was erased here" : "Show what was erased here";
+                        color: Theme.accent;
+                        font-size: Theme.fs-micro;
+                        vertical-alignment: center;
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { AgentsState.toggle("reveal:" + root.item.key, !root.item.revealed); }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
             }
             if root.item.output-kind == "terminal" && (root.item.expanded || root.item.live) : TerminalCells {
                 runs: root.item.runs;
@@ -604,6 +639,8 @@ export component AgentSession inherits Rectangle {
                         padding-right: 6px;
                         for item in AgentsState.items : ItemView {
                             item: item;
+                            // The scroller's height, less the item's own 2px above and below.
+                            card-limit: flick.height - 4px;
                         }
                     }
                 }
@@ -1016,6 +1053,9 @@ component TaskDetail inherits Rectangle {
                         spacing: 6px;
                         for item in AgentsState.items : ItemView {
                             item: item;
+                            // The scroller's height, less the column's 24px padding above and
+                            // below and the item's own 2px.
+                            card-limit: flick.height - 2 * 24px - 4px;
                         }
                     }
                     // A word to the mind, to the agent this run belongs to.

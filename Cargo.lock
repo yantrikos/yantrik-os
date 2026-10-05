@@ -11499,8 +11499,10 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tracing",
+ "unicode-normalization",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
 ]

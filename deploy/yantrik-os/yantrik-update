@@ -2478,6 +2478,20 @@ restart_mind() {
   systemctl restart "$MIND_UNIT" >/dev/null 2>&1 || true
 }
 
+# Rollback copies: the newest two of each installed file are kept and the rest removed. Every
+# install used to keep one more for good; VM 520 had 29 pairs, 3.8 GB, and its disk at 98%
+# (5 Oct 2026). Ordered by ctime, which is when the copy was made: `cp -p` keeps the old file's
+# mtime, and tar sets mtimes from the bundle, so mtime says nothing about install order.
+prune_mind_rollbacks() { # prune_mind_rollbacks <mind dir>
+  local f old
+  for f in $MIND_FILES_INSTALLED; do
+    # shellcheck disable=SC2012  # names we wrote ourselves: no newlines, sorted by ctime
+    ls -1tcd -- "$1/$f".before-* 2>/dev/null | tail -n +3 | while IFS= read -r old; do
+      rm -f -- "$old"
+    done
+  done
+}
+
 cmd_install_mind() {
   local bundle="${1:-}" want="${2:-}" have stage build commit sha16 f since restored=0
   local mind_dir=/opt/yantrik-mind
@@ -2529,12 +2543,14 @@ cmd_install_mind() {
   # A Mind that was not running is left not running: installing is not starting.
   if ! { install_mind_selftest && [ -n "${YANTRIK_MIND_HEALTH:-}" ]; } \
     && ! systemctl is-active --quiet "$MIND_UNIT" 2>/dev/null; then
+    prune_mind_rollbacks "$mind_dir"
     printf 'installed %s %s not-running\n' "$commit" "$sha16"
     return 0
   fi
   since="$(date +%s)"
   restart_mind
   if mind_attached "$since" first; then
+    prune_mind_rollbacks "$mind_dir"
     printf 'installed %s %s attached\n' "$commit" "$sha16"
     return 0
   fi
@@ -2957,6 +2973,21 @@ with tarfile.open(sys.argv[1], "w") as t:
     out="$(im_run "$md" "$im/next.tar.zst" "$next_sha" YANTRIK_MIND_HEALTH=never)"
     t "install-mind: when the previous Mind does not attach either, it says so" "the previous Mind is back but did NOT attach either" "$out"
     t "install-mind: ... with a failing exit" "[exit 1]" "$out"
+
+    local c csha
+    for c in aaa0001 aaa0002 aaa0003; do
+      mk_bundle "$c" "$c" "$c" agent_token=1
+      csha="$(sha256sum "$im/$c.tar.zst" | cut -d' ' -f1)"
+      im_run "$md" "$im/$c.tar.zst" "$csha" YANTRIK_MIND_HEALTH=ok >/dev/null
+      sleep 1
+    done
+    is "install-mind: only the two newest rollback copies of the Mind are kept" \
+      "yantrik-mind.before-aaa0002 yantrik-mind.before-aaa0003" \
+      "$(cd "$md/bin" && ls -1d yantrik-mind.before-* | sort | tr '\n' ' ' | sed 's/ $//')"
+    is "install-mind: ... and of its BUILD" "BUILD.before-aaa0002 BUILD.before-aaa0003" \
+      "$(cd "$md" && ls -1d BUILD.before-* | sort | tr '\n' ' ' | sed 's/ $//')"
+    is "install-mind: ... the newest one still the Mind it replaced" "ELF...stamp aaa0002..." \
+      "$(cat "$md/bin/yantrik-mind.before-aaa0003")"
   else
     printf '  skip install-mind checks: no zstd here\n'
   fi

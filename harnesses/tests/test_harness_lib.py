@@ -6,6 +6,7 @@ is written again from scratch: it stops breathing while it works, and it swallow
 arrives while it is working.
 """
 
+import json
 import os
 import tempfile
 import threading
@@ -76,6 +77,33 @@ class Asking(Handler):
         got = turn.ask("Delete 3 old installers?", self.options, request_id="del", timeout=self.timeout)
         self.got.append(got)
         turn.emit("answer: %s" % got)
+
+
+class Forgetting(Handler):
+    """Asks Keep/Erase about the person's sister's name, and on Erase asks the desktop to erase it."""
+
+    def __init__(self):
+        self.replies = []
+
+    def answer(self, turn):
+        turn.emit("Your sister is Priya.")
+        # The question quotes, verbatim, what it will ask the desktop to erase.
+        got = turn.ask("Forget your sister's name, \"Priya\", and the \u201cCaf\u00e9\u201d?", ["Keep", "Erase"],
+                       request_id="forget", timeout=5)
+        if got == "Erase":
+            self.replies.append(turn.redact("forget", ["Priya", "Cafe\u0301"]))
+            self.replies.append(turn.redact("forget", ["Priya"]))
+        turn.emit(" ok")
+
+
+class OverReaching(Forgetting):
+    """Asks to forget one thing, and on Erase asks the desktop to erase something it never quoted."""
+
+    def answer(self, turn):
+        got = turn.ask("Forget the \"temp draft\"?", ["Keep", "Erase"], request_id="forget", timeout=5)
+        if got == "Erase":
+            self.replies.append(turn.redact("forget", ["temp draft", "don't touch ~/Photos"]))
+        turn.emit(" ok")
 
 
 class Resettable(Handler):
@@ -503,6 +531,85 @@ class ConversationTests(unittest.TestCase):
         self.desktop.wait_closed(turn)
         self.assertEqual(handler.got, ["Allow"])
         self.assertEqual(self.desktop.text(turn), "answer: Allow")
+
+    def test_redact_sends_digests_never_the_words_and_returns_the_desktops_reply(self):
+        handler = Forgetting()
+        self.start(handler)
+        turn = self.desktop.ask("forget my sister's name")
+        self.assertTrue(wait_for(lambda: (turn, "forget") in self.desktop.questions))
+        self.assertTrue(self.desktop.answer(turn, "forget", "Erase"))
+        self.desktop.wait_closed(turn)
+        self.assertEqual(handler.replies[0], {"redacted": 2, "where": ["transcript", "runs"]})
+        self.assertIn("refused", handler.replies[1], "once per question")
+        sent = json.dumps(self.desktop.redactions)
+        self.assertNotIn("Priya", sent)
+        self.assertNotIn("Caf", sent)
+        needles = self.desktop.redactions[0][1]["needles"]
+        self.assertEqual(needles[0], yantrik_harness.needle("Priya"))
+        self.assertEqual(needles[0]["len"], 5)
+        # Composed and decomposed are one needle: NFC before hashing, length after it.
+        self.assertEqual(needles[1], yantrik_harness.needle("Caf\u00e9"))
+        self.assertEqual(needles[1]["len"], 4)
+
+    def test_a_redact_of_words_the_question_never_quoted_is_refused(self):
+        handler = OverReaching()
+        self.start(handler)
+        turn = self.desktop.ask("tidy up")
+        self.assertTrue(wait_for(lambda: (turn, "forget") in self.desktop.questions))
+        self.assertTrue(self.desktop.answer(turn, "forget", "Erase"))
+        self.desktop.wait_closed(turn)
+        self.assertEqual(handler.replies, [{"refused": "a needle is not in the question the person answered"}])
+
+    def test_a_keep_answer_sends_no_redact(self):
+        handler = Forgetting()
+        self.start(handler)
+        turn = self.desktop.ask("forget my sister's name")
+        self.assertTrue(wait_for(lambda: (turn, "forget") in self.desktop.questions))
+        self.desktop.answer(turn, "forget", "Keep")
+        self.desktop.wait_closed(turn)
+        self.assertEqual((handler.replies, self.desktop.redactions), ([], []))
+
+    def test_needles_match_the_shared_fixtures(self):
+        # The same file the desktop's Rust tests assert (crates/yantrik-harness/src/redact.rs):
+        # both sides compute exactly these digests and lengths.
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "redact_needles.json")
+        with open(path, encoding="utf-8") as f:
+            fixtures = json.load(f)
+        self.assertEqual([f["text"] for f in fixtures],
+                         ["Straße", "İstanbul", "É", "É", "throwaway-erase2"])
+        for f in fixtures:
+            self.assertEqual(yantrik_harness.needle(f["text"]), {"sha256": f["sha256"], "len": f["len"]},
+                             repr(f["text"]))
+
+    def test_quoted_spans_match_the_shared_fixtures(self):
+        # The same file the desktop's Rust tests assert (crates/yantrik-harness/src/redact.rs).
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "redact_spans.json")
+        with open(path, encoding="utf-8") as f:
+            fixtures = json.load(f)
+        self.assertGreaterEqual(len(fixtures), 9)
+        for f in fixtures:
+            spans = yantrik_harness.quoted_spans(f["question"])
+            self.assertEqual(spans, f["spans"], f["case"])
+            self.assertEqual([s for s in spans if len(s) < yantrik_harness.REDACT_MIN_CHARS], f["too_short"], f["case"])
+
+    def test_a_needle_is_the_same_in_every_case_and_counted_after_lowercasing(self):
+        n = yantrik_harness.needle("throwaway-erase2")
+        self.assertEqual(yantrik_harness.needle("THROWAWAY-ERASE2"), n)
+        self.assertEqual(yantrik_harness.needle("Throwaway-Erase2"), n)
+        self.assertEqual(yantrik_harness.needle("CAFÉ"), yantrik_harness.needle("café"))
+        self.assertEqual(yantrik_harness.needle("İstanbul")["len"], 9)
+
+    def test_redact_checks_its_needles_before_sending(self):
+        turn = yantrik_harness.Turn.__new__(yantrik_harness.Turn)
+        turn.harness = None
+        self.assertIn("unsent", yantrik_harness.Turn.redact(turn, "r", []))
+        self.assertIn("unsent", yantrik_harness.Turn.redact(turn, "r", ["x"] * 17))
+        self.assertIn("unsent", yantrik_harness.Turn.redact(turn, "r", ["x" * 4097]))
+        # "e" or "not" would erase too much: not sent.
+        self.assertEqual(yantrik_harness.Turn.redact(turn, "r", ["e"]), {"unsent": "a needle is too short to erase safely"})
+        self.assertIn("unsent", yantrik_harness.Turn.redact(turn, "r", ["not"]))
+        # A lone surrogate cannot be hashed as UTF-8: not sent, not an exception.
+        self.assertIn("unsent", yantrik_harness.Turn.redact(turn, "r", ["Priya" + chr(0xD800)]))
 
     def test_a_desktop_that_cannot_take_a_question_gets_none_at_once(self):
         self.desktop.keeps_runs = False

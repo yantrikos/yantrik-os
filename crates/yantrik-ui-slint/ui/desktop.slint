@@ -101,7 +101,7 @@ export component DesktopScreen inherits Rectangle {
     in property <int> approvals-waiting: 0;
     /// The Lens's mind's own questions (#25).
     in property <[QuestionRequest]> questions: [];
-    callback question-answer(string, string, string);
+    callback question-answer(string, string, string, bool);
     callback open-run(string);
     callback approval-allow(string);
     /// The same grant plus a standing rule for that (app, action) — see mind_mode.rs.
@@ -666,7 +666,7 @@ export component DesktopScreen inherits Rectangle {
         approval-allow-session(id) => { root.approval-allow-session(id); }
         approval-deny(id) => { root.approval-deny(id); }
         questions: root.questions;
-        question-answer(agent, request, answer) => { root.question-answer(agent, request, answer); }
+        question-answer(agent, request, answer, pressed) => { root.question-answer(agent, request, answer, pressed); }
         open-run(run) => { root.open-run(run); }
         query-changed(text) => { root.lens-query(text); }
         submit-query(text) => { root.lens-submit(text); }

@@ -288,6 +288,23 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     }
     assert!(filled, "a starter puts words in the composer");
     assert_eq!(ui.get_sends(), 0, "and never sends them by itself");
+    // The person thinks better of it: select all and delete, and the box is as it was. Without
+    // this the starter's words stayed in the box for the rest of the scene, and the "hello" typed
+    // in section 5 went out as "Help me plan hello". The app was right (the scene had chosen
+    // "Plan something"); the scene never put the box back.
+    w.dispatch_event(WindowEvent::KeyPressed { text: Key::Control.into() });
+    key(w, "a");
+    w.dispatch_event(WindowEvent::KeyReleased { text: Key::Control.into() });
+    key(w, Key::Backspace);
+    // The box only: the starter keeps its hover fill under the pointer that pressed it.
+    let composer_rows = |p: &Pixels| -> Vec<slint::Rgb8Pixel> {
+        (H as usize - 172..H as usize - 60)
+            .flat_map(|row| p.as_slice()[row * W as usize + PANEL_X as usize..row * W as usize + PANEL_X as usize + 440].to_vec())
+            .collect()
+    };
+    let (before, after) = (composer_rows(&empty), composer_rows(&settle(w)));
+    let changed = before.iter().zip(&after).filter(|(a, b)| a != b).count();
+    assert!(changed < 150, "select all and delete empties the box a starter filled ({changed} pixels differ)");
 
     // ── 4. Following the bottom, and the New reply pill ──
     let model = Rc::new(VecModel::from(
@@ -358,6 +375,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     }
     key(w, Key::Return);
     settle(w);
+    // Exactly what was typed: no starter's words in front of it.
     assert_eq!((ui.get_sends(), ui.get_sent().as_str()), (1, "hello"), "Enter sends the message");
     assert!(ui.get_following(), "and sending a message goes to the bottom, where the reply will be");
     for c in "a".chars() {
