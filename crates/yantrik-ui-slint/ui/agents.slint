@@ -84,6 +84,8 @@ export struct AgentItemData {
     revealed: bool,
     // For a Keep/Erase question: what Erase removes, as the shell parsed it from the prompt.
     removes: string,
+    // For a question: the desktop's own search grant card, set only by the host.
+    by-host: bool,
     answer: string,
     asked: string,
 }
@@ -482,6 +484,7 @@ component ItemView inherits Rectangle {
             closed: root.item.explain;
             asked: root.item.asked;
             removes: root.item.removes;
+            by-host: root.item.by-host;
             answered(a, pressed) => { AgentsState.answer-question(AgentsState.header.id, root.item.request, a, pressed); }
         }
 

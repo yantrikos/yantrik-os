@@ -21,6 +21,10 @@ sha2 = { workspace = true }
 unicode-normalization = "0.1"
 # The grants reader opens its file O_NOFOLLOW (`grants`).
 libc = { workspace = true }
+# A search query the grant card shows is screened by general category and by script
+# (`host::grant::screen`): nothing that draws as nothing, no mixed-script word.
+unicode-properties = { version = "0.1", default-features = false, features = ["general-category"] }
+unicode-script = "0.5"
 
 [dev-dependencies]
 # Only the examples need a socket; the host itself is deliberately transport-free so it can be

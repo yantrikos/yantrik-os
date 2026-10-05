@@ -3,6 +3,11 @@
 // Its words and its answers are the agent's, so it is drawn as the agent speaking ("pi asks"),
 // plainly, and never as the approval card, which only the shell makes: an agent cannot dress a
 // question up as the desktop's permission. The answer goes to the run that asked, once.
+//
+// The one exception is the search grant card (`by-host`): the host's own question when the Mind
+// asks to search in its own words. It is headed in the desktop's name, with an accent band down
+// its edge, and only the host sets the flag: no harness can send it, and a harness `request`
+// offering the same four answers is refused before it is drawn.
 
 import { Theme } from "theme.slint";
 import { YButton } from "y_button.slint";
@@ -17,6 +22,7 @@ export struct QuestionRequest {
     options: [string], // the answers offered as buttons; none: a free answer
     asked: string,     // when it was asked, "16:16"
     removes: string,   // for a Keep/Erase question, what Erase removes, as the shell parsed it
+    by-host: bool,     // the desktop's own search grant card, set only by the host
 }
 
 export component QuestionCard inherits Rectangle {
@@ -33,6 +39,9 @@ export component QuestionCard inherits Rectangle {
     /// out by the shell from the prompt's quoted spans (never the agent's words about it), one per
     /// line — so the person sees exactly what goes, whatever the quote marks look like.
     in property <string> removes;
+    /// The desktop's own search grant card (set only by the host): headed in the desktop's name,
+    /// with an accent band, so a copy in an agent's words cannot pass for it.
+    in property <bool> by-host;
     // The answer, and whether it is one of the offered answers pressed (true) or one typed (false):
     // a typed "Erase" is not a pressed one (docs/harness.md, `redact`).
     callback answered(string, bool);
@@ -67,7 +76,18 @@ export component QuestionCard inherits Rectangle {
     background: Theme.chat-bar;
     border-radius: Theme.chat-radius;
     border-width: 1px;
-    border-color: root.waiting ? Theme.chat-needs-you : Theme.chat-border;
+    border-color: root.by-host ? Theme.accent : root.waiting ? Theme.chat-needs-you : Theme.chat-border;
+
+    // The desktop's mark on its own card: a band down the leading edge no agent's question has.
+    if root.by-host : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 4px;
+        height: parent.height;
+        background: Theme.accent;
+        border-top-left-radius: Theme.chat-radius;
+        border-bottom-left-radius: Theme.chat-radius;
+    }
 
     VerticalLayout {
         padding: Theme.sp-3;
@@ -76,8 +96,10 @@ export component QuestionCard inherits Rectangle {
             spacing: Theme.sp-2;
             Text {
                 horizontal-stretch: 1;
-                text: root.waiting ? "Your answer needed \u{00b7} " + root.mind : root.mind + " asked";
-                color: root.waiting ? Theme.chat-needs-you : Theme.chat-text-2;
+                text: root.by-host
+                    ? (root.waiting ? "Yantrik asks \u{00b7} search permission for " + root.mind : "Yantrik asked \u{00b7} search permission")
+                    : (root.waiting ? "Your answer needed \u{00b7} " + root.mind : root.mind + " asked");
+                color: root.by-host ? Theme.accent : root.waiting ? Theme.chat-needs-you : Theme.chat-text-2;
                 font-size: Theme.fs-caption;
                 font-weight: 600;
             }

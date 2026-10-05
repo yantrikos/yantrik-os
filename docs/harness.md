@@ -322,7 +322,7 @@ is *doing*, and the Agents view draws each tool call as a card:
 | `usage` | `model`, `input_tokens?`, `output_tokens?`, `cost_usd?` | the details panel; they add up |
 | `request` | `request_id`, `prompt`, `options?` | the agent waits for you, asking `prompt` |
 | `redact` | `request_id`, `needles: [{sha256, len}]` | nothing: the shell erases its copies of the words (below) |
-| `grant_request` | `request_id`, `capability`, `query`, `run_id?` | a grant in force answers at once; otherwise a card with the exact query (below) |
+| `grant_request` | `request_id`, `capability`, `query` | a grant in force answers at once; otherwise a card with the exact query (below) |
 
 `call` is your own id for the call (pi's `toolCallId`, an OpenAI `tool_call.id`), unique within
 the turn. The types are `crates/yantrik-harness/src/event.rs`. The desktop enforces a lifecycle,
@@ -345,12 +345,26 @@ answering:
 
 ```json
 {"kind": "grant_request", "request_id": "g1", "capability": "web_search_own_words",
- "query": "rust 2027 edition changes", "run_id": "research-42"}
+ "query": "rust 2027 edition changes"}
 ```
 
-`capability` is `web_search_own_words`, the only one; `query` is the exact search, at most 300
-characters, no control or direction characters, no space around it; `run_id` is optional, for a
-run started with a run grant. The reply is one of:
+`capability` is `web_search_own_words`, the only one. `query` is the exact search: at most 300
+characters, no space around it, and only what the card can show as it is: letters, marks, numbers,
+punctuation, symbols and the space U+0020. Refused, each with a reason to log: general categories
+Cc, Cf, Zl, Zp, Co, Cn and Cs; variation selectors (U+FE00–FE0F, U+E0100–E01EF); tag characters;
+any whitespace other than U+0020; the card's own quote marks (`“`, `”`, `"`); and a word mixing
+scripts, such as Latin with Cyrillic or Greek letters (Han with kana, Bopomofo or Hangul is one
+writing system and passes). Only a `mind` that attached as the `yantrik-mind` account is listened
+to; any other gets `refused`.
+
+**There is no `run_id`.** A run grant covers a request only on a turn the desktop stamped with that
+run: the person (or root) starts the run with `yos act shell send_message text=… run=ID`, and the
+turn the harness is handed carries it as `"run": "ID"` (absent on a turn in no run). The host
+remembers it for that turn. A `grant_request` that still has a `run_id` key, whatever its value,
+is refused. `run` on `send_message` is refused from a call with an agent token, from the mind
+account, and from any process an attached harness started: only the person's own session or root.
+
+The reply is one of:
 
 - `{"granted": {"id": "g-…", "scope": "session"|"run"|"always", "expires_at": n|null}}`: a grant in
   force covers it. Search; the shell has journalled the use. No card.
@@ -360,13 +374,23 @@ run started with a run grant. The reply is one of:
   "scope_id"?}]`. `once`, `session` and `always` each allow this query; `session` and `always`
   also store a grant (root writes it; `session` carries its `scope_id`), and `once` stores nothing.
   A typed answer, or none before the turn ends, is not a yes.
-- `{"refused": why}`: another capability, another harness, or a query that cannot be shown exactly.
+- `{"refused": why}`: another capability, another harness, a `mind` not attached as the mind
+  account, a `run_id`, or a query that cannot be shown exactly.
+
+The card is the desktop's: it is headed in the desktop's name with an accent band, a mark only the
+host sets. An ordinary `request` whose options are the card's four answers is refused.
+
+Nothing binds the approved query to the search the Mind then makes: the answer is a word to the
+Mind, and the Mind's planner must search only what was approved (and must not keep a `granted`
+reply across searches). Every answer and use is journalled with the query and its SHA-256; the
+proxy enforcing it is #669.
 
 The grants are also readable directly, for a run with no turn to send on:
 `/run/yantrik-mind-egress/grants.json`, root's, with the reader's trust checks in the design. A
 session grant's `scope_id` is the first 16 hex digits of the SHA-256 of the `session` string
 `harness.attach` returned. Nothing the harness sends writes a grant: only the person's press on the
-card, or a run starter's `yantrik-update mind-grant add --scope run --run-id ID --ttl 4h`.
+card, or a run starter's `yantrik-update mind-grant add --scope run --run-id ID --ttl 4h` followed
+by `yos act shell send_message text=… run=ID`.
 
 **Forgetting: `redact`.** When the person asks a mind to forget something, the mind asks a
 Keep/Erase question (a `request` with `options: ["Keep", "Erase"]`) that **contains each text it

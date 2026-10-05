@@ -224,7 +224,13 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     });
     // The Mind asks before it searches the web in its own words; the person's card answers, and
     // root writes a grant on *This session* or *Always* (design/mind-egress-2026-09-29.md, 6).
-    let host = host.with_grants(yantrik_harness::grants::GRANTS_PATH, (0, 0), crate::mind_grants::on_notice);
+    // Only a `mind` attached as the yantrik-mind account is listened to.
+    let host = host.with_grants(
+        yantrik_harness::grants::GRANTS_PATH,
+        (0, 0),
+        yantrik_ipc_transport::mind_door::mind_uid(),
+        crate::mind_grants::on_notice,
+    );
     let _ = HOST.set(host.clone());
 
     // The agent terminal's side of agents (design/agents-workspace-2026-09-23.md, decision 3):

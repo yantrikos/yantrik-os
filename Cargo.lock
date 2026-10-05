@@ -11505,6 +11505,8 @@ dependencies = [
  "tokio",
  "tracing",
  "unicode-normalization",
+ "unicode-properties",
+ "unicode-script",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
 ]
@@ -11954,6 +11956,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "slint",
  "sysinfo",
  "tokio",

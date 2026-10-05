@@ -1028,6 +1028,10 @@ pub struct Question {
     /// Why it can no longer be answered, when that happened; empty while it can.
     pub closed: String,
     pub asked: u64,
+    /// The desktop's own search grant card (`yantrik_harness::host::grant`), drawn in the
+    /// desktop's name: set only from the host's `Event::Request { by_host }`, which no harness
+    /// can send. Not kept across a restart, where the question closes anyway.
+    pub by_host: bool,
 }
 
 impl Question {

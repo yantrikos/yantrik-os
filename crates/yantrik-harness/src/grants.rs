@@ -12,6 +12,8 @@
 //!   path) shows a regular file owned by root with no group or other write bit;
 //! - it parses, `version` is 1, and each grant checks; one that does not, or has expired, is
 //!   dropped. A capability this build does not know is dropped, never widened into one it does.
+//!   So is one granted more than [`SKEW_SECS`] in the future: written under a clock that was
+//!   ahead, it would otherwise hold until that future date.
 //!
 //! A file that fails any of these is read as **no grants**: the Mind asks.
 
@@ -31,6 +33,9 @@ pub const AGENT: &str = "mind";
 pub const VERSION: u64 = 1;
 /// The longest a run or session grant lasts.
 pub const MOST_SECS: u64 = 24 * 60 * 60;
+/// How far in the future a grant's `granted_at` may be and still be read: clock skew between
+/// the writer and a reader, no more.
+pub const SKEW_SECS: u64 = 300;
 /// The largest file read.
 const BIGGEST: u64 = 64 * 1024;
 
@@ -65,10 +70,11 @@ impl Grant {
         let id_ok = self.id.len() == 14
             && self.id.starts_with("g-")
             && self.id[2..].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-        let scope_id_ok = |s: &str| {
-            !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b".-_:".contains(&b))
-        };
         if !id_ok || self.agent != AGENT || self.capability != CAPABILITY {
+            return false;
+        }
+        // Not granted in the future, beyond the skew a reader allows.
+        if now.checked_add(SKEW_SECS).is_none_or(|latest| self.granted_at > latest) {
             return false;
         }
         match (self.scope.as_str(), self.scope_id.as_deref(), self.expires_at) {
@@ -76,7 +82,7 @@ impl Grant {
             (scope @ ("run" | "session"), Some(id), Some(expires)) => {
                 scope_id_ok(id)
                     && self.granted_at < expires
-                    && expires <= self.granted_at + MOST_SECS
+                    && self.granted_at.checked_add(MOST_SECS).is_some_and(|most| expires <= most)
                     && now < expires
                     && self.granted_by == if scope == "run" { "run-starter" } else { "person" }
             }
@@ -96,6 +102,11 @@ impl Grant {
                 _ => false,
             }
     }
+}
+
+/// Whether `s` is a run or session id a grant may name: 1 to 64 of `A-Z a-z 0-9 . _ : -`.
+pub fn scope_id_ok(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b".-_:".contains(&b))
 }
 
 /// A harness session's id as a grant names it: the first 16 hex digits of the SHA-256 of the
@@ -238,6 +249,39 @@ mod tests {
         std::os::unix::fs::symlink(&d, &linked_dir).unwrap();
         assert!(read(&linked_dir.join("grants.json"), me(), 2000).is_err(), "nor a directory that is a link");
         assert!(read(&d.join("missing.json"), me(), 2000).is_err(), "a missing file: no grants");
+    }
+
+    #[test]
+    fn a_grant_dated_in_the_future_is_dropped_beyond_the_skew() {
+        let at = |granted_at: u64, scope: &str| {
+            let mut g = if scope == "always" { grant("always", None, None) } else { grant("session", Some("s"), Some(granted_at + 3600)) };
+            g["granted_at"] = json!(granted_at);
+            g
+        };
+        let now = 1_759_650_000;
+        // The review's probe: granted_at 4000000000 was kept at now=1759650000.
+        assert_eq!(parse(&file(vec![at(4_000_000_000, "always")]), now).unwrap(), vec![]);
+        assert_eq!(parse(&file(vec![at(4_000_000_000, "session")]), now).unwrap(), vec![]);
+        assert_eq!(parse(&file(vec![at(now + SKEW_SECS + 1, "always")]), now).unwrap(), vec![], "just past the skew");
+        assert_eq!(parse(&file(vec![at(now + SKEW_SECS, "always")]), now).unwrap().len(), 1, "within the skew");
+        assert_eq!(parse(&file(vec![at(now + SKEW_SECS, "session")]), now).unwrap().len(), 1);
+        assert_eq!(parse(&file(vec![at(now - 10, "session")]), now).unwrap().len(), 1, "an ordinary grant");
+        // No overflow, in a debug build or any: a granted_at or a now at the top of the range.
+        let mut top = grant("session", Some("s"), Some(u64::MAX));
+        top["granted_at"] = json!(u64::MAX - 1);
+        assert_eq!(parse(&file(vec![top.clone()]), now).unwrap(), vec![]);
+        assert_eq!(parse(&file(vec![top]), u64::MAX).unwrap(), vec![]);
+        assert_eq!(parse(&file(vec![grant("always", None, None)]), u64::MAX).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn a_run_grant_names_the_run_and_nothing_else() {
+        let raw = file(vec![grant("run", Some("research-42"), Some(5000))]);
+        let g = &parse(&raw, 2000).unwrap()[0];
+        assert!(g.covers("mind", Some("5f1c2a9e0b7d4c3e"), Some("research-42"), 2000));
+        assert!(!g.covers("mind", Some("5f1c2a9e0b7d4c3e"), None, 2000), "a turn in no run");
+        assert!(!g.covers("mind", Some("5f1c2a9e0b7d4c3e"), Some("research-43"), 2000), "another run");
+        assert!(scope_id_ok("research-42") && !scope_id_ok("") && !scope_id_ok("a b") && !scope_id_ok(&"x".repeat(65)));
     }
 
     #[test]

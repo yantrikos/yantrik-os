@@ -74,11 +74,16 @@ pub struct Turn {
     /// Where the turn came from: the Lens at the desk, or a channel on the person's phone.
     /// `None` for a turn the desktop does not say (a harness that predates it sees no difference).
     pub origin: Option<protocol::Origin>,
+    /// The run this turn belongs to, when the person (or root) started it as one: `yos act shell
+    /// send_message text=… run=ID`. Stamped by the host on the turn it hands the harness
+    /// (`turn["run"]`) and remembered for that turn; a run grant covers a `grant_request` only on
+    /// a turn that carries its run. Never taken from a harness or an agent.
+    pub run: Option<String>,
 }
 
 impl Turn {
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), context: None, origin: None }
+        Self { text: text.into(), context: None, origin: None, run: None }
     }
 
     pub fn with_context(mut self, context: impl Into<String>) -> Self {
@@ -88,6 +93,12 @@ impl Turn {
 
     pub fn with_origin(mut self, origin: protocol::Origin) -> Self {
         self.origin = Some(origin);
+        self
+    }
+
+    /// The same turn, in run `run` (see [`Turn::run`]). The caller has already checked who asked.
+    pub fn with_run(mut self, run: impl Into<String>) -> Self {
+        self.run = Some(run.into());
         self
     }
 

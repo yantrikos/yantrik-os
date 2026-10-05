@@ -1299,7 +1299,7 @@ fn apply(agent: &mut Agent, event: &Event, provenance: Provenance, now: u64) -> 
         Event::Status { text } => agent.status = cap(text).to_string(),
         // The agent asked the person something (#25): it waits, and says what it asked. The
         // question itself is kept by the host's run store, which alone takes the answer.
-        Event::Request { request_id, prompt, options } => {
+        Event::Request { request_id, prompt, options, by_host } => {
             let turn = turn_for(agent, provenance, now);
             let known = turn.items.iter().any(|i| matches!(i, Item::Question(q) if q.request == *request_id));
             if !known {
@@ -1310,6 +1310,7 @@ fn apply(agent: &mut Agent, event: &Event, provenance: Provenance, now: u64) -> 
                     answer: String::new(),
                     closed: String::new(),
                     asked: now,
+                    by_host: *by_host,
                 }));
             }
             agent.status = cap(&format!("asks: {prompt}")).to_string();
@@ -1740,6 +1741,8 @@ fn parse(text: &str, now: u64) -> Option<Agent> {
                     options: q.options,
                     answer: q.answer,
                     asked: q.asked,
+                    // Closed by the restart; never drawn as the desktop's again.
+                    by_host: false,
                 }),
                 // A request still waiting when the shell stopped is gone with the shell: requests
                 // are held in memory, so nobody can answer it now, and it is never drawn with
@@ -1882,7 +1885,7 @@ mod tests {
         let (mut s, _) = store();
         let pi = id("pi:main");
         s.open_turn(&pi, "clean up Downloads");
-        let ask = Event::Request { request_id: "r1".into(), prompt: "Delete 3 old installers?".into(), options: vec!["Allow".into(), "Deny".into()] };
+        let ask = Event::Request { request_id: "r1".into(), prompt: "Delete 3 old installers?".into(), options: vec!["Allow".into(), "Deny".into()], by_host: false };
         s.event(&pi, &ask, Provenance::Reported);
         let agent = s.agent(&pi).unwrap();
         assert_eq!(agent.state, State::WaitingForYou);
@@ -2263,7 +2266,7 @@ mod tests {
     }
 
     fn asks(request: &str, prompt: &str) -> Event {
-        Event::Request { request_id: request.into(), prompt: prompt.into(), options: vec!["Yes".into(), "No".into()] }
+        Event::Request { request_id: request.into(), prompt: prompt.into(), options: vec!["Yes".into(), "No".into()], by_host: false }
     }
 
     /// A question waits in the session as one card, is answered once, and an approval answered
@@ -2288,24 +2291,29 @@ mod tests {
         assert!(s.transcript(&pi, 5).unwrap().contains("[asked the person] Delete 3 installers? — answered: Yes"));
     }
 
-    /// The Mind's search-grant card is the host's question, drawn as any other: the exact query in
-    /// the host's words and the four answers, in order. A raw `grant_request` from any feeder is
-    /// refused, never drawn: only the host's question in its own words reaches the pane.
+    /// The Mind's search-grant card is the host's question: the exact query in the host's words and
+    /// the four answers, in order, marked as the desktop's (`by_host`) so the card draws it in the
+    /// desktop's name. A raw `grant_request` from any feeder is refused, never drawn: only the
+    /// host's question in its own words reaches the pane. An agent's own question is never marked.
     #[test]
     fn a_search_grant_card_offers_its_four_answers_and_a_raw_request_is_not_drawn() {
         use yantrik_harness::host::grant;
         let (mut s, _) = store();
         let mind = id("mind:c-g1");
         s.open_turn(&mind, "research the 2027 edition");
-        let ask = Event::Request { request_id: "g1".into(), prompt: grant::prompt("rust 2027 edition"), options: grant::labels() };
+        let ask = Event::Request { request_id: "g1".into(), prompt: grant::prompt("rust 2027 edition"), options: grant::labels(), by_host: true };
         s.event(&mind, &ask, Provenance::Reported);
         let q = &questions(&s, &mind)[0];
         assert_eq!(q.options, ["Once", "This session", "Always", "No"]);
         assert!(q.prompt.contains("\u{201c}rust 2027 edition\u{201d}"), "{}", q.prompt);
-        let raw = Event::GrantRequest { request_id: "g2".into(), capability: "web_search_own_words".into(), query: "x".into(), run_id: None };
+        assert!(q.by_host, "the desktop's card");
+        let raw = Event::GrantRequest { request_id: "g2".into(), capability: "web_search_own_words".into(), query: "x".into() };
         s.event(&mind, &raw, Provenance::Reported);
         assert_eq!(questions(&s, &mind).len(), 1);
         assert!(s.question_answered(&mind, "g1", "This session"));
+        let own = Event::Request { request_id: "q3".into(), prompt: "Which folder?".into(), options: vec![], by_host: false };
+        s.event(&mind, &own, Provenance::Reported);
+        assert!(!questions(&s, &mind).iter().find(|q| q.request == "q3").unwrap().by_host, "an agent's own question");
     }
 
     /// A question past the quiet limit is still the person's to answer: it needs them as waiting,

@@ -342,6 +342,7 @@ mod tests {
                 answer: answer.into(),
                 closed: String::new(),
                 asked: 10,
+                by_host: false,
             }));
             a
         };
