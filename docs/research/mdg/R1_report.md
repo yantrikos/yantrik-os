@@ -4,7 +4,7 @@
 
 ## Executive summary (for Pranab)
 
-**Bottom line:** the central hypothesis (§25/§32) is **not yet supported in a form that is about MDG**. The first experiment found a large position saving, but nearly all of it comes from **packing one fact into one sequence position**. Plain compact English packed the same way does just as well. The **typed MDG schema itself added +2.9 accuracy points at an identical position count, which is within seed noise** (3 seeds, Welch t ≈ 1.8).
+**Bottom line:** the central hypothesis (§25/§32) is **not yet supported in a form that is about MDG**. The first experiment found a large position saving, but nearly all of it comes from **packing one fact into one sequence position**. Plain compact English packed the same way does nearly as well in the pre-registered runs. The **typed MDG schema itself added +2.9 accuracy points at an identical position count, which is within seed noise** (3 seeds, Welch t ≈ 1.8).
 
 At the serialisation level, MDG written one code per slot is 34% shorter than word-level compact English. But a fair text baseline uses a 200-merge domain-trained tokenizer, and against that MDG-with-the-same-tokenizer saves only **~6%** of positions (72.6 vs 76.9). That is far below the pre-registered 30% bar.
 
