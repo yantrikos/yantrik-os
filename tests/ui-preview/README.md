@@ -163,7 +163,7 @@ The acceptance checks the outside design review asked for, beside it:
   session row were, and Enter, answer nothing.
 - `verify-approval-precedence`: the whole shell with a card in its corner, and each of the shell's
   own overlays (Quick Settings, Today, power menu, clipboard, cheat sheet, battery and network
-  popovers, window switcher, Lens) opened over it in turn: the card stays drawn whole on top and
+  popovers, window switcher, Lens, mode menu, Minds panel) opened over it in turn: the card stays drawn whole on top and
   Decline answers. Other apps' windows are the compositor's; `card_watch`'s unit tests cover the
   shell's side of those.
 
