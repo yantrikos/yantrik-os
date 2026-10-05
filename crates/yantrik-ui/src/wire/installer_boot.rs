@@ -1,9 +1,11 @@
 //! GRUB on an EFI machine, whether the installer made the EFI partition or found it shared.
 //!
 //! Two installs, and both used to be needed everywhere. The first writes \EFI\yantrik and,
-//! where allowed, a firmware boot entry for it. The second writes \EFI\BOOT\BOOTX64.EFI, the
-//! removable-media path every UEFI implementation tries when it has no entry of its own, and the
-//! one a Mac's Option-key menu shows as "EFI Boot".
+//! where allowed, a firmware boot entry for it. The second fills \EFI\BOOT, whose BOOTX64.EFI is
+//! the removable-media path every UEFI implementation tries when it has no entry of its own, and
+//! the one a Mac's Option-key menu shows as "EFI Boot". It is no longer `grub-install
+//! --removable`, which wrote whatever it liked there: a fixed set of files copied from
+//! \EFI\yantrik (efi::SHIM_SET), each recorded in \EFI\BOOT\YANTRIK.OWN.
 //!
 //! Only the first used to run, with `--no-nvram`, so the disk had a bootloader in a directory
 //! nothing had been told to look in: the machine installed, rebooted, and came back up on the
@@ -11,11 +13,11 @@
 //!
 //! Installed into a partition (wire/installer_partition.rs) the EFI partition is shared, so the
 //! decisions are crates/yantrik-install-target's `efi` rules: a Mac's NVRAM is never written
-//! (macOS stays what starts; Yantrik is picked with Option), another system's BOOTX64.EFI is
-//! never replaced, and on any other UEFI machine the new entry goes last unless the person
-//! asked for first.
+//! (macOS stays what starts; Yantrik is picked with Option), nothing is written in \EFI\BOOT
+//! while any file Yantrik would write there is another system's, and on any other UEFI machine
+//! the new entry goes last unless the person asked for first.
 
-use yantrik_install_target::efi::{self, Existing, Fallback, Nvram};
+use yantrik_install_target::efi::{self, EspFiles, Fallback, Nvram, Written};
 use yantrik_install_target::{parse_target_id, TargetSpec};
 
 use super::installer::{chroot_cmd, run_cmd, sudo_write};
@@ -39,19 +41,13 @@ pub fn install_efi(
     tracing::info!(apple, external, in_partition = layout.in_partition, ?nvram, "Installer: installing GRUB for EFI");
     let mut notes: Vec<String> = Vec::new();
 
-    // What is at \EFI\BOOT\BOOTX64.EFI, asked before any grub-install writes to the partition:
-    // each directory listed and its names matched without regard to case, as FAT matches them.
-    // A directory that cannot be listed counts as holding another system's loader.
+    // Whether \EFI\BOOT may be written, asked before any grub-install writes to the partition:
+    // each directory listed and its names matched without regard to case, as FAT matches them,
+    // and every file Yantrik would write there that is already there must be listed by sha256 in
+    // YANTRIK.OWN. A directory that cannot be listed counts as holding another system's files.
     let esp = format!("{mount_dir}/boot/efi");
-    let existing = efi::find_fallback(&esp, &|dir| {
-        run_cmd("ls", &["-A1", "--", dir]).map(|out| out.lines().map(String::from).collect())
-    });
-    let ours = match &existing {
-        Existing::At(path) => fallback_is_ours(&esp, path),
-        Existing::Nothing | Existing::Unknown(_) => false,
-    };
-    let fallback = efi::fallback(layout.in_partition, existing != Existing::Nothing, ours, apple);
-    tracing::info!(?existing, ours, ?fallback, "Installer: the EFI partition's fallback loader, before writing");
+    let fallback = efi::check_fallback(&Sudo, &esp, apple);
+    tracing::info!(?fallback, "Installer: the EFI partition's \\EFI\\BOOT, before writing");
 
     let mut no_nvram: Vec<&str> = NAMED.to_vec();
     no_nvram.push("--no-nvram");
@@ -73,26 +69,16 @@ pub fn install_efi(
         }
     }
 
-    match fallback {
-        Fallback::Write => {
-            // Not optional once chosen: its failure is the install's failure. --no-nvram: the
-            // removable path is found by the firmware without an entry, and this one is never
-            // to touch a Mac's NVRAM, whatever grub-install would do by default.
-            chroot_cmd(
-                mount_dir,
-                &["grub-install", "--target=x86_64-efi", "--efi-directory=/boot/efi", "--removable", "--no-nvram"],
-            )?;
-            // Check the file, not the exit code. grub-install has been known to report success
-            // having written nothing useful.
-            let written = format!("{esp}/EFI/BOOT/BOOTX64.EFI");
-            let digest = run_cmd("sha256sum", &[&written]).map_err(|_| {
-                "grub-install reported success but left no EFI/BOOT/BOOTX64.EFI on the EFI partition; \
-                 the disk would not boot"
-                    .to_string()
-            })?;
-            let hex = digest.split_whitespace().next().unwrap_or("");
-            sudo_write(&format!("{esp}/{}", efi::OWNER_FILE), &efi::owner_line(hex))?;
-            tracing::info!("Installer: EFI fallback bootloader present");
+    // Checked again as it is written; a file that appeared since stops it all the same. Not
+    // optional once chosen: failing to write the set is the install's failure.
+    let written = match fallback {
+        Fallback::Write => efi::write_fallback(&Sudo, &esp, apple)
+            .map_err(|e| format!("the EFI fallback \\EFI\\BOOT could not be written: {e}; the disk would not boot"))?,
+        Fallback::Keep(note) => Written::Kept(note),
+    };
+    match written {
+        Written::Set(set) => {
+            tracing::info!(?set, "Installer: EFI fallback written, each file recorded in YANTRIK.OWN");
             if apple && layout.in_partition {
                 notes.push(
                     "macOS still starts by default. To start Yantrik OS, hold Option at the chime and choose EFI Boot."
@@ -100,20 +86,41 @@ pub fn install_efi(
                 );
             }
         }
-        Fallback::Keep(note) => {
-            tracing::info!(existing = ?existing, "Installer: another system's fallback loader left in place");
+        Written::Kept(note) => {
+            tracing::info!(%note, "Installer: \\EFI\\BOOT left as it was");
             notes.push(note);
         }
     }
     Ok((!notes.is_empty()).then(|| notes.join(" ")))
 }
 
-/// Whether the BOOTX64.EFI at `path` is the one Yantrik wrote: its sha256 is the one recorded
-/// beside it.
-fn fallback_is_ours(esp: &str, path: &str) -> bool {
-    let owner = run_cmd("cat", &[&format!("{esp}/{}", efi::OWNER_FILE)]).unwrap_or_default();
-    let digest = run_cmd("sha256sum", &[path]).unwrap_or_default();
-    efi::is_ours_by_digest(digest.split_whitespace().next().unwrap_or(""), &owner)
+/// The EFI partition through sudo: the installer does not run as root.
+struct Sudo;
+
+impl EspFiles for Sudo {
+    fn list(&self, dir: &str) -> Result<Vec<String>, String> {
+        run_cmd("ls", &["-A1", "--", dir]).map(|out| out.lines().map(String::from).collect())
+    }
+    fn sha256(&self, path: &str) -> Result<String, String> {
+        let out = run_cmd("sha256sum", &["--", path])?;
+        let hex = out.split_whitespace().next().map(str::to_ascii_lowercase);
+        hex.ok_or_else(|| format!("sha256sum printed nothing for {path}"))
+    }
+    fn read(&self, path: &str) -> Result<String, String> {
+        run_cmd("cat", &["--", path])
+    }
+    fn copy(&self, from: &str, to: &str) -> Result<(), String> {
+        run_cmd("cp", &["--", from, to]).map(|_| ())
+    }
+    fn write(&self, path: &str, text: &str) -> Result<(), String> {
+        sudo_write(path, text)
+    }
+    fn remove(&self, path: &str) -> Result<(), String> {
+        run_cmd("rm", &["--", path]).map(|_| ())
+    }
+    fn mkdir(&self, path: &str) -> Result<(), String> {
+        run_cmd("mkdir", &["--", path]).map(|_| ())
+    }
 }
 
 /// A firmware entry for \EFI\yantrik, last in the boot order: what was starting keeps starting.

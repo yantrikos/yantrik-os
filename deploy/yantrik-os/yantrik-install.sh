@@ -103,20 +103,6 @@ is_apple() {
     apple_types_on "$1"
 }
 
-# The path of \EFI\BOOT\BOOTX64.EFI under the EFI partition mounted at $1, found by reading each
-# directory and matching names whatever their case, as FAT does. Exits 1 when there is none, 2
-# when a directory could not be read (counted as "there is one, and it is not ours").
-fallback_probe() {
-    local dir=$1 want listing found
-    for want in EFI BOOT BOOTX64.EFI; do
-        listing=$(ls -A1 -- "$dir" 2>/dev/null) || return 2
-        found=$(printf '%s\n' "$listing" | awk -v w="$want" 'toupper($0) == w { print; exit }')
-        [ -n "$found" ] || return 1
-        dir="$dir/$found"
-    done
-    printf '%s\n' "$dir"
-}
-
 if [ -d /sys/firmware/efi ]; then
     SCAN='[]'
     DISKS=$(lsblk -dn -e 7,11 -o NAME,TYPE | awk '$2 == "disk" { print "/dev/" $1 }')
@@ -472,20 +458,18 @@ if $IS_EFI; then
     # before still starts (crates/yantrik-install-target/src/efi.rs has the same rules).
     NVRAM_FLAG=""
     { $EXTERNAL || $APPLE || [ "$MODE" = partition ]; } && NVRAM_FLAG="--no-nvram"
-    # \EFI\BOOT\BOOTX64.EFI: another system's is never replaced. Asked before any grub-install
-    # writes to the partition, by reading each directory (FAT ignores case, so efi/boot/bootx64.efi
-    # is the same file); a directory that cannot be read counts as one holding another system's
-    # loader. Yantrik's own is known by the sha256 recorded beside it in YANTRIK.OWN.
-    PROBE=0
-    EXISTING=$(fallback_probe "$M/boot/efi") || PROBE=$?
-    OURS=false
-    if [ "$PROBE" = 0 ] && [ -f "$(dirname "$EXISTING")/YANTRIK.OWN" ] \
-        && [ "sha256=$(sha256sum "$EXISTING" | cut -d' ' -f1)" = "$(cat "$(dirname "$EXISTING")/YANTRIK.OWN")" ]; then
-        OURS=true
-    fi
-    if [ "$PROBE" = 2 ]; then
-        echo -e "   ${A}Could not read the EFI partition's EFI/BOOT directory; any loader there is left alone.${N}"
-    fi
+    # \EFI\BOOT: a fixed set of files copied from \EFI\yantrik (shim as BOOTX64.EFI, grubx64.efi,
+    # mmx64.efi, grub.cfg; crates/yantrik-install-target/src/efi.rs, SHIM_SET), each recorded by
+    # sha256 in \EFI\BOOT\YANTRIK.OWN, and nothing at all written there while any file of that
+    # set is already there and not listed in YANTRIK.OWN. Asked before any grub-install writes
+    # to the partition, and again as it is written. Never grub-install --removable, which wrote
+    # BOOTX64.CSV beside them and recorded none of it.
+    { [ -x "$TARGET_BIN" ] && command -v jq >/dev/null 2>&1; } \
+        || { echo -e "${R}$TARGET_BIN or jq is missing from this installer image; the EFI fallback cannot be written.${N}" >&2; exit 1; }
+    APPLE_FLAG=""
+    $APPLE && APPLE_FLAG="--apple"
+    FALLBACK=$("$TARGET_BIN" efi-fallback check $APPLE_FLAG "$M/boot/efi") \
+        || { echo -e "${R}Could not check the EFI partition's EFI/BOOT directory.${N}" >&2; exit 1; }
     chroot "$M" grub-install --target=x86_64-efi --efi-directory=/boot/efi \
         --bootloader-id=yantrik $NVRAM_FLAG \
         || chroot "$M" grub-install --target=x86_64-efi --efi-directory=/boot/efi \
@@ -506,18 +490,19 @@ if $IS_EFI; then
             echo -e "   ${A}No firmware entry was added; choose Yantrik OS from the firmware's boot menu.${N}"
         fi
     fi
-    # Written where nothing was (probe 1), over our own, or on a disk this install made.
-    if [ "$MODE" != partition ] || [ "$PROBE" = 1 ] || $OURS; then
-        # --no-nvram: the removable path needs no entry, and a Mac's NVRAM is never written.
-        chroot "$M" grub-install --target=x86_64-efi --efi-directory=/boot/efi --removable --no-nvram
-        [ -f "$M/boot/efi/EFI/BOOT/BOOTX64.EFI" ] \
-            || { echo -e "${R}No EFI/BOOT/BOOTX64.EFI on the EFI partition; this disk would not boot.${N}" >&2; exit 1; }
-        echo "sha256=$(sha256sum "$M/boot/efi/EFI/BOOT/BOOTX64.EFI" | cut -d' ' -f1)" > "$M/boot/efi/EFI/BOOT/YANTRIK.OWN"
+    if [ "$(jq -r '.write // false' <<<"$FALLBACK")" = true ]; then
+        FALLBACK=$("$TARGET_BIN" efi-fallback write $APPLE_FLAG "$M/boot/efi") \
+            || { echo -e "${R}The EFI fallback in EFI/BOOT could not be written; this disk would not boot.${N}" >&2; exit 1; }
+    fi
+    if jq -e '.written' <<<"$FALLBACK" >/dev/null; then
+        ok "EFI/BOOT: $(jq -r '[.written[].name] | join(", ")' <<<"$FALLBACK"), each recorded in YANTRIK.OWN"
         if $APPLE && [ "$MODE" = partition ]; then
             BOOT_NOTE="macOS still starts by default. Hold Option at the chime and choose EFI Boot to start Yantrik OS."
         fi
     else
-        BOOT_NOTE="The EFI partition already has a \\EFI\\BOOT\\BOOTX64.EFI that is not Yantrik's, so it was left alone. Start Yantrik OS from rEFInd or the firmware's boot menu (\\EFI\\yantrik\\grubx64.efi)."
+        # printf, not echo -e: the note's \EFI would print as an escape.
+        BOOT_NOTE=$(jq -r '.kept' <<<"$FALLBACK")
+        printf '   %b%s%b\n' "$A" "$BOOT_NOTE" "$N"
     fi
     # Beside macOS on a Mac, a boot menu entry that gets back to it.
     if $APPLE && [ "$MODE" = partition ] && [ "${KEEPS_MACOS:-false}" = true ]; then
@@ -534,7 +519,7 @@ if grep -qE 'root=/dev/(sd|nvme|vd|hd|mmcblk)' "$M/boot/grub/grub.cfg"; then
     echo -e "${R}grub.cfg names the root by device, not UUID; it would not boot from another port.${N}" >&2
     exit 1
 fi
-ok "GRUB installed$($IS_EFI && echo ' (EFI, with the removable-media fallback)')"
+ok "GRUB installed$($IS_EFI && echo ' (EFI)')"
 
 # ── 16. Regenerate initramfs (without live-boot hooks) ──
 chroot "$M" update-initramfs -u 2>/dev/null || true
@@ -569,7 +554,7 @@ echo -e "${G}╚═════════════════════�
 echo -e "  ${MEDIUM_NOTE}"
 echo
 if [ -n "${BOOT_NOTE:-}" ]; then
-    echo -e "  ${A}${BOOT_NOTE}${N}"
+    printf '  %b%s%b\n' "$A" "$BOOT_NOTE" "$N"
     echo
 fi
 echo -n "Reboot now? [Y/n] "; read -r RB

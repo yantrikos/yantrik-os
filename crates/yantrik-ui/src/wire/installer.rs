@@ -596,7 +596,8 @@ fn install_to_target(
 
     // ── Step 12: Install GRUB ───────────────────────────────────
     progress(75, "Installing bootloader...");
-    // Both the shared-EFI-partition rules and the two grub-install runs are installer_boot.rs.
+    // The shared-EFI-partition rules, the named grub-install and the \EFI\BOOT fallback are
+    // installer_boot.rs.
     // A USB disk gets no NVRAM entry (it moves between ports and machines), and a Mac never does.
     let boot_note = if is_efi {
         installer_boot::install_efi(mount_dir, disk, layout, disk_is_external(disk), state.boot_first)?
@@ -1200,7 +1201,7 @@ fn copy_system(mount_dir: &str, progress: &ProgressFn) -> Result<(), String> {
             "--exclude=/live/*",
             "--exclude=/cdrom/*",
             // The EFI partition is mounted there, and installed into a partition it is shared
-            // with macOS or Windows: only grub-install writes to it (installer_boot.rs).
+            // with macOS or Windows: only installer_boot.rs writes to it (GRUB and the \EFI\BOOT set).
             "--exclude=/boot/efi/*",
             "/",
             &target,

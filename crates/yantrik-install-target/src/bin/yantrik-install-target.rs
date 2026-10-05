@@ -13,6 +13,13 @@
 //!       Re-read the table, refuse if it changed, make or wipe the target, check nothing else
 //!       moved, and print the devices as JSON: {"esp": ..., "root": ..., "boot": ...}.
 //!
+//!   yantrik-install-target efi-fallback check|write [--apple] ESP_MOUNT
+//!       The removable-media fallback \EFI\BOOT on the EFI partition mounted at ESP_MOUNT
+//!       (efi::check_fallback, efi::write_fallback). `check`, asked before any grub-install:
+//!       {"write": true}, or {"kept": "<what to tell the person>"}. `write`, after the named
+//!       grub-install has filled \EFI\yantrik: {"written": [{"name": ..., "sha256": ...}, ...]},
+//!       each also in \EFI\BOOT\YANTRIK.OWN, or {"kept": ...} with nothing written there.
+//!
 //!   yantrik-install-target grub-macos-entry
 //!       The /etc/grub.d script for a Mac installed beside macOS (efi::GRUB_MACOS_SCRIPT).
 //!
@@ -21,6 +28,8 @@
 //! filesystems on the devices `apply` prints.
 
 use std::process::{Command, ExitCode};
+
+use yantrik_install_target::efi::{self, EspFiles, Fallback, Written};
 
 use serde_json::json;
 use yantrik_install_target::apply::{self, Ran};
@@ -38,6 +47,36 @@ fn run(cmd: &str, args: &[&str]) -> Ran {
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         },
         Err(e) => Ran { code: None, stdout: String::new(), stderr: format!("could not run {cmd}: {e}") },
+    }
+}
+
+/// The EFI partition as root reaches it.
+struct Fs;
+
+impl EspFiles for Fs {
+    fn list(&self, dir: &str) -> Result<Vec<String>, String> {
+        let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
+        entries.map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned()).map_err(|e| e.to_string())).collect()
+    }
+    fn sha256(&self, path: &str) -> Result<String, String> {
+        std::fs::read(path).map(|b| efi::sha256_hex(&b)).map_err(|e| format!("{path}: {e}"))
+    }
+    fn read(&self, path: &str) -> Result<String, String> {
+        std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))
+    }
+    fn copy(&self, from: &str, to: &str) -> Result<(), String> {
+        std::fs::copy(from, to).map_err(|e| format!("copying {from} to {to}: {e}"))?;
+        std::fs::File::open(to).and_then(|f| f.sync_all()).map_err(|e| format!("{to}: {e}"))
+    }
+    fn write(&self, path: &str, text: &str) -> Result<(), String> {
+        std::fs::write(path, text).map_err(|e| format!("{path}: {e}"))?;
+        std::fs::File::open(path).and_then(|f| f.sync_all()).map_err(|e| format!("{path}: {e}"))
+    }
+    fn remove(&self, path: &str) -> Result<(), String> {
+        std::fs::remove_file(path).map_err(|e| format!("{path}: {e}"))
+    }
+    fn mkdir(&self, path: &str) -> Result<(), String> {
+        std::fs::create_dir(path).map_err(|e| format!("{path}: {e}"))
     }
 }
 
@@ -101,6 +140,16 @@ fn main() -> ExitCode {
             let all: Vec<Segment> = read(disks, efi).into_iter().filter_map(|(_, r)| r.ok()).flat_map(|(_, s)| s).collect();
             Ok(json!({ "preselect": classify::preselect(&all) }))
         }
+        ["efi-fallback", "check", esp] => Ok(match efi::check_fallback(&Fs, esp, flag("--apple")) {
+            Fallback::Write => json!({ "write": true }),
+            Fallback::Keep(note) => json!({ "kept": note }),
+        }),
+        ["efi-fallback", "write", esp] => efi::write_fallback(&Fs, esp, flag("--apple")).map(|w| match w {
+            Written::Set(set) => {
+                json!({ "written": set.iter().map(|(n, h)| json!({ "name": n, "sha256": h })).collect::<Vec<_>>() })
+            }
+            Written::Kept(note) => json!({ "kept": note }),
+        }),
         [verb @ ("plan" | "apply"), target, fingerprint] => (|| {
             let (disk, spec) = parse_target_id(target)?;
             let disk = format!("/dev/{disk}");
@@ -114,7 +163,7 @@ fn main() -> ExitCode {
             }
         })(),
         _ => Err("usage: yantrik-install-target scan DISK... | preselect DISK... | plan TARGET FINGERPRINT | \
-                  apply TARGET FINGERPRINT [--encrypt] [--uefi|--bios]"
+                  apply TARGET FINGERPRINT [--encrypt] [--uefi|--bios] | efi-fallback check|write [--apple] ESP_MOUNT"
             .into()),
     };
     match result {

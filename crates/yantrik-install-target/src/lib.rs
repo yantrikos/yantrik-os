@@ -21,8 +21,9 @@
 //!   that was not the target must be exactly as it was; and every partition about to be
 //!   formatted must be where the kernel says it is.
 //! - **Booting** ([`efi`]): the existing EFI system partition is mounted, never formatted. The
-//!   `\EFI\BOOT\BOOTX64.EFI` fallback is written only where none exists or the one there is
-//!   ours, and a Mac's NVRAM is never touched.
+//!   `\EFI\BOOT` fallback is a fixed set of files, each recorded with its sha256 in
+//!   `YANTRIK.OWN`, written only when none of them is there as another system's, and a Mac's
+//!   NVRAM is never touched.
 //!
 //! Pure logic and fixtures in `table`, `classify`, `segment`, `plan` and `efi`; reading a real
 //! disk in `read` and writing it in `apply`, behind a runner the caller supplies (the desktop
