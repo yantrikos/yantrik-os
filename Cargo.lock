@@ -11340,6 +11340,7 @@ dependencies = [
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
  "yantrik-ml",
+ "yantrik-web-search",
  "yantrikdb",
 ]
 
@@ -12019,6 +12020,17 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "yantrik-web-search"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "ureq 2.12.1",
+ "url",
 ]
 
 [[package]]

@@ -354,13 +354,14 @@ fn detect_captcha(title: &str, text: &str, elements: &str) -> Option<String> {
         || tl.contains("access denied")
         || (xl.contains("blocked") && xl.contains("automated"))
     {
-        return Some(
+        return Some(format!(
             "BOT PROTECTION: Hard block — this site rejected automated access.\n\
              Cannot solve this. Alternatives:\n\
-             1. Use http_fetch with a different search engine (DuckDuckGo, Bing)\n\
+             1. {}\n\
              2. Try accessing via API instead of web scraping\n\
-             3. Use a different URL or source".to_string()
-        );
+             3. Use a different URL or source",
+            crate::search_service::advice()
+        ));
     }
 
     // ── Element-level detection (iframe captcha widgets) ──
@@ -1328,8 +1329,8 @@ impl Tool for BrowserSearchTool {
             cleanup_after_data_extraction(&mut ws);
             return format!(
                 "Search for '{query}' hit bot protection:\n{captcha_msg}\n\n\
-                 STOP retrying Google — use http_fetch with DuckDuckGo instead:\n\
-                 http_fetch(url=\"https://html.duckduckgo.com/html/?q=YOUR+QUERY\")"
+                 STOP retrying Google. {}",
+                crate::search_service::advice()
             );
         }
 
@@ -1382,10 +1383,10 @@ impl Tool for WebSearchTool {
             return "Error: query too long (max 500 chars)".to_string();
         }
 
-        // Try SearXNG first (local, fast, no rate limits)
-        match searxng_search(query) {
-            Ok(results) => return results,
-            Err(e) => tracing::debug!("SearXNG unavailable ({e}), trying browser/DDG"),
+        // The person's SearXNG, when Settings → Network → Web search names one; it falls back to
+        // DuckDuckGo itself, and says so. Built-in searches as below.
+        if let Some(results) = crate::search_service::search(&crate::search_service::target(), query, &duckduckgo_html_search) {
+            return results;
         }
 
         // Auto-launch headless browser if not running — fall back to DuckDuckGo if unavailable
@@ -1495,58 +1496,6 @@ impl Tool for WebSearchTool {
 
         output
     }
-}
-
-// ── SearXNG local search (primary, fast, no rate limits) ──
-
-/// Default SearXNG base URL. Override via SEARXNG_URL env var.
-fn searxng_base_url() -> String {
-    std::env::var("SEARXNG_URL").unwrap_or_else(|_| "http://localhost:8888".to_string())
-}
-
-/// Search via local SearXNG instance. Returns structured results as JSON API.
-fn searxng_search(query: &str) -> Result<String, String> {
-    let base = searxng_base_url();
-    let encoded: String = query
-        .chars()
-        .map(|c| match c {
-            ' ' => '+'.to_string(),
-            c if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') => c.to_string(),
-            c => format!("%{:02X}", c as u32),
-        })
-        .collect();
-
-    let url = format!("{}/search?q={}&format=json&pageno=1", base, encoded);
-
-    let resp = ureq::get(&url)
-        .set("Accept", "application/json")
-        .timeout(std::time::Duration::from_secs(10))
-        .call()
-        .map_err(|e| format!("SearXNG request failed: {e}"))?;
-
-    let json: serde_json::Value = resp
-        .into_json()
-        .map_err(|e| format!("SearXNG JSON parse failed: {e}"))?;
-
-    let results = json
-        .get("results")
-        .and_then(|v| v.as_array())
-        .ok_or("No results array in SearXNG response")?;
-
-    if results.is_empty() {
-        return Err("SearXNG returned zero results".to_string());
-    }
-
-    let mut output = format!("Search results for: {query}\n\n");
-    for (i, r) in results.iter().take(10).enumerate() {
-        let title = r.get("title").and_then(|v| v.as_str()).unwrap_or("");
-        let url = r.get("url").and_then(|v| v.as_str()).unwrap_or("");
-        let snippet = r.get("content").and_then(|v| v.as_str()).unwrap_or("");
-        output.push_str(&format!("{}. {}\n   {}\n   {}\n\n", i + 1, title, url, snippet));
-    }
-
-    tracing::info!(query = %query, count = results.len().min(10), "SearXNG search");
-    Ok(output)
 }
 
 // ── DuckDuckGo HTML fallback (no browser required) ──

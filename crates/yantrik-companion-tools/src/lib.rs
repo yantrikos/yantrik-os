@@ -46,6 +46,7 @@ pub mod package;
 pub mod pipe;
 /// What run_command may run, without a shell (#445).
 pub mod safe_command;
+pub mod search_service;
 pub mod plugin;
 pub mod process;
 pub mod provider_keys;

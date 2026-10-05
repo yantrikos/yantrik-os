@@ -47,6 +47,8 @@ members = [
     # The folder watch and the move decisions shared by yDoc and the Text Editor, so a file
     # moved in Files does not strand the editor holding it open (#75, #86).
     "crates/yantrik-file-follow",
+    # The person's web search service: one setting, read by the shell, its tools and its harnesses.
+    "crates/yantrik-web-search",
     "apps/notes",
     "apps/arcade",
     "apps/container-manager",
@@ -161,6 +163,7 @@ libc = "0.2"
 
 # Internal crates
 yantrik-harness = { path = "crates/yantrik-harness" }
+yantrik-web-search = { path = "crates/yantrik-web-search" }
 yantrik-agent-terminal = { path = "crates/yantrik-agent-terminal" }
 yantrik-companion-core = { path = "crates/yantrik-companion-core" }
 yantrik-companion-instincts = { path = "crates/yantrik-companion-instincts" }

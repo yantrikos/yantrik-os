@@ -31,3 +31,5 @@ html2text = { workspace = true }
 serde_yaml = { workspace = true }
 tungstenite = { workspace = true }
 ureq = { workspace = true }
+# The person's web search service (Settings → Network → Web search): what `web_search` asks.
+yantrik-web-search = { workspace = true }
