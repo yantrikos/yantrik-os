@@ -40,3 +40,11 @@ accuracy is within 1 pt of the best text accuracy. Best MDG condition M* is chos
 * Matched: parameters, examples seen, optimizer, schedule. Reported, not matched: FLOPs, KV size, wall-clock.
 * One learnability pilot on `mdg_packed` only (to check the model trains at all at this size) is permitted
   before the main runs, and is disclosed in the report.
+
+## Amendment 1 (after the learnability pilot, before any main run)
+Pilots, all on `mdg_packed` seed 0 (no other condition was run):
+(a) d=64, 3 layers, bs 32, 2000 steps → 36.0% test accuracy (underfit);
+(b) d=64, 3 layers, bs 32, 8000 steps → 66.8%;
+(c) d=128, 4 layers, bs 64, 4000 steps, lr 5e-4 → 49.2%.
+Change: **training is 8000 steps × batch 32 (256k fresh worlds)** with d=64, 3 layers. Kill criteria are unchanged.
+Because of CPU budget, `plain` (not part of K1–K3) runs with **seed 0 only**. All other conditions run seeds 0,1,2.
