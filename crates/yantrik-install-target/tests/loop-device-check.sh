@@ -23,8 +23,15 @@
 # parted type), as the text installer does; 4b, on the same layout made again, the encrypted
 # one the desktop installer takes by default (wipefs, rm, then /boot and root made inside the
 # placeholder's extent). Both check the decoy is untouched byte for byte.
+# 4a and 4b write the EFI fallback as both installers do (`yantrik-install-target efi-fallback
+# write`, from an \EFI\yantrik filled as the named grub-install with shim fills it) and check
+# that \EFI\BOOT holds exactly BOOTX64.EFI, grubx64.efi, mmx64.efi and grub.cfg, each listed by
+# sha256 in YANTRIK.OWN, and nothing else: no BOOTX64.CSV, no fbx64.efi.
 # Section 5 is the disks refused whole: a hybrid MBR, an EFI partition too full for a loader,
 # and an empty partition that is not blank.
+# Section 6 is \EFI\BOOT holding another system's grub.cfg, grubx64.efi, BOOTX64.EFI or
+# fbx64.efi: nothing is written there and it stays byte for byte; and a re-install over
+# Yantrik's own set, which is written over and recorded again.
 #
 # Run as root, on a machine with loop devices (sparse images, a few hundred MB of real writes):
 #   sudo crates/yantrik-install-target/tests/loop-device-check.sh [path/to/yantrik-install-target]
@@ -108,9 +115,60 @@ apfs_ends() {
     dd if="${LOOP}p2" bs=1M count=64 skip=$((size - 64 * MIB)) iflag=skip_bytes status=none | sha256sum | cut -d' ' -f1
 }
 
+# Every file Yantrik writes in \EFI\BOOT (crates/yantrik-install-target/src/efi.rs, SHIM_SET),
+# in C order.
+FALLBACK_SET="BOOTX64.EFI grub.cfg grubx64.efi mmx64.efi"
+
+# The EFI partition's files, by sha256, that an install must leave as they were: all but
+# \EFI\yantrik's and the fallback's. The allowlist for \EFI\BOOT is exactly what YANTRIK.OWN
+# records, and only when it records exactly FALLBACK_SET and each file matches its digest;
+# otherwise a line saying so is printed, and any file in \EFI\BOOT it does not record
+# (BOOTX64.CSV, say) is listed as itself, so either counts as a change.
 esp_files() {
     mount -o ro "${LOOP}p1" "$MNT"
-    (cd "$MNT" && find . -type f ! -path './EFI/yantrik/*' -exec sha256sum {} + | sort)
+    local own="$MNT/EFI/BOOT/YANTRIK.OWN" recorded="" skip=""
+    if [ -f "$own" ]; then
+        recorded=$(awk '{ print $2 }' "$own" | LC_ALL=C sort | xargs)
+        if [ "$recorded" = "$FALLBACK_SET" ] && (cd "$MNT/EFI/BOOT" && sha256sum --quiet --strict -c YANTRIK.OWN >/dev/null 2>&1); then
+            skip="$FALLBACK_SET YANTRIK.OWN"
+        else
+            echo "YANTRIK.OWN records '$recorded', not exactly '$FALLBACK_SET' with matching digests" | tee /dev/stderr
+        fi
+    fi
+    (cd "$MNT" && find . -type f ! -path './EFI/yantrik/*' -exec sha256sum {} + | sort) \
+        | awk -v skip="$skip" 'BEGIN { n = split(skip, s, " "); for (i = 1; i <= n; i++) ok["./EFI/BOOT/" s[i]] = 1 } !($2 in ok)'
+    umount "$MNT"
+}
+
+# \EFI\yantrik as the named grub-install with shim leaves it ($1: the mounted EFI partition),
+# with BOOTX64.CSV and fbx64.efi, which the fallback must not copy.
+fill_yantrik() {
+    mkdir -p "$1/EFI/yantrik"
+    for f in shimx64.efi grubx64.efi mmx64.efi fbx64.efi; do head -c 150000 /dev/urandom > "$1/EFI/yantrik/$f"; done
+    printf 'search.fs_uuid %s root\nset prefix=($root)/grub\nconfigfile $prefix/grub.cfg\n' "$RANDOM$RANDOM" > "$1/EFI/yantrik/grub.cfg"
+    printf 'shimx64.efi,Yantrik OS,,This is the boot entry for Yantrik OS\n' > "$1/EFI/yantrik/BOOTX64.CSV"
+}
+
+# \EFI\BOOT on the EFI partition mounted at $1 after `efi-fallback write` printed $2: exactly
+# the set and YANTRIK.OWN, each file listed in it by sha256, BOOTX64.EFI shim. $3: what was done.
+fallback_written() {
+    [ "$(jq -r '[.written[].name] | sort | join(" ")' <<<"$2")" = "$FALLBACK_SET" ] || { echo "$2"; fail "$3: wrote other than $FALLBACK_SET"; }
+    [ "$(ls -A "$1/EFI/BOOT" | LC_ALL=C sort | xargs)" = "$(printf '%s\n' $FALLBACK_SET YANTRIK.OWN | LC_ALL=C sort | xargs)" ] \
+        || fail "$3: EFI/BOOT holds $(ls -A "$1/EFI/BOOT" | xargs)"
+    [ "$(awk '{ print $2 }' "$1/EFI/BOOT/YANTRIK.OWN" | LC_ALL=C sort | xargs)" = "$FALLBACK_SET" ] || fail "$3: YANTRIK.OWN records other files"
+    (cd "$1/EFI/BOOT" && sha256sum --quiet --strict -c YANTRIK.OWN) || fail "$3: a file in EFI/BOOT does not match YANTRIK.OWN"
+    cmp -s "$1/EFI/yantrik/shimx64.efi" "$1/EFI/BOOT/BOOTX64.EFI" || fail "$3: BOOTX64.EFI is not shim"
+    cmp -s "$1/EFI/yantrik/grubx64.efi" "$1/EFI/BOOT/grubx64.efi" || fail "$3: grubx64.efi is not \\EFI\\yantrik's"
+}
+
+# What the installers do to the EFI partition after the root is made: the named GRUB in
+# \EFI\yantrik, then the fallback in \EFI\BOOT. $1: what was done.
+install_boot() {
+    mount "${LOOP}p1" "$MNT"
+    fill_yantrik "$MNT"
+    [ "$("$BIN" efi-fallback check --apple "$MNT" | jq -r .write)" = true ] || fail "$1: the fallback was not to be written"
+    OUT=$("$BIN" efi-fallback write --apple "$MNT")
+    fallback_written "$MNT" "$OUT" "$1"
     umount "$MNT"
 }
 
@@ -354,7 +412,7 @@ ROOT=$(jq -r .root "$WORK/apply.json")
 [ "$ROOT" = "${LOOP}p4" ] || fail "the root reported is $ROOT, not ${LOOP}p4"
 [ "$(jq -r .esp "$WORK/apply.json")" = "${LOOP}p1" ] || fail "the EFI partition reported is not ${LOOP}p1"
 mkfs.ext4 -q -F -L YANTRIK "$ROOT"
-mount "${LOOP}p1" "$MNT"; mkdir -p "$MNT/EFI/yantrik"; head -c 150000 /dev/urandom > "$MNT/EFI/yantrik/grubx64.efi"; umount "$MNT"
+install_boot "installing into YANTRIK, unencrypted"
 sync
 mac_unchanged "installing into YANTRIK, unencrypted"
 [ "$(sgdisk -i 4 "$LOOP" | grep -E 'First sector|Last sector|unique GUID|Partition name')" = "$P4_INFO" ] \
@@ -362,7 +420,7 @@ mac_unchanged "installing into YANTRIK, unencrypted"
 sgdisk -i 4 "$LOOP" | grep -q "$LINUX_TYPE" || fail "the target is not typed Linux filesystem"
 [ "$(part_count)" = 4 ] || fail "the disk does not have exactly its four partitions"
 [ "$(blkid -p -s TYPE -o value "$ROOT")" = ext4 ] || fail "the root is not ext4"
-pass "4a: YANTRIK wiped, retyped and formatted where it is; APFS head and tail, the EFI partition and its files, the disk GUID, partitions 1-3, YKINSTALL and the decoy disk unchanged"
+pass "4a: YANTRIK wiped, retyped and formatted where it is; EFI/BOOT exactly $FALLBACK_SET and YANTRIK.OWN; APFS head and tail, the EFI partition and its other files, the disk GUID, partitions 1-3, YKINSTALL and the decoy disk unchanged"
 drop_mac
 
 echo "== 4b. YANTRIK, encrypted: wipefs, rm, then /boot and root inside its extent (the desktop default)"
@@ -389,7 +447,7 @@ else
     LUKS="cryptsetup is not installed here, so the root was made ext4 in place of LUKS2"
     echo "   NOTE: $LUKS"
 fi
-mount "${LOOP}p1" "$MNT"; mkdir -p "$MNT/EFI/yantrik"; head -c 150000 /dev/urandom > "$MNT/EFI/yantrik/grubx64.efi"; umount "$MNT"
+install_boot "installing into YANTRIK, encrypted"
 sync
 mac_unchanged "installing into YANTRIK, encrypted"
 [ "$(part_count)" = 5 ] || fail "the disk does not have exactly five partitions (the four, with YANTRIK made two)"
@@ -401,7 +459,7 @@ done
 [ "$(first_sector "${BOOT##*p}")" = 1563433928 ] && [ "$(last_sector "${ROOT##*p}")" = 1952105802 ] \
     || fail "/boot and root do not fill exactly YANTRIK's old extent"
 [ "$(blockdev --getsize64 "$BOOT")" -ge $((1024 * MIB)) ] || fail "/boot is under 1 GiB"
-pass "4b: /boot and root made inside exactly YANTRIK's old extent ($LUKS); APFS head and tail, the EFI partition and its files, the disk GUID, partitions 1-3, YKINSTALL and the decoy disk unchanged"
+pass "4b: /boot and root made inside exactly YANTRIK's old extent ($LUKS); EFI/BOOT exactly $FALLBACK_SET and YANTRIK.OWN; APFS head and tail, the EFI partition and its other files, the disk GUID, partitions 1-3, YKINSTALL and the decoy disk unchanged"
 drop_mac
 losetup -d "$DECOY"; DECOY=""
 rm -f "$DIMG"
@@ -435,5 +493,40 @@ seg "$WORK/scan.json" "$(basename "$LOOP")p3" reason | grep -qF 'first MiB is no
     || { seg "$WORK/scan.json" "$(basename "$LOOP")p3" reason; fail "a partition with bytes in its first MiB was offered as empty"; }
 losetup -d "$LOOP"; LOOP=""
 pass "a hybrid MBR, an EFI partition with under 32 MB free, and an empty partition with bytes in it are refused"
+
+# ── 6. Another system's files in \EFI\BOOT, and a re-install over Yantrik's own ────────────
+echo "== EFI/BOOT holding another system's files; a re-install over Yantrik's own"
+make_disk efiboot
+boot_sums() { (cd "$MNT/EFI/BOOT" && find . -type f -exec sha256sum {} + | LC_ALL=C sort); }
+mount "${LOOP}p1" "$MNT"
+fill_yantrik "$MNT"
+for foreign in grub.cfg grubx64.efi BOOTX64.EFI bootx64.efi fbx64.efi; do
+    rm -rf "$MNT/EFI/BOOT"; mkdir -p "$MNT/EFI/BOOT"
+    head -c 4096 /dev/urandom > "$MNT/EFI/BOOT/$foreign"
+    echo "left by another system" > "$MNT/EFI/BOOT/BOOTX64.CSV"
+    BEFORE=$(boot_sums)
+    "$BIN" efi-fallback check --apple "$MNT" | jq -e '.kept' >/dev/null || fail "a foreign $foreign was not reported by the check"
+    OUT=$("$BIN" efi-fallback write --apple "$MNT")
+    jq -r '.kept // empty' <<<"$OUT" | grep -qF "not Yantrik's" || { echo "$OUT"; fail "a foreign $foreign did not stop the write"; }
+    [ "$(boot_sums)" = "$BEFORE" ] || fail "a foreign $foreign: EFI/BOOT changed"
+    [ ! -e "$MNT/EFI/BOOT/YANTRIK.OWN" ] || fail "a foreign $foreign: YANTRIK.OWN was written"
+    echo "   kept: $(jq -r .kept <<<"$OUT")"
+done
+pass "another system's grub.cfg, grubx64.efi, BOOTX64.EFI (in either case) or fbx64.efi stops the fallback; EFI/BOOT unchanged byte for byte"
+
+rm -rf "$MNT/EFI/BOOT"
+OUT=$("$BIN" efi-fallback write --apple "$MNT")
+fallback_written "$MNT" "$OUT" "the first install"
+head -c 150000 /dev/urandom > "$MNT/EFI/yantrik/grubx64.efi"
+OUT=$("$BIN" efi-fallback write --apple "$MNT")
+fallback_written "$MNT" "$OUT" "a re-install with a newer GRUB"
+echo "another system's" > "$MNT/EFI/BOOT/grub.cfg"
+BEFORE=$(boot_sums)
+OUT=$("$BIN" efi-fallback write --apple "$MNT")
+jq -r '.kept // empty' <<<"$OUT" | grep -qF "grub.cfg that is not Yantrik's" || { echo "$OUT"; fail "our grub.cfg replaced by another was written over"; }
+[ "$(boot_sums)" = "$BEFORE" ] || fail "EFI/BOOT changed after its grub.cfg was replaced"
+umount "$MNT"
+losetup -d "$LOOP"; LOOP=""
+pass "a re-install over Yantrik's own set writes it again and records it; once another system replaces one file, nothing is written"
 
 echo "PASS: install into a partition, checked on loop devices"
