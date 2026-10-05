@@ -7,10 +7,13 @@
 
 use std::process::Command;
 
-use yantrik_install_target::{apply, classify, efi, parse_target_id, Segment};
+use yantrik_install_target::{apply, classify, parse_target_id, Segment};
 
 use super::installer::run_cmd;
 use super::installer_disk::{self, Layout};
+use super::installer_probe::{self, run_ran};
+
+pub use super::installer_probe::{holds_macos, is_apple};
 
 /// A disk the scan could read a GPT from.
 #[derive(Debug, Clone)]
@@ -36,8 +39,9 @@ pub fn efi_boot() -> bool {
     std::path::Path::new("/sys/firmware/efi").exists()
 }
 
-pub fn is_apple() -> bool {
-    std::fs::read_to_string("/sys/class/dmi/id/sys_vendor").map(|v| efi::is_apple(&v)).unwrap_or(false)
+/// The chosen target read again, for the control surface's choice (installer_probe::recheck).
+pub fn recheck(id: &str, fingerprint: &str) -> Result<(), String> {
+    installer_probe::recheck(id, fingerprint, efi_boot())
 }
 
 /// The disks a partition may be chosen on, from `lsblk -J -d -o NAME,TYPE,RO,SIZE,MODEL,FSTYPE`:
@@ -68,7 +72,8 @@ pub fn candidate_disks(lsblk_json: &str) -> Vec<(String, String)> {
 /// Read every candidate disk's table. A disk with no GPT (blank, or MBR) has nothing to install
 /// into and is left to the whole-disk list.
 pub fn scan() -> Scan {
-    let mut out = Scan { efi: efi_boot(), apple: is_apple(), ..Scan::default() };
+    // A Mac by its firmware here; by an Apple partition type on any disk below.
+    let mut out = Scan { efi: efi_boot(), apple: is_apple(None), ..Scan::default() };
     let listing = Command::new("lsblk")
         .args(["-J", "-d", "-o", "NAME,TYPE,RO,SIZE,MODEL,FSTYPE", "-e", "7,11"])
         .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
@@ -76,8 +81,9 @@ pub fn scan() -> Scan {
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default();
     for (name, title) in candidate_disks(&listing) {
-        match apply::read_table(&format!("/dev/{name}"), &run_cmd) {
+        match apply::read_table(&format!("/dev/{name}"), &run_ran) {
             Ok(t) if t.label == "gpt" => {
+                out.apple |= t.parts.iter().any(classify::is_apple_type);
                 out.segments.extend(classify::segments(&t, out.efi));
                 out.disks.push(ScannedDisk { name, title, fingerprint: t.fingerprint() });
             }
@@ -127,6 +133,7 @@ pub fn show(ui: &crate::App, scan: &Scan) {
             eligible: s.eligible,
             reason: s.reason.clone().into(),
             sentence: s.sentence.clone().into(),
+            card: s.card.clone().into(),
         })
         .collect();
     let eligible: Vec<&str> = scan.segments.iter().filter(|s| s.eligible).map(|s| s.id.as_str()).collect();
@@ -165,15 +172,13 @@ pub fn prepare(
     let disk = format!("/dev/{disk}");
     let _ = run_cmd("cryptsetup", &["close", installer_disk::CRYPT_NAME]);
     progress(2, "Checking the disk has not changed...");
-    let placed = apply::apply(&disk, spec, encrypt, efi_boot(), fingerprint, &run_cmd)?;
+    let placed = apply::apply(&disk, spec, encrypt, efi_boot(), fingerprint, &run_ran)?;
     tracing::info!(
         disk = %disk, target, root = %placed.root, esp = %placed.esp, boot = ?placed.boot,
         "Installer: partition made beside what is on the disk"
     );
     progress(8, "Partition ready");
-    let keeps_macos = apply::read_table(&disk, &run_cmd)
-        .map(|t| t.parts.iter().any(|p| classify::kind_of(p).name() == "macos"))
-        .unwrap_or(false);
+    let keeps_macos = holds_macos(&disk);
     let layout = Layout {
         efi_part: placed.esp,
         boot_part: placed.boot,

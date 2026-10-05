@@ -1,6 +1,11 @@
 //! A disk's partition table, read from `parted -j -s <disk> unit s print free` (the geometry,
-//! the GPT type of each partition, and the runs of free space between them) and `lsblk -J`
-//! (the filesystem, label and mount point of each partition).
+//! the disk's GUID, the GPT type, GUID, name and flags of each partition, and the runs of free
+//! space between them) and `lsblk -J` (the filesystem, label and mount point of each partition).
+//!
+//! What only reading the disk itself can tell — whether a partition is truly empty, what a
+//! placeholder holds, the MBR in sector 0, the room left on the EFI partition — is filled in by
+//! `read::read_table`. A table parsed from text alone has looked at none of it, and nothing on
+//! it can be chosen.
 
 use serde_json::Value;
 
@@ -30,6 +35,8 @@ pub struct Part {
     pub run: Run,
     /// The GPT partition type, lowercase; empty when parted did not say.
     pub type_uuid: String,
+    /// The partition's own GPT GUID, lowercase; empty when parted did not say.
+    pub uuid: String,
     /// The GPT partition name ("EFI System Partition", "Container").
     pub name: String,
     pub flags: Vec<String>,
@@ -40,6 +47,36 @@ pub struct Part {
     pub label: String,
     /// Where it is mounted now, if anywhere.
     pub mountpoint: String,
+    /// What looking inside it found. Only an empty partition or an empty placeholder can be
+    /// installed into, and only `read::read_table` looks.
+    pub checked: Checked,
+}
+
+/// What reading a partition's bytes found, beyond the name of its filesystem.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Checked {
+    /// Nobody looked: a table parsed from text, or a partition of a kind that is kept anyway.
+    #[default]
+    NotLooked,
+    /// Nothing on it at all (blkid found nothing, wipefs no signature, the first and last MiB
+    /// are zeros), or, for a YANTRIK placeholder, nothing on it but macOS's own housekeeping.
+    Empty,
+    /// It could not be shown to be empty; why, in words.
+    Unreadable(String),
+    /// A YANTRIK placeholder with files a person may want: their paths, as found.
+    Holds(Vec<String>),
+}
+
+/// What only the disk itself can say about the table as a whole, read by `read::read_table`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Probed {
+    /// On USB or marked removable, or it could not be told: never where a target is chosen for
+    /// the person.
+    pub external: bool,
+    /// Bytes free on the EFI system partition; `None` when it could not be looked at.
+    pub esp_free: Option<u64>,
+    /// Why sector 0 is not a plain protective MBR (a hybrid MBR, as Boot Camp makes), or `None`.
+    pub mbr_problem: Option<String>,
 }
 
 /// A disk and its partitions, in the order they sit on it.
@@ -50,11 +87,16 @@ pub struct DiskTable {
     pub model: String,
     /// The partition table: "gpt", "msdos", "unknown".
     pub label: String,
+    /// The disk's GPT GUID, lowercase: a rewritten table gets a new one. Empty when parted did
+    /// not say, and then nothing on the disk can be chosen.
+    pub guid: String,
     /// The disk's size in logical sectors.
     pub sectors: u64,
     pub sector_size: u64,
     pub parts: Vec<Part>,
     pub free: Vec<Run>,
+    /// `None` until the disk itself was read (`read::read_table`).
+    pub probed: Option<Probed>,
 }
 
 /// The kernel's name for partition `num` of `disk`: a disk whose name ends in a digit gets a
@@ -87,6 +129,7 @@ impl DiskTable {
         let sectors = sectors_of(&disk["size"]).ok_or("parted gave no size in sectors")?;
         let sector_size = disk["logical-sector-size"].as_u64().unwrap_or(512);
         let label = disk["label"].as_str().unwrap_or("unknown").to_string();
+        let guid = disk["uuid"].as_str().unwrap_or("").to_lowercase();
         let model = disk["model"].as_str().unwrap_or("").trim().to_string();
         let probes = probes(lsblk_json);
 
@@ -109,6 +152,7 @@ impl DiskTable {
                 number,
                 run,
                 type_uuid: p["type-uuid"].as_str().unwrap_or("").to_lowercase(),
+                uuid: p["uuid"].as_str().unwrap_or("").to_lowercase(),
                 name: p["name"].as_str().unwrap_or("").to_string(),
                 flags: p["flags"]
                     .as_array()
@@ -118,10 +162,11 @@ impl DiskTable {
                 fstype: probe.0,
                 label: probe.1,
                 mountpoint: probe.2,
+                checked: Checked::NotLooked,
             });
         }
         parts.sort_by_key(|p| p.run.start);
-        Ok(DiskTable { path, model, label, sectors, sector_size, parts, free })
+        Ok(DiskTable { path, model, label, guid, sectors, sector_size, parts, free, probed: None })
     }
 
     pub fn name(&self) -> &str {
@@ -139,6 +184,12 @@ impl DiskTable {
         self.sectors.saturating_sub(backup + 1)
     }
 
+    /// The first sector a partition may use: the protective MBR, then GPT's header and entries
+    /// (34 sectors in all at 512 bytes, 6 at 4096).
+    pub fn first_usable(&self) -> u64 {
+        2 + (128 * 128 + self.sector_size - 1) / self.sector_size
+    }
+
     /// One mebibyte in sectors: where new partitions start and end.
     pub fn align(&self) -> u64 {
         (1024 * 1024 / self.sector_size).max(1)
@@ -153,16 +204,16 @@ impl DiskTable {
         self.parts.iter().find(|p| crate::classify::is_esp(p))
     }
 
-    /// What the person was shown, in sixteen hex digits: the table (its kind, the disk's size,
-    /// every partition's number, extent and type) and what is on each partition. Two reads of an
-    /// unchanged disk agree; a partition added, moved, removed, retyped or reformatted between
-    /// them does not.
+    /// What the person was shown, in sixteen hex digits: the table (its kind, its GUID, the
+    /// disk's size, every partition's number, extent, type, GUID, name and flags) and what is on
+    /// each partition. Two reads of an unchanged disk agree; a table rewritten, or a partition
+    /// added, moved, removed, retyped, renamed, reflagged or reformatted between them, does not.
     pub fn fingerprint(&self) -> String {
-        let mut text = format!("{}|{}|{}", self.label, self.sectors, self.sector_size);
+        let mut text = format!("{}|{}|{}|{}", self.label, self.guid, self.sectors, self.sector_size);
         for p in &self.parts {
             text.push_str(&format!(
-                "|{}:{}-{}:{}:{}:{}",
-                p.number, p.run.start, p.run.end, p.type_uuid, p.fstype, p.label
+                "|{}:{}-{}:{}:{}:{:?}:{:?}:{}:{}",
+                p.number, p.run.start, p.run.end, p.type_uuid, p.uuid, p.name, p.flags, p.fstype, p.label
             ));
         }
         format!("{:016x}", fnv1a64(text.as_bytes()))
@@ -239,20 +290,25 @@ mod tests {
     }
 
     #[test]
-    fn the_end_of_a_gpt_disk_is_kept_for_its_backup() {
+    fn the_ends_of_a_gpt_disk_are_kept_for_its_headers() {
         let t = DiskTable {
             path: "/dev/sda".into(),
             model: String::new(),
             label: "gpt".into(),
+            guid: String::new(),
             sectors: 4_194_304,
             sector_size: 512,
             parts: vec![],
             free: vec![],
+            probed: None,
         };
         // 4194304 sectors: the backup header is the last, its 32 sectors of entries before it.
         assert_eq!(t.last_usable(), 4_194_304 - 34);
+        // The protective MBR, the header, then 32 sectors of entries: 34 is the first free one.
+        assert_eq!(t.first_usable(), 34);
         let t4k = DiskTable { sector_size: 4096, sectors: 1_000_000, ..t };
         assert_eq!(t4k.last_usable(), 1_000_000 - 6);
+        assert_eq!(t4k.first_usable(), 6);
         assert_eq!(t4k.align(), 256);
     }
 }

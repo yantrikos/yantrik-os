@@ -44,6 +44,7 @@ fn seg(id: &str, kind: &str, title: &str, size: &str, share: f32, kept: bool, el
         eligible,
         reason: if eligible { "".into() } else { "kept".into() },
         sentence: format!("Yantrik OS will be installed into {device} ({size}). Nothing else on this disk changes.").into(),
+        card: format!("Install into {device} ({size}, {title}); nothing else changes").into(),
     }
 }
 

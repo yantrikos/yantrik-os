@@ -268,7 +268,7 @@ pub fn check(plan: &Plan, t: &DiskTable) -> Result<(), String> {
     if let Some(p) = t.parts.iter().find(|p| Some(p.number) != target && p.run.overlaps(&plan.region)) {
         return fail(format!("overlap {}", p.path));
     }
-    if plan.region.end > t.last_usable() || plan.region.start < t.align().min(34) {
+    if plan.region.end > t.last_usable() || plan.region.start < t.first_usable() {
         return fail("write into the space GPT keeps for itself".into());
     }
     let mut made: Vec<Run> = Vec::new();

@@ -5,9 +5,46 @@
 //! shows as "EFI Boot" and which another system may already own, and the firmware's NVRAM boot
 //! entries, which on a Mac decide what starts when nobody holds a key.
 
-/// DMI's `sys_vendor` (`/sys/class/dmi/id/sys_vendor`) on a Mac.
-pub fn is_apple(sys_vendor: &str) -> bool {
-    matches!(sys_vendor.trim(), "Apple Inc." | "Apple Computer, Inc.")
+/// Whether this machine is a Mac, by any one of: DMI's vendor (`dmi`: `/sys/class/dmi/id/`'s
+/// `sys_vendor`, and `board_vendor` and `bios_vendor` with it, or `None` when `sys_vendor` could
+/// not be read), the firmware's vendor (`/sys/firmware/efi/fw_vendor`), or an Apple partition
+/// type (APFS, HFS+, any other of Apple's) on the disk being installed to.
+///
+/// It fails toward Apple: a machine taken for a Mac has nothing written to its NVRAM, which costs
+/// a PC its boot entry, while a Mac taken for a PC would have its startup disk changed. So a
+/// machine whose DMI cannot be read is a Mac.
+pub fn is_apple_machine(dmi: Option<&str>, fw_vendor: Option<&str>, apple_types_on_disk: bool) -> bool {
+    let says_apple = |v: Option<&str>| v.is_some_and(|v| v.to_ascii_lowercase().contains("apple"));
+    apple_types_on_disk || dmi.is_none() || says_apple(dmi) || says_apple(fw_vendor)
+}
+
+/// What is at `\EFI\BOOT\BOOTX64.EFI` on an EFI partition, before anything is written to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Existing {
+    /// Nothing: a directory on the way holds no such name.
+    Nothing,
+    /// There, at this path, in whatever case it was written.
+    At(String),
+    /// A directory on the way could not be read: counted as one that is there and is not ours.
+    Unknown(String),
+}
+
+/// Find `\EFI\BOOT\BOOTX64.EFI` under `esp` by listing each directory on the way and matching
+/// names without regard to case, as FAT does (`efi/boot/bootx64.efi` is the same file). `list`
+/// gives one directory's names, or why it could not.
+pub fn find_fallback(esp: &str, list: &dyn Fn(&str) -> Result<Vec<String>, String>) -> Existing {
+    let mut path = esp.trim_end_matches('/').to_string();
+    for want in ["EFI", "BOOT", "BOOTX64.EFI"] {
+        let names = match list(&path) {
+            Ok(names) => names,
+            Err(e) => return Existing::Unknown(format!("{path} could not be read: {e}")),
+        };
+        match names.iter().find(|n| n.trim_end_matches(['\r', '\n']).eq_ignore_ascii_case(want)) {
+            Some(name) => path = format!("{path}/{}", name.trim_end_matches(['\r', '\n'])),
+            None => return Existing::Nothing,
+        }
+    }
+    Existing::At(path)
 }
 
 /// Next to `\EFI\BOOT\BOOTX64.EFI` when Yantrik wrote it: the digest of the file it wrote. A
@@ -131,11 +168,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_mac_is_known_by_its_dmi_vendor() {
-        assert!(is_apple("Apple Inc.\n"));
-        assert!(is_apple("Apple Computer, Inc."));
-        assert!(!is_apple("LENOVO"));
-        assert!(!is_apple(""));
+    fn a_mac_is_known_by_any_one_sign_and_an_unreadable_dmi_is_a_mac() {
+        assert!(is_apple_machine(Some("Apple Inc.\n"), None, false));
+        assert!(is_apple_machine(Some("Apple Computer, Inc."), None, false));
+        assert!(is_apple_machine(Some("Acme Clone Co. Apple Inc."), None, false), "board or bios vendor");
+        assert!(is_apple_machine(Some("LENOVO"), Some("Apple"), false), "the firmware's vendor");
+        assert!(is_apple_machine(Some("LENOVO"), None, true), "APFS or HFS+ on the disk");
+        assert!(is_apple_machine(None, None, false), "DMI could not be read");
+        assert!(!is_apple_machine(Some("LENOVO"), Some("0x7f6b2018"), false));
+        assert!(!is_apple_machine(Some(""), None, false));
+    }
+
+    #[test]
+    fn the_fallback_loader_is_found_in_any_case_and_an_unreadable_directory_counts_as_one() {
+        let tree = |dirs: &'static [(&'static str, &'static [&'static str])]| {
+            move |dir: &str| -> Result<Vec<String>, String> {
+                dirs.iter()
+                    .find(|(d, _)| *d == dir)
+                    .map(|(_, names)| names.iter().map(|n| n.to_string()).collect())
+                    .ok_or_else(|| "Permission denied".to_string())
+            }
+        };
+        let lower = tree(&[("/esp", &["efi"]), ("/esp/efi", &["APPLE", "boot"]), ("/esp/efi/boot", &["bootx64.efi"])]);
+        assert_eq!(find_fallback("/esp/", &lower), Existing::At("/esp/efi/boot/bootx64.efi".into()));
+        let none = tree(&[("/esp", &["EFI"]), ("/esp/EFI", &["APPLE"])]);
+        assert_eq!(find_fallback("/esp", &none), Existing::Nothing);
+        let empty_boot = tree(&[("/esp", &["EFI"]), ("/esp/EFI", &["BOOT"]), ("/esp/EFI/BOOT", &["YANTRIK.OWN"])]);
+        assert_eq!(find_fallback("/esp", &empty_boot), Existing::Nothing);
+        // The BOOT directory could not be listed: there may be a loader in it, and not ours.
+        let unreadable = tree(&[("/esp", &["EFI"]), ("/esp/EFI", &["BOOT"])]);
+        let found = find_fallback("/esp", &unreadable);
+        assert!(matches!(&found, Existing::Unknown(why) if why.contains("/esp/EFI/BOOT")), "{found:?}");
+        assert!(matches!(fallback(true, found != Existing::Nothing, false, true), Fallback::Keep(_)));
     }
 
     #[test]

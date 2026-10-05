@@ -1,18 +1,25 @@
 //! What each partition is, and whether Yantrik OS may be installed into it.
 //!
 //! Only two kinds of partition can ever be the root: an empty one, and a placeholder made for
-//! the purpose (FAT or exFAT labelled `YANTRIK` or `YANTRIK-*`, which is what macOS's Disk
-//! Utility makes when the APFS container is shrunk). Everything else is kept, and a kind is
-//! read from the partition type and the filesystem both: a partition typed APFS is macOS's even
-//! when nothing on it can be probed.
+//! the purpose (FAT or exFAT labelled exactly `YANTRIK`, which is what macOS's Disk Utility
+//! makes when the APFS container is shrunk). Both only once the disk itself was read and showed
+//! them empty (`table::Checked::Empty`): a table parsed from text, or a partition that could not
+//! be read, offers nothing. Everything else is kept, and a kind is read from the partition type
+//! and the filesystem both: a partition typed APFS is macOS's even when nothing on it can be
+//! probed.
 
-use crate::table::{human, DiskTable, Part, Run};
+use crate::table::{human, Checked, DiskTable, Part, Run};
+
+pub use crate::segment::{preselect, segments, Segment};
 
 /// The smallest root Yantrik OS is installed into: 20 GB.
 pub const MIN_BYTES: u64 = 20_000_000_000;
-/// Free space smaller than this is not drawn at all: GPT alignment leaves gaps of a few MB
-/// between partitions, and macOS leaves 128 MiB ones.
-const DRAWN_FREE_BYTES: u64 = 1_000_000_000;
+/// The least room the EFI system partition must have left for Yantrik's boot loader: 32 MB.
+pub const ESP_MIN_FREE: u64 = 32_000_000;
+/// The only label a placeholder carries.
+pub const PLACEHOLDER_LABEL: &str = "YANTRIK";
+/// What [`Kind::Other`] says of a partition that could not be shown to be empty.
+pub const UNREADABLE: &str = "unreadable";
 
 /// GPT partition types, lowercase.
 pub mod guid {
@@ -46,13 +53,14 @@ pub enum Kind {
     Windows,
     /// A Linux filesystem, swap, LVM, RAID or LUKS: it may hold someone's data.
     LinuxData(String),
-    /// FAT or exFAT labelled YANTRIK or YANTRIK-*: made to be installed over.
+    /// FAT or exFAT labelled exactly YANTRIK, read and found empty: made to be installed over.
     Placeholder,
-    /// Nothing on it that blkid recognises, typed as plain data.
+    /// Nothing on it at all, read and found so, typed as plain data.
     Unformatted,
     /// What the installer itself is running from.
     InstallMedium,
-    /// Anything else: a filesystem that is not a placeholder, a type we do not know.
+    /// Anything else: a filesystem that is not a placeholder, a type we do not know, a
+    /// placeholder holding files, or a partition that could not be shown empty ([`UNREADABLE`]).
     Other(String),
 }
 
@@ -81,10 +89,15 @@ pub fn is_esp(p: &Part) -> bool {
     p.type_uuid == guid::ESP || p.flags.iter().any(|f| f == "esp")
 }
 
-/// `YANTRIK` or `YANTRIK-anything`, in any case (an exFAT label keeps its case; FAT's is upper).
+/// Exactly `YANTRIK`. Not `YANTRIK-backup`, not `Yantrik-Photos`, not the installer's own
+/// `YANTRIK-INS`: a label that merely starts the same way may be someone's data.
 pub fn is_placeholder_label(label: &str) -> bool {
-    let upper = label.trim().to_ascii_uppercase();
-    upper == "YANTRIK" || (upper.starts_with("YANTRIK-") && upper.len() > "YANTRIK-".len())
+    label == PLACEHOLDER_LABEL
+}
+
+/// Whether a partition has an Apple GPT type: APFS, HFS+, or any other of Apple's.
+pub fn is_apple_type(p: &Part) -> bool {
+    p.type_uuid.ends_with(guid::APPLE_SUFFIX)
 }
 
 const LINUX_FS: &[&str] = &[
@@ -92,7 +105,7 @@ const LINUX_FS: &[&str] = &[
     "crypto_LUKS", "LVM2_member", "linux_raid_member", "zfs_member",
 ];
 
-/// What `p` is, from its GPT type and its filesystem.
+/// What `p` is, from its GPT type, its filesystem and what reading it found.
 pub fn kind_of(p: &Part) -> Kind {
     let t = p.type_uuid.as_str();
     let fs = p.fstype.as_str();
@@ -121,23 +134,31 @@ pub fn kind_of(p: &Part) -> Kind {
         return Kind::LinuxData(if t == guid::BIOS_BOOT { "BIOS boot".into() } else { "Linux".into() });
     }
     if (fs == "vfat" || fs == "exfat") && is_placeholder_label(&p.label) {
-        return Kind::Placeholder;
+        // Labelled for Yantrik, but only empty is a placeholder: what is on it was looked at.
+        return match &p.checked {
+            Checked::Empty => Kind::Placeholder,
+            Checked::Holds(_) => Kind::Other(fs.to_string()),
+            Checked::NotLooked | Checked::Unreadable(_) => Kind::Other(UNREADABLE.into()),
+        };
     }
     if fs.is_empty() {
         // Only the plain data types: an empty partition of a type something else owns (a
         // Linux root or /home with a filesystem blkid could not read) is not empty.
         if t == guid::MS_BASIC_DATA || t == guid::LINUX_FS {
-            return Kind::Unformatted;
+            return if p.checked == Checked::Empty { Kind::Unformatted } else { Kind::Other(UNREADABLE.into()) };
         }
         if [guid::LINUX_ROOT_X86_64, guid::LINUX_HOME].contains(&t) {
             return Kind::LinuxData("Linux".into());
         }
         return Kind::Other(if t.is_empty() { "an unknown partition type".into() } else { format!("partition type {t}") });
     }
+    if let Checked::Unreadable(_) = p.checked {
+        return Kind::Other(UNREADABLE.into());
+    }
     Kind::Other(fs.to_string())
 }
 
-fn fs_word(fs: &str) -> &str {
+pub(crate) fn fs_word(fs: &str) -> &str {
     match fs {
         "vfat" => "FAT32",
         "exfat" => "exFAT",
@@ -175,6 +196,12 @@ pub fn disk_problem(t: &DiskTable, efi_boot: bool) -> Option<String> {
             format!("{} has an {} partition table; installing into a partition needs GPT", t.path, t.label)
         });
     }
+    if t.guid.is_empty() {
+        return Some(format!(
+            "parted did not report the GUID of {}'s partition table, which is how the installer makes sure the table is never rewritten",
+            t.path
+        ));
+    }
     let Some(esp) = t.esp() else {
         return Some(format!("{} has no EFI system partition to boot from", t.path));
     };
@@ -185,7 +212,32 @@ pub fn disk_problem(t: &DiskTable, efi_boot: bool) -> Option<String> {
             esp.path
         ));
     }
-    None
+    let Some(probed) = &t.probed else {
+        return Some(format!("{} was not read closely enough to install beside what is on it", t.path));
+    };
+    if let Some(why) = &probed.mbr_problem {
+        return Some(why.clone());
+    }
+    match probed.esp_free {
+        None => Some(format!(
+            "the EFI system partition {} could not be looked at, read-only, to see how much room it has",
+            esp.path
+        )),
+        Some(free) if free < ESP_MIN_FREE => Some(format!(
+            "the EFI system partition {} has {} free; Yantrik's boot loader needs {}",
+            esp.path,
+            human(free),
+            human(ESP_MIN_FREE)
+        )),
+        Some(_) => None,
+    }
+}
+
+/// The first few of a placeholder's files, for a sentence.
+fn some_of(files: &[String]) -> String {
+    let shown: Vec<&str> = files.iter().take(4).map(String::as_str).collect();
+    let more = files.len().saturating_sub(shown.len());
+    if more == 0 { shown.join(", ") } else { format!("{} and {more} more", shown.join(", ")) }
 }
 
 /// Why `p` cannot be the root, or `None` when it can.
@@ -205,11 +257,21 @@ pub fn partition_problem(t: &DiskTable, p: &Part, efi_boot: bool) -> Option<Stri
         Kind::Windows => Some(format!("{path} holds Windows; it is kept")),
         Kind::LinuxData(what) => Some(format!("{path} holds a Linux filesystem ({what}) that may have data; it is kept")),
         Kind::InstallMedium => Some(format!("{path} is what this installer is running from")),
-        Kind::Other(what) => Some(format!(
-            "{path} holds {}{}; only an empty partition, or a FAT or exFAT placeholder labelled YANTRIK, can be installed into",
-            fs_word(what),
-            if p.label.is_empty() { String::new() } else { format!(" labelled {}", p.label) }
-        )),
+        Kind::Other(what) => Some(match &p.checked {
+            Checked::Holds(files) if is_placeholder_label(&p.label) => format!(
+                "{path} is labelled YANTRIK but holds files ({}); only an empty placeholder is installed into, so move them off it in macOS first",
+                some_of(files)
+            ),
+            Checked::Unreadable(why) => format!("{path} could not be shown to be empty ({why}); it is kept"),
+            _ if what == UNREADABLE => {
+                format!("{path} was not looked inside, so it cannot be shown to be empty; it is kept")
+            }
+            _ => format!(
+                "{path} holds {}{}; only an empty partition, or a FAT or exFAT placeholder labelled exactly YANTRIK, can be installed into",
+                fs_word(what),
+                if p.label.is_empty() { String::new() } else { format!(" labelled {}", p.label) }
+            ),
+        }),
         Kind::Placeholder | Kind::Unformatted => None,
     };
     if refused.is_some() {
@@ -250,103 +312,56 @@ pub fn free_problem(t: &DiskTable, run: &Run, efi_boot: bool) -> Option<String> 
     None
 }
 
-/// One stretch of a disk as the Disk screen draws it: a partition or a run of free space.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Segment {
-    /// What the installer is handed to choose it: `sda3`, or `sda@<start>-<end>` for free space.
-    pub id: String,
-    pub disk: String,
-    /// [`Kind::name`], or "free".
-    pub kind: String,
-    pub title: String,
-    pub bytes: u64,
-    pub size: String,
-    /// Its share of the disk, 0 to 1.
-    pub share: f32,
-    /// Never installed over, whatever happens: macOS, Windows, the EFI partition, data.
-    pub kept: bool,
-    pub eligible: bool,
-    /// Why it cannot be chosen; empty when it can.
-    pub reason: String,
-    /// What the Disk screen says once it is chosen.
-    pub sentence: String,
-    /// `/dev/sda3`; empty for free space.
-    pub device: String,
-    pub start: u64,
-    pub end: u64,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn sentence(what: &str, bytes: u64) -> String {
-    format!("Yantrik OS will be installed into {what} ({}). Nothing else on this disk changes.", human(bytes))
-}
-
-/// The disk's partitions and free space in order, each with whether it can be chosen.
-pub fn segments(t: &DiskTable, efi_boot: bool) -> Vec<Segment> {
-    let disk = t.name().to_string();
-    let share = |sectors: u64| sectors as f32 / t.sectors.max(1) as f32;
-    let mut out: Vec<Segment> = Vec::new();
-    for p in &t.parts {
-        let kind = kind_of(p);
-        let bytes = t.bytes(p.run.sectors());
-        let reason = partition_problem(t, p, efi_boot).unwrap_or_default();
-        out.push(Segment {
-            id: crate::plan::target_id(&disk, &crate::plan::TargetSpec::Partition(p.number)),
-            disk: disk.clone(),
-            kind: kind.name().into(),
-            title: title(p, &kind),
-            bytes,
-            size: human(bytes),
-            share: share(p.run.sectors()),
-            kept: kind.kept(),
-            eligible: reason.is_empty(),
-            sentence: sentence(&p.path, bytes),
-            reason,
-            device: p.path.clone(),
-            start: p.run.start,
-            end: p.run.end,
-        });
-    }
-    for run in &t.free {
-        let bytes = t.bytes(run.sectors());
-        if bytes < DRAWN_FREE_BYTES {
-            continue;
+    fn fat(label: &str, checked: Checked) -> Part {
+        Part {
+            number: 4,
+            run: Run { start: 2048, end: 100_000_000 },
+            type_uuid: guid::MS_BASIC_DATA.into(),
+            uuid: String::new(),
+            name: String::new(),
+            flags: vec![],
+            path: "/dev/sda4".into(),
+            fstype: "vfat".into(),
+            label: label.into(),
+            mountpoint: String::new(),
+            checked,
         }
-        let usable = aligned(t, run).map(|r| t.bytes(r.sectors())).unwrap_or(0);
-        let reason = free_problem(t, run, efi_boot).unwrap_or_default();
-        out.push(Segment {
-            id: crate::plan::target_id(&disk, &crate::plan::TargetSpec::Free { start: run.start, end: run.end }),
-            disk: disk.clone(),
-            kind: "free".into(),
-            title: "Free space".into(),
-            bytes,
-            size: human(bytes),
-            share: share(run.sectors()),
-            kept: false,
-            eligible: reason.is_empty(),
-            sentence: sentence(&format!("a new partition in the free space on {}", t.path), usable),
-            reason,
-            device: String::new(),
-            start: run.start,
-            end: run.end,
-        });
     }
-    out.sort_by_key(|s| s.start);
-    out
-}
 
-/// The target chosen before anyone chooses: a placeholder made for Yantrik (the person said so
-/// by labelling it), or else the largest free run on a disk that keeps another system. `None`
-/// otherwise, and the Disk screen offers erasing a disk as it always did.
-pub fn preselect(segments: &[Segment]) -> Option<String> {
-    if let Some(s) = segments.iter().find(|s| s.eligible && s.kind == "placeholder") {
-        return Some(s.id.clone());
+    #[test]
+    fn only_the_label_yantrik_itself_is_a_placeholder() {
+        assert!(is_placeholder_label("YANTRIK"));
+        for not in ["YANTRIK-backup", "Yantrik-Photos", "YANTRIK-INS", "yantrik", "Yantrik", "YANTRIK ", " YANTRIK", "YANTRIKS", ""] {
+            assert!(!is_placeholder_label(not), "{not:?}");
+            assert_ne!(kind_of(&fat(not, Checked::Empty)), Kind::Placeholder, "{not:?}");
+        }
+        assert_eq!(kind_of(&fat("YANTRIK", Checked::Empty)), Kind::Placeholder);
     }
-    let keeps_a_system = |disk: &str| {
-        segments.iter().any(|s| s.disk == disk && s.kept && matches!(s.kind.as_str(), "macos" | "windows" | "linux"))
-    };
-    segments
-        .iter()
-        .filter(|s| s.eligible && s.kind == "free" && keeps_a_system(&s.disk))
-        .max_by_key(|s| s.bytes)
-        .map(|s| s.id.clone())
+
+    #[test]
+    fn a_placeholder_nobody_looked_inside_or_that_holds_files_is_kept() {
+        assert_eq!(kind_of(&fat("YANTRIK", Checked::NotLooked)), Kind::Other(UNREADABLE.into()));
+        assert_eq!(kind_of(&fat("YANTRIK", Checked::Unreadable("mount failed".into()))), Kind::Other(UNREADABLE.into()));
+        let holds = fat("YANTRIK", Checked::Holds(vec!["Photos/IMG_0001.HEIC".into()]));
+        assert_eq!(kind_of(&holds), Kind::Other("vfat".into()));
+        assert!(kind_of(&holds).kept());
+    }
+
+    #[test]
+    fn an_empty_partition_is_empty_only_once_read_and_found_so() {
+        let mut p = fat("", Checked::NotLooked);
+        p.fstype.clear();
+        assert_eq!(kind_of(&p), Kind::Other(UNREADABLE.into()), "parsed from text: nobody looked");
+        p.checked = Checked::Unreadable("its first MiB is not blank".into());
+        assert_eq!(kind_of(&p), Kind::Other(UNREADABLE.into()));
+        p.checked = Checked::Empty;
+        assert_eq!(kind_of(&p), Kind::Unformatted);
+        // Typed as someone's Linux root: never empty, however blank it reads.
+        p.type_uuid = guid::LINUX_ROOT_X86_64.into();
+        assert_eq!(kind_of(&p).name(), "linux");
+    }
 }

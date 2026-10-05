@@ -49,6 +49,7 @@ export struct InstallerSegment {
     eligible: bool,     // may be chosen
     reason: string,     // why it may not, in words
     sentence: string,   // "Yantrik OS will be installed into /dev/sda3 (200 GB). Nothing else on this disk changes."
+    card: string,       // what an approval card says: "Install into /dev/sda4 (199 GB, YANTRIK, FAT32); nothing else changes"
 }
 
 export struct KeyboardChoice {

@@ -1,0 +1,27 @@
+{
+   "blockdevices": [
+      {
+         "path": "/dev/sdb",
+         "name": "sdb",
+         "fstype": null,
+         "label": null,
+         "mountpoint": null,
+         "children": [
+            {
+               "path": "/dev/sdb1",
+               "name": "sdb1",
+               "fstype": "vfat",
+               "label": "EFI",
+               "mountpoint": null
+            },
+            {
+               "path": "/dev/sdb2",
+               "name": "sdb2",
+               "fstype": "vfat",
+               "label": "YANTRIK-backup",
+               "mountpoint": null
+            }
+         ]
+      }
+   ]
+}

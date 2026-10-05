@@ -15,7 +15,7 @@
 //! never replaced, and on any other UEFI machine the new entry goes last unless the person
 //! asked for first.
 
-use yantrik_install_target::efi::{self, Fallback, Nvram};
+use yantrik_install_target::efi::{self, Existing, Fallback, Nvram};
 use yantrik_install_target::{parse_target_id, TargetSpec};
 
 use super::installer::{chroot_cmd, run_cmd, sudo_write};
@@ -34,10 +34,24 @@ pub fn install_efi(
     external: bool,
     boot_first: bool,
 ) -> Result<Option<String>, String> {
-    let apple = super::installer_partition::is_apple();
+    let apple = super::installer_partition::is_apple(Some(disk));
     let nvram = efi::nvram(apple, external, layout.in_partition, boot_first);
     tracing::info!(apple, external, in_partition = layout.in_partition, ?nvram, "Installer: installing GRUB for EFI");
     let mut notes: Vec<String> = Vec::new();
+
+    // What is at \EFI\BOOT\BOOTX64.EFI, asked before any grub-install writes to the partition:
+    // each directory listed and its names matched without regard to case, as FAT matches them.
+    // A directory that cannot be listed counts as holding another system's loader.
+    let esp = format!("{mount_dir}/boot/efi");
+    let existing = efi::find_fallback(&esp, &|dir| {
+        run_cmd("ls", &["-A1", "--", dir]).map(|out| out.lines().map(String::from).collect())
+    });
+    let ours = match &existing {
+        Existing::At(path) => fallback_is_ours(&esp, path),
+        Existing::Nothing | Existing::Unknown(_) => false,
+    };
+    let fallback = efi::fallback(layout.in_partition, existing != Existing::Nothing, ours, apple);
+    tracing::info!(?existing, ours, ?fallback, "Installer: the EFI partition's fallback loader, before writing");
 
     let mut no_nvram: Vec<&str> = NAMED.to_vec();
     no_nvram.push("--no-nvram");
@@ -59,15 +73,15 @@ pub fn install_efi(
         }
     }
 
-    let esp = format!("{mount_dir}/boot/efi");
-    let existing = run_cmd("find", &[&esp, "-maxdepth", "3", "-ipath", "*/EFI/BOOT/BOOTX64.EFI"])
-        .ok()
-        .and_then(|out| out.lines().next().map(str::to_string));
-    let ours = existing.as_deref().map(|path| fallback_is_ours(&esp, path)).unwrap_or(false);
-    match efi::fallback(layout.in_partition, existing.is_some(), ours, apple) {
+    match fallback {
         Fallback::Write => {
-            // Not optional once chosen: its failure is the install's failure.
-            chroot_cmd(mount_dir, &["grub-install", "--target=x86_64-efi", "--efi-directory=/boot/efi", "--removable"])?;
+            // Not optional once chosen: its failure is the install's failure. --no-nvram: the
+            // removable path is found by the firmware without an entry, and this one is never
+            // to touch a Mac's NVRAM, whatever grub-install would do by default.
+            chroot_cmd(
+                mount_dir,
+                &["grub-install", "--target=x86_64-efi", "--efi-directory=/boot/efi", "--removable", "--no-nvram"],
+            )?;
             // Check the file, not the exit code. grub-install has been known to report success
             // having written nothing useful.
             let written = format!("{esp}/EFI/BOOT/BOOTX64.EFI");
@@ -130,9 +144,10 @@ fn add_entry_last(mount_dir: &str, disk: &str, layout: &Layout) -> Result<(), St
 
 /// The boot menu's macOS entry, on a Mac installed beside macOS (efi::GRUB_MACOS_SCRIPT). Written
 /// before update-grub. A failure costs the entry, never the install: Option at the chime still
-/// reaches macOS.
+/// reaches macOS. A disk that keeps macOS has Apple partition types, which makes the machine a
+/// Mac by efi::is_apple_machine; nothing else need be asked.
 pub fn write_macos_entry(mount_dir: &str, layout: &Layout) {
-    if !(layout.in_partition && layout.keeps_macos && super::installer_partition::is_apple()) {
+    if !(layout.in_partition && layout.keeps_macos) {
         return;
     }
     let path = format!("{mount_dir}/etc/grub.d/35_yantrik_macos");

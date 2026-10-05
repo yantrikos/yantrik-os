@@ -228,13 +228,17 @@ fn uuid_of(device: &str) -> Result<String, String> {
 
 /// The installed system's /etc/fstab, every line by UUID: device names move between boots (a
 /// second disk, a USB stick), and labels repeat (a YANTRIK placeholder, a second Yantrik disk).
-pub fn fstab_text(root_uuid: &str, efi_uuid: Option<&str>, boot_uuid: Option<&str>) -> String {
+///
+/// An EFI partition shared with macOS or Windows (`shared_esp`) gets fsck pass 0: it is theirs
+/// too, and a Linux fsck.vfat "repairing" it at every boot is a write nobody asked for.
+pub fn fstab_text(root_uuid: &str, efi_uuid: Option<&str>, boot_uuid: Option<&str>, shared_esp: bool) -> String {
     let mut fstab = format!("UUID={root_uuid}  /           ext4  defaults,noatime  0  1\n");
     if let Some(uuid) = boot_uuid {
         fstab.push_str(&format!("UUID={uuid}  /boot       ext4  defaults,noatime  0  2\n"));
     }
     if let Some(uuid) = efi_uuid {
-        fstab.push_str(&format!("UUID={uuid}  /boot/efi   vfat  umask=0077        0  2\n"));
+        let pass = if shared_esp { 0 } else { 2 };
+        fstab.push_str(&format!("UUID={uuid}  /boot/efi   vfat  umask=0077        0  {pass}\n"));
     }
     fstab
 }
@@ -256,7 +260,7 @@ pub fn write_system_files(layout: &Layout, mount_dir: &str) -> Result<(), String
     let root_uuid = uuid_of(&layout.root_dev)?;
     sudo_write(
         &format!("{mount_dir}/etc/fstab"),
-        &fstab_text(&root_uuid, efi_uuid.as_deref(), boot_uuid.as_deref()),
+        &fstab_text(&root_uuid, efi_uuid.as_deref(), boot_uuid.as_deref(), layout.in_partition),
     )?;
     let Some(luks) = &layout.luks_part else {
         return Ok(());
@@ -379,13 +383,20 @@ mod tests {
 
     #[test]
     fn fstab_finds_everything_by_uuid() {
-        let text = fstab_text("2222-root", Some("AB12-CD34"), Some("1111-boot"));
+        let text = fstab_text("2222-root", Some("AB12-CD34"), Some("1111-boot"), false);
         assert!(text.starts_with("UUID=2222-root  /  "));
         assert!(!text.contains("LABEL="), "a placeholder may carry the same label");
         assert!(text.contains("UUID=1111-boot  /boot  "));
-        assert!(text.contains("UUID=AB12-CD34  /boot/efi   vfat  umask=0077"));
+        assert!(text.contains("UUID=AB12-CD34  /boot/efi   vfat  umask=0077        0  2\n"));
         assert!(!text.contains("/dev/"), "no device names: they move between boots");
-        assert_eq!(fstab_text("2222-root", None, None).lines().count(), 1);
+        assert_eq!(fstab_text("2222-root", None, None, false).lines().count(), 1);
+    }
+
+    #[test]
+    fn an_efi_partition_shared_with_macos_is_never_checked_at_boot() {
+        let text = fstab_text("2222-root", Some("67E3-17ED"), None, true);
+        assert!(text.contains("UUID=67E3-17ED  /boot/efi   vfat  umask=0077        0  0\n"), "{text}");
+        assert!(text.starts_with("UUID=2222-root  /           ext4  defaults,noatime  0  1\n"));
     }
 
     #[test]

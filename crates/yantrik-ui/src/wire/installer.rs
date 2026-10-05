@@ -56,18 +56,20 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
             .upgrade()
             .map(|ui| ui.get_onboard_erase_macos_disk().to_string())
             .unwrap_or_default();
-        // And, installing into a partition, which one, the table it was chosen from, and
-        // whether the firmware should start Yantrik first (wire/installer_partition.rs).
-        let (install_into, table_fingerprint, boot_first) = ui_weak
-            .upgrade()
-            .filter(|ui| ui.get_onboard_into_partition())
-            .map(|ui| {
+        // And how: erasing a disk, or beside what is on one (wire/installer_partition.rs) with
+        // which partition, the table it was chosen from, and whether the firmware should start
+        // Yantrik first. A shell that cannot be read says nothing, and that refuses rather than
+        // erases: beside, with no target.
+        let (mode, install_into, table_fingerprint, boot_first) = match ui_weak.upgrade() {
+            Some(ui) if !ui.get_onboard_into_partition() => (InstallMode::Erase, String::new(), String::new(), false),
+            Some(ui) => {
                 let target = ui.get_onboard_install_target().to_string();
                 let disk = yantrik_install_target::parse_target_id(&target).map(|(d, _)| d).unwrap_or_default();
                 let fp = installer_partition::fingerprint_for(&ui.get_onboard_table_fingerprints(), &disk);
-                (target, fp, ui.get_onboard_boot_first())
-            })
-            .unwrap_or_default();
+                (InstallMode::Beside, target, fp, ui.get_onboard_boot_first())
+            }
+            None => (InstallMode::Beside, String::new(), String::new(), false),
+        };
 
         std::thread::spawn(move || {
             tracing::info!(
@@ -118,6 +120,7 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
                 timezone,
                 target_disk: target_disk.clone(),
                 erase_macos_disk,
+                mode,
                 install_into,
                 table_fingerprint,
                 boot_first,
@@ -301,8 +304,11 @@ pub struct InstallerState {
     pub target_disk: String,      // e.g. "sda"
     /// The disk the person confirmed may be erased although it holds macOS. Empty: none.
     pub erase_macos_disk: String,
-    /// Install into this partition (`sda3`) or free space (`sda@START-END`) and change nothing
-    /// else on the disk (wire/installer_partition.rs). Empty: erase `target_disk`.
+    /// Erase `target_disk`, or install beside what is on a disk into `install_into`. Carried
+    /// as itself, so an empty target can never read as "erase a disk".
+    pub mode: InstallMode,
+    /// In `InstallMode::Beside`: this partition (`sda3`) or free space (`sda@START-END`); nothing
+    /// else on the disk changes (wire/installer_partition.rs). Empty there is refused.
     pub install_into: String,
     /// The fingerprint of the table `install_into` was chosen from; the install is refused
     /// when the disk no longer matches it.
@@ -323,6 +329,17 @@ pub struct InstallerState {
     pub ai_model: String,
 }
 
+/// How the person chose to install.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InstallMode {
+    /// Erase `target_disk`, or, when none was named, the disk the Disk screen would offer.
+    #[default]
+    Erase,
+    /// Into `install_into`, beside what is on its disk. Nothing is erased, and no other disk is
+    /// ever looked for in its place.
+    Beside,
+}
+
 /// Progress callback: (percent 0-100, status message).
 type ProgressFn = Box<dyn Fn(i32, &str) + Send>;
 
@@ -335,14 +352,18 @@ pub fn run_install(state: &InstallerState, progress: ProgressFn) -> Result<Optio
     progress(1, "Detecting target disk...");
 
     tracing::info!(
-        target_disk = %state.target_disk, install_into = %state.install_into,
+        mode = ?state.mode, target_disk = %state.target_disk, install_into = %state.install_into,
         "Installer: starting, target from UI"
     );
 
     // Into one partition or free space: nothing else on the disk is touched, so there is no
     // disk to erase and nothing about macOS to confirm. The planner refuses every partition it
-    // must keep, and a table that changed since the person saw it.
-    if !state.install_into.is_empty() {
+    // must keep, and a table that changed since the person saw it. With no target there is
+    // nothing to do: never the erase below, and never a disk found in its place.
+    if state.mode == InstallMode::Beside {
+        if let Some(why) = beside_problem(state) {
+            return Err(why);
+        }
         let (disk_name, _) = yantrik_install_target::parse_target_id(&state.install_into)?;
         let disk = format!("/dev/{disk_name}");
         let layout = installer_partition::prepare(
@@ -390,6 +411,25 @@ pub fn run_install(state: &InstallerState, progress: ProgressFn) -> Result<Optio
     // ── Steps 1-3: partition, encrypt if asked, format, mount (installer_disk.rs) ──
     let layout = installer_disk::prepare(&disk, is_efi, state.encrypt, &state.password, &*progress)?;
     install_onto(state, &disk, layout, is_efi, progress)
+}
+
+/// Why an install beside what is on a disk cannot start: no target, or no table to check it
+/// against. Nothing has been written when this answers.
+fn beside_problem(state: &InstallerState) -> Option<String> {
+    if state.install_into.trim().is_empty() {
+        return Some(
+            "installing beside what is on a disk was chosen, but no partition or free space was; nothing was \
+             written, and no disk is erased in its place"
+                .into(),
+        );
+    }
+    if state.table_fingerprint.trim().is_empty() {
+        return Some(format!(
+            "{} was never scanned, so there is nothing to check its disk against; nothing was written",
+            state.install_into
+        ));
+    }
+    None
 }
 
 /// Mount the prepared layout, install onto it, and unmount whatever happened.
@@ -1015,10 +1055,11 @@ pub(crate) fn preselect(disks: &[DiskInfo]) -> Option<&DiskInfo> {
     disks.iter().find(|d| d.name == name)
 }
 
-/// Whether `/dev/<disk>` carries an HFS+ or APFS filesystem anywhere on it, asked of the disk
-/// now. Unknown (lsblk failed) is no: the listing's own answer has already been shown.
+/// Whether `/dev/<disk>` holds macOS, asked of the disk now: by its partitions' GPT types and
+/// `blkid -p` (crates/yantrik-install-target's classify), and by lsblk's FSTYPE as well. A disk
+/// that cannot be read holds macOS unless it is blank (installer_partition::holds_macos).
 fn disk_holds_macos(disk: &str) -> bool {
-    Command::new("lsblk")
+    let by_lsblk = Command::new("lsblk")
         .args(["-nro", "FSTYPE", disk])
         .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         .output()
@@ -1027,7 +1068,8 @@ fn disk_holds_macos(disk: &str) -> bool {
                 .lines()
                 .any(|l| installer_rules::is_macos_fstype(l.trim()))
         })
-        .unwrap_or(false)
+        .unwrap_or(false);
+    by_lsblk || installer_partition::holds_macos(disk)
 }
 
 /// Whether `/dev/<disk>` is on USB or marked removable: a disk that may be plugged in anywhere.
@@ -1278,7 +1320,15 @@ pub(crate) fn detect_disks() -> Vec<DiskInfo> {
         return detect_disks_fallback();
     }
 
-    let disks = disks_from_lsblk(&String::from_utf8_lossy(&output.stdout));
+    let mut disks = disks_from_lsblk(&String::from_utf8_lossy(&output.stdout));
+    // lsblk reads udev's records. The disk itself is asked too, by GPT type and blkid -p, so a
+    // Mac whose udev said nothing about its APFS is still a Mac (installer_partition::holds_macos).
+    for d in &mut disks {
+        if !d.holds_macos && installer_partition::holds_macos(&format!("/dev/{}", d.name)) {
+            d.holds_macos = true;
+            d.contents = format!("macOS · {}", d.contents);
+        }
+    }
     for d in &disks {
         tracing::info!(name = %d.name, size = %d.size, model = %d.model, contents = %d.contents, "Detected disk");
     }
@@ -1625,5 +1675,30 @@ llm:
         assert_eq!(installed_layout(&state), "us");
         state.keyboard.clear();
         assert_eq!(installed_layout(&state), "us");
+    }
+
+    /// Beside what is on a disk with no target chosen used to fall through to the erase path,
+    /// and with no disk named either, to auto_detect_disk. It is refused before anything runs.
+    #[test]
+    fn beside_with_no_target_is_refused_and_never_becomes_an_erase() {
+        let progress_seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen = progress_seen.clone();
+        for target_disk in ["", "sda"] {
+            let state = InstallerState { mode: InstallMode::Beside, target_disk: target_disk.into(), ..InstallerState::default() };
+            let seen = seen.clone();
+            let e = run_install(&state, Box::new(move |_, s| seen.lock().unwrap().push(s.to_string()))).unwrap_err();
+            assert!(e.contains("no partition or free space was") && e.contains("no disk is erased"), "{e}");
+        }
+        // Only the first word was said; nothing was detected, partitioned or erased.
+        assert!(progress_seen.lock().unwrap().iter().all(|s| s == "Detecting target disk..."));
+        let unscanned = InstallerState {
+            mode: InstallMode::Beside,
+            install_into: "sda4".into(),
+            ..InstallerState::default()
+        };
+        assert!(beside_problem(&unscanned).unwrap().contains("never scanned"));
+        let ready = InstallerState { table_fingerprint: "a7df3a2a0968d199".into(), ..unscanned };
+        assert_eq!(beside_problem(&ready), None);
+        assert_eq!(InstallerState::default().mode, InstallMode::Erase);
     }
 }

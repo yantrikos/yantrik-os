@@ -1,18 +1,16 @@
 //! The planner over real layouts: the Mac mini Late 2012 it is for (1 TB GPT disk, a 209.7 MB EFI
 //! partition, an APFS container of 1000 GB, then shrunk to 790 GB beside a 200 GB FAT32 YANTRIK
 //! placeholder and an 8 GB YANTRIK-INS partition holding the installer, or beside free space),
-//! and a PC with Windows and Linux. The fixtures are `parted -j unit s print free` and `lsblk -J`.
+//! and a PC with Windows and Linux. The fixtures are `parted -j unit s print free` and `lsblk -J`,
+//! as `read_table` leaves them (common::looked) unless a test says otherwise. The layout of the
+//! Mac as it really is, and its decoy disk, are tests/mac_real.rs.
 
+mod common;
+
+use common::{on_usb, parsed, table};
 use yantrik_install_target::classify::{self, preselect};
 use yantrik_install_target::plan::check;
-use yantrik_install_target::{parse_target_id, plan, DiskTable, PartRef, Step, TargetSpec};
-
-fn table(name: &str, lsblk: &str) -> DiskTable {
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/");
-    let parted = std::fs::read_to_string(format!("{dir}{name}.parted.json")).unwrap();
-    let lsblk = std::fs::read_to_string(format!("{dir}{lsblk}.lsblk.json")).unwrap();
-    DiskTable::parse(&parted, &lsblk).unwrap()
-}
+use yantrik_install_target::{parse_target_id, plan, Checked, DiskTable, PartRef, Step, TargetSpec};
 
 fn mac_full() -> DiskTable {
     table("mac-apfs-full", "mac-apfs-full")
@@ -67,12 +65,61 @@ fn the_yantrik_placeholder_is_offered_and_chosen_first() {
     assert!(!ins.eligible && ins.reason.contains("running from"), "{}", ins.reason);
     assert_eq!(s.iter().find(|s| s.id == "sda2").unwrap().size, "790 GB");
     assert_eq!(preselect(&s).as_deref(), Some("sda3"));
+    assert_eq!(y.card, "Install into /dev/sda3 (200 GB, YANTRIK, FAT32); nothing else changes");
 
-    // Booted from a USB stick instead, YANTRIK-INS is a placeholder by its label, but 8 GB.
+    // Booted from a USB stick instead, YANTRIK-INS is not mounted, and still no placeholder: its
+    // label only starts like one.
     let s = classify::segments(&mac_placeholders_usb_boot(), true);
     let ins = s.iter().find(|s| s.id == "sda4").unwrap();
-    assert_eq!(ins.kind, "placeholder");
-    assert!(!ins.eligible && ins.reason.contains("needs at least 20 GB"), "{}", ins.reason);
+    assert_eq!(ins.kind, "other");
+    assert!(!ins.eligible && ins.reason.contains("labelled YANTRIK-INS"), "{}", ins.reason);
+    assert_eq!(preselect(&s).as_deref(), Some("sda3"));
+    // The same disk on USB: offered, but never chosen for the person.
+    let s = classify::segments(&on_usb(mac_placeholders()), true);
+    assert!(s.iter().find(|s| s.id == "sda3").unwrap().eligible);
+    assert_eq!(preselect(&s), None);
+}
+
+#[test]
+fn a_table_nobody_read_offers_nothing() {
+    // Parsed from parted and lsblk alone: the placeholder was never looked inside, the EFI
+    // partition's room never measured, sector 0 never read.
+    for t in [parsed("mac-shrunk-placeholders", "mac-shrunk-placeholders"), parsed("mac-shrunk-free", "mac-shrunk-free")] {
+        let s = classify::segments(&t, true);
+        assert!(s.iter().all(|s| !s.eligible), "{:?}", s.iter().filter(|s| s.eligible).map(|s| &s.id).collect::<Vec<_>>());
+        assert_eq!(preselect(&s), None);
+        assert!(classify::disk_problem(&t, true).unwrap().contains("not read closely enough"));
+    }
+    // Probed, but the placeholder itself not looked inside.
+    let mut t = mac_placeholders();
+    t.parts[2].checked = Checked::NotLooked;
+    let e = plan(&t, TargetSpec::Partition(3), false, true, &t.fingerprint()).unwrap_err();
+    assert!(e.contains("was not looked inside"), "{e}");
+}
+
+#[test]
+fn a_hybrid_mbr_a_full_efi_partition_or_no_disk_guid_refuses_the_disk() {
+    let t = mac_placeholders();
+    let refuse = |t: &DiskTable, says: &str| {
+        let e = plan(t, TargetSpec::Partition(3), false, true, &t.fingerprint()).unwrap_err();
+        assert!(e.contains(says), "{e}");
+        assert!(classify::segments(t, true).iter().all(|s| !s.eligible));
+    };
+    let mut hybrid = t.clone();
+    hybrid.probed.as_mut().unwrap().mbr_problem = Some("/dev/sda has a hybrid MBR".into());
+    refuse(&hybrid, "hybrid MBR");
+    let mut full = t.clone();
+    full.probed.as_mut().unwrap().esp_free = Some(31_999_999);
+    refuse(&full, "needs 32 MB");
+    let mut unmeasured = t.clone();
+    unmeasured.probed.as_mut().unwrap().esp_free = None;
+    refuse(&unmeasured, "could not be looked at");
+    let mut exactly = t.clone();
+    exactly.probed.as_mut().unwrap().esp_free = Some(32_000_000);
+    assert!(plan(&exactly, TargetSpec::Partition(3), false, true, &exactly.fingerprint()).is_ok());
+    let mut no_guid = t.clone();
+    no_guid.guid.clear();
+    refuse(&no_guid, "GUID");
 }
 
 #[test]
@@ -227,6 +274,21 @@ fn the_plan_is_refused_when_the_table_changed() {
     let mut changed = t.clone();
     changed.parts[1].run.end += 1;
     assert!(plan(&changed, TargetSpec::Partition(3), false, true, &shown).is_err());
+    // The table was rewritten with the same layout (a new disk GUID), a partition was recreated
+    // in place (a new partition GUID), renamed, or had its flags changed.
+    let edits: [&dyn Fn(&mut DiskTable); 4] = [
+        &|t| t.guid = "00000000-1111-4222-8333-444444444444".into(),
+        &|t| t.parts[1].uuid = "00000000-1111-4222-8333-555555555555".into(),
+        &|t| t.parts[2].name = "Untitled".into(),
+        &|t| t.parts[0].flags = vec!["boot".into()],
+    ];
+    for edit in edits {
+        let mut changed = t.clone();
+        edit(&mut changed);
+        assert_ne!(changed.fingerprint(), shown);
+        let e = plan(&changed, TargetSpec::Partition(3), false, true, &shown).unwrap_err();
+        assert!(e.contains("has changed since it was shown"), "{e}");
+    }
     // Unchanged: the same fingerprint, read twice.
     assert_eq!(mac_placeholders().fingerprint(), shown);
 }
@@ -318,6 +380,20 @@ fn a_plan_that_breaks_a_guard_is_refused_by_the_check() {
     let mut tail = good.clone();
     tail.region.end = 1_953_525_160;
     assert!(check(&tail, &t).is_err(), "into the backup GPT");
+
+    // Free space claimed from sector 0, as no parted prints it: the GPT header is refused.
+    let mut odd = t.clone();
+    odd.free.push(yantrik_install_target::Run { start: 0, end: 39 });
+    let mut head = good.clone();
+    head.region = yantrik_install_target::Run { start: 0, end: 39 };
+    head.steps = vec![Step::MkPart { role: yantrik_install_target::Role::Root, start: 0, end: 39 }];
+    assert!(check(&head, &odd).unwrap_err().contains("space GPT keeps"));
+    head.region.start = 34;
+    head.steps = vec![
+        Step::MkPart { role: yantrik_install_target::Role::Root, start: 34, end: 39 },
+        Step::Format { part: PartRef::StartingAt(34), role: yantrik_install_target::Role::Root, encrypted: false },
+    ];
+    assert!(check(&head, &odd).is_ok(), "34 is the first sector GPT leaves at 512 bytes");
 }
 
 #[test]
