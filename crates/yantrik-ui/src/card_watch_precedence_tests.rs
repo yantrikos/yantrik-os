@@ -1,11 +1,17 @@
-//! Approval precedence, the shell's half: with a card waiting, a maximised window, a fullscreen
-//! window and an always-on-top window each taking focus over the shell bring it back in front,
-//! and none of them can be made by a mind while the card waits. The decision is made on which
-//! window took focus, never on that window's size or layer, so no window state is a way round it.
+//! Approval precedence, the shell's half: with a card waiting, a window taking focus over the
+//! shell brings it back in front, up to [`MAX_RAISES`] times, and a mind cannot make a window
+//! fullscreen or always on top through the control surface at all.
 //!
-//! What labwc then draws is not reachable from a unit test: whether a focused shell is painted
-//! over a fullscreen window, and over a window in labwc's always-on-top layer (rc.xml's
-//! `ToggleAlwaysOnTop` window-menu row), is the live check named in the PR.
+//! [`decide`] is given the focused window's title and nothing else: not its size, its layer, or
+//! whether it is maximised, fullscreen or always on top. So the replay below cannot tell those
+//! states apart and does not claim to; it shows that no window state is an input, and so none is
+//! a way round the raise. Whether labwc then paints the focused shell over a fullscreen window,
+//! or over one in its always-on-top layer (rc.xml's `ToggleAlwaysOnTop` window-menu row), is not
+//! reachable from a unit test and is the live check named in the PR.
+//!
+//! The cap is real and pinned here: after [`MAX_RAISES`] (5) raises over windows that are not
+//! Mind View, a sixth window taking focus is left in front and covers the card. From then on the
+//! taskbar's Chat button, amber with a count, is what says a card waits.
 use super::*;
 
 /// Replays focus changes against [`decide`] on a clock of its own, the way `front_changed` and
@@ -33,10 +39,28 @@ fn replay(events: &[(u64, &str)]) -> Vec<String> {
     raised
 }
 
+/// The titles only name the windows: [`decide`] never sees their state, so these are three
+/// focus changes, answered alike.
 #[test]
-fn a_maximised_a_fullscreen_and_an_always_on_top_window_each_lose_the_front_to_a_waiting_card() {
-    let raised = replay(&[(0, "Notes (maximised)"), (5_000, "Video (fullscreen)"), (10_000, "Clock (always on top)")]);
-    assert_eq!(raised, ["Notes (maximised)", "Video (fullscreen)", "Clock (always on top)"]);
+fn focus_taken_by_any_window_brings_the_shell_back_since_its_state_is_never_read() {
+    let raised = replay(&[(0, "Notes"), (5_000, "Video"), (10_000, "Clock")]);
+    assert_eq!(raised, ["Notes", "Video", "Clock"]);
+}
+
+/// The cap: five raises over other windows, then the sixth focus change is left in front of the
+/// card. Mind View still brings it back, since a mind's own desktop never uses up the raises.
+#[test]
+fn a_sixth_window_taking_focus_is_left_over_the_card_and_mind_view_never_is() {
+    let titles: Vec<String> = (1..=MAX_RAISES + 1).map(|n| format!("Window {n}")).collect();
+    let mut events: Vec<(u64, &str)> = titles.iter().enumerate().map(|(i, t)| (i as u64 * 5_000, t.as_str())).collect();
+    let after = events.len() as u64 * 5_000;
+    events.push((after, MIND_VIEW_TITLE));
+    let raised = replay(&events);
+    assert_eq!(MAX_RAISES, 5, "the evidence states a cap of five; change it there too");
+    assert_eq!(raised.len(), MAX_RAISES as usize + 1, "{raised:?}");
+    assert_eq!(raised[..MAX_RAISES as usize], titles[..MAX_RAISES as usize]);
+    assert!(!raised.contains(&titles[MAX_RAISES as usize]), "the sixth window is raised over, past the cap");
+    assert_eq!(raised.last().map(String::as_str), Some(MIND_VIEW_TITLE));
 }
 
 /// The shell taking the front back is not itself something to answer.
@@ -45,23 +69,17 @@ fn the_shell_coming_back_is_left_alone() {
     assert!(replay(&[(0, SHELL_WINDOW_TITLE)]).is_empty());
 }
 
-/// None of the three states can be made through the control surface while a card waits: the
-/// actions that maximise, bring forward or open a window are held, and the shell publishes no
-/// action that makes a window fullscreen or always on top at all.
+/// No action the shell publishes makes a window fullscreen or always on top. The actions that
+/// maximise, bring forward or open a window are held while a card waits; which ones is pinned by
+/// `every_window_moving_action_asks_hold_windows_first` in card_watch.rs, since `hold_windows`
+/// itself answers the same whatever action name it is given.
 #[test]
-fn a_mind_cannot_maximise_or_raise_a_window_over_a_waiting_card() {
-    let _turn = super::tests::SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    set_waiting(["precedence-card"]);
-    for action in ["maximise_window", "focus_window", "show_app", "open_app"] {
-        assert!(hold_windows(action).is_err(), "{action} runs while a card waits");
-    }
-    set_waiting([]);
-    *RAISED_AT.lock().unwrap() = None;
+fn the_shell_publishes_no_action_that_makes_a_window_fullscreen_or_always_on_top() {
     let published = crate::control::locked_state_tests::published_actions();
     for word in ["fullscreen", "always_on_top", "keep_above", "pin_window"] {
         assert!(
             !published.iter().any(|a| a.contains(word)),
-            "the shell publishes an action with {word:?} in its name; it must call hold_windows and be listed here"
+            "the shell publishes an action with {word:?} in its name; it must call hold_windows and be listed in every_window_moving_action_asks_hold_windows_first"
         );
     }
 }

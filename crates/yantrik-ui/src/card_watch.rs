@@ -332,7 +332,7 @@ mod tests {
     }
 
     /// The statics are shared, so the tests that touch them take turns.
-    pub(super) static SERIAL: Mutex<()> = Mutex::new(());
+    static SERIAL: Mutex<()> = Mutex::new(());
 
     /// Second review: a harmless card kept pending could use up the raises before the real one
     /// arrived. Each new card starts the count and the gap again, and only a new one does.
