@@ -247,14 +247,14 @@ mod key_tests {
         assert_eq!(h.get(0).unwrap().content, "three");
     }
 
-    /// The panel says "Kept on this machine". That stays true only while nothing here writes the
+    /// The panel says "History stored on this device". That stays true only while nothing here writes the
     /// history out or hands it to anything that could.
     #[test]
     fn the_history_is_kept_in_memory_only() {
         let src = include_str!("clipboard.rs");
         let code = src.split("#[cfg(test)]").next().unwrap();
         for out in ["std::fs", "File::", "write(", "reqwest", "TcpStream", "serde_json"] {
-            assert!(!code.contains(out), "clipboard.rs uses `{out}`: the footer's \"Kept on this machine\" needs a look");
+            assert!(!code.contains(out), "clipboard.rs uses `{out}`: the footer's \"History stored on this device\" needs a look");
         }
     }
 }

@@ -138,6 +138,10 @@ export global AppColor {
              : id == "terminal"       ? "green"
              : id == "system"         ? "azure"
              : id == "sysmonitor"     ? "lime"
+             // htop, installed with the OS: a process viewer, so System Monitor's lime with bars
+             // of its own. Its theme icon was a photograph of a bar chart on the neutral plate,
+             // the one picture in a row of flat glyphs (sign-off, 5 October).
+             : id == "htop"           ? "lime"
              : id == "network"        ? "azure"
              : id == "containers"     ? "blue"
              : id == "packages"       ? "green"

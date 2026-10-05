@@ -32,7 +32,7 @@ component LockAction inherits Rectangle {
     border-radius: Theme.r-lg;
     border-width: 1px;
     border-color: root.armed ? Theme.destructive : Theme.lock-field-line;
-    background: root.armed ? (ta.has-hover ? Theme.destructive.brighter(8%) : Theme.destructive)
+    background: root.armed ? (ta.has-hover ? Theme.destructive-hover : Theme.destructive)
               : ta.has-hover ? Theme.lock-action-hover : Theme.lock-action;
     animate background { duration: Theme.dur-fast; }
 
@@ -43,11 +43,12 @@ component LockAction inherits Rectangle {
         alignment: center;
         VerticalLayout {
             alignment: center;
-            Icon { commands: root.icon; size: 16px; tint: Theme.lock-text; thickness: Theme.icon-stroke; }
+            Icon { commands: root.icon; size: 16px; tint: root.armed ? Theme.text-on-danger : Theme.lock-text; thickness: Theme.icon-stroke; }
         }
         Text {
             text: root.label;
-            color: Theme.lock-text;
+            // On the red, the red's ink: the lock's own white on it was 3.9:1.
+            color: root.armed ? Theme.text-on-danger : Theme.lock-text;
             font-size: Theme.fs-body;
             vertical-alignment: center;
         }

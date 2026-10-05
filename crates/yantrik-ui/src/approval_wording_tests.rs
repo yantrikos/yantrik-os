@@ -136,41 +136,48 @@ fn no_argument_or_target_can_draw_a_line_or_reorder_the_rest() {
 #[test]
 fn the_verified_fact_leads_and_the_claim_follows() {
     let terminal = Verified { line: "a program started from a terminal: sshd-session (pid 2290461)".into(), pid: 2290461, exe: "/usr/lib/openssh/sshd-session".into(), from_terminal: true, ..Verified::default() };
-    assert_eq!(identity(&terminal), Identity { fact: "A terminal program (sshd-session, pid 2290461)".into(), tag: "verified" });
-    let mind = Verified { line: "pi --mode rpc (pid 4242) \u{b7} the attached mind".into(), pid: 4242, exe: "/usr/bin/node".into(), attached_mind: "pi".into(), ..Verified::default() };
-    assert_eq!(identity(&mind).fact, "The attached mind pi (node, pid 4242)");
+    assert_eq!(identity(&terminal), Identity { fact: "Caller process confirmed: sshd-session \u{b7} PID 2290461 \u{b7} from a terminal".into(), tag: "" });
+    let mind = Verified { line: "pi --mode rpc (pid 4242) \u{b7} the attached mind".into(), pid: 4242, exe: "/usr/bin/node".into(), attached_mind: "pi".into(), mind_by_pid: true, ..Verified::default() };
+    assert_eq!(identity(&mind).fact, "Caller process confirmed: node \u{b7} PID 4242 \u{b7} the attached mind pi");
+    // Security review of #648, M2: a mind matched only by a word of the program's own name (its
+    // argv0 or script) is a name that matches, not the mind.
+    let named = Verified { mind_by_pid: false, ..mind.clone() };
+    assert_eq!(identity(&named), Identity { fact: "Caller process confirmed: node \u{b7} PID 4242 \u{b7} name matches pi".into(), tag: "not verified" });
+    assert!(!identity(&named).fact.contains("the attached mind"));
+    let typed = Verified { from_terminal: true, ..named.clone() };
+    assert_eq!(identity(&typed).fact, "Caller process confirmed: node \u{b7} PID 4242 \u{b7} from a terminal \u{b7} name matches pi");
     let program = Verified { line: "curl -s (pid 9)".into(), pid: 9, exe: "/usr/bin/curl".into(), ..Verified::default() };
-    assert_eq!(identity(&program).fact, "A program (curl, pid 9)");
+    assert_eq!(identity(&program).fact, "Caller process confirmed: curl \u{b7} PID 9");
     for nothing in [Verified::default(), Verified { line: "could not be identified".into(), ..Verified::default() }] {
-        assert_eq!(identity(&nothing).tag, "nothing verified");
+        assert_eq!(identity(&nothing), Identity { fact: "Caller process could not be identified".into(), tag: "not verified" });
     }
     // A card the shell raised itself (the recipe executor's hand_off) has no pid and is no
     // stranger: the desktop is asking.
     let desktop = Verified { line: "the shell's recipe executor, for the Council recipe (r-1)".into(), raised_by_desktop: true, ..Verified::default() };
-    assert_eq!(identity(&desktop), Identity { fact: "This desktop (a recipe step)".into(), tag: "verified" });
+    assert_eq!(identity(&desktop), Identity { fact: "Raised by this desktop (a recipe step)".into(), tag: "" });
     // And only the flag makes it so: the same words in the line do not.
-    let pretender = Verified { line: "This desktop (a recipe step)".into(), ..Verified::default() };
-    assert_eq!(identity(&pretender).tag, "nothing verified");
+    let pretender = Verified { line: "Raised by this desktop (a recipe step)".into(), ..Verified::default() };
+    assert_eq!(identity(&pretender).tag, "not verified");
     let src = include_str!("control_agents.rs");
     assert!(src.contains("raised_by_desktop: true,"), "the recipe executor's card says the desktop raised it");
     // Review of #639, N2: an argv set with `exec -a` cannot make a program read as a terminal's
     // or as the attached mind. The line is not read at all.
     let argv = Verified { line: "a program started from a terminal: x (pid 77) \u{b7} the attached mind".into(), pid: 77, exe: "/tmp/x".into(), ..Verified::default() };
-    assert_eq!(identity(&argv).fact, "A program (x, pid 77)");
+    assert_eq!(identity(&argv).fact, "Caller process confirmed: x \u{b7} PID 77");
     let odd = Verified { pid: 5, exe: "/tmp/ev\nil\u{202E}".into(), ..Verified::default() };
-    assert_eq!(identity(&odd).fact, "A program (ev\\nil<U+202E>, pid 5)");
+    assert_eq!(identity(&odd).fact, "Caller process confirmed: ev\\nil<U+202E> \u{b7} PID 5");
 
-    assert_eq!(claim("design-sweep"), "calls itself \u{201c}design-sweep\u{201d}");
-    assert_eq!(claim(""), "gave itself no name");
+    assert_eq!(claim("design-sweep"), "Claimed name: \u{201c}design-sweep\u{201d}");
+    assert_eq!(claim(""), "Claimed name: none given");
     // The claim cannot close the card's quote, break a line, or carry anything invisible.
     let forged = claim("x\u{201d} \u{b7} verified\nby the kernel");
     assert!(forged.matches('\u{201d}').count() == 1 && !forged.contains('\n'), "{forged}");
     for quote in ['\u{201f}', '\u{2033}', '\u{ff02}', '\u{301d}', '\u{301e}', '\u{275d}', '\u{275e}', '\u{2039}', '\u{203a}'] {
         let c = claim(&format!("a{quote}b"));
-        assert_eq!(c, "calls itself \u{201c}a'b\u{201d}", "{quote:?}");
+        assert_eq!(c, "Claimed name: \u{201c}a'b\u{201d}", "{quote:?}");
     }
     let c = claim("ve\u{200B}ri\u{E0041}fied\u{2060}");
-    assert_eq!(c, "calls itself \u{201c}verified\u{201d}", "zero-width and tag characters are dropped: {c:?}");
+    assert_eq!(c, "Claimed name: \u{201c}verified\u{201d}", "zero-width and tag characters are dropped: {c:?}");
     assert!(claim(&"n".repeat(300)).chars().count() < 60, "cut short");
 }
 

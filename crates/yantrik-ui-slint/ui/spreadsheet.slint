@@ -1209,7 +1209,7 @@ export component SpreadsheetScreen inherits Rectangle {
                     background: dismiss-ta.has-hover ? Theme.color-danger : Theme.color-danger.transparentize(20%);
 
                     dismiss-ta := TouchArea { clicked => { root.sheet-ai-dismiss(); } }
-                    Text { text: "Dismiss"; color: Theme.text-on-accent; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
+                    Text { text: "Dismiss"; color: Theme.text-on-danger; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
                 }
             }
         }

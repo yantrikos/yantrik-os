@@ -925,7 +925,7 @@ export component DocumentEditorScreen inherits Rectangle {
                         border-width: 1px;
                         border-color: Theme.color-danger;
                         discard-ta := TouchArea { clicked => { root.doc-dialog-discard(); } }
-                        Text { text: "Discard"; color: discard-ta.has-hover ? white : Theme.color-danger; font-size: Theme.fs-caption; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { text: "Discard"; color: discard-ta.has-hover ? Theme.text-on-danger : Theme.color-danger; font-size: Theme.fs-caption; horizontal-alignment: center; vertical-alignment: center; }
                     }
 
                     Rectangle {

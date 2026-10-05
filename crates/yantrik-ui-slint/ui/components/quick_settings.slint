@@ -176,7 +176,12 @@ export component QuickSettings inherits YPopover {
             x: parent.width - self.width; y: 0; width: root.private-w;
             icon: Icons.shield;
             title: "Private";
-            subtitle: root.private-mode ? "Minds off" : "Off";
+            // What it stops, as private_mode::enforce enforces it (review by GPT-6 Astra, D):
+            // every turn to every mind is refused and the agents are frozen, and the event log,
+            // the clipboard, activity and screen watchers record nothing. The tile has room for
+            // the first half; the sentence is its description.
+            subtitle: root.private-mode ? "Minds paused" : "Off";
+            description: "While on, no mind is sent anything, agents this desktop runs are frozen, and the event log, clipboard, activity and screen watchers record nothing.";
             on: root.private-mode;
             toggled => { root.private-chosen(!root.private-mode); }
             focus-arrived(s) => { root.cursor = s; }

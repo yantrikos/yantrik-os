@@ -15,6 +15,7 @@ export component QsTile inherits Rectangle {
     in property <string> icon;
     in property <string> title;
     in property <string> subtitle;
+    in property <string> description;
     in property <bool> on: false;
     in property <bool> split: false;
     callback toggled();
@@ -31,6 +32,7 @@ export component QsTile inherits Rectangle {
         icon: root.icon;
         title: root.title;
         subtitle: root.subtitle;
+        description: root.description;
         on: root.on;
         split: root.split;
         // The arrow keys move between tiles here; the chevron is reached with Tab.

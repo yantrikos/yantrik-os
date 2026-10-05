@@ -248,6 +248,10 @@ pub struct Verified {
     pub pid: i32,
     /// The attached mind the caller's ancestry belongs to, if one matched.
     pub attached_mind: String,
+    /// Whether that match was by the kernel's pid (`CallerIdentity::attached_by_pid`). A match by
+    /// the program's own name is only a name that matches: the card says "name matches X · not
+    /// verified" and nothing calls the caller the mind (security review of #648, M2).
+    pub mind_by_pid: bool,
     /// What does not add up about this request, one bounded sentence each.
     ///
     /// Two can arrive today: the claimed name names an attached mind that the ancestry
@@ -278,15 +282,16 @@ pub struct Verified {
 
 impl Verified {
     /// Who is asking, as the machine established it, in a few words: the attached mind its
-    /// ancestry belongs to, else the verified program's executable (the kernel's word, not its
-    /// command line, which the caller writes), else "an unidentified program". Never the name the
+    /// ancestry belongs to by the kernel's pid (a name match is not enough), else the verified
+    /// program's executable (the kernel's word, not its command line, which the caller writes),
+    /// else "an unidentified program". Never the name the
     /// request gave itself. For the shell's own "… is asking to …" notification, which goes out
     /// as `Yantrik` (security review of #614).
     pub fn who(&self) -> String {
         if self.raised_by_desktop {
             return "this desktop".to_string();
         }
-        if !self.attached_mind.trim().is_empty() {
+        if self.mind_by_pid && !self.attached_mind.trim().is_empty() {
             return self.attached_mind.trim().to_string();
         }
         let exe = self.exe.strip_suffix(" (deleted)").unwrap_or(&self.exe);
@@ -308,6 +313,7 @@ impl Verified {
             "exe": self.exe,
             "pid": self.pid,
             "attached_mind": self.attached_mind,
+            "mind_by_pid": self.mind_by_pid,
             "discrepancies": self.discrepancies,
             "agent": self.agent,
         })
@@ -1468,6 +1474,7 @@ mod approvals_tests {
             exe: "/home/pranab/hermes-agent/venv/bin/python".into(),
             pid: 696,
             attached_mind: "Hermes Agent".into(),
+            mind_by_pid: true,
             discrepancies: Vec::new(),
             agent: String::new(),
             from_terminal: false,

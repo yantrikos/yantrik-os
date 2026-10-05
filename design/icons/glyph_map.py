@@ -32,6 +32,8 @@ GLYPHS = {
     "terminal": "terminal-window",
     "system": "cpu",
     "sysmonitor": "gauge",
+    # htop's own icon is a photographic bar chart; this is the flat one.
+    "htop": "chart-bar",
     # Not wifi-high: filled, its arcs merge into a wedge that reads as a pie slice.
     "network": "network",
     "containers": "stack",

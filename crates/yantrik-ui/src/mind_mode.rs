@@ -2243,6 +2243,7 @@ mod mind_mode_tests {
                 exe: "/home/pranab/hermes-agent/venv/bin/python".into(),
                 pid: 696,
                 attached_mind: "Hermes Agent".into(),
+                mind_by_pid: true,
                 discrepancies: Vec::new(),
                 agent: String::new(),
                 from_terminal: false,

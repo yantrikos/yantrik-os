@@ -337,6 +337,7 @@ export component CalendarScreen inherits Rectangle {
                 // ═══════════════════════════════════════
                 if root.view-mode == 0 : MonthGrid {
                     days: root.days;
+                    month-title: root.month-title;
                     monday-first: root.week-starts-monday;
                     cell-min-height: 56px;
                     accent: AppIdentity.accent;

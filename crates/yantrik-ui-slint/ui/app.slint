@@ -178,6 +178,12 @@ export component App inherits Window {
         && root.current-screen != 0 && root.current-screen != 2
         && root.current-screen != 3 && root.current-screen != 32;
     property <length> approval-corner-height: 0px;
+    /// Where that card's left edge is: one sp-4 in from the right edge, and clear of the mind panel
+    /// when the panel is drawn there, by the panel's width and the same sp-4 between them. The card
+    /// sat over the panel's avatar at the top right (sign-off, 5 October). The card is 404px wide;
+    /// the vault prompt lines up on this edge too. Out, so the preview can find the card.
+    out property <length> approval-corner-x: root.width - 404px - Theme.sp-4
+        - (root.mind-panel-shown && !root.mind-panel-covered ? root.mind-panel-width + Theme.sp-4 : 0px);
     // How many cards wait in all, the Agents pane's included (pending-approvals holds only the one
     // on screen). The taskbar's Chat button says it (card_watch.rs).
     in property <int> cards-pending: 0;
@@ -310,6 +316,9 @@ export component App inherits Window {
     // Below this width the open card floats over the screen instead of taking its room, so a
     // compact display keeps its working area and can still open the panel to look.
     property <bool> mind-panel-docks: root.width >= 1100px;
+    // How wide the panel is drawn: the open card, or the strip. Shared with the approval card's
+    // corner, which keeps clear of it.
+    out property <length> mind-panel-width: root.mind-panel-open ? 334px : 44px;
     // 302 for the card and 16 either side of it; 44 for the strip.
     property <length> mind-panel-reserve: !root.mind-panel-shown ? 0px
         : root.mind-panel-open && root.mind-panel-docks ? 334px : 44px;
@@ -3182,7 +3191,7 @@ export component App inherits Window {
         // over it. Between the two bars: the compositor's own margins (config/labwc/rc.xml, top 32
         // and bottom 40) are the bars', and this stays inside them.
         if root.mind-panel-shown : MindPanel {
-            width: root.mind-panel-open ? 334px : 44px;
+            width: root.mind-panel-width;
             x: parent.width - self.width;
             y: Theme.status-bar-height;
             height: parent.height - Theme.status-bar-height - Theme.taskbar-height;
@@ -3445,7 +3454,7 @@ export component App inherits Window {
             // sit under the taskbar. `min-height` is deliberately not set beside `height`: Slint
             // refuses both on one element, and `height` is the one that has to be the layout's.
             Rectangle {
-                x: parent.width - 420px;
+                x: root.approval-corner-x;
                 y: Theme.status-bar-height + Theme.sp-4;
                 width: 404px;
                 height: approval-stack.preferred-height;
@@ -3515,8 +3524,8 @@ export component App inherits Window {
                 // Beside only when there is a whole column for it left of the card: on a narrow
                 // screen (800px wide puts "beside" at -40px, and clamping it would lay it over the
                 // card) it stays below, where nothing covers the card's buttons.
-                property <bool> beside: !self.fits-below && parent.width - 840px >= Theme.sp-4;
-                x: self.beside ? parent.width - 840px : parent.width - 420px;
+                property <bool> beside: !self.fits-below && root.approval-corner-x - 420px >= Theme.sp-4;
+                x: self.beside ? root.approval-corner-x - 420px : root.approval-corner-x;
                 y: self.beside ? Theme.status-bar-height + Theme.sp-4 : self.below;
                 width: 404px;
                 // Same lesson as the approval overlay: take the height from the layout inside,

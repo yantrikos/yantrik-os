@@ -1218,10 +1218,13 @@ export component NetworkManager inherits Rectangle {
 
                                 Text {
                                     // Four words, four different statements. "Unknown" is not
-                                    // "Off", and "not installed" is neither.
+                                    // "Off", and "not installed" is neither. Absent means only
+                                    // that none of the tools the service looks for is on the
+                                    // machine: the kernel's own rules were not read, so it says
+                                    // no more than that (review by GPT-6 Astra, G).
                                     text: root.firewall-state == "active" ? "Filtering"
                                         : root.firewall-state == "inactive" ? "Installed, not filtering"
-                                        : root.firewall-state == "absent" ? "No firewall installed"
+                                        : root.firewall-state == "absent" ? "No supported firewall manager detected"
                                         : "Could not be determined";
                                     color: root.firewall-state == "active" ? Theme.color-success
                                          : root.firewall-state == "inactive" ? Theme.color-warning
@@ -1231,6 +1234,14 @@ export component NetworkManager inherits Rectangle {
                                     vertical-alignment: center;
                                     horizontal-stretch: 1;
                                 }
+                            }
+
+                            // What was not looked at, when only the tools were.
+                            if root.firewall-state == "absent" : Text {
+                                text: "Active filtering rules: not checked";
+                                color: Theme.text-secondary;
+                                font-size: Theme.fs-caption;
+                                wrap: word-wrap;
                             }
 
                             // Why the line above says what it says. Always drawn when there is a

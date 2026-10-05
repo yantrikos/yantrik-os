@@ -14,6 +14,12 @@
 //
 // A cell is only a button when the owner says so (`clickable`): a grid whose days do nothing must
 // not show a pointer over them.
+//
+// Every day says itself in words, "25 September 2026, 3 events", to assistive tech: the dots
+// were the only place a day's events showed in the grid, and they told the count by colour
+// (accent, then amber, then purple) — and amber is "needs you". They are one colour now, one dot
+// per event up to three, so the count is in how many there are and the exact one is in the name
+// (review of the UI overhaul by GPT-6 Astra, I). The dots encode no calendar: there is one store.
 
 import { Theme } from "theme.slint";
 
@@ -33,6 +39,8 @@ export component MonthGrid inherits VerticalLayout {
     in property <bool> clickable: true;
     in property <color> accent: Theme.accent;
     in property <color> tint: Theme.tint-accent;
+    // The month shown, as its owner titles it ("September 2026"), for each day's spoken name.
+    in property <string> month-title: "";
     callback day-clicked(int);
 
     // A month needs 6 rows only when it spills past cell 35; drawing 6 regardless left an empty
@@ -86,6 +94,12 @@ export component MonthGrid inherits VerticalLayout {
                 property <CalendarDay> cell-day: root.days.length > cell-idx
                     ? root.days[cell-idx]
                     : { day-number: 0, is-today: false, is-selected: false, is-current-month: false, has-events: false, event-count: 0 };
+                // "25 September 2026, 3 events, today". A day spilling in from the next or the
+                // last month is not named with this month's title.
+                property <string> spoken: "\{cell-day.day-number}"
+                    + (cell-day.is-current-month && root.month-title != "" ? " " + root.month-title : "")
+                    + (cell-day.event-count == 0 ? ", no events" : cell-day.event-count == 1 ? ", 1 event" : ", \{cell-day.event-count} events")
+                    + (cell-day.is-today ? ", today" : "");
 
                 min-height: root.cell-min-height;
                 border-radius: Theme.r-sm;
@@ -102,6 +116,14 @@ export component MonthGrid inherits VerticalLayout {
                 if cell-day.day-number > 0 && root.clickable : TouchArea {
                     clicked => { root.day-clicked(cell-day.day-number); }
                     mouse-cursor: pointer;
+                    accessible-role: button;
+                    accessible-label: spoken;
+                    accessible-action-default => { root.day-clicked(cell-day.day-number); }
+                }
+                // A grid whose days are not buttons (Today's) names each day all the same.
+                if cell-day.day-number > 0 && !root.clickable : Rectangle {
+                    accessible-role: text;
+                    accessible-label: spoken;
                 }
 
                 // The cell's contents are positioned, not laid out: a layout child reports a
@@ -150,12 +172,12 @@ export component MonthGrid inherits VerticalLayout {
                     if cell-day.event-count > 1 && !root.compact : Rectangle {
                         width: 5px; height: 5px;
                         border-radius: 2.5px;
-                        background: Theme.amber;
+                        background: root.accent;
                     }
                     if cell-day.event-count > 2 && !root.compact : Rectangle {
                         width: 5px; height: 5px;
                         border-radius: 2.5px;
-                        background: Theme.color-purple;
+                        background: root.accent;
                     }
                 }
             }

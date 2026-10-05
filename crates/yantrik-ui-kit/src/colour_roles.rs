@@ -347,12 +347,101 @@ fn the_ink_on_an_accent_fill_reads_on_every_accent() {
     }
 }
 
+/// The ink on a red fill is `Theme.text-on-danger`, by the rule the accent's ink follows (#634): the
+/// deep ground in dark mode, white in light. White on the destructive button's #e5484d was 3.9:1
+/// ("Delete event", sign-off of 5 October). Every red something is filled with — the destructive
+/// button at rest, hovered and pressed, and color-danger — is read from the source in both modes,
+/// and its ink must clear 4.5:1 on it: each dark red under the stock ground and every dark theme
+/// file's, each light red under white.
+#[test]
+fn the_ink_on_a_red_fill_reads_on_every_red() {
+    let tokens = read("crates/yantrik-design-tokens/slint/theme.slint");
+    let theme = &tokens[tokens.find("export global Theme {").expect("the Theme global")..];
+    assert_eq!(token(theme, "text-on-danger").trim(), "ThemeMode.dark ? Theme.bg-deep : #ffffff");
+    assert!(!theme.contains("text-on-destructive"), "one ink for a red fill, not two");
+
+    let mut dark_inks = vec![("theme.slint".to_string(), hexes(token(theme, "bg-deep"))[0].clone())];
+    dark_inks.extend(theme_files().into_iter().filter(|t| t.1).map(|t| (t.0, t.2)));
+    assert!(dark_inks.len() >= 3, "the stock ground, Lake and Nightfall at least");
+
+    let mut checked = 0;
+    for fill in ["destructive", "destructive-hover", "destructive-pressed", "color-danger"] {
+        let value = token(theme, fill);
+        assert!(value.contains("ThemeMode.dark ?"), "{fill} has a dark and a light value: {value}");
+        let colours = hexes(value);
+        assert_eq!(colours.len(), 2, "{fill}: {value}");
+        let (dark, light) = (&colours[0], &colours[1]);
+        for (whose, ink) in &dark_inks {
+            let ratio = contrast(ink, dark);
+            assert!(ratio >= 4.5, "{whose}'s ink {ink} on {fill} {dark} (dark) is {ratio:.2}:1");
+        }
+        let ratio = contrast("#ffffff", light);
+        assert!(ratio >= 4.5, "white on {fill} {light} (light) is {ratio:.2}:1");
+        checked += 1;
+    }
+    assert_eq!(checked, 4);
+    assert!(contrast("#ffffff", "#e5484d") < 4.5, "the sign-off's case: white on the old red");
+}
+
+/// The two small lines a person reads to know what is being asked and where their words go were
+/// 11px in text-dim (sign-off, 5 October): the approval card's exact action name
+/// (`calendar.delete_event`) is 12px secondary, and the composer's destination is a row of its own
+/// directly above Send, 13px secondary, saying what is sent and to whom (review by GPT-6 Astra, A).
+#[test]
+fn the_lines_that_say_what_and_where_are_readable() {
+    let lens = read(&format!("{UI}components/intent_lens.slint"));
+    let at = lens.find("text: root.data.app + \".\" + root.data.action;").expect("the card's action name line");
+    let line = &lens[at..at + lens[at..].find('}').unwrap()];
+    assert!(line.contains("color: Theme.text-secondary;") && line.contains("font-size: Theme.fs-caption;"), "{line}");
+
+    let composer = read(&format!("{UI}components/chat_composer.slint"));
+    let at = composer.find("destination-row := Text {").expect("the destination row");
+    let row = &composer[at..at + composer[at..].find("\n        }").unwrap()];
+    assert!(row.contains("color: Theme.text-secondary;") && row.contains("font-size: Theme.fs-label;"), "{row}");
+    assert!(row.contains("y: parent.height - 44px - root.destination-h;"), "directly above the row Send is on");
+    assert!(composer.find("destination-row").unwrap() < composer.find("label: root.run-active ? \"Send follow-up\" : \"Send\";").unwrap());
+    let theme = read("crates/yantrik-design-tokens/slint/theme.slint");
+    assert!(theme.contains("out property <length> fs-label: 13px;") && theme.contains("out property <length> fs-caption: 12px;"));
+}
+
+/// Decline is the outline kind, transparent at rest, so it shows the card's ground: on the light
+/// bar's grey it read as a filled grey key, outlined in dark (sign-off, 5 October). The card has
+/// a ground of its own, the bar's in dark and the raised white in light.
+#[test]
+fn the_approval_card_has_its_own_ground() {
+    let lens = read(&format!("{UI}components/intent_lens.slint"));
+    let card = &lens[lens.find("if root.waiting : card := Rectangle {").expect("the waiting card")..];
+    assert!(card[..card.find("drop-shadow-blur").unwrap()].contains("background: Theme.chat-card;"), "the card is on chat-card");
+    let tokens = read("crates/yantrik-design-tokens/slint/theme.slint");
+    let theme = &tokens[tokens.find("export global Theme {").unwrap()..];
+    assert_eq!(token(theme, "chat-card").trim(), "ThemeMode.dark ? Theme.chat-bar : Theme.chat-raised");
+    assert_eq!(hexes(token(theme, "chat-raised"))[1], "#ffffff", "white in light");
+    let button = read("crates/yantrik-ui-kit/slint/y_button.slint");
+    assert!(button.contains(": root.variant != 0 ? (root.pressed ? Theme.hover-fill-strong : root.hovered ? Theme.hover-fill : transparent)"),
+        "the outline kind is transparent at rest, in both modes");
+}
+
+/// A day's events were told by colour (accent, amber, purple for one, two, three) and amber is
+/// "needs you". One colour now, the count in how many dots, and each day named in words
+/// (review by GPT-6 Astra, I).
+#[test]
+fn a_days_events_are_not_told_by_colour_alone() {
+    let grid = read(&format!("{UI}components/month_grid.slint"));
+    let dots = &grid[grid.find("if cell-day.has-events : HorizontalLayout {").expect("the dots")..];
+    for hue in ["Theme.amber", "Theme.color-purple"] {
+        assert!(!dots.contains(hue), "a dot is {hue}");
+    }
+    assert!(grid.contains("property <string> spoken:") && grid.matches("accessible-label: spoken;").count() == 2, "every day has a name");
+    assert!(grid.contains("\", 1 event\"") && grid.contains("events\""), "and it says how many");
+}
+
 /// The contrast sum itself, on pairs with published ratios.
 #[test]
 fn contrast_is_wcag() {
     assert!((contrast("#000000", "#ffffff") - 21.0).abs() < 0.01);
     assert!((contrast("#777777", "#ffffff") - 4.48).abs() < 0.01);
     assert!((contrast("#ffffff", "#8fb4e3") - 2.14).abs() < 0.01, "white on the soft blue, the sign-off's case");
+    assert!((contrast("#ffffff", "#e5484d") - 3.91).abs() < 0.01, "white on the old destructive red");
 }
 
 /// Every .slint file under `dir`, build output skipped.
@@ -367,44 +456,71 @@ fn slint_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Nothing sits on an accent fill in white, near-white text-primary, or bg-deep (pale in light
-/// mode, so a hand-written "dark ink" turned pale there): the ink is Theme.text-on-accent. A fill
-/// is an element whose own background names the accent (or the app's identity accent, which is
-/// as light); a colour, tint, glyph fill or knob anywhere inside it is checked. A value that also
-/// names text-on-accent chooses between the fill's ink and another state's, and passes.
-#[test]
-fn nothing_on_an_accent_fill_is_white_or_text_primary() {
+/// Every element in the shell, the kit and the apps whose own background names one of `fills`,
+/// checked for an ink in `forbidden`: a colour, tint, glyph fill or knob anywhere inside it. A
+/// value that also names `ink` chooses between the fill's ink and another state's, and passes.
+/// Returns how many fills it found.
+fn check_inks_on_fills(fills: &[&str], forbidden: &[&str], ink: &str, what: &str) -> usize {
     use crate::slint_source::{blocks, names, own_text, strip, values};
-    const FORBIDDEN: [&str; 5] = ["white", "#fff", "Theme.text-primary", "Theme.bg-deep", "Theme.lock-ground"];
-    const ACCENTS: [&str; 3] = ["Theme.accent", "AccentPreset.accent", "AppIdentity.accent"];
     let root: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
     let mut files = Vec::new();
     for dir in ["crates/yantrik-ui-slint/ui", "crates/yantrik-ui-kit/slint", "crates/yantrik-lock/ui", "apps", "tests/ui-preview"] {
         slint_files(&root.join(dir), &mut files);
     }
     assert!(files.len() > 100, "read the shell, the kit and the apps, found {}", files.len());
-    let mut fills = 0;
+    let mut found = 0;
     for path in &files {
         let s = strip(&std::fs::read_to_string(path).unwrap());
         let all = blocks(&s);
         for (i, block) in all.iter().enumerate() {
             let own = own_text(&s, *block, &all);
-            if !values(&own, "background").iter().any(|v| ACCENTS.iter().any(|t| names(v, t))) {
+            if !values(&own, "background").iter().any(|v| fills.iter().any(|t| names(v, t))) {
                 continue;
             }
-            fills += 1;
+            found += 1;
             let inner = &s[block.open + 1..block.close];
             let mut inks: Vec<String> = ["color", "tint", "fill"].iter().flat_map(|p| values(inner, p)).collect();
             for inside in all[i + 1..].iter().take_while(|b| b.open < block.close) {
                 inks.extend(values(&own_text(&s, *inside, &all), "background"));
             }
-            for ink in inks.iter().filter(|v| !v.contains("text-on-accent")) {
-                if let Some(bad) = FORBIDDEN.iter().find(|f| ink.contains(*f)) {
+            for value in inks.iter().filter(|v| !v.contains(ink)) {
+                if let Some(bad) = forbidden.iter().find(|f| value.contains(*f)) {
                     let line = s[..block.open].matches('\n').count() + 1;
-                    panic!("{}:{line} puts `{ink}` ({bad}) on an accent fill; the ink there is Theme.text-on-accent", path.display());
+                    panic!("{}:{line} puts `{value}` ({bad}) on {what}; the ink there is Theme.{ink}", path.display());
                 }
             }
         }
     }
+    found
+}
+
+/// Nothing sits on an accent fill in white, near-white text-primary, or bg-deep (pale in light
+/// mode, so a hand-written "dark ink" turned pale there): the ink is Theme.text-on-accent. A fill
+/// is an element whose own background names the accent (or the app's identity accent, which is
+/// as light).
+#[test]
+fn nothing_on_an_accent_fill_is_white_or_text_primary() {
+    let fills = check_inks_on_fills(
+        &["Theme.accent", "AccentPreset.accent", "AppIdentity.accent"],
+        &["white", "#fff", "Theme.text-primary", "Theme.bg-deep", "Theme.lock-ground"],
+        "text-on-accent",
+        "an accent fill",
+    );
     assert!(fills > 50, "found the accent fills, {fills} of them");
+}
+
+/// Nothing sits on a red fill in white, text-primary, the lock's white, or the accent's ink (the
+/// Remove and Force Kill buttons used text-on-accent, white on a light red in dark mode): the ink
+/// there is Theme.text-on-danger. A fill is an element whose own background is the destructive
+/// red, at rest, hovered or pressed, or color-danger itself; a wash of either shows the surface
+/// beneath and is not one.
+#[test]
+fn nothing_on_a_red_fill_is_white_or_another_ink() {
+    let fills = check_inks_on_fills(
+        &["Theme.destructive", "Theme.destructive-hover", "Theme.destructive-pressed", "Theme.color-danger"],
+        &["white", "#fff", "Theme.text-primary", "Theme.bg-deep", "Theme.lock-text", "Theme.text-on-accent"],
+        "text-on-danger",
+        "a red fill",
+    );
+    assert!(fills >= 10, "found the red fills, {fills} of them");
 }

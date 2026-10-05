@@ -176,13 +176,20 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str, width: u32, height: u32) -> 
     std::thread::sleep(std::time::Duration::from_millis(300));
     let alone = settle(w, width, height);
     save(&alone, output, width, height)?;
+    // The card's left edge, and clear of the mind panel drawn at the right edge (sign-off, 5
+    // October: the card sat over the panel's avatar). The card is 404px wide, with 16px between
+    // it and the panel.
+    let cx = shell.get_approval_corner_x();
+    let panel = shell.get_mind_panel_width();
+    assert!(cx >= 0.0, "the card starts on screen, at {cx}");
+    assert!(cx + 404.0 + 16.0 <= fw - panel + 0.5, "the card ({cx}..{}) keeps 16px clear of the {panel}px mind panel", cx + 404.0);
     // The dock starts 48px above the window's foot; a button under it, or under the foot, is a
     // button nobody can press. The scan starts above the dock, so it never presses the dock.
     let dock_top = fh - 48.0;
     let corner = answer(
         w,
         &format!("corner at {width}×{height}"),
-        (fw - 320.0, fw - 120.0, fw - 220.0, 140.0),
+        (cx + 100.0, cx + 300.0, cx + 200.0, 140.0),
         (40.0, dock_top - 2.0),
         (width, height),
         &|| denied.get(),
@@ -198,11 +205,11 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str, width: u32, height: u32) -> 
     shell.get_pending_approvals().set_row_data(0, big.clone());
     settle(w, width, height);
     let before = allowed.get();
-    click(w, fw - 120.0, corner.allow_y);
+    click(w, cx + 300.0, corner.allow_y);
     assert!(allowed.get() > before, "a republish in place keeps the card read and Allow live");
     // The session row is a standing yes: it answers only once the card has been read (it has now).
     let before = sessioned.get();
-    let session_y = scan(w, fw - 220.0, corner.deny_y + 8.0, dock_top - 2.0, || sessioned.get() > before)
+    let session_y = scan(w, cx + 200.0, corner.deny_y + 8.0, dock_top - 2.0, || sessioned.get() > before)
         .expect("the session row answers under the buttons, above the dock");
     save(&settle(w, width, height), &output.replace(".png", "-read.png"), width, height)?;
     // A different request arriving in the same card — written into the same row, as the shell's
@@ -211,13 +218,13 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str, width: u32, height: u32) -> 
         shell.get_pending_approvals().set_row_data(0, ApprovalRequest { id: "appr-largest-next".into(), ..big.clone() });
         settle(w, width, height);
         let (before, before_session) = (allowed.get(), sessioned.get());
-        click(w, fw - 120.0, corner.allow_y);
-        click(w, fw - 220.0, session_y);
+        click(w, cx + 300.0, corner.allow_y);
+        click(w, cx + 200.0, session_y);
         assert_eq!(allowed.get(), before, "a new request in a card that was read leaves Allow disabled until it is read too");
         assert_eq!(sessioned.get(), before_session, "and the session row with it");
-        read_to_end(w, fw - 220.0, 140.0, width, height);
+        read_to_end(w, cx + 200.0, 140.0, width, height);
         let before = allowed.get();
-        click(w, fw - 120.0, corner.allow_y);
+        click(w, cx + 300.0, corner.allow_y);
         assert!(allowed.get() > before, "read to its end, the new request can be allowed");
     }
 
@@ -233,12 +240,12 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str, width: u32, height: u32) -> 
     diff_box(without.as_slice(), both.as_slice(), width, (0, width), (40, height)).expect("the vault prompt is drawn");
     // Over the card's columns, nothing changes above its last row: the prompt is under the card,
     // or — when under it would be under the dock and there is room — beside it.
-    let over_card = diff_box(without.as_slice(), both.as_slice(), width, (width - 420, width - 16), (40, height));
+    let over_card = diff_box(without.as_slice(), both.as_slice(), width, (cx as u32, cx as u32 + 404), (40, height));
     if let Some((top_over_card, _, _)) = over_card {
         assert!(top_over_card as f32 > session_y + 8.0, "the vault prompt is under the card's last row ({session_y}), at {top_over_card}");
     }
     let before = denied.get();
-    scan(w, fw - 320.0, corner.deny_y - 12.0, corner.deny_y + 4.0, || denied.get() > before).expect("Decline still answers with the vault prompt up");
+    scan(w, cx + 100.0, corner.deny_y - 12.0, corner.deny_y + 4.0, || denied.get() > before).expect("Decline still answers with the vault prompt up");
 
     // ── A named and an unnamed target, in the corner ──
     shell.set_vault_unlock(VaultUnlockRequest { reason: "".into(), error: "".into(), first_time: false });
@@ -247,7 +254,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str, width: u32, height: u32) -> 
         w,
         &format!("corner at {width}×{height}"),
         &corner_show,
-        (fw - 320.0, fw - 120.0, fw - 220.0, 140.0),
+        (cx + 100.0, cx + 300.0, cx + 200.0, 140.0),
         (40.0, dock_top - 2.0),
         (width, height),
         &|| denied.get(),

@@ -145,7 +145,9 @@ fn notice_name(harness: &str, catalogue: Option<&str>) -> String {
 /// history, where the person can read it.
 fn late_answer_notice(name: &str) -> yantrik_app_runtime::notify::Notification {
     use yantrik_app_runtime::notify::{Level, Notification};
-    let name = if name.is_empty() { "A mind" } else { name };
+    // The mind's name as the desktop repeats it: one plain line, cut (security review of #648, M1).
+    let name = crate::notification_groups::mind_name(name);
+    let name = if name.is_empty() { "A mind".to_string() } else { name };
     Notification::new("Yantrik", format!("{name} answered after you left. Open the chat to read it."))
         .urgency(Level::Normal)
 }
