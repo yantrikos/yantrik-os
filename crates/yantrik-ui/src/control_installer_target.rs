@@ -121,8 +121,14 @@ pub fn problem(target: &str, eligible: &str, fingerprint: &str) -> Option<String
 
 /// `installer_choose_target`: install beside what is there, into a partition or free space, or
 /// go back to erasing a whole disk.
+///
+/// Graded `sensitive`: it decides which partition installer_install writes, or switches it to
+/// erasing a disk, so a person sees a card naming the device (control_installer_consent.rs). A
+/// partition or free space is read again from the disk before it is taken: the placeholder
+/// mounted read-only and looked inside, and the table compared with the one scanned.
 pub fn add(surface: ControlSurface, ui: &App) -> ControlSurface {
     let weak = ui.as_weak();
+    let explain_weak = ui.as_weak();
     surface.action(
         Action::new(
             "installer_choose_target",
@@ -137,7 +143,16 @@ pub fn add(surface: ControlSurface, ui: &App) -> ControlSurface {
         .arg(Param::flag("whole_disk").optional().describe("true: erase a whole disk instead (the disk field)"))
         .arg(Param::flag("boot_first").optional().describe(
             "not on a Mac: put Yantrik first in the firmware's boot order (otherwise last)",
-        )),
+        ))
+        .risk("sensitive")
+        .explain(move |args| {
+            let Some(ui) = explain_weak.upgrade() else {
+                return "Choose where the installer writes; the installer could not be read to say more".into();
+            };
+            let offered: Vec<(String, String)> =
+                ui.get_onboard_segments().iter().map(|s| (s.id.to_string(), s.card.to_string())).collect();
+            crate::control_installer_consent::choose_card(args, &offered, ui.get_onboard_selected_disk().as_str())
+        }),
         move |args| {
             let ui = weak.upgrade().ok_or_else(|| "the shell is gone".to_string())?;
             if ui.get_onboard_installing() {
@@ -162,6 +177,10 @@ pub fn add(surface: ControlSurface, ui: &App) -> ControlSurface {
                 return Err("name a partition, or free space with disk, free_start and free_end, or whole_disk".into());
             }
             let id = choose(&offered(&ui), partition, args["disk"].as_str(), free.0, free.1)?;
+            // What the scan offered, read again from the disk now, as the planner will read it.
+            let disk = yantrik_install_target::parse_target_id(&id).map(|(d, _)| d).unwrap_or_default();
+            let scanned = crate::wire::installer_partition::fingerprint_for(&ui.get_onboard_table_fingerprints(), &disk);
+            crate::wire::installer_partition::recheck(&id, &scanned)?;
             let eligible = ui.get_onboard_eligible_targets().to_string();
             if !crate::installer_rules::disk_in_list(&id, &eligible) {
                 // A part of an offered run: offered now as itself.

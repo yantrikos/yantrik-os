@@ -57,6 +57,7 @@ mod power_status;
 mod control_network;
 mod control_power;
 mod control_installer;
+mod control_installer_consent;
 mod control_installer_target;
 mod control_levels;
 mod control_levels_actions;

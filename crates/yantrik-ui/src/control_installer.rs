@@ -118,7 +118,6 @@ const FIELDS: &[&str] = &[
     "keyboard",
     "timezone",
     "disk",
-    "erase_macos",
     "encrypt",
 ];
 
@@ -257,7 +256,10 @@ impl Form {
         if let Some(why) = installer_rules::disk_problem(&self.selected_disk, &self.macos_disks, &self.erase_macos)
             .filter(|_| !self.into_partition)
         {
-            return Some(format!("disk: {why}; to erase it, set erase_macos to `{}`", self.selected_disk));
+            return Some(format!(
+                "disk: {why}; to erase it, call installer_erase_macos with disk `{}`",
+                self.selected_disk
+            ));
         }
         if let Some(why) = installer_rules::timezone_problem(&self.timezone, zoneinfo) {
             return Some(format!("timezone: {}", lower(why)));
@@ -407,6 +409,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
     let install_ui = ui_for.clone();
     let reboot_ui = ui_for;
 
+    let surface = crate::control_installer_consent::add_erase_macos(surface, ui);
     crate::control_installer_target::add(surface, ui)
         .action(
             Action::new(
@@ -415,8 +418,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             )
             .arg(Param::text("field").describe(
                 "full_name, username, password, password_confirm, hostname, keyboard, timezone, disk, \
-                 encrypt (true or false; on unless turned off), erase_macos (the chosen disk's name, \
-                 when it holds macOS and may be erased; empty to withdraw)",
+                 encrypt (true or false; on unless turned off). Confirming that a disk holding macOS \
+                 may be erased is installer_erase_macos",
             ))
             .arg(Param::text("value")),
             move |args| {
@@ -505,22 +508,12 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                         // "Erase a whole disk" is; installer_choose_target goes back to beside.
                         ui.set_onboard_into_partition(false);
                     }
-                    // The Disk screen's "Erase macOS on /dev/sdX". The value is that disk's name,
-                    // typed again: a yes/no could be carried over to a disk it was never about.
+                    // The Disk screen's "Erase macOS on /dev/sdX" is an action of its own, graded
+                    // above filling in a name (control_installer_consent.rs).
                     "erase_macos" => {
-                        let want = value.trim().trim_start_matches("/dev/");
-                        if !want.is_empty() {
-                            let macos = ui.get_onboard_macos_disks().to_string();
-                            if !installer_rules::disk_in_list(want, &macos) {
-                                return Err(format!("`{want}` is not a disk here that holds macOS"));
-                            }
-                            if want != ui.get_onboard_selected_disk().as_str() {
-                                return Err(format!(
-                                    "`{want}` is not the chosen disk; choose it with the disk field first"
-                                ));
-                            }
-                        }
-                        ui.set_onboard_erase_macos_disk(want.into());
+                        return Err("erase_macos is not a field: confirm erasing macOS with installer_erase_macos, \
+                                    which a person approves with the disk named"
+                            .into())
                     }
                     // The Disk screen's "Encrypt with my password". Only a plain yes or no: a
                     // value misread as "off" would leave a disk readable by whoever takes it.
@@ -594,7 +587,21 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                  it; what was on an erased disk is not recoverable.",
             )
             .risk("dangerous")
-            .defers(),
+            .defers()
+            // The card names the device and whether it is erased, as the installer holds them
+            // when the card is built: "Install into /dev/sda4 (199 GB, YANTRIK, FAT32); nothing
+            // else changes", or "ERASE /dev/sda, which holds macOS".
+            .explain({
+                let weak = ui.as_weak();
+                move |_| match weak.upgrade() {
+                    Some(ui) => crate::control_installer_consent::install_card(
+                        &crate::control_installer_consent::install_view(&ui),
+                    ),
+                    None => "Install Yantrik OS; the installer could not be read to say which disk it writes or \
+                             whether it erases one"
+                        .into(),
+                }
+            }),
             move |_| {
                 let ui = install_ui()?;
                 if ui.get_onboard_installing() {
@@ -794,7 +801,7 @@ mod tests {
         // A disk holding macOS needs its own confirmation, naming it.
         let mac = with(&|f| f.macos_disks = "sda".into());
         assert!(mac.starts_with("disk: /dev/sda holds macOS"), "{mac}");
-        assert!(mac.contains("set erase_macos to `sda`"), "{mac}");
+        assert!(mac.contains("call installer_erase_macos with disk `sda`"), "{mac}");
         assert!(with(&|f| {
             f.macos_disks = "sda".into();
             f.erase_macos = "nvme0n1".into();

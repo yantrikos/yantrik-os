@@ -304,8 +304,9 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | shell | `check_update` | safe | reads |
 | shell | `set_update_channel` | sensitive | stored configuration: decides where every later update comes from |
 | shell | `apply_update` | dangerous | replaces the system |
-| shell | `installer_set`, `installer_go_to` | standard | driving the installer's own screens |
-| shell | `installer_install`, `installer_reboot` | dangerous | writes the disk; ends the session |
+| shell | `installer_set`, `installer_go_to` | standard | driving the installer's own screens; confirming that macOS may be erased is not a field of `installer_set` |
+| shell | `installer_choose_target`, `installer_erase_macos` | sensitive | decide which partition the install writes, or switch it to erasing a disk; confirm that a disk holding macOS may be erased (its name typed again). Both explain one call: the card names the device |
+| shell | `installer_install`, `installer_reboot` | dangerous | writes the disk; ends the session. `installer_install` explains one call: "Install into /dev/sda4 (199 GB, YANTRIK, FAT32); nothing else changes", or "ERASE /dev/sda, which holds macOS" |
 | shell | `run_recipe` | sensitive | starts agents |
 | shell | `answer_recipe`, `pause_recipe`, `resume_recipe`, `cancel_recipe` | standard | steering a run already started |
 | shell | `new_agent`, `hand_off` | sensitive | starts an agent, with what that costs and whatever reach the role carries |
