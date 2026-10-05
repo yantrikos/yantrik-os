@@ -117,7 +117,7 @@ fn open_launcher(ui: &crate::App) -> Result<serde_json::Value, String> {
 ///
 /// `screens_match_the_shell` in the tests below now reads app.slint and checks every id here
 /// against the `if current-screen == N` branches, so this cannot drift again in silence.
-const SCREENS: &[(&str, i32)] = &[
+pub(crate) const SCREENS: &[(&str, i32)] = &[
     ("desktop", 1),
     ("bond", 4),
     ("personality", 5),
