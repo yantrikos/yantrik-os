@@ -43,6 +43,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The Mind's search grants journal each query's SHA-256 beside it (`mind_grants`).
+sha2 = { workspace = true }
 serde_yaml = { workspace = true }
 # The agent catalog's roles are TOML files (src/agents/catalog.rs, config/agents/).
 toml = "0.8"

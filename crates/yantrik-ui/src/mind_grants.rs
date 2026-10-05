@@ -4,8 +4,12 @@
 //! (`yantrik_harness::host::grant`) and tells this module what came of it. This module never
 //! writes a grant: on *This session* or *Always* it asks root to, through the updater's own sudo
 //! rule (`yantrik-update mind-grant add`), which names the person as the caller and refuses the
-//! mind and egress accounts. Every answer and every use goes to the journal
-//! (`yantrik-mind-grant`); root journals the adds and revokes it makes.
+//! mind and egress accounts. The query goes to the updater on stdin, never on its command line,
+//! which every account reads in /proc and sudo logs. Every answer and every use goes to the
+//! journal (`yantrik-mind-grant`) with the query, escaped, and its SHA-256, so an audit can
+//! compare what was approved with what was searched: nothing on this machine binds the two but
+//! the Mind's own planner (design/mind-egress-2026-09-29.md, section 6). Root journals the adds
+//! and revokes it makes.
 //!
 //! Settings → Harnesses lists the grants in force, read with the same trust checks the Mind
 //! makes, each with Revoke.
@@ -18,22 +22,22 @@ use yantrik_harness::GrantNotice;
 pub enum Step {
     /// One line for the journal.
     Journal(String),
-    /// `yantrik-update` with these arguments (it journals itself).
-    Updater(Vec<String>),
+    /// `yantrik-update` with these arguments and this on its stdin (it journals itself).
+    Updater(Vec<String>, String),
 }
 
 /// What to do about a notice from the host. Pure, for the tests.
 pub fn steps(notice: &GrantNotice) -> Vec<Step> {
     match notice {
         GrantNotice::Answered { harness, query, scope_id, answer } => {
-            let said = Step::Journal(format!("answered {answer} agent={harness} query={}", shown(query)));
+            let said = Step::Journal(format!("answered {answer} agent={harness} {}", shown(query)));
             let add = |scope: &str, id: Option<&str>| {
                 let mut args = vec!["mind-grant".to_string(), "add".into(), "--scope".into(), scope.into()];
                 if let Some(id) = id {
                     args.extend(["--session-id".into(), id.to_string()]);
                 }
-                args.extend(["--query".into(), query.clone()]);
-                Step::Updater(args)
+                args.push("--query-stdin".into());
+                Step::Updater(args, query.clone())
             };
             match *answer {
                 "session" => vec![said, add("session", Some(scope_id))],
@@ -42,7 +46,7 @@ pub fn steps(notice: &GrantNotice) -> Vec<Step> {
             }
         }
         GrantNotice::Used { harness, query, grant } => vec![Step::Journal(format!(
-            "used {} agent={harness} scope={} query={}",
+            "used {} agent={harness} scope={} {}",
             grant.id,
             grant.scope,
             shown(query)
@@ -57,9 +61,9 @@ pub fn on_notice(notice: GrantNotice) {
         for step in steps {
             match step {
                 Step::Journal(line) => journal(&line),
-                Step::Updater(args) => {
+                Step::Updater(args, input) => {
                     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-                    match crate::control_update::run_updater(&args) {
+                    match crate::control_update::run_updater_with_input(&args, Some(input.as_bytes())) {
                         Ok(run) if run.code == 0 => {}
                         Ok(run) => tracing::warn!(code = run.code, why = %run.stderr.trim(), "the search grant was not written"),
                         Err(e) => tracing::warn!(why = %e, "the search grant was not written"),
@@ -102,10 +106,13 @@ pub fn rows() -> Vec<(String, String, String)> {
     grants::in_force().iter().map(|g| row(g, now)).collect()
 }
 
-/// A query as one journal field: quoted, at most 300 characters, nothing unprintable.
+/// A query as journal fields: `sha256=` over its bytes as the Mind sent them, then `query=` the
+/// text quoted, with every character outside printable ASCII (and the quote and backslash)
+/// written as an escape, so nothing in it can split, hide or recolour the line.
 fn shown(query: &str) -> String {
-    let clean: String = query.chars().take(300).map(|c| if c.is_control() { '?' } else { c }).collect();
-    format!("{clean:?}")
+    use sha2::{Digest, Sha256};
+    let digest: String = Sha256::digest(query.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+    format!("sha256={digest} query=\"{}\"", query.escape_default())
 }
 
 fn journal(line: &str) {
@@ -121,10 +128,30 @@ mod tests {
         GrantNotice::Answered { harness: "mind".into(), query: "rust 2027 edition".into(), scope_id: "5f1c2a9e0b7d4c3e".into(), answer }
     }
 
+    /// SHA-256 of "rust 2027 edition".
+    fn digest() -> String {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(b"rust 2027 edition").iter().map(|b| format!("{b:02x}")).collect()
+    }
+
     #[test]
-    fn once_and_no_are_journalled_with_the_query_and_store_nothing() {
-        assert_eq!(steps(&answered("once")), [Step::Journal("answered once agent=mind query=\"rust 2027 edition\"".into())]);
+    fn once_and_no_are_journalled_with_the_query_and_its_digest_and_store_nothing() {
+        assert_eq!(
+            steps(&answered("once")),
+            [Step::Journal(format!("answered once agent=mind sha256={} query=\"rust 2027 edition\"", digest()))]
+        );
         assert_eq!(steps(&answered("no")).len(), 1);
+    }
+
+    #[test]
+    fn a_query_is_journalled_escaped_and_its_digest_is_of_the_bytes_sent() {
+        let q = "caf\u{e9} \u{202e}x\n\"y\"\\";
+        let line = shown(q);
+        assert!(line.ends_with(r#"query="caf\u{e9} \u{202e}x\n\"y\"\\""#), "{line}");
+        assert!(line.is_ascii() && !line.contains('\n'), "{line}");
+        use sha2::{Digest, Sha256};
+        let want: String = Sha256::digest(q.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+        assert!(line.starts_with(&format!("sha256={want} ")), "{line}");
     }
 
     #[test]
@@ -133,13 +160,20 @@ mod tests {
         assert_eq!(
             s[1],
             Step::Updater(
-                ["mind-grant", "add", "--scope", "session", "--session-id", "5f1c2a9e0b7d4c3e", "--query", "rust 2027 edition"]
-                    .map(String::from)
-                    .to_vec()
+                ["mind-grant", "add", "--scope", "session", "--session-id", "5f1c2a9e0b7d4c3e", "--query-stdin"].map(String::from).to_vec(),
+                "rust 2027 edition".into()
             )
         );
         let a = steps(&answered("always"));
-        assert_eq!(a[1], Step::Updater(["mind-grant", "add", "--scope", "always", "--query", "rust 2027 edition"].map(String::from).to_vec()));
+        assert_eq!(
+            a[1],
+            Step::Updater(["mind-grant", "add", "--scope", "always", "--query-stdin"].map(String::from).to_vec(), "rust 2027 edition".into())
+        );
+        // The query is on stdin, never among the arguments (/proc/*/cmdline, sudo's log).
+        for step in [&s[1], &a[1]] {
+            let Step::Updater(args, _) = step else { unreachable!() };
+            assert!(args.iter().all(|a| !a.contains("rust")), "{args:?}");
+        }
     }
 
     #[test]
@@ -155,7 +189,9 @@ mod tests {
             granted_by: "person".into(),
         };
         let used = GrantNotice::Used { harness: "mind".into(), query: "q\nx".into(), grant: grant.clone() };
-        assert_eq!(steps(&used), [Step::Journal("used g-0123456789ab agent=mind scope=always query=\"q?x\"".into())]);
+        let line = format!("used g-0123456789ab agent=mind scope=always {}", shown("q\nx"));
+        assert_eq!(steps(&used), [Step::Journal(line.clone())]);
+        assert!(line.ends_with(r#"query="q\nx""#), "{line}");
         assert_eq!(row(&grant, 2000).2, "The Mind · always, until you revoke it · you allowed it");
         let run = Grant { scope: "run".into(), scope_id: Some("research-42".into()), expires_at: Some(1000 + 4 * 3600), granted_by: "run-starter".into(), ..grant };
         assert_eq!(row(&run, 1000).2, "Run research-42 · 240 more minutes · started with the run");
