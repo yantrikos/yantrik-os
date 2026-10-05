@@ -154,6 +154,31 @@ fn disks(ui: &App) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// The disk `installer_set disk=<value>` names, or why it is refused.
+///
+/// A typo here costs a disk, so the name has to be one the installer found (`found`). And it
+/// only ever names the disk to erase: while the installer is set to install beside what is on a
+/// disk (`beside`), it is refused rather than switching to erasing one. That switch is
+/// installer_choose_target's `whole_disk`, graded `sensitive`; this field is `standard`, and
+/// used to make the switch itself, which went round the grade.
+fn disk_field<'a>(value: &'a str, found: &[String], beside: bool) -> Result<&'a str, String> {
+    if beside {
+        return Err("the installer is set to install beside what is on a disk, so there is no disk to erase \
+                    to choose; to erase a whole disk instead, call installer_choose_target with whole_disk \
+                    true, then set the disk"
+            .into());
+    }
+    let want = value.trim().trim_start_matches("/dev/");
+    if !found.iter().any(|n| n == want) {
+        return Err(if found.is_empty() {
+            "the installer found no disks on this machine".to_string()
+        } else {
+            format!("no disk `{want}` here; it found: {}", found.join(", "))
+        });
+    }
+    Ok(want)
+}
+
 /// The keyboard layouts the Welcome screen offers.
 fn keyboards(ui: &App) -> Vec<String> {
     ui.get_onboard_keyboards().iter().map(|k| k.code.to_string()).collect()
@@ -417,9 +442,10 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 "Fill in one field of the installer, as if typed into it",
             )
             .arg(Param::text("field").describe(
-                "full_name, username, password, password_confirm, hostname, keyboard, timezone, disk, \
-                 encrypt (true or false; on unless turned off). Confirming that a disk holding macOS \
-                 may be erased is installer_erase_macos",
+                "full_name, username, password, password_confirm, hostname, keyboard, timezone, disk \
+                 (the disk to erase; refused while installing beside what is on a disk, which only \
+                 installer_choose_target whole_disk changes), encrypt (true or false; on unless turned \
+                 off). Confirming that a disk holding macOS may be erased is installer_erase_macos",
             ))
             .arg(Param::text("value")),
             move |args| {
@@ -488,25 +514,15 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                         ui.set_onboard_timezone(want.into());
                     }
                     "disk" => {
-                        // A typo here costs a disk, so the name has to be one the installer
-                        // actually found rather than anything the caller cares to type.
                         let found = disks(&ui);
                         let names: Vec<String> = found
                             .iter()
                             .filter_map(|d| d["name"].as_str().map(String::from))
                             .collect();
-                        let want = value.trim().trim_start_matches("/dev/");
-                        if !names.iter().any(|n| n == want) {
-                            return Err(if names.is_empty() {
-                                "the installer found no disks on this machine".to_string()
-                            } else {
-                                format!("no disk `{want}` here; it found: {}", names.join(", "))
-                            });
-                        }
+                        let want = disk_field(&value, &names, ui.get_onboard_into_partition())?;
+                        // Never a change of mode: that is installer_choose_target's, graded
+                        // above filling in a field, and it says on its card what it switches to.
                         ui.set_onboard_selected_disk(want.into());
-                        // Choosing a disk this way is choosing to erase it, as the screen's
-                        // "Erase a whole disk" is; installer_choose_target goes back to beside.
-                        ui.set_onboard_into_partition(false);
                     }
                     // The Disk screen's "Erase macOS on /dev/sdX" is an action of its own, graded
                     // above filling in a name (control_installer_consent.rs).
@@ -743,6 +759,20 @@ mod tests {
             eligible_targets: String::new(),
             target_fingerprint: String::new(),
         }
+    }
+
+    #[test]
+    fn setting_the_disk_field_never_switches_beside_to_erase() {
+        let found = vec!["sda".to_string(), "sdb".to_string()];
+        let e = disk_field("sda", &found, true).unwrap_err();
+        assert!(e.contains("installer_choose_target with whole_disk true"), "{e}");
+        assert_eq!(disk_field("/dev/sdb", &found, false), Ok("sdb"));
+        assert!(disk_field("sdc", &found, false).unwrap_err().contains("no disk `sdc` here"));
+        assert!(disk_field("sda", &[], false).unwrap_err().contains("found no disks"));
+        // Only installer_choose_target changes the mode: nothing in this file's actions does.
+        let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/control_installer.rs")).unwrap();
+        let actions = src.split("#[cfg(test)]").next().unwrap();
+        assert!(!actions.contains("set_onboard_into_partition("), "installer_set must not switch the mode");
     }
 
     #[test]
