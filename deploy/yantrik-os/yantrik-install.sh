@@ -64,23 +64,93 @@ ok "User: $USERNAME ($FULLNAME) @ $HOSTNAME, $TIMEZONE"
 # planner (yantrik-install-target, crates/yantrik-install-target) decides what may be chosen and
 # refuses macOS, Windows, Linux filesystems and the EFI partition; it reads the table again
 # right before writing and refuses if it is not the one shown here.
+#
+# Without the planner there is no installing beside anything, and that is said loudly rather than
+# quietly offering only the erase below: on a Mac kept on macOS with no backup, an installer that
+# silently stopped offering "beside" is a few keystrokes from erasing it. Erasing instead is
+# something the person types, never a fallback.
 MODE=erase
 TARGET_BIN=/opt/yantrik/bin/yantrik-install-target
-APPLE=false
-case "$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null)" in "Apple Inc."|"Apple Computer, Inc.") APPLE=true ;; esac
-if [ -d /sys/firmware/efi ] && [ -x "$TARGET_BIN" ] && command -v jq >/dev/null 2>&1; then
-    # shellcheck disable=SC2046
-    SCAN=$("$TARGET_BIN" scan --uefi $(lsblk -dn -e 7,11 -o NAME,TYPE | awk '$2 == "disk" { print "/dev/" $1 }') 2>/dev/null || echo '[]')
+
+refuse_beside() {
+    echo
+    echo -e "  ${R}${B}Installing beside macOS or another system is not possible here:${N}"
+    echo -e "  ${R}$1${N}"
+    echo -e "  ${A}Nothing has been changed. The only other way on is to ERASE a whole disk.${N}"
+    echo -n "  Type ERASE to choose a whole disk to erase instead, or press Enter to stop: "
+    local answer
+    read -r answer
+    [ "$answer" = "ERASE" ] || { echo "  Nothing was changed."; exit 1; }
+}
+
+# Any Apple partition type (APFS, HFS+, Apple's others) on disk $1, read by blkid -p.
+apple_types_on() {
+    local p
+    for p in $(lsblk -lnpo NAME,TYPE "$1" 2>/dev/null | awk '$2 == "part" { print $1 }'); do
+        blkid -p -s PART_ENTRY_TYPE -o value "$p" 2>/dev/null | grep -qi -- '-11aa-aa11-00306543ecac$' && return 0
+    done
+    return 1
+}
+
+# A Mac by any one sign, as crates/yantrik-install-target's efi::is_apple_machine: DMI's vendors,
+# the firmware's vendor, or an Apple partition type on disk $1. A machine whose DMI cannot be read
+# is taken for a Mac: that costs a PC its boot entry, never a Mac its startup disk.
+is_apple() {
+    local vendors
+    vendors=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null) || return 0
+    vendors="$vendors $(cat /sys/class/dmi/id/board_vendor /sys/class/dmi/id/bios_vendor /sys/firmware/efi/fw_vendor 2>/dev/null || true)"
+    case "${vendors,,}" in *apple*) return 0 ;; esac
+    apple_types_on "$1"
+}
+
+# The path of \EFI\BOOT\BOOTX64.EFI under the EFI partition mounted at $1, found by reading each
+# directory and matching names whatever their case, as FAT does. Exits 1 when there is none, 2
+# when a directory could not be read (counted as "there is one, and it is not ours").
+fallback_probe() {
+    local dir=$1 want listing found
+    for want in EFI BOOT BOOTX64.EFI; do
+        listing=$(ls -A1 -- "$dir" 2>/dev/null) || return 2
+        found=$(printf '%s\n' "$listing" | awk -v w="$want" 'toupper($0) == w { print; exit }')
+        [ -n "$found" ] || return 1
+        dir="$dir/$found"
+    done
+    printf '%s\n' "$dir"
+}
+
+if [ -d /sys/firmware/efi ]; then
+    SCAN='[]'
+    DISKS=$(lsblk -dn -e 7,11 -o NAME,TYPE | awk '$2 == "disk" { print "/dev/" $1 }')
+    if [ ! -x "$TARGET_BIN" ]; then
+        refuse_beside "$TARGET_BIN is missing from this installer image."
+    elif ! command -v jq >/dev/null 2>&1; then
+        refuse_beside "jq is missing from this installer image."
+    # shellcheck disable=SC2086
+    elif ! SCAN=$("$TARGET_BIN" scan --uefi $DISKS 2>/tmp/yantrik-scan.err); then
+        SCAN='[]'
+        refuse_beside "the disks could not be scanned: $(tail -1 /tmp/yantrik-scan.err)"
+    fi
     ELIGIBLE=$(echo "$SCAN" | jq -r '.[] | .segments[]? | select(.eligible) | .id')
-    if [ -n "$ELIGIBLE" ]; then
+    if [ "$SCAN" != '[]' ]; then
         step "Install beside what is on a disk"
-        echo "$SCAN" | jq -r '.[] | select(.segments | length > 0) | "  \(.disk) \(.model)",
+        echo "$SCAN" | jq -r '.[] | select(.segments | length > 0) | "  \(.disk) \(.model)\(if .problem then " (\(.problem))" else "" end)",
             (.segments[] | "    \(if .eligible then "*" else " " end) \(.id | .[0:28] | . + (" " * (28 - length)))  \(.size | . + (" " * (9 - length))) \(.title)\(if .kept then " (kept)" elif .eligible then "" else " (\(.reason))" end)")'
         echo
+    fi
+    if [ "$SCAN" != '[]' ] && [ -z "$ELIGIBLE" ]; then
+        refuse_beside "nothing on these disks can be installed into; why is beside each one above."
+    elif [ -n "$ELIGIBLE" ]; then
+        # shellcheck disable=SC2086
+        PRE=$("$TARGET_BIN" preselect --uefi $DISKS 2>/dev/null | jq -r '.preselect // empty') || PRE=""
         echo "  * may be installed into. Nothing else on that disk changes."
-        echo -n "  Target to install into (e.g. $(echo "$ELIGIBLE" | head -1)), or Enter to erase a whole disk instead: "
+        if [ -n "$PRE" ]; then
+            echo -n "  Target to install into [$PRE], or type ERASE to erase a whole disk instead: "
+        else
+            echo -n "  Target to install into (e.g. $(echo "$ELIGIBLE" | head -1)), or type ERASE to erase a whole disk instead: "
+        fi
         read -r INTO
-        if [ -n "$INTO" ]; then
+        [ -z "$INTO" ] && INTO="$PRE"
+        [ -n "$INTO" ] || { echo "  Nothing was chosen; nothing was changed."; exit 1; }
+        if [ "$INTO" != "ERASE" ]; then
             INTO="${INTO#/dev/}"
             echo "$ELIGIBLE" | grep -qxF "$INTO" || { echo -e "${R}$INTO may not be installed into.${N}"; exit 1; }
             MODE=partition
@@ -91,6 +161,7 @@ if [ -d /sys/firmware/efi ] && [ -x "$TARGET_BIN" ] && command -v jq >/dev/null 
             DISK="$INTO_DISK"
             EXTERNAL=false
             [ "$(lsblk -dno TRAN "$DISK" | tr -d ' ')" = "usb" ] && EXTERNAL=true
+            [ "$(cat "/sys/block/$(basename "$DISK")/removable" 2>/dev/null)" = "1" ] && EXTERNAL=true
             ok "$SENTENCE"
         fi
     fi
@@ -105,8 +176,9 @@ LIVE_DISK=""
 LIVE_SRC=$(findmnt -n -o SOURCE /run/live/medium 2>/dev/null || true)
 [ -n "$LIVE_SRC" ] && LIVE_DISK=$(lsblk -no PKNAME "$LIVE_SRC" 2>/dev/null | head -1)
 [ -n "$LIVE_SRC" ] && [ -z "$LIVE_DISK" ] && LIVE_DISK=$(basename "$LIVE_SRC")
-# A Mac's own system: HFS+ (macOS up to 10.12) or APFS (10.13 on).
-holds_macos() { lsblk -nro FSTYPE "/dev/$1" 2>/dev/null | grep -qxE 'hfsplus|apfs'; }
+# A Mac's own system: HFS+ (macOS up to 10.12) or APFS (10.13 on), by what udev told lsblk or by
+# the partition types blkid reads off the disk itself.
+holds_macos() { lsblk -nro FSTYPE "/dev/$1" 2>/dev/null | grep -qxE 'hfsplus|apfs' || apple_types_on "/dev/$1"; }
 echo -e "  ${B}Available disks:${N}"
 printf "  %-10s %-8s %-6s %s\n" NAME SIZE BUS "MODEL / CONTENTS"
 for d in $(lsblk -dn -e 7,11 -o NAME,TYPE | awk '$2 == "disk" { print $1 }'); do
@@ -137,6 +209,11 @@ EXTERNAL=false
 [ "$(lsblk -dno TRAN "$DISK" | tr -d ' ')" = "usb" ] && EXTERNAL=true
 [ "$(cat "/sys/block/$TARGET_DISK/removable" 2>/dev/null)" = "1" ] && EXTERNAL=true
 fi
+
+# Whether this is a Mac, asked now, while the disk still shows what it held: an erase is about
+# to remove its Apple partition types.
+APPLE=false
+if is_apple "$DISK" || [ "${KEEPS_MACOS:-false}" = true ]; then APPLE=true; fi
 
 # ── 2b. Everything, once, before anything is destroyed ──
 # The disk was the only thing confirmed before this, so a mistyped username was
@@ -239,7 +316,9 @@ echo "UUID=$ROOT_UUID  /  ext4  defaults,noatime  0  1" > "$M/etc/fstab"
 if $IS_EFI && [ -n "$EFI_PART" ]; then
     EFI_UUID=$(blkid -s UUID -o value "$EFI_PART")
     [ -n "$EFI_UUID" ] || { echo -e "${R}Could not read the UUID of $EFI_PART.${N}"; exit 1; }
-    echo "UUID=$EFI_UUID  /boot/efi  vfat  umask=0077  0  2" >> "$M/etc/fstab"
+    # Shared with macOS or Windows beside it: never fsck'd at boot (pass 0), it is theirs too.
+    EFI_PASS=2; [ "$MODE" = partition ] && EFI_PASS=0
+    echo "UUID=$EFI_UUID  /boot/efi  vfat  umask=0077  0  $EFI_PASS" >> "$M/etc/fstab"
 fi
 
 # ── 9. Hostname ──
@@ -393,6 +472,20 @@ if $IS_EFI; then
     # before still starts (crates/yantrik-install-target/src/efi.rs has the same rules).
     NVRAM_FLAG=""
     { $EXTERNAL || $APPLE || [ "$MODE" = partition ]; } && NVRAM_FLAG="--no-nvram"
+    # \EFI\BOOT\BOOTX64.EFI: another system's is never replaced. Asked before any grub-install
+    # writes to the partition, by reading each directory (FAT ignores case, so efi/boot/bootx64.efi
+    # is the same file); a directory that cannot be read counts as one holding another system's
+    # loader. Yantrik's own is known by the sha256 recorded beside it in YANTRIK.OWN.
+    PROBE=0
+    EXISTING=$(fallback_probe "$M/boot/efi") || PROBE=$?
+    OURS=false
+    if [ "$PROBE" = 0 ] && [ -f "$(dirname "$EXISTING")/YANTRIK.OWN" ] \
+        && [ "sha256=$(sha256sum "$EXISTING" | cut -d' ' -f1)" = "$(cat "$(dirname "$EXISTING")/YANTRIK.OWN")" ]; then
+        OURS=true
+    fi
+    if [ "$PROBE" = 2 ]; then
+        echo -e "   ${A}Could not read the EFI partition's EFI/BOOT directory; any loader there is left alone.${N}"
+    fi
     chroot "$M" grub-install --target=x86_64-efi --efi-directory=/boot/efi \
         --bootloader-id=yantrik $NVRAM_FLAG \
         || chroot "$M" grub-install --target=x86_64-efi --efi-directory=/boot/efi \
@@ -413,16 +506,10 @@ if $IS_EFI; then
             echo -e "   ${A}No firmware entry was added; choose Yantrik OS from the firmware's boot menu.${N}"
         fi
     fi
-    # \EFI\BOOT\BOOTX64.EFI: another system's is never replaced. Yantrik's own is known by the
-    # sha256 recorded beside it in YANTRIK.OWN.
-    EXISTING=$(find "$M/boot/efi" -maxdepth 3 -ipath '*/EFI/BOOT/BOOTX64.EFI' 2>/dev/null | head -1)
-    OURS=false
-    if [ -n "$EXISTING" ] && [ -f "$M/boot/efi/EFI/BOOT/YANTRIK.OWN" ] \
-        && [ "sha256=$(sha256sum "$EXISTING" | cut -d' ' -f1)" = "$(cat "$M/boot/efi/EFI/BOOT/YANTRIK.OWN")" ]; then
-        OURS=true
-    fi
-    if [ "$MODE" != partition ] || [ -z "$EXISTING" ] || $OURS; then
-        chroot "$M" grub-install --target=x86_64-efi --efi-directory=/boot/efi --removable
+    # Written where nothing was (probe 1), over our own, or on a disk this install made.
+    if [ "$MODE" != partition ] || [ "$PROBE" = 1 ] || $OURS; then
+        # --no-nvram: the removable path needs no entry, and a Mac's NVRAM is never written.
+        chroot "$M" grub-install --target=x86_64-efi --efi-directory=/boot/efi --removable --no-nvram
         [ -f "$M/boot/efi/EFI/BOOT/BOOTX64.EFI" ] \
             || { echo -e "${R}No EFI/BOOT/BOOTX64.EFI on the EFI partition; this disk would not boot.${N}" >&2; exit 1; }
         echo "sha256=$(sha256sum "$M/boot/efi/EFI/BOOT/BOOTX64.EFI" | cut -d' ' -f1)" > "$M/boot/efi/EFI/BOOT/YANTRIK.OWN"

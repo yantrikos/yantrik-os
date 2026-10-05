@@ -603,6 +603,11 @@ for required in yantrik-ui yantrik yantrik-notes weather-service yos; do
     [ -e "$ROOTFS/opt/yantrik/bin/$required" ] \
         || fail "$required missing from the image — the ISO would boot without it"
 done
+# The text installer's planner for installing beside macOS (crates/yantrik-install-target). It
+# comes with the workspace build like every other binary; without it yantrik-install.sh refuses
+# to install beside anything, so an image that lacks it is not one to ship.
+[ -x "$ROOTFS/opt/yantrik/bin/yantrik-install-target" ] \
+    || fail "yantrik-install-target missing from the image — the text installer could not install beside macOS"
 
 # Copy i18n files if they exist
 if [ -d "$PROJECT_ROOT/crates/yantrik-ui/i18n" ]; then
