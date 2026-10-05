@@ -480,13 +480,21 @@ pub fn run_pointer_only(w: &MinimalSoftwareWindow, output: &str) -> Result<(), B
     std::thread::sleep(std::time::Duration::from_millis(300));
     save(&settle(w, width, height), output, width, height)?;
 
-    // The first key after the card appears, before any Tab: wherever the initial focus is, it is
-    // not on the affirmative, so Enter or Space straight away presses nothing.
+    // The first key after the card appears, before any Tab: the initial focus is the reply box
+    // (the Lens puts it there when it opens), not the affirmative, so Enter or Space straight
+    // away presses nothing on the card.
     for k in ["\n", "\r", " ", "\n"] {
         key(w, k.into());
     }
     render(w, width, height);
     assert_eq!((ui.get_allowed(), ui.get_denied()), (0, 0), "Enter as the first key on a new card answers nothing");
+    // And the keys did arrive somewhere: with nothing focused, the check above would pass for
+    // keys that went nowhere. A letter and Return are sent from the reply box.
+    key(w, "x".into());
+    key(w, slint::SharedString::from(Key::Return));
+    render(w, width, height);
+    assert!(ui.get_sent().contains('x'), "the first keys reached nothing (sent: {:?}), so they proved nothing", ui.get_sent());
+    assert_eq!((ui.get_allowed(), ui.get_denied()), (0, 0), "Return in the reply box answers nothing on the card");
 
     // Shift+Tab and Tab both ways round the whole focus chain, with every confirming key at each
     // stop: if either button, or the row under them, could take focus it would be pressed here.
@@ -519,6 +527,6 @@ pub fn run_pointer_only(w: &MinimalSoftwareWindow, output: &str) -> Result<(), B
     scan(w, deny_x, panel_top, panel_bottom - 4.0, || ui.get_denied() > before).expect("a click on Decline answers");
     let before = ui.get_allowed();
     scan(w, allow_x, panel_top, panel_bottom - 4.0, || ui.get_allowed() > before).expect("a click on Delete event answers");
-    println!("PASS approval card: keys press nothing (Tab/Backtab/Enter/Return/Space ×12, on an Allow-once card and on a red Delete-event card), a click answers Decline and the action");
+    println!("PASS approval card: the first keys land in the reply box (\"x\" + Return sent {:?}) and press nothing; keys press nothing (Tab/Backtab/Enter/Return/Space ×12, on an Allow-once card and on a red Delete-event card), a click answers Decline and the action", ui.get_sent());
     Ok(())
 }
