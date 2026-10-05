@@ -8609,6 +8609,7 @@ dependencies = [
  "serde",
  "serde_json",
  "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
  "yantrik-service-sdk",
 ]
 

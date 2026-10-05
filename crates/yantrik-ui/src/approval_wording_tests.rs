@@ -182,3 +182,45 @@ fn the_countdown_is_in_minutes_and_says_what_happens_then() {
     assert_eq!(expires_text(59), "Expires in under a minute, then declined");
     assert_eq!(expires_text(0), "Expires in under a minute, then declined");
 }
+
+/// The button says "Delete series" only when the app said the call takes a whole recurring
+/// series, and only on a card that already says the action; anything else is unchanged.
+#[test]
+fn a_recurring_target_turns_the_label_into_its_series() {
+    let published = Published::app("Take an event off the calendar. It is not recoverable");
+    assert_eq!(confirm_label_for(true, "delete_event", published, false), "Delete event");
+    assert_eq!(confirm_label_for(true, "delete_event", published, true), "Delete series");
+    assert_eq!(confirm_label_for(false, "update_event", Published::app("Move or rename an event"), true), ALLOW_ONCE);
+    assert_eq!(confirm_label_for(true, "frobnicate", Published::app("Frobnicate"), true), ALLOW_ONCE, "no verb, no series label");
+}
+
+/// Named: the pinned line says the thing by the app's first row, the rest follow a line each,
+/// escaped; unnamed on a blocked card: the line that says so.
+#[test]
+fn the_consequences_say_the_target_the_app_named() {
+    use crate::approval_target::Named;
+    use yantrik_app_runtime::control::Target;
+    let published = Published::app("Take an event off the calendar. It is not recoverable");
+    let named = Named::Resolved(Target {
+        rows: vec![("Event".into(), "Dentist".into()), ("When".into(), "Fri 25 Sep 2026\n13:00".into())],
+        series: false,
+        handles: vec!["id".into()],
+    });
+    let c = consequences_named("delete_event", published, published_said(), "", &[], &named, false);
+    assert_eq!(c.what, "Deletes: Dentist");
+    assert_eq!(c.rows, ["When: Fri 25 Sep 2026\\n13:00"]);
+    assert!(c.exactly.is_empty() && c.unavailable.is_empty());
+    assert_eq!(c.undo, UNDO_APP);
+
+    let args = vec!["id: 01a0c718".to_string()];
+    let c = consequences_named("delete_event", published, published_said(), "", &args, &Named::Unresolved, true);
+    assert_eq!(c.what, "Deletes: id: 01a0c718", "the arguments, plainly, as before");
+    assert_eq!(c.unavailable, "Target details unavailable \u{00b7} the app could not say what this would delete");
+    let c = consequences_named("delete_event", published, published_said(), "", &args, &Named::Unresolved, false);
+    assert!(c.unavailable.is_empty(), "only a blocked card says so");
+    assert_eq!(consequences("delete_event", published, published_said(), "", &args), consequences_named("delete_event", published, published_said(), "", &args, &Named::NotAsked, false));
+}
+
+fn published_said() -> &'static str {
+    "Take an event off the calendar. It is not recoverable"
+}

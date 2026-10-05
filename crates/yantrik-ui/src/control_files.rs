@@ -131,6 +131,7 @@ fn selected_names(ui: &App) -> Vec<String> {
 
 /// Add the file-browser actions to the shell's control surface.
 pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
+    crate::control_files_target::remember(ui);
     let for_go = ui.as_weak();
     let for_enter = ui.as_weak();
     let for_open = ui.as_weak();
@@ -294,7 +295,9 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             // Preserve the existing permission classification for automation callers.
             Action::new("files_delete", "Move a file or folder to recoverable Trash").defers()
                 .risk("dangerous")
-                .arg(Param::text("name").describe("The name to delete, shown in the current listing")),
+                .arg(Param::text("name").describe("The name to delete, shown in the current listing"))
+                // Its path and size on the approval card, from the folder on screen and the disk.
+                .names(crate::control_files_target::named),
             move |args| {
                 let ui = up(&for_delete)?;
                 let name = args["name"].as_str().unwrap_or_default().to_string();

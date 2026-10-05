@@ -430,7 +430,13 @@ fn card_answer(text: &str, asker: &Asker) -> Option<String> {
         }
         Err(why) => {
             tracing::info!(card = %card.card_id, reason = %why, "a phone's answer did not apply");
-            "That card was already answered or has gone.".to_string()
+            // The store's own refusal for a destructive card whose target the app could not name
+            // (approval_target): it is not gone, it can only be declined.
+            if allow && crate::approvals::card(&card.card_id).is_some_and(|c| c.target_blocked) {
+                "That card can only be declined: the app could not say what it would act on.".to_string()
+            } else {
+                "That card was already answered or has gone.".to_string()
+            }
         }
     })
 }

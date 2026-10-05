@@ -276,7 +276,7 @@ use yantrik_ipc_transport::gate::{agent_token_of, ceiling_from, DEFAULT_CEILING}
 // `control::View` / `control::Action` / `control::Param` caller is unchanged, and the shell
 // window and a headless service now share one definition of what an app is.
 pub use yantrik_ipc_contracts::control_surface::{
-    act_json, describe_json, Action, Explainer, Param, View, PROTOCOL,
+    act_json, describe_json, Action, Explainer, Param, Target, View, PROTOCOL,
 };
 
 // ── The registry, which lives on the UI thread ──────────────────────
@@ -383,6 +383,20 @@ pub fn published_grade(action: &str) -> Option<&'static str> {
 /// too, and the card and the dispatch cannot disagree about the shell's own actions.
 pub fn published_description(action: &str) -> Option<String> {
     REGISTRY.with(|cell| cell.borrow().as_ref().and_then(|reg| reg.published_description(action)))
+}
+
+/// What one call of THIS app's own action acts on, beside [`published_grade`] and for the same
+/// reason: the shell's approval card names the target of its own `files_delete` without asking
+/// itself over its socket. `Err` when the action names nothing; `Ok(None)` when it does not hold
+/// what the arguments point at.
+pub fn published_target(
+    action: &str,
+    args: &serde_json::Value,
+) -> Result<Option<yantrik_ipc_contracts::control_surface::Target>, String> {
+    REGISTRY.with(|cell| match cell.borrow().as_ref() {
+        None => Err("this app published no control surface".to_string()),
+        Some(registry) => registry.name_target(action, args),
+    })
 }
 
 /// Re-declare the grade THIS app publishes for one of its own actions, while it is running.
@@ -672,6 +686,28 @@ impl ControlRpc {
                 .map_err(unanswered)?
                 // "This action says nothing about one call of itself" is an answer, not a
                 // transport failure: -32602, so the asker draws no line instead of retrying.
+                .map_err(refusal)
+            }
+
+            // What one call acts on, named from the app's own store, for the approval card: read
+            // like `app.explain`, and bound to nothing. `target: null` is the app saying it does
+            // not hold what the arguments point at.
+            "app.name_target" => {
+                let action = params["action"].as_str().unwrap_or("").trim().to_string();
+                if action.is_empty() {
+                    return Err(refusal("app.name_target needs a non-empty `action`".into()));
+                }
+                let args = params.get("args").cloned().unwrap_or_else(|| serde_json::json!({}));
+                on_ui_thread(who, move |reg| {
+                    reg.name_target(&action, &args).map(|target| {
+                        serde_json::json!({
+                            "app": reg.app_id(),
+                            "action": action,
+                            "target": target.map(|t| t.to_json()).unwrap_or(serde_json::Value::Null),
+                        })
+                    })
+                })
+                .map_err(unanswered)?
                 .map_err(refusal)
             }
 

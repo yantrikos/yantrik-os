@@ -233,7 +233,11 @@ fn sysmon_actions() -> Vec<Action> {
             // come back as "needs argument `pid`" for an argument that was plainly there.
             .arg(Param::integer("pid").describe(
                 "The process id to end, as shown in top_processes or found by find_process",
-            )),
+            ))
+            // What the approval card names in place of the pid, as the window names it.
+            .names(|args| {
+                yantrik_ipc_transport::peer_identity::process_target(args["pid"].as_i64()?.try_into().ok()?)
+            }),
     ]
 }
 

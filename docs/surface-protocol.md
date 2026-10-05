@@ -176,6 +176,7 @@ An **action**:
 | `parameters` | A JSON Schema object: `type` `"object"`, `properties` (each `{type, description}` and, when declared, `enum`, `items` and `default`; `description` MAY be empty), `required` (names, in declaration order). |
 | `expected_seconds` | Optional integer: how long a call usually takes to answer, when the app knows it is more than a moment (a render, an export). A client SHOULD size its timeout by it; absent, the client keeps its own. |
 | `explains` | Optional boolean, present and `true` only when the action can say what ONE call of it does, with that call's own arguments. The sentence itself comes from `app.explain` (below), because it depends on arguments `describe` never sees; absent, the action says nothing per call. |
+| `names_target` | Optional boolean, present and `true` only when the action can name what ONE call of it acts on — an event, a file, a container — from the app's own store. The names come from `app.name_target` (below); absent, the action names nothing. |
 
 **Parameter types.** `type` is one of `string`, `number`, `integer`, `boolean`, `array`,
 `object`, and the dispatch checks it (§5, step 7): an argument of another type is refused before
@@ -249,6 +250,28 @@ does not serve. A client MUST treat any error, and any slowness, as "nothing to 
 NOT make the thing it was about to draw — the card — depend on this answer: a missing line is
 never a missing card. The `explains` flag on `describe` exists so a client need not ask a surface
 that cannot answer.
+
+### `app.name_target` (optional)
+
+What ONE call acts on, named by the app from its own store, for an approval card to draw in place
+of a raw id: "Event: Dentist", "When: Fri 25 Sep 2026, 13:00–14:00 (local time, UTC+01:00)".
+
+`params` are `app.explain`'s: `action`, and the `args` of the call. The result is
+`{app, action, target}`, where `target` is `null` when the app does not hold what the arguments
+point at (an unknown id), or:
+
+| key | |
+| --- | --- |
+| `rows` | `[{label, value}]`, strings, in the order a card draws them. The first names the thing itself; the rest say which one. A client bounds them (the shell keeps six) and escapes every value. |
+| `series` | `true` when the call acts on every occurrence of a recurring thing — the card's button then says "Delete series". |
+| `handles` | The argument names the rows stand for (`id`): a card shows those arguments under its details rather than on its face. |
+
+Reading, not acting, exactly as `app.explain`; an action that declared no namer is refused with
+`-32602`. Unlike `app.explain`, the answer can decide what a card offers: the shell does not let a
+person allow a destructive call (graded `dangerous`, or one whose description says it cannot be
+undone or runs whatever it is given) to an action that takes a named thing away — `delete`,
+`remove`, `kill` and the like — unless the app named its target. Any error, any slowness and
+`target: null` leave such a card with Decline only.
 
 ## 5. `app.act`
 

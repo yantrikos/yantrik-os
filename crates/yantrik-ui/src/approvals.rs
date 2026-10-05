@@ -49,6 +49,8 @@
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+pub use crate::approval_target::Named;
+
 /// How long a request waits for an answer before it stops being one.
 ///
 /// Two minutes is roughly how long a person takes to notice a card, read six lines of arguments
@@ -379,6 +381,11 @@ struct Record {
     /// sentence about them changes nothing about what was allowed. It DOES close the standing
     /// yes: a card carrying one offers no session rule (see [`Card::can_session`]).
     explained: String,
+    /// What the call acts on, named by the app from its own store when the action acts on a named
+    /// thing (`approval_target`). Display only and outside the grant, like `target` — except for
+    /// one rule it carries: a destructive request whose target was asked for and could not be
+    /// named is never granted ([`Store::decide`]).
+    named: Named,
     /// The action's description as the APP publishes it, whatever the caller said beside it —
     /// empty only for a caller that raised the card with no published sentence to read (the
     /// store's own tests). What the card warns from, whether it offers a standing yes, and what
@@ -406,6 +413,11 @@ struct Record {
 }
 
 impl Record {
+    /// Destructive, and its target was asked for and not named: see [`crate::approval_target`].
+    fn target_blocked(&self) -> bool {
+        crate::approval_target::blocked(&self.named, shown_whole(&self.grade, &self.said()))
+    }
+
     /// Everything said about the action: the app's own sentence, then the caller's words when
     /// they add anything. Read whole — never cut to the card's bound — by the warning, the
     /// session-rule offer and the rule check, so a phrase past [`PURPOSE_CHARS`] still counts.
@@ -623,6 +635,15 @@ pub struct Card {
     /// [`Card::target`] it says nothing about what the grant covers, and a cut one names its
     /// true length.
     pub explained: String,
+    /// What the call acts on, in the app's words, or why it could not be named. See
+    /// [`crate::approval_target`].
+    pub named: Named,
+    /// The arguments the card's face shows: [`Card::args`] less the ones the app's rows stand for
+    /// (the raw id), which stay whole under Details. Equal to `args` unless the target was named.
+    pub face_args: Vec<String>,
+    /// A destructive card whose target could not be named: Decline only, and the store refuses a
+    /// grant for it whatever presses Allow.
+    pub target_blocked: bool,
     /// A sentence to put in front of the buttons, or empty. See [`warning_for`].
     pub warning: String,
     /// Everything said about the action, whole: the app's published sentence and the caller's
@@ -826,6 +847,9 @@ pub struct Asked<'a> {
     pub published: &'a str,
     pub target: &'a str,
     pub explained: &'a str,
+    /// What the app named the call's target as (`approval_target`) — `&Named::NotAsked` for a
+    /// card nobody needed to ask about.
+    pub named: &'a Named,
 }
 
 /// What [`Store::request`] answers with.
@@ -895,7 +919,7 @@ impl Store {
     ) -> Result<Requested, String> {
         // Every caller of this form passes the action's own description — the tests, and the
         // shell's `hand_off`, whose purpose it writes itself — so that is what it is kept as.
-        let asked = Asked { app, action, grade, purpose: "", published: purpose, target, explained };
+        let asked = Asked { app, action, grade, purpose: "", published: purpose, target, explained, named: &Named::NotAsked };
         self.raise(requester, verified, asked, args, now, at)
     }
 
@@ -911,7 +935,7 @@ impl Store {
         now: Instant,
         at: &str,
     ) -> Result<Requested, String> {
-        let Asked { app, action, grade, purpose, published, target, explained } = asked;
+        let Asked { app, action, grade, purpose, published, target, explained, named } = asked;
         self.prune(now);
 
         let canonical = canonical(&args);
@@ -987,6 +1011,7 @@ impl Store {
             // a second cut would replace the marker that names the sentence's true length
             // with one naming the length of the already-cut line.
             explained: clip_at_word(explained.trim(), EXPLAINED_CHARS),
+            named: named.clone(),
             published: published.trim().to_string(),
             created: now,
             created_at: at.to_string(),
@@ -1071,6 +1096,16 @@ impl Store {
         // Deciding twice is a double click, not a second decision. And a card that has already
         // expired must not become a grant: the request it stood for is gone, and the person
         // clicking now is answering a question nobody is asking any more.
+        // A destructive request whose target the app could not name is answered by Decline only:
+        // the person cannot have seen what it would destroy, so no press makes it a grant
+        // (approval-safety condition; `approval_target`). Refused here, where every grant is
+        // made, not only by the disabled button.
+        if decision == Status::Granted && record.target_blocked() {
+            return Err(format!(
+                "`{id}` cannot be allowed: the app could not say what this would act on, so the \
+                 person could not see it. It can only be declined."
+            ));
+        }
         match record.status(now) {
             Status::Pending => {
                 record.state = decision;
@@ -1167,6 +1202,10 @@ impl Store {
         let mut pending: Vec<Card> = Vec::new();
         for record in &self.records {
             let status = record.status(now);
+            let whole = shown_whole(&record.grade, &record.said()) || record.verified.raised_by_desktop;
+            let rows_of = |args: &serde_json::Value| {
+                if whole { args_rows_with(args, WHOLE_VALUE_CHARS) } else { args_rows(args) }
+            };
             let card = Card {
                 id: record.id.clone(),
                 requester: record.requester.clone(),
@@ -1182,11 +1221,10 @@ impl Store {
                 // And on a card the desktop raised itself — the recipe executor's hand_off, whose
                 // task (up to 200 characters) is what a person is being asked to start — which
                 // never passes `request_approval`'s refusal and was cut at sixty (fifth review).
-                args: if shown_whole(&record.grade, &record.said()) || record.verified.raised_by_desktop {
-                    args_rows_with(&record.args, WHOLE_VALUE_CHARS)
-                } else {
-                    args_rows(&record.args)
-                },
+                args: rows_of(&record.args),
+                face_args: crate::approval_target::face_args(&record.named, &record.args, rows_of),
+                named: record.named.clone(),
+                target_blocked: record.target_blocked(),
                 // At a word, not at the bound: a cut in the middle of the name is the
                 // `PURPOSE_CHARS` mistake rebuilt — "13:0" and "13:00… " are not the same
                 // sentence about when the appointment is.
@@ -1492,6 +1530,7 @@ mod approvals_tests {
             published: "Run an agent.",
             target: "",
             explained: "",
+            named: &crate::approvals::Named::NotAsked,
         };
         let mut store = Store::new();
         let off = Some(crate::never_ask::REFUSED.to_string());
@@ -2180,6 +2219,7 @@ mod approvals_tests {
             published: run,
             target: "",
             explained: "",
+            named: &crate::approvals::Named::NotAsked,
         };
         let id = store.raise("pi 0.87", Verified::default(), asked, args(serde_json::json!({"command": "ls /tmp"})), now, "12:03").unwrap().id;
         let card = store.pending(now).into_iter().find(|c| c.id == id).unwrap();
@@ -2201,6 +2241,7 @@ mod approvals_tests {
             published: "Take an event off the calendar. It is not recoverable",
             target: "",
             explained: "",
+            named: &crate::approvals::Named::NotAsked,
         };
         let id = store.raise("pi 0.87", Verified::default(), delete, args(serde_json::json!({"id": "e1"})), now, "12:04").unwrap().id;
         let card = store.pending(now).into_iter().find(|c| c.id == id).unwrap();
@@ -2232,6 +2273,7 @@ mod approvals_tests {
             published,
             target: "",
             explained: "",
+            named: &crate::approvals::Named::NotAsked,
         };
         let id = store.raise("pi 0.87", Verified::default(), asked, args(serde_json::json!({"from": "a"})), now, "12:05").unwrap().id;
         let card = store.pending(now).into_iter().find(|c| c.id == id).unwrap();

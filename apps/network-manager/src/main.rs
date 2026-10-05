@@ -447,6 +447,30 @@ fn do_disconnect(ui: &NetworkManagerApp, state: &State) -> Result<WifiState, Str
 }
 
 /// Delete a saved network. The service refuses the one that is currently in use.
+/// The approval card's rows for forgetting the saved network `ssid`, or `None` when nothing by that
+/// name is saved.
+fn saved_target(known: &[KnownNetwork], ssid: &str) -> Option<yantrik_app_runtime::control::Target> {
+    let saved = known.iter().find(|k| k.ssid == ssid.trim())?;
+    Some(yantrik_app_runtime::control::Target {
+        rows: vec![
+            ("Saved network".into(), saved.ssid.clone()),
+            ("Goes with it".into(), "the password saved for it".into()),
+        ],
+        series: false,
+        handles: vec!["ssid".into()],
+    })
+}
+
+#[cfg(test)]
+mod saved_target_tests {
+    #[test]
+    fn a_saved_network_is_named_and_an_unsaved_one_is_not() {
+        let known = vec![super::KnownNetwork { ssid: "Home".into(), uuid: "u-1".into(), is_active: false }];
+        assert_eq!(super::saved_target(&known, "Home").unwrap().rows[0].1, "Home");
+        assert!(super::saved_target(&known, "Cafe").is_none());
+    }
+}
+
 fn do_forget(
     ui: &NetworkManagerApp,
     state: &State,
@@ -1175,7 +1199,12 @@ fn publish_control(app: &NetworkManagerApp, state: &State) {
                  It cannot be undone: joining it again needs the password again.",
             )
                 .risk("sensitive")
-                .arg(Param::text("ssid").describe("The saved network to delete")),
+                .arg(Param::text("ssid").describe("The saved network to delete"))
+                // What the approval card names: the saved network as the service lists it now.
+                .names(|args| {
+                    let known = call::<Vec<KnownNetwork>>(method::WIFI_KNOWN, serde_json::json!({})).ok()?;
+                    saved_target(&known, args["ssid"].as_str().unwrap_or_default())
+                }),
             move |args| {
                 let ui = forget_ui()?;
                 let ssid = args["ssid"].as_str().unwrap_or_default().trim().to_string();

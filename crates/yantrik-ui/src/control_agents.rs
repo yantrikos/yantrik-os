@@ -827,6 +827,7 @@ fn allowed_on_card(origin: &RecipeOrigin, call: &AgentCall<'_>, role: &catalog::
         published: &purpose,
         target: "",
         explained: "",
+        named: &crate::approvals::Named::NotAsked,
     };
     match approvals::request(&origin.label(), verified, asked, args) {
         Ok(asked) => {

@@ -65,6 +65,23 @@ struct Session {
 
 type State = Rc<RefCell<Session>>;
 
+/// The approval card's rows for the snippet `needle` names: its title, language, collection and
+/// size, or `None` when the store holds no one snippet by that id or title.
+fn snippet_target(store: &store::Store, needle: &str) -> Option<yantrik_app_runtime::control::Target> {
+    let snippet = store.find(needle).ok()?;
+    let lines = snippet.code.lines().count();
+    Some(yantrik_app_runtime::control::Target {
+        rows: vec![
+            ("Snippet".into(), if snippet.title.trim().is_empty() { "(untitled)".into() } else { snippet.title.clone() }),
+            ("Language".into(), if snippet.language.is_empty() { "plain text".into() } else { snippet.language.clone() }),
+            ("Collection".into(), store.collection_name(snippet.collection)),
+            ("Size".into(), format!("{lines} line{}", if lines == 1 { "" } else { "s" })),
+        ],
+        series: false,
+        handles: vec!["id".into()],
+    })
+}
+
 fn main() {
     init_tracing("yantrik-snippet-manager");
 
@@ -1176,7 +1193,13 @@ fn publish_control(app: &SnippetManagerApp, state: State) {
             // same reason — the recoverable and the unrecoverable are not one grade.
             Action::new("delete", "Throw a snippet away. There is no trash to take it out of: it cannot be undone.")
                 .arg(Param::text("id").describe("Its id, or its title"))
-                .risk("sensitive"),
+                .risk("sensitive")
+                // What the approval card names in place of the id: the snippet as the store on
+                // disk holds it, which every change this window makes is saved to.
+                .names(|args| {
+                    let store = store::Store::peek(store::state_path(&store::dir()))?;
+                    snippet_target(&store, args["id"].as_str().unwrap_or_default())
+                }),
             move |args| {
                 let ui = delete_ui()?;
                 let id = named(&delete_state, &arg(args, "id"))?;
@@ -1332,5 +1355,27 @@ fn expanded(value: &str) -> PathBuf {
         PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest)
     } else {
         PathBuf::from(value)
+    }
+}
+
+#[cfg(test)]
+mod target_tests {
+    /// The approval card's name for a snippet comes from the store on disk, read without
+    /// changing it; an id the store does not hold names nothing.
+    #[test]
+    fn a_snippet_is_named_from_the_store_and_an_unknown_one_is_not() {
+        let dir = std::env::temp_dir().join(format!("snippet-target-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = super::store::state_path(&dir);
+        let mut store = super::store::Store::load(path.clone());
+        let id = store.create("docker compose up", "yaml", "services:\n  db:\n", "", super::store::ALL).unwrap();
+        let read = super::store::Store::peek(path).expect("saved and read back");
+        let t = super::snippet_target(&read, &id.to_string()).expect("named by id");
+        assert_eq!(t.rows[0], ("Snippet".to_string(), "docker compose up".to_string()));
+        assert_eq!(t.rows[3].1, "2 lines");
+        assert!(super::snippet_target(&read, "9999").is_none());
+        assert!(super::store::Store::peek(dir.join("missing.json")).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

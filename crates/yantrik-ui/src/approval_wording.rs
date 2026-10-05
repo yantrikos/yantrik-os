@@ -28,6 +28,7 @@
 //! person should see that something is there.
 
 use crate::approval_bounds;
+use crate::approval_target::{self, Named};
 use crate::approvals::{self, Card, Verified};
 use crate::notification_sender::{bridged_by, one_line, plain};
 use yantrik_ipc_transport::plain_text::is_bidi_control;
@@ -139,6 +140,21 @@ pub fn confirm_label(destructive: bool, action: &str, published: Published) -> S
     verb_phrase(action, published).unwrap_or_else(|| ALLOW_ONCE.to_string())
 }
 
+/// [`confirm_label`], told whether the app said the call acts on a whole recurring series: then
+/// the action's verb with "series" — "Delete series", not "Delete event" — because deleting every
+/// occurrence is a different act from deleting one, and the button is where the person reads it.
+/// `series` is only ever the app's answer (`approval_target`), never the caller's.
+pub fn confirm_label_for(destructive: bool, action: &str, published: Published, series: bool) -> String {
+    let label = confirm_label(destructive, action, published);
+    if !destructive || !series || label == ALLOW_ONCE {
+        return label;
+    }
+    match label.split_whitespace().next() {
+        Some(verb) => format!("{verb} series"),
+        None => label,
+    }
+}
+
 /// The action as a short imperative, from what the app publishes:
 ///
 /// 1. the action id when it is `<verb>_<object>` — `delete_event` → "Delete event";
@@ -233,6 +249,14 @@ pub struct Consequences {
     pub exactly: String,
     /// "Undo: not possible, the app says so", the caller-only form, or empty.
     pub undo: String,
+    /// What the target is, beyond the name `what` gives it — "When: Fri 25 Sep 2026, 13:00–14:00
+    /// (local time, UTC+01:00)", "Calendar: …", "Occurrences: …" — one elided line each, in the
+    /// app's words, escaped. Empty unless the app named the target.
+    pub rows: Vec<String>,
+    /// "Target details unavailable · the app could not say what this would delete", on a
+    /// destructive card whose target was asked for and not named — the card whose confirm is
+    /// disabled. Empty otherwise.
+    pub unavailable: String,
 }
 
 /// The card's "what changes" lines. `args` are `approvals::args_rows` (already bounded), `said` is
@@ -240,6 +264,40 @@ pub struct Consequences {
 /// from the app only, and every argument and the target are passed through [`visible`] one by one,
 /// before they are joined, so no value can break a line or reorder the ones after it.
 pub fn consequences(action: &str, published: Published, said: &str, target: &str, args: &[String]) -> Consequences {
+    consequences_named(action, published, said, target, args, &Named::NotAsked, false)
+}
+
+/// [`consequences`], with what the app named the target as (`approval_target`). Named: the
+/// pinned line says the thing by its first row — "Deletes: Dentist" — the other rows follow it,
+/// and `args` (the card's face arguments, the raw id already left under Details) are `exactly`.
+/// Not named, on a card whose confirm is `blocked`: the line saying so. Every row is the app's
+/// answer, escaped and cut here; nothing in it is read from the caller's arguments or purpose.
+pub fn consequences_named(
+    action: &str,
+    published: Published,
+    said: &str,
+    target: &str,
+    args: &[String],
+    named: &Named,
+    blocked: bool,
+) -> Consequences {
+    let mut changes = consequences_plain(action, published, said, target, args);
+    let verb = verb_said(verb_phrase(action, published).as_deref());
+    match named {
+        Named::Resolved(t) => {
+            let shown = |text: &str| clip_chars(&visible(text), approval_target::VALUE_CHARS);
+            if let Some((_, first)) = t.rows.first() {
+                changes.what = format!("{verb}: {}", shown(first));
+            }
+            changes.rows = t.rows.iter().skip(1).map(|(label, value)| format!("{}: {}", shown(label), shown(value))).collect();
+        }
+        Named::Unresolved if blocked => changes.unavailable = approval_target::unavailable(&approval_target::verb_of(action)),
+        _ => {}
+    }
+    changes
+}
+
+fn consequences_plain(action: &str, published: Published, said: &str, target: &str, args: &[String]) -> Consequences {
     let verb = verb_said(verb_phrase(action, published).as_deref());
     let none = args.is_empty() || (args.len() == 1 && args[0] == "(no arguments)");
     // Escaped value by value, then cut after escaping — each row and all of them together — to the
@@ -263,7 +321,7 @@ pub fn consequences(action: &str, published: Published, said: &str, target: &str
     } else {
         ""
     };
-    Consequences { what, exactly, undo: undo.to_string() }
+    Consequences { what, exactly, undo: undo.to_string(), ..Consequences::default() }
 }
 
 /// The warning line, less what the undo row already says. "The app says this cannot be undone."

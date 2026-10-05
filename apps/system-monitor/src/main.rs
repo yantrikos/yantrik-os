@@ -624,7 +624,11 @@ fn publish_control(app: &SystemMonitorApp, status: Rc<RefCell<Status>>) {
                 .arg(Param::flag("force").describe("SIGKILL instead of SIGTERM").optional())
                 // Everything else on this surface changes a view. This ends someone's work, and
                 // there is no undo — so it must clear the caller's ceiling on its own.
-                .risk("dangerous"),
+                .risk("dangerous")
+                // What the approval card names in place of the pid: the program, from /proc now.
+                .names(|args| {
+                    yantrik_ipc_transport::peer_identity::process_target(args["pid"].as_i64()?.try_into().ok()?)
+                }),
             move |args| {
                 let ui = kill_ui()?;
                 let pid = args["pid"].as_i64().ok_or("`pid` must be a number")? as i32;

@@ -391,7 +391,7 @@ pub fn child_path(current: &str, child_name: &str) -> String {
     collapse_home(&child)
 }
 
-fn format_size(bytes: u64) -> String {
+pub fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{} B", bytes)
     } else if bytes < 1024 * 1024 {

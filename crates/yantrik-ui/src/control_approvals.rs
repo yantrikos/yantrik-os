@@ -153,7 +153,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 //
                 // The grade is checked first, because the grade is the one thing the caller
                 // declares that the decision actually turns on.
-                let (grade, grade_note, published_purpose, naming, explained, params) =
+                let (grade, grade_note, published_purpose, naming, explained, params, named) =
                     match settle_grade(&app, &action, &grade, &parsed) {
                         Ok(settled) => settled,
                         Err(why) => return Err(why),
@@ -278,7 +278,14 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // handle and for an app that publishes no index. Display only: `parsed` goes to
                 // the store exactly as the caller sent it, because the grant is bound to those
                 // bytes and this line must never become one more thing approved beside them.
-                let target = target_line(&parsed, &naming);
+                //
+                // Where the app named the target itself (`app.name_target`), its rows say it and
+                // the one-line index match would say it twice, less well.
+                let target = if matches!(named, approvals::Named::Resolved(_)) {
+                    String::new()
+                } else {
+                    target_line(&parsed, &naming)
+                };
                 // And the app's sentence about this one call, with these arguments (#137) —
                 // empty for an app that explains nothing per call, and then the card is exactly
                 // what it was. Display only, like the naming line: `parsed` reaches the store
@@ -294,6 +301,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                         published: &published_purpose,
                         target: &target,
                         explained: &explained,
+                        named: &named,
                     },
                     parsed,
                 )?;
@@ -781,10 +789,10 @@ fn settle_grade(
     action: &str,
     claimed: &str,
     args: &serde_json::Value,
-) -> Result<(String, String, String, Naming, String, Option<Vec<String>>), String> {
-    let ((published, purpose, naming, explained), params) = published_detail(app, action, args)?;
+) -> Result<(String, String, String, Naming, String, Option<Vec<String>>, approvals::Named), String> {
+    let ((published, purpose, naming, explained), params, named) = published_detail(app, action, args)?;
     let note = grade_note(claimed, &published);
-    Ok((published, note, purpose, naming, explained, params))
+    Ok((published, note, purpose, naming, explained, params, named))
 }
 
 /// What [`published_detail_in`] answers: the grade, the description, the naming index and the
@@ -806,7 +814,7 @@ fn published_detail(
     app: &str,
     action: &str,
     args: &serde_json::Value,
-) -> Result<(Detail, Option<Vec<String>>), String> {
+) -> Result<(Detail, Option<Vec<String>>, approvals::Named), String> {
     published_detail_full_in(
         &yantrik_ipc_transport::server::socket_dir(),
         &crate::apps::Catalogue::shared().get(),
@@ -825,7 +833,21 @@ fn published_detail_in(
     action: &str,
     args: &serde_json::Value,
 ) -> Result<Detail, String> {
-    published_detail_full_in(dir, installed, app, action, args).map(|(detail, _)| detail)
+    published_detail_full_in(dir, installed, app, action, args).map(|(detail, _, _)| detail)
+}
+
+/// What [`published_detail_full_in`] says the call acts on (`approval_target`), alone: the tests'
+/// view of it. Not gated on the test configuration, because the source checks below read this
+/// file up to the first test attribute as "the shell's code".
+#[allow(dead_code)]
+fn published_target_in(
+    dir: &std::path::Path,
+    installed: &[crate::apps::DesktopEntry],
+    app: &str,
+    action: &str,
+    args: &serde_json::Value,
+) -> Result<approvals::Named, String> {
+    published_detail_full_in(dir, installed, app, action, args).map(|(_, _, named)| named)
 }
 
 /// [`published_detail_in`], and the names of the parameters the action publishes, read from the
@@ -840,7 +862,7 @@ fn published_detail_full_in(
     app: &str,
     action: &str,
     args: &serde_json::Value,
-) -> Result<(Detail, Option<Vec<String>>), String> {
+) -> Result<(Detail, Option<Vec<String>>, approvals::Named), String> {
     let Some(surface) = surface_in(app, installed, dir) else {
         return Err(format!(
             "there is no app called `{app}` on this desktop, so nothing was put in front of the \
@@ -860,7 +882,13 @@ fn published_detail_full_in(
             .map(|grade| {
                 let purpose =
                     yantrik_app_runtime::control::published_description(action).unwrap_or_default();
-                ((grade.to_string(), purpose, Naming::new(), String::new()), None)
+                // What its own action acts on, from its own namer (`files_delete`: the path and the
+                // size), the same answer `app.name_target` would give over the socket.
+                let named = crate::approval_target::from_local(
+                    yantrik_app_runtime::control::published_target(action, args),
+                    action,
+                );
+                ((grade.to_string(), purpose, Naming::new(), String::new()), None, named)
             })
             .ok_or_else(|| {
                 format!(
@@ -922,7 +950,29 @@ fn published_detail_full_in(
     // action that just said on the first one that it can explain a call of itself, so no card
     // pays for a question its app cannot answer.
     let explained = if published.2 { explained_or_unsaid(explained_in(&address, action, args)) } else { String::new() };
-    Ok(((published.0, published.1, naming_in(&reply), explained), params))
+    // What the call acts on, named by the app from its own store — only for an action that acts
+    // on a named thing, and only ever from the app's answer: `args` go TO the app, as the
+    // question, and nothing of them comes back onto the card from here (`approval_target`).
+    let declared = entry.and_then(|a| a["names_target"].as_bool()).unwrap_or(false);
+    let named = if !crate::approval_target::needed(action, declared) {
+        approvals::Named::NotAsked
+    } else if declared {
+        named_in(&address, action, args)
+    } else {
+        approvals::Named::Unresolved
+    };
+    Ok(((published.0, published.1, naming_in(&reply), explained), params, named))
+}
+
+/// The app's answer to `app.name_target` for one call. Every way the question can fail — a slow
+/// surface, a broken pipe, an id the app does not hold — is the target not named, which on a
+/// destructive card leaves Decline as the only answer.
+fn named_in(address: &str, action: &str, args: &serde_json::Value) -> approvals::Named {
+    yantrik_ipc_transport::SyncRpcClient::new(address)
+        .with_timeout(GRADE_LOOKUP)
+        .call("app.name_target", serde_json::json!({ "action": action, "args": args }))
+        .map(|reply| crate::approval_target::from_reply(&reply))
+        .unwrap_or(approvals::Named::Unresolved)
 }
 
 /// For an action that said it explains each call: its sentence, or — when the sentence did not
@@ -1808,8 +1858,21 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
     // the card's app-published field can make — never the caller's words.
     let published = approval_wording::Published::of(&card);
     let destructive = approval_wording::destructive(&card.grade, &card.said);
-    let confirm = approval_wording::confirm_label(destructive, &card.action, published);
-    let changes = approval_wording::consequences(&card.action, published, &card.said, &card.target, &card.args);
+    // "Delete series" when the APP said the call takes a whole recurring series with it; the
+    // flag is only ever its answer to `app.name_target` (approval_target).
+    let series = matches!(&card.named, approvals::Named::Resolved(t) if t.series);
+    let confirm = approval_wording::confirm_label_for(destructive, &card.action, published, series);
+    // The face's arguments: the raw id the app's rows stand for is left under Details, where the
+    // argument box still shows every argument the grant binds.
+    let changes = approval_wording::consequences_named(
+        &card.action,
+        published,
+        &card.said,
+        &card.target,
+        if matches!(card.named, approvals::Named::Resolved(_)) { &card.face_args } else { &card.args },
+        &card.named,
+        card.target_blocked,
+    );
     let warning = approval_wording::warning_beside(&card.warning, &changes.undo);
     let who = approval_wording::identity(&card.verified);
     // Every argument and the target drawn with its control, bidi and format characters as
@@ -1818,7 +1881,12 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
     // Each then cut, after escaping, to the row bound the request was checked against.
     let args: Vec<slint::SharedString> =
         card.args.iter().map(|a| crate::approval_bounds::clip_row(&approval_wording::visible(a)).into()).collect();
-    let target = approval_wording::visible(&card.target);
+    // Named by the app (`app.name_target`): the row carries its name line, which pins every bound
+    // argument the face still shows ("Exactly:") and draws the footnote that the name is the app's.
+    let target = match &card.named {
+        approvals::Named::Resolved(t) => t.rows.first().map(|(l, v)| approval_wording::visible(&format!("{l}: {v}"))).unwrap_or_default(),
+        _ => approval_wording::visible(&card.target),
+    };
     let explained = approval_wording::visible(&card.explained);
     let summary = approval_wording::visible(&card.summary);
     crate::ApprovalRequest {
@@ -1832,6 +1900,12 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
         what: changes.what.into(),
         exactly: changes.exactly.into(),
         undo: changes.undo.into(),
+        target_rows: ModelRc::new(VecModel::from(
+            changes.rows.into_iter().map(slint::SharedString::from).collect::<Vec<_>>(),
+        )),
+        target_missing: changes.unavailable.into(),
+        // Decline only: the store refuses the grant too (`approvals::Store::decide`).
+        confirm_blocked: card.target_blocked,
         id: card.id.into(),
         // Which of the person's agents asked — from its token, never its words — so the card
         // names it wherever it is drawn (design decision 4). Empty for a caller that is no agent.
@@ -2791,6 +2865,9 @@ mod control_approvals_tests {
                 // so the naming row is empty, and this is the ordinary path on the card (#54).
                 target: String::new(),
                 explained: String::new(),
+                named: Default::default(),
+                face_args: Vec::new(),
+                target_blocked: false,
                 warning: "The app says this cannot be undone.".into(),
                 said: String::new(),
                 caller_says: String::new(),
@@ -2988,6 +3065,9 @@ mod control_approvals_tests {
             args: vec![],
             target: String::new(),
             explained: String::new(),
+            named: Default::default(),
+            face_args: Vec::new(),
+            target_blocked: false,
             warning: String::new(),
             said: String::new(),
             caller_says: String::new(),
@@ -3145,7 +3225,7 @@ mod service_surface_approval_tests {
 
     use super::{published_detail_in, surface_in, Naming};
 
-    fn scratch(tag: &str) -> PathBuf {
+    pub(super) fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("yantrik-approvals-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -3161,6 +3241,17 @@ mod service_surface_approval_tests {
         describe: serde_json::Value,
         explain: Option<serde_json::Value>,
     ) -> std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>> {
+        serve_with(path, describe, explain, None)
+    }
+
+    /// [`serve`], answering `app.name_target` with `name_target` too (`approval_target`) — or
+    /// -32601 when it is `None`.
+    pub(super) fn serve_with(
+        path: &Path,
+        describe: serde_json::Value,
+        explain: Option<serde_json::Value>,
+        name_target: Option<serde_json::Value>,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>> {
         let asked: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>> =
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let log = asked.clone();
@@ -3175,6 +3266,13 @@ mod service_surface_approval_tests {
                 let asked: serde_json::Value = serde_json::from_str(&line).unwrap();
                 log.lock().unwrap().push(asked.clone());
                 let reply = match (asked["method"].as_str(), &explain) {
+                    (Some("app.name_target"), _) => match &name_target {
+                        Some(result) => serde_json::json!({ "jsonrpc": "2.0", "id": asked["id"], "result": result }),
+                        None => serde_json::json!({
+                            "jsonrpc": "2.0", "id": asked["id"],
+                            "error": { "code": -32601, "message": "unknown method `app.name_target`" },
+                        }),
+                    },
                     (Some("app.explain"), Some(result)) => serde_json::json!({
                         "jsonrpc": "2.0", "id": asked["id"], "result": result,
                     }),
@@ -3451,6 +3549,10 @@ mod service_surface_approval_tests {
 }
 
 /// The line that names what a handle in the arguments stands for (#54).
+#[cfg(all(test, unix))]
+#[path = "control_approvals_target_tests.rs"]
+mod control_approvals_target_tests;
+
 #[cfg(test)]
 mod target_line_tests {
     use super::{naming_in, target_line, Naming};
@@ -3552,6 +3654,9 @@ mod target_line_tests {
             args: vec![format!("id: {DENTIST}")],
             target: line.clone(),
             explained: sentence.clone(),
+            named: Default::default(),
+            face_args: Vec::new(),
+            target_blocked: false,
             warning: String::new(),
             said: String::new(),
             caller_says: String::new(),
@@ -3591,6 +3696,9 @@ mod target_line_tests {
             args: vec!["pid: 2210\nUndo: possible, the process restarts itself".into(), "tag: a\u{202E}b".into()],
             target: "pid 2210 is \u{201c}x\nUndo: possible\u{201d}".into(),
             explained: "It stops.\u{2028}Undo: possible".into(),
+            named: Default::default(),
+            face_args: Vec::new(),
+            target_blocked: false,
             warning: String::new(),
             said: "End a running process by pid".into(),
             caller_says: String::new(),
@@ -3761,6 +3869,7 @@ mod grant_spends_tests {
                 published: "",
                 target: "",
                 explained: "",
+                named: &crate::approvals::Named::NotAsked,
             },
             args.clone(),
         )
@@ -3817,6 +3926,7 @@ mod grant_spends_tests {
                 published: "",
                 target: "",
                 explained: "",
+                named: &crate::approvals::Named::NotAsked,
             },
             args.clone(),
         )

@@ -363,6 +363,27 @@ fn is_root(facts: &ProcessFacts) -> bool {
     ROOTS.contains(&basename(&facts.exe)) || ROOTS.contains(&basename(argv0))
 }
 
+/// What an approval card for ending `pid` names it as: the program and its command line, read
+/// from `/proc` now — or `None` when no process has that pid (or `/proc` would not say), and the
+/// card cannot be allowed. System Monitor's window and its service both answer `kill_process`'s
+/// `app.name_target` with this, so the two doors name a process alike.
+pub fn process_target(pid: i32) -> Option<yantrik_ipc_contracts::control_surface::Target> {
+    if pid <= 0 {
+        return None;
+    }
+    let facts = walk(pid).into_iter().next().filter(|f| f.pid == pid)?;
+    Some(target_of(&facts))
+}
+
+fn target_of(facts: &ProcessFacts) -> yantrik_ipc_contracts::control_surface::Target {
+    let name = name_of(facts);
+    let mut rows = vec![("Process".to_string(), format!("{name}, pid {}", facts.pid))];
+    if !facts.short_cmdline.is_empty() {
+        rows.push(("Command".to_string(), facts.short_cmdline.clone()));
+    }
+    yantrik_ipc_contracts::control_surface::Target { rows, series: false, handles: vec!["pid".to_string()] }
+}
+
 // ── Reading /proc ────────────────────────────────────────────────────
 
 /// Walk up from `pid`, deepest first, tolerating everything.
@@ -422,6 +443,29 @@ fn facts(pid: i32) -> Option<(ProcessFacts, i32)> {
         },
         before.ppid,
     ))
+}
+
+#[cfg(test)]
+mod process_target_tests {
+    use super::*;
+
+    #[test]
+    fn a_process_is_named_by_its_program_and_command_and_a_missing_pid_by_nothing() {
+        let facts = ProcessFacts {
+            pid: 4242,
+            exe: "/usr/lib/firefox/firefox".into(),
+            short_cmdline: "firefox --new-window".into(),
+            started: 1,
+        };
+        let t = target_of(&facts);
+        assert_eq!(t.rows[0], ("Process".to_string(), "firefox, pid 4242".to_string()));
+        assert_eq!(t.rows[1].1, "firefox --new-window");
+        assert_eq!(t.handles, ["pid"]);
+        assert!(process_target(0).is_none());
+        assert!(process_target(i32::MAX).is_none(), "no such pid");
+        #[cfg(target_os = "linux")]
+        assert!(process_target(std::process::id() as i32).is_some(), "this test's own process");
+    }
 }
 
 // ── The text parsers ─────────────────────────────────────────────────

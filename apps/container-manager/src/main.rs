@@ -347,6 +347,44 @@ fn container_named(ui: &ContainerManagerApp, needle: &str) -> Option<(String, St
     runtime::resolve(&rows, needle).map(|i| rows[i].clone())
 }
 
+/// The approval card's rows for the container `needle` names in `list`: its name, its image and
+/// its state as the runtime reports them, or `None` when no container answers to it.
+fn container_target(list: &[runtime::Container], needle: &str) -> Option<yantrik_app_runtime::control::Target> {
+    let rows: Vec<(String, String)> = list.iter().map(|c| (c.id.clone(), c.name.clone())).collect();
+    let c = &list[runtime::resolve(&rows, needle)?];
+    let state = if c.status_text.trim().is_empty() { c.state.clone() } else { c.status_text.clone() };
+    Some(yantrik_app_runtime::control::Target {
+        rows: vec![
+            ("Container".into(), c.name.clone()),
+            ("Image".into(), c.image.clone()),
+            ("State".into(), state),
+        ],
+        series: false,
+        handles: vec!["container".into()],
+    })
+}
+
+#[cfg(test)]
+mod target_tests {
+    #[test]
+    fn a_container_is_named_by_name_image_and_state_and_an_unknown_one_is_not() {
+        let list = vec![super::runtime::Container {
+            id: "3f2a9c1b7d4e".into(),
+            name: "postgres-dev".into(),
+            image: "postgres:16".into(),
+            state: "running".into(),
+            status_text: "Up 2 hours".into(),
+            ..Default::default()
+        }];
+        let t = super::container_target(&list, "3f2a9c1b7d4e").expect("named by id");
+        assert_eq!(t.rows[0], ("Container".to_string(), "postgres-dev".to_string()));
+        assert_eq!(t.rows[1].1, "postgres:16");
+        assert_eq!(t.rows[2].1, "Up 2 hours");
+        assert_eq!(t.handles, ["container"]);
+        assert!(super::container_target(&list, "nope").is_none());
+    }
+}
+
 /// How the list describes this container now, or `None` when it is no longer in it.
 ///
 /// Read after a command, from a list the command itself caused to be re-read, so an action
@@ -563,7 +601,18 @@ fn publish_control(app: &ContainerManagerApp, health: &Health) {
             // No undo, and the container's writable layer goes with it.
             Action::new("remove", "Delete a container and its writable layer. It cannot be undone.")
                 .arg(Param::text("container"))
-                .risk("dangerous"),
+                .risk("dangerous")
+                // What the approval card names in place of the id the caller passed: the runtime's
+                // own listing, read now. The card cannot be allowed when this cannot say.
+                .names(|args| {
+                    let rt = runtime::detect();
+                    let runtime::Exit::Ran { code: Some(0), stdout, .. } =
+                        runtime::run(rt, &["ps", "-a", "--format", runtime::PS_FORMAT])
+                    else {
+                        return None;
+                    };
+                    container_target(&runtime::parse_containers(&stdout), args["container"].as_str().unwrap_or_default())
+                }),
             move |args| {
                 let ui = remove_ui()?;
                 let want = args["container"].as_str().unwrap_or_default();

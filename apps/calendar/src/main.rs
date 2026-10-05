@@ -16,6 +16,7 @@ use yantrik_ipc_transport::{peer_identity, reach};
 
 mod notice;
 mod ownership;
+mod target;
 mod views;
 use views::ViewMode;
 
@@ -832,6 +833,18 @@ fn delete_through_service(event_id: &str) -> Result<String, String> {
     Ok(event.title)
 }
 
+/// What a call to `delete_event` or `update_event` acts on, for the shell's approval card: the
+/// event the store holds under the id — or under exactly one title on one date — named from the
+/// store's own copy. `None` for anything the store does not hold, or a title that is ambiguous on
+/// its day: the card then says it could not be named, and a delete cannot be allowed.
+fn named_target(args: &serde_json::Value, act: target::Act) -> Option<yantrik_app_runtime::control::Target> {
+    let (id, _) = named_event(args).ok()?;
+    let event = get_event_via_service(&id).ok()?;
+    let by_id = args["id"].as_str().is_some_and(|s| !s.trim().is_empty());
+    let handles: &[&str] = if by_id { &["id"] } else { &["title", "date"] };
+    Some(target::rows(&event, act, handles))
+}
+
 /// Which event a delete names: by id, or by exactly one title on one date. Never a guess.
 ///
 /// The resolution both delete actions share, lifted out of the handlers so the two cannot
@@ -1541,7 +1554,8 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                     .optional())
                 .arg(Param::text("date")
                     .describe("YYYY-MM-DD, given with `title`")
-                    .optional()),
+                    .optional())
+                .names(|args| named_target(args, target::Act::Delete)),
             move |args| {
                 let ui = delete_ui()?;
                 let (id, named) = named_event(&args)?;
@@ -1646,7 +1660,8 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
             update_door_args(Action::new(
                 "update_event",
                 "Move or rename any event that is already on the calendar",
-            ).risk("sensitive")),
+            ).risk("sensitive"))
+            .names(|args| named_target(args, target::Act::Change)),
             move |args| {
                 let ui = update_ui()?;
                 let ask = update_ask(&args)?;
