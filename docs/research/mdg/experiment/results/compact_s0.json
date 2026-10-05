@@ -1,0 +1,38 @@
+{
+ "cond": "compact",
+ "seed": 0,
+ "acc": 0.2852139104328246,
+ "per_type": {
+  "where_now": 0.265,
+  "where_at": 0.238,
+  "holder_now": 0.216,
+  "when_moved": 0.06472654290015052,
+  "root_cause": 0.24824824824824826,
+  "dev_now": 0.6785
+ },
+ "n_test": 11991,
+ "mean_positions": 169.50437828371278,
+ "kv_floats_per_example": 65089.68126094571,
+ "fwd_flops_per_example": 72054847.11804956,
+ "train_flops_approx": 55338122586662.06,
+ "params": 311099,
+ "steps": 8000,
+ "bs": 32,
+ "train_time_s": 2215.70477437973,
+ "positions_seen": 43412961,
+ "vocab_used": 669,
+ "args": {
+  "cond": "compact",
+  "seed": 0,
+  "steps": 8000,
+  "bs": 32,
+  "d": 64,
+  "layers": 3,
+  "heads": 4,
+  "lr": 0.001,
+  "n_test": 2000,
+  "out": "results",
+  "threads": 1,
+  "device": "cpu"
+ }
+}
