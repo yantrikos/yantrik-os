@@ -564,23 +564,21 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         // Saved first, drawn after (toggle_truth): a style that did not save would come back
         // the other way at the next start, so the tile does not claim it.
         let was = ui.get_settings_dark_mode();
-        let out = crate::toggle_truth::write_then_show(was, !was, |dark| {
-            if let Ok(mut st) = s.lock() {
-                st.dark_mode = dark;
-            }
-            persist(&s).inspect_err(|_| {
+        let shown = crate::toggle_truth::flip_saved(
+            "Dark style",
+            was,
+            |dark| {
                 if let Ok(mut st) = s.lock() {
-                    st.dark_mode = was;
+                    st.dark_mode = dark;
                 }
-            })
-        });
-        ui.set_settings_dark_mode(out.shown);
-        if out.shown != was {
-            ui.global::<ThemeMode>().set_dark(out.shown);
+            },
+            |_| persist(&s),
+            crate::toggle_truth::say_refused,
+        );
+        ui.set_settings_dark_mode(shown);
+        if shown != was {
+            ui.global::<ThemeMode>().set_dark(shown);
             crate::wire::theme::dark_mode_changed(&ui);
-        }
-        if let Some(why) = &out.refused {
-            crate::toggle_truth::say_refused("Dark style", why);
         }
     });
 
@@ -640,18 +638,21 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         // (toggle_truth): the tile is pressed from Quick Settings, Today and the bar, where the
         // Settings save line is not, so a refusal leaves the tile as it was and is said aloud.
         let was = ui.get_dnd_mode();
-        let out = crate::toggle_truth::write_then_show(was, !was, |on| {
-            set_dnd_mode(on).inspect_err(|_| {
+        let shown = crate::toggle_truth::flip_saved(
+            "Do Not Disturb",
+            was,
+            |on| {
                 if let Some(Ok(mut settings)) = LIVE.get().map(|shared| shared.lock()) {
-                    settings.dnd_mode = was;
+                    settings.dnd_mode = on;
                 }
-            })
-        });
-        ui.set_dnd_mode(out.shown);
-        if let Some(why) = &out.refused {
-            crate::toggle_truth::say_refused("Do Not Disturb", why);
+            },
+            set_dnd_mode,
+            crate::toggle_truth::say_refused,
+        );
+        ui.set_dnd_mode(shown);
+        if shown != was {
+            tracing::info!(dnd = shown, "Do Not Disturb toggled");
         }
-        tracing::info!(dnd = out.shown, "Do Not Disturb toggled");
     });
 
     // Cycle auto-lock timeout: 30s → 1m → 2m → 5m → 10m → never → 30s

@@ -876,6 +876,13 @@ pub fn private_mode_notice(title: &str, body: &str) {
     notify::send(notify::Notification::new("Yantrik", title.to_string()).body(body.to_string()).urgency(Urgency::Critical));
 }
 
+/// A setting the person changed did not take: its backend refused the write, so the toggle stays
+/// where it was. Normal urgency — this is a setting that did not save, not a safety boundary, so
+/// it does not stay up the way Private mode's notices do.
+pub fn setting_not_saved(title: &str, body: &str) {
+    notify::send(notify::Notification::new("Yantrik", title.to_string()).body(body.to_string()).urgency(Urgency::Normal));
+}
+
 /// The mind finished saying something while the Lens was closed.
 ///
 /// The bridge used to raise a private toast for this, which nothing kept: closing it lost the
@@ -1336,7 +1343,7 @@ mod tests {
     /// added here because its words are the desktop's.
     #[test]
     fn model_text_reaches_a_notification_only_through_post_companion() {
-        const DESKTOPS_OWN_WORDS: [(&str, &str); 9] = [
+        const DESKTOPS_OWN_WORDS: [(&str, &str); 10] = [
             ("focus.rs", "start"),                         // "Session complete. Nice work."
             ("wire/agents.rs", "notification"),            // turn titles, "You asked: …"
             ("wire/harness.rs", "late_answer_notice"),     // "<mind> answered after you left."
@@ -1344,6 +1351,7 @@ mod tests {
             ("wire/notifications.rs", "approval_waiting"), // "<verified asker> is asking to …"
             ("wire/notifications.rs", "bypass_ended"),     // "Bypass ended"
             ("wire/notifications.rs", "private_mode_notice"),
+            ("wire/notifications.rs", "setting_not_saved"), // "<setting> did not change"
             ("wire/notifications.rs", "post_companion"),   // the one door for model text
             ("wire/screenshot.rs", "take_screenshot"),     // "Screenshot saved"
         ];

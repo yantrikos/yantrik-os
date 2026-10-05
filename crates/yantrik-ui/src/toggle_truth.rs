@@ -12,7 +12,7 @@
 //! - **Pending, then what the backend says**, for one that answers later (the power profile, a
 //!   D-Bus call with a two-second timeout). The tile says "Switching…" and takes no press until the
 //!   daemon answers; then it shows what the daemon reads back, which on a refusal or a timeout is
-//!   the old profile, and the reason is said ([`crate::power_status::settled`]).
+//!   the old profile, and the reason is said ([`crate::power_choice`]).
 
 /// How a toggle came out: what to show, and why it is not what was asked when it is not.
 #[derive(Debug, PartialEq)]
@@ -29,11 +29,33 @@ pub(crate) fn write_then_show(was: bool, want: bool, write: impl FnOnce(bool) ->
     }
 }
 
+/// A setting held in memory and saved to a file, flipped from `was`: `remember` sets the value in
+/// memory, `write` saves it. A refused save puts the value in memory back to `was` (so the next
+/// save of any other setting does not write the refused one after all), says why through `say`,
+/// and answers `was`, which is what the tile then shows. Do Not Disturb's and Dark style's
+/// handlers are this, with the real store and [`say_refused`].
+pub(crate) fn flip_saved(
+    what: &str,
+    was: bool,
+    remember: impl Fn(bool),
+    write: impl FnOnce(bool) -> Result<(), String>,
+    say: impl FnOnce(&str, &str),
+) -> bool {
+    let out = write_then_show(was, !was, |want| {
+        remember(want);
+        write(want).inspect_err(|_| remember(was))
+    });
+    if let Some(why) = &out.refused {
+        say(what, why);
+    }
+    out.shown
+}
+
 /// Said when a toggle did not change, so it is seen whatever screen is up — the Settings save
 /// line is only on Settings, and a tile is pressed from Quick Settings, Today and the bar.
 pub(crate) fn say_refused(what: &str, why: &str) {
     tracing::warn!(%what, %why, "a toggle's backend refused the change");
-    crate::wire::notifications::private_mode_notice(&format!("{what} did not change"), why);
+    crate::wire::notifications::setting_not_saved(&format!("{what} did not change"), why);
 }
 
 #[cfg(test)]
@@ -80,6 +102,36 @@ mod tests {
         assert!(other.refused.unwrap().contains("`balanced`"), "taken as something else is a refusal");
     }
 
+    /// A save that fails, through the same function the handlers use: the value in memory is back
+    /// where it was, the refusal is said once, and the tile is told the old value.
+    #[test]
+    fn a_refused_save_restores_memory_says_why_and_claims_nothing() {
+        for was in [false, true] {
+            let memory = std::cell::Cell::new(was);
+            let said = std::cell::RefCell::new(Vec::new());
+            let shown = flip_saved(
+                "Dark style",
+                was,
+                |v| memory.set(v),
+                |want| {
+                    assert_eq!(memory.get(), want, "the value is in memory when the save is made");
+                    Err("read-only file system".into())
+                },
+                |what, why| said.borrow_mut().push(format!("{what} did not change: {why}")),
+            );
+            assert_eq!(shown, was, "the tile is told the old value");
+            assert_eq!(memory.get(), was, "the refused value is not left in memory for the next save");
+            assert_eq!(*said.borrow(), ["Dark style did not change: read-only file system"]);
+        }
+    }
+
+    #[test]
+    fn a_taken_save_shows_the_new_value_and_says_nothing() {
+        let memory = std::cell::Cell::new(false);
+        let shown = flip_saved("Do Not Disturb", false, |v| memory.set(v), |_| Ok(()), |w, why| panic!("{w}: {why}"));
+        assert!(shown && memory.get());
+    }
+
     /// The handler's body, from `ui.on_<name>(` to the closing `});` at its own indent.
     fn handler<'a>(src: &'a str, name: &str) -> &'a str {
         let open = format!("ui.on_{name}(");
@@ -89,17 +141,16 @@ mod tests {
         &src[at..at + end]
     }
 
-    /// Each toggle that answers on the UI thread writes first, through [`write_then_show`], and
-    /// never sets its property before the write has answered.
+    /// Do Not Disturb and Dark style are [`flip_saved`] with the real store, which the test above
+    /// runs with a failing one; the handler shows only what it answered.
     #[test]
-    fn dnd_and_dark_style_show_only_what_was_written() {
+    fn dnd_and_dark_style_go_through_flip_saved() {
         let src = include_str!("wire/settings.rs");
-        for (name, prop) in [("toggle_dnd_mode", "ui.set_dnd_mode("), ("toggle_dark_mode", "ui.set_settings_dark_mode(")] {
+        for (name, prop) in [("toggle_dnd_mode", "ui.set_dnd_mode(shown)"), ("toggle_dark_mode", "ui.set_settings_dark_mode(shown)")] {
             let body = handler(src, name);
-            let write = body.find("toggle_truth::write_then_show(").unwrap_or_else(|| panic!("{name} flips before the write"));
-            let shown = body.find(prop).unwrap_or_else(|| panic!("{name} never shows the result"));
-            assert!(shown > write, "{name} sets {prop}…) before the backend answered");
-            assert!(body.contains("toggle_truth::say_refused("), "{name} drops the refusal");
+            assert!(body.contains("toggle_truth::flip_saved("), "{name} does not go through flip_saved");
+            assert!(body.contains("toggle_truth::say_refused"), "{name} drops the refusal");
+            assert!(body.contains(prop), "{name} shows something other than what was saved");
         }
     }
 
@@ -108,18 +159,6 @@ mod tests {
         let body = handler(include_str!("wire/skill_store.rs"), "toggle_skill");
         assert!(body.contains("toggle_truth::say_refused("), "a refused skill toggle is silent");
         assert!(!body.contains("if let Ok(conn)"), "a database that will not open is dropped silently");
-    }
-
-    /// The power profile answers later: pending is shown before the daemon is asked, and cleared
-    /// with what it reads back.
-    #[test]
-    fn the_power_profile_is_pending_until_the_daemon_answers() {
-        let body = handler(include_str!("power_status.rs"), "set_power_profile");
-        let pending = body.find("set_power_profile_pending(profile").expect("the tile is not marked pending");
-        let asked = body.find("power_profile::set(").expect("the daemon is asked");
-        assert!(pending < asked, "pending is shown only after the daemon was asked");
-        assert!(body.contains("set_power_profile_pending(\"\".into())"), "pending is never cleared");
-        assert!(body.contains("toggle_truth::say_refused("), "a refusal or timeout is silent");
     }
 
     /// Private already wrote first; this keeps it so.
