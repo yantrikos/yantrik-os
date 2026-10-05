@@ -545,11 +545,28 @@ $IS_EFI && umount "$M/boot/efi" 2>/dev/null || true
 umount "$M" 2>/dev/null || true
 sync
 
+# What to do with the medium the installer runs from: nothing at all when it is a partition of an
+# internal disk (YKINSTALL on a Mac), the same lines as the desktop installer's Installed screen
+# (crates/yantrik-ui/src/installer_medium.rs).
+MEDIUM_NOTE="If the installer is on a USB drive or a disc, take it out once the screen goes dark."
+if [ -n "$LIVE_DISK" ]; then
+    case "$LIVE_DISK" in
+        sr[0-9]*) MEDIUM_NOTE="The disc comes out as the computer restarts." ;;
+        *)
+            if [ "$(lsblk -dno TRAN "/dev/$LIVE_DISK" 2>/dev/null | tr -d ' ')" = usb ] \
+                || [ "$(lsblk -dno RM "/dev/$LIVE_DISK" 2>/dev/null | tr -d ' ')" != 0 ]; then
+                MEDIUM_NOTE="Remove the USB drive once the screen goes dark, so the computer starts Yantrik OS and not the installer."
+            else
+                MEDIUM_NOTE="The installer stays on its own partition. There is nothing to remove."
+            fi ;;
+    esac
+fi
+
 echo
 echo -e "${G}╔═══════════════════════════════════════════════╗${N}"
 echo -e "${G}║  Installation complete!                       ║${N}"
-echo -e "${G}║  Remove the installation media and reboot.    ║${N}"
 echo -e "${G}╚═══════════════════════════════════════════════╝${N}"
+echo -e "  ${MEDIUM_NOTE}"
 echo
 if [ -n "${BOOT_NOTE:-}" ]; then
     echo -e "  ${A}${BOOT_NOTE}${N}"

@@ -335,6 +335,9 @@ export component InstallerScreen inherits Rectangle {
     // set the Installed screen does not restart by itself: the countdown would take the message
     // away before anyone read it.
     in-out property <string> install-note;
+    // What the Installed screen says about the medium the installer runs from: nothing to remove
+    // for an internal partition (YKINSTALL on a Mac), the USB drive, the disc (installer_medium.rs).
+    in property <string> media-hint: "If the installer is on a USB drive or a disc, take it out once the screen goes dark.";
     callback install-to-disk(/* username */ string, /* password */ string,
                              /* full_name */ string, /* hostname */ string,
                              /* keyboard */ string, /* timezone */ string,
@@ -1387,7 +1390,9 @@ export component InstallerScreen inherits Rectangle {
                     }
 
                     Text {
-                        text: "You can leave this running. The computer restarts by itself when it is done.";
+                        // Not "restarts by itself": the Installed screen waits for Restart now
+                        // whenever it has something to say.
+                        text: "You can leave this running. When it is done, this screen says what happens next.";
                         color: Theme.text-dim;
                         font-size: Theme.fs-caption;
                         wrap: word-wrap;
@@ -1408,7 +1413,8 @@ export component InstallerScreen inherits Rectangle {
                     }
 
                     Text {
-                        text: "Remove the installation media.";
+                        text: root.media-hint;
+                        wrap: word-wrap;
                         color: Theme.text-secondary;
                         font-size: Theme.fs-body;
                         horizontal-alignment: center;

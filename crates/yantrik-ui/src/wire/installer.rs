@@ -232,12 +232,19 @@ fn prepare(ui: &App) {
     ui.set_onboard_keyboard(detected.clone().into());
     tracing::info!(layout = %detected, "Installer: keyboard layout detected");
 
-    // Disks.
+    // Disks, and what the installer itself runs from, for the Installed screen's last word.
     let weak = ui.as_weak();
     std::thread::spawn(move || {
         let disks = detect_disks();
+        let live = live_disk();
+        let medium = crate::installer_medium::medium(
+            live.as_deref(),
+            live.as_deref().is_some_and(|d| disk_is_external(&format!("/dev/{d}"))),
+        );
+        tracing::info!(?medium, live = ?live, "Installer: running from");
         let _ = slint::invoke_from_event_loop(move || {
             let Some(ui) = weak.upgrade() else { return };
+            ui.set_onboard_install_media_hint(crate::installer_medium::finish_hint(medium).into());
             // A disk is preselected only when there is nothing to guess: exactly one internal
             // disk without macOS that the installer is not running from (on the machine most
             // people install on there is one). Never a USB or removable disk, which may be a

@@ -1330,6 +1330,7 @@ export component App inherits Window {
     in-out property <string> onboard-install-error: "";
     // Set by a finished install the person must read before the restart (wire/installer.rs).
     in-out property <string> onboard-install-note: "";
+    in property <string> onboard-install-media-hint: "If the installer is on a USB drive or a disc, take it out once the screen goes dark.";
     in-out property <bool> onboard-installing: false;
 
     callback onboard-install-to-disk(/* username */ string, /* password */ string,
@@ -1597,6 +1598,7 @@ export component App inherits Window {
             install-status <=> root.onboard-install-status;
             install-error <=> root.onboard-install-error;
             install-note <=> root.onboard-install-note;
+            media-hint: root.onboard-install-media-hint;
             install-to-disk(username, password, full-name, hostname, keyboard, timezone, disk, encrypt) => {
                 root.onboard-install-to-disk(username, password, full-name, hostname, keyboard, timezone, disk, encrypt);
             }

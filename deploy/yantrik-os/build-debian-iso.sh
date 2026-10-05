@@ -410,6 +410,19 @@ for required in usr/lib/yantrik/boot-unlock/askpass usr/lib/yantrik/boot-unlock/
 done
 ok "Pre-boot unlock screen, keyscript and signed-in marker staged"
 
+# ── The live system's shutdown says nothing about removing its medium ──
+# live-tools' system-shutdown hook ejected the disk the medium is on and waited for ENTER after
+# "Please remove the live-medium". On a Mac the installer is a partition of the internal disk
+# (YKINSTALL). Ours opens a disc's tray and otherwise does nothing (yantrik-live-medium-eject).
+if [ -e "$ROOTFS/bin/live-medium-eject" ] || [ -e "$ROOTFS/usr/bin/live-medium-eject" ]; then
+    sudo chroot "$ROOTFS" dpkg-divert --local --rename --divert /bin/live-medium-eject.live-tools \
+        --add /bin/live-medium-eject >/dev/null \
+        || fail "could not set live-tools' live-medium-eject aside"
+fi
+sudo install -m 0755 -o root -g root "$SCRIPT_DIR/yantrik-live-medium-eject" "$ROOTFS/bin/live-medium-eject" \
+    || fail "could not install yantrik-live-medium-eject"
+ok "The live system's shutdown leaves an internal installer partition alone"
+
 # ── Intel Macs (the Mac mini 2012 is the first real machine this image runs on) ──
 # Fan control, and the Broadcom BCM4331 Wi-Fi driver fetched from Debian on the machine once it
 # is online: neither the wl module nor Broadcom's b43 firmware may be redistributed in a public
