@@ -343,10 +343,12 @@ removes the grants file, so a bad directory leaves no grant in force.
 - `scope`: `run`, `session` or `always`. `scope_id`: the run id for `run`; for `session`, the first
   16 hex digits of the SHA-256 of the session string `harness.attach` returned (never the session
   itself, which answers for the harness and this file is world-readable); `null` for `always`.
+- `granted_at`: unix seconds. A reader drops a grant dated more than 300 s after its own clock (a
+  writer whose clock was ahead would otherwise make it hold until that future date).
 - `expires_at`: unix seconds, more than `granted_at` and at most 24 h after it, for `run` and
   `session`; `null` for `always`. A reader drops a grant at or past it.
 - `granted_by`: `person` (a tap on the card) for `session` and `always`, `run-starter` for `run`.
-- `version`: 1; a reader refuses a file with any other. A grant with another key, a capability or
+- `version`: the integer 1; a reader refuses a file with any other (`true` and `1.0` included). A grant with another key, a capability or
   agent it does not know, or a field out of shape is dropped, never read as something else.
 
 Trust it only if all of these hold, else read it as **no grants** (the Mind asks):
@@ -357,6 +359,12 @@ Trust it only if all of these hold, else read it as **no grants** (the Mind asks
 - it parses, and `version` is 1.
 
 `yantrik_harness::grants::read` is that reader, with tests.
+
+**Writing both files.** Every rewrite (`add`, `revoke`, `publish`) holds `/run/yantrik-mind-grants.lock`
+from its read to its last write, so a `publish` that read a grant cannot write it back after a
+`revoke` took it out. A `revoke` writes the `/run` file (what readers believe) first and the
+always-list second; an `add` and a `publish` write the always-list first and `/run` second. The
+`/run` write is tried twice.
 
 **Who writes.** Root, through `yantrik-update mind-grant add|revoke` (and `publish`). The shell
 runs as the person, so it reaches root the way the shell already reaches the updater: the narrow
@@ -372,21 +380,43 @@ person can run the updater as the person does, so a mind the person lets run com
 grant written is in the journal.
 
 **How the Mind asks.** A `grant_request` event on the turn it is answering (docs/harness.md):
-`{"kind": "grant_request", "request_id", "capability": "web_search_own_words", "query",
-"run_id"?}`. If a grant in force covers it (the Mind's, this session's, the run's, or always) the
-reply is `{"granted": {"id", "scope", "expires_at"}}` and the use is journalled. Otherwise the
-shell shows the ordinary question card, in the host's words with the exact query, and four answers:
-**Once** (this query only, nothing stored), **This session**, **Always**, **No**. The answer comes
-back on a later poll as `once`, `session` (with the grant's `scope_id`), `always` or `no`; a typed
-answer is `no`. On *This session* and *Always* the shell asks root to write the grant. The
-model's words are only ever the query on the card: nothing it sends makes a grant.
+`{"kind": "grant_request", "request_id", "capability": "web_search_own_words", "query"}`. It is
+looked at only from a `mind` the kernel said, at attach, runs as the `yantrik-mind` account. The
+query is shown exactly or refused: letters, marks, numbers, punctuation, symbols and U+0020 only
+(no control, format, separator, private-use, unassigned or surrogate character, no variation
+selector or tag character, no other space, none of the card's quote marks), and no word mixing
+scripts (Latin with Cyrillic or Greek, say), each with a reason the Mind can log. If a grant in
+force covers it (this session's, the turn's run's, or always) the reply is `{"granted": {"id",
+"scope", "expires_at"}}` and the use is journalled. Otherwise the shell shows the host's own card,
+headed in the desktop's name with an accent band no agent's question has, the exact query, and four
+answers: **Once** (this query only, nothing stored), **This session**, **Always**, **No**. A
+harness `request` offering those four answers itself is refused. The answer comes back on a later
+poll as `once`, `session` (with the grant's `scope_id`), `always` or `no`; a typed answer is `no`.
+On *This session* and *Always* the shell asks root to write the grant, with the query on the
+updater's stdin, never its command line. The model's words are only ever the query on the card:
+nothing it sends makes a grant.
 
 **For unattended runs**, the person or root starts the run with a grant that lasts the run:
-`yantrik-update mind-grant add --scope run --run-id ID --ttl 4h` (`list`, `revoke ID|all`).
+`yantrik-update mind-grant add --scope run --run-id ID --ttl 4h` (`list`, `revoke ID|all`), and
+then starts it: `yos act shell send_message text=… run=ID` (the same `send_message` action over the
+control socket). `run` is accepted only from the person's own session or root, never from a call
+with an agent token, the mind account or any process an attached harness started. The host stamps
+it on the turn it hands the harness, as `turn["run"]`, and remembers it for that turn; a run grant
+covers a `grant_request` only on a turn that carries its run. A `grant_request` naming a `run_id`
+itself is refused: run ids are in the world-readable `/run` file, and one the Mind could name
+would make a run grant a Mind-wide one.
+
+**What binds the approved query to the search: the Mind's own planner, today.** The answer is a
+word to the Mind; the egress proxy sees no grants and no queries, so nothing on this machine stops
+a Mind that was allowed Q1 from searching Q2. Until the proxy enforces it (#669: a single-use
+token bound to `sha256(query)`, spent by `yantrik-egress`), the shell journals every answer and
+every use with the query's SHA-256 and the query, escaped, so an audit can compare what was
+approved with what was searched.
 
 **Audit.** Root journals every add and revoke (tag `yantrik-mind-grant`: id, agent, capability,
-scope, scope id, expiry, who, caller uid, and the query that prompted it). The shell journals every
-answer (with the query, so a *Once* is recorded) and every use of a grant in force, with the query.
+scope, scope id, expiry, who, caller uid, and the query that prompted it, as `sha256=… query="…"`
+with every character outside printable ASCII escaped). The shell journals every answer (so a
+*Once* is recorded) and every use of a grant in force, each with `sha256=… query="…"`, escaped.
 
 **Settings → Harnesses** lists the grants in force, read with the reader's checks, each with
 Revoke.
