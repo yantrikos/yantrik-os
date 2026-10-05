@@ -332,7 +332,7 @@ mod tests {
     }
 
     /// The statics are shared, so the tests that touch them take turns.
-    static SERIAL: Mutex<()> = Mutex::new(());
+    pub(super) static SERIAL: Mutex<()> = Mutex::new(());
 
     /// Second review: a harmless card kept pending could use up the raises before the real one
     /// arrived. Each new card starts the count and the gap again, and only a new one does.
@@ -475,3 +475,7 @@ mod tests {
         *RAISED_AT.lock().unwrap() = None;
     }
 }
+
+#[cfg(test)]
+#[path = "card_watch_precedence_tests.rs"]
+mod precedence_tests;
