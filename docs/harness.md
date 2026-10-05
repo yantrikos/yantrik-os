@@ -322,6 +322,7 @@ is *doing*, and the Agents view draws each tool call as a card:
 | `usage` | `model`, `input_tokens?`, `output_tokens?`, `cost_usd?` | the details panel; they add up |
 | `request` | `request_id`, `prompt`, `options?` | the agent waits for you, asking `prompt` |
 | `redact` | `request_id`, `needles: [{sha256, len}]` | nothing: the shell erases its copies of the words (below) |
+| `grant_request` | `request_id`, `capability`, `query`, `run_id?` | a grant in force answers at once; otherwise a card with the exact query (below) |
 
 `call` is your own id for the call (pi's `toolCallId`, an OpenAI `tool_call.id`), unique within
 the turn. The types are `crates/yantrik-harness/src/event.rs`. The desktop enforces a lifecycle,
@@ -336,6 +337,36 @@ is not a reason to lose the turn:
 - one event is at most 64 KiB as JSON; send a long output as several `tool_output` events;
 - an event of a kind the desktop does not know is ignored (`{"ignored": …}`) — a newer harness
   must not break an older desktop — and a malformed one of a kind it knows is logged and counted.
+
+**Searching in its own words: `grant_request`.** The Yantrik Mind (harness id `mind`, and only it)
+may search the web in its own words, not only the person's, when the person grants it
+(design/mind-egress-2026-09-29.md, section 6). Before such a search it sends, on the turn it is
+answering:
+
+```json
+{"kind": "grant_request", "request_id": "g1", "capability": "web_search_own_words",
+ "query": "rust 2027 edition changes", "run_id": "research-42"}
+```
+
+`capability` is `web_search_own_words`, the only one; `query` is the exact search, at most 300
+characters, no control or direction characters, no space around it; `run_id` is optional, for a
+run started with a run grant. The reply is one of:
+
+- `{"granted": {"id": "g-…", "scope": "session"|"run"|"always", "expires_at": n|null}}`: a grant in
+  force covers it. Search; the shell has journalled the use. No card.
+- `{}`: the person is asked. The card is in the shell's words, with the query exactly as sent, and
+  four answers: **Once**, **This session**, **Always**, **No**. The answer arrives once, on a later
+  poll, like any answer: `answers: [{"turn_id", "request_id", "answer": "once"|"session"|"always"|"no",
+  "scope_id"?}]`. `once`, `session` and `always` each allow this query; `session` and `always`
+  also store a grant (root writes it; `session` carries its `scope_id`), and `once` stores nothing.
+  A typed answer, or none before the turn ends, is not a yes.
+- `{"refused": why}`: another capability, another harness, or a query that cannot be shown exactly.
+
+The grants are also readable directly, for a run with no turn to send on:
+`/run/yantrik-mind-egress/grants.json`, root's, with the reader's trust checks in the design. A
+session grant's `scope_id` is the first 16 hex digits of the SHA-256 of the `session` string
+`harness.attach` returned. Nothing the harness sends writes a grant: only the person's press on the
+card, or a run starter's `yantrik-update mind-grant add --scope run --run-id ID --ttl 4h`.
 
 **Forgetting: `redact`.** When the person asks a mind to forget something, the mind asks a
 Keep/Erase question (a `request` with `options: ["Keep", "Erase"]`) that **contains each text it

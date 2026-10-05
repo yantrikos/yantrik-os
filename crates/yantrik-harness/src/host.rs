@@ -61,6 +61,7 @@ use crate::run_store::{RunError, RunState, RunStore};
 use crate::{Answer, Capabilities, Chunk, Harness, Health, Turn};
 
 mod erase;
+pub mod grant;
 pub use erase::{Redactor, ShellErased, ShellErasure, ShellPlan, ShellRedactor};
 
 /// The summary a call gets when its turn ended before it did.
@@ -113,6 +114,8 @@ struct Flight {
     /// silently: see [`Host::with_late_answer`]. Never logged.
     late: String,
     calls: HashMap<String, Call>,
+    /// Grant requests this turn asked the person, by request id, until answered (`host::grant`).
+    grant_asks: HashMap<String, grant::Asked>,
 }
 
 /// Why a turn's chunks have nowhere to go.
@@ -169,6 +172,7 @@ impl Flight {
             drop_logged: false,
             late: String::new(),
             calls: HashMap::new(),
+            grant_asks: HashMap::new(),
         }
     }
 
@@ -214,6 +218,8 @@ impl Flight {
                 }
             },
             Event::Thinking { .. } | Event::Status { .. } | Event::Usage { .. } | Event::Request { .. } => Ok(()),
+            // Turned into a `Request` before it is admitted (`Host::event`); never one itself.
+            Event::GrantRequest { .. } => Err("a `grant_request` is asked as a question".to_string()),
             // Taken before a turn's stream is looked at (`Host::redact`); never one of its events.
             Event::Redact { .. } => Err("a `redact` is not part of a turn's stream".to_string()),
         }
@@ -652,6 +658,9 @@ pub struct Host {
     /// Erases the shell's own copy of a conversation (the agent's pane transcript) once a `redact`
     /// is accepted, when the shell said how: see [`Host::with_redactor`].
     redactor: Option<Redactor>,
+    /// Where the Mind's search grants are read, and who is told of answers and uses: see
+    /// [`Host::with_grants`].
+    grants: Option<grant::Grants>,
 }
 
 /// How the host decides who carries a memory credential, and how it digests one. The decision
@@ -690,7 +699,23 @@ impl Host {
             paused: Arc::new(std::sync::RwLock::new(None)),
             late_answer: None,
             redactor: None,
+            grants: None,
         }
+    }
+
+    /// The same host, reading the Mind's search grants from `path` (believed only when `owner`,
+    /// uid and gid, alone may write it and its directory: root's on a machine) and telling `hook`
+    /// of every answer to a `grant_request` card and every search a grant in force covered. The
+    /// shell journals both and has root write a grant on *This session* or *Always*. Without
+    /// this, every `grant_request` is asked and nothing is told. See [`grant`].
+    pub fn with_grants(
+        mut self,
+        path: impl Into<std::path::PathBuf>,
+        owner: (u32, u32),
+        hook: impl Fn(grant::GrantNotice) + Send + Sync + 'static,
+    ) -> Host {
+        self.grants = Some(grant::Grants { path: path.into(), owner, hook: Arc::new(hook) });
+        self
     }
 
     /// The same host, telling `hook` once when a turn ends well after the person had left its chat
@@ -803,7 +828,28 @@ impl Host {
             });
         };
         store.answer(run_id, request_id, answer, by_option).map_err(|e| e.to_string())?;
-        harness.answers.push(serde_json::json!({ "turn_id": run_id, "request_id": request_id, "answer": answer }));
+        // A grant request's answer is one of four words, whatever the card's label (`grant`).
+        let asked = harness.in_flight.get_mut(&run_id).and_then(|f| f.grant_asks.remove(request_id));
+        let Some(asked) = asked else {
+            harness.answers.push(serde_json::json!({ "turn_id": run_id, "request_id": request_id, "answer": answer }));
+            return Ok(());
+        };
+        let key = grant::answer_key(answer, by_option);
+        let mut entry = serde_json::json!({ "turn_id": run_id, "request_id": request_id, "answer": key });
+        if key == "session" {
+            entry["scope_id"] = serde_json::json!(asked.scope_id);
+        }
+        harness.answers.push(entry);
+        let notice = grant::GrantNotice::Answered {
+            harness: harness.announced.id.clone(),
+            query: asked.query,
+            scope_id: asked.scope_id,
+            answer: key,
+        };
+        drop(state);
+        if let Some(grants) = &self.grants {
+            (grants.hook)(notice);
+        }
         Ok(())
     }
 
@@ -1838,10 +1884,14 @@ impl Host {
     fn event(&self, params: &serde_json::Value, peer: Peer) -> Result<serde_json::Value, String> {
         let turn_id = params["turn_id"].as_u64().ok_or("`turn_id` must be a number")?;
         let raw = &params["event"];
+        // Read off the lock: the grants in force, for a `grant_request` only.
+        let on_file = (raw.get("kind").and_then(|k| k.as_str()) == Some("grant_request"))
+            .then(|| self.grants.as_ref().map(grant::Grants::in_force).unwrap_or_default());
         let mut state = self.lock();
         let st = &mut *state;
         let harness = Self::touch(&mut st.attached, params, peer, &*self.descends)?;
         let who = harness.announced.id.clone();
+        let session_scope = on_file.is_some().then(|| crate::grants::session_scope_id(&harness.session));
         if raw.get("kind").and_then(|k| k.as_str()) == Some("redact") {
             // Not part of the turn's stream: it may come after the turn closed, and it is never
             // passed on to a reader. Its own rule, off the host's lock (`host::erase`).
@@ -1902,6 +1952,30 @@ impl Host {
             tracing::warn!(harness = %who, turn = turn_id, kind, "tool event with an empty `call`; refused");
             return Ok(refused(format!("a `{kind}` event needs a `call` id")));
         }
+        // A grant request: answered by a grant in force, or asked as a question in the host's words.
+        let mut grant_ask: Option<(String, grant::Asked)> = None;
+        let event = match event {
+            Event::GrantRequest { request_id, capability, query, run_id } => {
+                if let Err(why) = grant::screen(&who, &capability, &query) {
+                    return Ok(refused(why));
+                }
+                let scope_id = session_scope.unwrap_or_default();
+                let now = crate::grants::now();
+                let covering = on_file.iter().flatten().find(|g| g.covers(&who, Some(&scope_id), run_id.as_deref(), now));
+                if let Some(g) = covering.cloned() {
+                    counts.accepted += 1;
+                    drop(state);
+                    let reply = serde_json::json!({ "granted": { "id": g.id, "scope": g.scope, "expires_at": g.expires_at } });
+                    if let Some(grants) = &self.grants {
+                        (grants.hook)(grant::GrantNotice::Used { harness: who, query, grant: g });
+                    }
+                    return Ok(reply);
+                }
+                grant_ask = Some((request_id.clone(), grant::Asked { query: query.clone(), scope_id }));
+                Event::Request { request_id, prompt: grant::prompt(&query), options: grant::labels() }
+            }
+            other => other,
+        };
         if let Err(why) = flight.admit(&event) {
             counts.out_of_order += 1;
             tracing::warn!(harness = %who, turn = turn_id, why = %why, "event out of order; refused");
@@ -1918,6 +1992,9 @@ impl Host {
             }
             if let Err(e) = store.ask(turn_id, request_id, &serde_json::json!({ "prompt": prompt, "options": options })) {
                 return Ok(refused(e.to_string()));
+            }
+            if let Some((id, asked)) = grant_ask {
+                flight.grant_asks.insert(id, asked);
             }
         } else {
             self.record("event", turn_id, |s| s.append(turn_id, "event", raw));

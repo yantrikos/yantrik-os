@@ -1,0 +1,64 @@
+// What the Mind may search for in its own words, and Revoke beside each grant
+// (crates/yantrik-ui/src/mind_grants.rs; design/mind-egress-2026-09-29.md, section 6).
+// Listed from root's file with the same trust checks the Mind makes; Revoke asks root to
+// rewrite it. Nothing here grants: only the card's answer or a run starter does.
+import { Theme } from "theme.slint";
+import { YButton } from "y_button.slint";
+
+export struct MindGrantRow {
+    id: string,
+    title: string,
+    detail: string,
+}
+
+export component MindGrantsCard inherits Rectangle {
+    in property <[MindGrantRow]> grants;
+    in property <string> error;
+    callback revoke(string);
+
+    background: Theme.bg-card;
+    border-radius: Theme.r-lg;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+    height: body.preferred-height;
+
+    body := VerticalLayout {
+        padding: Theme.sp-4;
+        spacing: Theme.sp-2;
+        Text {
+            text: "Searches in the Mind's own words";
+            color: Theme.text-primary;
+            font-size: Theme.fs-body;
+            font-weight: 600;
+        }
+        Text {
+            text: root.grants.length == 0
+                ? "None. The Mind asks you before it searches the web in words that are not yours."
+                : "The Mind may search the web in its own words, not only yours, while one of these holds.";
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            wrap: word-wrap;
+        }
+        for g in root.grants : HorizontalLayout {
+            spacing: Theme.sp-3;
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                Text { text: g.title; color: Theme.text-primary; font-size: Theme.fs-body; }
+                Text { text: g.detail; color: Theme.text-secondary; font-size: Theme.fs-caption; wrap: word-wrap; }
+            }
+            YButton {
+                label: "Revoke";
+                variant: 1;
+                size: 0;
+                clicked => { root.revoke(g.id); }
+            }
+        }
+        if root.error != "" : Text {
+            text: root.error;
+            color: Theme.color-danger;
+            font-size: Theme.fs-caption;
+            wrap: word-wrap;
+        }
+    }
+}

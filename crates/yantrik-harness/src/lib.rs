@@ -46,12 +46,14 @@
 //! question to it — unreachable, or reachable but not configured, with the reason attached.
 
 pub mod event;
+pub mod grants;
 pub mod host;
 pub mod protocol;
 pub mod redact;
 pub mod run_store;
 
 pub use event::{AgentId, Event};
+pub use host::grant::GrantNotice;
 pub use host::{random_hex, AgentEntry, AgentState, Entry, EventCounts, Host, LateAnswer, Resumed, TurnEnd};
 
 use std::sync::mpsc::Receiver;

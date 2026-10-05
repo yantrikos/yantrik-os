@@ -2697,7 +2697,11 @@ cmd_mind_egress() {
   if command -v flock >/dev/null 2>&1 && exec 9>/run/yantrik-mind-egress.lock; then
     flock 9
   fi
-  mind_egress_load
+  local rc=0
+  mind_egress_load || rc=$?
+  # The grants in force, put back from the always-list after a reboot emptied /run (section 6).
+  mind_grant_publish || warn "could not publish the mind's search grants; the Mind will ask before searching in its own words"
+  return "$rc"
 }
 
 mind_egress_unit_text() {
@@ -2812,6 +2816,269 @@ reconcile_mind_egress() {
   # unit still reads active, and the load is one atomic transaction.
   ( cmd_mind_egress apply ) || true
   return 0
+}
+
+# ── mind-grant: what the Mind may search for in its own words ───────────────────────────
+#
+# The Mind's egress planner used to let a web search carry only the person's own words. Now the
+# person grants it searching in its own words, for one run, one session of the Mind's harness, or
+# always (design/mind-egress-2026-09-29.md, section 6). The Mind reads the grants; it never writes
+# them. Root writes both files, whole (write_file_atomic), in directories only root writes:
+#
+#   /run/yantrik-mind-egress/grants.json   every grant in force: run, session and always (tmpfs,
+#                                          gone at reboot; put back from the next file at boot)
+#   /var/lib/yantrik/mind-grants.json      the always-list, which outlives a reboot
+#
+# Who may write: root, or the desktop's owner through this updater's own sudo rule (sudo names the
+# caller, SUDO_UID). Never the mind account, never the egress account: neither can run this as
+# root, and a sudo from either is refused here too. Every add and revoke is journalled.
+MIND_GRANTS_RUN=/run/yantrik-mind-egress/grants.json
+MIND_GRANTS_ALWAYS=/var/lib/yantrik/mind-grants.json
+MIND_GRANTS_LOCK=/run/yantrik-mind-grants.lock
+
+# The one program that reads, checks and rewrites the grants: argv op, now, always-file, run-file,
+# then the op's own (`list`: the uid that must own the file). Prints the always-list, then everything in force (one JSON line each), then
+# one line for the journal; `list` prints rows instead. Exit 3: refused, with why on stderr.
+PY_MIND_GRANTS='
+import json, os, re, secrets, stat, sys
+op, now, always_path, run_path, args = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5:]
+CAPABILITIES = {"web_search_own_words"}
+AGENTS = {"mind"}
+DAY, MOST, BIGGEST = 86400, 64, 65536
+KEYS = {"id", "agent", "capability", "scope", "scope_id", "granted_at", "expires_at", "granted_by"}
+SCOPE_ID = re.compile(r"[A-Za-z0-9._:-]{1,64}\Z")
+GRANT_ID = re.compile(r"g-[0-9a-f]{12}\Z")
+
+def refuse(why):
+    print(why, file=sys.stderr)
+    sys.exit(3)
+
+def number(v):
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 0
+
+def valid(g):
+    if not isinstance(g, dict) or set(g) != KEYS:
+        return False
+    if not (isinstance(g["id"], str) and GRANT_ID.match(g["id"]) and number(g["granted_at"])):
+        return False
+    if g["agent"] not in AGENTS or g["capability"] not in CAPABILITIES:
+        return False
+    if g["scope"] == "always":
+        return g["scope_id"] is None and g["expires_at"] is None and g["granted_by"] == "person"
+    if g["scope"] not in ("run", "session"):
+        return False
+    return (isinstance(g["scope_id"], str) and bool(SCOPE_ID.match(g["scope_id"])) and number(g["expires_at"])
+            and g["granted_at"] < g["expires_at"] <= g["granted_at"] + DAY
+            and g["granted_by"] == ("run-starter" if g["scope"] == "run" else "person"))
+
+# The writer reads files it wrote (its own uid); `list` reads as anyone, files root wrote.
+OWNER = int(args[0]) if op == "list" and args else os.geteuid()
+
+def load(path, scopes):
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return []
+    except OSError as e:
+        print(f"{path}: {e}; read as no grants", file=sys.stderr)
+        return []
+    with os.fdopen(fd, "rb") as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != OWNER or st.st_mode & 0o022:
+            print(f"{path} is not a file only its writer may change; read as no grants", file=sys.stderr)
+            return []
+        raw = f.read(BIGGEST + 1)
+    try:
+        doc = json.loads(raw) if len(raw) <= BIGGEST else None
+    except ValueError:
+        doc = None
+    if not isinstance(doc, dict) or doc.get("version") != 1 or not isinstance(doc.get("grants"), list):
+        print(f"{path} is not version 1 grants; read as none", file=sys.stderr)
+        return []
+    kept = []
+    for g in doc["grants"]:
+        if not valid(g):
+            print(f"{path}: a grant that does not check was dropped", file=sys.stderr)
+        elif g["scope"] in scopes and (g["expires_at"] is None or g["expires_at"] > now):
+            kept.append(g)
+    return kept
+
+always = load(always_path, {"always"})
+# /run holds the always grants too; the writer takes those from the always-list, `list` from /run.
+held = load(run_path, {"run", "session", "always"} if op == "list" else {"run", "session"})
+note = ""
+
+if op == "add":
+    if len(args) != 5:
+        refuse("add takes: agent capability scope scope_id ttl")
+    agent, capability, scope, scope_id, ttl = args
+    if capability not in CAPABILITIES:
+        refuse(f"no such capability: {capability!r} (there is only web_search_own_words)")
+    if agent not in AGENTS:
+        refuse(f"grants are for the Yantrik Mind (mind), not {agent!r}")
+    if scope == "always":
+        if scope_id or ttl:
+            refuse("an always grant has no scope id and no ttl")
+        grant = {"scope_id": None, "expires_at": None, "granted_by": "person"}
+    elif scope in ("run", "session"):
+        if not SCOPE_ID.match(scope_id):
+            refuse(f"a {scope} grant needs its {scope} id: 1 to 64 of A-Z a-z 0-9 . _ : -")
+        if not (ttl.isdigit() and 60 <= int(ttl) <= DAY):
+            refuse("a run or session grant lasts from a minute to 24 hours")
+        grant = {"scope_id": scope_id, "expires_at": now + int(ttl),
+                 "granted_by": "run-starter" if scope == "run" else "person"}
+    else:
+        refuse(f"no such scope: {scope!r} (run, session or always)")
+    grant = {"id": "g-" + secrets.token_hex(6), "agent": agent, "capability": capability, "scope": scope,
+             "granted_at": now, **grant}
+    same = lambda g: (g["agent"], g["capability"], g["scope"], g["scope_id"]) == (agent, capability, scope, grant["scope_id"])
+    always = [g for g in always if not same(g)]
+    held = [g for g in held if not same(g)]
+    (always if scope == "always" else held).append(grant)
+    if len(always) + len(held) > MOST:
+        refuse(f"at most {MOST} grants at once; revoke one first")
+    note = "added {id} agent={agent} capability={capability} scope={scope} scope_id={scope_id} expires_at={expires_at} by={granted_by}".format(**grant)
+elif op == "revoke":
+    if len(args) != 1 or not (args[0] == "all" or GRANT_ID.match(args[0])):
+        refuse("revoke takes a grant id (g- and 12 hex digits) or all")
+    gone = [g for g in always + held if args[0] in ("all", g["id"])]
+    if not gone:
+        refuse(f"no grant {args[0]} in force")
+    always = [g for g in always if g not in gone]
+    held = [g for g in held if g not in gone]
+    note = "revoked " + " ".join("{id} agent={agent} scope={scope} scope_id={scope_id}".format(**g) for g in gone)
+elif op == "publish":
+    note = f"published {len(always)} always and {len(held)} run or session grant(s)"
+elif op == "list":
+    for g in sorted(always + held, key=lambda g: g["granted_at"]):
+        print(g["id"], g["agent"], g["capability"], g["scope"], g["scope_id"] or "-", g["expires_at"] or "never", g["granted_by"])
+    sys.exit(0)
+else:
+    refuse(f"no such op: {op}")
+
+doc = lambda grants: json.dumps({"version": 1, "written_at": now,
+                                 "grants": sorted(grants, key=lambda g: (g["granted_at"], g["id"]))}, separators=(", ", ": "))
+print(doc(always))
+print(doc(always + held))
+print(note)
+'
+
+# Is <dir> one only this writer (root) may change? Made 0755 if missing; refused if it is a link,
+# not the writer's uid and group, or group- or world-writable: as for the status file.
+mind_grant_dir_ok() { # <dir>
+  [ -L "$1" ] && return 1
+  [ -d "$1" ] || mkdir -m 0755 -- "$1" || return 1
+  [ ! -L "$1" ] && [ "$(stat -c %u:%g -- "$1")" = "$(id -u):$(id -g)" ] \
+    && [ $(( 0$(stat -c %a -- "$1") & 022 )) = 0 ]
+}
+
+# May <caller uid> write a grant? Root, or the desktop's owner <owner uid>; never the mind account
+# <mind uid> or the egress account <egress uid>, whatever else is true. Pure, for the selftest.
+mind_grant_caller_ok() { # <caller uid> <owner uid> <mind uid> <egress uid>
+  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+  [ -n "$3" ] && [ "$1" = "$3" ] && return 1
+  [ -n "$4" ] && [ "$1" = "$4" ] && return 1
+  [ "$1" = 0 ] && return 0
+  [ -n "$2" ] && [ "$1" = "$2" ]
+}
+
+# Who asked: the account sudo came from (this updater's sudo rule), or root itself.
+mind_grant_caller() {
+  local u="${SUDO_UID:-}"
+  [ -n "$u" ] || u="$(id -u)"
+  printf '%s' "$u"
+}
+
+# One line to the journal (tag yantrik-mind-grant) and to whoever ran this.
+mind_grant_journal() { # <message>
+  command -v logger >/dev/null 2>&1 && logger -t yantrik-mind-grant -- "$1" 2>/dev/null
+  info "$1"
+}
+
+# Rewrite both files through PY_MIND_GRANTS with <op> and its arguments: expired grants are
+# dropped every time. Both directories are checked first; a bad /run directory leaves no grants
+# file in force (the old one removed), a bad /var/lib one is refused outright.
+mind_grant_write() { # <op> [args]
+  local out always_doc run_doc note
+  mind_grant_dir_ok "$(dirname "$MIND_GRANTS_ALWAYS")" \
+    || { warn "$(dirname "$MIND_GRANTS_ALWAYS") is not a directory only root writes; no grant changed"; return 1; }
+  if ! mind_grant_dir_ok "$(dirname "$MIND_GRANTS_RUN")"; then
+    rm -f -- "$MIND_GRANTS_RUN" 2>/dev/null
+    warn "$(dirname "$MIND_GRANTS_RUN") is not a directory only root writes; no grant is in force"
+    return 1
+  fi
+  out="$(python3 -I -c "$PY_MIND_GRANTS" "$1" "$(date +%s)" "$MIND_GRANTS_ALWAYS" "$MIND_GRANTS_RUN" "${@:2}")" || return $?
+  always_doc="$(printf '%s\n' "$out" | sed -n 1p)"
+  run_doc="$(printf '%s\n' "$out" | sed -n 2p)"
+  note="$(printf '%s\n' "$out" | sed -n 3p | LC_ALL=C tr -c '[:print:]' '?')"
+  printf '%s\n' "$always_doc" | write_file_atomic "$MIND_GRANTS_ALWAYS" || return 1
+  printf '%s\n' "$run_doc" | write_file_atomic "$MIND_GRANTS_RUN" || return 1
+  [ "$1" = publish ] && { info "$note"; return 0; }
+  mind_grant_journal "$note (caller uid $(mind_grant_caller))"
+}
+
+# At boot (from mind-egress apply) and every reconcile: the /run file put back from the always-list.
+mind_grant_publish() {
+  [ "$(id -u)" = 0 ] || return 0
+  mind_grant_write publish
+}
+
+# "4h", "30m", "90s" or plain seconds, as seconds; nothing for anything else.
+mind_grant_seconds() { # <ttl>
+  case "$1" in
+    *[!0-9hms]*|''|[hms]*) return 1 ;;
+    *h) [ "${1%h}" -eq "${1%h}" ] 2>/dev/null && echo $(( ${1%h} * 3600 )) ;;
+    *m) [ "${1%m}" -eq "${1%m}" ] 2>/dev/null && echo $(( ${1%m} * 60 )) ;;
+    *s) [ "${1%s}" -eq "${1%s}" ] 2>/dev/null && echo "${1%s}" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+cmd_mind_grant() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    list)
+      [ -r "$MIND_GRANTS_RUN" ] || { echo "no grants in force"; return 0; }
+      python3 -I -c "$PY_MIND_GRANTS" list "$(date +%s)" "" "$MIND_GRANTS_RUN" "${MIND_GRANTS_OWNER:-0}"
+      return 0 ;;
+    add|revoke) ;;
+    *) fail "usage: yantrik-update mind-grant add --scope run|session|always [--run-id ID|--session-id ID] [--ttl 4h] | list | revoke ID|all" ;;
+  esac
+  local scope="" id="" ttl="" capability=web_search_own_words agent=mind query="" target=""
+  while [ $# -gt 0 ]; do
+    case "$1" in --*) [ $# -ge 2 ] || fail "mind-grant: $1 needs a value" ;; esac
+    case "$1" in
+      --scope) scope="${2:-}"; shift 2 ;;
+      --run-id|--session-id) id="${2:-}"; shift 2 ;;
+      --ttl) ttl="$(mind_grant_seconds "${2:-}")" || fail "--ttl is like 4h, 30m or 900"; shift 2 ;;
+      --capability) capability="${2:-}"; shift 2 ;;
+      --agent) agent="${2:-}"; shift 2 ;;
+      --query) query="${2:-}"; shift 2 ;;
+      -*) fail "mind-grant: unknown option $1" ;;
+      *) target="$1"; shift ;;
+    esac
+  done
+  # As root: through this updater's own sudo rule when the person runs it.
+  [ "$(id -u)" = 0 ] || elevate "$sub" ${scope:+--scope "$scope"} ${id:+--run-id "$id"} ${ttl:+--ttl "$ttl"} \
+    --capability "$capability" --agent "$agent" ${query:+--query "$query"} ${target:+"$target"}
+  [ "$(id -u)" = 0 ] || fail "mind-grant $sub runs as root; run: sudo yantrik-update mind-grant $sub"
+  local caller owner_uid
+  caller="$(mind_grant_caller)"
+  owner_uid="$(id -u "$(desktop_owner)" 2>/dev/null)"
+  mind_grant_caller_ok "$caller" "$owner_uid" "$(id -u yantrik-mind 2>/dev/null)" "$(id -u yantrik-egress 2>/dev/null)" \
+    || { mind_grant_journal "refused a grant $sub from uid $caller: only root and the desktop's owner write grants"; return 1; }
+  if command -v flock >/dev/null 2>&1 && exec 8>"$MIND_GRANTS_LOCK"; then
+    flock 8
+  fi
+  case "$sub" in
+    add)
+      [ "$scope" = always ] || ttl="${ttl:-86400}"
+      [ -z "$query" ] || mind_grant_journal "asked for by the search: $(printf '%s' "$query" | head -c 300 | LC_ALL=C tr -c '[:print:]' '?')"
+      mind_grant_write add "$agent" "$capability" "$scope" "$id" "$ttl" ;;
+    revoke)
+      [ -n "$target" ] || fail "usage: yantrik-update mind-grant revoke ID|all"
+      mind_grant_write revoke "$target" ;;
+  esac
 }
 
 reconcile_private_dirs() {
@@ -4238,6 +4505,110 @@ c.sendall((json.dumps({"ok": True, "seeded": req["rules"]}) + "\n").encode())' "
     printf '  skip mind-egress nft syntax check: no nft, or no user namespace to run it in\n'
   fi
 
+  # O. The Mind's search grants (section 6): root writes them whole, in directories only it
+  #    writes; the mind account never may; expired grants go at every rewrite.
+  local mg="$root/grants"
+  mkdir -p "$mg/run" "$mg/lib"
+  mg_run() { # mg_run <op> [args]: mind_grant_write against scratch files; the journal into $mg/journal
+    ( MIND_GRANTS_RUN="$mg/run/yantrik-mind-egress/grants.json" MIND_GRANTS_ALWAYS="$mg/lib/yantrik/mind-grants.json"
+      logger() { printf '%s\n' "$*" >> "$mg/journal"; }
+      mind_grant_write "$@" ) >/dev/null 2>"$mg/err"
+  }
+  mg_count() { # mg_count <file> <scope|any>: how many grants of that scope it holds
+    python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(sum(1 for g in d["grants"] if sys.argv[2] in ("any", g["scope"])))' "$1" "$2" 2>/dev/null || echo '[no file]'
+  }
+  local mgr="$mg/run/yantrik-mind-egress/grants.json" mga="$mg/lib/yantrik/mind-grants.json"
+  mg_run add mind web_search_own_words session s-7f3a 3600
+  is "mind-grant: a session grant is in force in /run, not in the always-list" "1 0" "$(mg_count "$mgr" session) $(mg_count "$mga" any)"
+  is "mind-grant: ... directories made 0755, files 0644, the writer's" "755 755 644 644 $(id -u):$(id -g)" \
+    "$(stat -c %a "$(dirname "$mgr")") $(stat -c %a "$(dirname "$mga")") $(stat -c %a "$mgr") $(stat -c %a "$mga") $(stat -c %u:%g "$mgr")"
+  is "mind-grant: ... version 1, with every field" "1 mind web_search_own_words session s-7f3a person 3600" \
+    "$(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); g=d["grants"][0]; print(d["version"], g["agent"], g["capability"], g["scope"], g["scope_id"], g["granted_by"], g["expires_at"]-g["granted_at"])' "$mgr")"
+  t "mind-grant: ... journalled with agent and scope" "added g-" "$(cat "$mg/journal")"
+  t "mind-grant: ... the journal line names them" "agent=mind capability=web_search_own_words scope=session scope_id=s-7f3a" "$(cat "$mg/journal")"
+  mg_run add mind web_search_own_words always "" ""
+  is "mind-grant: an always grant is in both files" "1 2" "$(mg_count "$mga" always) $(mg_count "$mgr" any)"
+  mg_run add mind web_search_own_words run research-42 14400
+  is "mind-grant: a run grant is the run-starter's" "run-starter" \
+    "$(python3 -I -c 'import json,sys; print([g["granted_by"] for g in json.load(open(sys.argv[1]))["grants"] if g["scope"]=="run"][0])' "$mgr")"
+  mg_run add mind web_search_own_words session s-7f3a 600
+  is "mind-grant: the same scope again replaces, not adds" "3" "$(mg_count "$mgr" any)"
+  mg_run add mind web_search_anything session s-1 600; local rc=$?
+  is "mind-grant: an unknown capability is refused, nothing changed" "3 3" "$rc $(mg_count "$mgr" any)"
+  t "mind-grant: ... and says why" "no such capability" "$(cat "$mg/err")"
+  mg_run add pi web_search_own_words session s-1 600
+  is "mind-grant: an agent other than the Mind is refused" "3" "$?"
+  mg_run add mind web_search_own_words session s-1 90000
+  is "mind-grant: a session grant longer than 24 h is refused" "3" "$?"
+  mg_run add mind web_search_own_words run "" 600
+  is "mind-grant: a run grant with no run id is refused" "3" "$?"
+  mg_run add mind web_search_own_words always "" 600
+  is "mind-grant: an always grant with a ttl is refused" "3" "$?"
+  mg_run add mind web_search_own_words forever "" ""
+  is "mind-grant: an unknown scope is refused" "3" "$?"
+  is "mind-grant: the caller: root" "yes" "$(mind_grant_caller_ok 0 1000 998 997 && echo yes || echo no)"
+  is "mind-grant: the caller: the desktop's owner" "yes" "$(mind_grant_caller_ok 1000 1000 998 997 && echo yes || echo no)"
+  is "mind-grant: the caller: the mind account is refused" "no" "$(mind_grant_caller_ok 998 1000 998 997 && echo yes || echo no)"
+  is "mind-grant: ... even if it were the desktop's owner" "no" "$(mind_grant_caller_ok 998 998 998 997 && echo yes || echo no)"
+  is "mind-grant: the caller: the egress account is refused" "no" "$(mind_grant_caller_ok 997 1000 998 997 && echo yes || echo no)"
+  is "mind-grant: the caller: anyone else is refused" "no" "$(mind_grant_caller_ok 1001 1000 998 997 && echo yes || echo no)"
+  is "mind-grant: the caller: no owner known, only root" "no" "$(mind_grant_caller_ok 1000 '' 998 997 && echo yes || echo no)"
+  is "mind-grant: the caller: not a number" "no" "$(mind_grant_caller_ok '' 1000 998 997 && echo yes || echo no)"
+  is "mind-grant: the caller is who sudo names" "1000" "$(SUDO_UID=1000 mind_grant_caller)"
+  is "mind-grant: --ttl 4h" "14400 1800 900" "$(mind_grant_seconds 4h) $(mind_grant_seconds 30m) $(mind_grant_seconds 900)"
+  is "mind-grant: ... nonsense is not a ttl" "no no" "$(mind_grant_seconds 4d || echo no) $(mind_grant_seconds h || echo no)"
+
+  # Expired grants go at the next rewrite, and a grant that does not check is dropped.
+  python3 -I -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["grants"].append({"id": "g-0123456789ab", "agent": "mind", "capability": "web_search_own_words", "scope": "session",
+                    "scope_id": "old", "granted_at": 1000, "expires_at": 2000, "granted_by": "person"})
+d["grants"].append({"id": "g-ba9876543210", "agent": "mind", "capability": "shell", "scope": "always",
+                    "scope_id": None, "granted_at": 1000, "expires_at": None, "granted_by": "person"})
+open(sys.argv[1], "w").write(json.dumps(d))' "$mgr"
+  is "mind-grant: (a stale and a forged grant written in)" "5" "$(mg_count "$mgr" any)"
+  mg_run publish
+  is "mind-grant: expired and unknown grants are dropped on rewrite" "3 no" \
+    "$(mg_count "$mgr" any) $(grep -q 'g-0123456789ab\|g-ba9876543210' "$mgr" && echo yes || echo no)"
+  rm -f "$mgr"; mg_run publish
+  is "mind-grant: after a reboot the always-list is put back in /run" "1 always" \
+    "$(mg_count "$mgr" any) $(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["grants"][0]["scope"])' "$mgr")"
+  is "mind-grant: list prints what is in force" "mind web_search_own_words always - never person" \
+    "$(MIND_GRANTS_RUN="$mgr" MIND_GRANTS_OWNER="$(id -u)" cmd_mind_grant list | cut -d' ' -f2-)"
+  local gid; gid="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["grants"][0]["id"])' "$mgr")"
+  : > "$mg/journal"; mg_run revoke "$gid"
+  is "mind-grant: revoke takes it out of both files" "0 0" "$(mg_count "$mgr" any) $(mg_count "$mga" any)"
+  t "mind-grant: ... journalled" "revoked $gid agent=mind scope=always" "$(cat "$mg/journal")"
+  mg_run revoke "$gid"
+  is "mind-grant: revoking one not in force is refused" "3" "$?"
+
+  # Whole, by rename, never through a link, never in a directory others may write.
+  mg_run add mind web_search_own_words session s-1 600
+  ln "$mgr" "$mg/held"; mg_run add mind web_search_own_words session s-2 600
+  is "mind-grant: replaced by a rename, not rewritten in place" "1 2" "$(mg_count "$mg/held" any) $(mg_count "$mgr" any)"
+  is "mind-grant: ... no temporary file left" "" "$(find "$(dirname "$mgr")" "$(dirname "$mga")" -name '.*grants.json.*')"
+  printf 'the person'"'"'s file\n' > "$mg/victim"
+  rm -f "$mgr"; ln -s "$mg/victim" "$mgr"
+  mg_run add mind web_search_own_words session s-3 600
+  is "mind-grant: a link planted at the path is replaced, not followed" "the person's file file" \
+    "$(cat "$mg/victim") $([ -f "$mgr" ] && [ ! -L "$mgr" ] && echo file || echo other)"
+  chmod 0775 "$(dirname "$mgr")"
+  mg_run add mind web_search_own_words session s-4 600
+  is "mind-grant: a /run directory others may write: refused, no grants in force" "1 absent" "$? $([ -e "$mgr" ] || echo absent)"
+  chmod 0755 "$(dirname "$mgr")"
+  chmod 0777 "$(dirname "$mga")"
+  local before; before="$(cat "$mga")"
+  mg_run add mind web_search_own_words always "" ""
+  is "mind-grant: an always-list directory others may write: refused, unchanged" "1 same" "$? $([ "$(cat "$mga")" = "$before" ] && echo same)"
+  chmod 0755 "$(dirname "$mga")"
+  mv "$(dirname "$mgr")" "$mg/run/elsewhere"; ln -s "$mg/run/elsewhere" "$(dirname "$mgr")"
+  mg_run add mind web_search_own_words session s-5 600
+  is "mind-grant: a /run directory that is a link: nothing written through it" "absent" \
+    "$(grep -q s-5 "$mg/run/elsewhere/grants.json" 2>/dev/null && echo written || echo absent)"
+  is "mind-grant: the boot unit's apply publishes them" "yes" \
+    "$(declare -f cmd_mind_egress | grep -q mind_grant_publish && echo yes || echo no)"
+
   # The blanket sudo rules taken away once the narrow one is in place (#397), cloud-init's included.
   local sd="$root/sudoers.d"; mkdir -p "$sd"
   printf '# written by the image\nyantrik ALL=(ALL) NOPASSWD: ALL\n' > "$sd/image"
@@ -4271,6 +4642,8 @@ usage() {
     "  reconcile                                 install base packages the image ships and this lacks" \
     "  install-mind BUNDLE SHA256                put a Yantrik Mind bundle in place, and prove it attaches" \
     "  mind-egress apply                         hold the mind account to its egress proxy (root; its units run it)" \
+    "  mind-grant add --scope run|session|always [--run-id ID|--session-id ID] [--ttl 4h]" \
+    "  mind-grant list | revoke ID|all          what the Mind may search for in its own words" \
     "  selftest                                  offline checks, no network" \
     "" \
     "check exits 0 up to date · 10 update available · 11 channel not published ·" \
@@ -4291,6 +4664,7 @@ case "$CMD" in
   migrate-minds) cmd_migrate_minds "$@" ;;
   install-mind) cmd_install_mind "$@" ;;
   mind-egress) cmd_mind_egress "$@" ;;
+  mind-grant) cmd_mind_grant "$@" ;;
   migrate-ownership) cmd_migrate_ownership ;;
   selftest) cmd_selftest ;;
   # Printed from a function rather than `sed -n '20,30p' "$0"`, which quietly printed whatever

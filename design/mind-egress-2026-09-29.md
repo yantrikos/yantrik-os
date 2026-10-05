@@ -2,7 +2,7 @@
 
 29 September 2026. Status: **step 1 built** (`crates/yantrik-egress`: the proxy, audit and enforce, the control socket);
 **step 3 built 5 October 2026** (the kernel holds the mind account to the proxy, in audit and enforce
-alike: section 1); the rest for review by Pranab and yantrik-mind-72.
+alike: section 1); **search grants built 5 October 2026** (section 6); the rest for review by Pranab and yantrik-mind-72.
 Prompted by NVIDIA OpenShell 0.1.0 (28 Sep 2026): its default-deny egress is the one thing it does
 that we don't.
 
@@ -304,6 +304,92 @@ A missing file means **not enforced: fail closed**. It is removed when nothing c
 stops (stopping nftables flushes the ruleset, the table with it). When it holds, a mind sends
 everything through the proxy and leaves resolving names to it; with `dns_allowed` false it must
 not try to resolve anything itself.
+
+### 6. Searching in its own words: the person's grant
+
+5 October 2026. The Mind's egress planner let a web search carry only words from the person's own
+messages or files they handed over, which made research impossible. Instead the person grants it,
+as other agents are granted things: a **grant** lets one agent use one capability for one run, one
+session of its harness, or always. Only `web_search_own_words` exists; anything else is refused by
+the writer, the host and every reader.
+
+**Where they live.** Two files, both root's, both written only with `write_file_atomic` (a
+`mktemp` beside the file, then `mv -T` over it), so a reader sees the old file or the new one,
+and a link planted at a path is replaced, never followed:
+
+- `/run/yantrik-mind-egress/grants.json`: every grant in force, run, session and always. The
+  directory is the status file's (section 5), root:root 0755. Gone at reboot.
+- `/var/lib/yantrik/mind-grants.json`: the always-list, which outlives a reboot. Directory
+  `/var/lib/yantrik`, root:root 0755, file 0644. The writer merges it into the `/run` file at every
+  write, and at boot (`yantrik-update mind-egress apply`, from `yantrik-mind-egress.service`) and
+  every reconcile.
+
+Each write drops grants that have expired or do not check. The writer refuses a directory that is
+a link, not owned by its uid and group (root:root), or group- or world-writable; for `/run` it then
+removes the grants file, so a bad directory leaves no grant in force.
+
+```json
+{"version": 1, "written_at": 1759650000, "grants": [
+  {"id": "g-3fa29c07d1e4", "agent": "mind", "capability": "web_search_own_words",
+   "scope": "session", "scope_id": "5f1c2a9e0b7d4c3e", "granted_at": 1759650000,
+   "expires_at": 1759736400, "granted_by": "person"},
+  {"id": "g-9b0d5e1a7c32", "agent": "mind", "capability": "web_search_own_words",
+   "scope": "always", "scope_id": null, "granted_at": 1759600000, "expires_at": null,
+   "granted_by": "person"}]}
+```
+
+- `id`: `g-` and 12 hex digits; what `revoke` takes.
+- `agent`: the harness id, `mind` (the first-party Yantrik Mind) and nothing else for now.
+- `scope`: `run`, `session` or `always`. `scope_id`: the run id for `run`; for `session`, the first
+  16 hex digits of the SHA-256 of the session string `harness.attach` returned (never the session
+  itself, which answers for the harness and this file is world-readable); `null` for `always`.
+- `expires_at`: unix seconds, more than `granted_at` and at most 24 h after it, for `run` and
+  `session`; `null` for `always`. A reader drops a grant at or past it.
+- `granted_by`: `person` (a tap on the card) for `session` and `always`, `run-starter` for `run`.
+- `version`: 1; a reader refuses a file with any other. A grant with another key, a capability or
+  agent it does not know, or a field out of shape is dropped, never read as something else.
+
+Trust it only if all of these hold, else read it as **no grants** (the Mind asks):
+- `/run/yantrik-mind-egress` passes `lstat`: a directory, not a link, owned by uid 0 and gid 0,
+  not group- or world-writable;
+- the file is opened with `O_NOFOLLOW`, and `fstat` on that descriptor (not a second `stat` of the
+  path) shows a regular file owned by uid 0 with no group or other write bit; at most 64 KiB;
+- it parses, and `version` is 1.
+
+`yantrik_harness::grants::read` is that reader, with tests.
+
+**Who writes.** Root, through `yantrik-update mind-grant add|revoke` (and `publish`). The shell
+runs as the person, so it reaches root the way the shell already reaches the updater: the narrow
+sudo rule for `$BIN_DIR/yantrik-update` (#397), which re-runs the same root-owned file as root.
+sudo names the caller (`SUDO_UID`), and the writer accepts root and the desktop's owner only,
+never the `yantrik-mind` or `yantrik-egress` account, whatever else is true. No new setuid binary
+and no new socket. The proxy's control socket was not used: the proxy runs as `yantrik-egress`
+and cannot write a root-owned file. The mind account has no path to the writer: it is not in the
+sudo rule, and nothing it can call passes `mind-grant` to the updater (the control surface runs
+the updater only with fixed arguments). **What this does not close:** anything running as the
+person can run the updater as the person does, so a mind the person lets run commands as them
+(`shell.agent_run`, a sensitive act with its own card) could ask for a grant that way; and every
+grant written is in the journal.
+
+**How the Mind asks.** A `grant_request` event on the turn it is answering (docs/harness.md):
+`{"kind": "grant_request", "request_id", "capability": "web_search_own_words", "query",
+"run_id"?}`. If a grant in force covers it (the Mind's, this session's, the run's, or always) the
+reply is `{"granted": {"id", "scope", "expires_at"}}` and the use is journalled. Otherwise the
+shell shows the ordinary question card, in the host's words with the exact query, and four answers:
+**Once** (this query only, nothing stored), **This session**, **Always**, **No**. The answer comes
+back on a later poll as `once`, `session` (with the grant's `scope_id`), `always` or `no`; a typed
+answer is `no`. On *This session* and *Always* the shell asks root to write the grant. The
+model's words are only ever the query on the card: nothing it sends makes a grant.
+
+**For unattended runs**, the person or root starts the run with a grant that lasts the run:
+`yantrik-update mind-grant add --scope run --run-id ID --ttl 4h` (`list`, `revoke ID|all`).
+
+**Audit.** Root journals every add and revoke (tag `yantrik-mind-grant`: id, agent, capability,
+scope, scope id, expiry, who, caller uid, and the query that prompted it). The shell journals every
+answer (with the query, so a *Once* is recorded) and every use of a grant in force, with the query.
+
+**Settings → Harnesses** lists the grants in force, read with the reader's checks, each with
+Revoke.
 
 ## What this is not
 

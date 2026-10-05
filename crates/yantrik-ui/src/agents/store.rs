@@ -1208,6 +1208,7 @@ fn what_event(event: &Event) -> String {
         Event::Usage { .. } => "a usage report".to_string(),
         Event::Request { prompt, .. } => format!("a question ({})", clip_text(prompt, 40)),
         Event::Redact { .. } => "a redaction".to_string(),
+        Event::GrantRequest { query, .. } => format!("a search grant ({})", clip_text(query, 40)),
     }
 }
 
@@ -1317,6 +1318,8 @@ fn apply(agent: &mut Agent, event: &Event, provenance: Provenance, now: u64) -> 
         // The host applies an erasure itself, through `Agents::redact`, and only once its rule
         // held; one arriving here, from any feeder, is not one.
         Event::Redact { .. } => return Err("a redaction — only the host applies one".to_string()),
+        // The host turns one into a question in its own words before anything reads it.
+        Event::GrantRequest { .. } => return Err("a grant request — the host asks it as a question".to_string()),
         Event::Usage { model, input_tokens, output_tokens, cost_usd } => {
             let usage = &mut agent.usage;
             usage.reported = true;
@@ -2283,6 +2286,26 @@ mod tests {
         assert_eq!(questions(&s, &pi)[0].answer, "Yes");
         assert_eq!(s.agent(&pi).unwrap().state, State::Thinking, "back to work");
         assert!(s.transcript(&pi, 5).unwrap().contains("[asked the person] Delete 3 installers? — answered: Yes"));
+    }
+
+    /// The Mind's search-grant card is the host's question, drawn as any other: the exact query in
+    /// the host's words and the four answers, in order. A raw `grant_request` from any feeder is
+    /// refused, never drawn: only the host's question in its own words reaches the pane.
+    #[test]
+    fn a_search_grant_card_offers_its_four_answers_and_a_raw_request_is_not_drawn() {
+        use yantrik_harness::host::grant;
+        let (mut s, _) = store();
+        let mind = id("mind:c-g1");
+        s.open_turn(&mind, "research the 2027 edition");
+        let ask = Event::Request { request_id: "g1".into(), prompt: grant::prompt("rust 2027 edition"), options: grant::labels() };
+        s.event(&mind, &ask, Provenance::Reported);
+        let q = &questions(&s, &mind)[0];
+        assert_eq!(q.options, ["Once", "This session", "Always", "No"]);
+        assert!(q.prompt.contains("\u{201c}rust 2027 edition\u{201d}"), "{}", q.prompt);
+        let raw = Event::GrantRequest { request_id: "g2".into(), capability: "web_search_own_words".into(), query: "x".into(), run_id: None };
+        s.event(&mind, &raw, Provenance::Reported);
+        assert_eq!(questions(&s, &mind).len(), 1);
+        assert!(s.question_answered(&mind, "g1", "This session"));
     }
 
     /// A question past the quiet limit is still the person's to answer: it needs them as waiting,
