@@ -22,11 +22,12 @@
 //! # A whole harness
 //!
 //! ```text
-//! attach  {id, name, conversations?}    → {session}
+//! attach  {id, name, conversations?}    → {session, web_search?}
 //! loop:
 //!   poll  {session}                     → {turn_id, text, context, conversation, agent_token,
 //!                                          memory_credential?} | {}
-//!                                         (+ cancelled: [turn_id], ended: [conversation])
+//!                                         (+ cancelled: [turn_id], ended: [conversation],
+//!                                            web_search: when the person changed it)
 //!   …if no turn_id: wait POLL_INTERVAL_MS and poll again
 //!   chunk {session, turn_id, delta}     → {}          … as many as you like
 //!   event {session, turn_id, event}     → {}          … optional: what the agent is doing
@@ -189,6 +190,36 @@ pub struct Resume {
     /// What that turn asked, so the desktop can say what is being picked up.
     #[serde(default)]
     pub prompt: String,
+}
+
+/// The person's web search service, as the desktop tells a harness (docs/harness.md, "Web
+/// search"): in the attach reply, and again in the next poll reply after the person changes it,
+/// so a harness switches without restarting. `{"service":"searxng","url":"http://192.168.4.42:8888"}`
+/// or `{"service":"builtin"}`.
+///
+/// The desktop's to say, not the harness's: unlike an endpoint or a key, which a harness brings
+/// itself ([`Attach`] has nowhere to put one), this is the person's choice of where their searches
+/// go, made once in Settings for every mind. A harness that searches the web SHOULD send its
+/// searches there, and MUST NOT send the queries it makes there anywhere else (a log, telemetry,
+/// another service). An older harness ignores the field, as it ignores any it does not know.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebSearch {
+    /// `builtin` (the harness's own way of searching) or `searxng`.
+    pub service: String,
+    /// With `searxng`: the base address, already checked (http only to this machine or the local
+    /// network, no user name, no query, no trailing slash). Search as `<url>/search?q=…&format=json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+impl WebSearch {
+    pub fn builtin() -> WebSearch {
+        WebSearch { service: "builtin".into(), url: None }
+    }
+
+    pub fn searxng(url: impl Into<String>) -> WebSearch {
+        WebSearch { service: "searxng".into(), url: Some(url.into()) }
+    }
 }
 
 /// Where a turn came from (design/channels-2026-09-29.md). A mind reads it for register — terse
@@ -417,6 +448,15 @@ mod tests {
         let attach: Attach =
             serde_json::from_str(r#"{"id":"pi","name":"Pi","conversations":true}"#).unwrap();
         assert!(attach.conversations);
+    }
+
+    #[test]
+    fn web_search_is_one_small_object_either_way() {
+        assert_eq!(serde_json::to_value(WebSearch::builtin()).unwrap(), serde_json::json!({"service": "builtin"}));
+        assert_eq!(
+            serde_json::to_value(WebSearch::searxng("http://192.168.4.42:8888")).unwrap(),
+            serde_json::json!({"service": "searxng", "url": "http://192.168.4.42:8888"})
+        );
     }
 
     #[test]
