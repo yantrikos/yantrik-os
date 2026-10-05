@@ -29,9 +29,11 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     w.set_size(slint::PhysicalSize::new(width, height));
     settle(w, width, height);
 
-    // The card is 404px wide, 16px in from the right edge, under the status bar. Decline is the
-    // left half of its button row.
-    let (card_left, card_right, card_top) = (860u32, 1264u32, 48u32);
+    // The card is 404px wide, its left edge where the shell says (`approval-corner-x`, clear of
+    // the mind panel when that is drawn), under the status bar. Decline is the left half of its
+    // button row.
+    let card_left = ui.get_approval_corner_x().round() as u32;
+    let (card_right, card_top) = (card_left + 404, 48u32);
     let deny_x = card_left as f32 + 100.0;
     // Compared well inside the card's border: its rounded corners and the gap above it show
     // whatever is behind, which an overlay there rightly changes.
