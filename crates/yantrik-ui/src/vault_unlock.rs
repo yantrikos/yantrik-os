@@ -51,6 +51,12 @@ use yantrikdb_core::vault;
 /// session never sets it, which is exactly the fact that has to reach the person.
 static SAW_SESSION_PASSWORD: AtomicBool = AtomicBool::new(false);
 
+/// Whether this session started signed in because the person typed their password at the
+/// pre-boot screen (boot_unlock.rs). The password itself never reached this process, so there is
+/// nothing to open or protect the vault with until the screen is next unlocked; but the session
+/// did not sign in "without a password", and the vault must not say it did.
+static SIGNED_IN_AT_BOOT: AtomicBool = AtomicBool::new(false);
+
 /// The last thing the engine said about whether the key is wrapped.
 ///
 /// Cached because `describe shell` is answered on the UI thread and `is_protected` needs the
@@ -125,6 +131,9 @@ pub fn run(conn: &Connection, op: Op) -> Reply {
 pub enum Tier {
     /// A password the system itself verified reached this process. Reuse it; derive nothing.
     SessionPassword,
+    /// The password was typed at the pre-boot screen and opened the disk; it never reached this
+    /// process. The vault waits for the next screen unlock, or asks (VaultUnlockCard) when used.
+    DiskPassword,
     /// Nobody typed anything to get in here. There is no secret to reuse.
     NoSessionSecret,
 }
@@ -140,6 +149,10 @@ impl Tier {
                 "this session signs in without a password, so there is nothing to lock the vault \
                  with"
             }
+            Tier::DiskPassword => {
+                "you signed in with your password before Yantrik OS started, but the vault has not \
+                 been locked with it yet — it will be the next time you unlock the screen"
+            }
             Tier::SessionPassword => {
                 "you signed in with a password, but the vault has not been locked with it yet — \
                  it will be on your next sign-in"
@@ -152,9 +165,17 @@ impl Tier {
 pub fn tier() -> Tier {
     if SAW_SESSION_PASSWORD.load(Ordering::Relaxed) {
         Tier::SessionPassword
+    } else if SIGNED_IN_AT_BOOT.load(Ordering::Relaxed) {
+        Tier::DiskPassword
     } else {
         Tier::NoSessionSecret
     }
+}
+
+/// Record that this session started signed in by the disk's password. Called only from
+/// `session_lock::lock_at_start`, on the root helper's one-shot answer.
+pub fn note_signed_in_at_boot() {
+    SIGNED_IN_AT_BOOT.store(true, Ordering::Relaxed);
 }
 
 /// Record that a password this process can trust arrived. Called only from the login wiring.
@@ -442,6 +463,7 @@ pub fn set_prompt_error(message: impl Into<String>) {
 fn reset_for_test() {
     vault::lock();
     SAW_SESSION_PASSWORD.store(false, Ordering::Relaxed);
+    SIGNED_IN_AT_BOOT.store(false, Ordering::Relaxed);
     PROTECTED.store(false, Ordering::Relaxed);
     PROTECTION_KNOWN.store(false, Ordering::Relaxed);
     dismiss();
@@ -689,12 +711,16 @@ mod vault_unlock_tests {
         reset_for_test();
         assert_eq!(tier(), Tier::NoSessionSecret);
 
+        note_signed_in_at_boot();
+        assert_eq!(tier(), Tier::DiskPassword, "signed in at the pre-boot screen is not 'without a password'");
         note_session_password_seen();
-        assert_eq!(tier(), Tier::SessionPassword);
+        assert_eq!(tier(), Tier::SessionPassword, "a password the shell saw wins");
+        let why = [Tier::SessionPassword, Tier::DiskPassword, Tier::NoSessionSecret].map(Tier::why_unprotected);
         assert!(
-            Tier::SessionPassword.why_unprotected() != Tier::NoSessionSecret.why_unprotected(),
-            "the two tiers must not give the person the same explanation"
+            why[0] != why[1] && why[1] != why[2] && why[0] != why[2],
+            "no two tiers may give the person the same explanation"
         );
+        assert!(!why[1].contains("without a password"));
         reset_for_test();
     }
 
@@ -777,6 +803,7 @@ mod vault_unlock_tests {
         seen.push(LOCKED_ANSWER.to_string());
         seen.push(Tier::SessionPassword.why_unprotected().to_string());
         seen.push(Tier::NoSessionSecret.why_unprotected().to_string());
+        seen.push(Tier::DiskPassword.why_unprotected().to_string());
 
         for text in &seen {
             assert!(
