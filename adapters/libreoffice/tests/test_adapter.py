@@ -105,7 +105,9 @@ class TestTheProgram(unittest.TestCase):
         return hidden
 
     def start(self, **env):
-        base = self.machine.env(YANTRIK_LIBREOFFICE_GRACE="0.5", **env)
+        # PYTHONFAULTHANDLER: a SIGABRT makes the adapter print every thread's stack, so a stop
+        # that hangs (seen once in CI, 5 Oct 2026, never reproduced locally) says where it hung.
+        base = self.machine.env(YANTRIK_LIBREOFFICE_GRACE="0.5", PYTHONFAULTHANDLER="1", **env)
         base["PYTHONPATH"] = os.pathsep.join((self.no_uno(), base["PYTHONPATH"]))
         program = subprocess.Popen(
             [sys.executable, os.path.join(support.BIN, "yantrik-libreoffice-adapter")],
@@ -134,7 +136,13 @@ class TestTheProgram(unittest.TestCase):
         # A return code of -15 here is the adapter killed by Python's default SIGTERM action —
         # its handler not yet installed — not a timeout: a timeout raises TimeoutExpired.
         program.send_signal(signal.SIGTERM)
-        _, err = program.communicate(timeout=30)
+        try:
+            _, err = program.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            program.send_signal(signal.SIGABRT)
+            _, err = program.communicate(timeout=10)
+            self.fail("the adapter did not stop within 30 s of SIGTERM; its threads were:\n%s"
+                      % err[-6000:])
         self.assertEqual(program.returncode, 0, err)
         self.assertIn("libreoffice stopped: asked to stop", err)
         self.assertFalse(os.path.exists(socket), "the socket outlived the adapter")

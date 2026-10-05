@@ -53,6 +53,7 @@ from .surface import (
     agent_token,
     caller,
 )
+from .stopping import StopOnSignal
 from .wire import PeerCred, PeerRefused, RpcError, SocketBusy, call_once, revision, socket_dir
 
 __version__ = "0.1.0"
@@ -77,6 +78,7 @@ __all__ = [
     "RpcError",
     "SOCKET_FLOOR",
     "SocketBusy",
+    "StopOnSignal",
     "Surface",
     "agent_token",
     "call_once",
