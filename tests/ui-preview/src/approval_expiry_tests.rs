@@ -3,7 +3,8 @@
 //! store refuses a late grant (approval_acceptance_tests.rs). This is the pixel half: in the Lens,
 //! at 1280×800, the card is answered at the place its buttons were, a person's late click on
 //! that place after expiry presses nothing, and neither does Enter.
-use super::approval_tests::{button_top, card, message, save, scan, settle, RUN_RECIPE_SUMMARY};
+use super::approval_fit_tests::read_to_end;
+use super::approval_tests::{card, message, save, scan, settle, RUN_RECIPE_SUMMARY};
 use super::*;
 use slint::platform::Key;
 use slint::{ModelRc, VecModel};
@@ -25,17 +26,17 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     let (deny_x, allow_x) = (panel_left + 100.0, panel_left + 280.0);
     let deny_y = scan(w, deny_x, panel_top, panel_bottom - 4.0, || ui.get_denied() > 0)
         .expect("Decline answers while the card waits");
-    let allow_y = button_top(w, deny_x, deny_y, panel_top, || ui.get_denied()) + 14.0;
-    let before = ui.get_allowed();
-    click(w, allow_x, allow_y);
-    assert!(ui.get_allowed() > before, "Allow answers at {allow_y} while the card waits");
+    // The Lens holds Allow until a card that scrolls has been read to its end (verify-approval-fit).
+    read_to_end(w, panel_left + 190.0, deny_y - 120.0, width, height);
+    let allow_y = scan(w, allow_x, panel_top, panel_bottom - 4.0, || ui.get_allowed() > 0)
+        .expect("Allow answers while the card waits");
 
     // Its time runs out: the same request, now a record of an expiry.
     let expired = ApprovalRequest { decision: "expired".into(), age_text: "".into(), ..waiting };
     ui.set_approvals(ModelRc::new(VecModel::from(vec![expired])));
     save(&settle(w, width, height), output, width, height)?;
     let (allowed, sessioned, denied) = (ui.get_allowed(), ui.get_sessioned(), ui.get_denied());
-    for (x, y) in [(allow_x, allow_y), (deny_x, deny_y), (allow_x, allow_y + 40.0)] {
+    for (x, y) in [(allow_x, allow_y), (deny_x, deny_y), (allow_x, allow_y + 40.0), (allow_x, deny_y)] {
         click(w, x, y);
         click(w, x, y);
     }
