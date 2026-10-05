@@ -13,7 +13,7 @@ use yantrik_surface::Surface;
 
 /// The machine this OS ships: a `sensitive` ceiling, in `mode`.
 fn under(mode: &str) -> Authority {
-    Authority { ceiling: "sensitive".into(), mode: Mode::named(mode), granted: false, asks_above: None }
+    Authority { ceiling: "sensitive".into(), mode: Mode::named(mode), granted: false, asks_above: None, target: None }
 }
 
 fn fresh() -> (Surface, Arc<Mutex<Tasks>>) {
