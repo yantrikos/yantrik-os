@@ -633,7 +633,7 @@ export component EditorProbe inherits TextEditorApp {
 
 // ── Installer (#400) ────────────────────────────────────────────────────────
 
-import { InstallerScreen, InstallerDisk, KeyboardChoice } from "installer.slint";
+import { InstallerScreen, InstallerDisk, InstallerSegment, InstallerTargetDisk, KeyboardChoice } from "installer.slint";
 
 // The production installer screens with fixture disks and layouts. The rules behind every
 // field are the production ones: the runner wires these callbacks to installer_rules.rs,
@@ -661,6 +661,14 @@ export component InstallerProbe inherits Window {
     in-out property <string> selected-disk;
     in property <string> macos-disks;
     in-out property <string> erase-macos-disk;
+    in property <[InstallerTargetDisk]> target-disks;
+    in property <[InstallerSegment]> segments;
+    in property <string> eligible-targets;
+    in-out property <bool> into-partition;
+    in-out property <string> install-target;
+    in property <bool> boot-first-offered;
+    in-out property <bool> boot-first;
+    out property <bool> disk-ok: screen.disk-ok;
     in-out property <string> timezone;
     in-out property <bool> installing;
     in-out property <int> install-progress;
@@ -683,6 +691,7 @@ export component InstallerProbe inherits Window {
     pure callback check-password(string, string) -> string;
     pure callback check-timezone(string) -> string;
     pure callback is-macos-disk(string, string) -> bool;
+    pure callback target-listed(string, string) -> bool;
 
     screen := InstallerScreen {
         width: 100%; height: 100%;
@@ -704,6 +713,13 @@ export component InstallerProbe inherits Window {
         selected-disk <=> root.selected-disk;
         macos-disks: root.macos-disks;
         erase-macos-disk <=> root.erase-macos-disk;
+        target-disks: root.target-disks;
+        segments: root.segments;
+        eligible-targets: root.eligible-targets;
+        into-partition <=> root.into-partition;
+        install-target <=> root.install-target;
+        boot-first-offered: root.boot-first-offered;
+        boot-first <=> root.boot-first;
         timezone <=> root.timezone;
         installing <=> root.installing;
         install-progress <=> root.install-progress;
@@ -721,6 +737,7 @@ export component InstallerProbe inherits Window {
         check-password(p, c) => { return root.check-password(p, c); }
         check-timezone(t) => { return root.check-timezone(t); }
         is-macos-disk(d, l) => { return root.is-macos-disk(d, l); }
+        target-listed(t, l) => { return root.target-listed(t, l); }
     }
 }
 

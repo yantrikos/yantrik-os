@@ -300,6 +300,7 @@ systemctl --global disable podman.socket 2>/dev/null || true
 apt-get install -y -qq \
     jq parted rsync openssh-server openssl \
     dosfstools e2fsprogs grub-efi-amd64-bin grub-pc-bin \
+    efibootmgr \
     libpam-modules initramfs-tools || true
 
 # ── Disk encryption (#400 step b) ──

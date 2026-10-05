@@ -15,3 +15,6 @@ path = "src/bin/yantrik-install-target.rs"
 
 [dependencies]
 serde_json = { workspace = true }
+# The digest recorded beside a \EFI\BOOT\BOOTX64.EFI Yantrik wrote; the text installer checks it
+# with sha256sum.
+sha2 = { workspace = true }

@@ -15,7 +15,8 @@ use super::installer::{chroot_cmd, run_cmd, sudo_write};
 
 /// Where the opened root appears, /dev/mapper/<this>, on every encrypted install.
 pub const CRYPT_NAME: &str = "yantrik-root";
-/// The root filesystem's label, encrypted or not: fstab finds the root by it.
+/// The root filesystem's label, encrypted or not. A name for people: fstab and GRUB find the
+/// root by its UUID, since a placeholder or another Yantrik disk may carry the same label.
 const ROOT_LABEL: &str = "YANTRIK";
 const BOOT_LABEL: &str = "YANTRIK_BOOT";
 const CRYPT_LABEL: &str = "YANTRIK_CRYPT";
@@ -73,6 +74,11 @@ pub struct Layout {
     pub luks_part: Option<String>,
     /// What the root filesystem is on: the partition, or /dev/mapper/yantrik-root.
     pub root_dev: String,
+    /// Installed into one partition beside other systems (wire/installer_partition.rs): the EFI
+    /// partition is theirs too, mounted and never formatted, and its fallback loader may be theirs.
+    pub in_partition: bool,
+    /// The disk keeps macOS, so the boot menu gets an entry for it.
+    pub keeps_macos: bool,
 }
 
 impl Layout {
@@ -121,14 +127,31 @@ pub fn prepare(
         std::thread::sleep(std::time::Duration::from_secs(2));
     }
 
-    let mut layout = Layout {
+    let layout = Layout {
         efi_part: plan.efi.map(|n| partition_name(disk, n)).unwrap_or_default(),
         boot_part: plan.boot.map(|n| partition_name(disk, n)),
         luks_part: None,
-        root_dev: root_part.clone(),
+        root_dev: root_part,
+        in_partition: false,
+        keeps_macos: false,
     };
+    make_filesystems(layout, encrypt, passphrase, progress)
+}
 
-    if !layout.efi_part.is_empty() {
+/// Make the filesystems on a partitioned disk: the EFI partition (only on a whole-disk install;
+/// installed into a partition it is other systems' too, and never formatted), /boot when there
+/// is one, the LUKS2 container when encrypting, and the root.
+pub fn make_filesystems(
+    mut layout: Layout,
+    encrypt: bool,
+    passphrase: &str,
+    progress: &dyn Fn(i32, &str),
+) -> Result<Layout, String> {
+    if encrypt && passphrase.is_empty() {
+        return Err("encrypting the disk needs a password, and none was given".into());
+    }
+    let root_part = layout.root_dev.clone();
+    if !layout.efi_part.is_empty() && !layout.in_partition {
         progress(10, "Formatting EFI partition (FAT32)...");
         run_cmd("mkfs.fat", &["-F32", &layout.efi_part])?;
     }
@@ -203,10 +226,10 @@ fn uuid_of(device: &str) -> Result<String, String> {
     Ok(uuid)
 }
 
-/// The installed system's /etc/fstab. The root by its label, the others by UUID: device names
-/// move between boots (a second disk, a USB stick), and a UUID does not.
-pub fn fstab_text(efi_uuid: Option<&str>, boot_uuid: Option<&str>) -> String {
-    let mut fstab = format!("LABEL={ROOT_LABEL}  /           ext4  defaults,noatime  0  1\n");
+/// The installed system's /etc/fstab, every line by UUID: device names move between boots (a
+/// second disk, a USB stick), and labels repeat (a YANTRIK placeholder, a second Yantrik disk).
+pub fn fstab_text(root_uuid: &str, efi_uuid: Option<&str>, boot_uuid: Option<&str>) -> String {
+    let mut fstab = format!("UUID={root_uuid}  /           ext4  defaults,noatime  0  1\n");
     if let Some(uuid) = boot_uuid {
         fstab.push_str(&format!("UUID={uuid}  /boot       ext4  defaults,noatime  0  2\n"));
     }
@@ -230,9 +253,10 @@ pub fn write_system_files(layout: &Layout, mount_dir: &str) -> Result<(), String
         Some(boot) => Some(uuid_of(boot)?),
         None => None,
     };
+    let root_uuid = uuid_of(&layout.root_dev)?;
     sudo_write(
         &format!("{mount_dir}/etc/fstab"),
-        &fstab_text(efi_uuid.as_deref(), boot_uuid.as_deref()),
+        &fstab_text(&root_uuid, efi_uuid.as_deref(), boot_uuid.as_deref()),
     )?;
     let Some(luks) = &layout.luks_part else {
         return Ok(());
@@ -354,13 +378,14 @@ mod tests {
     }
 
     #[test]
-    fn fstab_finds_everything_but_the_root_by_uuid() {
-        let text = fstab_text(Some("AB12-CD34"), Some("1111-boot"));
-        assert!(text.starts_with("LABEL=YANTRIK  /  "));
+    fn fstab_finds_everything_by_uuid() {
+        let text = fstab_text("2222-root", Some("AB12-CD34"), Some("1111-boot"));
+        assert!(text.starts_with("UUID=2222-root  /  "));
+        assert!(!text.contains("LABEL="), "a placeholder may carry the same label");
         assert!(text.contains("UUID=1111-boot  /boot  "));
         assert!(text.contains("UUID=AB12-CD34  /boot/efi   vfat  umask=0077"));
         assert!(!text.contains("/dev/"), "no device names: they move between boots");
-        assert_eq!(fstab_text(None, None).lines().count(), 1);
+        assert_eq!(fstab_text("2222-root", None, None).lines().count(), 1);
     }
 
     #[test]

@@ -10,6 +10,9 @@
 //!       Re-read the table, refuse if it changed, make or wipe the target, check nothing else
 //!       moved, and print the devices as JSON: {"esp": ..., "root": ..., "boot": ...}.
 //!
+//!   yantrik-install-target grub-macos-entry
+//!       The /etc/grub.d script for a Mac installed beside macOS (efi::GRUB_MACOS_SCRIPT).
+//!
 //! TARGET is a partition (`sda3`, `nvme0n1p4`) or free space (`sda@START-END`, in sectors), as
 //! `scan` names them. Nothing is formatted except a placeholder's wipe; the caller makes the
 //! filesystems on the devices `apply` prints.
@@ -67,6 +70,10 @@ fn main() -> ExitCode {
     };
     let encrypt = flag("--encrypt");
     let words: Vec<&str> = args.iter().map(String::as_str).filter(|a| !a.starts_with("--")).collect();
+    if words.as_slice() == ["grub-macos-entry"] {
+        print!("{}", yantrik_install_target::efi::GRUB_MACOS_SCRIPT);
+        return ExitCode::SUCCESS;
+    }
     let result: Result<serde_json::Value, String> = match words.as_slice() {
         ["scan", disks @ ..] if !disks.is_empty() => Ok(json!(disks.iter().map(|d| scan(d, efi)).collect::<Vec<_>>())),
         [verb @ ("plan" | "apply"), target, fingerprint] => (|| {

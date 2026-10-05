@@ -57,9 +57,49 @@ fi
 
 ok "User: $USERNAME ($FULLNAME) @ $HOSTNAME, $TIMEZONE"
 
+# ── 2a. Beside what is there, if anything can take it ──
+# Installing into one partition or run of free space changes nothing else on the disk: no new
+# partition table, the EFI partition mounted and never formatted. On a Mac whose APFS container
+# was shrunk in Disk Utility, that is the FAT32 partition named YANTRIK, or the free space. The
+# planner (yantrik-install-target, crates/yantrik-install-target) decides what may be chosen and
+# refuses macOS, Windows, Linux filesystems and the EFI partition; it reads the table again
+# right before writing and refuses if it is not the one shown here.
+MODE=erase
+TARGET_BIN=/opt/yantrik/bin/yantrik-install-target
+APPLE=false
+case "$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null)" in "Apple Inc."|"Apple Computer, Inc.") APPLE=true ;; esac
+if [ -d /sys/firmware/efi ] && [ -x "$TARGET_BIN" ] && command -v jq >/dev/null 2>&1; then
+    # shellcheck disable=SC2046
+    SCAN=$("$TARGET_BIN" scan --uefi $(lsblk -dn -e 7,11 -o NAME,TYPE | awk '$2 == "disk" { print "/dev/" $1 }') 2>/dev/null || echo '[]')
+    ELIGIBLE=$(echo "$SCAN" | jq -r '.[] | .segments[]? | select(.eligible) | .id')
+    if [ -n "$ELIGIBLE" ]; then
+        step "Install beside what is on a disk"
+        echo "$SCAN" | jq -r '.[] | select(.segments | length > 0) | "  \(.disk) \(.model)",
+            (.segments[] | "    \(if .eligible then "*" else " " end) \(.id | .[0:28] | . + (" " * (28 - length)))  \(.size | . + (" " * (9 - length))) \(.title)\(if .kept then " (kept)" elif .eligible then "" else " (\(.reason))" end)")'
+        echo
+        echo "  * may be installed into. Nothing else on that disk changes."
+        echo -n "  Target to install into (e.g. $(echo "$ELIGIBLE" | head -1)), or Enter to erase a whole disk instead: "
+        read -r INTO
+        if [ -n "$INTO" ]; then
+            INTO="${INTO#/dev/}"
+            echo "$ELIGIBLE" | grep -qxF "$INTO" || { echo -e "${R}$INTO may not be installed into.${N}"; exit 1; }
+            MODE=partition
+            INTO_DISK=$(echo "$SCAN" | jq -r --arg id "$INTO" '.[] | select(any(.segments[]; .id == $id)) | .disk')
+            TABLE_FP=$(echo "$SCAN" | jq -r --arg id "$INTO" '.[] | select(any(.segments[]; .id == $id)) | .fingerprint')
+            SENTENCE=$(echo "$SCAN" | jq -r --arg id "$INTO" '.[] | .segments[] | select(.id == $id) | .sentence')
+            KEEPS_MACOS=$(echo "$SCAN" | jq -r --arg d "$INTO_DISK" '.[] | select(.disk == $d) | any(.segments[]; .kind == "macos")')
+            DISK="$INTO_DISK"
+            EXTERNAL=false
+            [ "$(lsblk -dno TRAN "$DISK" | tr -d ' ')" = "usb" ] && EXTERNAL=true
+            ok "$SENTENCE"
+        fi
+    fi
+fi
+
 # ── 2. Disk selection ──
 # TRAN says which disk is the external USB one: on a Mac kept on macOS, that is usually the one
 # to install to. The stick this installer booted from is not offered at all.
+if [ "$MODE" = erase ]; then
 step "Select installation disk"
 LIVE_DISK=""
 LIVE_SRC=$(findmnt -n -o SOURCE /run/live/medium 2>/dev/null || true)
@@ -96,6 +136,7 @@ fi
 EXTERNAL=false
 [ "$(lsblk -dno TRAN "$DISK" | tr -d ' ')" = "usb" ] && EXTERNAL=true
 [ "$(cat "/sys/block/$TARGET_DISK/removable" 2>/dev/null)" = "1" ] && EXTERNAL=true
+fi
 
 # ── 2b. Everything, once, before anything is destroyed ──
 # The disk was the only thing confirmed before this, so a mistyped username was
@@ -107,15 +148,33 @@ printf "  %-12s %s\n" "Full name" "${FULLNAME:-[skipped]}"
 printf "  %-12s %s\n" "Hostname"  "$HOSTNAME"
 printf "  %-12s %s\n" "Timezone"  "$TIMEZONE"
 printf "  %-12s %s\n" "Password"  "$(printf '%*s' "${#PASSWORD}" '' | tr ' ' '*')"
-printf "  %-12s %s\n" "Disk"      "$DISK ($(lsblk -dno SIZE "$DISK" 2>/dev/null | tr -d ' '))"
-echo
-echo -e "  ${A}Everything on $DISK will be erased. There is no recovery.${N}"
+if [ "$MODE" = partition ]; then
+    printf "  %-12s %s\n" "Into" "/dev/$INTO, on $DISK"
+    echo
+    echo -e "  ${A}$SENTENCE${N}"
+else
+    printf "  %-12s %s\n" "Disk"      "$DISK ($(lsblk -dno SIZE "$DISK" 2>/dev/null | tr -d ' '))"
+    echo
+    echo -e "  ${A}Everything on $DISK will be erased. There is no recovery.${N}"
+fi
 echo -n "  Type 'yes' to install: "; read -r CONFIRM
 [ "$CONFIRM" = "yes" ] || { echo "  Nothing was changed."; exit 1; }
 
 # ── 3. Partition ──
-step "Partitioning $DISK (GPT)..."
 IS_EFI=false; [ -d /sys/firmware/efi ] && IS_EFI=true
+if [ "$MODE" = partition ]; then
+    # No new table: the partition is made in the free space (or the placeholder wiped), after
+    # the planner has read the table again and found it as it was shown above.
+    step "Making room in /dev/$INTO (nothing else on $DISK changes)..."
+    PLACED=$("$TARGET_BIN" apply --uefi "$INTO" "$TABLE_FP") \
+        || { echo -e "${R}Refused; nothing was written.${N}"; exit 1; }
+    ROOT_PART=$(echo "$PLACED" | jq -r .root)
+    EFI_PART=$(echo "$PLACED" | jq -r .esp)
+    [ -b "$ROOT_PART" ] && [ -b "$EFI_PART" ] || { echo -e "${R}The planner named no usable root ($ROOT_PART).${N}"; exit 1; }
+    mkfs.ext4 -q -F -L YANTRIK "$ROOT_PART"
+    ok "Installing into $ROOT_PART; the EFI partition $EFI_PART is kept as it is"
+else
+step "Partitioning $DISK (GPT)..."
 parted -s "$DISK" mklabel gpt
 if $IS_EFI; then
     parted -s "$DISK" mkpart EFI fat32 1MiB 513MiB
@@ -136,6 +195,7 @@ else
 fi
 mkfs.ext4 -q -L YANTRIK "$ROOT_PART"
 ok "Partitioned ($( $IS_EFI && echo 'EFI' || echo 'BIOS' ) mode)"
+fi
 
 # ── 4. Mount ──
 M="/mnt/yantrik-install"
@@ -150,7 +210,7 @@ fi
 step "Copying system files (this takes a few minutes)..."
 rsync -aAXH --exclude='/proc/*' --exclude='/sys/*' --exclude='/dev/*' \
     --exclude='/run/*' --exclude='/tmp/*' --exclude='/mnt/*' \
-    --exclude='/live/*' --exclude='/cdrom/*' \
+    --exclude='/live/*' --exclude='/cdrom/*' --exclude='/boot/efi/*' \
     / "$M/" --info=progress2
 ok "System copied"
 # The live image's blanket rule (`yantrik ALL=(ALL) NOPASSWD: ALL`) came over with the copy. It
@@ -327,16 +387,55 @@ if $IS_EFI; then
     # removable-media path every UEFI tries when it has no entry, and the only one Apple's firmware
     # needs. This used to run only the first, with --no-nvram, which left a disk no firmware would
     # boot.
+    #
+    # A Mac's NVRAM is never written (macOS stays what starts; Option picks Yantrik), nor a USB
+    # disk's. Installed beside another system on a PC, the entry is added last, so what started
+    # before still starts (crates/yantrik-install-target/src/efi.rs has the same rules).
     NVRAM_FLAG=""
-    $EXTERNAL && NVRAM_FLAG="--no-nvram"
+    { $EXTERNAL || $APPLE || [ "$MODE" = partition ]; } && NVRAM_FLAG="--no-nvram"
     chroot "$M" grub-install --target=x86_64-efi --efi-directory=/boot/efi \
         --bootloader-id=yantrik $NVRAM_FLAG \
         || chroot "$M" grub-install --target=x86_64-efi --efi-directory=/boot/efi \
             --bootloader-id=yantrik --no-nvram \
         || true
-    chroot "$M" grub-install --target=x86_64-efi --efi-directory=/boot/efi --removable
-    [ -f "$M/boot/efi/EFI/BOOT/BOOTX64.EFI" ] \
-        || { echo -e "${R}No EFI/BOOT/BOOTX64.EFI on the EFI partition; this disk would not boot.${N}" >&2; exit 1; }
+    if [ "$MODE" = partition ] && ! $APPLE && ! $EXTERNAL && command -v efibootmgr >/dev/null 2>&1; then
+        # A failure here costs the entry, not the install: the firmware's menu still finds it.
+        ORDER=$(efibootmgr 2>/dev/null | sed -n 's/^BootOrder: //p') || ORDER=""
+        ESP_NUM=$(cat "/sys/class/block/$(basename "$EFI_PART")/partition" 2>/dev/null) || ESP_NUM=""
+        NEW=""
+        if [ -n "$ESP_NUM" ]; then
+            NEW=$(efibootmgr -C -d "$DISK" -p "$ESP_NUM" -L "Yantrik OS" -l '\EFI\yantrik\grubx64.efi' 2>/dev/null \
+                | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\)\*\{0,1\} Yantrik OS.*/\1/p' | tail -1) || NEW=""
+        fi
+        if [ -n "$NEW" ] && efibootmgr -o "${ORDER:+$ORDER,}$NEW" >/dev/null 2>&1; then
+            ok "Firmware entry Boot$NEW added, last in the boot order"
+        else
+            echo -e "   ${A}No firmware entry was added; choose Yantrik OS from the firmware's boot menu.${N}"
+        fi
+    fi
+    # \EFI\BOOT\BOOTX64.EFI: another system's is never replaced. Yantrik's own is known by the
+    # sha256 recorded beside it in YANTRIK.OWN.
+    EXISTING=$(find "$M/boot/efi" -maxdepth 3 -ipath '*/EFI/BOOT/BOOTX64.EFI' 2>/dev/null | head -1)
+    OURS=false
+    if [ -n "$EXISTING" ] && [ -f "$M/boot/efi/EFI/BOOT/YANTRIK.OWN" ] \
+        && [ "sha256=$(sha256sum "$EXISTING" | cut -d' ' -f1)" = "$(cat "$M/boot/efi/EFI/BOOT/YANTRIK.OWN")" ]; then
+        OURS=true
+    fi
+    if [ "$MODE" != partition ] || [ -z "$EXISTING" ] || $OURS; then
+        chroot "$M" grub-install --target=x86_64-efi --efi-directory=/boot/efi --removable
+        [ -f "$M/boot/efi/EFI/BOOT/BOOTX64.EFI" ] \
+            || { echo -e "${R}No EFI/BOOT/BOOTX64.EFI on the EFI partition; this disk would not boot.${N}" >&2; exit 1; }
+        echo "sha256=$(sha256sum "$M/boot/efi/EFI/BOOT/BOOTX64.EFI" | cut -d' ' -f1)" > "$M/boot/efi/EFI/BOOT/YANTRIK.OWN"
+        if $APPLE && [ "$MODE" = partition ]; then
+            BOOT_NOTE="macOS still starts by default. Hold Option at the chime and choose EFI Boot to start Yantrik OS."
+        fi
+    else
+        BOOT_NOTE="The EFI partition already has a \\EFI\\BOOT\\BOOTX64.EFI that is not Yantrik's, so it was left alone. Start Yantrik OS from rEFInd or the firmware's boot menu (\\EFI\\yantrik\\grubx64.efi)."
+    fi
+    # Beside macOS on a Mac, a boot menu entry that gets back to it.
+    if $APPLE && [ "$MODE" = partition ] && [ "${KEEPS_MACOS:-false}" = true ]; then
+        "$TARGET_BIN" grub-macos-entry > "$M/etc/grub.d/35_yantrik_macos" && chmod 0755 "$M/etc/grub.d/35_yantrik_macos"
+    fi
 else
     chroot "$M" grub-install --target=i386-pc "$DISK"
 fi
@@ -365,5 +464,9 @@ echo -e "${G}║  Installation complete!                       ║${N}"
 echo -e "${G}║  Remove the installation media and reboot.    ║${N}"
 echo -e "${G}╚═══════════════════════════════════════════════╝${N}"
 echo
+if [ -n "${BOOT_NOTE:-}" ]; then
+    echo -e "  ${A}${BOOT_NOTE}${N}"
+    echo
+fi
 echo -n "Reboot now? [Y/n] "; read -r RB
 [ "$RB" != "n" ] && reboot

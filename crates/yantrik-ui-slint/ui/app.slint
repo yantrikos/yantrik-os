@@ -22,8 +22,8 @@ import { CalendarDay } from "components/month_grid.slint";
 export { TodayState, TodayEvent, CalendarDay }
 import { BootScreen, BootStage } from "boot.slint";
 import { OnboardingScreen } from "onboarding.slint";
-import { InstallerScreen, InstallerDisk, KeyboardChoice } from "installer.slint";
-export { InstallerDisk, KeyboardChoice }
+import { InstallerScreen, InstallerDisk, InstallerSegment, InstallerTargetDisk, KeyboardChoice } from "installer.slint";
+export { InstallerDisk, InstallerSegment, InstallerTargetDisk, KeyboardChoice }
 export { DecisionPreset, DecisionUse, ThemeCardData } from "settings.slint";
 export { ProviderPresetData, ProviderPresetRow, ProviderPresetGroup } from "provider_presets.slint";
 import { ProviderPresetData, ProviderPresetGroup } from "provider_presets.slint";
@@ -1283,6 +1283,18 @@ export component App inherits Window {
     // one the person confirmed may be erased anyway. Never preselected (installer_rules.rs).
     in property <string> onboard-macos-disks: "";
     in-out property <string> onboard-erase-macos-disk: "";
+    // Installing beside what is on a disk (wire/installer_partition.rs): every GPT disk's
+    // partitions and free space, the ids that may be chosen (space-separated), each disk's table
+    // fingerprint (`sda=<fp> ...`, checked again before anything is written), and the choice.
+    in property <[InstallerTargetDisk]> onboard-target-disks: [];
+    in property <[InstallerSegment]> onboard-segments: [];
+    in property <bool> onboard-partitions-scanned: false;
+    in-out property <string> onboard-eligible-targets: "";
+    in property <string> onboard-table-fingerprints: "";
+    in-out property <bool> onboard-into-partition: false;
+    in-out property <string> onboard-install-target: "";
+    in property <bool> onboard-boot-first-offered: false;
+    in-out property <bool> onboard-boot-first: false;
     // A Wi-Fi chip still waiting for its driver (wifi_note.rs); "" when there is nothing to say.
     in property <string> onboard-hw-note: "";
     in property <[KeyboardChoice]> onboard-keyboards: [];
@@ -1301,6 +1313,7 @@ export component App inherits Window {
     pure callback installer-check-password(string, string) -> string;
     pure callback installer-check-timezone(string) -> string;
     pure callback installer-is-macos-disk(string, string) -> bool;
+    pure callback installer-target-listed(string, string) -> bool;
 
     // The onboarding form, mirrored up to the window so the control surface can read and fill
     // it. `OnboardingScreen` lives inside a conditional element, so Rust cannot reach into it;
@@ -1569,6 +1582,13 @@ export component App inherits Window {
             selected-disk <=> root.onboard-selected-disk;
             macos-disks: root.onboard-macos-disks;
             erase-macos-disk <=> root.onboard-erase-macos-disk;
+            target-disks: root.onboard-target-disks;
+            segments: root.onboard-segments;
+            eligible-targets: root.onboard-eligible-targets;
+            into-partition <=> root.onboard-into-partition;
+            install-target <=> root.onboard-install-target;
+            boot-first-offered: root.onboard-boot-first-offered;
+            boot-first <=> root.onboard-boot-first;
             hw-note: root.onboard-hw-note;
             encrypt <=> root.onboard-encrypt;
             timezone <=> root.onboard-timezone;
@@ -1589,6 +1609,7 @@ export component App inherits Window {
             check-password(password, confirm) => { return root.installer-check-password(password, confirm); }
             check-timezone(timezone) => { return root.installer-check-timezone(timezone); }
             is-macos-disk(disk, list) => { return root.installer-is-macos-disk(disk, list); }
+            target-listed(target, list) => { return root.installer-target-listed(target, list); }
         }
 
         // Lock screen

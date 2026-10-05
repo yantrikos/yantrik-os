@@ -10,9 +10,11 @@ use crate::app_context::AppContext;
 use crate::control_installer::step;
 use crate::installer_rules;
 use crate::wire::provider_catalogue::{auth_type_for, default_model_for, provider_preset};
+use crate::wire::installer_boot;
 use crate::wire::installer_disk;
 use crate::wire::installer_locale;
 use crate::wire::installer_ownership;
+use crate::wire::installer_partition;
 use crate::wire::settings::{ProviderStore, ProviderStoreEntry};
 use crate::{App, InstallerDisk, KeyboardChoice};
 
@@ -53,6 +55,18 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
         let erase_macos_disk = ui_weak
             .upgrade()
             .map(|ui| ui.get_onboard_erase_macos_disk().to_string())
+            .unwrap_or_default();
+        // And, installing into a partition, which one, the table it was chosen from, and
+        // whether the firmware should start Yantrik first (wire/installer_partition.rs).
+        let (install_into, table_fingerprint, boot_first) = ui_weak
+            .upgrade()
+            .filter(|ui| ui.get_onboard_into_partition())
+            .map(|ui| {
+                let target = ui.get_onboard_install_target().to_string();
+                let disk = yantrik_install_target::parse_target_id(&target).map(|(d, _)| d).unwrap_or_default();
+                let fp = installer_partition::fingerprint_for(&ui.get_onboard_table_fingerprints(), &disk);
+                (target, fp, ui.get_onboard_boot_first())
+            })
             .unwrap_or_default();
 
         std::thread::spawn(move || {
@@ -104,6 +118,9 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
                 timezone,
                 target_disk: target_disk.clone(),
                 erase_macos_disk,
+                install_into,
+                table_fingerprint,
+                boot_first,
                 encrypt,
                 partition_scheme: "auto".into(),
                 ai_provider,
@@ -194,6 +211,7 @@ fn wire_rules(ui: &App) {
         problem(installer_rules::timezone_problem(&tz, std::path::Path::new("/usr/share/zoneinfo")))
     });
     ui.on_installer_is_macos_disk(|disk, list| installer_rules::disk_in_list(&disk, &list));
+    ui.on_installer_target_listed(|target, list| installer_rules::disk_in_list(&target, &list));
 }
 
 /// What the installer finds before anyone asks: the disks, the keyboard in use, and where the
@@ -243,6 +261,16 @@ fn prepare(ui: &App) {
         });
     });
 
+    // Partitions and free space on every disk with a GPT, for installing beside what is there.
+    let weak = ui.as_weak();
+    std::thread::spawn(move || {
+        let scan = installer_partition::scan();
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            installer_partition::show(&ui, &scan);
+        });
+    });
+
     // Timezone.
     let weak = ui.as_weak();
     std::thread::spawn(move || {
@@ -273,6 +301,15 @@ pub struct InstallerState {
     pub target_disk: String,      // e.g. "sda"
     /// The disk the person confirmed may be erased although it holds macOS. Empty: none.
     pub erase_macos_disk: String,
+    /// Install into this partition (`sda3`) or free space (`sda@START-END`) and change nothing
+    /// else on the disk (wire/installer_partition.rs). Empty: erase `target_disk`.
+    pub install_into: String,
+    /// The fingerprint of the table `install_into` was chosen from; the install is refused
+    /// when the disk no longer matches it.
+    pub table_fingerprint: String,
+    /// Installed into a partition on a UEFI machine that is not a Mac: put Yantrik first in the
+    /// firmware's boot order. Off unless asked for.
+    pub boot_first: bool,
     /// LUKS2 on the root with the password as its passphrase (#400 step b).
     pub encrypt: bool,
     pub partition_scheme: String,  // "auto" or "manual"
@@ -297,7 +334,26 @@ type ProgressFn = Box<dyn Fn(i32, &str) + Send>;
 pub fn run_install(state: &InstallerState, progress: ProgressFn) -> Result<Option<String>, String> {
     progress(1, "Detecting target disk...");
 
-    tracing::info!(target_disk = %state.target_disk, "Installer: starting, target_disk from UI");
+    tracing::info!(
+        target_disk = %state.target_disk, install_into = %state.install_into,
+        "Installer: starting, target from UI"
+    );
+
+    // Into one partition or free space: nothing else on the disk is touched, so there is no
+    // disk to erase and nothing about macOS to confirm. The planner refuses every partition it
+    // must keep, and a table that changed since the person saw it.
+    if !state.install_into.is_empty() {
+        let (disk_name, _) = yantrik_install_target::parse_target_id(&state.install_into)?;
+        let disk = format!("/dev/{disk_name}");
+        let layout = installer_partition::prepare(
+            &state.install_into,
+            &state.table_fingerprint,
+            state.encrypt,
+            &state.password,
+            &*progress,
+        )?;
+        return install_onto(state, &disk, layout, true, progress);
+    }
 
     let disk_name = if state.target_disk.is_empty() {
         tracing::info!("Installer: no disk selected, auto-detecting...");
@@ -333,6 +389,17 @@ pub fn run_install(state: &InstallerState, progress: ProgressFn) -> Result<Optio
 
     // ── Steps 1-3: partition, encrypt if asked, format, mount (installer_disk.rs) ──
     let layout = installer_disk::prepare(&disk, is_efi, state.encrypt, &state.password, &*progress)?;
+    install_onto(state, &disk, layout, is_efi, progress)
+}
+
+/// Mount the prepared layout, install onto it, and unmount whatever happened.
+fn install_onto(
+    state: &InstallerState,
+    disk: &str,
+    layout: installer_disk::Layout,
+    is_efi: bool,
+    progress: ProgressFn,
+) -> Result<Option<String>, String> {
     let mount_dir = "/mnt/yantrik-install";
     progress(16, "Mounting target filesystem...");
     if let Err(e) = installer_disk::mount(&layout, mount_dir) {
@@ -478,76 +545,18 @@ fn install_to_target(
 
     // ── Step 12: Install GRUB ───────────────────────────────────
     progress(75, "Installing bootloader...");
-    if is_efi {
-        // Two installs, and both are needed.
-        //
-        // The first writes \EFI\yantrik and asks the firmware to remember it. The second writes
-        // \EFI\BOOT\BOOTX64.EFI, the removable-media path every UEFI implementation tries when
-        // it has no entry of its own.
-        //
-        // Only the first used to run, and with `--no-nvram` on it, so it left a disk with a
-        // bootloader in a directory nothing had been told to look in. The machine installed
-        // cleanly, reported 100%, rebooted, and came straight back up on the installation
-        // media — the firmware had no entry for the disk and no fallback file to find.
-        //
-        // A USB disk gets no entry: it may move between ports and machines, and on a Mac kept
-        // on macOS an entry would put it ahead of the internal disk for as long as it stays in
-        // NVRAM. It boots through the removable path wherever it is plugged in; on a Mac, hold
-        // Option at the chime and pick "EFI Boot".
-        let external = disk_is_external(disk);
-        tracing::info!(external, "Installer: installing GRUB for EFI");
-        let mut named_args = vec![
-            "grub-install",
-            "--target=x86_64-efi",
-            "--efi-directory=/boot/efi",
-            "--bootloader-id=yantrik",
-        ];
-        if external {
-            named_args.push("--no-nvram");
-        }
-        let named = chroot_cmd(mount_dir, &named_args);
-        if let Err(e) = named {
-            // Firmware that will not take a new entry is normal enough — a locked-down board,
-            // or efivars mounted read-only. It costs us the named entry, not the install,
-            // because the removable path below does not need NVRAM at all.
-            tracing::warn!(error = %e, "could not register a UEFI boot entry; the removable path will carry the boot");
-            chroot_cmd(
-                mount_dir,
-                &[
-                    "grub-install",
-                    "--target=x86_64-efi",
-                    "--efi-directory=/boot/efi",
-                    "--bootloader-id=yantrik",
-                    "--no-nvram",
-                ],
-            )?;
-        }
-
-        // This one is not optional and its failure is the install's failure.
-        chroot_cmd(
-            mount_dir,
-            &["grub-install", "--target=x86_64-efi", "--efi-directory=/boot/efi", "--removable"],
-        )?;
-
-        // Check the file, not the exit code. grub-install has been known to report success
-        // having written nothing useful, and "the installer said it worked" is exactly the
-        // claim that cost us a boot.
-        let fallback = format!("{mount_dir}/boot/efi/EFI/BOOT/BOOTX64.EFI");
-        if !std::path::Path::new(&fallback).exists() {
-            return Err(
-                "grub-install reported success but left no EFI/BOOT/BOOTX64.EFI on the \
-                 EFI partition; the disk would not boot"
-                    .to_string(),
-            );
-        }
-        tracing::info!("Installer: EFI fallback bootloader present");
+    // Both the shared-EFI-partition rules and the two grub-install runs are installer_boot.rs.
+    // A USB disk gets no NVRAM entry (it moves between ports and machines), and a Mac never does.
+    let boot_note = if is_efi {
+        installer_boot::install_efi(mount_dir, disk, layout, disk_is_external(disk), state.boot_first)?
     } else {
         tracing::info!("Installer: installing GRUB for BIOS on {disk}");
         chroot_cmd(
             mount_dir,
             &["grub-install", "--target=i386-pc", disk],
         )?;
-    }
+        None
+    };
 
     // Brand the installed system as Yantrik OS (so GRUB says "Yantrik OS" not "Debian")
     //
@@ -575,6 +584,8 @@ fn install_to_target(
     // and falls back to root=/dev/sdX before that. Freshly formatted partitions may not have one
     // yet, so wait for udev, then check what it wrote.
     let _ = run_cmd("udevadm", &["settle"]);
+    // Beside macOS on a Mac, an entry that gets back to it.
+    installer_boot::write_macos_entry(mount_dir, layout);
     chroot_cmd(mount_dir, &["update-grub"])?;
     let grub_cfg = run_cmd("cat", &[&format!("{mount_dir}/boot/grub/grub.cfg")])?;
     if let Some(line) = installer_rules::root_by_device(&grub_cfg) {
@@ -616,7 +627,9 @@ fn install_to_target(
     }
 
     progress(100, "Installation complete!");
-    Ok(ownership_note)
+    // How it starts, beside macOS or another system's boot loader, is something to read too.
+    let notes: Vec<String> = ownership_note.into_iter().chain(boot_note).collect();
+    Ok((!notes.is_empty()).then(|| notes.join(" ")))
 }
 
 /// Create user account inside the chroot.
@@ -1105,6 +1118,9 @@ fn copy_system(mount_dir: &str, progress: &ProgressFn) -> Result<(), String> {
             "--exclude=/mnt/*",
             "--exclude=/live/*",
             "--exclude=/cdrom/*",
+            // The EFI partition is mounted there, and installed into a partition it is shared
+            // with macOS or Windows: only grub-install writes to it (installer_boot.rs).
+            "--exclude=/boot/efi/*",
             "/",
             &target,
         ])

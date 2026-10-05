@@ -15,15 +15,28 @@ pub fn is_apple(sys_vendor: &str) -> bool {
 /// wrote once and something else has since replaced.
 pub const OWNER_FILE: &str = "EFI/BOOT/YANTRIK.OWN";
 
-/// What [`OWNER_FILE`] says for a BOOTX64.EFI of these bytes.
+/// What [`OWNER_FILE`] says for a BOOTX64.EFI of these bytes: `sha256=<hex>`, the line the text
+/// installer writes with sha256sum.
 pub fn owner_record(bootx64: &[u8]) -> String {
-    format!("fnv1a64={:016x}\n", crate::table::fnv1a64(bootx64))
+    use sha2::{Digest, Sha256};
+    let hex: String = Sha256::digest(bootx64).iter().map(|b| format!("{b:02x}")).collect();
+    owner_line(&hex)
+}
+
+/// [`OWNER_FILE`]'s line for a BOOTX64.EFI whose sha256 is `hex` (as sha256sum prints it).
+pub fn owner_line(hex: &str) -> String {
+    format!("sha256={}\n", hex.trim().to_ascii_lowercase())
 }
 
 /// Whether the BOOTX64.EFI with these bytes is the one Yantrik wrote, by `owner` (the contents
 /// of [`OWNER_FILE`], empty when there is none).
 pub fn is_ours(bootx64: &[u8], owner: &str) -> bool {
     !owner.trim().is_empty() && owner.trim() == owner_record(bootx64).trim()
+}
+
+/// [`is_ours`], from the file's sha256 as sha256sum prints it rather than its bytes.
+pub fn is_ours_by_digest(hex: &str, owner: &str) -> bool {
+    !hex.trim().is_empty() && !owner.trim().is_empty() && owner.trim() == owner_line(hex).trim()
 }
 
 /// What to do about `\EFI\BOOT\BOOTX64.EFI`.
@@ -149,9 +162,15 @@ mod tests {
     fn ownership_is_the_digest_of_what_was_written() {
         let ours = b"grub image";
         let record = owner_record(ours);
+        // `printf 'grub image' | sha256sum`
+        assert_eq!(record, "sha256=977898ce6cb0ef1775b824aa7aed1e3d028e9cf44d4d5a8bf93efbf21736472e\n");
         assert!(is_ours(ours, &record));
         assert!(!is_ours(b"rEFInd", &record), "replaced since: not ours any more");
         assert!(!is_ours(ours, ""), "no record: not ours");
+        let hex = "977898CE6CB0EF1775B824AA7AED1E3D028E9CF44D4D5A8BF93EFBF21736472E";
+        assert!(is_ours_by_digest(hex, &record));
+        assert!(!is_ours_by_digest("", &record));
+        assert!(!is_ours_by_digest(hex, ""));
     }
 
     #[test]
