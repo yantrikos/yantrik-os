@@ -1,0 +1,38 @@
+{
+ "cond": "mdg_seq",
+ "seed": 0,
+ "acc": 0.2961387707447252,
+ "per_type": {
+  "where_now": 0.28,
+  "where_at": 0.2715,
+  "holder_now": 0.231,
+  "when_moved": 0.05218263923733066,
+  "root_cause": 0.26676676676676675,
+  "dev_now": 0.6745
+ },
+ "n_test": 11991,
+ "mean_positions": 112.65607538987574,
+ "kv_floats_per_example": 43259.93294971228,
+ "fwd_flops_per_example": 42970617.04086655,
+ "train_flops_approx": 33001433887385.504,
+ "params": 311099,
+ "steps": 8000,
+ "bs": 32,
+ "train_time_s": 1404.3809270858765,
+ "positions_seen": 28855577,
+ "vocab_used": 669,
+ "args": {
+  "cond": "mdg_seq",
+  "seed": 0,
+  "steps": 8000,
+  "bs": 32,
+  "d": 64,
+  "layers": 3,
+  "heads": 4,
+  "lr": 0.001,
+  "n_test": 2000,
+  "out": "results",
+  "threads": 1,
+  "device": "cpu"
+ }
+}
