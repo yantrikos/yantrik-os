@@ -1412,6 +1412,10 @@ pub fn pending() -> Vec<Card> {
 }
 
 #[cfg(test)]
+#[path = "approval_acceptance_tests.rs"]
+mod approval_acceptance_tests;
+
+#[cfg(test)]
 mod approvals_tests {
     use super::*;
 

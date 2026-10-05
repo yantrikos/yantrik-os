@@ -111,6 +111,21 @@ fn answer(
             y += 3.0;
         }
         assert_eq!(sessioned(), before, "{place}: the session row grants nothing before the card is read");
+        // Decline stays where it was, and answers, at every point of the scroll: one turn in, and
+        // at the end. A person who has read half and wants out is never sent looking for it.
+        for turns in [1, 12] {
+            for _ in 0..turns {
+                w.dispatch_event(WindowEvent::PointerScrolled {
+                    position: slint::LogicalPosition::new(read_x, read_y),
+                    delta_x: 0.0,
+                    delta_y: -240.0,
+                });
+            }
+            settle(w, width, height);
+            let before = denied();
+            click(w, deny_x, deny_y);
+            assert!(denied() > before, "{place}: Decline answers at {deny_y} after {turns} turn(s) of the wheel");
+        }
         // Disabled until the end has been in view: the click granted nothing. Read on, and it does.
         read_to_end(w, read_x, read_y, width, height);
         let before = allowed();
