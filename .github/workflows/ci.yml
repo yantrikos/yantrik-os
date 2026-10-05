@@ -189,7 +189,10 @@ jobs:
           root="$(mktemp -d)"
           sh deploy/yantrik-os/stage-mac-support.sh "$root"
           test -x "$root/usr/lib/yantrik/yantrik-broadcom-wifi"
-          test -L "$root/etc/systemd/system/multi-user.target.wants/yantrik-broadcom-wifi.service"
+          link="$root/etc/systemd/system/multi-user.target.wants/yantrik-broadcom-wifi.service"
+          test -L "$link"
+          # The link is absolute: its target must exist inside the rootfs, not on this runner.
+          test -f "$root$(readlink "$link")"
           test -f "$root/etc/systemd/system/mbpfan.service.d/yantrik-apple.conf"
 
       # The session's shell supervisor (#247): a crash brings the shell back, a crash loop stops,
