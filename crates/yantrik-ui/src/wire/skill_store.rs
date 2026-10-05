@@ -26,10 +26,16 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         // Open the skills.db to persist the change
         let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
         let db_path = format!("{}/.config/yantrik/skills.db", home);
-        if let Ok(conn) = rusqlite::Connection::open(&db_path) {
-            let mut reg = reg2.borrow_mut();
-            let (new_state, auto_deps) = reg.toggle(&conn, &id);
-            tracing::info!(skill = %id, enabled = new_state, auto_deps = ?auto_deps, "Skill toggled");
+        // The switch is redrawn from the registry, which moves only once the database has taken
+        // the write (toggle_truth): a refusal leaves it where it was, and is said.
+        let toggled = rusqlite::Connection::open(&db_path)
+            .map_err(|e| format!("the skills database could not be opened: {e}"))
+            .and_then(|conn| reg2.borrow_mut().toggle(&conn, &id));
+        match toggled {
+            Ok((new_state, auto_deps)) => {
+                tracing::info!(skill = %id, enabled = new_state, auto_deps = ?auto_deps, "Skill toggled")
+            }
+            Err(why) => crate::toggle_truth::say_refused("The skill", &why),
         }
 
         // Refresh UI

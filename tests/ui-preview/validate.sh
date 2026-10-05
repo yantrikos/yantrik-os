@@ -56,6 +56,8 @@ run target/ui-validation/approval-pointer-only.png 1280 800 verify-approval-poin
 run target/ui-validation/approval-fit-800x600.png 800 600 verify-approval-fit
 run target/ui-validation/approval-fit-1280x720.png 1280 720 verify-approval-fit
 run target/ui-validation/approval-fit.png 1280 800 verify-approval-fit
+run target/ui-validation/approval-expired.png 1280 800 verify-approval-expired
+run target/ui-validation/approval-precedence.png 1280 800 verify-approval-precedence
 for scene in notes files settings desktop agent; do
     run "target/ui-validation/$scene.png" 1280 800 "$scene"
     run "target/ui-validation/$scene-compact.png" 800 600 "$scene"

@@ -561,14 +561,27 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let s = settings.clone();
     ui.on_toggle_dark_mode(move || {
         let Some(ui) = ui_weak.upgrade() else { return };
-        let new_val = !ui.get_settings_dark_mode();
-        ui.set_settings_dark_mode(new_val);
-        ui.global::<ThemeMode>().set_dark(new_val);
-        crate::wire::theme::dark_mode_changed(&ui);
-        if let Ok(mut st) = s.lock() {
-            st.dark_mode = new_val;
+        // Saved first, drawn after (toggle_truth): a style that did not save would come back
+        // the other way at the next start, so the tile does not claim it.
+        let was = ui.get_settings_dark_mode();
+        let out = crate::toggle_truth::write_then_show(was, !was, |dark| {
+            if let Ok(mut st) = s.lock() {
+                st.dark_mode = dark;
+            }
+            persist(&s).inspect_err(|_| {
+                if let Ok(mut st) = s.lock() {
+                    st.dark_mode = was;
+                }
+            })
+        });
+        ui.set_settings_dark_mode(out.shown);
+        if out.shown != was {
+            ui.global::<ThemeMode>().set_dark(out.shown);
+            crate::wire::theme::dark_mode_changed(&ui);
         }
-        persist(&s);
+        if let Some(why) = &out.refused {
+            crate::toggle_truth::say_refused("Dark style", why);
+        }
     });
 
     // Cycle accent color through the offered ones: soft blue → violet → pink → soft blue
@@ -622,14 +635,23 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let ui_weak = ui.as_weak();
     ui.on_toggle_dnd_mode(move || {
         let Some(ui) = ui_weak.upgrade() else { return };
-        let new_val = !ui.get_dnd_mode();
-        ui.set_dnd_mode(new_val);
         // Through `set_dnd_mode`, which is also what the control surface writes with, so there
-        // is one answer to what a persisted do-not-disturb is. A failure is dropped here on
-        // purpose: this row has the save-status line under it, like every other row on the
-        // screen, and a click has nowhere else to put an error.
-        let _ = set_dnd_mode(new_val);
-        tracing::info!(dnd = new_val, "Do Not Disturb toggled");
+        // is one answer to what a persisted do-not-disturb is. Written first and shown after
+        // (toggle_truth): the tile is pressed from Quick Settings, Today and the bar, where the
+        // Settings save line is not, so a refusal leaves the tile as it was and is said aloud.
+        let was = ui.get_dnd_mode();
+        let out = crate::toggle_truth::write_then_show(was, !was, |on| {
+            set_dnd_mode(on).inspect_err(|_| {
+                if let Some(Ok(mut settings)) = LIVE.get().map(|shared| shared.lock()) {
+                    settings.dnd_mode = was;
+                }
+            })
+        });
+        ui.set_dnd_mode(out.shown);
+        if let Some(why) = &out.refused {
+            crate::toggle_truth::say_refused("Do Not Disturb", why);
+        }
+        tracing::info!(dnd = out.shown, "Do Not Disturb toggled");
     });
 
     // Cycle auto-lock timeout: 30s → 1m → 2m → 5m → 10m → never → 30s
