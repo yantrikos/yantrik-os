@@ -2,8 +2,9 @@
 //! review's precedence check, at the level this runner can reach). The whole shell, 1280×800, the
 //! card in its top-right corner, and then each of the shell's own overlays opened over it in turn —
 //! Quick Settings, Today, the power menu, the clipboard, the cheat sheet, the battery and network
-//! popovers, the window switcher and the Lens. With each one open the card is drawn pixel for
-//! pixel as it was with none, and its Decline answers a click at the same place.
+//! popovers, the window switcher, the Lens, the mode menu and the Minds panel. With each one open
+//! the card is drawn pixel for pixel as it was with none, and its Decline answers a click at the
+//! same place. The window switcher used to be drawn over the card and took that click.
 //!
 //! What this cannot reach is the compositor: another app's maximised, fullscreen or always-on-top
 //! window over the shell's own window. The shell's half of that — it brings itself back in front
@@ -32,21 +33,23 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     // left half of its button row.
     let (card_left, card_right, card_top) = (860u32, 1264u32, 48u32);
     let deny_x = card_left as f32 + 100.0;
+    // Compared well inside the card's border: its rounded corners and the gap above it show
+    // whatever is behind, which an overlay there rightly changes.
     let deny_y = scan(w, deny_x, card_top as f32, height as f32 - 48.0, || denied.get() > 0)
         .expect("Decline answers on the corner card with nothing open");
     let card_bottom = deny_y as u32 + 12;
     let alone = settle(w, width, height);
     save(&alone, output, width, height)?;
     let card_px = |p: &slint::SharedPixelBuffer<slint::Rgb8Pixel>| -> Vec<slint::Rgb8Pixel> {
-        (card_top..card_bottom)
-            .flat_map(|y| (card_left..card_right).map(move |x| (y * width + x) as usize))
+        (card_top + 12..card_bottom)
+            .flat_map(|y| (card_left + 12..card_right - 12).map(move |x| (y * width + x) as usize))
             .map(|i| p.as_slice()[i])
             .collect()
     };
     let card_alone = card_px(&alone);
 
     type Open = fn(&App, bool);
-    let overlays: [(&str, Open, fn(&App) -> bool); 9] = [
+    let overlays: [(&str, Open, fn(&App) -> bool); 11] = [
         ("Quick Settings", |u, o| u.set_quick_settings_open(o), |u| u.get_quick_settings_open()),
         ("Today", |u, o| u.set_today_open(o), |u| u.get_today_open()),
         ("the power menu", |u, o| u.set_power_menu_open(o), |u| u.get_power_menu_open()),
@@ -56,6 +59,8 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         ("the network popover", |u, o| u.set_network_open(o), |u| u.get_network_open()),
         ("the window switcher", |u, o| u.set_alt_tab_open(o), |u| u.get_alt_tab_open()),
         ("the Lens", |u, o| u.set_lens_open(o), |u| u.get_lens_open()),
+        ("the mode menu", |u, o| u.set_mind_menu_open(o), |u| u.get_mind_menu_open()),
+        ("the Minds panel", |u, o| u.set_minds_panel_open(o), |u| u.get_minds_panel_open()),
     ];
     let mut failures = Vec::new();
     for (name, open, is_open) in overlays {
@@ -77,7 +82,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         }
         open(&ui, false);
         settle(w, width, height);
-        println!("{name}: the card is drawn whole on top ({differ} pixels differ) and Decline answers");
+        println!("{name}: {differ} pixels of the card differ; Decline answered: {}", denied.get() > before);
     }
     assert!(failures.is_empty(), "the waiting card is not on top of everything the shell draws:\n{}", failures.join("\n"));
     println!("PASS approval precedence: with each of {} shell overlays open, the card is drawn whole on top and Decline answers", overlays.len());

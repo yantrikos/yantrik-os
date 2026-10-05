@@ -3424,80 +3424,8 @@ export component App inherits Window {
             toast-action(id, action) => { root.toast-action(id, action); }
         }
 
-        // Approval cards, over whatever screen is up.
-        //
-        // The Lens shows these in its conversation, which is the right home for them — but the
-        // Lens lives on the desktop screen and is closed most of the time, and a request that
-        // nobody is shown expires unanswered after two minutes. From the person's side that is
-        // indistinguishable from the machine ignoring them, which is the bug this whole feature
-        // exists to fix. So the same cards are drawn here, above every screen, and the Lens's
-        // copy is suppressed when this one is up so the same question is never asked twice.
-        //
-        // Not on the lock, login, boot or onboarding screens. A card that can be allowed from a
-        // locked screen is a way to act on a machine without unlocking it; the request stays
-        // pending underneath and expires if nobody comes back, which is the honest outcome.
-        //
-        // An open Lens stands in only for a card its own mind raised (`approval-in-lens`); it
-        // hosts no other (control_approvals::in_the_lens), so every other card stays here, over it.
-        if root.approval-corner-shown : Rectangle {
-            width: 100%;
-            height: 100%;
-            background: transparent;
-
-            // The top edge is the anchor and the card grows downward from it.
-            //
-            // It did not, the first time. `ApprovalCard` reported a preferred height of zero
-            // (see the note at the top of that component), so this box was sized to nothing and
-            // the card spilled out of it — upward, off the top of the screen, taking the header
-            // and the action name with it. The person was left looking at three arguments and
-            // two buttons with no way to tell what they were allowing.
-            //
-            // With that fixed this box gets the card's true height, the card is a known number of
-            // lines (every text on it is bounded in approvals.rs), and only ONE card is ever here
-            // — three of them would be 780px on an 800px screen and the third one's buttons would
-            // sit under the taskbar. `min-height` is deliberately not set beside `height`: Slint
-            // refuses both on one element, and `height` is the one that has to be the layout's.
-            Rectangle {
-                x: root.approval-corner-x;
-                y: Theme.status-bar-height + Theme.sp-4;
-                width: 404px;
-                height: approval-stack.preferred-height;
-                background: transparent;
-                // Told to the root, so the vault prompt below is placed under the card as tall as
-                // it really is (third review of #639: it assumed 300px and drew over taller cards).
-                init => { root.approval-corner-height = self.height; }
-                changed height => { root.approval-corner-height = self.height; }
-
-                approval-stack := VerticalLayout {
-                    spacing: Theme.sp-1;
-                    alignment: start;
-
-                    for item in root.pending-approvals : ApprovalCard {
-                        data: item;
-                        // The room this corner actually has: from the card's top edge (one sp-4
-                        // under the status bar) down to one sp-4 above the taskbar. A card that
-                        // grew past it would run its buttons under the taskbar, which is the
-                        // same failure the Lens had in #218 — the details scroll instead.
-                        height-limit: root.height - Theme.status-bar-height - Theme.taskbar-height
-                            - 2 * Theme.sp-4;
-                        allow => { root.approval-allow(item.id); }
-                        allow-session => { root.approval-allow-session(item.id); }
-                        deny => { root.approval-deny(item.id); }
-                    }
-
-                    if root.approvals-waiting > 0 : Text {
-                        text: root.approvals-waiting + " more waiting — this one first";
-                        color: Theme.text-dim;
-                        font-size: Theme.fs-micro;
-                        horizontal-alignment: center;
-                        wrap: no-wrap;
-                        overflow: elide;
-                    }
-                }
-            }
-        }
-
-        // The vault unlock prompt, in the same corner and under the same rules as the card above.
+        // The vault unlock prompt, in the same corner and under the same rules as the approval card
+        // (the last overlay below).
         //
         // Excluded from lock (3), login (32), boot (0) and onboarding (2) for a reason that is
         // sharper here than it is for an approval: a passphrase box that can be typed into from a
@@ -3641,8 +3569,8 @@ export component App inherits Window {
             }
         }
 
-        // The taskbar entry's own menu (#232). Last in the file so it draws over everything,
-        // the way the desktop's instance is last in its file — a menu that opened under the bar
+        // The taskbar entry's own menu (#232). Near the end so it draws over everything but a
+        // waiting approval card, the way the desktop's instance is last in its file — a menu that opened under the bar
         // it was summoned from would be worse than no menu. Clamped inside the screen like that
         // one, and the clamp is doing real work here: the taskbar sits at the bottom edge, so
         // `height - 200px` is what puts the panel ABOVE the bar instead of off the display.
@@ -3670,6 +3598,82 @@ export component App inherits Window {
             hover(i) => { root.alt-tab-hover(i); }
             activate(i) => { root.alt-tab-activate(i); }
             cancel => { root.alt-tab-cancel(); }
+        }
+
+        // Approval cards, over whatever screen is up — and last among the overlays, so that
+        // nothing else the shell draws comes over a waiting card: not the window switcher, the
+        // mode menu, the Minds panel or a taskbar menu (verify-approval-precedence). The switcher
+        // used to be drawn over it and took the click meant for Decline.
+        //
+        // The Lens shows these in its conversation, which is the right home for them — but the
+        // Lens lives on the desktop screen and is closed most of the time, and a request that
+        // nobody is shown expires unanswered after two minutes. From the person's side that is
+        // indistinguishable from the machine ignoring them, which is the bug this whole feature
+        // exists to fix. So the same cards are drawn here, above every screen, and the Lens's
+        // copy is suppressed when this one is up so the same question is never asked twice.
+        //
+        // Not on the lock, login, boot or onboarding screens. A card that can be allowed from a
+        // locked screen is a way to act on a machine without unlocking it; the request stays
+        // pending underneath and expires if nobody comes back, which is the honest outcome.
+        //
+        // An open Lens stands in only for a card its own mind raised (`approval-in-lens`); it
+        // hosts no other (control_approvals::in_the_lens), so every other card stays here, over it.
+        if root.approval-corner-shown : Rectangle {
+            width: 100%;
+            height: 100%;
+            background: transparent;
+
+            // The top edge is the anchor and the card grows downward from it.
+            //
+            // It did not, the first time. `ApprovalCard` reported a preferred height of zero
+            // (see the note at the top of that component), so this box was sized to nothing and
+            // the card spilled out of it — upward, off the top of the screen, taking the header
+            // and the action name with it. The person was left looking at three arguments and
+            // two buttons with no way to tell what they were allowing.
+            //
+            // With that fixed this box gets the card's true height, the card is a known number of
+            // lines (every text on it is bounded in approvals.rs), and only ONE card is ever here
+            // — three of them would be 780px on an 800px screen and the third one's buttons would
+            // sit under the taskbar. `min-height` is deliberately not set beside `height`: Slint
+            // refuses both on one element, and `height` is the one that has to be the layout's.
+            Rectangle {
+                x: root.approval-corner-x;
+                y: Theme.status-bar-height + Theme.sp-4;
+                width: 404px;
+                height: approval-stack.preferred-height;
+                background: transparent;
+                // Told to the root, so the vault prompt below is placed under the card as tall as
+                // it really is (third review of #639: it assumed 300px and drew over taller cards).
+                init => { root.approval-corner-height = self.height; }
+                changed height => { root.approval-corner-height = self.height; }
+
+                approval-stack := VerticalLayout {
+                    spacing: Theme.sp-1;
+                    alignment: start;
+
+                    for item in root.pending-approvals : ApprovalCard {
+                        data: item;
+                        // The room this corner actually has: from the card's top edge (one sp-4
+                        // under the status bar) down to one sp-4 above the taskbar. A card that
+                        // grew past it would run its buttons under the taskbar, which is the
+                        // same failure the Lens had in #218 — the details scroll instead.
+                        height-limit: root.height - Theme.status-bar-height - Theme.taskbar-height
+                            - 2 * Theme.sp-4;
+                        allow => { root.approval-allow(item.id); }
+                        allow-session => { root.approval-allow-session(item.id); }
+                        deny => { root.approval-deny(item.id); }
+                    }
+
+                    if root.approvals-waiting > 0 : Text {
+                        text: root.approvals-waiting + " more waiting — this one first";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-micro;
+                        horizontal-alignment: center;
+                        wrap: no-wrap;
+                        overflow: elide;
+                    }
+                }
+            }
         }
 
             // Debug: navigate to screen from Rust
