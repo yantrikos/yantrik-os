@@ -8,6 +8,10 @@
 // draws and reports presses, it does not decide. Save is offered only after a Test that found at
 // least one result, and the egress button only when Rust says the proxy is enforcing with no rule
 // for this address. Nothing here writes a rule or a setting by itself.
+//
+// Its three buttons are `pointer-only`: Save and Allow are consents, and Test reaches out to an
+// address, so none of them may be pressed through the accessibility default action by another
+// process in the session (yantrik-ui-kit's y_button.slint).
 
 import { Theme } from "theme.slint";
 import { YButton } from "y_button.slint";
@@ -78,7 +82,7 @@ export component WebSearchCard inherits Rectangle {
         }
 
         if WebSearchState.service == "builtin" : Line {
-            text: "Searches DuckDuckGo directly, with no account. It can be rate-limited during heavy research, and a search then comes back empty.";
+            text: "Searches DuckDuckGo's plain HTML page directly, with no account, no browser and no other search engine. It can be rate-limited during heavy research, and a search then comes back empty.";
         }
 
         if WebSearchState.service == "searxng" : VerticalLayout {
@@ -104,6 +108,7 @@ export component WebSearchCard inherits Rectangle {
                         variant: 1;
                         loading: WebSearchState.testing;
                         disabled: WebSearchState.testing || WebSearchState.url == "";
+                        pointer-only: true;
                         clicked => { WebSearchState.test(); }
                     }
                 }
@@ -124,6 +129,7 @@ export component WebSearchCard inherits Rectangle {
             YButton {
                 label: "Save";
                 disabled: !WebSearchState.can-save;
+                pointer-only: true;
                 clicked => { WebSearchState.save(); }
             }
             VerticalLayout {
@@ -142,6 +148,7 @@ export component WebSearchCard inherits Rectangle {
                 variant: 1;
                 loading: WebSearchState.egress-busy;
                 disabled: WebSearchState.egress-busy;
+                pointer-only: true;
                 clicked => { WebSearchState.allow-egress(); }
             }
         }

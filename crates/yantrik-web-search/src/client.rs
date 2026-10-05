@@ -51,6 +51,8 @@ pub enum Failure {
     Status(u16),
     /// No `/search` there.
     NotFound,
+    /// The answer was longer than [`MOST_BODY`]: not read past it, and not used.
+    TooLarge,
 }
 
 impl std::fmt::Display for Failure {
@@ -72,12 +74,19 @@ impl std::fmt::Display for Failure {
                 f,
                 "A web server answered, but there is no SearXNG search there (HTTP 404). Check the address, including any path such as /searxng."
             ),
+            Failure::TooLarge => write!(f, "The answer was larger than {} MiB, far more than a results page.", MOST_BODY / (1024 * 1024)),
         }
     }
 }
 
-/// Ask `base` for `query`.
+/// Ask `base` for `query`. A failure names the address, for the person's screen.
 pub fn fetch(base: &SearxUrl, query: &str, timeout: Duration) -> Result<Page, Failure> {
+    fetch_as(base, query, timeout, true)
+}
+
+/// [`fetch`]; `named` false says "the SearXNG" where the address would be, for what a model reads
+/// (docs/harness.md: the address is configuration, not something to show the model).
+fn fetch_as(base: &SearxUrl, query: &str, timeout: Duration, named: bool) -> Result<Page, Failure> {
     let agent = ureq::AgentBuilder::new().timeout(timeout).redirects(0).build();
     let url = format!("{}/search", base.url);
     let answer = agent
@@ -90,19 +99,23 @@ pub fn fetch(base: &SearxUrl, query: &str, timeout: Duration) -> Result<Page, Fa
     let response = match answer {
         Ok(r) => r,
         Err(ureq::Error::Status(code, r)) => return Err(status_failure(code, &r)),
-        Err(ureq::Error::Transport(t)) => return Err(Failure::Unreachable(transport_reason(&t, base, timeout))),
+        Err(ureq::Error::Transport(t)) => return Err(Failure::Unreachable(transport_reason(&t, base, timeout, named))),
     };
     if (300..400).contains(&response.status()) {
         return Err(Failure::Redirected(response.header("Location").unwrap_or_default().chars().take(200).collect()));
     }
     let content_type = response.content_type().to_string();
-    let mut body = String::new();
+    let mut body = Vec::new();
+    // One byte past the cap is read, to tell an answer that fits from one that was cut.
     response
         .into_reader()
-        .take(MOST_BODY)
-        .read_to_string(&mut body)
+        .take(MOST_BODY + 1)
+        .read_to_end(&mut body)
         .map_err(|e| Failure::Unreachable(format!("the answer broke off ({e})")))?;
-    parse(&content_type, &body)
+    if body.len() as u64 > MOST_BODY {
+        return Err(Failure::TooLarge);
+    }
+    parse(&content_type, &String::from_utf8_lossy(&body))
 }
 
 fn status_failure(code: u16, response: &ureq::Response) -> Failure {
@@ -115,13 +128,17 @@ fn status_failure(code: u16, response: &ureq::Response) -> Failure {
     }
 }
 
-fn transport_reason(t: &ureq::Transport, base: &SearxUrl, timeout: Duration) -> String {
-    let at = format!("{}:{}", base.host, base.port);
+fn transport_reason(t: &ureq::Transport, base: &SearxUrl, timeout: Duration, named: bool) -> String {
+    let (at, name) = if named {
+        (format!("{}:{}", base.host, base.port), format!("the name {}", base.host))
+    } else {
+        ("the SearXNG".to_string(), "the SearXNG's host name".to_string())
+    };
     let message = t.message().unwrap_or_default().to_string();
     let source = std::error::Error::source(t).map(|s| s.to_string()).unwrap_or_default();
     let said = format!("{message} {source}").to_ascii_lowercase();
     match t.kind() {
-        ureq::ErrorKind::Dns => format!("the name {} does not resolve", base.host),
+        ureq::ErrorKind::Dns => format!("{name} does not resolve"),
         _ if said.contains("timed out") || said.contains("would block") => {
             format!("no answer from {at} within {} seconds", timeout.as_secs())
         }
@@ -225,9 +242,10 @@ pub fn judge(outcome: Result<Page, Failure>) -> Probe {
 }
 
 /// Search for the companion's `web_search`: the page, or why there is none to use. A page with no
-/// results is a failure here, with SearXNG's own reasons, so the caller falls back.
+/// results is a failure here, with SearXNG's own reasons, so the caller falls back. The reason is
+/// for the model, so it never names the address.
 pub fn search(base: &SearxUrl, query: &str) -> Result<Vec<Hit>, String> {
-    match fetch(base, query, TIMEOUT) {
+    match fetch_as(base, query, TIMEOUT, false) {
         Ok(page) if !page.hits.is_empty() => Ok(page.hits),
         Ok(page) if !page.unresponsive.is_empty() => Err(format!(
             "no results; unresponsive engines: {}",
@@ -359,5 +377,45 @@ mod tests {
         let (url, server) = stub("200 OK", "application/json", r#"{"results":[],"unresponsive_engines":[["google","CAPTCHA"]]}"#);
         assert_eq!(search(&url, "x").unwrap_err(), "no results; unresponsive engines: google (CAPTCHA)");
         server.join().unwrap();
+    }
+
+    /// An answer is read up to the cap and no further, and one past it is not used: a stub that
+    /// streams more than the cap of valid JSON gets no result through.
+    #[test]
+    fn an_answer_past_the_size_cap_is_refused() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = std::io::Read::read(&mut s, &mut buf);
+            let one = r#"{"title":"t","url":"https://example.org/","content":"c"},"#;
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"results\":[");
+            let mut sent = 0u64;
+            // Past the cap, then a well-formed end: only the cap keeps it out.
+            while sent <= MOST_BODY {
+                if s.write_all(one.as_bytes()).is_err() {
+                    return;
+                }
+                sent += one.len() as u64;
+            }
+            let _ = s.write_all(one.trim_end_matches(',').as_bytes());
+            let _ = s.write_all(b"]}");
+        });
+        let url = crate::check(&format!("http://127.0.0.1:{port}")).unwrap();
+        let p = probe(&url, Duration::from_secs(10));
+        let _ = server.join();
+        assert!(!p.ok, "{}", p.summary);
+        assert_eq!(p.summary, "The answer was larger than 2 MiB, far more than a results page.");
+    }
+
+    /// What a model reads about a failed search says "the SearXNG", never the address.
+    #[test]
+    fn a_failed_search_does_not_name_the_address() {
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let url = crate::check(&format!("http://127.0.0.1:{port}")).unwrap();
+        let why = search(&url, "q").unwrap_err();
+        assert_eq!(why, "Not reachable: nothing is listening at the SearXNG");
+        assert!(probe(&url, Duration::from_secs(5)).summary.contains(&format!("127.0.0.1:{port}")), "the person's screen names it");
     }
 }

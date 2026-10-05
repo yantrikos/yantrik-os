@@ -380,8 +380,9 @@ built-in, or a SearXNG they run themselves. The desktop tells each harness which
   change. A harness can switch without restarting. A desktop that predates this sends neither.
 - **`service`** is `builtin` (search the way you always have) or `searxng`.
 - **`url`**, only with `searxng`, is the base address, already checked by the desktop: `http` or
-  `https`, plain `http` only to this machine or the local network, no user name or password, no
-  query or fragment, no trailing slash, at most 256 characters. Search with
+  `https`, plain `http` only to `localhost` or an IP on this machine or a private network (never
+  another name), never an address the egress proxy calls no destination, no user name or
+  password, no query or fragment, no trailing slash, at most 256 characters. Search with
   `GET <url>/search?q=<query>&format=json` and read `results[]` (`title`, `url`, `content`) and
   `unresponsive_engines`. Settings only saves an address after a test search there found results.
 - **You SHOULD use it** for the searches you make for the person, instead of your own default,
@@ -389,7 +390,8 @@ built-in, or a SearXNG they run themselves. The desktop tells each harness which
 - **You MUST NOT** send the queries you make there anywhere else: not to a log that leaves the
   machine, not to telemetry, not to another search service "as well". The person chose where
   their searches go. Treat the address as you would `memory_url`: configuration, not something
-  to show the model or write into a transcript.
+  to show the model or write into a transcript. Say "the person's SearXNG" instead, as the
+  desktop's own tools and `describe shell` do.
 - **The egress proxy** still applies to a mind running as its own account. When it enforces,
   Settings offers the person a button that adds the one rule for this address; a harness never
   asks for one.

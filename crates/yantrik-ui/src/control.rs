@@ -1541,15 +1541,18 @@ pub fn publish(
             },
         )
         .action(
-            // Sensitive at least, and never less: it decides where every web search the person's
-            // minds and tools make is sent. A hostile address would read every query and choose
-            // every result. The card names the address, and an address is saved only after a
-            // test search there finds results, as Settings' own Save requires.
+            // Dangerous: it decides where every web search the person's minds and tools make is
+            // sent, and a hostile address would read every query and choose every result. So it
+            // is asked about every time, in auto too, and no "Allow for this session" rule covers
+            // it: a rule is per action, not per address, so a yes for a LAN address would have
+            // stood for any later one (security review of #656). The card names the address, and
+            // an address is saved only after a test search there finds results, as Settings' own
+            // Save requires.
             Action::new(
                 "set_web_search",
                 "Choose the web search service every mind and tool searches through: builtin (DuckDuckGo) or searxng with the address of the person's own SearXNG. `describe shell` → `settings` → `web_search` shows the current one and, after a change, whether it was saved",
             )
-            .risk("sensitive")
+            .risk("dangerous")
             .defers()
             .explain(|args| {
                 crate::wire::web_search::explain_set(
@@ -3463,11 +3466,6 @@ mod lasting_settings_grade_tests {
                 "use_harness",
                 "writes the preferred mind into the shell's settings, deciding which mind \
                  answers after a restart",
-            ),
-            (
-                "set_web_search",
-                "writes the web search service into the shell's settings, sending every search \
-                 the person's minds and tools make to the address it names",
             ),
             (
                 "set_do_not_disturb",

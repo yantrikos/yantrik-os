@@ -10,3 +10,5 @@ serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 ureq = { workspace = true }
 url = { workspace = true }
+# Where an IP leads, as the egress proxy reads it: one classification on the machine.
+yantrik-egress = { path = "../yantrik-egress" }

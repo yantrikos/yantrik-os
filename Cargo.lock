@@ -12033,6 +12033,7 @@ dependencies = [
  "serde_yaml",
  "ureq 2.12.1",
  "url",
+ "yantrik-egress",
 ]
 
 [[package]]

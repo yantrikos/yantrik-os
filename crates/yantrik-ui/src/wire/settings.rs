@@ -104,7 +104,7 @@ pub struct UserSettings {
     pub minds_open_in_mind_view: bool,
     /// Where web searches go: built-in, or the person's own SearXNG (crates/yantrik-web-search,
     /// which the companion's tools read this section through). Written by Settings → Network →
-    /// Web search after a test that found results, and by `set_web_search`, graded sensitive.
+    /// Web search after a test that found results, and by `set_web_search`, graded dangerous.
     #[serde(default)]
     pub web_search: yantrik_web_search::WebSearch,
 }

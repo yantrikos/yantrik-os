@@ -1345,7 +1345,7 @@ impl Tool for BrowserSearchTool {
     }
 }
 
-// ── Web Search (lightweight core tool, uses Chromium CDP) ──
+// ── Web Search (lightweight core tool: the person's SearXNG or DuckDuckGo's HTML page) ──
 
 pub struct WebSearchTool;
 
@@ -1383,122 +1383,14 @@ impl Tool for WebSearchTool {
             return "Error: query too long (max 500 chars)".to_string();
         }
 
-        // The person's SearXNG, when Settings → Network → Web search names one; it falls back to
-        // DuckDuckGo itself, and says so. Built-in searches as below.
-        if let Some(results) = crate::search_service::search(&crate::search_service::target(), query, &duckduckgo_html_search) {
-            return results;
-        }
-
-        // Auto-launch headless browser if not running — fall back to DuckDuckGo if unavailable
-        if let Err(e) = ensure_headless_browser() {
-            tracing::info!("Browser unavailable ({e}), using DuckDuckGo HTML fallback");
-            return duckduckgo_html_search(query);
-        }
-
-        // URL-encode the query
-        let encoded: String = query
-            .chars()
-            .map(|c| match c {
-                ' ' => '+'.to_string(),
-                c if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') => {
-                    c.to_string()
-                }
-                c => format!("%{:02X}", c as u32),
-            })
-            .collect();
-
-        let url = format!("https://www.google.com/search?q={}&num=10&hl=en", encoded);
-
-        let (mut ws, _tab) = match connect_first_tab() {
-            Ok(v) => v,
-            Err(e) => return format!("Error connecting to browser: {e}"),
-        };
-
-        // Navigate to Google search
-        if let Err(e) = cdp_send(&mut ws, "Page.navigate", json!({ "url": url })) {
-            return format!("Navigation error: {e}");
-        }
-
-        // Wait for results to load
-        std::thread::sleep(Duration::from_secs(3));
-
-        // Extract structured search results via JS
-        let js = r#"
-            (function() {
-                var results = [];
-                // Google search result blocks
-                var items = document.querySelectorAll('div.g, div[data-hveid]');
-                for (var i = 0; i < items.length && results.length < 10; i++) {
-                    var el = items[i];
-                    var link = el.querySelector('a[href^="http"]');
-                    if (!link) continue;
-                    var url = link.href;
-                    if (url.includes('google.com') || url.includes('accounts.google')) continue;
-                    var titleEl = el.querySelector('h3');
-                    var title = titleEl ? titleEl.innerText : '';
-                    if (!title) continue;
-                    var snippetEl = el.querySelector('div[data-sncf], span.aCOpRe, div.VwiC3b, div[style*="line"]');
-                    var snippet = snippetEl ? snippetEl.innerText : '';
-                    if (!snippet) {
-                        // Try getting text from the result block minus the title
-                        var allText = el.innerText || '';
-                        var parts = allText.split('\n').filter(function(l) { return l.length > 20 && l !== title; });
-                        snippet = parts.slice(0, 2).join(' ');
-                    }
-                    results.push(title + '\n' + url + '\n' + snippet.substring(0, 200));
-                }
-                if (results.length === 0) {
-                    // Fallback: just get page text
-                    return 'NO_STRUCTURED_RESULTS\n' + (document.body ? document.body.innerText.substring(0, 4000) : '');
-                }
-                return results.join('\n---\n');
-            })()
-        "#;
-
-        let raw = eval_js(&mut ws, js).unwrap_or_default();
-
-        // Check for CAPTCHA on Google search
-        let page_title = eval_js(&mut ws, "document.title").unwrap_or_default();
-        if let Some(captcha_msg) = detect_captcha(&page_title, &raw, "") {
-            cleanup_after_data_extraction(&mut ws);
-            tracing::info!("Google CAPTCHA detected, falling back to DuckDuckGo: {captcha_msg}");
-            return duckduckgo_html_search(query);
-        }
-
-        if raw.starts_with("NO_STRUCTURED_RESULTS") {
-            // Fallback to plain text results
-            let text = raw.strip_prefix("NO_STRUCTURED_RESULTS\n").unwrap_or(&raw);
-            let truncated = if text.len() > 4000 { &text[..text.floor_char_boundary(4000)] } else { text };
-            cleanup_after_data_extraction(&mut ws);
-            return format!("Search results for: {query}\n\n{truncated}");
-        }
-
-        // Parse structured results
-        let mut output = format!("Search results for: {query}\n\n");
-        for (i, block) in raw.split("\n---\n").enumerate() {
-            let lines: Vec<&str> = block.lines().collect();
-            if lines.len() >= 2 {
-                let title = lines[0];
-                let url = lines[1];
-                let snippet = if lines.len() > 2 { lines[2..].join(" ") } else { String::new() };
-                output.push_str(&format!("{}. {}\n   {}\n   {}\n\n", i + 1, title, url, snippet));
-            }
-        }
-
-        if output.len() > 5000 {
-            let boundary = output.floor_char_boundary(5000);
-            output.truncate(boundary);
-            output.push_str("\n... (truncated)");
-        }
-
-        // Clear page so stale content isn't mistaken for user activity
-        cleanup_after_data_extraction(&mut ws);
-
-        output
+        // What the person chose in Settings → Network → Web search: their SearXNG, falling back
+        // to DuckDuckGo and saying so, or built-in, which is DuckDuckGo's HTML page and nothing
+        // else. No browser and no other engine: "Built-in (DuckDuckGo)" is exactly what it does.
+        crate::search_service::search(&crate::search_service::target(), query, &duckduckgo_html_search)
     }
 }
 
-// ── DuckDuckGo HTML fallback (no browser required) ──
+// ── DuckDuckGo HTML search: built-in, and the fallback (no browser required) ──
 
 /// Search via DuckDuckGo HTML-only endpoint. Pure HTTP — no browser, no JS, no CAPTCHAs.
 fn duckduckgo_html_search(query: &str) -> String {
