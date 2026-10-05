@@ -3,7 +3,8 @@ import json, glob, collections, math
 import numpy as np
 
 R = collections.defaultdict(list)
-for f in sorted(glob.glob("results/*.json")):
+import sys
+for f in sorted(glob.glob((sys.argv[1] if len(sys.argv) > 1 else "results") + "/*.json")):
     r = json.load(open(f)); R[r["cond"]].append(r)
 ORDER = ["plain", "compact", "compact_bpe", "mdg_seq", "mdg_seq_bpe", "mdg_packed", "compact_packed"]
 S = {}
@@ -35,8 +36,13 @@ if all(c in S for c in ["compact", "compact_bpe", "mdg_seq", "mdg_seq_bpe", "mdg
     print(f"T* = {T} ({S[T]['acc']:.1f}%, {S[T]['pos']:.1f} pos);  M* = {M} ({S[M]['acc']:.1f}%, {S[M]['pos']:.1f} pos)")
     print(f"K1: acc(M*) - acc(T*) = {S[M]['acc']-S[T]['acc']:+.1f} pt; pos ratio = {S[M]['pos']/S[T]['pos']:.2f} -> {'PASS' if k1 else 'FAIL'}")
     k2 = S["compact_packed"]["acc"] >= S["mdg_packed"]["acc"] - 1.0
+    gap = S["mdg_packed"]["acc"] - S["compact_packed"]["acc"]; noise = 2 * max(S["mdg_packed"]["sd"], S["compact_packed"]["sd"])
     print(f"K2: compact_packed {S['compact_packed']['acc']:.1f} vs mdg_packed {S['mdg_packed']['acc']:.1f} -> "
-          f"{'packing explains it (not MDG-specific)' if k2 else 'MDG packed beats packed text'}")
+          f"{'packing explains it (not MDG-specific)' if k2 else 'literal 1-pt rule: MDG packed ahead'}; "
+          f"gap {gap:+.1f} pt vs 2*sd noise {noise:.1f} -> {'NOT detectable (noise rule)' if abs(gap) < noise else 'detectable'}")
+    from math import sqrt
+    a = [r["acc"]*100 for r in R["mdg_packed"]]; b = [r["acc"]*100 for r in R["compact_packed"]]
+    se = sqrt(np.var(a, ddof=1)/len(a) + np.var(b, ddof=1)/len(b)); print(f"   Welch t = {gap/se:.2f}")
     for a, b in [("mdg_seq", "compact_bpe"), ("mdg_seq_bpe", "compact_bpe"), ("mdg_seq", "compact"), ("mdg_packed", "compact_packed")]:
         d = S[a]["acc"] - S[b]["acc"]; noise = 2 * max(S[a]["sd"], S[b]["sd"])
         print(f"K3/compare {a} vs {b}: Δacc {d:+.1f} pt (2·sd = {noise:.1f}), positions {S[a]['pos']:.1f} vs {S[b]['pos']:.1f}"
