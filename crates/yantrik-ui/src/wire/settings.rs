@@ -102,6 +102,11 @@ pub struct UserSettings {
     /// over the person's work. It is a UI-only choice, like the mode — nothing on the socket sets
     /// it — because "put your windows on my desktop" is the person's to say.
     pub minds_open_in_mind_view: bool,
+    /// Where web searches go: built-in, or the person's own SearXNG (crates/yantrik-web-search,
+    /// which the companion's tools read this section through). Written by Settings → Network →
+    /// Web search after a test that found results, and by `set_web_search`, graded sensitive.
+    #[serde(default)]
+    pub web_search: yantrik_web_search::WebSearch,
 }
 
 impl Default for UserSettings {
@@ -130,6 +135,7 @@ impl Default for UserSettings {
             // about a machine somebody already trusts.
             mind_mode: "ask".into(),
             minds_open_in_mind_view: true,
+            web_search: Default::default(),
         }
     }
 }
@@ -338,6 +344,27 @@ pub fn set_mind_mode(mode: &str) {
     }
     settings.mind_mode = mode.to_string();
     save(&settings);
+}
+
+/// The person's web search service, as saved. Through the shared handle, like the mode.
+pub fn web_search() -> yantrik_web_search::WebSearch {
+    match LIVE.get().and_then(|s| s.lock().ok()) {
+        Some(settings) => settings.web_search.clone(),
+        None => load().web_search,
+    }
+}
+
+/// Record the web search service. Only `wire::web_search::save` calls this, after its checks.
+pub fn set_web_search(web_search: yantrik_web_search::WebSearch) -> Result<(), String> {
+    if let Some(shared) = LIVE.get() {
+        if let Ok(mut settings) = shared.lock() {
+            settings.web_search = web_search;
+        }
+        return persist(shared);
+    }
+    let mut settings = load();
+    settings.web_search = web_search;
+    save(&settings)
 }
 
 /// Whether apps a mind opens go into Mind View rather than onto the person's desktop.

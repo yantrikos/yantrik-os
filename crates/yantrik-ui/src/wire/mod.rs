@@ -54,6 +54,7 @@ pub mod notifications;
 mod power;
 pub mod screenshot;
 pub mod settings;
+pub mod web_search;
 pub mod theme;
 pub mod theme_files;
 mod system_poll;
@@ -133,6 +134,8 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     show_desktop::wire(ui);
     voice_mode::wire(ui, ctx);
     settings::wire(ui, ctx);
+    // After `settings`, whose live handle it reads and writes, and after `harness`, which it tells.
+    web_search::wire(ui);
     system_poll::wire(ui, ctx);
     package_manager::wire(ui, ctx);
     screenshot::wire(ui, ctx);

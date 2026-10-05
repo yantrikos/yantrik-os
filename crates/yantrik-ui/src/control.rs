@@ -1022,7 +1022,7 @@ pub fn publish(
                 .with("private", crate::private_mode::is_on())
                 // The theme in use and the ones to choose from (`set_theme`).
                 .with("theme", crate::wire::theme::for_describe(ui.get_settings_theme().as_str()))
-                .with("settings", serde_json::json!({"category":ui.get_settings_category(),"query":ui.get_settings_query().to_string(),"dark":ui.get_settings_dark_mode(),"accent":ui.get_settings_accent_color().to_string(),"wallpaper":ui.get_wallpaper_path().to_string(),"save_error":ui.get_settings_save_error(),"save_status":ui.get_settings_save_status().to_string(),"auto_lock_secs":ui.get_settings_auto_lock_secs(),"auto_lock_available":ui.get_settings_auto_lock_available()}))
+                .with("settings", serde_json::json!({"category":ui.get_settings_category(),"query":ui.get_settings_query().to_string(),"dark":ui.get_settings_dark_mode(),"accent":ui.get_settings_accent_color().to_string(),"wallpaper":ui.get_wallpaper_path().to_string(),"save_error":ui.get_settings_save_error(),"save_status":ui.get_settings_save_status().to_string(),"auto_lock_secs":ui.get_settings_auto_lock_secs(),"auto_lock_available":ui.get_settings_auto_lock_available(),"web_search":crate::wire::web_search::describe()}))
         }
     };
 
@@ -1035,6 +1035,7 @@ pub fn publish(
     let focus_ui = ui_for.clone();
     let dnd_ui = ui_for.clone();
     let profile_ui = ui_for.clone();
+    let web_search_ui = ui_for.clone();
     let ask_ui = ui_for.clone();
     let lens_ui = ui_for.clone();
     let lens_close_ui = ui_for.clone();
@@ -1537,6 +1538,35 @@ pub fn publish(
                     yantrik_ipc_transport::mind_door::is_mind,
                     crate::memory_grants::load,
                 )
+            },
+        )
+        .action(
+            // Sensitive at least, and never less: it decides where every web search the person's
+            // minds and tools make is sent. A hostile address would read every query and choose
+            // every result. The card names the address, and an address is saved only after a
+            // test search there finds results, as Settings' own Save requires.
+            Action::new(
+                "set_web_search",
+                "Choose the web search service every mind and tool searches through: builtin (DuckDuckGo) or searxng with the address of the person's own SearXNG. `describe shell` → `settings` → `web_search` shows the current one and, after a change, whether it was saved",
+            )
+            .risk("sensitive")
+            .defers()
+            .explain(|args| {
+                crate::wire::web_search::explain_set(
+                    args["service"].as_str().unwrap_or_default().trim(),
+                    args["url"].as_str().unwrap_or_default().trim(),
+                )
+            })
+            .arg(Param::text("service").describe("builtin or searxng"))
+            .arg(Param::text("url").optional().describe("With searxng: its address, http only on this machine or the local network, e.g. http://192.168.1.20:8888")),
+            move |args| {
+                let ui = web_search_ui()?;
+                let said = crate::wire::web_search::set_from_agent(
+                    args["service"].as_str().unwrap_or_default().trim(),
+                    args["url"].as_str().unwrap_or_default().trim(),
+                    ui.as_weak(),
+                )?;
+                Ok(serde_json::json!({ "said": said }))
             },
         )
         .action(
@@ -3433,6 +3463,11 @@ mod lasting_settings_grade_tests {
                 "use_harness",
                 "writes the preferred mind into the shell's settings, deciding which mind \
                  answers after a restart",
+            ),
+            (
+                "set_web_search",
+                "writes the web search service into the shell's settings, sending every search \
+                 the person's minds and tools make to the address it names",
             ),
             (
                 "set_do_not_disturb",

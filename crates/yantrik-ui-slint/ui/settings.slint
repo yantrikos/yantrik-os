@@ -16,6 +16,7 @@ import { ProviderPresetGroup } from "provider_presets.slint";
 import { YDialog } from "components/y_dialog.slint";
 import { AccountList, ProviderGroup, AddChoice } from "components/minds_panel.slint";
 import { FreeAiCard } from "components/free_ai_card.slint";
+import { WebSearchCard } from "components/web_search_card.slint";
 export { DecisionPreset, DecisionUse }
 
 // ── Settings sidebar category item ──
@@ -3428,6 +3429,8 @@ SettingRow{label:"Clear search";description:"Return to the complete settings lis
 SettingRow{label:root.network-label;description:root.network-detail!=""?root.network-detail:"What this machine is connected over, as the network service reports it.";value:root.network-online?"Connected":"Offline";interactive:false;}
 SettingRow{label:"IP address";description:"The address reported by the system monitor.";value:root.ip-address!=""?root.ip-address:"Not available";interactive:false;}
 SettingRow{label:"Network manager";description:"Open the native app to inspect and manage connections.";value:"Open";activated=>{root.open-network();}}
+                        // Where every web search goes: built-in, or the person's own SearXNG.
+                        WebSearchCard {}
 
                         Rectangle{height:24px;}
                     }

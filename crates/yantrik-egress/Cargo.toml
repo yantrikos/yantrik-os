@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "The one way out for the mind account: a CONNECT proxy that serves only yantrik-mind, by the person's policy (design/mind-egress-2026-09-29.md)"
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "yantrik-egress"
 path = "src/main.rs"
