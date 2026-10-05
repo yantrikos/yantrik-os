@@ -33,10 +33,10 @@ pub struct InstallView {
 pub fn install_card(v: &InstallView) -> String {
     if v.into_partition {
         if v.target.trim().is_empty() {
-            return "Install Yantrik OS beside what is on a disk, but nothing is chosen to install into; this call is refused".into();
+            return "Refused: install beside what is on a disk — nothing is chosen to install into".into();
         }
         if let Some(why) = &v.target_refusal {
-            return format!("Install into /dev/{}, which is refused: {why}; this call is refused", v.target.trim_start_matches("/dev/"));
+            return format!("Refused: install into /dev/{} — {why}", v.target.trim_start_matches("/dev/"));
         }
         if let Some(card) = &v.target_card {
             return card.clone();
@@ -50,7 +50,7 @@ pub fn install_card(v: &InstallView) -> String {
     }
     let disk = v.disk.trim().trim_start_matches("/dev/");
     if disk.is_empty() {
-        return "ERASE a whole disk and install Yantrik OS, but no disk is chosen; this call is refused".into();
+        return "Refused: erase a whole disk — no disk is chosen to erase".into();
     }
     if v.disk_holds_macos {
         return format!("ERASE /dev/{disk}, which holds macOS; macOS and everything else on it is lost");
@@ -71,8 +71,8 @@ pub fn choose_card(args: &serde_json::Value, offered: &[(String, String, bool)],
     if let Some(p) = args["partition"].as_str().map(|p| p.trim().trim_start_matches("/dev/")).filter(|p| !p.is_empty()) {
         return match offered.iter().find(|(id, _, _)| id == p) {
             Some((_, card, true)) => format!("Choose where to install: {card}. Nothing is written until installer_install"),
-            Some((_, why, false)) => format!("Choose {p} to install into; this call is refused: {why}"),
-            None => format!("Choose {p} to install into; the installer did not offer it, so this call is refused"),
+            Some((_, why, false)) => format!("Refused: choose {p} — {why}"),
+            None => format!("Refused: choose {p} — the installer did not offer it"),
         };
     }
     if let (Some(start), Some(end)) = (args["free_start"].as_u64(), args["free_end"].as_u64()) {
@@ -208,15 +208,13 @@ mod tests {
             install_card(&beside("sda@1600000000-1700000000", None)),
             "Install into a new partition at sectors 1600000000-1700000000 of /dev/sda; nothing else changes"
         );
-        assert!(install_card(&beside("", None)).contains("refused"));
+        // Whatever is refused says so first, so a glance cannot take it for an install.
+        assert_eq!(install_card(&beside("", None)), "Refused: install beside what is on a disk — nothing is chosen to install into");
         let refused = InstallView { target_refusal: Some("/dev/sda1 is the EFI system partition; ...".into()), ..beside("sda1", None) };
-        assert_eq!(
-            install_card(&refused),
-            "Install into /dev/sda1, which is refused: /dev/sda1 is the EFI system partition; ...; this call is refused"
-        );
+        assert_eq!(install_card(&refused), "Refused: install into /dev/sda1 — /dev/sda1 is the EFI system partition; ...");
         assert_eq!(install_card(&erase("sda", Some("931.5G, APPLE HDD"), true)), "ERASE /dev/sda, which holds macOS; macOS and everything else on it is lost");
         assert_eq!(install_card(&erase("sdb", Some("1.8T, USB · T7"), false)), "ERASE /dev/sdb (1.8T, USB · T7); everything on it is lost");
-        assert!(install_card(&erase("", None, false)).starts_with("ERASE a whole disk") && install_card(&erase("", None, false)).contains("refused"));
+        assert_eq!(install_card(&erase("", None, false)), "Refused: erase a whole disk — no disk is chosen to erase");
         // Every sentence about a beside install says nothing else changes; every erase says ERASE.
         for v in [beside("sda4", Some(card)), beside("sda@1-2", None), beside("nvme0n1p5", None)] {
             assert!(install_card(&v).ends_with("nothing else changes") && !install_card(&v).contains("ERASE"), "{v:?}");
@@ -231,10 +229,10 @@ mod tests {
         ];
         let c = choose_card(&json!({ "partition": "/dev/sda4" }), &offered, "");
         assert!(c.contains("/dev/sda4 (199 GB, YANTRIK, FAT32)") && c.contains("Nothing is written until installer_install"), "{c}");
-        assert!(choose_card(&json!({ "partition": "sda2" }), &offered, "").contains("did not offer it"));
-        // A refused one says it is refused and why, never "Choose where to install".
+        assert_eq!(choose_card(&json!({ "partition": "sda2" }), &offered, ""), "Refused: choose sda2 — the installer did not offer it");
+        // A refused one leads with "Refused:" and says why, never "Choose where to install".
         let r = choose_card(&json!({ "partition": "sda1" }), &offered, "");
-        assert_eq!(r, "Choose sda1 to install into; this call is refused: /dev/sda1 is the EFI system partition; ...");
+        assert_eq!(r, "Refused: choose sda1 — /dev/sda1 is the EFI system partition; ...");
         assert!(choose_card(&json!({ "whole_disk": true }), &offered, "sda").contains("ERASING a whole disk (/dev/sda)"));
         assert!(choose_card(&json!({ "disk": "sda", "free_start": 2048, "free_end": 9999 }), &offered, "").contains("sectors 2048-9999 of /dev/sda"));
         assert!(choose_card(&json!({ "boot_first": true }), &offered, "").contains("first"));

@@ -377,12 +377,9 @@ pub fn run_install(state: &InstallerState, progress: ProgressFn) -> Result<Optio
         return install_onto(state, &disk, layout, true, progress);
     }
 
-    let disk_name = if state.target_disk.is_empty() {
-        tracing::info!("Installer: no disk selected, auto-detecting...");
-        auto_detect_disk()?
-    } else {
-        state.target_disk.clone()
-    };
+    // Erasing takes the disk the person chose, and only that one. There is no disk found in its
+    // place: an install that erases what nobody named is the one this installer must never do.
+    let disk_name = erase_target(state)?;
     let disk = format!("/dev/{}", disk_name);
 
     tracing::info!(disk = %disk, "Installer: will use disk");
@@ -1028,26 +1025,18 @@ fn installed_providers_yaml(state: &InstallerState) -> Option<String> {
     serde_yaml::to_string(&store).ok()
 }
 
-/// Auto-detect the installation target disk: the one the Disk screen would preselect, from the
-/// same listing, so a caller that names no disk gets the disk a person would have been offered.
-/// Never one that holds macOS, and never the installer's own stick.
+/// The disk an erase writes: the one named in `state.target_disk`, or a refusal when none is.
 ///
-/// This used to have a fallback of its own that took "any disk that's not the live media",
-/// which on a Mac is the internal disk with macOS on it.
-fn auto_detect_disk() -> Result<String, String> {
-    let disks = detect_disks();
-    match preselect(&disks) {
-        Some(d) => {
-            tracing::info!(disk = %d.name, "Installer: auto-detected target disk");
-            Ok(d.name.clone())
-        }
-        None if disks.is_empty() => Err("No suitable disk found. Ensure a hard disk is attached.".into()),
-        None => Err(format!(
-            "No disk was chosen, and none is chosen for anyone unless exactly one internal disk without \
-             macOS is here; choose one of {} and confirm it may be erased. Nothing was written.",
-            disks.iter().map(|d| d.name.as_str()).collect::<Vec<_>>().join(", ")
-        )),
+/// There used to be a fallback here that found a disk when none was named: first "any disk that
+/// is not the live media", which on a Mac is the internal disk with macOS on it, then the Disk
+/// screen's preselection. Neither is a choice the person made, so neither erases anything. The
+/// screen preselects for the person to see; the install takes only what reaches it.
+fn erase_target(state: &InstallerState) -> Result<String, String> {
+    let name = state.target_disk.trim().trim_start_matches("/dev/");
+    if name.is_empty() {
+        return Err("no disk was chosen to erase; nothing was written. Choose one on the Disk screen.".into());
     }
+    Ok(name.to_string())
 }
 
 /// The disk chosen for erasing before anyone chooses (installer_rules::default_disk over the
@@ -1103,24 +1092,28 @@ fn disk_holds_macos(disk: &str) -> bool {
 }
 
 /// Whether `/dev/<disk>` is on USB or marked removable: a disk that may be plugged in anywhere.
+/// An lsblk that fails, or answers nothing, counts as external: it is then never preselected
+/// for erasing, and gets no NVRAM entry.
 fn disk_is_external(disk: &str) -> bool {
-    Command::new("lsblk")
+    let answer = Command::new("lsblk")
         .args(["-dno", "TRAN,RM", disk])
         .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         .output()
-        .map(|o| external_from_lsblk(&String::from_utf8_lossy(&o.stdout)))
-        .unwrap_or(false)
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    answer.as_deref().map_or(true, external_from_lsblk)
 }
 
 /// `lsblk -dno TRAN,RM` for one disk: `usb 0`, `sata 0`, `nvme 0`, or just `1` when the
-/// transport is unknown and the column is blank.
+/// transport is unknown and the column is blank. Anything else is no answer, and external.
 fn external_from_lsblk(out: &str) -> bool {
     let words: Vec<&str> = out.split_whitespace().collect();
     match words.as_slice() {
         ["usb", ..] => true,
-        [_, rm] => *rm == "1",
-        [rm] => *rm == "1",
-        _ => false,
+        [_, rm] => *rm != "0",
+        [rm] => *rm != "0",
+        _ => true,
     }
 }
 
@@ -1471,8 +1464,7 @@ fn detect_disks_fallback() -> Vec<DiskInfo> {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() < 5 { continue; }
         let (name, size, dtype, ro, rm) = (parts[0], parts[1], parts[2], parts[3], parts[4]);
-        if dtype != "disk" || ro == "1" || rm == "1" { continue; }
-        if name.starts_with("loop") || name.starts_with("sr") || name.starts_with("fd") { continue; }
+        if !fallback_candidate(name, dtype, ro, rm, live.as_deref()) { continue; }
 
         disks.push(DiskInfo {
             name: name.to_string(),
@@ -1483,10 +1475,22 @@ fn detect_disks_fallback() -> Vec<DiskInfo> {
             has_data: true,
             holds_macos: disk_holds_macos(&format!("/dev/{name}")),
             external: disk_is_external(&format!("/dev/{name}")),
-            runs_installer: live.as_deref() == Some(name),
+            runs_installer: false,
         });
     }
     disks
+}
+
+/// Whether a line of `lsblk -dn -o NAME,SIZE,TYPE,RO,RM` is a disk the fallback listing offers
+/// for erasing: a writable, fixed disk that is not the one the installer runs from (`live`, the
+/// disk under /run/live/medium). The JSON listing leaves that disk out by its mount point; this
+/// listing cannot see mount points, so it is named.
+fn fallback_candidate(name: &str, dtype: &str, ro: &str, rm: &str, live: Option<&str>) -> bool {
+    dtype == "disk"
+        && ro != "1"
+        && rm != "1"
+        && !["loop", "sr", "fd"].iter().any(|p| name.starts_with(p))
+        && live != Some(name)
 }
 
 #[cfg(test)]
@@ -1740,7 +1744,41 @@ llm:
         assert!(external_from_lsblk("1"), "a removable disk with no transport named");
         assert!(!external_from_lsblk("sata 0"));
         assert!(!external_from_lsblk("nvme 0"));
-        assert!(!external_from_lsblk(""));
+        assert!(!external_from_lsblk("0"));
+        // No answer, or one that cannot be read, is external: never preselected, no NVRAM entry.
+        assert!(external_from_lsblk(""), "lsblk said nothing");
+        assert!(external_from_lsblk("sata ?"), "a removable flag that is not 0");
+        assert!(external_from_lsblk("sata 0 extra"), "an answer of another shape");
+        assert!(disk_is_external("/dev/yantrik-no-such-disk"), "an lsblk that fails");
+    }
+
+    #[test]
+    fn the_fallback_listing_never_offers_the_installers_own_disk() {
+        assert!(fallback_candidate("sda", "disk", "0", "0", None));
+        assert!(!fallback_candidate("sda", "disk", "0", "0", Some("sda")), "the disk the installer runs from");
+        assert!(fallback_candidate("sdb", "disk", "0", "0", Some("sda")));
+        assert!(!fallback_candidate("sdb", "disk", "0", "1", None), "removable");
+        assert!(!fallback_candidate("sdb", "disk", "1", "0", None), "read-only");
+        assert!(!fallback_candidate("sdb1", "part", "0", "0", None));
+        assert!(!fallback_candidate("loop0", "disk", "0", "0", None));
+    }
+
+    /// Erasing with no disk named used to fall back to auto_detect_disk, a disk nobody chose.
+    #[test]
+    fn erasing_with_no_disk_chosen_is_refused_and_nothing_is_found_in_its_place() {
+        for target_disk in ["", "  ", "/dev/"] {
+            let state = InstallerState { mode: InstallMode::Erase, target_disk: target_disk.into(), ..InstallerState::default() };
+            let said = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+            let s = said.clone();
+            let e = run_install(&state, Box::new(move |_, m| s.lock().unwrap().push(m.to_string()))).unwrap_err();
+            assert!(e.starts_with("no disk was chosen to erase; nothing was written"), "{target_disk:?}: {e}");
+            assert!(said.lock().unwrap().iter().all(|m| m == "Detecting target disk..."), "nothing ran past the check");
+        }
+        let named = InstallerState { mode: InstallMode::Erase, target_disk: "/dev/sdb".into(), ..InstallerState::default() };
+        assert_eq!(erase_target(&named), Ok("sdb".to_string()));
+        let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/wire/installer.rs")).unwrap();
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        assert!(!code.contains("fn auto_detect_disk"), "no disk is found for an install that named none");
     }
 
     #[test]
@@ -1761,7 +1799,7 @@ llm:
     }
 
     /// Beside what is on a disk with no target chosen used to fall through to the erase path,
-    /// and with no disk named either, to auto_detect_disk. It is refused before anything runs.
+    /// and with no disk named either, to a disk found for it. It is refused before anything runs.
     #[test]
     fn beside_with_no_target_is_refused_and_never_becomes_an_erase() {
         let progress_seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
