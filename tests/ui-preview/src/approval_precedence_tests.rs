@@ -29,24 +29,27 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     w.set_size(slint::PhysicalSize::new(width, height));
     settle(w, width, height);
 
-    // The card is 404px wide, 16px in from the right edge, under the status bar. Decline is the
-    // left half of its button row.
-    let (card_left, card_right, card_top) = (860u32, 1264u32, 48u32);
-    let deny_x = card_left as f32 + 100.0;
-    // Compared well inside the card's border: its rounded corners and the gap above it show
-    // whatever is behind, which an overlay there rightly changes.
+    // The card is 404px wide, its left edge where the shell says, under the status bar. That edge
+    // moves: it keeps clear of the mind panel's strip, and an overlay that covers the strip lets
+    // the card back to the right edge. So it is read again with each overlay open, and the card is
+    // compared wherever it is. Decline is the left half of its button row.
+    let card_left = || ui.get_approval_corner_x() as u32;
+    let card_top = 48u32;
+    let deny_x = card_left() as f32 + 100.0;
     let deny_y = scan(w, deny_x, card_top as f32, height as f32 - 48.0, || denied.get() > 0)
         .expect("Decline answers on the corner card with nothing open");
     let card_bottom = deny_y as u32 + 12;
     let alone = settle(w, width, height);
     save(&alone, output, width, height)?;
-    let card_px = |p: &slint::SharedPixelBuffer<slint::Rgb8Pixel>| -> Vec<slint::Rgb8Pixel> {
+    // Compared well inside the card's border: its rounded corners and the gap above it show
+    // whatever is behind, which an overlay there rightly changes.
+    let card_px = |p: &slint::SharedPixelBuffer<slint::Rgb8Pixel>, left: u32| -> Vec<slint::Rgb8Pixel> {
         (card_top + 12..card_bottom)
-            .flat_map(|y| (card_left + 12..card_right - 12).map(move |x| (y * width + x) as usize))
+            .flat_map(|y| (left + 12..left + 404 - 12).map(move |x| (y * width + x) as usize))
             .map(|i| p.as_slice()[i])
             .collect()
     };
-    let card_alone = card_px(&alone);
+    let card_alone = card_px(&alone, card_left());
 
     type Open = fn(&App, bool);
     let overlays: [(&str, Open, fn(&App) -> bool); 11] = [
@@ -70,13 +73,14 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
             failures.push(format!("{name} did not stay open, so this check proved nothing"));
             continue;
         }
-        let differ = card_px(&over).iter().zip(&card_alone).filter(|(a, b)| a != b).count();
+        let left = card_left();
+        let differ = card_px(&over, left).iter().zip(&card_alone).filter(|(a, b)| a != b).count();
         if differ > 0 {
             save(&over, &output.replace(".png", &format!("-{}.png", name.replace(' ', "-"))), width, height)?;
             failures.push(format!("with {name} open, {differ} pixels of the card are covered or changed"));
         }
         let before = denied.get();
-        click(w, deny_x, deny_y);
+        click(w, left as f32 + 100.0, deny_y);
         if denied.get() == before {
             failures.push(format!("with {name} open, a click on Decline did not reach the card"));
         }

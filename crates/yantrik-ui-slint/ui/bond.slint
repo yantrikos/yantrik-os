@@ -1,5 +1,8 @@
-// Bond visualization screen.
-// Shows the level, how it was counted, and the relationship stats.
+// Interaction history (the Bond screen).
+// Shows the usage-derived level, how it was counted, and the plain counts it was counted from.
+// Headed "Interaction history", not "Bond", and the level labelled as derived from use (review of
+// the UI overhaul by GPT-6 Astra, H): it counts conversation, and says nothing about whether a
+// mind understands the person, can be relied on, or may do anything. The scoring is unchanged.
 
 import { Theme } from "theme.slint";
 import { Icons } from "components/icon.slint";
@@ -62,7 +65,7 @@ export component BondScreen inherits Rectangle {
             app-id: "bond";
             show-back: true;
             icon: Icons.bond;
-            title: "Bond";
+            title: "Interaction history";
             back => { root.back-pressed(); }
         }
 
@@ -99,6 +102,13 @@ export component BondScreen inherits Rectangle {
                         font-weight: 600;
                         horizontal-alignment: center;
                         letter-spacing: 1px;
+                    }
+                    Text {
+                        text: "Usage-derived level \u{b7} not a measure of understanding, reliability or permissions";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-caption;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
                     }
                     Text {
                         text: "Level " + data.level-number + " of 5 · from "
@@ -196,8 +206,9 @@ export component BondScreen inherits Rectangle {
                                     font-size: Theme.fs-display;
                                     font-weight: 600;
                                 }
+                                // A plain count, not a run to keep up.
                                 Text {
-                                    text: "streak";
+                                    text: "in a row with a conversation";
                                     color: Theme.text-secondary;
                                     font-size: Theme.font-small;
                                 }
@@ -231,8 +242,9 @@ export component BondScreen inherits Rectangle {
                                     font-size: Theme.fs-display;
                                     font-weight: 600;
                                 }
+                                // A plain count of what the scoring counted, not a stage reached.
                                 Text {
-                                    text: "vulnerability";
+                                    text: "messages that said how you felt";
                                     color: Theme.text-secondary;
                                     font-size: Theme.font-small;
                                 }

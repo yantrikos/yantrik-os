@@ -62,10 +62,11 @@ export struct ApprovalRequest {
     // /proc to the first ancestor a person would recognise. Never empty — `caller_identity`
     // answers "could not be identified" rather than leaving a blank where a fact should be.
     verified: string,
-    // The card's first identity line: the walk's structured findings in words, "A terminal program
-    // (sshd-session, pid 2290461)", with `identity-tag` ("verified", or "nothing verified") drawn
-    // beside it and never cut — and under it `claim`, "calls itself “design-sweep”", in amber with
-    // "· unverified" beside it. Worded in approval_wording.rs; the fact always comes first (design
+    // The card's first identity line: the walk's structured findings in words, "Caller process
+    // confirmed: sshd-session · PID 2290461 · from a terminal", with `identity-tag` ("not verified"
+    // when nothing could be established, else empty) drawn beside it and never cut — and under it
+    // `claim`, "Claimed name: “design-sweep”", in amber with "· not verified" beside it. Worded
+    // in approval_wording.rs (review by GPT-6 Astra, B); the fact always comes first (design
     // sign-off, 4 October, item 2), and neither is read from the caller's argv.
     identity: string,
     identity-tag: string,
@@ -322,7 +323,8 @@ export component ApprovalCard inherits Rectangle {
         border-radius: Theme.chat-radius;
         // Opaque, not glass: this card is drawn over whatever screen is up, and a question about
         // something that cannot be undone must not have another window's words showing through it.
-        background: Theme.chat-bar;
+        // The card's own ground (`chat-card`), so Decline reads as an outline in both modes.
+        background: Theme.chat-card;
         border-width: 1px;
         // The edge carries the grade (`grade-edge` above).
         border-color: root.grade-edge;
@@ -389,7 +391,7 @@ export component ApprovalCard inherits Rectangle {
             //
             // Each one line, cut at the card's edge when it must be — never scrolled away while the
             // pinned lines fit (review of #639, S1). The labels that say what kind of line each is
-            // ("verified", "unverified") are their own Texts beside the cut one, so the cut can
+            // ("not verified") are their own Texts beside the cut one, so the cut can
             // only ever eat the caller's words or the program's name, never the label.
             pinned-floor := VerticalLayout {
                 spacing: Theme.sp-1;
@@ -446,7 +448,8 @@ export component ApprovalCard inherits Rectangle {
                         horizontal-stretch: 1;
                         max-width: self.preferred-width;
                     }
-                    Text {
+                    // Only when there is one: a confirmed caller's line says so itself.
+                    if root.data.identity-tag != "" : Text {
                         text: "\u{00b7} " + root.data.identity-tag;
                         color: Theme.text-primary;
                         font-size: Theme.fs-body;
@@ -467,7 +470,7 @@ export component ApprovalCard inherits Rectangle {
                         max-width: self.preferred-width;
                     }
                     Text {
-                        text: "\u{00b7} unverified";
+                        text: "\u{00b7} not verified";
                         color: Theme.chat-needs-you;
                         font-size: Theme.fs-caption;
                         wrap: no-wrap;
@@ -864,7 +867,7 @@ export component ApprovalCard inherits Rectangle {
                 spacing: Theme.sp-2;
 
             // Decline first, outlined; then the affirmative (sign-off item 1). For what cannot be
-            // undone, or is graded dangerous, it is the kit's filled red with its white label,
+            // undone, or is graded dangerous, it is the kit's filled red with the red's own ink,
             // and it says the action — "Delete event" — in words taken from the app's published
             // action, never from the caller's purpose (approval_wording::confirm_label). For
             // anything else it is "Allow once" on the accent fill. The look says which button is

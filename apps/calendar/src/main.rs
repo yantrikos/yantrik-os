@@ -16,6 +16,7 @@ use yantrik_ipc_transport::{peer_identity, reach};
 
 mod notice;
 mod ownership;
+mod today;
 mod views;
 use views::ViewMode;
 
@@ -157,6 +158,9 @@ struct CalState {
     /// through the same service — so "the range has not changed" stopped being a reason to
     /// believe the events in hand are the events on disk. See `reread`.
     revision: Option<CalendarRevision>,
+    /// The day this window last saw as today: the marker, the day it opens on, and the day a
+    /// window left on today follows when the date turns (`follow_today`).
+    today: today::Today,
     /// How long the event the form is about should run.
     ///
     /// The form has no duration field -- it asks for a title, a date, a time and notes -- so a
@@ -378,9 +382,9 @@ fn update_event_via_service(
 
 // ── Date helpers ─────────────────────────────────────────────────────
 
-fn today() -> (i32, u32, u32) {
-    let now = chrono::Local::now();
-    (now.year(), now.month(), now.day())
+/// The day of the month the marker goes on in the month shown, if today is in it.
+fn today_in(year: i32, month: u32, today: chrono::NaiveDate) -> Option<u32> {
+    (today.year() == year && today.month() == month).then(|| today.day())
 }
 
 use chrono::{Datelike, Timelike};
@@ -564,9 +568,9 @@ fn count_phrase(n: usize, one: &str, many: &str) -> String {
 /// all. Anything that changes the month, the selected day, the view, or what is stored ends here.
 fn render(ui: &CalendarApp, state: &Rc<RefCell<CalState>>) {
     let s = state.borrow();
-    let (this_year, this_month, this_day) = today();
-    let today_day =
-        if s.year == this_year && s.month == this_month { Some(this_day) } else { None };
+    // The day `follow_today` last saw, not a fresh read of the clock: the marker and the window's
+    // idea of today are one value, so they cannot disagree about which day it is.
+    let today_day = today_in(s.year, s.month, s.today.date());
     let day = ui.get_selected_day();
 
     ui.set_month_title(format!("{} {}", views::month_name(s.month), s.year).into());
@@ -724,6 +728,55 @@ fn follow_store(ui: &CalendarApp, state: &Rc<RefCell<CalState>>) -> bool {
     }
     render(ui, state);
     true
+}
+
+/// Notice that the date has turned, and follow it.
+///
+/// Called at midnight, when the window is brought back to the front, and on the store watch's
+/// tick (a suspended machine wakes past a midnight its timer slept through). Nothing happens while it is
+/// still the day last seen. When it is not, the marker moves to the real date, and a window that
+/// was showing the old today moves with it; one the person had moved elsewhere stays where it is
+/// (`today::follow`).
+fn follow_today(ui: &CalendarApp, state: &Rc<RefCell<CalState>>, clock: &impl today::Clock) {
+    let (shown, was, now) = {
+        let mut s = state.borrow_mut();
+        let Some(was) = s.today.check(clock) else { return };
+        let shown = today::Shown { year: s.year, month: s.month, day: ui.get_selected_day().max(0) as u32 };
+        (shown, was, s.today.date())
+    };
+    let next = today::follow(shown, was, now);
+    {
+        let mut s = state.borrow_mut();
+        s.year = next.year;
+        s.month = next.month;
+    }
+    ui.set_selected_day(next.day as i32);
+    refresh(ui, state);
+}
+
+/// Keep the window's today true: at every midnight while the window is open, and each time it
+/// becomes the active window again.
+///
+/// Midnight is a chain of single-shot timers, each set for the next midnight by the one before,
+/// that ends when the window does; the event loop owns them, so there is no handle to hold.
+fn watch_the_date(app: &CalendarApp, state: &Rc<RefCell<CalState>>) {
+    fn at_midnight(weak: slint::Weak<CalendarApp>, state: Rc<RefCell<CalState>>) {
+        let wait = today::until_midnight(today::Clock::now(&today::LocalClock));
+        slint::Timer::single_shot(wait, move || {
+            let Some(ui) = weak.upgrade() else { return };
+            follow_today(&ui, &state, &today::LocalClock);
+            at_midnight(weak, state);
+        });
+    }
+    at_midnight(app.as_weak(), state.clone());
+
+    let weak = app.as_weak();
+    let st = state.clone();
+    yantrik_app_runtime::chrome::on_activated(app.window(), move || {
+        if let Some(ui) = weak.upgrade() {
+            follow_today(&ui, &st, &today::LocalClock);
+        }
+    });
 }
 
 /// Put an event on the calendar and show it, or say why not.
@@ -1757,10 +1810,12 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
 /// and a binding inside this function is dropped the moment it returns — see the comment at its
 /// declaration below, and `main`.
 fn wire(app: &CalendarApp) -> slint::Timer {
-    let (ty, tm, td) = today();
+    let today = today::Today::new(&today::LocalClock);
+    let opens_on = today::Shown::on(today.date());
     let state = Rc::new(RefCell::new(CalState {
-        year: ty,
-        month: tm,
+        year: opens_on.year,
+        month: opens_on.month,
+        today,
         week_start: week_start_setting(),
         events: Vec::new(),
         range: None,
@@ -1770,11 +1825,12 @@ fn wire(app: &CalendarApp) -> slint::Timer {
 
     // Initial load. The selected day goes on first because the range the week view needs is
     // decided by it.
-    app.set_selected_day(td as i32);
+    app.set_selected_day(opens_on.day as i32);
     refresh(app, &state);
 
     // Published once the first read is done, so the first `app.describe` reports real events.
     publish_control(app, state.clone());
+    watch_the_date(app, &state);
 
     // ── Prev month ──
     {
@@ -1977,13 +2033,17 @@ fn wire(app: &CalendarApp) -> slint::Timer {
         let st = state.clone();
         app.on_today_pressed(move || {
             let Some(ui) = weak.upgrade() else { return };
-            let (ny, nm, nd) = today();
-            {
+            // The clock is read here, at the press, so the button goes to the real date even if
+            // midnight passed since the window last looked.
+            let target = {
                 let mut s = st.borrow_mut();
-                s.year = ny;
-                s.month = nm;
-            }
-            ui.set_selected_day(nd as i32);
+                s.today.check(&today::LocalClock);
+                let target = today::Shown::on(s.today.date());
+                s.year = target.year;
+                s.month = target.month;
+                target
+            };
+            ui.set_selected_day(target.day as i32);
             refresh(&ui, &st);
         });
     }
@@ -2141,6 +2201,10 @@ fn wire(app: &CalendarApp) -> slint::Timer {
         let st = state.clone();
         watch.start(slint::TimerMode::Repeated, STORE_WATCH, move || {
             let Some(ui) = weak.upgrade() else { return };
+            // Before the visibility test: a date check is one comparison, and a window that was
+            // put away over midnight should come back on the right day. This also catches a
+            // midnight the timer above slept through on a suspended machine.
+            follow_today(&ui, &st, &today::LocalClock);
             if !ui.window().is_visible() || ui.window().is_minimized() {
                 return;
             }
@@ -2162,6 +2226,26 @@ mod tests {
         assert_eq!(ymd("2026-09-32"), None);
         assert_eq!(ymd("30 Sep"), None, "not a date: the window stays where it is");
         assert_eq!(ymd(""), None);
+    }
+
+    /// The month grid's marker is the window's today, so it moves when the date turns: on the
+    /// 30th of September before midnight, off September and on the 1st of October after it.
+    #[test]
+    fn the_marker_follows_the_date_across_midnight() {
+        let clock = today::FakeClock::at("2026-09-30 23:59:58");
+        let mut tracked = today::Today::new(&clock);
+        let marked = |year: i32, month: u32, today: chrono::NaiveDate| -> Vec<i32> {
+            build_month_grid(year, month, &[], today_in(year, month, today), views::WeekStart::Monday)
+                .iter()
+                .filter(|c| c.is_today)
+                .map(|c| c.day_number)
+                .collect()
+        };
+        assert_eq!(marked(2026, 9, tracked.date()), [30]);
+        clock.advance(5);
+        assert!(tracked.check(&clock).is_some(), "midnight passed");
+        assert_eq!(marked(2026, 9, tracked.date()), Vec::<i32>::new(), "September has no today any more");
+        assert_eq!(marked(2026, 10, tracked.date()), [1]);
     }
 
     /// A mind could not read "the week of Monday 28 September" because the only way to a range

@@ -3,8 +3,8 @@
 // Kinds (`variant`), exactly four:
 //   0 primary      filled accent, dark label. One per group at most.
 //   1 secondary    an outline: transparent, 1px outline-border, white label.
-//   3 destructive  filled red, white label. Only for what cannot be undone: delete, erase,
-//                  power off.
+//   3 destructive  filled red, its label the red's ink (text-on-danger). Only for what cannot
+//                  be undone: delete, erase, power off.
 //   4 destructive, at rest  an outline with a red label or glyph, filled red on hover and
 //                  press. For a delete that repeats down a list: a filled red square on every
 //                  row shouts the one action nobody came to the list to take, so it waits in
@@ -64,7 +64,7 @@ export component YButton inherits Rectangle {
     property <bool> hovered: ta.has-hover && !root.disabled;
     property <bool> pressed: ta.pressed && !root.disabled;
     property <bool> red-filled: root.variant == 3 || (root.variant == 4 && (root.hovered || root.pressed));
-    property <color> fg: root.variant == 0 ? Theme.text-on-accent : root.red-filled ? Theme.text-on-destructive : root.variant == 4 ? Theme.color-danger : Theme.text-primary;
+    property <color> fg: root.variant == 0 ? Theme.text-on-accent : root.red-filled ? Theme.text-on-danger : root.variant == 4 ? Theme.color-danger : Theme.text-primary;
     property <length> glyph: root.size == 0 ? 13px : 15px;
 
     height: root.size == 0 ? Theme.h-compact : root.size == 2 ? Theme.h-prominent : Theme.h-regular;

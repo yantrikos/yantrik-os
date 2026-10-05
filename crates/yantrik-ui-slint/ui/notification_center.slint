@@ -54,8 +54,8 @@ export struct NotificationData {
     // recorded nothing — an old record, or one from the freedesktop door — and then not drawn.
     // Shown behind the card's Details control; `sender-short` is what the card leads with.
     sender-line: string,
-    // The same two facts in a few words, the verified program first: "Sent by yantrik-ui ·
-    // verified" for the installed desktop only, else "Sent by python3 evil.py (verified) · calls
+    // The same two facts in a few words, the verified program first: "Source process confirmed:
+    // yantrik-ui" for the installed desktop only, else "Sent by python3 evil.py (verified) · calls
     // itself “Yantrik”", with the claim cut short so it can only elide itself
     // (notification_sender.rs).
     sender-short: string,
@@ -217,7 +217,9 @@ export component NotificationCenter inherits Rectangle {
                                     }
                                 }
 
-                                Text { text: notif.group-name; color: Theme.text-primary; font-size: Theme.fs-body; font-weight: Theme.fw-headline; vertical-alignment: center; }
+                                // The heading (`summary`): the sender's name, or a mind's for a group of nothing
+                                // but its turns. `group-name` is the sender's, and is what Clear matches.
+                                Text { text: notif.summary; color: Theme.text-primary; font-size: Theme.fs-body; font-weight: Theme.fw-headline; vertical-alignment: center; }
 
                                 // The total, as plain words beside the name. It was a pill, and a
                                 // pill reading 450 on a screen where nothing was unread was taken

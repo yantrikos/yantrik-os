@@ -81,9 +81,9 @@ fn approval(decision: &str, record: &str, decided_at: &str) -> ApprovalRequest {
         can_session: true,
         decision: decision.into(),
         record: record.into(),
-        identity: "The attached mind pi (node, pid 4242)".into(),
-        identity_tag: "verified".into(),
-        claim: "calls itself \u{201c}pi 0.87\u{201d}".into(),
+        identity: "Caller process confirmed: node \u{b7} PID 4242 \u{b7} the attached mind pi".into(),
+        identity_tag: "".into(),
+        claim: "Claimed name: \u{201c}pi 0.87\u{201d}".into(),
         confirm_label: "Allow once".into(),
         what: "Moves: from: ~/Pictures/2024; to: ~/Pictures/By date".into(),
         exactly: "from: ~/Pictures/2024; to: ~/Pictures/By date".into(),
@@ -114,6 +114,15 @@ fn shift_enter(w: &MinimalSoftwareWindow) {
     w.dispatch_event(WindowEvent::KeyPressed { text: Key::Shift.into() });
     key(w, Key::Return);
     w.dispatch_event(WindowEvent::KeyReleased { text: Key::Shift.into() });
+}
+
+/// Empty the focused field from the keyboard: Ctrl+A, then Backspace. Whatever an earlier step put
+/// there (step 3's starter fills the composer), wherever the field happens to be drawn.
+fn clear_field(w: &MinimalSoftwareWindow) {
+    w.dispatch_event(WindowEvent::KeyPressed { text: Key::Control.into() });
+    key(w, "a");
+    w.dispatch_event(WindowEvent::KeyReleased { text: Key::Control.into() });
+    key(w, Key::Backspace);
 }
 
 fn wheel(w: &MinimalSoftwareWindow, delta_y: f32) {
@@ -340,6 +349,10 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     settle(w);
     assert!(!ui.get_following());
     crate::click(w, PANEL_X + 150.0, 690.0);
+    // Step 3's starter left its words in the box (a starter fills and never sends); a person
+    // clears them before writing their own.
+    clear_field(w);
+    settle(w);
     for c in "hello".chars() {
         key(w, c.to_string());
     }

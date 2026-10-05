@@ -31,10 +31,12 @@ import re
 import signal
 import sys
 import threading
+import time
 import types
 import typing
 
 from . import gate, mind_door, privacy, reach, wire
+from .stopping import StopOnSignal
 
 PROTOCOL = 1
 SETTLES = ("on return", "later")
@@ -879,18 +881,22 @@ class Surface:
             raise SystemExit(1) from None
         print("[yantrik] %s answering on %s (%d actions)"
               % (self.app_id, server.path, len(self.actions)), file=sys.stderr)
-        stop = threading.Event()
-        previous = None
+        # A flag, not a threading.Event: a handler calling Event.set() can deadlock (stopping.py).
+        # Signals can only be handled on the main thread; elsewhere only Ctrl-C ends the loop.
+        stop = None
         if threading.current_thread() is threading.main_thread():
-            previous = signal.signal(signal.SIGTERM, lambda *_: stop.set())
+            stop = StopOnSignal((signal.SIGTERM,))
         try:
-            while not stop.wait(0.5):
-                pass
+            while True:
+                if stop is None:
+                    time.sleep(0.5)
+                elif stop.wait(0.5):
+                    break
         except KeyboardInterrupt:
             pass
         finally:
-            if previous is not None:
-                signal.signal(signal.SIGTERM, previous)
+            if stop is not None:
+                stop.restore()
             self.stop()
 
     def stop(self):

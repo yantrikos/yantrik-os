@@ -49,9 +49,9 @@ pub(crate) fn card(summary: &str) -> ApprovalRequest {
         on_behalf: "".into(),
         requester: "pi 0.87".into(),
         verified: "pi --mode rpc (pid 4242) · the attached mind".into(),
-        identity: "The attached mind pi (node, pid 4242)".into(),
-        identity_tag: "verified".into(),
-        claim: "calls itself “pi 0.87”".into(),
+        identity: "Caller process confirmed: node \u{b7} PID 4242 \u{b7} the attached mind pi".into(),
+        identity_tag: "".into(),
+        claim: "Claimed name: “pi 0.87”".into(),
         confirm_label: "Allow once".into(),
         destructive: false,
         what: "Runs: recipe: builtin_formation_council; inputs: {\"question\": \"attack the plan to ship 0.4 on Friday\"}".into(),
@@ -329,11 +329,11 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         exactly: long.join("; ").into(),
         discrepancies: lines(&["The caller called this `standard`; the app publishes `sensitive`."]),
         explained: "After this the recipe's agents start at once.".into(),
-        identity: "A terminal program (sshd-session, pid 2290461)".into(),
+        identity: "Caller process confirmed: sshd-session \u{b7} PID 2290461 \u{b7} from a terminal".into(),
         ..card(RUN_RECIPE_SUMMARY)
     };
-    let who = row_drawn_above(crowded.clone(), &|c: &mut ApprovalRequest| c.identity = "A terminal program (sshd-session, pid 2290467)".into(), "the identity line, eight long arguments");
-    let claim = row_drawn_above(crowded.clone(), &|c: &mut ApprovalRequest| c.claim = "calls itself \u{201c}pi 0.88\u{201d}".into(), "the claim, eight long arguments");
+    let who = row_drawn_above(crowded.clone(), &|c: &mut ApprovalRequest| c.identity = "Caller process confirmed: sshd-session \u{b7} PID 2290467 \u{b7} from a terminal".into(), "the identity line, eight long arguments");
+    let claim = row_drawn_above(crowded.clone(), &|c: &mut ApprovalRequest| c.claim = "Claimed name: \u{201c}pi 0.88\u{201d}".into(), "the claim, eight long arguments");
     let doubt = row_drawn_above(
         crowded.clone(),
         &|c: &mut ApprovalRequest| c.discrepancies = lines(&["The caller called this `standard`; the app publishes `dangerous`."]),
@@ -432,6 +432,21 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     let with = measure(roomy_card(sentence));
     println!("#137 line: the sensitive card is {without}px without the sentence and {with}px with it");
     assert!(with - without >= 45.0, "the per-call sentence is on the face of a sensitive card and wraps: {}px", with - without);
+
+    // Sign-off, 5 October: Decline is the outline kind, transparent at rest, and showed the card's
+    // ground — in light the bar's grey, so it read as a filled grey key beside the outline it is
+    // in dark. The card has a ground of its own (`chat-card`): white in light, the bar's in dark.
+    for (dark, want) in [(false, (0xff, 0xff, 0xff)), (true, (0x10, 0x14, 0x17))] {
+        natural.global::<ThemeMode>().set_dark(dark);
+        natural.set_data(card(RUN_RECIPE_SUMMARY));
+        let (gw, gh) = size(&natural);
+        w.set_size(slint::PhysicalSize::new(gw, gh));
+        let p = settle(w, gw, gh);
+        // Inside the card's left padding, halfway down: the ground and nothing drawn on it.
+        let c = p.as_slice()[(gh / 2 * gw + 14) as usize];
+        assert_eq!((c.r, c.g, c.b), want, "the approval card's ground (dark: {dark})");
+    }
+    natural.global::<ThemeMode>().set_dark(true);
 
     println!(
         "PASS: the longest card fits the Lens at 1280×800 — Deny answers at {deny_y} and Allow at \

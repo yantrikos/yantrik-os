@@ -278,11 +278,18 @@ pub fn warning_beside(warning: &str, undo: &str) -> String {
 }
 
 /// Who is asking, as this machine established it.
+///
+/// Worded so the line says what was checked and by what (review of the UI overhaul by GPT-6
+/// Astra, B): "Caller process confirmed: bash · PID 812", not "A program (bash, pid 812) ·
+/// verified", which left a person to guess what "verified" covered. Display only: how the caller
+/// is identified is `caller_identity.rs`'s and the kernel's, and nothing here changes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Identity {
-    /// "A terminal program (sshd-session, pid 2290461)": cut at the card's edge if it must.
+    /// "Caller process confirmed: sshd-session · PID 2290461 · from a terminal": cut at the
+    /// card's edge if it must, from the end, so the process and its PID go last.
     pub fact: String,
-    /// "verified", or "nothing verified": drawn beside the fact, never cut.
+    /// "not verified" when nothing could be established; else empty, the fact saying it. Drawn
+    /// beside the fact, never cut.
     pub tag: &'static str,
 }
 
@@ -295,28 +302,38 @@ pub fn identity(verified: &Verified) -> Identity {
     // A card the shell raised itself, for a recipe step: a structured fact the shell set where it
     // built the card, never read from the line (fourth review of #639).
     if verified.raised_by_desktop {
-        return Identity { fact: "This desktop (a recipe step)".to_string(), tag: "verified" };
+        return Identity { fact: "Raised by this desktop (a recipe step)".to_string(), tag: "" };
     }
     if verified.pid <= 0 {
-        return Identity { fact: "A program this machine could not identify".to_string(), tag: "nothing verified" };
+        return Identity { fact: "Caller process could not be identified".to_string(), tag: "not verified" };
     }
     let pid = verified.pid;
     let exe_path = verified.exe.strip_suffix(" (deleted)").unwrap_or(&verified.exe);
-    if verified.attached_mind.trim().is_empty() && yantrik_ipc_transport::owner::is_installed_desktop_binary(exe_path) {
-        return Identity { fact: format!("{} (pid {pid})", capitalised(&visible(&bridged_by(exe_path)))), tag: "verified" };
+    if (verified.attached_mind.trim().is_empty() || !verified.mind_by_pid) && yantrik_ipc_transport::owner::is_installed_desktop_binary(exe_path) {
+        return Identity { fact: format!("{CONFIRMED}{} \u{b7} PID {pid}", visible(&bridged_by(exe_path))), tag: "" };
     }
     let exe = clip_chars(&visible(yantrik_ipc_transport::peer_identity::basename(exe_path)), EXE_CHARS);
-    let what = if exe.is_empty() { format!("pid {pid}") } else { format!("{exe}, pid {pid}") };
+    let head = if exe.is_empty() { format!("{CONFIRMED}PID {pid}") } else { format!("{CONFIRMED}{exe} \u{b7} PID {pid}") };
     let mind = visible(verified.attached_mind.trim());
+    // The attached mind only by the kernel's pid. A word of the program's own name that matches a
+    // mind is the program's choice: said as a match, and not verified (security review of #648, M2).
+    if !mind.is_empty() && !verified.mind_by_pid {
+        // A script typed in a terminal keeps that note too.
+        let terminal = if verified.from_terminal { " \u{b7} from a terminal" } else { "" };
+        return Identity { fact: format!("{head}{terminal} \u{b7} name matches {mind}"), tag: "not verified" };
+    }
     let fact = if !mind.is_empty() {
-        format!("The attached mind {mind} ({what})")
+        format!("{head} \u{b7} the attached mind {mind}")
     } else if verified.from_terminal {
-        format!("A terminal program ({what})")
+        format!("{head} \u{b7} from a terminal")
     } else {
-        format!("A program ({what})")
+        head
     };
-    Identity { fact, tag: "verified" }
+    Identity { fact, tag: "" }
 }
+
+/// How a confirmed caller's line begins.
+const CONFIRMED: &str = "Caller process confirmed: ";
 
 /// Every character drawn as a quote mark, which a claim must not use to close the card's own.
 fn is_quote(c: char) -> bool {
@@ -328,8 +345,8 @@ fn is_quote(c: char) -> bool {
     )
 }
 
-/// The second identity line, drawn under the first in amber with "· unverified" beside it: the
-/// name the caller gave itself. One plain line, nothing invisible left in it, cut short, and every
+/// The second identity line, drawn under the first in amber with "· not verified" beside it: the
+/// name the caller gave itself, "Claimed name: “design-sweep”". One plain line, nothing invisible left in it, cut short, and every
 /// quote mark of its own turned into an apostrophe so it cannot close the quote the card puts
 /// round it (review of #639, N1).
 pub fn claim(requester: &str) -> String {
@@ -337,9 +354,9 @@ pub fn claim(requester: &str) -> String {
     let name: String = plain(&seen, CLAIM_CHARS).chars().map(|c| if is_quote(c) { '\'' } else { c }).collect();
     let name = name.trim();
     if name.is_empty() {
-        "gave itself no name".to_string()
+        "Claimed name: none given".to_string()
     } else {
-        format!("calls itself \u{201c}{name}\u{201d}")
+        format!("Claimed name: \u{201c}{name}\u{201d}")
     }
 }
 

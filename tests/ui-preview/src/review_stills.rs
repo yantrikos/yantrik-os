@@ -90,9 +90,9 @@ pub(crate) fn delete_card() -> ApprovalRequest {
         on_behalf: "".into(),
         requester: "design-sweep".into(),
         verified: "a program started from a terminal: sshd-session (pid 2290461)".into(),
-        identity: "A terminal program (sshd-session, pid 2290461)".into(),
-        identity_tag: "verified".into(),
-        claim: "calls itself \u{201c}design-sweep\u{201d}".into(),
+        identity: "Caller process confirmed: sshd-session \u{b7} PID 2290461 \u{b7} from a terminal".into(),
+        identity_tag: "".into(),
+        claim: "Claimed name: \u{201c}design-sweep\u{201d}".into(),
         confirm_label: "Delete event".into(),
         destructive: true,
         what: "Deletes: id: sweep-demo-not-real".into(),
@@ -126,9 +126,9 @@ pub(crate) fn dangerous_card() -> ApprovalRequest {
         id: "appr-review-2".into(),
         requester: "hermes".into(),
         verified: "python3 sweep.py (pid 31337)".into(),
-        identity: "A program (python3.12, pid 31337)".into(),
-        identity_tag: "verified".into(),
-        claim: "calls itself \u{201c}hermes\u{201d}".into(),
+        identity: "Caller process confirmed: python3.12 \u{b7} PID 31337".into(),
+        identity_tag: "".into(),
+        claim: "Claimed name: \u{201c}hermes\u{201d}".into(),
         confirm_label: "Kill process".into(),
         destructive: true,
         what: "Kills: force: true; pid: 2210".into(),
@@ -248,7 +248,7 @@ fn lens_composer(w: &MinimalSoftwareWindow, output: &str, dark: bool) -> Result<
     ui.global::<ThemeMode>().set_dark(dark);
     ui.global::<AccentPreset>().set_index(0);
     ui.set_messages(ModelRc::new(VecModel::from(Vec::<MessageData>::new())));
-    ui.set_destination("Yantrik Mind \u{b7} deepseek-v4.1-flash \u{b7} online, via Ollama Cloud".into());
+    ui.set_destination("Sends your message and conversation context to: Ollama Cloud \u{b7} deepseek-v4.1-flash".into());
     ui.show()?;
     w.set_size(slint::PhysicalSize::new(1280, 800));
     settle(w, 1280, 800);

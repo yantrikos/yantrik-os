@@ -34,7 +34,7 @@ pub struct MindFact {
 }
 
 /// What the built-in companion is pointed at: the AI page's own answer.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct CompanionFact {
     pub base_url: String,
     pub model: String,
@@ -42,6 +42,112 @@ pub struct CompanionFact {
     pub source: String,
     /// The saved provider's name, when it is one.
     pub provider_name: String,
+    /// How the companion reaches its model: config.yaml's `llm.backend`, or the API when a saved
+    /// provider is primary (Settings applies one as an API backend).
+    pub backend: Backend,
+    /// Where it turns when that fails, already said ("Ollama at localhost:8341", "llama.cpp in
+    /// this process"): config.yaml's `llm.fallback` or a saved fallback provider. `None` when
+    /// there is no fallback.
+    pub fallback: Option<String>,
+    /// What the endpoint was set up as: a saved provider's type ("litellm", "ollama"), or
+    /// config.yaml's `llm.backend` name. Lets a proxy on a port the catalogue does not know be
+    /// named as one.
+    pub provider_kind: String,
+}
+
+/// How the built-in companion reaches its model: the split `bridge::build_companion` makes when it
+/// builds the backend, by the same two predicates (`Backend::of`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Backend {
+    /// An HTTP API at `base_url`: Ollama, vLLM, a cloud provider, a proxy.
+    #[default]
+    Api,
+    /// A model loaded into this process (candle, llama.cpp): nothing goes over the network.
+    InProcess,
+    /// The Claude Code CLI, which sends what it is given to Anthropic whatever the URL says.
+    ClaudeCli,
+}
+
+impl Backend {
+    /// What `bridge::build_companion` builds from this config, decided by the predicates it
+    /// decides by — `is_claude_cli_backend` first, then `is_api_backend` — so a spelling the
+    /// bridge reads as an API ("Candle", " llamacpp") is an API here too and never "in process"
+    /// (security review of #648, H1(b)).
+    pub fn of(llm: &yantrik_companion::config::LLMConfig) -> Self {
+        if llm.is_claude_cli_backend() {
+            Backend::ClaudeCli
+        } else if llm.is_api_backend() {
+            Backend::Api
+        } else {
+            Backend::InProcess
+        }
+    }
+}
+
+/// An address as it was seen: "Ollama at localhost:11434", "Ollama at 127.0.0.1:11434" (a local
+/// runtime by its default port on this machine), "Ollama Cloud", "10.0.0.2:8000, on this
+/// network". The words a destination or a fallback is named in.
+pub fn seen_at(base_url: &str) -> String {
+    let host = identity::host(base_url);
+    match identity::from_url(base_url) {
+        ProviderRef::Known(p) if p.kind == yantrik_ml::ProviderKind::Local => format!("{} at {host}", p.display_name),
+        ProviderRef::Known(p) => p.display_name.to_string(),
+        ProviderRef::Local(h) if identity::is_loopback(&h) => match local_by_port(&h) {
+            Some(p) => format!("{} at {h}", p.display_name),
+            None => h,
+        },
+        ProviderRef::Local(h) => format!("{h}, on this network"),
+        ProviderRef::Custom(h) => h,
+        ProviderRef::NotReported => "an address not known".to_string(),
+    }
+}
+
+/// The local runtime whose default port a loopback address is on: 127.0.0.1:11434 is Ollama's,
+/// 127.0.0.1:4000 LiteLLM's. The catalogue matches local runtimes by their exact default host
+/// (`localhost:11434`), so the same daemon reached by its IP was only an address.
+fn local_by_port(host: &str) -> Option<&'static yantrik_ml::ProviderDescriptor> {
+    let port = host.rsplit_once(':').map(|(_, p)| p)?;
+    yantrik_ml::KNOWN_PROVIDERS.iter().find(|p| {
+        p.kind == yantrik_ml::ProviderKind::Local
+            && identity::host(p.default_base_url).rsplit_once(':').map(|(_, q)| q) == Some(port)
+    })
+}
+
+/// config.yaml's `llm.fallback`, as the destination line names it: "llama.cpp in this process", or
+/// the address of the API it falls back to. Decided as `bridge` decides it: `llamacpp` exactly is
+/// the embedded model, anything else an API.
+pub fn fallback_label(backend: &str, api_base_url: Option<&str>) -> String {
+    if backend == "llamacpp" {
+        return "llama.cpp in this process".to_string();
+    }
+    match api_base_url.map(str::trim).filter(|u| !u.is_empty()) {
+        Some(url) => seen_at(url),
+        None => "a fallback not known".to_string(),
+    }
+}
+
+/// A provider that forwards what it is sent somewhere else, so an address on this machine is no
+/// promise about where the words end up: a LiteLLM proxy — the catalogue's, one on LiteLLM's
+/// port, or one set up as LiteLLM on any port — and a model that runs on Ollama's cloud
+/// (`*-cloud` / `*:cloud`) through a daemon on this machine or this network.
+fn forwards_elsewhere(provider: &ProviderRef, kind: &str, model: Option<&str>) -> Option<String> {
+    let id = match provider {
+        ProviderRef::Known(p) => Some(p.id),
+        ProviderRef::Local(h) if identity::is_loopback(h) => local_by_port(h).map(|p| p.id),
+        _ => None,
+    };
+    let kind = kind.trim().to_ascii_lowercase();
+    if id == Some("litellm") || kind == "litellm" {
+        return Some("a proxy that forwards it on".to_string());
+    }
+    let cloud_model = model.is_some_and(|m| {
+        let m = m.trim().to_ascii_lowercase();
+        m.ends_with("-cloud") || m.ends_with(":cloud")
+    });
+    if cloud_model && (id == Some("ollama") || kind == "ollama" || matches!(provider, ProviderRef::Local(_))) {
+        return Some("Ollama Cloud".to_string());
+    }
+    None
 }
 
 /// Where a mind's provider is set.
@@ -69,12 +175,28 @@ pub struct RunsOn {
     pub set_in: SetIn,
     /// The facts came from the mind's own words, not from a file the desktop read.
     pub reported: bool,
+    /// How the companion reaches its model; `Api` for every attached mind.
+    pub backend: Backend,
+    /// The companion's fallback, said; `None` for every attached mind.
+    pub fallback: Option<String>,
+    /// The companion's address as the desktop read it; empty for every attached mind.
+    pub base_url: String,
+    /// What the companion's endpoint was set up as (`CompanionFact::provider_kind`); empty for
+    /// every attached mind.
+    pub provider_kind: String,
 }
 
 impl RunsOn {
     /// "Ollama Cloud · deepseek-v4.1-flash"; "provider not reported · deepseek-v4.1-flash";
     /// "Nothing set up" when the companion has no address.
     pub fn runs_on(&self) -> String {
+        let model = self.model.as_deref().filter(|m| !m.is_empty());
+        let with_model = |what: &str| model.map_or(what.to_string(), |m| format!("{what} \u{b7} {m}"));
+        match self.backend {
+            Backend::ClaudeCli => return with_model("Anthropic (Claude CLI)"),
+            Backend::InProcess => return with_model("This machine, in process"),
+            Backend::Api => {}
+        }
         if self.set_in == SetIn::Nowhere {
             return "Nothing set up".to_string();
         }
@@ -100,26 +222,50 @@ impl RunsOn {
         }
     }
 
-    /// Where words typed to this mind go, for the line under the chat composer:
-    /// "Yantrik Mind · deepseek-v4.1-flash · online, via Ollama Cloud";
-    /// "Yantrik Companion · qwen3.5:9b · on this machine". Empty when the provider is not known:
-    /// the line is an observed fact or nothing, never a guess.
+    /// Where words typed to this mind go, for the row above the chat composer's Send:
+    /// "Sends your message and conversation context to: Ollama Cloud · deepseek-v4.1-flash";
+    /// "Stays on this machine · qwen3.5:9b". It says what leaves the machine (the message and the
+    /// conversation sent with it; the composer carries no attachments) and to whom. Empty when the
+    /// provider is not known: the line is an observed fact or nothing, never a guess (review of
+    /// the UI overhaul by GPT-6 Astra, A).
+    ///
+    /// "Stays on this machine" is said for one thing only (security review of #648, H1): a model
+    /// loaded into this process, with no fallback that could take the words elsewhere. An API is
+    /// never "stays", loopback included — a daemon on this machine can forward what it is sent,
+    /// and the desktop cannot see that it does not — so it is named as it was seen ("Ollama at
+    /// 127.0.0.1:11434"), and a proxy or a cloud model behind it is named as forwarding.
     pub fn destination(&self) -> String {
-        let place = match &self.provider {
+        let to = |whom: String| format!("Sends your message and conversation context to: {whom}");
+        let model = self.model.as_deref().filter(|m| !m.is_empty());
+        let said = match (&self.backend, &self.provider) {
+            // The CLI sends to Anthropic whatever address config.yaml also holds.
+            (Backend::ClaudeCli, _) => to("Anthropic (Claude CLI)".to_string()),
+            (Backend::InProcess, _) if self.fallback.is_none() => "Stays on this machine".to_string(),
+            (Backend::InProcess, _) => "Runs in this process".to_string(),
             _ if self.set_in == SetIn::Nowhere => return String::new(),
-            ProviderRef::NotReported => return String::new(),
-            // A local runtime named by the desktop's own address is this machine. Named only in a
-            // mind's words ("ollama:qwen3.5:9b") it could be on any machine, so no place is said.
-            ProviderRef::Known(p) if p.kind == yantrik_ml::ProviderKind::Local && self.reported => format!("via {}", p.display_name),
-            ProviderRef::Known(p) if p.kind == yantrik_ml::ProviderKind::Local => "on this machine".to_string(),
-            ProviderRef::Known(p) => format!("online, via {}", p.display_name),
-            ProviderRef::Local(host) if identity::is_loopback(host) => "on this machine".to_string(),
-            ProviderRef::Local(host) => format!("on this network, at {host}"),
-            ProviderRef::Custom(host) => format!("online, via {host}"),
+            (_, ProviderRef::NotReported) => return String::new(),
+            // A mind's own words ("ollama:qwen3.5:9b", "127.0.0.1:9000") could be about any
+            // machine: the provider is named and no place is said for it.
+            (_, provider) if self.reported => to(match provider {
+                ProviderRef::Known(p) => p.display_name.to_string(),
+                ProviderRef::Local(h) | ProviderRef::Custom(h) => h.clone(),
+                ProviderRef::NotReported => return String::new(),
+            }),
+            (_, provider) => {
+                let seen = if self.base_url.is_empty() { provider.label() } else { seen_at(&self.base_url) };
+                match forwards_elsewhere(provider, &self.provider_kind, model) {
+                    Some(on) => to(format!("{on}, through {seen}")),
+                    None => to(seen),
+                }
+            }
         };
-        match self.model.as_deref().filter(|m| !m.is_empty()) {
-            Some(m) => format!("{} \u{b7} {m} \u{b7} {place}", self.name),
-            None => format!("{} \u{b7} {place}", self.name),
+        let said = match model {
+            Some(m) => format!("{said} \u{b7} {m}"),
+            None => said,
+        };
+        match &self.fallback {
+            Some(fb) => format!("{said} \u{b7} falls back to {fb}"),
+            None => said,
         }
     }
 
@@ -159,17 +305,27 @@ fn one(m: &MindFact, companion: Option<&CompanionFact>) -> RunsOn {
         model,
         set_in,
         reported,
+        backend: Backend::Api,
+        fallback: None,
+        base_url: String::new(),
+        provider_kind: String::new(),
     };
     if m.builtin {
         return match companion {
-            Some(c) if !c.base_url.trim().is_empty() => {
+            Some(c) if !c.base_url.trim().is_empty() || c.backend != Backend::Api => {
                 let set_in = if c.source == "saved provider" {
                     SetIn::SavedProvider(c.provider_name.clone())
                 } else {
                     SetIn::ConfigYaml
                 };
                 let model = Some(c.model.trim().to_string()).filter(|s| !s.is_empty());
-                base(identity::from_url(&c.base_url), model, set_in, false)
+                RunsOn {
+                    backend: c.backend,
+                    fallback: c.fallback.clone(),
+                    base_url: c.base_url.trim().to_string(),
+                    provider_kind: c.provider_kind.clone(),
+                    ..base(identity::from_url(&c.base_url), model, set_in, false)
+                }
             }
             _ => base(ProviderRef::NotReported, None, SetIn::Nowhere, false),
         };
@@ -196,7 +352,10 @@ pub fn summary(rows: &[RunsOn]) -> String {
         .iter()
         .map(|(_, label, n)| format!("{label} runs {n} {}.", if *n == 1 { "mind" } else { "minds" }))
         .collect();
-    let silent = rows.iter().filter(|r| r.provider == ProviderRef::NotReported && r.set_in != SetIn::Nowhere).count();
+    let silent = rows
+        .iter()
+        .filter(|r| r.provider == ProviderRef::NotReported && r.set_in != SetIn::Nowhere && r.backend == Backend::Api)
+        .count();
     if silent > 0 {
         parts.push(format!("{silent} {} not say what {} on.", if silent == 1 { "mind does" } else { "minds do" }, if silent == 1 { "it runs" } else { "they run" }));
     }

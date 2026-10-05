@@ -240,10 +240,12 @@ export component MemoryBrowser inherits Rectangle {
         if results.length == 0 && !is-searching && !root.busy : YEmptyState {
             vertical-stretch: 1;
             icon-path: root.showing-recent ? Icons.chip : Icons.search;
-            title: root.showing-recent ? "Search your memories" : "Nothing matched";
+            // A search over saved entries, said as one (review by GPT-6 Astra, F): it finds what
+            // matches the words, not everything a mind "knows", and it can miss.
+            title: root.showing-recent ? "Search saved memories" : "Nothing matched";
             description: !root.showing-recent ? "Try other words, or clear the search to see the newest memories."
-                : root.total-memories > 0 ? "\{root.total-memories} stored. Type a query above and Yantrik will recall what it knows."
-                : "Type a query above and Yantrik will recall what it knows.";
+                : root.total-memories > 0 ? "\{root.total-memories} stored. Enter a query to find matching saved entries. Results may be incomplete."
+                : "Enter a query to find matching saved entries. Results may be incomplete.";
         }
     }
 }

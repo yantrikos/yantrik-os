@@ -1766,7 +1766,7 @@ impl Notice {
     /// words, so it goes in the body, labelled as theirs. It was the title, and two cards in the
     /// centre were titled "yes" (sign-off, 4 October).
     fn notification(&self) -> yantrik_app_runtime::notify::Notification {
-        use crate::notification_groups::{turn_title, you_asked};
+        use crate::notification_groups::{mind_name, turn_title, you_asked};
         use yantrik_app_runtime::notify::{Level, Notification};
         let (title, body) = match self {
             Notice::Finished { mind, title, ok: true, calls, .. } => (
@@ -1777,9 +1777,9 @@ impl Notice {
                 turn_title(mind, false, *calls),
                 format!("{} Its turn ended without finishing. Open it to see where it stopped.", you_asked(title)),
             ),
-            Notice::NeedsYou { mind, what, .. } => (format!("{} needs you", one_line(mind, 40)), what.clone()),
+            Notice::NeedsYou { mind, what, .. } => (format!("{} needs you", mind_name(mind)), what.clone()),
             Notice::Stuck { mind, title, why, .. } => (
-                format!("{mind} looks stuck"),
+                format!("{} looks stuck", mind_name(mind)),
                 format!("{} {} Open it to see where, give it a hint, or stop it.", you_asked(title), why.plain()),
             ),
         };

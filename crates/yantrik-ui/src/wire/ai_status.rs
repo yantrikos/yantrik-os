@@ -39,6 +39,54 @@ pub(crate) fn companion() -> Option<crate::runs_on::CompanionFact> {
     COMPANION.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+/// What the companion was built from, as `bridge::build_companion` built it: the backend by the
+/// bridge's own predicates (`runs_on::Backend::of`), the fallback said (`runs_on::fallback_label`),
+/// and config.yaml's backend name. What the destination line may claim rests on these (security
+/// review of #648, H1). Set once at start, from the config the companion is built from.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ConfigLlm {
+    pub backend: crate::runs_on::Backend,
+    pub fallback: Option<String>,
+    pub kind: String,
+}
+
+static CONFIG_LLM: Mutex<Option<ConfigLlm>> = Mutex::new(None);
+
+pub(crate) fn set_config_llm(config: ConfigLlm) {
+    *CONFIG_LLM.lock().unwrap_or_else(|e| e.into_inner()) = Some(config);
+}
+
+/// The companion as the destination line needs it: the target, how it is reached, its fallback
+/// and what it was set up as. A saved primary is applied as an API backend (`ReloadLLM`),
+/// whatever config.yaml names, and its type is what it was set up as; a saved fallback provider
+/// is named over config.yaml's. In-process and CLI backends are described even with no address.
+pub(crate) fn companion_fact(
+    target: Option<&Target>,
+    config: &ConfigLlm,
+    saved_primary_kind: Option<String>,
+    saved_fallback: Option<String>,
+) -> Option<crate::runs_on::CompanionFact> {
+    use crate::runs_on::{Backend, CompanionFact};
+    let backend = if saved_primary_kind.is_some() { Backend::Api } else { config.backend };
+    let provider_kind = saved_primary_kind.unwrap_or_else(|| config.kind.clone());
+    let fallback = saved_fallback.or_else(|| config.fallback.clone());
+    match target {
+        Some(t) => Some(CompanionFact {
+            base_url: t.base_url.clone(),
+            model: t.model.clone(),
+            source: t.source.clone(),
+            provider_name: t.name.clone(),
+            backend,
+            fallback,
+            provider_kind,
+        }),
+        None if backend != Backend::Api => {
+            Some(CompanionFact { source: "config.yaml".into(), backend, fallback, provider_kind, ..CompanionFact::default() })
+        }
+        None => None,
+    }
+}
+
 pub(crate) fn set_config_key(key: Option<String>) {
     let slot = CONFIG_KEY.get_or_init(|| Mutex::new(None));
     *slot.lock().unwrap_or_else(|e| e.into_inner()) = key.filter(|k| !k.is_empty());
@@ -181,12 +229,18 @@ pub(crate) fn refresh(ui: &App, store: &ProviderStore) {
     );
     let fallback = store.fallback().map(|f| f.name.clone());
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-    *COMPANION.lock().unwrap_or_else(|e| e.into_inner()) = target.as_ref().map(|t| crate::runs_on::CompanionFact {
-        base_url: t.base_url.clone(),
-        model: t.model.clone(),
-        source: t.source.clone(),
-        provider_name: t.name.clone(),
-    });
+    // Before the config is known, nothing is claimed for it: an API, which is never "stays".
+    let config = CONFIG_LLM
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .unwrap_or_else(|| ConfigLlm { kind: ui.get_settings_llm_backend().to_string(), ..ConfigLlm::default() });
+    *COMPANION.lock().unwrap_or_else(|e| e.into_inner()) = companion_fact(
+        target.as_ref(),
+        &config,
+        store.primary().map(|p| p.provider_type.clone()),
+        fallback.clone(),
+    );
     super::runs_on_card::publish(ui);
     let Some(target) = target else {
         ui.set_settings_ai_status(card(None, &Health::NotSetUp, fallback.as_deref()));
@@ -217,6 +271,31 @@ mod tests {
 
     fn listed(ids: &[&str]) -> Vec<ListedModel> {
         ids.iter().map(|i| ListedModel { id: i.to_string(), name: i.to_string(), size_bytes: 0 }).collect()
+    }
+
+    /// What the destination line rests on: a saved primary is an API backend whatever config.yaml
+    /// says, config.yaml's in-process and CLI backends are described with no address, and a
+    /// fallback is carried — the saved one over config.yaml's.
+    #[test]
+    fn the_companion_fact_carries_its_backend_and_fallback() {
+        use crate::runs_on::Backend;
+        let cfg = |backend: Backend, fallback: Option<&str>, kind: &str| ConfigLlm {
+            backend,
+            fallback: fallback.map(String::from),
+            kind: kind.into(),
+        };
+        let t = target(&ProviderStore::default(), "http://localhost:11434/v1", "qwen3.5:9b", None).unwrap();
+        let f = companion_fact(Some(&t), &cfg(Backend::Api, None, "api"), None, None).unwrap();
+        assert_eq!((f.backend, f.fallback.as_deref(), f.provider_kind.as_str()), (Backend::Api, None, "api"));
+        let f = companion_fact(Some(&t), &cfg(Backend::ClaudeCli, None, "claude-cli"), None, None).unwrap();
+        assert_eq!(f.backend, Backend::ClaudeCli);
+        let saved = companion_fact(Some(&t), &cfg(Backend::ClaudeCli, None, "claude-cli"), Some("litellm".into()), None).unwrap();
+        assert_eq!((saved.backend, saved.provider_kind.as_str()), (Backend::Api, "litellm"), "a saved primary is applied as the API, as what it was saved as");
+        let f = companion_fact(None, &cfg(Backend::InProcess, Some("Ollama at localhost:8341"), "llamacpp"), None, None).unwrap();
+        assert_eq!((f.backend, f.fallback.as_deref()), (Backend::InProcess, Some("Ollama at localhost:8341")));
+        assert!(companion_fact(None, &cfg(Backend::Api, None, "api"), None, None).is_none());
+        let f = companion_fact(Some(&t), &cfg(Backend::Api, Some("x"), "api"), None, Some("Saved".into())).unwrap();
+        assert_eq!(f.fallback.as_deref(), Some("Saved"));
     }
 
     #[test]

@@ -1152,11 +1152,11 @@ export component SystemMonitor inherits Rectangle {
                                     Rectangle {
                                         width: 100%; height: 100%;
                                         border-radius: 8px;
-                                        background: ta-fkill.has-hover ? Theme.color-danger.brighter(20%) : Theme.color-danger;
+                                        background: ta-fkill.has-hover ? Theme.destructive-hover : Theme.destructive;
                                         animate background { duration: 120ms; }
                                         Text {
                                             text: "Force Kill";
-                                            color: Theme.text-on-accent;
+                                            color: Theme.text-on-danger;
                                             font-size: Theme.fs-micro;
                                             font-weight: 500;
                                             horizontal-alignment: center;

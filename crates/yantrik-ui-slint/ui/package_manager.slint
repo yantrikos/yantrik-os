@@ -710,13 +710,13 @@ export component PackageManager inherits Rectangle {
                             if root.detail-installed : Rectangle {
                                 width: 100px;
                                 height: 36px;
-                                background: remove-ta.has-hover ? Theme.color-danger.brighter(20%) : Theme.color-danger;
+                                background: remove-ta.has-hover ? Theme.destructive-hover : Theme.destructive;
                                 border-radius: Theme.radius-pill;
 
                                 Text {
                                     text: "Remove";
                                     font-size: Theme.font-body;
-                                    color: Theme.text-on-accent;
+                                    color: Theme.text-on-danger;
                                     font-weight: 600;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;

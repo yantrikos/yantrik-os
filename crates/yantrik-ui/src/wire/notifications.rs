@@ -886,10 +886,9 @@ pub fn companion_said(ui: &App, title: &str, text: &str) {
     if ui.get_lens_open() {
         return;
     }
-    notify::send(
-        notify::Notification::new("Yantrik", title)
-            .body(text.chars().take(200).collect::<String>()),
-    );
+    // The text is the model's: filed as the companion's, labelled as a model's (security review of
+    // #648, L3). It went out under "Yantrik" with nothing saying a model wrote it.
+    post_companion(CompanionPost::Result, title.to_string(), text.chars().take(200).collect());
 }
 
 /// The built-in companion said something *unprompted* while the Lens was closed, so the person
@@ -1122,9 +1121,7 @@ fn deliver(
                  a notification and not part of the conversation"
             );
             let (title, body) = title_and_body(text);
-            notify::send(
-                notify::Notification::new("Yantrik Companion", title).body(body).urgency(Urgency::Low),
-            );
+            post_companion(CompanionPost::Result, title, body);
         }
         ProactiveDelivery::Transcript { notify } => push_to_transcript(notify),
     }
@@ -1197,12 +1194,48 @@ fn notify_companion_thought(text: &str) -> bool {
         return false;
     }
     let (title, body) = title_and_body(&cleaned);
+    post_companion(CompanionPost::Reflection, title, body);
+    true
+}
+
+/// What kind of words a companion notification carries, said on the card before the words
+/// themselves: a model wrote them (review of the UI overhaul by GPT-6 Astra, E). In the body, so
+/// the toast, Today and the centre all carry it and none can drop it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompanionPost {
+    /// An unprompted thought: nobody asked for it.
+    Reflection,
+    /// A background task's result, delivered as a notification because another mind is answering.
+    Result,
+}
+
+impl CompanionPost {
+    fn label(self) -> &'static str {
+        match self {
+            CompanionPost::Reflection => "AI-generated reflection",
+            CompanionPost::Result => "AI-generated result",
+        }
+    }
+}
+
+/// The body of a companion notification, led by what kind of words it is.
+fn labelled(kind: CompanionPost, body: &str) -> String {
+    if body.is_empty() {
+        kind.label().to_string()
+    } else {
+        format!("{} \u{b7} {body}", kind.label())
+    }
+}
+
+/// File something the built-in companion said as a notification: the one place one is made, so
+/// every companion post carries its label (security review of #648, L3: the result route filed
+/// unlabelled).
+fn post_companion(kind: CompanionPost, title: String, body: String) {
     notify::send(
         notify::Notification::new("Yantrik Companion", title)
-            .body(body)
+            .body(labelled(kind, &body))
             .urgency(Urgency::Low),
     );
-    true
 }
 
 /// How much of a thought the body keeps. The store's bound is 2,000 (`MAX_BODY`); an unprompted
@@ -1277,6 +1310,79 @@ pub fn describe_summary() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    /// A companion notification says what kind of words it is, first, whether or not it has a
+    /// body, and every one is made in one place, so none goes out unlabelled.
+    #[test]
+    fn every_companion_post_says_a_model_wrote_it() {
+        use super::{labelled, CompanionPost};
+        assert_eq!(labelled(CompanionPost::Reflection, "Your 9:30 overlaps the standup."), "AI-generated reflection \u{b7} Your 9:30 overlaps the standup.");
+        assert_eq!(labelled(CompanionPost::Reflection, ""), "AI-generated reflection");
+        assert_eq!(labelled(CompanionPost::Result, "Backups checked."), "AI-generated result \u{b7} Backups checked.");
+        let src = include_str!("notifications.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        let body_of = |name: &str| {
+            let at = &code[code.find(&format!("fn {name}(")).unwrap_or_else(|| panic!("fn {name}"))..];
+            at[..at.find("\n}\n").unwrap()].to_string()
+        };
+        assert!(body_of("notify_companion_thought").contains("post_companion(CompanionPost::Reflection"));
+        assert!(body_of("deliver").contains("post_companion(CompanionPost::Result"));
+        assert!(body_of("companion_said").contains("post_companion(CompanionPost::Result"), "a finished task's text is a model's");
+    }
+
+    /// Security review of #648, L3: model-written text must not reach a notification any way but
+    /// `post_companion`. Every place in the shell that makes a notification is listed here with
+    /// what it says; each says the desktop's own words (a fixed sentence, a version, a mind's
+    /// cleaned name). A new one fails this until it is either routed through `post_companion` or
+    /// added here because its words are the desktop's.
+    #[test]
+    fn model_text_reaches_a_notification_only_through_post_companion() {
+        const DESKTOPS_OWN_WORDS: [(&str, &str); 9] = [
+            ("focus.rs", "start"),                         // "Session complete. Nice work."
+            ("wire/agents.rs", "notification"),            // turn titles, "You asked: …"
+            ("wire/harness.rs", "late_answer_notice"),     // "<mind> answered after you left."
+            ("wire/notifications.rs", "watch_for_updates"), // "Update available — <version>"
+            ("wire/notifications.rs", "approval_waiting"), // "<verified asker> is asking to …"
+            ("wire/notifications.rs", "bypass_ended"),     // "Bypass ended"
+            ("wire/notifications.rs", "private_mode_notice"),
+            ("wire/notifications.rs", "post_companion"),   // the one door for model text
+            ("wire/screenshot.rs", "take_screenshot"),     // "Screenshot saved"
+        ];
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    files.push(path);
+                }
+            }
+        }
+        let mut found = 0;
+        for path in files {
+            let rel = path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+            let src = std::fs::read_to_string(&path).unwrap();
+            let code = src.split("#[cfg(test)]").next().unwrap();
+            for (at, _) in code.match_indices(concat!("Notification::", "new(")) {
+                let before = &code[..at];
+                let name = before
+                    .rmatch_indices("fn ")
+                    .map(|(i, _)| &before[i + 3..])
+                    .find(|rest| rest.starts_with(|c: char| c.is_ascii_lowercase() || c == '_'))
+                    .map(|rest| rest.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).next().unwrap_or(""))
+                    .unwrap_or("");
+                assert!(
+                    DESKTOPS_OWN_WORDS.contains(&(rel.as_str(), name)),
+                    "{rel}: `{name}` makes a notification; model text goes through post_companion, and the desktop's own words are listed here"
+                );
+                found += 1;
+            }
+        }
+        assert!(found >= DESKTOPS_OWN_WORDS.len(), "found {found} places");
+    }
+
     use super::*;
 
     fn situation(builtin: bool, in_flight: bool, lens: bool) -> ProactiveSituation {

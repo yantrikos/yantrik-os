@@ -1308,14 +1308,16 @@ fn who_is_calling(claimed: &str) -> approvals::Verified {
         line: identity.line(),
         exe: identity.exe(),
         pid: identity.pid(),
-        attached_mind: identity.attached_mind.clone().unwrap_or_default(),
+        // What the card names: by pid, or by a word of the program's name that is the mind's own.
+        attached_mind: identity.shown_mind.clone().unwrap_or_default(),
+        mind_by_pid: identity.attached_by_pid,
         discrepancies: {
             let said = crate::caller_identity::mismatch(claimed, &identity, &minds);
             if said.is_empty() { Vec::new() } else { vec![said] }
         },
         agent: String::new(),
         // The rule `CallerIdentity::line` uses for its terminal prefix, kept as a fact.
-        from_terminal: identity.attached_mind.is_none() && identity.via_shell,
+        from_terminal: !identity.attached_by_pid && identity.via_shell,
         raised_by_desktop: false,
     }
 }
@@ -2060,8 +2062,13 @@ fn audit_row(e: &crate::mind_mode::AuditEntry) -> crate::MindAuditEntry {
 /// caller": `intent_lens.slint`, the notifications after #134, `caller_identity.rs` / #43).
 fn audit_actor(e: &crate::mind_mode::AuditEntry) -> String {
     let v = &e.verified;
-    if !v.attached_mind.is_empty() {
+    if !v.attached_mind.is_empty() && v.mind_by_pid {
         return v.attached_mind.clone();
+    }
+    // Matched only by a word of the program's own name: a match, not the mind (security review
+    // of #648, M2).
+    if !v.attached_mind.is_empty() {
+        return format!("name matches {} (not verified)", v.attached_mind);
     }
     if !v.agent.is_empty() {
         return format!("agent {}", v.agent);
@@ -2812,6 +2819,7 @@ mod control_approvals_tests {
             exe: "/home/pranab/hermes-agent/venv/bin/python".into(),
             pid: 696,
             attached_mind: "Hermes Agent".into(),
+            mind_by_pid: true,
             discrepancies: vec![
                 "\u{201c}Hermes Agent\u{201d} is attached here \u{2014} this is not it.".into(),
                 "The caller called this `standard`; the app publishes `dangerous`.".into(),
@@ -3698,10 +3706,15 @@ mod audit_row_tests {
         // while the kernel's ancestry says Hermes Agent is shown as Hermes Agent.
         let verified = crate::approvals::Verified {
             attached_mind: "Hermes Agent".into(),
+            mind_by_pid: true,
             ..Default::default()
         };
-        let row = super::audit_row(&entry("Coder · pi", verified));
+        let row = super::audit_row(&entry("Coder · pi", verified.clone()));
         assert_eq!(row.actor.as_str(), "Hermes Agent", "the verified mind is the actor");
+        // A name match is only that.
+        let named = crate::approvals::Verified { mind_by_pid: false, ..verified };
+        let row = super::audit_row(&entry("Coder · pi", named));
+        assert_eq!(row.actor.as_str(), "name matches Hermes Agent (not verified)");
 
         // No mind, but an agent token the harness was checked against: name the agent.
         let verified = crate::approvals::Verified {

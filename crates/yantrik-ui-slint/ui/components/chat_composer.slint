@@ -6,8 +6,9 @@
 // you are typing in it is a trap. While a run is going the send button reads "Send follow-up",
 // which is what it does: the words go to the mind beside its work.
 //
-// The line under the box says where the words go (`destination`): the answering mind, its model,
-// and whether that is online or on this machine, or nothing when the shell does not know.
+// The row above Send says where the message goes (`destination`): "Sends your message and
+// conversation context to: <provider> · <model>", or "Stays on this machine · <model>" only when
+// that is certain, in the box, always there.
 //
 // The mode chip ("Mode: Ask") is the status bar chip's twin: it opens the same mind-mode choice,
 // it does not change the mode by itself, and a mode change applies to the next run. The noun is
@@ -21,17 +22,19 @@ import { ChatPill } from "chat_parts.slint";
 export component ChatComposer inherits Rectangle {
     in property <string> mind-name;
     in property <string> mode-label: "Ask";
-    // Where the words go, as the shell knows it from the configured backend: "Yantrik Mind ·
-    // deepseek-v4.1-flash · online, via Ollama Cloud", or "… · on this machine". Drawn as a line
-    // under the box; "" when the shell does not know, and then no line and no room for one.
+    // Where the message goes, as the shell knows it from the configured backend: "Sends your
+    // message and conversation context to: Ollama Cloud · deepseek-v4.1-flash", or "Stays on this
+    // machine · …" (runs_on::RunsOn::destination). "" when the shell does not know, and the row
+    // says so.
     in property <string> destination: "";
     // A run for this chat is going: the button says so.
     in property <bool> run-active: false;
     out property <bool> has-text: input.chat-text != "";
     // Whether the cursor is in the box (the idle-redraw and focus tests read it).
     out property <bool> focused: input.has-focus;
-    // The destination line's own room, under the box.
-    property <length> destination-h: root.destination != "" ? 18px : 0px;
+    // The destination row's own room, inside the box above the row Send is on. Always there: a
+    // row that comes and goes is one a person cannot learn to look for (review by GPT-6 Astra, A).
+    property <length> destination-h: 20px;
     // The bar's own height, which the panel's arithmetic subtracts.
     out property <length> bar-height: max(112px, min(200px, input.preferred-height + 14px) + 72px) + root.destination-h;
     // The tallest `bar-height` gets: the field's 200px cap plus the 72px around it, and the
@@ -69,7 +72,7 @@ export component ChatComposer inherits Rectangle {
         x: Theme.sp-3;
         y: Theme.sp-3;
         width: parent.width - 2 * Theme.sp-3;
-        height: parent.height - 2 * Theme.sp-3 - root.destination-h;
+        height: parent.height - 2 * Theme.sp-3;
         border-radius: Theme.chat-radius;
         background: Theme.chat-panel;
         border-width: 1px;
@@ -84,7 +87,7 @@ export component ChatComposer inherits Rectangle {
             x: Theme.sp-3;
             y: Theme.sp-3;
             width: parent.width - 2 * Theme.sp-3;
-            height: parent.height - 56px;
+            height: parent.height - 56px - root.destination-h;
             color: Theme.chat-text;
             font-size: Theme.fs-title-2;
             wrap: word-wrap;
@@ -113,6 +116,24 @@ export component ChatComposer inherits Rectangle {
             text: "Message " + root.mind-name + "\u{2026}";
             color: Theme.chat-text-2;
             font-size: Theme.fs-title-2;
+        }
+
+        // Where the message text goes, immediately above Send and ending where Send ends: an
+        // observed fact from the configured backend, never a guess, so a backend the shell does
+        // not know is said to be not known rather than named.
+        destination-row := Text {
+            x: Theme.sp-2;
+            y: parent.height - 44px - root.destination-h;
+            width: parent.width - 2 * Theme.sp-2 - Theme.sp-1;
+            height: root.destination-h;
+            text: root.destination != "" ? root.destination : "Where message text goes is not known";
+            color: Theme.text-secondary;
+            font-size: Theme.fs-label;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            overflow: elide;
+            accessible-role: text;
+            accessible-label: root.destination != "" ? root.destination : "Where message text goes is not known";
         }
 
         // The row under the words: the mode chip on the left, mic and send on the right.
@@ -205,21 +226,5 @@ export component ChatComposer inherits Rectangle {
                 }
             }
         }
-    }
-
-    // Where the words go, under the box: an observed fact from the configured backend, never a
-    // guess, so it is simply not drawn when the shell does not know.
-    if root.destination != "" : destination-line := Text {
-        x: Theme.sp-3 + Theme.sp-1;
-        y: root.height - Theme.sp-3 - root.destination-h + 2px;
-        width: root.width - 2 * (Theme.sp-3 + Theme.sp-1);
-        height: root.destination-h - 2px;
-        text: root.destination;
-        color: Theme.chat-text-2;
-        font-size: Theme.fs-caption;
-        vertical-alignment: center;
-        overflow: elide;
-        accessible-role: text;
-        accessible-label: "Your words go to " + root.destination;
     }
 }

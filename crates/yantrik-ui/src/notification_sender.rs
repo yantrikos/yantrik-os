@@ -19,7 +19,7 @@
 //! - labelling everyone by their command line, which they write: a script titled `yantrik-ui`
 //!   read as `yantrik-ui`.
 //!
-//! So: the plain `Sent by yantrik-ui · verified` comes from `Sender::desktop` alone, which the
+//! So: the plain `Source process confirmed: yantrik-ui` comes from `Sender::desktop` alone, which the
 //! notifications service sets at call time from the socket's own process and the install
 //! directory. Everyone else says `(verified)`, names the real executable whenever it is not
 //! what the command line calls itself, keeps a terminal origin in sight, and puts any claim
@@ -38,7 +38,7 @@ const FROM_TERMINAL: &str = "a program started from a terminal: ";
 
 /// How much of the caller's own name the short line repeats. The program comes first and is the
 /// fact; the claim is only what it said, and is cut before it can crowd the fact off the card.
-const CLAIM_CHARS: usize = 24;
+pub(crate) const CLAIM_CHARS: usize = 24;
 
 /// How much of the verified command line names a program that is not the desktop.
 const PROGRAM_CHARS: usize = 32;
@@ -69,7 +69,10 @@ pub fn sender_summary(n: &Notification) -> String {
     let terminal = sender.verified.starts_with(FROM_TERMINAL);
     if sender.desktop && !terminal {
         // The desktop itself may file under any name it likes; that is what `Yantrik` means.
-        return format!("Sent by {} \u{b7} verified", exe_name(sender));
+        // Worded as what was checked (review of the UI overhaul by GPT-6 Astra, E): the process
+        // on the socket, confirmed by the notifications service. Display only; who counts as the
+        // desktop is `Sender::desktop`, unchanged.
+        return format!("Source process confirmed: {}", exe_name(sender));
     }
     let (program, tag) = who_and_tag(sender);
     let origin = if terminal { " from a terminal" } else { "" };
@@ -256,9 +259,9 @@ mod tests {
     fn the_desktop_the_service_vouched_for_gets_the_plain_line() {
         // The VM 520 card, 4 October.
         let n = note(Some("Yantrik"), "yantrik-ui config.yaml (pid 189858)", 189858, SHELL, true);
-        assert_eq!(sender_summary(&n), "Sent by yantrik-ui \u{b7} verified");
+        assert_eq!(sender_summary(&n), "Source process confirmed: yantrik-ui");
         let n = note(None, "yantrik-ui config.yaml (pid 7)", 7, "/opt/yantrik/bin/yantrik-ui (deleted)", true);
-        assert_eq!(sender_summary(&n), "Sent by yantrik-ui \u{b7} verified");
+        assert_eq!(sender_summary(&n), "Source process confirmed: yantrik-ui");
     }
 
     #[test]
@@ -268,12 +271,12 @@ mod tests {
         // socket was not the desktop. The card must not draw the shell's line.
         let n = note(Some("Yantrik"), "yantrik-ui config.yaml (pid 7456)", 7456, SHELL, false);
         let line = sender_summary(&n);
-        assert_ne!(line, "Sent by yantrik-ui \u{b7} verified");
+        assert_ne!(line, "Source process confirmed: yantrik-ui");
         assert_eq!(line, "Sent by a program yantrik-ui started (verified) \u{b7} calls itself \u{201c}Yantrik\u{201d}");
         let n = note(None, "yantrik-ui config.yaml (pid 7456)", 7456, SHELL, false);
         assert_eq!(sender_summary(&n), "Sent by a program yantrik-ui started (verified)");
         // An old record, written before `desktop` existed, reads the same way.
-        assert!(!sender_summary(&n).ends_with("\u{b7} verified"));
+        assert!(!sender_summary(&n).starts_with("Source process confirmed"));
     }
 
     #[test]

@@ -382,7 +382,10 @@ pub fn centre_rows(mirror: &NotificationMirror) -> Vec<crate::NotificationData> 
         items.push(crate::NotificationData {
             id: slint::SharedString::default(),
             app_name: name.clone().into(),
-            summary: name.clone().into(),
+            // The words on the header: the mind's name for a group of nothing but its turns
+            // (`notification_groups::heading`). `group_name` stays the sender's, because it is
+            // what "Clear all from this group" matches against `group_of`.
+            summary: crate::notification_groups::heading(&name, &group).into(),
             body: slint::SharedString::default(),
             urgency: 0,
             time_ago: slint::SharedString::default(),
@@ -730,6 +733,29 @@ mod tests {
         // Nor does one share the desktop's group: the "Yantrik" header holds the desktop's alone.
         let desktop_group = centre.iter().find(|r| r.is_group_header && r.group_name.as_str() == "Yantrik").unwrap();
         assert_eq!(desktop_group.group_count, 1, "only notification 1 is the desktop's \"Yantrik\"");
+        assert_eq!(desktop_group.summary.as_str(), "Yantrik", "and is headed with its name");
+    }
+
+    /// The desktop's group of a mind's turns is headed with the mind's name, the way its fold line
+    /// names it; it is still keyed and cleared as the desktop's.
+    #[test]
+    fn a_group_of_a_minds_turns_is_headed_with_the_minds_name() {
+        let shell = "/opt/yantrik/bin/yantrik-ui";
+        let turns: Vec<Notification> = (1..=3)
+            .map(|i| {
+                let mut n = note(&i.to_string(), "Yantrik", &format!("2026-10-04T09:0{i}:00Z"));
+                n.title = "Yantrik Mind replied".into();
+                n.sender = sent_by(true, Some("Yantrik"), "yantrik-ui (pid 4)", 4, shell);
+                n.actions = vec![yantrik_ipc_contracts::notifications::NotificationAction::new("show_agent", "Open")];
+                n
+            })
+            .collect();
+        let centre = centre_rows(&mirror_of(turns.clone()));
+        let header = centre.iter().find(|r| r.is_group_header).unwrap();
+        assert_eq!(header.summary.as_str(), "Yantrik Mind");
+        assert_eq!(header.group_name.as_str(), "Yantrik", "Clear all still matches the desktop's group");
+        let fold = centre.iter().find(|r| r.is_turn_group).unwrap();
+        assert!(fold.summary.starts_with("Yantrik Mind finished 3 turns"), "{}", fold.summary);
     }
 
     #[test]

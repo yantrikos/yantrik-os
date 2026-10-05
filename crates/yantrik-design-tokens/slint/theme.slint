@@ -239,11 +239,21 @@ export global Theme {
     out property <color> color-danger:       ThemeMode.dark ? #ef9a9a : #c62828;
     // The destructive button's fill: the one red, for what cannot be undone (delete, erase,
     // power off). A filled button, so it is a stronger red than color-danger, which is a text
-    // and badge colour. White label on it in both themes.
-    out property <color> destructive:        #e5484d;
-    out property <color> text-on-destructive: #ffffff;
-    out property <color> destructive-hover:  #ec6064;
-    out property <color> destructive-pressed: #c93a3f;
+    // and badge colour. Its label is Theme.text-on-danger, below.
+    //
+    // It was #e5484d in both themes with a white label: 3.9:1, under the 4.5:1 every other
+    // label in the shell meets (sign-off, 5 October). The fix is the one the accent got (#634):
+    // the ink follows the mode. In dark mode the red stays as it was and the label is the deep
+    // ground, 4.8:1 or better; in light mode the red is the deeper #c62828 and the label white,
+    // 5.6:1 or better. Hover and pressed keep to the same side of the ink: lighter steps in
+    // dark, darker in light. A test holds every pair (crates/yantrik-ui-kit/src/colour_roles.rs).
+    out property <color> destructive:        ThemeMode.dark ? #e5484d : #c62828;
+    out property <color> destructive-hover:  ThemeMode.dark ? #ec6064 : #b71c1c;
+    out property <color> destructive-pressed: ThemeMode.dark ? #e85d62 : #a51d1d;
+    // The ink on any red fill: the destructive button above, and anything else that fills with
+    // color-danger behind a word or a glyph. The deep ground in dark mode, white in light — the
+    // same rule as text-on-accent, for the same reason: the dark-mode reds are light.
+    out property <color> text-on-danger: ThemeMode.dark ? Theme.bg-deep : #ffffff;
     out property <color> color-danger-dim:   ThemeMode.dark ? #ef9a9a28 : #c6282820;
     // The close button's hover fill, with white on it. Deliberately the same in both themes:
     // it is not a surface that adapts, it is the one colour in the OS that means "this
@@ -553,6 +563,12 @@ export global Theme {
     out property <color> chat-user-bubble: ThemeMode.dark ? #f2f4f5 : #20272c;
     out property <color> chat-user-text:   ThemeMode.dark ? #151a1e : #f2f4f5;
     out property <color> chat-raised:    ThemeMode.dark ? #1d2429 : #ffffff;
+    // The ground of a card that asks the person something, opaque over whatever screen is up
+    // (the approval card). The bar's ground in dark; the raised white in light, because on the
+    // light bar's grey the card's outline buttons read as filled grey keys — Decline looked filled
+    // in light and outlined in dark (sign-off, 5 October). The outline kind is transparent at
+    // rest; what it showed was this ground.
+    out property <color> chat-card:      ThemeMode.dark ? Theme.chat-bar : Theme.chat-raised;
 
     // ─── Kit controls: slider, popover, toggle tile, bar indicator ─
     // Sizes. Each is the one number the control draws with, so a later screen that has to line

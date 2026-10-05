@@ -37,6 +37,9 @@ export component YToggleTile inherits Rectangle {
     in property <string> icon: "";
     in property <string> title: "";
     in property <string> subtitle: "";
+    // What the tile does, in a sentence, for a tile whose one-line subtitle cannot hold it. Read
+    // out as the switch's description in place of the subtitle; "" reads the subtitle.
+    in property <string> description: "";
     in property <bool> on: false;
     in property <bool> enabled: true;
     in property <bool> split: false;
@@ -94,7 +97,7 @@ export component YToggleTile inherits Rectangle {
             enabled: root.enabled;
             accessible-role: switch;
             accessible-label: root.title;
-            accessible-description: root.subtitle;
+            accessible-description: root.description != "" ? root.description : root.subtitle;
             accessible-checkable: true;
             accessible-checked: root.on;
             accessible-enabled: root.enabled;

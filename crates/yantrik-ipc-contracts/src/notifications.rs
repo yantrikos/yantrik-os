@@ -259,7 +259,7 @@ pub struct Sender {
     /// The process on the socket itself — not the first recognisable one `verified` and `exe`
     /// are about — was the installed desktop: the shell or this service, judged by the service
     /// at the moment of the call. The only thing that earns a card the desktop's own plain
-    /// "Sent by yantrik-ui · verified".
+    /// "Source process confirmed: yantrik-ui".
     ///
     /// Not `exe`, because `exe` names the first recognisable ancestor: a mind calling through a
     /// bridge the shell spawned has `yos` on the socket and `yantrik-ui` above it, and its `exe`

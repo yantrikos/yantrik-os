@@ -643,7 +643,8 @@ fn refresh_agent_rail(ui: &NetworkManagerApp, state: &State) {
                 reading.firewall.kind.clone().unwrap_or_default()
             ),
             FirewallStatus::Inactive => "Firewall installed, not filtering".to_string(),
-            FirewallStatus::Absent => "No firewall installed".to_string(),
+            // Only the tools were looked for; the kernel's rules were not read.
+            FirewallStatus::Absent => "No supported firewall manager detected; active filtering rules not checked".to_string(),
             FirewallStatus::Unknown => "Firewall state unknown".to_string(),
         }
         .into(),
