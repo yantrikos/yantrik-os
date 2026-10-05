@@ -425,6 +425,17 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     );
     save(&settle(w, width, height), &output.replace(".png", "-named.png"), width, height)?;
 
+    // A long name wraps rather than being cut at the card's edge (security review of #652, M1):
+    // the folder that says WHICH thesis is at the end of the line, and a change there is drawn.
+    let mut long = named.clone();
+    long.what = "Deletes: thesis \u{00b7} ~/Documents/University/2026/Semester two/Drafts kept for the committee/thesis".into();
+    long.target_rows = lines(&["Size: folder, 12 items inside"]);
+    row_drawn_above(
+        long,
+        &|c: &mut ApprovalRequest| c.what = c.what.replace("committee/thesis", "committee/thesiz").into(),
+        "the end of a long target name",
+    );
+
     let unnamed = super::review_stills::unresolved_delete_card();
     let (_, btn) = fresh(&unnamed, "an unnamed target");
     read_to_end(w, read_at.0, read_at.1, width, height);
@@ -502,7 +513,8 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
          discrepancy, the sentence, the pinned line and the buttons are all drawn; the card leads \
          with the description's first sentence ({differ} pixels drawn); the per-call sentence is \
          on the face of a sensitive card and wraps; a target the app named is drawn above \
-         \"Delete series\", which answers, and an unnamed one leaves Decline only",
+         \"Delete series\", which answers, the end of a long one is drawn, and an unnamed one \
+         leaves Decline only",
         bottom - top,
     );
     Ok(())

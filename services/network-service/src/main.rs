@@ -1263,7 +1263,7 @@ mod tests {
     /// A machine at `ceiling`, in `mode`, with no grant spent — the authority pinned per case
     /// rather than inherited from whatever files the machine running the tests has.
     fn at(ceiling: &str, mode: &str) -> Authority {
-        Authority { ceiling: ceiling.into(), mode: gate::Mode::named(mode), granted: false, asks_above: None }
+        Authority { ceiling: ceiling.into(), mode: gate::Mode::named(mode), granted: false, asks_above: None, target: None }
     }
 
     /// `app.act` for `wifi_scan` with `args`, and a grant id beside it when the test says one was

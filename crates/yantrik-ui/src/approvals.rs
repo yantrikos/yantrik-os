@@ -1126,7 +1126,9 @@ impl Store {
         }
     }
 
-    /// Burn a grant, if the triple matches exactly. Succeeds at most once per grant.
+    /// Burn a grant, if the triple matches exactly. Succeeds at most once per grant, answering
+    /// the identity of the target the card named (`approval_target::identity`) — `None` when it
+    /// named none — for the app's handler to hold its own resolution of the arguments to.
     ///
     /// The refusal says which part differed, because a caller that is told only "no" will
     /// retry the same thing. Telling it the arguments changed is what makes it stop and look.
@@ -1137,7 +1139,7 @@ impl Store {
         action: &str,
         args: &serde_json::Value,
         now: Instant,
-    ) -> Result<(), String> {
+    ) -> Result<Option<String>, String> {
         let Some(record) = self.records.iter_mut().find(|r| r.id == id) else {
             return Err(format!(
                 "no approval request `{id}` — it may have been dropped when the shell restarted. \
@@ -1199,7 +1201,7 @@ impl Store {
         }
 
         record.state = Status::Consumed;
-        Ok(())
+        Ok(crate::approval_target::identity(&record.named))
     }
 
     /// Everything the UI and `describe` show: what is waiting, then what was recently decided.
@@ -1443,7 +1445,7 @@ pub fn consume(
     app: &str,
     action: &str,
     args: &serde_json::Value,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     locked().consume(id, app, action, args, Instant::now())
 }
 

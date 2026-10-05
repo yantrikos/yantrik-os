@@ -79,6 +79,7 @@ mod private_freeze;
 mod control_files_create;
 mod control_files_mind;
 mod control_files_target;
+mod phone_card;
 /// Whether a mind may paste the Files clipboard into the folder on screen (#443).
 mod control_files_paste;
 /// Agents' commands on the shell's surface: agent_run / agent_job / agent_input / agent_kill.

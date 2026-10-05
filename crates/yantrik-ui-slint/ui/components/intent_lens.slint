@@ -809,22 +809,30 @@ export component ApprovalCard inherits Rectangle {
             changes := VerticalLayout {
                 spacing: Theme.sp-1;
 
+                // Naming a target, it wraps: "Deletes: thesis · ~/tmp/…" cut at the card's edge hid
+                // the one part that said which thesis (security review of #652, M1). The name is
+                // bounded in the shell (120 escaped characters, its name before its path), and a
+                // name cut even there keeps every bound argument under "Exactly:" below. Naming
+                // nothing, it is one line, and "Exactly:" carries all of it whenever it is cut.
                 what-line := Text {
+                    width: parent.width;
                     text: root.data.what;
                     color: Theme.text-primary;
                     font-size: Theme.fs-body;
-                    wrap: no-wrap;
+                    wrap: root.data.target != "" || root.data.target-rows.length > 0 ? word-wrap : no-wrap;
                     overflow: elide;
                     visible: root.data.what != "";
                     height: root.data.what != "" ? self.preferred-height : 0px;
                 }
-                // The rest of what the app named the target as, a line each.
+                // The rest of what the app named the target as, each wrapped whole: nothing the
+                // card names is cut at its edge, and the section scrolls, holding Allow back,
+                // when they do not all fit.
                 for line in root.data.target-rows : Text {
+                    width: parent.width;
                     text: line;
                     color: Theme.text-primary;
                     font-size: Theme.fs-body;
-                    wrap: no-wrap;
-                    overflow: elide;
+                    wrap: word-wrap;
                 }
                 if root.data.target-missing != "" : Text {
                     width: parent.width;

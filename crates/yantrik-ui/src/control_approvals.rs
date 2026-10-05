@@ -153,7 +153,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 //
                 // The grade is checked first, because the grade is the one thing the caller
                 // declares that the decision actually turns on.
-                let (grade, grade_note, published_purpose, naming, explained, params, named) =
+                let (grade, grade_note, published_purpose, naming, explained, params, naming_target) =
                     match settle_grade(&app, &action, &grade, &parsed) {
                         Ok(settled) => settled,
                         Err(why) => return Err(why),
@@ -263,6 +263,12 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 if let Some(rule) = crate::approval_bounds::refusal(&parsed, params.as_deref(), whole) {
                     return Err(crate::approval_bounds::refused(&rule));
                 }
+
+                // What the call acts on, named by the app from its own store (`approval_target`) —
+                // asked only now, once the mode, the reach and the card's bounds have all said a
+                // card is raised: the question reads the app's store, and for the shell's own
+                // `files_delete` the disk (security review of #652, M2).
+                let named = naming_target.ask(&action, &parsed);
 
                 let mut verified = who_is_asking(&requester);
                 if !grade_note.is_empty() {
@@ -437,7 +443,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     approvals::agent_of(&id).as_deref().unwrap_or_default(),
                     &spending_agent(args),
                 )?;
-                approvals::consume(&id, &app, &action, &parsed)?;
+                let target = approvals::consume(&id, &app, &action, &parsed)?;
                 if let Some(ui) = consume_ui.upgrade() {
                     sync(&ui);
                 }
@@ -445,6 +451,10 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     "request_id": id,
                     "consumed": true,
                     "authorises": format!("{app}.{action}"),
+                    // What the card named, as the app told it apart: the app's handler holds what
+                    // the arguments point at when it runs to this (`approval_target`), and refuses
+                    // when they now point at something else. Null when the card named nothing.
+                    "target_identity": target,
                     "note": "one action, once. Run it now; this grant is spent.",
                 }))
             },
@@ -789,10 +799,40 @@ fn settle_grade(
     action: &str,
     claimed: &str,
     args: &serde_json::Value,
-) -> Result<(String, String, String, Naming, String, Option<Vec<String>>, approvals::Named), String> {
+) -> Result<(String, String, String, Naming, String, Option<Vec<String>>, TargetAsk), String> {
     let ((published, purpose, naming, explained), params, named) = published_detail(app, action, args)?;
     let note = grade_note(claimed, &published);
     Ok((published, note, purpose, naming, explained, params, named))
+}
+
+/// How the card asks what one call acts on (`approval_target`), settled with the grade from the
+/// same `describe` and asked later ([`TargetAsk::ask`]): only once a card is going to be raised,
+/// because the question reads the app's store — and the disk, for the shell's own `files_delete`.
+#[derive(Clone, Debug)]
+enum TargetAsk {
+    /// The action acts on no named thing and declared no namer: nothing to ask.
+    NotNeeded,
+    /// It takes a named thing away and declared no namer: not named, whatever is asked.
+    Undeclared,
+    /// One of the shell's own actions, named in-process from its own registry.
+    Shell,
+    /// An app's, over its socket, with the handles its `describe` declared.
+    Socket { address: String, handles: Vec<String> },
+}
+
+impl TargetAsk {
+    fn ask(&self, action: &str, args: &serde_json::Value) -> approvals::Named {
+        match self {
+            TargetAsk::NotNeeded => approvals::Named::NotAsked,
+            TargetAsk::Undeclared => approvals::Named::Unresolved,
+            TargetAsk::Shell => crate::approval_target::from_local(
+                yantrik_app_runtime::control::published_target(action, args),
+                action,
+                &yantrik_app_runtime::control::published_target_handles(action),
+            ),
+            TargetAsk::Socket { address, handles } => named_in(address, action, args, handles),
+        }
+    }
 }
 
 /// What [`published_detail_in`] answers: the grade, the description, the naming index and the
@@ -814,7 +854,7 @@ fn published_detail(
     app: &str,
     action: &str,
     args: &serde_json::Value,
-) -> Result<(Detail, Option<Vec<String>>, approvals::Named), String> {
+) -> Result<(Detail, Option<Vec<String>>, TargetAsk), String> {
     published_detail_full_in(
         &yantrik_ipc_transport::server::socket_dir(),
         &crate::apps::Catalogue::shared().get(),
@@ -847,7 +887,7 @@ fn published_target_in(
     action: &str,
     args: &serde_json::Value,
 ) -> Result<approvals::Named, String> {
-    published_detail_full_in(dir, installed, app, action, args).map(|(_, _, named)| named)
+    published_detail_full_in(dir, installed, app, action, args).map(|(_, _, asking)| asking.ask(action, args))
 }
 
 /// [`published_detail_in`], and the names of the parameters the action publishes, read from the
@@ -862,7 +902,7 @@ fn published_detail_full_in(
     app: &str,
     action: &str,
     args: &serde_json::Value,
-) -> Result<(Detail, Option<Vec<String>>, approvals::Named), String> {
+) -> Result<(Detail, Option<Vec<String>>, TargetAsk), String> {
     let Some(surface) = surface_in(app, installed, dir) else {
         return Err(format!(
             "there is no app called `{app}` on this desktop, so nothing was put in front of the \
@@ -882,13 +922,9 @@ fn published_detail_full_in(
             .map(|grade| {
                 let purpose =
                     yantrik_app_runtime::control::published_description(action).unwrap_or_default();
-                // What its own action acts on, from its own namer (`files_delete`: the path and the
-                // size), the same answer `app.name_target` would give over the socket.
-                let named = crate::approval_target::from_local(
-                    yantrik_app_runtime::control::published_target(action, args),
-                    action,
-                );
-                ((grade.to_string(), purpose, Naming::new(), String::new()), None, named)
+                // What its own action acts on is asked of its own namer (`files_delete`: the path
+                // and the size), the same answer `app.name_target` would give over the socket.
+                ((grade.to_string(), purpose, Naming::new(), String::new()), None, TargetAsk::Shell)
             })
             .ok_or_else(|| {
                 format!(
@@ -953,25 +989,31 @@ fn published_detail_full_in(
     // What the call acts on, named by the app from its own store — only for an action that acts
     // on a named thing, and only ever from the app's answer: `args` go TO the app, as the
     // question, and nothing of them comes back onto the card from here (`approval_target`).
+    // The handles the rows stand for are the ones the action declared here, fixed for the action
+    // (security review of #652, L2), never ones an answer lists for one call.
     let declared = entry.and_then(|a| a["names_target"].as_bool()).unwrap_or(false);
-    let named = if !crate::approval_target::needed(action, declared) {
-        approvals::Named::NotAsked
+    let asking = if !crate::approval_target::needed(action, declared) {
+        TargetAsk::NotNeeded
     } else if declared {
-        named_in(&address, action, args)
+        let handles = entry
+            .and_then(|a| a["target_handles"].as_array())
+            .map(|list| list.iter().filter_map(|h| h.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        TargetAsk::Socket { address: address.clone(), handles }
     } else {
-        approvals::Named::Unresolved
+        TargetAsk::Undeclared
     };
-    Ok(((published.0, published.1, naming_in(&reply), explained), params, named))
+    Ok(((published.0, published.1, naming_in(&reply), explained), params, asking))
 }
 
 /// The app's answer to `app.name_target` for one call. Every way the question can fail — a slow
 /// surface, a broken pipe, an id the app does not hold — is the target not named, which on a
 /// destructive card leaves Decline as the only answer.
-fn named_in(address: &str, action: &str, args: &serde_json::Value) -> approvals::Named {
+fn named_in(address: &str, action: &str, args: &serde_json::Value, handles: &[String]) -> approvals::Named {
     yantrik_ipc_transport::SyncRpcClient::new(address)
         .with_timeout(GRADE_LOOKUP)
         .call("app.name_target", serde_json::json!({ "action": action, "args": args }))
-        .map(|reply| crate::approval_target::from_reply(&reply))
+        .map(|reply| crate::approval_target::from_reply(&reply, handles))
         .unwrap_or(approvals::Named::Unresolved)
 }
 
@@ -1307,7 +1349,7 @@ fn spend_in_process(
     action: &str,
     args: &serde_json::Value,
     caller: Option<&yantrik_app_runtime::control::CallingAgent>,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let calling = caller.map(|c| crate::control_agent_terminal::agent_for(&c.token, c.pid));
     grant_belongs(id, approvals::agent_of(id).as_deref().unwrap_or_default(), &calling)?;
     approvals::consume(id, app, action, args)

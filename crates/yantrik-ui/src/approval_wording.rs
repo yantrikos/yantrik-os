@@ -250,7 +250,7 @@ pub struct Consequences {
     /// "Undo: not possible, the app says so", the caller-only form, or empty.
     pub undo: String,
     /// What the target is, beyond the name `what` gives it — "When: Fri 25 Sep 2026, 13:00–14:00
-    /// (local time, UTC+01:00)", "Calendar: …", "Occurrences: …" — one elided line each, in the
+    /// (local time, UTC+01:00)", "Calendar: …", "Occurrences: …" — one wrapped line each, in the
     /// app's words, escaped. Empty unless the app named the target.
     pub rows: Vec<String>,
     /// "Target details unavailable · the app could not say what this would delete", on a

@@ -303,6 +303,9 @@ thread_local! {
 // them has to change. A handler that cares reads `control::caller()`; every other one never
 // learns this exists.
 pub use yantrik_surface::{agent_token, answer_later, caller, AgentTokenScope, Caller, CallerScope};
+/// What a granted call's card named as its target, and the one check a handler makes against it
+/// before it acts (security review of #652, H1): see `yantrik_surface::held_to_grant`.
+pub use yantrik_surface::{granted_target, held_to_grant, GrantedTargetScope};
 
 /// Whether the call being dispatched on this thread is an agent's rather than the person's: the
 /// mind's own account by the kernel's word, or any caller that presented an agent token, believed
@@ -397,6 +400,12 @@ pub fn published_target(
         None => Err("this app published no control surface".to_string()),
         Some(registry) => registry.name_target(action, args),
     })
+}
+
+/// The arguments THIS app's `action` declared its target rows stand for
+/// (`Action::target_handles`), beside [`published_target`].
+pub fn published_target_handles(action: &str) -> Vec<String> {
+    REGISTRY.with(|cell| cell.borrow().as_ref().map(|registry| registry.target_handles(action)).unwrap_or_default())
 }
 
 /// Re-declare the grade THIS app publishes for one of its own actions, while it is running.
@@ -693,6 +702,9 @@ impl ControlRpc {
             // like `app.explain`, and bound to nothing. `target: null` is the app saying it does
             // not hold what the arguments point at.
             "app.name_target" => {
+                // The shell building a card, and nothing else: a mind asking directly would learn
+                // what names stand for in places it cannot see (`require_the_shell_asking`).
+                yantrik_surface::require_the_shell_asking(who)?;
                 let action = params["action"].as_str().unwrap_or("").trim().to_string();
                 if action.is_empty() {
                     return Err(refusal("app.name_target needs a non-empty `action`".into()));
@@ -936,17 +948,17 @@ mod tests {
     /// Authority that binds nothing: the ceiling and the mode both at the top of the ladder —
     /// full bypass, which asks about nothing, not even what cannot be undone.
     fn open() -> Authority {
-        Authority { ceiling: OPEN.into(), mode: Mode::named("bypass_all"), granted: false, asks_above: None }
+        Authority { ceiling: OPEN.into(), mode: Mode::named("bypass_all"), granted: false, asks_above: None, target: None }
     }
 
     /// A machine at `ceiling`, in a mode that asks about nothing under it: the ceiling tests.
     fn under(ceiling: &str) -> Authority {
-        Authority { ceiling: ceiling.into(), mode: Mode::named("bypass_all"), granted: false, asks_above: None }
+        Authority { ceiling: ceiling.into(), mode: Mode::named("bypass_all"), granted: false, asks_above: None, target: None }
     }
 
     /// An open ceiling and the mode under test, with or without a grant spent for the call.
     fn in_mode(mode: &str, granted: bool) -> Authority {
-        Authority { ceiling: OPEN.into(), mode: Mode::named(mode), granted, asks_above: None }
+        Authority { ceiling: OPEN.into(), mode: Mode::named(mode), granted, asks_above: None, target: None }
     }
 
     type Act = Box<dyn Fn(&serde_json::Value) -> Result<serde_json::Value, String>>;

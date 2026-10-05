@@ -20,6 +20,7 @@ fn calendar() -> serde_json::Value {
             "description": PUBLISHED,
             "permission": "sensitive",
             "names_target": true,
+            "target_handles": ["id"],
             "parameters": {"type": "object", "properties": {"id": {"type": "string"}}},
         }],
     })
@@ -41,7 +42,7 @@ fn dentist(series: bool) -> serde_json::Value {
                 }},
             ],
             "series": series,
-            "handles": ["id"],
+            "identity": EVENT_ID,
         },
     })
 }
@@ -98,7 +99,7 @@ fn a_single_event_is_named_by_title_date_time_and_calendar_and_its_id_is_under_d
     assert_eq!(log.iter().map(|r| r["method"].as_str().unwrap_or("")).collect::<Vec<_>>(), ["app.describe", "app.name_target"]);
     assert_eq!(log[1]["params"]["args"], args);
 
-    let (mut store, row, id) = card_for(&named, "", args);
+    let (mut store, row, id) = card_for(&named, "", args.clone());
     assert_eq!(row.what.as_str(), "Deletes: Dentist");
     assert_eq!(
         rows(&row),
@@ -116,6 +117,9 @@ fn a_single_event_is_named_by_title_date_time_and_calendar_and_its_id_is_under_d
     assert!(!rows(&row).iter().any(|r| r.contains("01a0c718")));
     assert!(row.args.iter().any(|a| a.as_str() == format!("id: {EVENT_ID}")), "under Details");
     assert!(store.grant(&id, std::time::Instant::now(), "10:01").is_ok(), "a named target can be allowed");
+    // And spending the grant hands the app the event it named, for its handler to hold the call to.
+    let spent = store.consume(&id, "calendar", "delete_event", &args, std::time::Instant::now()).unwrap();
+    assert_eq!(spent.as_deref(), Some(EVENT_ID));
 }
 
 #[test]
@@ -208,7 +212,7 @@ fn resolution_never_reads_the_callers_args_or_purpose_as_display_text() {
     // Whatever else rides in the app's reply, only its `target` is read — an echo of the
     // request's arguments is not a name.
     let echo = serde_json::json!({"app": "calendar", "action": "delete_event", "args": args, "target": null});
-    assert_eq!(crate::approval_target::from_reply(&echo), Named::Unresolved);
+    assert_eq!(crate::approval_target::from_reply(&echo, &["id".to_string()]), Named::Unresolved);
     let (named, _) = resolve("decoy-unknown", &args, Some(echo));
     let (_, row, _) = card_for(&named, purpose, args);
     assert!(rows(&row).is_empty());
@@ -234,13 +238,52 @@ fn the_apps_rows_are_escaped_like_every_other_line() {
 /// pinned as "Exactly:", even when the app's answer is a single row.
 #[test]
 fn the_other_arguments_stay_pinned_beside_a_named_target() {
-    let named = Named::Resolved(yantrik_app_runtime::control::Target {
+    let named = Named::Resolved(crate::approval_target::Resolved {
         rows: vec![("Event".into(), "Dentist".into())],
         series: false,
+        identity: EVENT_ID.into(),
         handles: vec!["id".into()],
     });
     let (_, row, _) = card_for(&named, "", serde_json::json!({ "id": EVENT_ID, "title": "Dentist (moved)" }));
     assert_eq!(row.exactly.as_str(), "title: Dentist (moved)");
     assert_eq!(row.target.as_str(), "Event: Dentist", "the card's pin for Exactly: and its Details footnote");
     assert!(rows(&row).is_empty());
+}
+
+/// L2: the arguments the card leaves under Details are the ones the action declared in its
+/// describe — an answer listing others for one call hides nothing — and a declared handle that
+/// arrives as a flag stays on the face.
+#[test]
+fn only_declared_scalar_handles_leave_the_face() {
+    let mut answer = dentist(false);
+    answer["target"]["handles"] = serde_json::json!(["id", "title"]);
+    let args = serde_json::json!({ "id": EVENT_ID, "title": "Dentist (moved)" });
+    let (named, _) = resolve("handles", &args, Some(answer));
+    let Named::Resolved(ref t) = named else { panic!("{named:?}") };
+    assert_eq!(t.handles, ["id"], "declared in describe, not in the answer");
+    let (_, row, _) = card_for(&named, "", args);
+    assert_eq!(row.exactly.as_str(), "title: Dentist (moved)");
+
+    let (_, row, _) = card_for(&named, "", serde_json::json!({ "id": true }));
+    assert_eq!(row.exactly.as_str(), "id: true", "a flag is never hidden");
+}
+
+/// M1: a name longer than the card draws, after escaping, is cut — and then the face keeps the
+/// handle too, so the whole bound argument is pinned under "Exactly:". The rows' labels are
+/// escaped like their values.
+#[test]
+fn a_cut_name_keeps_the_whole_argument_and_labels_are_escaped() {
+    let mut answer = dentist(false);
+    // 110 characters, each bidi control growing to eight when escaped: cut only after escaping.
+    let long = format!("{}{}", "D".repeat(100), "\u{202e}".repeat(10));
+    answer["target"]["rows"][0]["value"] = serde_json::json!(long);
+    answer["target"]["rows"][1]["label"] = serde_json::json!("When\u{202e}");
+    let args = serde_json::json!({ "id": EVENT_ID });
+    let (named, _) = resolve("cut", &args, Some(answer));
+    let (_, row, _) = card_for(&named, "", args);
+    let name = row.what.strip_prefix("Deletes: ").expect("named");
+    assert_eq!(name.chars().count(), crate::approval_target::VALUE_CHARS + 1, "cut at the bound, after escaping: {name}");
+    assert!(name.ends_with('\u{2026}'));
+    assert_eq!(row.exactly.as_str(), format!("id: {EVENT_ID}"), "the handle is back on the face");
+    assert!(rows(&row)[0].starts_with("When<U+202E>: "), "{:?}", rows(&row));
 }

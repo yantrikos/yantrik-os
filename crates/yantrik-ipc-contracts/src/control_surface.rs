@@ -251,9 +251,14 @@ pub struct Target {
     /// The call acts on every occurrence of a recurring thing, not one of them: the card's button
     /// says "Delete series", not "Delete event".
     pub series: bool,
-    /// The argument names these rows stand for (`id`, `name`): the card shows those arguments
-    /// under Details rather than in its face, because the rows say what they point at.
-    pub handles: Vec<String>,
+    /// What the rows name, as the app tells one thing from another however it is renamed or
+    /// moved: an event's or a snippet's id, a path with its device and inode, a container's full
+    /// id, a pid with the time that process started. Opaque to the shell, which keeps it on the
+    /// approval and hands it back with the grant; the handler resolves its arguments again when it
+    /// runs and refuses when what they point at now is not this ([`identity_matches`]). Never
+    /// drawn. An app that cannot tell one thing from another this way names nothing (`None`), and
+    /// a destructive card is then Decline only.
+    pub identity: String,
 }
 
 impl Target {
@@ -262,8 +267,21 @@ impl Target {
         serde_json::json!({
             "rows": self.rows.iter().map(|(label, value)| serde_json::json!({ "label": label, "value": value })).collect::<Vec<_>>(),
             "series": self.series,
-            "handles": self.handles,
+            "identity": self.identity,
         })
+    }
+}
+
+/// Whether what a granted call's arguments point at NOW is what the person was shown: `now` is
+/// the handler's own resolution's identity (`None`: they point at nothing), `granted` the one the
+/// grant carries (`None`: the card named nothing, so there is nothing to hold it to).
+///
+/// The one comparison every handler makes (`yantrik_surface::held_to_grant`), so the rule cannot
+/// drift from app to app.
+pub fn identity_matches(granted: Option<&str>, now: Option<&str>) -> bool {
+    match granted {
+        None => true,
+        Some(granted) => now == Some(granted),
     }
 }
 
@@ -353,6 +371,11 @@ pub struct Action {
     /// fact, never the names, which depend on arguments `describe` does not have; the shell asks
     /// `app.name_target` when it builds an approval card. See [`Target`].
     pub namer: Option<Namer>,
+    /// The arguments the namer's rows stand for (`id`, `name`, `pid`), declared with it and
+    /// published in `describe` as `target_handles`: the card shows those under Details rather than
+    /// on its face, because the rows say what they point at. Fixed per action, never per call, so
+    /// an app cannot hide an argument by answering differently for one call.
+    pub target_handles: Vec<String>,
 }
 
 impl Action {
@@ -370,6 +393,7 @@ impl Action {
             stateless: false,
             explainer: None,
             namer: None,
+            target_handles: Vec::new(),
         }
     }
 
@@ -407,9 +431,16 @@ impl Action {
     ///
     /// Runs while an approval card is being built, on the app's own thread: read the arguments,
     /// look the thing up in the app's own store, and answer its rows — `None` when the app does
-    /// not hold it. Like [`Action::explain`] it decides nothing and acts on nothing.
-    pub fn names(mut self, f: impl Fn(&serde_json::Value) -> Option<Target> + Send + Sync + 'static) -> Self {
+    /// not hold it, or cannot tell it apart by a stable [`Target::identity`]. Like
+    /// [`Action::explain`] it decides nothing and acts on nothing. `handles` are the arguments the
+    /// rows stand for ([`Action::target_handles`]).
+    pub fn names(
+        mut self,
+        handles: &[&str],
+        f: impl Fn(&serde_json::Value) -> Option<Target> + Send + Sync + 'static,
+    ) -> Self {
         self.namer = Some(Namer(Arc::new(f)));
+        self.target_handles = handles.iter().map(|h| h.to_string()).collect();
         self
     }
 
@@ -480,6 +511,7 @@ impl Action {
         // The same: the fact that the action can name its target, never a name.
         if self.namer.is_some() {
             schema["names_target"] = true.into();
+            schema["target_handles"] = self.target_handles.clone().into();
         }
         schema
     }
@@ -707,25 +739,37 @@ mod tests {
     fn an_action_that_names_its_target_says_it_can_and_carries_no_name() {
         let schema = Action::new("delete_event", "Take an event off the calendar")
             .arg(Param::text("id"))
-            .names(|args| {
+            .names(&["id"], |args| {
                 (args["id"] == "e1").then(|| Target {
                     rows: vec![("Event".into(), "Dentist".into())],
                     series: false,
-                    handles: vec!["id".into()],
+                    identity: "e1".into(),
                 })
             })
             .schema();
         assert_eq!(schema["names_target"], serde_json::json!(true), "{schema}");
+        assert_eq!(schema["target_handles"], serde_json::json!(["id"]), "declared, not answered per call");
         assert!(!schema.to_string().contains("Dentist"), "{schema}");
         assert!(Action::new("x", "y").schema().get("names_target").is_none());
 
-        let action = Action::new("d", "e").names(|_| None);
+        let action = Action::new("d", "e").names(&[], |_| None);
         assert_eq!(action.namer.as_ref().unwrap().target(&serde_json::json!({})), None);
-        let named = Target { rows: vec![("Event".into(), "Dentist".into())], series: true, handles: vec!["id".into()] };
+        let named = Target { rows: vec![("Event".into(), "Dentist".into())], series: true, identity: "e1".into() };
         assert_eq!(
             named.to_json(),
-            serde_json::json!({"rows": [{"label": "Event", "value": "Dentist"}], "series": true, "handles": ["id"]})
+            serde_json::json!({"rows": [{"label": "Event", "value": "Dentist"}], "series": true, "identity": "e1"})
         );
+    }
+
+    /// A grant that named a target holds the handler to it: the same identity runs, another one
+    /// or none at all is refused, and a grant that named nothing holds nothing.
+    #[test]
+    fn a_granted_target_is_held_to_its_identity() {
+        assert!(identity_matches(Some("e1"), Some("e1")));
+        assert!(!identity_matches(Some("e1"), Some("e2")), "renamed into its place");
+        assert!(!identity_matches(Some("e1"), None), "gone");
+        assert!(identity_matches(None, Some("e2")));
+        assert!(identity_matches(None, None));
     }
 
     /// An action that can say what one call of it does publishes the fact — and only the fact:

@@ -18,6 +18,15 @@
 //!
 //! Nothing here reads the request's arguments as display text or its purpose at all: the rows
 //! are the app's answer, and the arguments only travel TO the app, as the question.
+//!
+//! # What the grant holds the handler to
+//!
+//! The app answers an opaque identity beside the rows — an event's id, a path's device and inode,
+//! a container's full id, a pid and its start time — and an answer without one names nothing.
+//! The record keeps it, `consume` hands it back with the grant, and the app's handler resolves the
+//! arguments again when it runs and refuses when they now point at something else
+//! (`yantrik_surface::held_to_grant`; security review of #652, H1). The card can name one thing
+//! only if that thing is the one acted on.
 
 use yantrik_app_runtime::control::Target;
 
@@ -28,9 +37,24 @@ pub enum Named {
     #[default]
     NotAsked,
     /// The app named it.
-    Resolved(Target),
+    Resolved(Resolved),
     /// The action acts on a named thing and the app could not say what.
     Unresolved,
+}
+
+/// The app's name for a call's target, as the record keeps it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Resolved {
+    /// `(label, value)`, the first naming the thing itself. Bounded on arrival ([`from_reply`]).
+    pub rows: Vec<(String, String)>,
+    /// The call takes a whole recurring series with it: "Delete series".
+    pub series: bool,
+    /// What the rows name, as the app tells it apart (`Target::identity`): never drawn, handed
+    /// back with the grant for the handler to hold its own resolution to.
+    pub identity: String,
+    /// The arguments the rows stand for, as the app DECLARED them in `describe`
+    /// (`target_handles`) — never as one answer says.
+    pub handles: Vec<String>,
 }
 
 /// Verbs whose action destroys or takes away one named thing. A destructive card for one of
@@ -51,8 +75,12 @@ const LABEL_CHARS: usize = 24;
 /// How much of one value the record keeps. The card cuts again after escaping (`VALUE_CHARS`).
 const KEPT_CHARS: usize = 240;
 
-/// How much of one escaped value one elided row of the card carries.
+/// How much of one escaped value one row of the card carries.
 pub const VALUE_CHARS: usize = 120;
+
+/// An identity longer than this is not an identity: a full container id is 64 characters, a path
+/// with its device and inode a few hundred.
+const IDENTITY_CHARS: usize = 4096;
 
 /// The line a destructive card shows when its target could not be named.
 pub fn unavailable(verb: &str) -> String {
@@ -93,10 +121,11 @@ pub fn blocked(named: &Named, destructive: bool) -> bool {
 }
 
 /// The app's answer to `app.name_target`, as the card may use it. `target: null`, rows that are
-/// not strings, or no rows at all are all the app not naming it. Bounded on arrival: at most
-/// [`ROWS`] rows, labels of a few words, values cut at [`KEPT_CHARS`]; escaping is the card's
-/// (`approval_wording::visible`), so the record keeps what the app said.
-pub fn from_reply(reply: &serde_json::Value) -> Named {
+/// not strings, no rows at all, or no identity are all the app not naming it. Bounded on arrival:
+/// at most [`ROWS`] rows, labels of a few words, values cut at [`KEPT_CHARS`]; escaping is the
+/// card's (`approval_wording::visible`), so the record keeps what the app said. `handles` are the
+/// ones the action declared in `describe`.
+pub fn from_reply(reply: &serde_json::Value, handles: &[String]) -> Named {
     let target = &reply["target"];
     let Some(list) = target["rows"].as_array() else { return Named::Unresolved };
     let rows: Vec<(String, String)> = list
@@ -109,35 +138,59 @@ pub fn from_reply(reply: &serde_json::Value) -> Named {
         })
         .take(ROWS)
         .collect();
-    if rows.is_empty() {
+    let identity = target["identity"].as_str().unwrap_or_default();
+    if rows.is_empty() || identity.is_empty() || identity.chars().count() > IDENTITY_CHARS {
         return Named::Unresolved;
     }
-    let handles = target["handles"]
-        .as_array()
-        .map(|h| h.iter().filter_map(|k| k.as_str().map(str::to_string)).collect())
-        .unwrap_or_default();
-    Named::Resolved(Target { rows, series: target["series"].as_bool().unwrap_or(false), handles })
+    Named::Resolved(Resolved {
+        rows,
+        series: target["series"].as_bool().unwrap_or(false),
+        identity: identity.to_string(),
+        handles: handles.to_vec(),
+    })
 }
 
 /// The same, for an action the shell publishes itself (`yantrik_app_runtime::control::published_target`).
-pub fn from_local(answer: Result<Option<Target>, String>, action: &str) -> Named {
+pub fn from_local(answer: Result<Option<Target>, String>, action: &str, handles: &[String]) -> Named {
     match answer {
-        Ok(Some(target)) => from_reply(&serde_json::json!({ "target": target.to_json() })),
+        Ok(Some(target)) => from_reply(&serde_json::json!({ "target": target.to_json() }), handles),
         Ok(None) => Named::Unresolved,
         Err(_) if acts_on_object(action) => Named::Unresolved,
         Err(_) => Named::NotAsked,
     }
 }
 
-/// The card's argument rows for its face: every argument except the ones the app's rows stand
-/// for, which stay whole in the argument box under Details. Matched by exact key, on the value
-/// the grant binds — never by the text of a row.
+/// The identity a grant for this card hands back to the handler: the named target's, or `None`.
+pub fn identity(named: &Named) -> Option<String> {
+    match named {
+        Named::Resolved(t) => Some(t.identity.clone()),
+        _ => None,
+    }
+}
+
+/// Whether the first row, the one the card's "Deletes:" line says, is longer escaped than the card
+/// draws ([`VALUE_CHARS`]): then the face keeps every argument, the handle included, so the whole
+/// bound value is still in front of the person ("Exactly:").
+pub fn first_row_cut(named: &Named) -> bool {
+    matches!(named, Named::Resolved(t)
+        if t.rows.first().is_some_and(|(_, v)| crate::approval_wording::visible(v).chars().count() > VALUE_CHARS))
+}
+
+/// The card's argument rows for its face: every argument except the declared handles the app's
+/// rows stand for, which stay whole in the argument box under Details. Matched by exact key, on
+/// the value the grant binds — never by the text of a row — and only for a scalar identifier (a
+/// string or a number): a flag, a list or an object says how, not which, and is never hidden. All
+/// of them when the name line is cut ([`first_row_cut`]).
 pub fn face_args(named: &Named, args: &serde_json::Value, rows: impl Fn(&serde_json::Value) -> Vec<String>) -> Vec<String> {
     let (Named::Resolved(target), Some(map)) = (named, args.as_object()) else {
         return rows(args);
     };
+    if first_row_cut(named) {
+        return rows(args);
+    }
+    let hidden = |k: &String, v: &serde_json::Value| target.handles.contains(k) && (v.is_string() || v.is_number());
     let rest: serde_json::Map<String, serde_json::Value> =
-        map.iter().filter(|(k, _)| !target.handles.contains(k)).map(|(k, v)| (k.clone(), v.clone())).collect();
+        map.iter().filter(|(k, v)| !hidden(k, v)).map(|(k, v)| (k.clone(), v.clone())).collect();
     if rest.is_empty() {
         Vec::new()
     } else {

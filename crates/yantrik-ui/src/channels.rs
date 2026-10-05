@@ -313,26 +313,11 @@ pub fn card_raised(card_id: &str, irreversible: bool, published: &str) {
         return;
     };
     let Some(outbox) = OUTBOX.get().cloned() else { return };
-    // Every line drawn as one line of text: a name or an argument carrying a newline must not draw
-    // a line of its own on the phone.
-    let one_line = |s: &str| s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>();
-    let mut what = format!("{} asks to run {}.{} ({}).", one_line(&turn.mind), one_line(&card.app), one_line(&card.action), one_line(&card.grade));
-    if !published.trim().is_empty() {
-        what.push_str(&format!("\n{}", one_line(published)));
-    }
-    if !card.target.trim().is_empty() {
-        what.push_str(&format!("\n{}", one_line(card.target.trim())));
-    }
-    for row in &card.args {
-        what.push_str(&format!("\n  {}", one_line(row)));
-    }
-    // A code only for a card the phone is shown whole: an argument cut short, or more of them
-    // than fit, is a grant bound to what the person did not see.
-    let whole = card.args.iter().all(|r| !r.ends_with('…') && !r.starts_with('…'));
-    let said = if irreversible || never_from_a_phone(&card.app, &card.action) {
-        format!("{what}\nThis one waits for you at the machine: it cannot be undone, or it runs commands as you.")
-    } else if !whole {
-        format!("{what}\nThis one waits for you at the machine: it is too long to show here in full.")
+    // Everything the desk names the card by, a line each and escaped as the card escapes it — the
+    // rows the app named its target with among them (phone_card).
+    let what = crate::phone_card::what(&turn.mind, &card, published);
+    let said = if let Some(wait) = crate::phone_card::waits(&card, irreversible || never_from_a_phone(&card.app, &card.action)) {
+        format!("{what}\n{wait}")
     } else if !approvals_on(&turn.provider) {
         format!(
             "{what}\nIt is waiting on the desktop's screen: approvals from {} are off, since {} can read what is sent here.",

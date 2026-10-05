@@ -107,7 +107,9 @@ impl Surface {
             }
             "app.act" => Some(self.act(params, peer, Authority::now())),
             "app.explain" => Some(self.explain(params)),
-            "app.name_target" => Some(self.name_target(params)),
+            "app.name_target" => Some(
+                crate::require_the_shell_asking(peer.map(Caller::from)).and_then(|()| self.name_target(params)),
+            ),
             _ => None,
         }
     }
@@ -137,7 +139,8 @@ impl Surface {
 
     /// The reply to `app.name_target`: `{action, args}` → `{app, action, target}` — what one call
     /// acts on, named from the app's own store, or `target: null` when the app does not hold it.
-    /// Reading, like [`Surface::explain`]; an action that names nothing is refused (`-32602`).
+    /// Reading, like [`Surface::explain`]; an action that names nothing is refused (`-32602`). On
+    /// the socket, asked by the shell only (`require_the_shell_asking`).
     pub fn name_target(&self, params: &Value) -> Result<Value, ServiceError> {
         let action = params["action"].as_str().unwrap_or("").trim();
         if action.is_empty() {

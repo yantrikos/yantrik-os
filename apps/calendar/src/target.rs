@@ -18,9 +18,9 @@ pub enum Act {
     Change,
 }
 
-/// The card's rows for one stored event. `handles` are the argument names the event was found
-/// by (`id`, or `title` and `date`), which the card leaves under Details.
-pub fn rows(event: &CalendarEvent, act: Act, handles: &[&str]) -> Target {
+/// The card's rows for one stored event, identified by the store's id for it: a title and a time
+/// can be given to another event, the id cannot.
+pub fn rows(event: &CalendarEvent, act: Act) -> Target {
     let recurring = event.recurrence.as_deref().is_some_and(|r| !r.trim().is_empty());
     let occurrences = match (recurring, act) {
         (true, Act::Delete) => format!(
@@ -41,7 +41,7 @@ pub fn rows(event: &CalendarEvent, act: Act, handles: &[&str]) -> Target {
             ("Occurrences".into(), occurrences),
         ],
         series: recurring,
-        handles: handles.iter().map(|h| h.to_string()).collect(),
+        identity: event.id.clone(),
     }
 }
 
@@ -134,13 +134,13 @@ mod tests {
 
     #[test]
     fn a_single_event_is_named_by_title_date_time_zone_and_calendar() {
-        let t = rows(&event(None), Act::Delete, &["id"]);
+        let t = rows(&event(None), Act::Delete);
         assert_eq!(t.rows[0], ("Event".to_string(), "Dentist".to_string()), "the name comes first");
         assert_eq!(row(&t, "When"), "Fri 25 Sep 2026, 13:00\u{2013}14:00 (UTC+01:00)");
         assert_eq!(row(&t, "Calendar"), "on this computer");
         assert_eq!(row(&t, "Occurrences"), "this event only; it does not repeat");
         assert!(!t.series);
-        assert_eq!(t.handles, ["id"]);
+        assert_eq!(t.identity, "01a0c718-3931-7342-b9c7-8de36140ddb0", "identified by the id, not the title");
         assert!(!t.rows.iter().any(|(_, v)| v.contains("01a0c718")), "the raw id is not a row");
     }
 
@@ -149,11 +149,11 @@ mod tests {
         let mut synced = event(Some("RRULE:FREQ=WEEKLY;BYDAY=FR"));
         synced.calendar_id = "pranab@example.com".into();
         synced.remote_id = Some("g-1".into());
-        let t = rows(&synced, Act::Delete, &["id"]);
+        let t = rows(&synced, Act::Delete);
         assert!(t.series);
         assert_eq!(row(&t, "Occurrences"), "the whole series: it repeats weekly, and every occurrence is deleted");
         assert_eq!(row(&t, "Calendar"), "pranab@example.com (synced)");
-        let changed = rows(&synced, Act::Change, &["id"]);
+        let changed = rows(&synced, Act::Change);
         assert!(row(&changed, "Occurrences").ends_with("every occurrence changes"));
     }
 
@@ -162,12 +162,39 @@ mod tests {
         let mut local = event(None);
         local.start = "2026-09-25T09:30:00".into();
         local.end = "2026-09-25T10:00:00".into();
-        let when = row(&rows(&local, Act::Delete, &["id"]), "When").to_string();
+        let when = row(&rows(&local, Act::Delete), "When").to_string();
         assert!(when.starts_with("Fri 25 Sep 2026, 09:30\u{2013}10:00 (local time, UTC"), "{when}");
         let mut all_day = event(None);
         all_day.start = "2026-09-25".into();
         all_day.end = "2026-09-26".into();
         all_day.is_all_day = true;
-        assert_eq!(row(&rows(&all_day, Act::Delete, &["id"]), "When"), "Fri 25 Sep 2026, all day");
+        assert_eq!(row(&rows(&all_day, Act::Delete), "When"), "Fri 25 Sep 2026, all day");
+    }
+
+    /// H1 for the calendar: the card named "Dentist" on the 25th as event e1. Before the grant is
+    /// spent, e1 is renamed and e2 renamed into "Dentist" (`update_event` asks nobody for the
+    /// caller's own events). The title and date now resolve to e2, and the one check every
+    /// handler makes refuses — `delete_event` deletes nothing.
+    #[test]
+    fn an_event_renamed_into_the_title_after_the_allow_is_not_deleted() {
+        use crate::views::{named_on, EventRef, Named};
+        let at = |id: &str, title: &str| EventRef {
+            id: id.into(),
+            title: title.into(),
+            start: "2026-09-25T13:00:00".into(),
+            end: "2026-09-25T14:00:00".into(),
+            is_all_day: false,
+        };
+        let card = match named_on(&[at("e1", "Dentist"), at("e2", "Gym")], "Dentist", "2026-09-25") {
+            Named::One(e) => rows(&CalendarEvent { id: e.id, ..event(None) }, Act::Delete).identity,
+            _ => panic!("one event named"),
+        };
+        let Named::One(now) = named_on(&[at("e1", "Dentist (old)"), at("e2", "Dentist")], "Dentist", "2026-09-25") else {
+            panic!("one event named");
+        };
+        let _grant = yantrik_app_runtime::control::GrantedTargetScope::enter(Some(card.clone()));
+        let refused = yantrik_app_runtime::control::held_to_grant(Some(&now.id)).unwrap_err();
+        assert!(refused.starts_with("the target changed after you allowed it"), "{refused}");
+        assert!(yantrik_app_runtime::control::held_to_grant(Some(&card)).is_ok(), "the event it named still runs");
     }
 }

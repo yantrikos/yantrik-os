@@ -177,6 +177,7 @@ An **action**:
 | `expected_seconds` | Optional integer: how long a call usually takes to answer, when the app knows it is more than a moment (a render, an export). A client SHOULD size its timeout by it; absent, the client keeps its own. |
 | `explains` | Optional boolean, present and `true` only when the action can say what ONE call of it does, with that call's own arguments. The sentence itself comes from `app.explain` (below), because it depends on arguments `describe` never sees; absent, the action says nothing per call. |
 | `names_target` | Optional boolean, present and `true` only when the action can name what ONE call of it acts on — an event, a file, a container — from the app's own store. The names come from `app.name_target` (below); absent, the action names nothing. |
+| `target_handles` | Present with `names_target`: the argument names the rows stand for (`id`, `name`, `pid`), fixed for the action. A card shows those arguments under its details rather than on its face — only while each is a string or a number, never a flag, and never when the name it draws is cut. |
 
 **Parameter types.** `type` is one of `string`, `number`, `integer`, `boolean`, `array`,
 `object`, and the dispatch checks it (§5, step 7): an argument of another type is refused before
@@ -264,10 +265,18 @@ point at (an unknown id), or:
 | --- | --- |
 | `rows` | `[{label, value}]`, strings, in the order a card draws them. The first names the thing itself; the rest say which one. A client bounds them (the shell keeps six) and escapes every value. |
 | `series` | `true` when the call acts on every occurrence of a recurring thing — the card's button then says "Delete series". |
-| `handles` | The argument names the rows stand for (`id`): a card shows those arguments under its details rather than on its face. |
+| `identity` | What the rows name, as the app tells it apart however it is renamed or moved: an event's id, a path's real folder with its device and inode, a container's full id, a pid with the time that process started. Opaque, never drawn. An answer without one names nothing. |
+
+The shell keeps `identity` on the approval and hands it back when the grant is spent
+(`consume_approval` answers it as `target_identity`). The app's dispatch installs it for the one
+handler call, and the handler resolves its arguments again and checks what they point at NOW
+against it before acting (`held_to_grant`): a different identity, or none, is refused with "the
+target changed after you allowed it" and nothing is done. So a card cannot name one thing while
+another is deleted — a folder changed on screen, an event renamed into a title, a pid reused.
 
 Reading, not acting, exactly as `app.explain`; an action that declared no namer is refused with
-`-32602`. Unlike `app.explain`, the answer can decide what a card offers: the shell does not let a
+`-32602`. Answered to the desktop's own shell only (`yantrik-ui`, not the mind account): the answer
+says what names stand for in places an agent may not be let into. Unlike `app.explain`, the answer can decide what a card offers: the shell does not let a
 person allow a destructive call (graded `dangerous`, or one whose description says it cannot be
 undone or runs whatever it is given) to an action that takes a named thing away — `delete`,
 `remove`, `kill` and the like — unless the app named its target. Any error, any slowness and

@@ -205,12 +205,12 @@ fn a_recurring_target_turns_the_label_into_its_series() {
 /// escaped; unnamed on a blocked card: the line that says so.
 #[test]
 fn the_consequences_say_the_target_the_app_named() {
-    use crate::approval_target::Named;
-    use yantrik_app_runtime::control::Target;
+    use crate::approval_target::{Named, Resolved};
     let published = Published::app("Take an event off the calendar. It is not recoverable");
-    let named = Named::Resolved(Target {
+    let named = Named::Resolved(Resolved {
         rows: vec![("Event".into(), "Dentist".into()), ("When".into(), "Fri 25 Sep 2026\n13:00".into())],
         series: false,
+        identity: "e1".into(),
         handles: vec!["id".into()],
     });
     let c = consequences_named("delete_event", published, published_said(), "", &[], &named, false);

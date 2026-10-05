@@ -6,6 +6,7 @@
 //! the single path that both of them take to change anything.
 
 mod runtime;
+mod target;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -347,42 +348,9 @@ fn container_named(ui: &ContainerManagerApp, needle: &str) -> Option<(String, St
     runtime::resolve(&rows, needle).map(|i| rows[i].clone())
 }
 
-/// The approval card's rows for the container `needle` names in `list`: its name, its image and
-/// its state as the runtime reports them, or `None` when no container answers to it.
-fn container_target(list: &[runtime::Container], needle: &str) -> Option<yantrik_app_runtime::control::Target> {
-    let rows: Vec<(String, String)> = list.iter().map(|c| (c.id.clone(), c.name.clone())).collect();
-    let c = &list[runtime::resolve(&rows, needle)?];
-    let state = if c.status_text.trim().is_empty() { c.state.clone() } else { c.status_text.clone() };
-    Some(yantrik_app_runtime::control::Target {
-        rows: vec![
-            ("Container".into(), c.name.clone()),
-            ("Image".into(), c.image.clone()),
-            ("State".into(), state),
-        ],
-        series: false,
-        handles: vec!["container".into()],
-    })
-}
-
-#[cfg(test)]
-mod target_tests {
-    #[test]
-    fn a_container_is_named_by_name_image_and_state_and_an_unknown_one_is_not() {
-        let list = vec![super::runtime::Container {
-            id: "3f2a9c1b7d4e".into(),
-            name: "postgres-dev".into(),
-            image: "postgres:16".into(),
-            state: "running".into(),
-            status_text: "Up 2 hours".into(),
-            ..Default::default()
-        }];
-        let t = super::container_target(&list, "3f2a9c1b7d4e").expect("named by id");
-        assert_eq!(t.rows[0], ("Container".to_string(), "postgres-dev".to_string()));
-        assert_eq!(t.rows[1].1, "postgres:16");
-        assert_eq!(t.rows[2].1, "Up 2 hours");
-        assert_eq!(t.handles, ["container"]);
-        assert!(super::container_target(&list, "nope").is_none());
-    }
+/// The id the window lists for the container whose full id is `full`.
+fn ui_id_of(ui: &ContainerManagerApp, full: &str) -> Option<String> {
+    listed(ui).into_iter().map(|(id, _)| id).find(|id| !id.is_empty() && full.starts_with(id.as_str()))
 }
 
 /// How the list describes this container now, or `None` when it is no longer in it.
@@ -604,21 +572,23 @@ fn publish_control(app: &ContainerManagerApp, health: &Health) {
                 .risk("dangerous")
                 // What the approval card names in place of the id the caller passed: the runtime's
                 // own listing, read now. The card cannot be allowed when this cannot say.
-                .names(|args| {
-                    let rt = runtime::detect();
-                    let runtime::Exit::Ran { code: Some(0), stdout, .. } =
-                        runtime::run(rt, &["ps", "-a", "--format", runtime::PS_FORMAT])
-                    else {
-                        return None;
-                    };
-                    container_target(&runtime::parse_containers(&stdout), args["container"].as_str().unwrap_or_default())
+                .names(&["container"], |args| {
+                    target::container_target(&target::listing_now().ok()?, args["container"].as_str().unwrap_or_default())
                 }),
             move |args| {
                 let ui = remove_ui()?;
                 let want = args["container"].as_str().unwrap_or_default();
-                let (id, name) = container_named(&ui, want)
-                    .ok_or_else(|| format!("no container here is called \"{want}\""))?;
-                command(&ui, &remove_health, &["rm", "-f", id.as_str()])?;
+                // Resolved as the card's namer resolved it — the runtime's listing now, full ids,
+                // one container or none — and held to the one the card named before anything is
+                // removed (`target`).
+                let list = target::listing_now()?;
+                let found = target::one(&list, want);
+                control::held_to_grant(found.map(|c| c.id.as_str()))?;
+                let found = found.ok_or_else(|| format!("no one container here is called \"{want}\""))?;
+                let (full, name) = (found.id.clone(), found.name.clone());
+                command(&ui, &remove_health, &["rm", "-f", full.as_str()])?;
+                // The window lists ids cut to twelve characters.
+                let id = ui_id_of(&ui, &full).unwrap_or(full);
                 // The one that mattered most: this action is graded `dangerous`, and it used to
                 // answer `{"removed": name}` without ever looking at whether the container was
                 // gone. A grade on an action that fabricates its outcome approves nothing.

@@ -765,7 +765,7 @@ fn allowed_on_card(origin: &RecipeOrigin, call: &AgentCall<'_>, role: &catalog::
             None => Err(AgentRefusal::Ask(waiting)),
             Some((Outcome::Allowed, _)) => {
                 asks.remove(&key);
-                approvals::consume(&id, "shell", "hand_off", &args).map_err(AgentRefusal::Fail)
+                approvals::consume(&id, "shell", "hand_off", &args).map(|_| ()).map_err(AgentRefusal::Fail)
             }
             Some((Outcome::Denied, _)) => {
                 asks.remove(&key);
@@ -1177,6 +1177,7 @@ mod tests {
             mode: yantrik_ipc_transport::gate::Mode::named("bypass_all"),
             granted: false,
             asks_above: None,
+            target: None,
         };
         authority.held_by(Some(&held));
         assert!(yantrik_ipc_transport::gate::decide(&authority, "files", "list", "safe", "List").is_ok());

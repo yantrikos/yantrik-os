@@ -626,13 +626,16 @@ fn publish_control(app: &SystemMonitorApp, status: Rc<RefCell<Status>>) {
                 // there is no undo — so it must clear the caller's ceiling on its own.
                 .risk("dangerous")
                 // What the approval card names in place of the pid: the program, from /proc now.
-                .names(|args| {
+                .names(&["pid"], |args| {
                     yantrik_ipc_transport::peer_identity::process_target(args["pid"].as_i64()?.try_into().ok()?)
                 }),
             move |args| {
                 let ui = kill_ui()?;
                 let pid = args["pid"].as_i64().ok_or("`pid` must be a number")? as i32;
                 let force = args["force"].as_bool().unwrap_or(false);
+                // The process the card named — this pid, started when it was then — and not
+                // another program the pid was handed to since (security review of #652, H1).
+                control::held_to_grant(yantrik_ipc_transport::peer_identity::process_identity(pid).as_deref())?;
                 // The same call the End and Force Kill buttons make. It does not return until
                 // the process table has been read back, so `Ok` here means the pid is gone and
                 // an `Err` names which of the ways it can fail happened.
