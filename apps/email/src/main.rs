@@ -13,7 +13,10 @@
 //! * every wrapper returns `Result<T, String>`, because an `Option` is where the reason was lost;
 //! * the app distinguishes three states — the service could not be reached, the service is up and
 //!   no account is configured, an account exists — and says which, on screen and in `describe`.
+//!   A fourth comes before them: the window is up and the service has not answered yet, because
+//!   the first look runs on a worker after the window is shown (`startup`).
 
+mod startup;
 mod state;
 
 use std::cell::{Cell, RefCell};
@@ -150,6 +153,8 @@ fn wire_mail_ai(app: &EmailApp, which: MailAi) {
 }
 
 fn main() {
+    // Taken first, so the first-frame line in the log is process start to a window on screen.
+    let started = std::time::Instant::now();
     init_tracing("yantrik-email");
 
     // One window per app: a second launch defers to the running one (the shell focuses it).
@@ -165,6 +170,7 @@ fn main() {
     app.global::<AccentPreset>().set_index(theme.accent_index);
 
     wire(&app);
+    startup::log_first_frame(&app, started);
     run_until_closed(&app, "yantrik-email");
 }
 
@@ -613,9 +619,7 @@ fn with_mail<T>(f: impl FnOnce(&Rc<Mail>) -> T) -> Option<T> {
 impl Mail {
     fn new() -> Self {
         Self {
-            state: RefCell::new(MailState::Unreachable {
-                reason: "the mail service has not been asked yet".to_string(),
-            }),
+            state: RefCell::new(MailState::Starting),
             folder: RefCell::new("INBOX".to_string()),
             all_rows: RefCell::new(Vec::new()),
             shown_rows: RefCell::new(Vec::new()),
@@ -636,6 +640,7 @@ impl Mail {
     fn unreachable_reason(&self) -> Option<String> {
         match &*self.state.borrow() {
             MailState::Unreachable { reason } => Some(reason.clone()),
+            MailState::Starting => Some("it has not answered yet; Email is still starting".into()),
             _ => None,
         }
     }
@@ -668,7 +673,12 @@ struct Loaded {
 /// come to believe two different things about the same machine depending on which one ran. It
 /// touches no Slint: the sync runs it on a worker thread.
 fn look_at_mail(folder: &str) -> Loaded {
-    let state = state::decide(accounts_via_service());
+    open_mailbox(state::decide(accounts_via_service()), folder)
+}
+
+/// The second half of [`look_at_mail`]: with the account known, open its folder. The half that
+/// crosses the internet.
+fn open_mailbox(state: MailState, folder: &str) -> Loaded {
     let account = state.account_id();
     if account.is_empty() {
         return Loaded { state, folders: Vec::new(), messages: Vec::new(), mailbox_error: None };
@@ -753,7 +763,58 @@ fn apply_loaded(ui: &EmailApp, mail: &Rc<Mail>, loaded: Loaded) {
             ui.set_email_sync_status("Service unreachable".into());
             say(ui, loaded.state.notice());
         }
+        // Not what a look returns; a look that has not finished is not applied.
+        (MailState::Starting, _) => {}
     }
+}
+
+// ── The first look, after the window is up ───────────────────────────
+
+/// Show the window saying Email is starting, and look at the mail service on a worker.
+///
+/// This was `apply_loaded(app, &mail, look_at_mail(..))` on the UI thread before the window was
+/// shown — the service started, then two IMAP round trips — and the window arrived eight
+/// seconds after it was asked for, with nothing on screen in the meantime (see `startup`).
+fn first_look(app: &EmailApp, mail: &Rc<Mail>) {
+    app.set_service_state(MailState::Starting.service_word().into());
+    app.set_email_sync_status("Starting mail\u{2026}".into());
+    app.set_is_loading(true);
+    // Refresh waits for this rather than stacking a second look on top of it.
+    mail.syncing.set(true);
+
+    let folder = mail.folder.borrow().clone();
+    let halfway = app.as_weak();
+    let back = app.as_weak();
+    startup::off_the_ui_thread(
+        move || {
+            let state = state::decide(accounts_via_service());
+            if state.has_account() == Some(true) {
+                let known = state.clone();
+                let _ = halfway.upgrade_in_event_loop(move |ui| connecting(&ui, known));
+            }
+            open_mailbox(state, &folder)
+        },
+        move |loaded| {
+            let _ = back.upgrade_in_event_loop(move |ui| {
+                let Some(mail) = with_mail(|m| m.clone()) else { return };
+                mail.syncing.set(false);
+                ui.set_is_loading(false);
+                apply_loaded(&ui, &mail, loaded);
+            });
+        },
+    );
+}
+
+/// The account is known and its mailbox has not answered: the main view, empty, saying which
+/// account it is connecting to.
+fn connecting(ui: &EmailApp, state: MailState) {
+    let Some(mail) = with_mail(|m| m.clone()) else { return };
+    let name = state.account_name();
+    *mail.state.borrow_mut() = state;
+    ui.set_service_state("up".into());
+    ui.set_has_account(true);
+    ui.set_account_name(name.clone().into());
+    ui.set_email_sync_status(format!("Connecting to {name}\u{2026}").into());
 }
 
 /// Put a folder's messages into the model, through the triage filter.
@@ -1814,13 +1875,11 @@ fn wire(app: &EmailApp) {
         };
         app.set_service_state("up".into());
     } else {
-        let folder = mail.folder.borrow().clone();
-        let loaded = look_at_mail(&folder);
-        apply_loaded(app, &mail, loaded);
+        first_look(app, &mail);
     }
 
-    // Published once the mailbox is loaded, so the first `app.describe` is not of an empty
-    // window.
+    // Published at once, while the first look is still out: `describe` says the app is starting
+    // (`service: starting`) until the mail service answers, which is what is true.
     publish_control(app, &mail);
 
     // ── Folder clicked ──

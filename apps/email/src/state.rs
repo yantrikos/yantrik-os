@@ -32,6 +32,9 @@ use yantrik_ipc_contracts::email::{
 /// What the app has been told about the mail service, and about the account behind it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MailState {
+    /// The window is up and the mail service has not answered yet: the first look runs on a
+    /// worker (see `startup`). Not unreachable — nothing has failed — and not "no account".
+    Starting,
     /// The service could not be started or could not be answered. Carries the reason, which is
     /// the thing that used to be thrown away.
     Unreachable { reason: String },
@@ -54,6 +57,7 @@ impl MailState {
     /// What `describe` reports under `service`.
     pub fn service_word(&self) -> &'static str {
         match self {
+            MailState::Starting => "starting",
             MailState::Unreachable { .. } => "unreachable",
             _ => "up",
         }
@@ -66,7 +70,7 @@ impl MailState {
     /// been told whether an account exists, and saying it has none is a claim it cannot support.
     pub fn has_account(&self) -> Option<bool> {
         match self {
-            MailState::Unreachable { .. } => None,
+            MailState::Starting | MailState::Unreachable { .. } => None,
             MailState::NoAccount { .. } => Some(false),
             MailState::Ready { .. } => Some(true),
         }
@@ -86,6 +90,7 @@ impl MailState {
     /// The one line a caller surveying every window pays for.
     pub fn summary(&self) -> String {
         match self {
+            MailState::Starting => "Email — starting; the mail service has not answered yet".to_string(),
             MailState::Unreachable { reason } => {
                 format!("Email — the mail service could not be reached: {reason}")
             }
@@ -98,7 +103,7 @@ impl MailState {
 
     pub fn config_path(&self) -> &str {
         match self {
-            MailState::Unreachable { .. } => "",
+            MailState::Starting | MailState::Unreachable { .. } => "",
             MailState::NoAccount { config_path, .. } => config_path,
             MailState::Ready { config_path, .. } => config_path,
         }
@@ -106,7 +111,7 @@ impl MailState {
 
     pub fn secrets_are_plaintext(&self) -> bool {
         match self {
-            MailState::Unreachable { .. } => false,
+            MailState::Starting | MailState::Unreachable { .. } => false,
             MailState::NoAccount { secrets_are_plaintext, .. } => *secrets_are_plaintext,
             MailState::Ready { secrets_are_plaintext, .. } => *secrets_are_plaintext,
         }
@@ -126,6 +131,8 @@ impl MailState {
                        sign-in is available on this build."
                     .to_string(),
             },
+            // Not drawn while starting: the setup form is not on screen until the service answers.
+            MailState::Starting => GoogleSignIn::default(),
             MailState::NoAccount { google, .. } => google.clone(),
             MailState::Ready { google, .. } => google.clone(),
         }

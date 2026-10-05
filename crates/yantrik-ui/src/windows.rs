@@ -105,6 +105,9 @@ fn refresh_compositor_if_stale() {
         Ok(cache) => cache.as_ref().is_none_or(|(at, _, _)| at.elapsed() >= COMPOSITOR_TTL),
         Err(_) => return,
     };
+    // An app that is starting is waited on: its "Starting…" goes the poll after its window
+    // arrives, not up to nine seconds later. Bounded by the starting budget.
+    let stale = stale || !starting_apps().is_empty();
     if stale {
         refresh_compositor_windows();
     }
@@ -163,13 +166,14 @@ fn merge_windows(
     mut discovered: Vec<WindowEntry>,
     front: Option<&str>,
 ) -> Vec<WindowEntry> {
+    let now = crate::starting::now_unix();
     let mut merged: Vec<WindowEntry> = launched
         .iter()
         .map(|app| {
             let app_id = app.app_id.clone();
             let seen = discovered
                 .iter()
-                .position(|w| w.app_id == app_id || same_program(&app.binary, &w.wayland_app_id))
+                .position(|w| is_window_of(app, w))
                 .map(|i| discovered.remove(i));
             match seen {
                 Some(window) => WindowEntry {
@@ -179,10 +183,16 @@ fn merge_windows(
                     wayland_app_id: window.wayland_app_id,
                     app_id,
                 },
+                // Launched and not yet on screen: said so, rather than listed like a window
+                // that is there (see `starting`).
                 None => WindowEntry {
                     title: display_name(&app_id),
                     icon_char: icon_for_app(&app_id).to_string(),
-                    subtitle: String::new(),
+                    subtitle: if crate::starting::still_starting(app.since_unix, now, false) {
+                        crate::starting::MARK.to_string()
+                    } else {
+                        String::new()
+                    },
                     wayland_app_id: String::new(),
                     app_id,
                 },
@@ -203,6 +213,34 @@ fn put_front_first(merged: &mut Vec<WindowEntry>, front: Option<&str>) {
         let window = merged.remove(i);
         merged.insert(0, window);
     }
+}
+
+/// Whether the compositor's window `w` is the one the shell launched as `app`.
+fn is_window_of(app: &crate::running::RunningApp, w: &WindowEntry) -> bool {
+    w.app_id == app.app_id || same_program(&app.binary, &w.wayland_app_id)
+}
+
+/// The apps the shell launched whose window the compositor has not shown yet, inside the
+/// starting budget (see `starting`). From the last reading, so it is cheap enough for the UI
+/// thread.
+pub fn starting_apps() -> Vec<String> {
+    let (discovered, _) = compositor_snapshot();
+    windowless(&crate::running::running(), &discovered, crate::starting::now_unix())
+}
+
+fn windowless(
+    launched: &[crate::running::RunningApp],
+    discovered: &[WindowEntry],
+    now: u64,
+) -> Vec<String> {
+    launched
+        .iter()
+        .filter(|app| {
+            let seen = discovered.iter().any(|w| is_window_of(app, w));
+            crate::starting::still_starting(app.since_unix, now, seen)
+        })
+        .map(|app| app.app_id.clone())
+        .collect()
 }
 
 /// Whether a window that declared `wayland_app_id` came from the binary the shell started.
@@ -1017,6 +1055,20 @@ mod tests {
         assert_eq!(merged.iter().map(|w|w.app_id.as_str()).collect::<Vec<_>>(),["editor","terminal","notes"]);
     }
 
+
+    /// Email launched a moment ago with no window yet is starting, and says so in the list; once
+    /// the compositor has its window it is not (`starting`).
+    #[test]
+    fn a_launch_is_starting_until_its_window_is_seen() {
+        let now = crate::starting::now_unix();
+        let email = RunningApp { since_unix: now, ..launched("email", "yantrik-email") };
+        assert_eq!(windowless(&[email.clone()], &seen(&[": Terminal"]), now), ["email"]);
+        let merged = merge_windows(&[email.clone()], seen(&[": Terminal"]), None);
+        assert_eq!(merged[0].subtitle, crate::starting::MARK);
+        assert!(windowless(&[email], &seen(&[": Terminal", ": Email"]), now).is_empty());
+        // An old launch whose window was never seen is not starting for ever.
+        assert!(windowless(&[launched("email", "yantrik-email")], &[], now).is_empty());
+    }
 
     /// The case the shell used to get wrong: the launch registry is empty because this process
     /// has just started, and four apps are on screen because the compositor did not restart.
