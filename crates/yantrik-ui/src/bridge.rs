@@ -1778,6 +1778,8 @@ fn worker_loop(
                                     content: SharedString::from(&text),
                                     is_streaming: false,
                                     blocks: ModelRc::default(),
+                                    mind: crate::wire::harness::BUILTIN_NAME.into(),
+                                    model: Default::default(),
                                 });
                                 // Through the notifications service, and only when the Lens is
                                 // shut: with it open the answer is already in the conversation
@@ -2572,6 +2574,8 @@ fn worker_loop(
                                             content: SharedString::from(&text),
                                             is_streaming: false,
                                             blocks: ModelRc::default(),
+                                            mind: crate::wire::harness::BUILTIN_NAME.into(),
+                                            model: Default::default(),
                                         });
                                         // Raised only when the Lens is closed — re-checked here on
                                         // the UI thread, which is the one place that reading is

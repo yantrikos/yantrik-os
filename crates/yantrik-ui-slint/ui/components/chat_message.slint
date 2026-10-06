@@ -83,8 +83,12 @@ export component ChatMessage inherits Rectangle {
                 horizontal-stretch: 1;
                 spacing: 0;
 
+                // The mind that said it, kept on the message: switching mind never relabels the
+                // past (#673). A message from before minds were kept on it reads as the mind now.
                 if root.group-start : Text {
-                    text: root.is-desktop ? "From the desktop" : root.mind-name;
+                    text: root.is-desktop ? "From the desktop"
+                        : (root.data.mind != "" ? root.data.mind : root.mind-name)
+                          + (root.data.model != "" ? " · " + root.data.model : "");
                     color: Theme.chat-text-2;
                     font-size: Theme.fs-caption;
                     font-weight: 600;
