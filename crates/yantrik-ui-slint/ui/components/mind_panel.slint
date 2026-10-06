@@ -61,7 +61,7 @@ export struct MindPanelNow {
     builtin: bool,
     model: string,        // what it runs on — or why that is not known
     model-named: bool,    // `model` is a model, not a sentence about one
-    state: string,        // ready | thinking | offline | attached | unknown
+    state: string,        // connected | checking | not-set-up | key-missing | unreachable | not-allowed | own | thinking | offline | unknown
     project: string,      // "" when nothing has detected one
     memory: string,       // "YantrikDB · 1,234 memories"
     memory-known: bool,
@@ -166,8 +166,9 @@ component StateDot inherits Rectangle {
     border-radius: 3.5px;
     background: root.state == "waiting_for_you" ? Theme.amber
         : root.state == "thinking" || root.state == "running_tool" || root.state == "running" ? Theme.accent
-        : root.state == "ready" || root.state == "attached" ? Theme.color-success
+        : root.state == "connected" || root.state == "ready" || root.state == "attached" ? Theme.color-success
         : root.state == "offline" || root.state == "failed" ? Theme.color-danger
+        : root.state == "key-missing" || root.state == "unreachable" || root.state == "not-set-up" || root.state == "not-allowed" ? Theme.amber
         : Theme.text-dim;
 }
 
@@ -288,7 +289,9 @@ component MindCard inherits Rectangle {
                             spacing: 6px;
                             StateDot { state: root.now.state; y: (parent.height - self.height) / 2; }
                             Text {
-                                text: root.now.known ? root.now.state + " · " + root.now.model : "the host has not said yet";
+                                // The whole line comes from Rust: "connected · <model>" only after a
+                                // real call or a probe, else what is wrong (#673).
+                                text: root.now.known ? root.now.model : "the host has not said yet";
                                 color: root.now.model-named ? Theme.text-secondary : Theme.text-dim;
                                 font-size: Theme.fs-caption;
                                 overflow: elide;
