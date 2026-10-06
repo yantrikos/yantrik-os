@@ -225,6 +225,13 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                         }
                     }
                     _ if held_from_phone => crate::mind_mode::Decision::Ask,
+                    // A command line that may run `yantrik-update mind-grant` is asked about every
+                    // time, in every mode but plan (which refused above), full bypass included, and
+                    // no session rule answers it: a Mind grant is minted only on a person's Allow
+                    // for exactly that line (review of #667, M6).
+                    _ if app == "shell" && crate::control_agent_terminal::asks_each_time(&action, &parsed) => {
+                        crate::mind_mode::Decision::Ask
+                    }
                     other => other,
                 };
                 match decision {

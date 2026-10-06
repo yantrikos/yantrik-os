@@ -1207,7 +1207,11 @@ impl Store {
                 // a standing yes: the session rule would cover every later call of the action,
                 // and the sentence the person just read explained exactly one (#137).
                 can_session: may_offer_session_rule(&record.grade, &record.said())
-                    && record.explained.is_empty(),
+                    && record.explained.is_empty()
+                    // Nor a card for a line that may run `yantrik-update mind-grant`: that is
+                    // asked about every time (`control_agent_terminal::asks_each_time`).
+                    && !(record.app == "shell"
+                        && crate::control_agent_terminal::asks_each_time(&record.action, &record.args)),
                 said: record.said(),
                 status,
                 record: record_line(record, status),
@@ -2218,6 +2222,32 @@ mod approvals_tests {
             modes.person_add_rule(&card.app, &card.action, &card.grade, &card.said).is_err(),
             "nor may a rule be stored for it"
         );
+    }
+
+    /// An agent's command line that may run `yantrik-update mind-grant` is offered no standing
+    /// yes, while the same action with another line is (review of #667, M6).
+    #[test]
+    fn approvals_a_mind_grant_command_offers_no_session_rule() {
+        let mut store = Store::new();
+        let now = Instant::now();
+        let published = crate::control_agent_terminal::specs()[0].description.clone();
+        let asked = |purpose: &'static str| Asked {
+            app: "shell",
+            action: "agent_run",
+            grade: "sensitive",
+            purpose,
+            published: "",
+            target: "",
+            explained: "",
+        };
+        let grant = args(serde_json::json!({"command": "sudo -n yantrik-update mind-grant add --scope run search"}));
+        let id = store.raise("pi", Verified::default(), Asked { published: &published, ..asked("grant a search") }, grant, now, "12:05").unwrap().id;
+        let card = store.pending(now).into_iter().find(|c| c.id == id).unwrap();
+        assert!(!card.can_session, "a mind-grant line is asked about every time");
+        let build = args(serde_json::json!({"command": "cargo build"}));
+        let id = store.raise("pi", Verified::default(), Asked { published: &published, ..asked("build") }, build, now, "12:06").unwrap().id;
+        let card = store.pending(now).into_iter().find(|c| c.id == id).unwrap();
+        assert!(card.can_session, "another line still offers the session rule");
     }
 
     /// Re-review of #504: a caller's purpose padded past the card's bound, or dressed as the
