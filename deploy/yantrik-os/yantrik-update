@@ -2250,7 +2250,7 @@ reconcile_egress_seeds() {
 # person's policy, enforce mode and Private mode. Now the kernel holds the account to it, the same
 # shape as the DevTools guard: an output chain for `meta skuid <yantrik-mind>` that lets through
 #   * on loopback, only the ports the mind always needs (MIND_LOOPBACK_PORTS: the proxy, the memory
-#     server, the bundled llama-server) and the ones the person opened to it with a rule
+#     server, the model gateway, the bundled llama-server) and the ones the person opened to it with a rule
 #     `{host: 127.0.0.1 or ::1, ports, lan: true}` (a local Ollama on 11434). Everything else on
 #     this machine (`fib daddr type local`: loopback, and its own LAN address) is refused: a local
 #     model server or anything bound to 0.0.0.0 would otherwise be a way out past the proxy;
@@ -2293,12 +2293,17 @@ MIND_LAN_HOSTS_MAX=64
 # else) and in its unit; the kernel's loopback set and the status file's public_proxy are made from
 # this one, and the selftest checks all four agree.
 EGRESS_PUBLIC_DOOR=127.0.0.1:7451
+# The local model gateway (crates/yantrik-gateway, #673): the shell's OpenAI-compatible endpoint that
+# forwards a mind's model calls to the person's AI accounts with keys the mind never holds. Pinned,
+# the same as the crate's PORT and ADDR, and the selftest checks they agree. It refuses a call
+# without the mind's own token, and in Private mode anything not on this machine or network.
+GATEWAY_ADDR=127.0.0.1:7460
 # 127.0.0.1 ports every mind may reach: the egress proxy's two doors (7450 the endpoint door, the
-# public door's port from EGRESS_PUBLIC_DOOR), the memory server (7440, YM_MEMORY_SERVER) and the
-# bundled llama-server fallback (8341). The Mind's other loopback listeners are off in its unit
-# (YM_CTL 8077, YM_WEB, YM_WEBUI) and its sandboxes run in network namespaces of their own;
-# anything else is the person's to open with a rule.
-MIND_LOOPBACK_PORTS="7440, 7450, ${EGRESS_PUBLIC_DOOR##*:}, 8341"
+# public door's port from EGRESS_PUBLIC_DOOR), the memory server (7440, YM_MEMORY_SERVER), the
+# model gateway (GATEWAY_ADDR's port) and the bundled llama-server fallback (8341). The Mind's other
+# loopback listeners are off in its unit (YM_CTL 8077, YM_WEB, YM_WEBUI) and its sandboxes run in
+# network namespaces of their own; anything else is the person's to open with a rule.
+MIND_LOOPBACK_PORTS="7440, 7450, ${EGRESS_PUBLIC_DOOR##*:}, ${GATEWAY_ADDR##*:}, 8341"
 
 # What `yantrik-egress direct` printed, checked again: `private on|off`, `mode audit|guarded|enforce`, then
 # `direct <ip> <port>` lines (a literal address on the local network: 10/8, 172.16/12,
@@ -2458,8 +2463,9 @@ mind_egress_text() { # <uid> <entry lines> <resolver lines> <dns|nodns> <note>
 # Yantrik OS: where the mind account (yantrik-mind, uid $1) may connect, held by the kernel.
 # Its way out is the person's egress proxy on loopback (yantrik-egress: 127.0.0.1:7450, the endpoint
 # door, and 127.0.0.1:7451, the public door, which never reaches the local network), which
-# applies their policy and Private mode. Beside it: the memory server and the loopback services
-# the person opened, DNS (audit only: in guarded and enforce the proxy resolves), and the direct set (LAN services the person allowed by
+# applies their policy and Private mode. Beside it: the memory server, the model gateway
+# (127.0.0.1:7460, which forwards to the person's AI accounts with the mind's own token), and the
+# loopback services the person opened, DNS (audit only: in guarded and enforce the proxy resolves), and the direct set (LAN services the person allowed by
 # address: a policy rule with lan: true whose host is a literal address). Everything else from
 # the account is refused, and counted: nft list counters table inet yantrik_mind_egress
 # Entries: $5
@@ -4058,6 +4064,21 @@ d = json.load(sys.stdin); print(d["public_proxy"], d["proxy"].split(":")[0])')"
   is "public door: ... the kernel's loopback set has its port, once" "${EGRESS_PUBLIC_DOOR##*:}" \
     "$(printf '%s\n' "$MIND_LOOPBACK_PORTS" | tr ',' '\n' | tr -d ' ' | grep -x "${EGRESS_PUBLIC_DOOR##*:}")"
   is "public door: ... on 127.0.0.1, the only address the loopback set is for" "127.0.0.1" "${EGRESS_PUBLIC_DOOR%:*}"
+  # The model gateway (#673): its port is in the mind's loopback set once, on 127.0.0.1, and it is
+  # the only port added since the public door: the set is exactly these five, nothing widened.
+  is "model gateway: the kernel's loopback set has its port, once" "${GATEWAY_ADDR##*:}" \
+    "$(printf '%s\n' "$MIND_LOOPBACK_PORTS" | tr ',' '\n' | tr -d ' ' | grep -x "${GATEWAY_ADDR##*:}")"
+  is "model gateway: ... on 127.0.0.1, the only address the loopback set is for" "127.0.0.1" "${GATEWAY_ADDR%:*}"
+  is "model gateway: ... and the set is the five the mind always needs, nothing more" "7440 7450 7451 7460 8341" \
+    "$(printf '%s\n' "$MIND_LOOPBACK_PORTS" | tr ',' '\n' | tr -d ' ' | sort -n | tr '\n' ' ' | sed 's/ $//')"
+  local gateway_lib
+  gateway_lib="$(dirname "$0")/../../crates/yantrik-gateway/src/lib.rs"
+  if [ -f "$gateway_lib" ]; then
+    is "model gateway: ... the crate listens on the same address" "pub const ADDR: &str = \"$GATEWAY_ADDR\";" \
+      "$(grep '^pub const ADDR' "$gateway_lib")"
+    is "model gateway: ... and names the same port" "pub const PORT: u16 = ${GATEWAY_ADDR##*:};" \
+      "$(grep '^pub const PORT' "$gateway_lib")"
+  fi
   local egress_unit egress_main
   egress_unit="$(dirname "$0")/../../config/systemd/yantrik-egress.service"
   egress_main="$(dirname "$0")/../../crates/yantrik-egress/src/main.rs"

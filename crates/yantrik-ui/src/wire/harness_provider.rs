@@ -29,9 +29,52 @@ fn home() -> PathBuf {
     std::env::var("HOME").map(PathBuf::from).unwrap_or_default()
 }
 
+/// The model "Use Yantrik models" starts a harness on: the one the person picked for it, else
+/// the first it may use — any, for a harness that sends no private context; one the person allowed
+/// private context for (or on this network), for one that does.
+pub(crate) fn starting_model(harness: &str, private_context: bool) -> Result<String, String> {
+    let catalogue = crate::ai_accounts::catalogue();
+    if catalogue.models().next().is_none() {
+        return Err("There are no models yet: add an account under AI & Intelligence (or switch on a free one), then press Use Yantrik models again.".into());
+    }
+    if let Some(picked) = crate::picker::remembered_model(harness).filter(|m| catalogue.find(m).is_some()) {
+        return Ok(picked);
+    }
+    let accounts = crate::ai_accounts::accounts();
+    let allowed = crate::ai_accounts::consent::load(&crate::ai_accounts::consent::path());
+    let usable = catalogue
+        .models()
+        .find(|m| {
+            !private_context
+                || accounts.iter().any(|a| a.id == m.account && crate::gateway::private_ok(a, &allowed))
+        })
+        .map(|m| m.id.clone());
+    usable.ok_or_else(|| {
+        format!(
+            "{harness} keeps a memory of you, and no account may receive private context yet. Allow one under AI & Intelligence → AI accounts, or add a local one, then try again."
+        )
+    })
+}
+
+/// The plan for pointing `harness` at the local model gateway, with a token minted for it now.
+fn plan_gateway(harness: &str) -> Result<Plan, String> {
+    let adapter = provider_handoff::adapter_for(harness)
+        .ok_or_else(|| format!("{harness} cannot be pointed at Yantrik models from here yet — it keeps its own settings"))?;
+    let model = starting_model(harness, adapter.private_context())?;
+    let offer = provider_handoff::Offer {
+        token: provider_handoff::Token(yantrik_gateway::tokens::mint()?),
+        model,
+        models: crate::ai_accounts::catalogue().models().cloned().collect(),
+    };
+    adapter.plan_gateway(&home(), &offer)
+}
+
 /// The plan for giving `harness` the saved provider `provider` — its id, or a name only one
-/// saved provider has.
+/// saved provider has — or, for [`provider_handoff::GATEWAY_ID`], Yantrik models.
 pub(crate) fn plan(harness: &str, provider: &str) -> Result<Plan, String> {
+    if provider == provider_handoff::GATEWAY_ID {
+        return plan_gateway(harness);
+    }
     let adapter = provider_handoff::adapter_for(harness)
         .ok_or_else(|| format!("{harness} cannot be given a provider from here yet — it keeps its own settings"))?;
     let store = ProviderStore::load();
@@ -74,6 +117,14 @@ pub(crate) fn explain_assign(harness: &str, provider: &str) -> String {
 }
 
 pub(crate) fn explain_revert(harness: &str) -> String {
+    if provider_handoff::uses_gateway(&home(), harness) {
+        if let Some(a) = provider_handoff::adapter_for(harness) {
+            return format!(
+                "Withdraws {}'s gateway token and puts back its own settings, as they were before it was given Yantrik models.",
+                a.name()
+            );
+        }
+    }
     match provider_handoff::adapter_for(harness) {
         Some(a) => format!(
             "Puts back {}'s own settings file, as it was before a provider was given to it, and restarts it if it is running.",

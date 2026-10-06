@@ -101,6 +101,8 @@ pub mod minds_panel;
 pub mod services;
 pub mod vault;
 pub mod free_ai;
+/// Settings → AI & Intelligence → AI accounts: every account and its models (#673).
+pub mod ai_accounts_card;
 
 use crate::app_context::AppContext;
 use crate::App;
@@ -158,6 +160,12 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     ai_provider::wire(ui, ctx);
     decision_model::wire(ui, ctx);
     free_ai::wire(ui, ctx);
+    // After `free_ai`, whose choices say which free tiers are switched on.
+    ai_accounts_card::wire(ui, ctx);
+    // The model gateway reads that catalogue at each call; it listens from here on.
+    crate::gateway::start(ctx.bridge.clone());
+    // The picker reads the catalogue, the minds and the gateway's calls: after all three.
+    crate::picker::wire(ui, ctx);
     installer::wire(ui, ctx);
     // The Mac BCM4331's driver, fetched once online: what the first-run screens say meanwhile.
     wifi_driver::wire(ui, ctx);

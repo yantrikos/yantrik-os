@@ -40,6 +40,12 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Which vault values are kept, and which tiers are switched off, as last read: what the AI
+/// accounts list needs to know which free tiers are usable. No key.
+pub(crate) fn kept_and_off() -> (std::collections::BTreeSet<String>, std::collections::BTreeSet<String>) {
+    (lock(&KEPT).keys().cloned().collect(), lock(&CHOICES).off.clone())
+}
+
 #[derive(Clone)]
 struct Wiring {
     ui: slint::Weak<App>,

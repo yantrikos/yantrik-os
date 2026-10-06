@@ -81,6 +81,32 @@ impl Handoff for DeepSeek {
                 },
             }],
             restart: Some(UNIT.into()),
+            token: None,
+            private_context: false,
+            mind_post: None,
         })
+    }
+
+    /// The gateway is one more OpenAI-compatible endpoint to it: `base_url`, `model` and the token
+    /// as `api_key`, and the rest of the file as it was.
+    fn plan_gateway(&self, home: &Path, offer: &super::Offer) -> Result<Plan, String> {
+        let path = home.join(".config/yantrik/deepseek.json");
+        let mut config = super::read_json_object(&path)?;
+        config.insert("base_url".into(), Value::String(offer.base_url()));
+        config.insert("model".into(), Value::String(yantrik_gateway::PICKED.into()));
+        config.remove("api_key_env");
+        config.insert("api_key".into(), Value::String(offer.token.0.clone()));
+        let content = serde_json::to_string_pretty(&Value::Object(config)).map_err(|e| e.to_string())? + "\n";
+        let write = Write { path, content, what: "the gateway's address, `picked` as its model, and its gateway token".into() };
+        Ok(super::gateway_plan(self, offer, vec![write]))
+    }
+
+    fn takes_saved_provider(&self) -> bool {
+        true
+    }
+
+    /// It keeps no memory of the person (`memory=False` when it attaches).
+    fn private_context(&self) -> bool {
+        false
     }
 }

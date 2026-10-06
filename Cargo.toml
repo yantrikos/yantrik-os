@@ -44,6 +44,8 @@ members = [
     "crates/yantrik-mind-view-title",
     # The one way out for the mind account: a CONNECT proxy by the person's policy.
     "crates/yantrik-egress",
+    # The local model gateway: every mind's models through one loopback endpoint, keys kept by the OS (#673).
+    "crates/yantrik-gateway",
     # The folder watch and the move decisions shared by yDoc and the Text Editor, so a file
     # moved in Files does not strand the editor holding it open (#75, #86).
     "crates/yantrik-file-follow",
@@ -161,6 +163,7 @@ libc = "0.2"
 
 # Internal crates
 yantrik-harness = { path = "crates/yantrik-harness" }
+yantrik-gateway = { path = "crates/yantrik-gateway" }
 yantrik-agent-terminal = { path = "crates/yantrik-agent-terminal" }
 yantrik-companion-core = { path = "crates/yantrik-companion-core" }
 yantrik-companion-instincts = { path = "crates/yantrik-companion-instincts" }

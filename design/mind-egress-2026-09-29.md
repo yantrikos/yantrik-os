@@ -35,7 +35,7 @@ proxy's policy, not a hole in the kernel's). As built (`/etc/yantrik/mind-egress
 table inet yantrik_mind_egress {
   counter refused {}  counter dns {}  counter direct {}
   set resolvers4 { type ipv4_addr; … }             set resolvers6 { type ipv6_addr; … }      # audit only
-  set loopback4 { type inet_service; 7440, 7450, 8341, … } set loopback6 { type inet_service; … }
+  set loopback4 { type inet_service; 7440, 7450, 7451, 7460, 8341, … } set loopback6 { type inet_service; … }
   set direct4 { type ipv4_addr . inet_service; … }  set direct6 { type ipv6_addr . inet_service; … }
   chain output {
     type filter hook output priority filter; policy accept;
@@ -67,7 +67,7 @@ table inet yantrik_mind_egress {
   discovery) has no owner; `meta skuid != N return` would let such a packet fall into the
   refusals for every account on the machine. Only packets the mind account owns enter `mind`.
 - **Loopback is a list, not a hole.** On 127.0.0.1 the mind reaches the proxy (7450), the memory
-  server (7440) and the bundled llama-server (8341), and the ports the person opened to it with a
+  server (7440), the model gateway (7460, below) and the bundled llama-server (8341), and the ports the person opened to it with a
   rule `{host: 127.0.0.1 (or ::1), ports: [11434], lan: true}`: a **loopback entry**, a local
   Ollama the usual one. Everything else on this machine is refused (`fib daddr type local`, which
   is loopback and also the machine's own LAN address, routed over `lo`). A local model server is a
@@ -498,6 +498,37 @@ not try to resolve anything itself.
   to allow is the control. That is why each rule has a `why`, and why the audit week comes first.
 - **Not inference routing.** Which model a mind uses stays the mind's choice. This only decides
   whether it may reach it.
+
+## The model gateway on 7460 (6 October 2026, #673)
+
+The shell now serves one OpenAI-compatible endpoint on `127.0.0.1:7460` (`crates/yantrik-gateway`)
+that forwards a mind's model calls to the person's AI accounts, adding the account's key as it
+forwards. The mind account may reach it: `GATEWAY_ADDR` in `yantrik-update`, one more port in
+`MIND_LOOPBACK_PORTS`, and nothing else. The selftest checks the set is exactly 7440, 7450, 7451,
+7460 and 8341, and that the crate's `ADDR` and `PORT` name the same address.
+
+What this does and does not open:
+
+- **It is a door to the person's accounts, not to the internet.** The gateway sends only to the
+  accounts the person added (Settings → AI & Intelligence), at their saved addresses, and only
+  `/chat/completions`. A request cannot name a host.
+- **It needs the mind's own token** (`Authorization: Bearer ygw-…`), minted by the desktop for that
+  mind; without one it answers 401 and sends nothing. It answers no request that carries an
+  `Origin` header, so a web page on this machine cannot use it either.
+- **Private context goes only where the person allowed it.** The Mind's token is marked as sending
+  private context; it may use an account only when the person switched private context on for
+  that account (Settings → AI & Intelligence → AI accounts), the same per-account flag as the
+  Mind's own E.PROV1 `private_context`. An account on this machine or the local network needs no
+  switch.
+- **Private mode holds here too.** The kernel table keeps the port open in Private mode (it is one
+  of the mind's own, like the proxy's), and the gateway refuses every account that is not on this
+  machine or network while Private mode is on.
+- **Every call is logged without content** (`~/.local/state/yantrik/gateway-calls.jsonl`): which
+  mind, account, model, effort, status, tokens and time.
+
+What it does not close: what the person allowed. An account the person allowed private context
+for receives it, as a provider the Mind was configured with always did; the difference is that the
+key is no longer in the Mind's settings, and the call is counted.
 
 ## Questions for yantrik-mind-72
 

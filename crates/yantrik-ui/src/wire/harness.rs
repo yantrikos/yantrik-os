@@ -54,6 +54,8 @@ pub fn host() -> Option<&'static Host> {
 /// Named once here so the chat path can ask "is the builtin driving?" without a string literal
 /// of its own drifting away from this one.
 pub const BUILTIN_ID: &str = "companion";
+/// And its name, on its row and on every reply it signs.
+pub const BUILTIN_NAME: &str = "Yantrik Companion";
 
 struct Companion {
     bridge: Arc<CompanionBridge>,
@@ -65,7 +67,7 @@ impl Harness for Companion {
     }
 
     fn name(&self) -> &str {
-        "Yantrik Companion"
+        BUILTIN_NAME
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -571,6 +573,7 @@ fn publish_catalogue(ui: &App, entries: &[yantrik_harness::Entry]) {
             configure_label: row.configure.into(),
             provider_line: row.provider_line.into(),
             can_assign_provider: row.can_assign_provider,
+            can_use_saved: row.can_use_saved,
             can_revert_provider: row.can_revert_provider,
             docs: row.docs.into(),
         })

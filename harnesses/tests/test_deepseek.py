@@ -266,6 +266,28 @@ class DeepSeekTests(unittest.TestCase):
         self.assertIn("Asia/Kolkata", system)
         self.assertIn("REFUSED", system, "the system prompt must say what a refusal means")
 
+    def test_a_picked_model_and_effort_go_to_the_gateway_and_nowhere_else(self):
+        import yantrik_deepseek
+        from urllib.parse import urlsplit
+        from unittest import mock
+
+        picked = {"model": "plain", "effort": "high"}
+        mind = self.mind("tools")
+        turn, recorder = recording_turn("hi", options=picked)
+        with mock.patch.object(yantrik_deepseek, "GATEWAY_HOSTS", (urlsplit(self.base).netloc,)):
+            mind.answer(turn)
+        self.assertEqual(said(recorder), "Two windows.", "the picked model answered, not the configured one")
+        self.assertEqual(self.requests_for("plain")[0]["effort"], "high")
+        self.assertEqual(self.requests_for("tools"), [])
+        # Its own endpoint: a gateway id means nothing there, so its own model is asked.
+        with self.server.lock:
+            self.server.requests = []
+        own = self.mind("plain")
+        turn, _ = recording_turn("hi", options={"model": "tools", "effort": "high"})
+        own.answer(turn)
+        self.assertEqual(len(self.requests_for("plain")), 1)
+        self.assertNotIn("effort", self.requests_for("plain")[0])
+
     # ── what the agent is doing ─────────────────────────────────────────
 
     def test_each_tool_call_is_a_card_that_settles_with_its_result(self):

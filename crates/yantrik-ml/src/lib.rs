@@ -31,6 +31,9 @@ mod token_stream;
 // LLM backend modules
 mod llm;
 
+// What each model can do and how hard it can be asked to think (the AI accounts catalogue).
+pub mod model_caps;
+
 // Provider registry (multi-provider management, secret storage, key validation)
 #[cfg(feature = "api-llm")]
 pub mod provider;

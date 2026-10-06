@@ -97,6 +97,9 @@ Say what you are about to do before a long run of actions, then do it."""
 # is not, and stays with the chat model. So the decider goes in front of the generator: it picks,
 # the generator fills, and below a confidence gate the generator does both as it always did.
 
+# The desktop's model gateway (#673), where a turn's picked `<account>/<model>` can be sent.
+GATEWAY_HOSTS = ("127.0.0.1:7460", "localhost:7460")
+
 # The three kinds, with the base_url and model each is usually pointed at.
 DECIDER_KINDS = {
     # TypeSafe's hosted Jev. Needs a key, named by `api_key_env` and read from this process.
@@ -1135,6 +1138,10 @@ class DeepSeekMind(Handler):
         self.decider = build_decider(config.decider, self._open)
         self.messages: List[Dict[str, Any]] = []
         self._context: Optional[str] = None
+        # What the person picked for this turn (#673): a model and an effort, used only when this
+        # harness talks to the desktop's model gateway, where `<account>/<model>` means something.
+        self._turn_model = ""
+        self._turn_effort = ""
 
     def __repr__(self) -> str:
         return "DeepSeekMind(%r, %d messages, %s)" % (
@@ -1157,6 +1164,9 @@ class DeepSeekMind(Handler):
 
     def answer(self, turn: Turn) -> None:
         self._context = turn.context
+        on_gateway = urlsplit(self.config.base_url).netloc in GATEWAY_HOSTS
+        self._turn_model = turn.model if on_gateway else ""
+        self._turn_effort = turn.effort if on_gateway else ""
         self.messages.append({"role": "user", "content": turn.text})
         try:
             schemas = self.tools.as_openai_tools()
@@ -1406,10 +1416,13 @@ class DeepSeekMind(Handler):
     def _payload(self, schemas: List[Dict[str, Any]],
                  tool_choice: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         body: Dict[str, Any] = {
-            "model": self.config.model,
+            "model": self._turn_model or self.config.model,
             "messages": [{"role": "system", "content": self._system()}] + self.messages,
             "stream": True,
         }
+        if self._turn_effort:
+            # The gateway turns it into the provider's own knob.
+            body["effort"] = self._turn_effort
         if schemas:
             body["tools"] = schemas
         if schemas and tool_choice:

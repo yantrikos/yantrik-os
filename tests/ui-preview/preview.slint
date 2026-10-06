@@ -971,3 +971,51 @@ export component ApprovalCardProbe inherits Window {
     out property <length> card-h: card.preferred-height + 16px;
     card := ApprovalCard { x: 8px; y: 8px; width: parent.width - 16px; data: root.data; }
 }
+
+// The one picker for every mind (#673), as the Lens composer draws it, with fixture minds and
+// models: verify-picker switches mind and model with two clicks each (src/picker_tests.rs).
+import { ModelPicker, PickerMind, PickerModel, PickerFile, AttachmentChips } from "components/model_picker.slint";
+export { PickerMind, PickerModel, PickerFile }
+export component PickerProbe inherits Window {
+    width: 760px;
+    height: 560px;
+    background: Theme.bg-deep;
+    in property <bool> light: false;
+    changed light => { ThemeMode.dark = !root.light; }
+    in property <[PickerMind]> minds;
+    in property <[PickerModel]> models;
+    in property <[string]> efforts;
+    in property <[PickerFile]> files;
+    in-out property <string> chosen-mind;
+    in-out property <string> chosen-model;
+    in-out property <string> chosen-effort;
+    in-out property <int> opened-count;
+    out property <length> picker-x: picker.x;
+    out property <length> picker-y: picker.y;
+    Rectangle {
+        x: 16px;
+        y: root.height - 120px;
+        width: root.width - 32px;
+        height: 104px;
+        border-radius: 12px;
+        background: Theme.bg-card;
+        AttachmentChips { x: 12px; y: 10px; width: parent.width - 24px; files: root.files; }
+        Text { x: 12px; y: 44px; text: "Message Yantrik Mind…"; color: Theme.text-dim; }
+    }
+    picker := ModelPicker {
+        x: 28px;
+        y: root.height - 52px;
+        minds: root.minds;
+        mind-label: "Yantrik Mind";
+        models: root.models;
+        model-label: "gpt-oss-120b · Groq (free)";
+        efforts: root.efforts;
+        effort: "medium";
+        status-words: "connected · openai/gpt-oss-120b";
+        status-state: "connected";
+        choose-mind(id) => { root.chosen-mind = id; }
+        choose-model(id) => { root.chosen-model = id; }
+        choose-effort(e) => { root.chosen-effort = e; }
+        opened(w) => { root.opened-count += 1; }
+    }
+}

@@ -1,0 +1,15 @@
+[package]
+name = "yantrik-gateway"
+version = "0.1.0"
+edition = "2021"
+description = "The OS-owned local model gateway: an OpenAI-compatible endpoint on 127.0.0.1:7460 that forwards each harness's requests to the person's AI accounts, keys never leaving the OS (#673)"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tracing = { workspace = true }
+ureq = { workspace = true }
+# The models' capabilities and each provider's thinking knob (yantrik_ml::model_caps); none of
+# its backends.
+yantrik-ml = { path = "../yantrik-ml", default-features = false }

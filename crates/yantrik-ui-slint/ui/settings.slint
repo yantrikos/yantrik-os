@@ -16,6 +16,7 @@ import { ProviderPresetGroup } from "provider_presets.slint";
 import { YDialog } from "components/y_dialog.slint";
 import { AccountList, ProviderGroup, AddChoice } from "components/minds_panel.slint";
 import { FreeAiCard } from "components/free_ai_card.slint";
+import { AiAccountsCard } from "components/ai_accounts_card.slint";
 export { DecisionPreset, DecisionUse }
 
 // ── Settings sidebar category item ──
@@ -90,6 +91,7 @@ export struct HarnessRowData {
     // "Provider: NVIDIA NIM · model (from your saved providers)", or "its own settings".
     provider-line: string,
     can-assign-provider: bool,
+    can-use-saved: bool,       // "Use a provider" writes a saved provider into its own file
     can-revert-provider: bool,
     docs: string,
 }
@@ -1129,6 +1131,25 @@ export component SettingsScreen inherits Rectangle {
                                         }
                                     }
                                 }
+                            }
+
+                            // ── AI ACCOUNTS ──
+                            // Every account and its models: what the picker and the gateway use.
+                            VerticalLayout {
+                                spacing: Theme.sp-2;
+                                HorizontalLayout {
+                                    spacing: Theme.sp-2;
+                                    Rectangle { width: 3px; height: 14px; border-radius: 1.5px; background: Theme.accent; }
+                                    Text {
+                                        text: "AI ACCOUNTS";
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.fs-caption;
+                                        font-weight: 600;
+                                        letter-spacing: 3px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                AiAccountsCard { }
                             }
 
                             // ── FREE AI ACCOUNTS ──
@@ -3772,7 +3793,15 @@ SettingRow{label:"About this device";description:"Detailed information about thi
                                         variant: 1;
                                         clicked => { root.configure-harness(h.id); }
                                     }
-                                    if h.can-assign-provider && root.assigning-harness != h.id : YButton {
+                                    // Every mind the desktop can point at its model gateway: the
+                                    // accounts from AI & Intelligence, a token of its own, no key.
+                                    if h.can-assign-provider && !h.can-revert-provider : YButton {
+                                        label: "Use Yantrik models";
+                                        size: 0;
+                                        variant: 0;
+                                        clicked => { root.plan-provider(h.id, "yantrik-models"); }
+                                    }
+                                    if h.can-use-saved && h.can-assign-provider && root.assigning-harness != h.id : YButton {
                                         label: "Use a provider";
                                         size: 0;
                                         variant: 1;

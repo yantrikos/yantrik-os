@@ -69,6 +69,41 @@ impl Streams {
     }
 }
 
+/// Who says a reply (#673): the mind answering when it begins, and the model it is on. Kept on
+/// the message, so switching mind later never relabels it: `use_harness companion` used to put
+/// the Mind's earlier answers under "Yantrik Companion", because every bubble was labelled with
+/// whichever mind was answering now.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Speaker {
+    pub mind: String,
+    pub model: String,
+}
+
+impl Speaker {
+    /// The mind answering now, as the picker names it.
+    pub fn now() -> Speaker {
+        crate::picker::speaker()
+    }
+
+    /// The built-in companion, which speaks unprompted whoever is answering the person.
+    pub fn companion() -> Speaker {
+        Speaker { mind: crate::wire::harness::BUILTIN_NAME.to_string(), model: String::new() }
+    }
+}
+
+/// A reply's bubble, before its first word: empty, streaming, and signed by `speaker`.
+pub fn reply_bubble(speaker: &Speaker) -> MessageData {
+    MessageData {
+        run: Default::default(),
+        role: "assistant".into(),
+        content: "".into(),
+        is_streaming: true,
+        blocks: ModelRc::default(),
+        mind: speaker.mind.as_str().into(),
+        model: speaker.model.as_str().into(),
+    }
+}
+
 /// The same thing, from whatever is answering.
 ///
 /// Split out because the body had the builtin companion welded into it: it called
@@ -82,7 +117,7 @@ pub fn stream_into(
     text: &str,
     streams: &Streams,
 ) {
-    let row = match open_bubbles(&ui_weak, Some(text)) {
+    let row = match open_bubbles(&ui_weak, Some(text), &Speaker::now()) {
         Some(row) => row,
         None => return,
     };
@@ -103,6 +138,8 @@ pub fn say(ui_weak: &slint::Weak<App>, asked: Option<&str>, role: &str, said: &s
             content: SharedString::from(text),
             is_streaming: false,
             blocks: ModelRc::default(),
+            mind: Default::default(),
+            model: Default::default(),
         });
         ui.set_lens_chat_mode(true);
     }
@@ -112,6 +149,8 @@ pub fn say(ui_weak: &slint::Weak<App>, asked: Option<&str>, role: &str, said: &s
         content: SharedString::from(said),
         is_streaming: false,
         blocks: ModelRc::default(),
+        mind: Default::default(),
+        model: Default::default(),
     });
 }
 
@@ -131,7 +170,7 @@ pub fn offer(ui_weak: &slint::Weak<App>, asked: Option<&str>, said: &str, link: 
 
 /// Stream an answer into a bubble of its own, under a question already in the conversation.
 pub fn stream_answer(ui_weak: slint::Weak<App>, token_rx: crossbeam_channel::Receiver<String>, streams: &Streams) {
-    let Some(row) = open_bubbles(&ui_weak, None) else {
+    let Some(row) = open_bubbles(&ui_weak, None, &Speaker::now()) else {
         return;
     };
     pump(ui_weak, token_rx, row, streams);
@@ -145,7 +184,8 @@ pub fn start_proactive_stream(
     hidden_prompt: &str,
     streams: &Streams,
 ) {
-    let Some(row) = open_bubbles(&ui_weak, None) else {
+    // The companion speaks first here, whoever is answering the person.
+    let Some(row) = open_bubbles(&ui_weak, None, &Speaker::companion()) else {
         return;
     };
     pump(ui_weak, bridge.send_message(hidden_prompt.to_string()), row, streams);
@@ -156,7 +196,7 @@ pub fn start_proactive_stream(
 /// The row, not "the last row": with two answers arriving at once, the last row belongs to
 /// whichever started most recently, and the other one would write its words into it. Rows are
 /// only ever appended, so an index stays pointing at the same message.
-fn open_bubbles(ui_weak: &slint::Weak<App>, asked: Option<&str>) -> Option<usize> {
+fn open_bubbles(ui_weak: &slint::Weak<App>, asked: Option<&str>, speaker: &Speaker) -> Option<usize> {
     let ui = ui_weak.upgrade()?;
     let messages = ui.get_messages();
     let model = messages.as_any().downcast_ref::<VecModel<MessageData>>()?;
@@ -167,15 +207,11 @@ fn open_bubbles(ui_weak: &slint::Weak<App>, asked: Option<&str>) -> Option<usize
             content: SharedString::from(text),
             is_streaming: false,
             blocks: ModelRc::default(),
+            mind: Default::default(),
+            model: Default::default(),
         });
     }
-    model.push(MessageData {
-        run: Default::default(),
-        role: "assistant".into(),
-        content: "".into(),
-        is_streaming: true,
-        blocks: ModelRc::default(),
-    });
+    model.push(reply_bubble(speaker));
     ui.set_is_generating(true);
     ui.set_is_thinking(true);
     ui.set_companion_status("thinking".into());

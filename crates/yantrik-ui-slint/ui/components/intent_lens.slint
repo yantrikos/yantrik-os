@@ -2300,7 +2300,7 @@ export component IntentLens inherits Rectangle {
                             ChatMessage {
                                 data: msg;
                                 mind-name: root.mind-name;
-                                group-start: idx == 0 || root.messages[idx - 1].role != msg.role;
+                                group-start: idx == 0 || root.messages[idx - 1].role != msg.role || root.messages[idx - 1].mind != msg.mind;
                                 open-run(run) => { root.open-run(run); }
                             }
                             // The run this reply started, as one card, kept in step with the
