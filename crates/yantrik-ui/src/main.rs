@@ -40,6 +40,7 @@ mod app_context;
 mod approvals;
 mod approval_wording;
 mod approval_bounds;
+mod approval_target;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
 #[allow(dead_code)]
 mod apps;
@@ -77,6 +78,8 @@ mod private_freeze;
 /// Where a mind may take the Files screen, and what it may do with the folder there (#443).
 mod control_files_create;
 mod control_files_mind;
+mod control_files_target;
+mod phone_card;
 /// Whether a mind may paste the Files clipboard into the folder on screen (#443).
 mod control_files_paste;
 /// Agents' commands on the shell's surface: agent_run / agent_job / agent_input / agent_kill.

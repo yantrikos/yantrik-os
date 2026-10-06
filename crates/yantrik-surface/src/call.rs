@@ -211,6 +211,30 @@ impl ActCall {
     }
 }
 
+/// Who may ask `app.name_target`: the shell, building an approval card, and nothing else.
+///
+/// The answer names what an id, a title or a file name in some folder stands for, from the app's
+/// own store, whatever the asker may see: a mind asking directly could learn whether a name exists
+/// in a folder it is not let into (security review of #652, L3). The shell asks it for every card
+/// and holds the asker to the same rules there (the Files namer checks the folder a mind may see).
+/// So the caller must not be the mind account, and must run the desktop's own `yantrik-ui`
+/// (`owner::is_shell_binary`, a name check — it keeps agents out, not the person's own user).
+pub fn require_the_shell_asking(who: Option<Caller>) -> Result<(), ServiceError> {
+    let shell = who.is_some_and(|c| {
+        !yantrik_ipc_transport::mind_door::is_mind(c.uid)
+            && yantrik_ipc_transport::owner::exe_of(c.pid)
+                .is_some_and(|exe| yantrik_ipc_transport::owner::is_shell_binary(&exe))
+    });
+    if shell {
+        return Ok(());
+    }
+    Err(refusal(
+        "app.name_target answers the desktop's own shell only, while it builds an approval card. \
+         Nothing was named."
+            .into(),
+    ))
+}
+
 /// Run the rest of an answer a handler left with [`crate::answer_later`], and put its result in
 /// the envelope — with the view read again afterwards (`reread`), so the state beside the result
 /// is the state the result came from rather than the state before the wait. A `reread` that
@@ -300,6 +324,7 @@ mod tests {
             mode: yantrik_ipc_transport::gate::Mode::named("ask"),
             granted: false,
             asks_above: None,
+            target: None,
         };
         call.spend_grant(&mut authority, "notes", None, || panic!("asked for a grade with no grant to spend"))
             .unwrap();

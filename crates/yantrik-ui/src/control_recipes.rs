@@ -276,7 +276,7 @@ mod tests {
         assert_eq!(params, [("recipe", true), ("inputs", false)]);
         // Published as the object it is described as, so the dispatch's type check takes one.
         assert_eq!(spec.params[1].kind, "object");
-        let at = |mode: &str, granted: bool, ceiling: &str| Authority { ceiling: ceiling.into(), mode: Mode::named(mode), granted, asks_above: None };
+        let at = |mode: &str, granted: bool, ceiling: &str| Authority { ceiling: ceiling.into(), mode: Mode::named(mode), granted, asks_above: None, target: None };
         let err = decide(&at("ask", false, "sensitive"), "shell", "run_recipe", spec.permission, &spec.description).unwrap_err();
         assert!(err.starts_with("GRANT:") && err.contains("graded `sensitive`"), "{err}");
         assert!(decide(&at("plan", false, "sensitive"), "shell", "run_recipe", spec.permission, &spec.description).is_err());

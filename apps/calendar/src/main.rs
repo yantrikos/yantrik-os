@@ -16,6 +16,7 @@ use yantrik_ipc_transport::{peer_identity, reach};
 
 mod notice;
 mod ownership;
+mod target;
 mod today;
 mod views;
 use views::ViewMode;
@@ -885,6 +886,26 @@ fn delete_through_service(event_id: &str) -> Result<String, String> {
     Ok(event.title)
 }
 
+/// What a call to `delete_event` or `update_event` acts on, for the shell's approval card: the
+/// event the store holds under the id — or under exactly one title on one date — named from the
+/// store's own copy and identified by its id. `None` for anything the store does not hold, or a
+/// title that is ambiguous on its day: the card then says it could not be named, and a delete
+/// cannot be allowed.
+fn named_target(args: &serde_json::Value, act: target::Act) -> Option<yantrik_app_runtime::control::Target> {
+    let (id, _) = named_event(args).ok()?;
+    let event = get_event_via_service(&id).ok()?;
+    Some(target::rows(&event, act))
+}
+
+/// [`named_event`], held to the event the person's grant named (security review of #652, H1): a
+/// title and date resolve again when the call runs, and another event renamed into them after the
+/// Allow resolves to another id, which is refused before anything is deleted.
+fn granted_event(args: &serde_json::Value) -> Result<(String, String), String> {
+    let found = named_event(args);
+    control::held_to_grant(found.as_ref().ok().map(|(id, _)| id.as_str()))?;
+    found
+}
+
 /// Which event a delete names: by id, or by exactly one title on one date. Never a guess.
 ///
 /// The resolution both delete actions share, lifted out of the handlers so the two cannot
@@ -1594,10 +1615,11 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                     .optional())
                 .arg(Param::text("date")
                     .describe("YYYY-MM-DD, given with `title`")
-                    .optional()),
+                    .optional())
+                .names(&["id", "title", "date"], |args| named_target(args, target::Act::Delete)),
             move |args| {
                 let ui = delete_ui()?;
-                let (id, named) = named_event(&args)?;
+                let (id, named) = granted_event(&args)?;
 
                 match remove_event(&ui, &delete_state, &id) {
                     Ok(title) => {
@@ -1699,10 +1721,12 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
             update_door_args(Action::new(
                 "update_event",
                 "Move or rename any event that is already on the calendar",
-            ).risk("sensitive")),
+            ).risk("sensitive"))
+            .names(&["id"], |args| named_target(args, target::Act::Change)),
             move |args| {
                 let ui = update_ui()?;
                 let ask = update_ask(&args)?;
+                control::held_to_grant(Some(&ask.id))?;
                 change_and_answer(&ui, &update_state, &ask)
             },
         )

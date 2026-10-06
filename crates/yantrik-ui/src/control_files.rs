@@ -131,6 +131,7 @@ fn selected_names(ui: &App) -> Vec<String> {
 
 /// Add the file-browser actions to the shell's control surface.
 pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
+    crate::control_files_target::remember(ui);
     let for_go = ui.as_weak();
     let for_enter = ui.as_weak();
     let for_open = ui.as_weak();
@@ -294,7 +295,9 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             // Preserve the existing permission classification for automation callers.
             Action::new("files_delete", "Move a file or folder to recoverable Trash").defers()
                 .risk("dangerous")
-                .arg(Param::text("name").describe("The name to delete, shown in the current listing")),
+                .arg(Param::text("name").describe("The name to delete, shown in the current listing"))
+                // Its path and size on the approval card, from the folder on screen and the disk.
+                .names(&["name"], crate::control_files_target::named),
             move |args| {
                 let ui = up(&for_delete)?;
                 let name = args["name"].as_str().unwrap_or_default().to_string();
@@ -304,6 +307,14 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     return Err(format!("nothing called `{name}` in {}", ui.get_file_browser_path()));
                 }
                 mind::may_touch(&ui.get_file_browser_path(), std::slice::from_ref(&name))?;
+                // The entry the person's card named, by its folder's real path and its inode,
+                // resolved as the namer resolved it: a `files_go` after the Allow leaves the same
+                // name pointing somewhere else, and nothing is trashed (security review of #652, H1).
+                if yantrik_app_runtime::control::granted_target().is_some() {
+                    let now = crate::control_files_target::entry(&ui.get_file_browser_path(), &name)
+                        .and_then(|(path, _)| crate::control_files_target::identity_of(&path));
+                    yantrik_app_runtime::control::held_to_grant(now.as_deref())?;
+                }
                 ui.invoke_file_delete(name.clone().into());
                 Ok(serde_json::json!({ "requested_trash": name, "now": where_now(&ui) }))
             },

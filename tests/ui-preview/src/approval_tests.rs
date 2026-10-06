@@ -57,6 +57,9 @@ pub(crate) fn card(summary: &str) -> ApprovalRequest {
         what: "Runs: recipe: builtin_formation_council; inputs: {\"question\": \"attack the plan to ship 0.4 on Friday\"}".into(),
         exactly: "recipe: builtin_formation_council; inputs: {\"question\": \"attack the plan to ship 0.4 on Friday\"}".into(),
         undo: "".into(),
+        target_rows: Default::default(),
+        target_missing: "".into(),
+        confirm_blocked: false,
         discrepancies: lines(&[]),
         app: "shell".into(),
         action: "run_recipe".into(),
@@ -400,6 +403,60 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     scan(w, allow_x, panel_top, panel_bottom - 4.0, || ui.get_allowed() > before).expect("\"Delete event\" answers a click inside the panel");
     save(&settle(w, width, height), &output.replace(".png", "-delete.png"), width, height)?;
 
+    // ── The target named by the app (approval-safety condition) ──
+    // In the Lens's 240px the named card's pinned lines — the name, the app's rows, the undo line —
+    // are more than the cap holds, so it scrolls and Allow waits for its end: its rows are each
+    // found drawn once read, the last of them (about the series) included, and "Delete series"
+    // then answers. Then the same action for an id the app does not hold: read to its end, the
+    // line saying the target could not be named is drawn, a click on the confirm grants nothing
+    // anywhere in the panel, and Decline still answers.
+    let named = super::review_stills::resolved_delete_card();
+    drawn_once_read(named.clone(), &|c: &mut ApprovalRequest| c.what = "Deletes: Dentists".into(), "the target's name");
+    drawn_once_read(
+        named.clone(),
+        &|c: &mut ApprovalRequest| {
+            c.target_rows = lines(&[
+                "When: Fri 25 Sep 2026, 13:00\u{2013}14:00 (local time, UTC+01:00)",
+                "Calendar: on this computer",
+                "Occurrences: this event only; it does not repeat",
+            ])
+        },
+        "the app's last row about the target",
+    );
+    save(&settle(w, width, height), &output.replace(".png", "-named.png"), width, height)?;
+
+    // A long name wraps rather than being cut at the card's edge (security review of #652, M1):
+    // the folder that says WHICH thesis is at the end of the line, and a change there is drawn.
+    let mut long = named.clone();
+    long.what = "Deletes: thesis \u{00b7} ~/Documents/University/2026/Semester two/Drafts kept for the committee/thesis".into();
+    long.target_rows = lines(&["Size: folder, 12 items inside"]);
+    row_drawn_above(
+        long,
+        &|c: &mut ApprovalRequest| c.what = c.what.replace("committee/thesis", "committee/thesiz").into(),
+        "the end of a long target name",
+    );
+
+    let unnamed = super::review_stills::unresolved_delete_card();
+    let (_, btn) = fresh(&unnamed, "an unnamed target");
+    read_to_end(w, read_at.0, read_at.1, width, height);
+    let a = settle(w, width, height);
+    let mut changed = unnamed.clone();
+    // A word on the line's first row: the second row starts left of the columns `check` reads.
+    changed.target_missing = "Target details unavailable \u{00b7} the app would not say what this would delete".into();
+    ui.get_approvals().set_row_data(0, changed);
+    let b = settle(w, width, height);
+    check(a.as_slice(), b.as_slice(), btn, "the line saying the target could not be named");
+    let before = ui.get_allowed();
+    click(w, allow_x, btn + 14.0);
+    assert_eq!(ui.get_allowed(), before, "read to its end, an unnamed target's confirm still grants nothing");
+    assert!(
+        scan(w, allow_x, panel_top, panel_bottom - 4.0, || ui.get_allowed() > before).is_none(),
+        "nor anywhere down its column"
+    );
+    let before = ui.get_denied();
+    scan(w, deny_x, panel_top, panel_bottom - 4.0, || ui.get_denied() > before).expect("Decline still answers");
+    save(&settle(w, width, height), &output.replace(".png", "-unnamed.png"), width, height)?;
+
     // ── The card at its natural height: what the Lens's cap scrolls is all there ──
     let natural = ApprovalCardProbe::new()?;
     natural.set_data(card(RUN_RECIPE_SUMMARY));
@@ -455,7 +512,9 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
          the buttons; with eight 60-character arguments the identity line, the claim, the \
          discrepancy, the sentence, the pinned line and the buttons are all drawn; the card leads \
          with the description's first sentence ({differ} pixels drawn); the per-call sentence is \
-         on the face of a sensitive card and wraps",
+         on the face of a sensitive card and wraps; a target the app named is drawn above \
+         \"Delete series\", which answers, the end of a long one is drawn, and an unnamed one \
+         leaves Decline only",
         bottom - top,
     );
     Ok(())

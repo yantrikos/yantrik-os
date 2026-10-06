@@ -6,6 +6,7 @@
 //! the single path that both of them take to change anything.
 
 mod runtime;
+mod target;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -347,6 +348,11 @@ fn container_named(ui: &ContainerManagerApp, needle: &str) -> Option<(String, St
     runtime::resolve(&rows, needle).map(|i| rows[i].clone())
 }
 
+/// The id the window lists for the container whose full id is `full`.
+fn ui_id_of(ui: &ContainerManagerApp, full: &str) -> Option<String> {
+    listed(ui).into_iter().map(|(id, _)| id).find(|id| !id.is_empty() && full.starts_with(id.as_str()))
+}
+
 /// How the list describes this container now, or `None` when it is no longer in it.
 ///
 /// Read after a command, from a list the command itself caused to be re-read, so an action
@@ -563,13 +569,26 @@ fn publish_control(app: &ContainerManagerApp, health: &Health) {
             // No undo, and the container's writable layer goes with it.
             Action::new("remove", "Delete a container and its writable layer. It cannot be undone.")
                 .arg(Param::text("container"))
-                .risk("dangerous"),
+                .risk("dangerous")
+                // What the approval card names in place of the id the caller passed: the runtime's
+                // own listing, read now. The card cannot be allowed when this cannot say.
+                .names(&["container"], |args| {
+                    target::container_target(&target::listing_now().ok()?, args["container"].as_str().unwrap_or_default())
+                }),
             move |args| {
                 let ui = remove_ui()?;
                 let want = args["container"].as_str().unwrap_or_default();
-                let (id, name) = container_named(&ui, want)
-                    .ok_or_else(|| format!("no container here is called \"{want}\""))?;
-                command(&ui, &remove_health, &["rm", "-f", id.as_str()])?;
+                // Resolved as the card's namer resolved it — the runtime's listing now, full ids,
+                // one container or none — and held to the one the card named before anything is
+                // removed (`target`).
+                let list = target::listing_now()?;
+                let found = target::one(&list, want);
+                control::held_to_grant(found.map(|c| c.id.as_str()))?;
+                let found = found.ok_or_else(|| format!("no one container here is called \"{want}\""))?;
+                let (full, name) = (found.id.clone(), found.name.clone());
+                command(&ui, &remove_health, &["rm", "-f", full.as_str()])?;
+                // The window lists ids cut to twelve characters.
+                let id = ui_id_of(&ui, &full).unwrap_or(full);
                 // The one that mattered most: this action is graded `dangerous`, and it used to
                 // answer `{"removed": name}` without ever looking at whether the container was
                 // gone. A grade on an action that fabricates its outcome approves nothing.

@@ -122,6 +122,41 @@ pub(crate) fn answer(
     Answered { deny_y, allow_y, waited }
 }
 
+/// The approval-safety condition, at this size: a delete whose target the app named answers
+/// (after reading, if it had to scroll), and one whose target it could not name grants nothing —
+/// not on the confirm's row, not after reading to the end, nowhere down the confirm's column —
+/// while Decline answers. `show` puts a card where the host draws it.
+#[allow(clippy::too_many_arguments)]
+fn named_then_unnamed(
+    w: &MinimalSoftwareWindow,
+    place: &str,
+    show: &dyn Fn(ApprovalRequest),
+    xs: (f32, f32, f32, f32),
+    band: (f32, f32),
+    size: (u32, u32),
+    denied: &dyn Fn() -> i32,
+    allowed: &dyn Fn() -> i32,
+    sessioned: &dyn Fn() -> i32,
+) {
+    show(super::review_stills::resolved_delete_card());
+    settle(w, size.0, size.1);
+    answer(w, &format!("{place}, a named target"), xs, band, size, denied, allowed, sessioned);
+
+    show(super::review_stills::unresolved_delete_card());
+    settle(w, size.0, size.1);
+    let before = denied();
+    let deny_y = scan(w, xs.0, band.0, band.1, || denied() > before)
+        .unwrap_or_else(|| panic!("{place}, an unnamed target: Decline answers"));
+    let btn_top = button_top(w, xs.0, deny_y, band.0, denied);
+    let before = allowed();
+    click(w, xs.1, btn_top + 14.0);
+    read_to_end(w, xs.2, xs.3, size.0, size.1);
+    click(w, xs.1, btn_top + 14.0);
+    assert_eq!(allowed(), before, "{place}: the confirm of a card whose target was not named grants nothing, read or not");
+    assert!(scan(w, xs.1, band.0, band.1, || allowed() > before).is_none(), "{place}: nor anywhere down its column");
+    println!("{place}: a named target's confirm answered; an unnamed one's is disabled, Decline at {deny_y}");
+}
+
 pub fn run(w: &MinimalSoftwareWindow, output: &str, width: u32, height: u32) -> Result<(), Box<dyn std::error::Error>> {
     let (fw, fh) = (width as f32, height as f32);
     let big = largest();
@@ -213,6 +248,22 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str, width: u32, height: u32) -> 
     let before = denied.get();
     scan(w, cx + 100.0, corner.deny_y - 12.0, corner.deny_y + 4.0, || denied.get() > before).expect("Decline still answers with the vault prompt up");
 
+    // ── A named and an unnamed target, in the corner ──
+    shell.set_vault_unlock(VaultUnlockRequest { reason: "".into(), error: "".into(), first_time: false });
+    let corner_show = |card: ApprovalRequest| shell.set_pending_approvals(ModelRc::new(VecModel::from(vec![card])));
+    named_then_unnamed(
+        w,
+        &format!("corner at {width}×{height}"),
+        &corner_show,
+        (cx + 100.0, cx + 300.0, cx + 200.0, 140.0),
+        (40.0, dock_top - 2.0),
+        (width, height),
+        &|| denied.get(),
+        &|| allowed.get(),
+        &|| sessioned.get(),
+    );
+    save(&settle(w, width, height), &output.replace(".png", "-unnamed.png"), width, height)?;
+
     // ── The Lens panel, right-docked 440px wide between the bars ──
     let (panel_top, panel_bottom) = (48.0f32, fh - 60.0);
     let reply_top = panel_bottom - 48.0;
@@ -234,6 +285,19 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str, width: u32, height: u32) -> 
         &|| lens.get_sessioned(),
     );
     assert!(in_lens.deny_y < reply_top && in_lens.allow_y < reply_top, "both above the reply box, inside the panel");
+    let lens_show = |card: ApprovalRequest| lens.set_approvals(ModelRc::new(VecModel::from(vec![card])));
+    named_then_unnamed(
+        w,
+        &format!("Lens at {width}×{height}"),
+        &lens_show,
+        (fw - 340.0, fw - 130.0, fw - 230.0, 160.0),
+        (panel_top, reply_top - 2.0),
+        (width, height),
+        &|| lens.get_denied(),
+        &|| lens.get_allowed(),
+        &|| lens.get_sessioned(),
+    );
+
     lens.hide()?;
 
     // ── An agent's own pane, which scrolls itself ──
@@ -242,7 +306,8 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str, width: u32, height: u32) -> 
     println!(
         "PASS at {width}×{height}: the largest card a request may make keeps Decline and Allow inside the \
          window above the dock (corner, Decline at {}{}), inside the Lens panel (Decline at {}{}) and \
-         inside an agent's pane; a click on a waiting Allow granted nothing; the vault prompt lies over none of it",
+         inside an agent's pane; a click on a waiting Allow granted nothing; the vault prompt lies over none of it; \
+         a named target's confirm answers and an unnamed one's grants nothing in the corner and the Lens",
         corner.deny_y,
         if corner.waited { ", Allow after reading to the end" } else { "" },
         in_lens.deny_y,

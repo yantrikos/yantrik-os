@@ -107,6 +107,9 @@ impl Surface {
             }
             "app.act" => Some(self.act(params, peer, Authority::now())),
             "app.explain" => Some(self.explain(params)),
+            "app.name_target" => Some(
+                crate::require_the_shell_asking(peer.map(Caller::from)).and_then(|()| self.name_target(params)),
+            ),
             _ => None,
         }
     }
@@ -131,6 +134,24 @@ impl Surface {
             "app": self.registry.app_id(),
             "action": action,
             "explanation": explanation,
+        }))
+    }
+
+    /// The reply to `app.name_target`: `{action, args}` → `{app, action, target}` — what one call
+    /// acts on, named from the app's own store, or `target: null` when the app does not hold it.
+    /// Reading, like [`Surface::explain`]; an action that names nothing is refused (`-32602`). On
+    /// the socket, asked by the shell only (`require_the_shell_asking`).
+    pub fn name_target(&self, params: &Value) -> Result<Value, ServiceError> {
+        let action = params["action"].as_str().unwrap_or("").trim();
+        if action.is_empty() {
+            return Err(refusal("app.name_target needs a non-empty `action`".into()));
+        }
+        let args = params.get("args").cloned().unwrap_or_else(|| serde_json::json!({}));
+        let target = self.registry.name_target(action, &args).map_err(refusal)?;
+        Ok(serde_json::json!({
+            "app": self.registry.app_id(),
+            "action": action,
+            "target": target.map(|t| t.to_json()).unwrap_or(Value::Null),
         }))
     }
 

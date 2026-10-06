@@ -236,6 +236,75 @@ impl std::fmt::Debug for Explainer {
     }
 }
 
+/// What ONE call of an action acts on, in the app's own words: the rows an approval card draws in
+/// place of a raw id — "Event: Dentist", "When: Fri 25 Sep 2026, 13:00–14:00" — so a person asked
+/// "may this be deleted?" is answering about a thing and not a handle.
+///
+/// Answered by the app from its own store, never by the caller: the shell asks `app.name_target`
+/// when it builds the card, and draws nothing the request said in these rows. Display only — a
+/// grant is bound to the arguments, byte for byte, never to a name for them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Target {
+    /// `(label, value)` pairs in the order the card draws them. The first names the thing itself
+    /// (its title, its path, its name); the rest say which one (when, where, how big).
+    pub rows: Vec<(String, String)>,
+    /// The call acts on every occurrence of a recurring thing, not one of them: the card's button
+    /// says "Delete series", not "Delete event".
+    pub series: bool,
+    /// What the rows name, as the app tells one thing from another however it is renamed or
+    /// moved: an event's or a snippet's id, a path with its device and inode, a container's full
+    /// id, a pid with the time that process started. Opaque to the shell, which keeps it on the
+    /// approval and hands it back with the grant; the handler resolves its arguments again when it
+    /// runs and refuses when what they point at now is not this ([`identity_matches`]). Never
+    /// drawn. An app that cannot tell one thing from another this way names nothing (`None`), and
+    /// a destructive card is then Decline only.
+    pub identity: String,
+}
+
+impl Target {
+    /// The answer as `app.name_target` carries it.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "rows": self.rows.iter().map(|(label, value)| serde_json::json!({ "label": label, "value": value })).collect::<Vec<_>>(),
+            "series": self.series,
+            "identity": self.identity,
+        })
+    }
+}
+
+/// Whether what a granted call's arguments point at NOW is what the person was shown: `now` is
+/// the handler's own resolution's identity (`None`: they point at nothing), `granted` the one the
+/// grant carries (`None`: the card named nothing, so there is nothing to hold it to).
+///
+/// The one comparison every handler makes (`yantrik_surface::held_to_grant`), so the rule cannot
+/// drift from app to app.
+pub fn identity_matches(granted: Option<&str>, now: Option<&str>) -> bool {
+    match granted {
+        None => true,
+        Some(granted) => now == Some(granted),
+    }
+}
+
+/// How an action names the target of one call (see [`Target`]). `None` is the app's honest "I
+/// do not know what that is" — an id it does not hold — and the card says it could not be named.
+///
+/// An `Arc` for the reason [`Explainer`] is one.
+#[derive(Clone)]
+pub struct Namer(Arc<dyn Fn(&serde_json::Value) -> Option<Target> + Send + Sync>);
+
+impl Namer {
+    /// What one call with these arguments acts on, or `None` when the app cannot say.
+    pub fn target(&self, args: &serde_json::Value) -> Option<Target> {
+        (self.0)(args)
+    }
+}
+
+impl std::fmt::Debug for Namer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Namer(..)")
+    }
+}
+
 /// The sentence that makes an action open-ended: what it runs is whatever it was given, so it
 /// can do anything the person can. [`Action::open_ended`] appends it to the description, and
 /// `yantrik_ipc_transport::gate::open_ended` looks for it, so the reader of the description is
@@ -297,6 +366,16 @@ pub struct Action {
     /// `app.explain` when it builds an approval card. `None` — the default — publishes exactly
     /// what the action always did, and the card is exactly what it was.
     pub explainer: Option<Explainer>,
+    /// What one call of this action acts on, named from the app's own store, when the action acts
+    /// on a named thing (an event, a file, a container). Published as `names_target: true` — the
+    /// fact, never the names, which depend on arguments `describe` does not have; the shell asks
+    /// `app.name_target` when it builds an approval card. See [`Target`].
+    pub namer: Option<Namer>,
+    /// The arguments the namer's rows stand for (`id`, `name`, `pid`), declared with it and
+    /// published in `describe` as `target_handles`: the card shows those under Details rather than
+    /// on its face, because the rows say what they point at. Fixed per action, never per call, so
+    /// an app cannot hide an argument by answering differently for one call.
+    pub target_handles: Vec<String>,
 }
 
 impl Action {
@@ -313,6 +392,8 @@ impl Action {
             expected_seconds: None,
             stateless: false,
             explainer: None,
+            namer: None,
+            target_handles: Vec::new(),
         }
     }
 
@@ -343,6 +424,23 @@ impl Action {
         f: impl Fn(&serde_json::Value) -> String + Send + Sync + 'static,
     ) -> Self {
         self.explainer = Some(Explainer(Arc::new(f)));
+        self
+    }
+
+    /// Declare how this action names what one call of it acts on (see [`Target`]).
+    ///
+    /// Runs while an approval card is being built, on the app's own thread: read the arguments,
+    /// look the thing up in the app's own store, and answer its rows — `None` when the app does
+    /// not hold it, or cannot tell it apart by a stable [`Target::identity`]. Like
+    /// [`Action::explain`] it decides nothing and acts on nothing. `handles` are the arguments the
+    /// rows stand for ([`Action::target_handles`]).
+    pub fn names(
+        mut self,
+        handles: &[&str],
+        f: impl Fn(&serde_json::Value) -> Option<Target> + Send + Sync + 'static,
+    ) -> Self {
+        self.namer = Some(Namer(Arc::new(f)));
+        self.target_handles = handles.iter().map(|h| h.to_string()).collect();
         self
     }
 
@@ -409,6 +507,11 @@ impl Action {
         // because it depends on arguments `describe` never sees (#137).
         if self.explainer.is_some() {
             schema["explains"] = true.into();
+        }
+        // The same: the fact that the action can name its target, never a name.
+        if self.namer.is_some() {
+            schema["names_target"] = true.into();
+            schema["target_handles"] = self.target_handles.clone().into();
         }
         schema
     }
@@ -628,6 +731,45 @@ mod tests {
         assert_eq!(out["state"]["temp"], 21);
         assert_eq!(out["actions"][0]["name"], "refresh");
         assert!(out["revision"].as_str().unwrap().len() == 16);
+    }
+
+    /// An action that can name what one call of it acts on publishes the fact, never a name: the
+    /// names come from the app's store per call, by `app.name_target`.
+    #[test]
+    fn an_action_that_names_its_target_says_it_can_and_carries_no_name() {
+        let schema = Action::new("delete_event", "Take an event off the calendar")
+            .arg(Param::text("id"))
+            .names(&["id"], |args| {
+                (args["id"] == "e1").then(|| Target {
+                    rows: vec![("Event".into(), "Dentist".into())],
+                    series: false,
+                    identity: "e1".into(),
+                })
+            })
+            .schema();
+        assert_eq!(schema["names_target"], serde_json::json!(true), "{schema}");
+        assert_eq!(schema["target_handles"], serde_json::json!(["id"]), "declared, not answered per call");
+        assert!(!schema.to_string().contains("Dentist"), "{schema}");
+        assert!(Action::new("x", "y").schema().get("names_target").is_none());
+
+        let action = Action::new("d", "e").names(&[], |_| None);
+        assert_eq!(action.namer.as_ref().unwrap().target(&serde_json::json!({})), None);
+        let named = Target { rows: vec![("Event".into(), "Dentist".into())], series: true, identity: "e1".into() };
+        assert_eq!(
+            named.to_json(),
+            serde_json::json!({"rows": [{"label": "Event", "value": "Dentist"}], "series": true, "identity": "e1"})
+        );
+    }
+
+    /// A grant that named a target holds the handler to it: the same identity runs, another one
+    /// or none at all is refused, and a grant that named nothing holds nothing.
+    #[test]
+    fn a_granted_target_is_held_to_its_identity() {
+        assert!(identity_matches(Some("e1"), Some("e1")));
+        assert!(!identity_matches(Some("e1"), Some("e2")), "renamed into its place");
+        assert!(!identity_matches(Some("e1"), None), "gone");
+        assert!(identity_matches(None, Some("e2")));
+        assert!(identity_matches(None, None));
     }
 
     /// An action that can say what one call of it does publishes the fact — and only the fact:

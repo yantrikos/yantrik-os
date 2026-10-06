@@ -90,6 +90,7 @@
 mod args;
 mod call;
 mod context;
+mod granted_target;
 mod registry;
 mod surface;
 #[cfg(test)]
@@ -100,13 +101,14 @@ pub use args::{
     with_defaults,
 };
 pub use call::{
-    finish_later, needs_standing, next_action_id, refusal, service_id_for, ActCall, NO_SUCH_METHOD,
+    finish_later, needs_standing, next_action_id, refusal, require_the_shell_asking, service_id_for, ActCall, NO_SUCH_METHOD,
     REFUSED, STANDING_NOT_NEEDED, UNANSWERED,
 };
 pub use context::{
     agent_token, answer_later, caller, off_the_reactor, AgentTokenScope, Caller, CallerScope, Later,
     LaterScope,
 };
+pub use granted_target::{granted_target, held_to_grant, GrantedTargetScope};
 pub use registry::{
     check_grade, Describer, Handler, LocalRegistry, Registry, SharedDescriber, SharedHandler,
     SharedRegistry,
@@ -118,7 +120,7 @@ pub use serde_json;
 /// two replies built from them. [`Explainer`] is the sentence an action says about one call of
 /// itself (#137); most authors meet it only through [`Action::explain`].
 pub use yantrik_ipc_contracts::control_surface::{
-    act_json, act_json_stateless, describe_json, Action, Explainer, Param, View, PARAM_TYPES,
+    act_json, act_json_stateless, describe_json, Action, Explainer, Param, Target, View, PARAM_TYPES,
 };
 pub use yantrik_ipc_contracts::email::ServiceError;
 /// The ceiling, mode and grant rule every `app.act` meets. The dispatch calls it; it is exported

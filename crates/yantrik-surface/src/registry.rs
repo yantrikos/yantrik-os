@@ -3,7 +3,7 @@
 use std::sync::Mutex;
 
 use serde_json::Value;
-use yantrik_ipc_contracts::control_surface::{act_json, act_json_stateless, describe_json, Action, View};
+use yantrik_ipc_contracts::control_surface::{act_json, act_json_stateless, describe_json, Action, Target, View};
 use yantrik_ipc_transport::gate::{self, decide, Authority, LADDER};
 use yantrik_ipc_transport::reach::{self, Reach};
 
@@ -264,6 +264,28 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
             )),
         }
     }
+
+    /// What ONE call to `name` acts on, named from the app's own store: the rows an approval card
+    /// draws in place of a raw id. Reading, like [`Registry::explain`]: no ceiling, no mode, no
+    /// grant, and nothing is bound to it.
+    ///
+    /// `Err` for an action this surface does not have, or one that declared no
+    /// [`Namer`](yantrik_ipc_contracts::control_surface::Namer). `Ok(None)` is the app saying it
+    /// does not hold what the arguments point at — an unknown id.
+    pub fn name_target(&self, name: &str, args: &Value) -> Result<Option<Target>, String> {
+        let (spec, _) =
+            self.actions.iter().find(|(a, _)| a.name == name).ok_or_else(|| self.unknown(name))?;
+        match &spec.namer {
+            Some(namer) => Ok(namer.target(args)),
+            None => Err(format!("`{name}` does not name what one call of it acts on")),
+        }
+    }
+
+    /// The arguments `name`'s namer declared its rows stand for (`Action::target_handles`):
+    /// empty for an action this surface does not have, or one that names nothing.
+    pub fn target_handles(&self, name: &str) -> Vec<String> {
+        self.actions.iter().find(|(a, _)| a.name == name).map(|(a, _)| a.target_handles.clone()).unwrap_or_default()
+    }
 }
 
 /// A grade [`Registry::regrade`] may move an action to, or the sentence for one it may not.
@@ -367,7 +389,13 @@ where
 
         // The handler reads what it declared: every argument of its declared type, converted where
         // it arrived as something that converts without loss, and every default filled in.
-        let result = run(&as_declared(spec, args))?;
+        //
+        // With the target the person's grant named, if it named one, for the handler to hold its
+        // own resolution of the arguments to (`held_to_grant`) — for exactly this call.
+        let result = {
+            let _target = crate::GrantedTargetScope::enter(authority.target.clone());
+            run(&as_declared(spec, args))?
+        };
 
         // An answer about something other than this app carries nothing of it, and the app is not
         // read again for a reply that would not use it.
@@ -403,17 +431,17 @@ mod tests {
     /// Authority that binds nothing: the ceiling and the mode both at the top of the ladder —
     /// full bypass, which asks about nothing, not even what cannot be undone.
     fn open() -> Authority {
-        Authority { ceiling: OPEN.into(), mode: Mode::named("bypass_all"), granted: false, asks_above: None }
+        Authority { ceiling: OPEN.into(), mode: Mode::named("bypass_all"), granted: false, asks_above: None, target: None }
     }
 
     /// A machine at `ceiling`, in a mode that asks about nothing under it: the ceiling tests.
     fn under(ceiling: &str) -> Authority {
-        Authority { ceiling: ceiling.into(), mode: Mode::named("bypass_all"), granted: false, asks_above: None }
+        Authority { ceiling: ceiling.into(), mode: Mode::named("bypass_all"), granted: false, asks_above: None, target: None }
     }
 
     /// An open ceiling and the mode under test, with or without a grant spent for the call.
     fn in_mode(mode: &str, granted: bool) -> Authority {
-        Authority { ceiling: OPEN.into(), mode: Mode::named(mode), granted, asks_above: None }
+        Authority { ceiling: OPEN.into(), mode: Mode::named(mode), granted, asks_above: None, target: None }
     }
 
     /// A registry built the way an app builds one.
@@ -1058,7 +1086,7 @@ mod tests {
         let with_rule = |app: &str, action: &str| {
             let mut mode = Mode::named("ask");
             mode.session_rules.push((app.to_string(), action.to_string()));
-            Authority { ceiling: OPEN.into(), mode, granted: false, asks_above: None }
+            Authority { ceiling: OPEN.into(), mode, granted: false, asks_above: None, target: None }
         };
         let args = json!({"out": "anything.png"});
 
@@ -1078,7 +1106,7 @@ mod tests {
     fn the_ceiling_still_refuses_dangerous_whatever_the_grant_or_mode() {
         for (mode, granted) in [("bypass", false), ("ask", true), ("bypass", true), ("bypass_all", false), ("bypass_all", true)] {
             let ran = Rc::new(Cell::new(false));
-            let authority = Authority { ceiling: "sensitive".into(), mode: Mode::named(mode), granted, asks_above: None };
+            let authority = Authority { ceiling: "sensitive".into(), mode: Mode::named(mode), granted, asks_above: None, target: None };
             let err = delete_surface(ran.clone())
                 .act("files_delete", &json!({"name": "x"}), None, "shell#1", &authority)
                 .unwrap_err();
@@ -1136,7 +1164,7 @@ mod tests {
             if v["session_rule"] == true {
                 mode.session_rules.push((app.clone(), action.clone()));
             }
-            let authority = Authority { ceiling: text("ceiling"), mode, granted: v["grant"] == true, asks_above: None };
+            let authority = Authority { ceiling: text("ceiling"), mode, granted: v["grant"] == true, asks_above: None, target: None };
 
             let answer = reg.act(&action, &json!({}), None, "vector#1", &authority);
             match v["outcome"].as_str() {
@@ -1302,6 +1330,36 @@ mod tests {
             .act("rename", &json!({ "to": "ok" }), None, "notes#1", &open())
             .unwrap();
         assert_eq!(answer["accepted"], true);
+    }
+
+    /// What one call acts on, from the app's own namer: rows for an id it holds, `None` for one
+    /// it does not, and a refusal for an action that names nothing or does not exist.
+    #[test]
+    fn a_namer_names_what_the_app_holds_and_only_when_declared() {
+        let reg = surface(
+            "calendar",
+            None,
+            vec![
+                (
+                    Action::new("delete_event", "Take an event off the calendar").arg(Param::text("id")).names(&["id"], |args| {
+                        (args["id"] == "e1").then(|| Target {
+                            rows: vec![("Event".into(), "Dentist".into())],
+                            series: false,
+                            identity: "e1".into(),
+                        })
+                    }),
+                    Box::new(|_| Ok(json!("never reached"))),
+                ),
+                (Action::new("refresh", "Fetch again"), Box::new(|_| Ok(json!("never reached")))),
+            ],
+        );
+        let named = reg.name_target("delete_event", &json!({ "id": "e1" })).unwrap().unwrap();
+        assert_eq!(named.rows, vec![("Event".to_string(), "Dentist".to_string())]);
+        assert_eq!(reg.name_target("delete_event", &json!({ "id": "e2" })).unwrap(), None);
+        assert_eq!(reg.target_handles("delete_event"), ["id"]);
+        assert!(reg.target_handles("refresh").is_empty());
+        assert!(reg.name_target("refresh", &json!({})).unwrap_err().contains("does not name"));
+        assert!(reg.name_target("nope", &json!({})).unwrap_err().starts_with("unknown action `nope`"));
     }
 
     /// #137: the sentence about ONE call, with the arguments it carries — and the ways there is

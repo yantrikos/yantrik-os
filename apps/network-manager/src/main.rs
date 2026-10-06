@@ -447,6 +447,41 @@ fn do_disconnect(ui: &NetworkManagerApp, state: &State) -> Result<WifiState, Str
 }
 
 /// Delete a saved network. The service refuses the one that is currently in use.
+/// The one saved network `ssid` names — the card's namer and the handler both resolve it here —
+/// or `None` when none is saved by that name, or more than one is and the name says not which.
+fn saved_one<'a>(known: &'a [KnownNetwork], ssid: &str) -> Option<&'a KnownNetwork> {
+    let mut matching = known.iter().filter(|k| k.ssid == ssid.trim());
+    let one = matching.next()?;
+    matching.next().is_none().then_some(one)
+}
+
+/// The approval card's rows for forgetting the saved network `ssid`, named by its connection's
+/// uuid, or `None` when [`saved_one`] finds no one network.
+fn saved_target(known: &[KnownNetwork], ssid: &str) -> Option<yantrik_app_runtime::control::Target> {
+    let saved = saved_one(known, ssid)?;
+    Some(yantrik_app_runtime::control::Target {
+        rows: vec![
+            ("Saved network".into(), saved.ssid.clone()),
+            ("Goes with it".into(), "the password saved for it".into()),
+        ],
+        series: false,
+        identity: saved.uuid.clone(),
+    })
+}
+
+#[cfg(test)]
+mod saved_target_tests {
+    #[test]
+    fn a_saved_network_is_named_and_an_unsaved_one_is_not() {
+        let known = vec![super::KnownNetwork { ssid: "Home".into(), uuid: "u-1".into(), is_active: false }];
+        assert_eq!(super::saved_target(&known, "Home").unwrap().rows[0].1, "Home");
+        assert_eq!(super::saved_target(&known, "Home").unwrap().identity, "u-1");
+        assert!(super::saved_target(&known, "Cafe").is_none());
+        let twice = vec![known[0].clone(), super::KnownNetwork { ssid: "Home".into(), uuid: "u-2".into(), is_active: false }];
+        assert!(super::saved_target(&twice, "Home").is_none(), "a name that says not which names nothing");
+    }
+}
+
 fn do_forget(
     ui: &NetworkManagerApp,
     state: &State,
@@ -1176,12 +1211,23 @@ fn publish_control(app: &NetworkManagerApp, state: &State) {
                  It cannot be undone: joining it again needs the password again.",
             )
                 .risk("sensitive")
-                .arg(Param::text("ssid").describe("The saved network to delete")),
+                .arg(Param::text("ssid").describe("The saved network to delete"))
+                // What the approval card names: the saved network as the service lists it now.
+                .names(&["ssid"], |args| {
+                    let known = call::<Vec<KnownNetwork>>(method::WIFI_KNOWN, serde_json::json!({})).ok()?;
+                    saved_target(&known, args["ssid"].as_str().unwrap_or_default())
+                }),
             move |args| {
                 let ui = forget_ui()?;
                 let ssid = args["ssid"].as_str().unwrap_or_default().trim().to_string();
                 if ssid.is_empty() {
                     return Err("a network name is needed to forget one".to_string());
+                }
+                // The saved network the card named, by its uuid, and not another saved under the
+                // name since (security review of #652, H1). Read only for a granted call.
+                if yantrik_app_runtime::control::granted_target().is_some() {
+                    let known = call::<Vec<KnownNetwork>>(method::WIFI_KNOWN, serde_json::json!({}))?;
+                    yantrik_app_runtime::control::held_to_grant(saved_one(&known, &ssid).map(|k| k.uuid.as_str()))?;
                 }
                 let result = do_forget(&ui, &forget_state, &ssid)?;
                 Ok(serde_json::json!({

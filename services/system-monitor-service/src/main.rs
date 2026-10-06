@@ -233,7 +233,11 @@ fn sysmon_actions() -> Vec<Action> {
             // come back as "needs argument `pid`" for an argument that was plainly there.
             .arg(Param::integer("pid").describe(
                 "The process id to end, as shown in top_processes or found by find_process",
-            )),
+            ))
+            // What the approval card names in place of the pid, as the window names it.
+            .names(&["pid"], |args| {
+                yantrik_ipc_transport::peer_identity::process_target(args["pid"].as_i64()?.try_into().ok()?)
+            }),
     ]
 }
 
@@ -346,6 +350,11 @@ fn find_process_action(args: &serde_json::Value) -> Result<serde_json::Value, St
 /// the caller sees the machine after the kill without a second round trip.
 fn kill_process_action(args: &serde_json::Value) -> Result<serde_json::Value, String> {
     let pid = pid_of(args)?;
+    // The process the card named — this pid, started when it was then — and not another program
+    // that has the pid now (security review of #652, H1).
+    yantrik_service_sdk::surface::held_to_grant(
+        yantrik_ipc_transport::peer_identity::process_identity(pid as i32).as_deref(),
+    )?;
     kill_process(pid).map_err(|e| e.message)?;
     Ok(serde_json::json!({ "killed": pid }))
 }
@@ -954,7 +963,7 @@ mod tests {
     use std::time::Duration;
 
     fn at(ceiling: &str, mode: &str) -> Authority {
-        Authority { ceiling: ceiling.into(), mode: gate::Mode::named(mode), granted: false, asks_above: None }
+        Authority { ceiling: ceiling.into(), mode: gate::Mode::named(mode), granted: false, asks_above: None, target: None }
     }
 
     fn kill(pid: u32, grant: Option<&str>) -> serde_json::Value {
@@ -991,7 +1000,12 @@ mod tests {
             yantrik_service_sdk::reach::read_reach_with(|_| None);
             let spent = std::sync::Mutex::new(std::collections::HashSet::<String>::new());
             gate::spend_grants_with(move |id, app, action, args, _caller| {
-                let Some(pid) = id.strip_prefix("ok-kill-").and_then(|p| p.parse::<u64>().ok()) else {
+                // `named-kill-<pid>@<identity>`: a card that named the process as `<identity>`.
+                let (id_pid, named) = match id.strip_prefix("named-kill-").and_then(|rest| rest.split_once('@')) {
+                    Some((pid, identity)) => (pid.to_string(), Some(identity.to_string())),
+                    None => (id.strip_prefix("ok-kill-").unwrap_or_default().to_string(), None),
+                };
+                let Some(pid) = id_pid.parse::<u64>().ok() else {
                     return Err(format!("no approval request `{id}`."));
                 };
                 // The whole arguments, as the shell binds them: `{"pid": <pid>}` and nothing else.
@@ -1002,9 +1016,33 @@ mod tests {
                 if !spent.insert(id.to_string()) {
                     return Err(format!("`{id}` was already used."));
                 }
-                Ok(())
+                Ok(named)
             });
         });
+    }
+
+    /// A card names the process as its pid and the time it started; a grant spent after the pid
+    /// went to another program ends nothing (security review of #652, H1). The same card for the
+    /// process that is there ends it.
+    #[test]
+    fn a_grant_for_a_process_that_is_no_longer_the_one_on_its_pid_ends_nothing() {
+        spend_through_a_stand_in_shell();
+        let mut child = sleeper();
+        let pid = child.id();
+
+        // The card named the program that had this pid before: same number, another start.
+        let reused = format!("named-kill-{pid}@pid {pid} started 0");
+        let err = act(&kill(pid, Some(&reused)), at("dangerous", "ask")).unwrap_err();
+        assert!(err.message.contains("the target changed after you allowed it"), "{}", err.message);
+        if !still_running(&mut child) {
+            panic!("a process the card did not name was ended");
+        }
+
+        let identity = yantrik_ipc_transport::peer_identity::process_identity(pid as i32).expect("our own child");
+        let named = format!("named-kill-{pid}@{identity}");
+        let answer = act(&kill(pid, Some(&named)), at("dangerous", "ask")).expect("the process the card named");
+        assert_eq!(answer["result"]["killed"], serde_json::json!(pid));
+        assert_eq!(child.wait().expect("reaped").signal(), Some(libc::SIGTERM));
     }
 
     /// The ceiling is the machine's wall: not bypass, not a grant, not both. And a grant it
