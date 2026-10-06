@@ -156,7 +156,7 @@ pub fn copies_the_card(prompt: &str, options: &[String]) -> bool {
 pub fn prompt(query: &str) -> String {
     format!(
         "The Mind wants to search the web in its own words:\n\n\u{201c}{query}\u{201d}\n\n\
-         Once: this search only. This session: until the Mind restarts, 24 hours at most. \
+         It may go to the search service and its fallback engine. Once: this search only. This session: until the Mind restarts, 24 hours at most. \
          Always: until you revoke it in Settings \u{2192} Harnesses."
     )
 }
@@ -466,6 +466,7 @@ mod tests {
         let (session, turn, answer) = minds_turn(&host);
         let first = prompt("").lines().next().unwrap().to_string();
         assert_eq!(first, "The Mind wants to search the web in its own words:");
+        assert!(prompt("rust").contains("\n\nIt may go to the search service and its fallback engine. Once:"), "where a search goes");
         for (i, p) in [prompt("rust"), first.clone(), format!("  {first} please")].into_iter().enumerate() {
             let copy = json!({"kind": "request", "request_id": format!("p{i}"), "prompt": p, "options": ["Yes", "No"]});
             assert!(send_event(&host, &session, turn, copy)["refused"].is_string(), "{p}");
