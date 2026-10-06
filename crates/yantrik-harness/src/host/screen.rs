@@ -7,8 +7,9 @@
 //! not the one that was asked.
 //!
 //! [`query`] is the whole screen. It is self-contained on purpose: it uses only `std`,
-//! `unicode-normalization`, `unicode-properties` (feature `general-category`) and
-//! `unicode-script`, pinned to exact versions, so another repository can copy this file as it is.
+//! `unicode-normalization`, `unicode-properties` (feature `general-category`), `unicode-script`
+//! and `unicode-security`, pinned to exact versions, so another repository can copy this file as
+//! it is.
 //!
 //! What is refused, in the order it is checked:
 //!
@@ -27,9 +28,10 @@
 //! 5. Search-engine syntax ([`engine_syntax`]): a word that starts with `!`, `:` or `<`.
 //! 6. Scripts ([`mixed_script_word`], [`scripts`]): a word mixing scripts; a query with Latin,
 //!    Common and Inherited and more than one other script (Han with Hiragana and Katakana, Han
-//!    with Bopomofo and Han with Hangul each count as one); and a Cyrillic or Greek word made only
-//!    of letters that read as Latin ones ([`LATIN_LOOKALIKES`], a fixed set; not the UTS #39
-//!    skeleton).
+//!    with Bopomofo and Han with Hangul each count as one); a Latin letter outside Basic Latin,
+//!    Latin-1 Supplement, Latin Extended-A and -B and Latin Extended Additional ([`latin_ok`],
+//!    which refuses the IPA block U+0250–02AF); and a word that is not ASCII but whose UTS #39
+//!    skeleton is ([`lookalike_word`]): Cyrillic `расе`, Armenian `օ`, Cherokee `Ꭺ`, an en dash.
 //! 7. Right-to-left letters (bidi class R or AL) with digits or Latin letters ([`rtl_mixed`]),
 //!    whose order on the line is not the order they are sent in.
 
@@ -37,6 +39,7 @@ use unicode_normalization::char::canonical_combining_class;
 use unicode_normalization::UnicodeNormalization;
 use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 use unicode_script::{Script, UnicodeScript};
+use unicode_security::confusable_detection::skeleton;
 
 /// The longest query a card shows.
 pub const MOST_QUERY_CHARS: usize = 300;
@@ -220,20 +223,35 @@ pub fn mixed_script_word(q: &str) -> Option<(String, Vec<&'static str>)> {
     })
 }
 
-/// Cyrillic and Greek letters that read as Latin ones in common fonts: a word of these only can
-/// stand where a Latin word would, and the person cannot see which was sent. A fixed set, not
-/// the UTS #39 skeleton (that needs `unicode-security`).
-pub const LATIN_LOOKALIKES: &str = concat!(
-    // Cyrillic: а с е о р х у і ј ѕ һ ԁ ԛ ԝ ӏ ү, and А В Е К М Н О Р С Т Х І Ј Ѕ Ү Ԛ Ԝ Ӏ.
-    "\u{430}\u{441}\u{435}\u{43e}\u{440}\u{445}\u{443}\u{456}\u{458}\u{455}\u{4bb}\u{501}\u{51b}\u{51d}\u{4cf}\u{4af}",
-    "\u{410}\u{412}\u{415}\u{41a}\u{41c}\u{41d}\u{41e}\u{420}\u{421}\u{422}\u{425}\u{406}\u{408}\u{405}\u{4ae}\u{51a}\u{51c}\u{4c0}",
-    // Greek: Α Β Ε Ζ Η Ι Κ Μ Ν Ο Ρ Τ Υ Χ, and α ι κ ν ο ρ υ ϲ ϳ.
-    "\u{391}\u{392}\u{395}\u{396}\u{397}\u{399}\u{39a}\u{39c}\u{39d}\u{39f}\u{3a1}\u{3a4}\u{3a5}\u{3a7}",
-    "\u{3b1}\u{3b9}\u{3ba}\u{3bd}\u{3bf}\u{3c1}\u{3c5}\u{3f2}\u{3f3}",
-);
+/// Letters that read as Latin ones in common fonts but that the UTS #39 skeleton leaves as they
+/// are, each with the Latin letter it reads as. Cyrillic `Ԛ` (U+051A) draws as `Q`.
+pub const LATIN_LOOKALIKES: &[(char, char)] = &[('\u{51a}', 'Q')];
 
-/// The query's scripts: Latin, Common and Inherited, and at most one other writing system; and no
-/// Cyrillic or Greek word whose letters all read as Latin ones.
+/// What `word` reads as: its UTS #39 skeleton, with [`LATIN_LOOKALIKES`] put in.
+pub fn reads_as(word: &str) -> String {
+    skeleton(word).map(|c| LATIN_LOOKALIKES.iter().find(|(l, _)| *l == c).map_or(c, |(_, a)| *a)).collect()
+}
+
+/// The first word (split at U+0020) that is not plain ASCII but [`reads_as`] plain ASCII: a word
+/// the person would read as an ASCII word that it is not, such as Cyrillic `расе` ("pace"),
+/// Armenian `օ`, Cherokee `Ꭺ` or an en dash. The comparison is over whole words, so a word with
+/// a letter that draws as itself (`Москва`, `και`, `café`) passes.
+pub fn lookalike_word(q: &str) -> Option<&str> {
+    q.split(' ').find(|word| !word.is_ascii() && reads_as(word).is_ascii())
+}
+
+/// Whether `c`, if it is a Latin letter, is in Basic Latin, Latin-1 Supplement, Latin Extended-A
+/// or -B, or Latin Extended Additional: the letters of the languages written in Latin. The IPA
+/// block (U+0250–02AF), Latin Extended-C, -D and -E and the rest hold phonetic and lookalike
+/// letters (`ɡ` draws as `g`), so they are refused.
+pub fn latin_ok(c: char) -> bool {
+    !(c.script() == Script::Latin && c.is_alphabetic())
+        || matches!(c, '\u{0}'..='\u{24f}' | '\u{1e00}'..='\u{1eff}')
+}
+
+/// The query's scripts: Latin, Common and Inherited, and at most one other writing system; Latin
+/// letters only from the blocks [`latin_ok`] allows; and no word that reads as an ASCII word it is
+/// not ([`lookalike_word`]).
 pub fn scripts(q: &str) -> Result<(), String> {
     let others: Vec<Script> = scripts_of(q).into_iter().filter(|s| *s != Script::Latin).collect();
     if !one_system(&others) {
@@ -243,15 +261,19 @@ pub fn scripts(q: &str) -> Result<(), String> {
             names.join(" and ")
         ));
     }
-    let lookalike = q.split(' ').find(|word| {
-        let letters: Vec<char> = word.chars().filter(|c| c.is_alphabetic()).collect();
-        letters.iter().any(|c| matches!(c.script(), Script::Cyrillic | Script::Greek))
-            && letters.iter().all(|c| LATIN_LOOKALIKES.contains(*c))
-    });
-    if let Some(word) = lookalike {
+    if let Some(c) = q.chars().find(|c| !latin_ok(*c)) {
         return Err(format!(
-            "the word {word:?} is Cyrillic or Greek made only of letters that read as Latin ones, so the card \
-             cannot show which was sent; refused"
+            "the query holds the Latin letter U+{:04X}, which is outside the blocks languages are written \
+             in (Basic Latin, Latin-1, Latin Extended-A and -B, Latin Extended Additional) and can read as \
+             another letter; refused",
+            c as u32
+        ));
+    }
+    if let Some(word) = lookalike_word(q) {
+        return Err(format!(
+            "the word {word:?} is not ASCII but reads as the ASCII word {:?} (its UTS #39 skeleton), so the \
+             card cannot show which was sent; refused",
+            reads_as(word)
         ));
     }
     Ok(())
@@ -324,7 +346,16 @@ mod tests {
             "naïve Bayes 2027",
             "C++ std::vector",
             "pizza 🍕 near me",
-            "it's 3/4 – ok?",
+            "it's 3/4 - ok?",
+            "crème brûlée",
+            "Größe Straße",
+            "Müller über naïve",
+            "élève à l'école",
+            "Москва погода",
+            "Ελλάδα και Κύπρος",
+            "नई दिल्ली में मौसम कैसा है",
+            "क्षेत्रफल",
+            "site:docs.rs a!b",
             "हिन्दी समाचार",
             "tiếng Việt ệ",
             "שלום עולם",
@@ -410,7 +441,7 @@ mod tests {
         for q in ["foo\u{201d} bar", "\u{201c}foo", "say \"hi\""] {
             assert!(why(q).contains("quote"), "{q}");
         }
-        assert!(!refused("it's ‘fine’ «ok»"), "other quote marks cannot close the card's");
+        assert!(!refused("it's «ok»"), "other quote marks cannot close the card's");
     }
 
     #[test]
@@ -461,16 +492,52 @@ mod tests {
     #[test]
     fn a_whole_cyrillic_word_of_latin_lookalikes_is_refused() {
         // `расе` reads as "pace".
-        assert!(why("rust \u{440}\u{430}\u{441}\u{435}").contains("read as Latin"));
+        assert!(why("rust \u{440}\u{430}\u{441}\u{435}").contains("reads as the ASCII word"));
         assert_eq!(query("rust pace"), Ok(()));
     }
 
     #[test]
     fn a_lone_cyrillic_a_is_refused() {
-        assert!(why("rust \u{430} b").contains("read as Latin"));
+        assert!(why("rust \u{430} b").contains("reads as the ASCII word"));
         assert!(refused("\u{430}"));
         assert!(refused("rust \u{3bf}"), "a lone Greek omicron too");
-        assert_eq!(query("rust \u{431}"), Ok(()), "б reads as nothing Latin");
+        assert_eq!(query("rust \u{436}"), Ok(()), "ж reads as nothing Latin");
+        assert!(refused("rust \u{431}"), "a lone б reads as the digit 6");
+    }
+
+    // ── Round 3: lookalikes from any script, by the UTS #39 skeleton ──
+
+    #[test]
+    fn armenian_cherokee_and_ipa_lookalikes_are_refused() {
+        // Armenian օ (U+0585) draws as o, Cherokee Ꭺ (U+13AA) as A.
+        assert!(why("rust \u{585}").contains("reads as the ASCII word \"o\""));
+        assert!(why("\u{13aa}").contains("reads as the ASCII word \"A\""));
+        assert!(refused("\u{13aa}pple"), "Cherokee and Latin in one word");
+        assert!(refused("g\u{585}\u{585}gle"));
+        // IPA ɡ (U+0261) draws as g: outside the Latin blocks, alone or in a word.
+        assert!(why("\u{261}").contains("U+0261"));
+        assert!(why("\u{261}oogle").contains("U+0261"));
+        assert!(!latin_ok('\u{250}') && !latin_ok('\u{2af}') && !latin_ok('\u{259}'));
+        assert!(latin_ok('\u{24f}') && latin_ok('\u{1ec7}') && latin_ok('\u{df}') && latin_ok('\u{3b1}'));
+    }
+
+    #[test]
+    fn a_word_is_refused_only_when_its_skeleton_is_ascii_and_it_is_not() {
+        assert_eq!(lookalike_word("Москва погода"), None);
+        assert_eq!(lookalike_word("caf\u{e9} na\u{ef}ve"), None, "an accent draws as itself");
+        assert_eq!(lookalike_word("rust 1.97"), None, "an ASCII word is what it reads as");
+        assert_eq!(lookalike_word("\u{3ba}\u{3b1}\u{3b9}"), None, "Greek και: κ is not k");
+        assert_eq!(lookalike_word("x \u{51a}"), Some("\u{51a}"), "Cyrillic Ԛ, left by the skeleton");
+        assert_eq!(query("Ελλάδα και Κύπρος"), Ok(()));
+    }
+
+    #[test]
+    fn punctuation_that_reads_as_ascii_is_refused_too() {
+        // Known over-refusals: the en dash, curly single quotes, the multiplication sign and primes
+        // each read as ASCII punctuation they are not, so a word of them carries a hidden bit.
+        for q in ["it's 3/4 \u{2013} ok?", "\u{2018}fine\u{2019}", "1920\u{d7}1080", "5\u{2032}"] {
+            assert!(why(q).contains("reads as the ASCII word"), "{q}");
+        }
     }
 
     #[test]
