@@ -17,6 +17,7 @@
 // Nothing here is a placeholder: what is not known says so.
 
 import { Theme } from "theme.slint";
+import { BoundPicker } from "picker_state.slint";
 import { Icon, Icons } from "icon.slint";
 
 // One of the machine's out-of-process services. Moved here from the machine rail, whose LOAD and
@@ -317,6 +318,14 @@ component MindCard inherits Rectangle {
                     }
                 }
             }
+        }
+        // The picker (#673): the same [Mind ▾] [Model ▾] [Effort ▾] [📎] as the ask bar, so
+        // switching mind or model is two clicks from here too.
+        Rectangle { height: 8px; }
+        HorizontalLayout {
+            height: 28px;
+            BoundPicker { upward: false; compact: true; show-status: false; menu-width: 280px; }
+            Rectangle { horizontal-stretch: 1; }
         }
         Rectangle { height: 10px; }
         // The mode and the machine's ceiling, side by side because neither means much alone.

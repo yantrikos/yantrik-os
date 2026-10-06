@@ -61,6 +61,8 @@ native-tls = { workspace = true }
 imap = { workspace = true }
 lettre = { workspace = true, features = ["hostname"] }
 base64 = { workspace = true }
+# Handed-over files carry their SHA-256 (picker::attach), so a mind can tell it read the one given.
+sha2 = { workspace = true }
 ureq = { workspace = true }
 # One-shot hardware read for the first-boot scan. The system observer only
 # publishes on its poll cycle (10s by default), which is far too slow for a
