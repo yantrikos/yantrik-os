@@ -44,6 +44,19 @@ pub struct WindowEntry {
 /// the strip while the person is still looking at it.
 const COMPOSITOR_TTL: Duration = Duration::from_secs(9);
 
+/// How long a reading is trusted while an app is starting (see `starting`).
+///
+/// Short, so its "Starting…" goes about a second after its window arrives rather than up to nine.
+/// Not zero: the poll asks twice per tick (taskbar and dock), and `wlrctl` runs on the UI thread,
+/// so a zero here spawned it twice every three seconds for as long as anything was starting.
+const STARTING_TTL: Duration = Duration::from_secs(1);
+
+/// Whether a reading `age` old has to be taken again, given whether anything is starting.
+fn reading_is_stale(age: Option<Duration>, anything_starting: bool) -> bool {
+    let ttl = if anything_starting { STARTING_TTL } else { COMPOSITOR_TTL };
+    age.is_none_or(|age| age >= ttl)
+}
+
 /// The last reading of the compositor: its window list, which of them it said was in front, and
 /// when it was taken.
 ///
@@ -101,11 +114,13 @@ fn compositor_snapshot() -> (Vec<WindowEntry>, Option<String>) {
 
 /// Take a new reading if the one we have has aged out.
 fn refresh_compositor_if_stale() {
-    let stale = match COMPOSITOR.lock() {
-        Ok(cache) => cache.as_ref().is_none_or(|(at, _, _)| at.elapsed() >= COMPOSITOR_TTL),
+    let age = match COMPOSITOR.lock() {
+        Ok(cache) => cache.as_ref().map(|(at, _, _)| at.elapsed()),
         Err(_) => return,
     };
-    if stale {
+    // An app that is starting is waited on, on the shorter TTL; bounded by the starting budget.
+    // Asked after the lock is let go: `starting_apps` reads the same cache.
+    if reading_is_stale(age, !starting_apps().is_empty()) {
         refresh_compositor_windows();
     }
 }
@@ -163,13 +178,14 @@ fn merge_windows(
     mut discovered: Vec<WindowEntry>,
     front: Option<&str>,
 ) -> Vec<WindowEntry> {
+    let now = crate::running::now_unix();
     let mut merged: Vec<WindowEntry> = launched
         .iter()
         .map(|app| {
             let app_id = app.app_id.clone();
             let seen = discovered
                 .iter()
-                .position(|w| w.app_id == app_id || same_program(&app.binary, &w.wayland_app_id))
+                .position(|w| is_window_of(app, w))
                 .map(|i| discovered.remove(i));
             match seen {
                 Some(window) => WindowEntry {
@@ -179,10 +195,16 @@ fn merge_windows(
                     wayland_app_id: window.wayland_app_id,
                     app_id,
                 },
+                // Launched and not yet on screen: said so, rather than listed like a window
+                // that is there (see `starting`).
                 None => WindowEntry {
                     title: display_name(&app_id),
                     icon_char: icon_for_app(&app_id).to_string(),
-                    subtitle: String::new(),
+                    subtitle: if crate::starting::still_starting(app.since_unix, now, false) {
+                        crate::starting::MARK.to_string()
+                    } else {
+                        String::new()
+                    },
                     wayland_app_id: String::new(),
                     app_id,
                 },
@@ -203,6 +225,37 @@ fn put_front_first(merged: &mut Vec<WindowEntry>, front: Option<&str>) {
         let window = merged.remove(i);
         merged.insert(0, window);
     }
+}
+
+/// Whether the compositor's window `w` is the one the shell launched as `app`.
+fn is_window_of(app: &crate::running::RunningApp, w: &WindowEntry) -> bool {
+    w.app_id == app.app_id || same_program(&app.binary, &w.wayland_app_id)
+}
+
+/// The apps the shell launched whose window the compositor has not shown yet, inside the
+/// starting budget (see `starting`). From the last reading, so it is cheap enough for the UI
+/// thread.
+///
+/// Of the apps launched on this desktop: one a mind opened in Mind View never gets a window here,
+/// and would otherwise say "Starting…" in the person's dock for the whole budget.
+pub fn starting_apps() -> Vec<String> {
+    let (discovered, _) = compositor_snapshot();
+    windowless(&launched_on_desktop(), &discovered, crate::running::now_unix())
+}
+
+fn windowless(
+    launched: &[crate::running::RunningApp],
+    discovered: &[WindowEntry],
+    now: u64,
+) -> Vec<String> {
+    launched
+        .iter()
+        .filter(|app| {
+            let seen = discovered.iter().any(|w| is_window_of(app, w));
+            crate::starting::still_starting(app.since_unix, now, seen)
+        })
+        .map(|app| app.app_id.clone())
+        .collect()
 }
 
 /// Whether a window that declared `wayland_app_id` came from the binary the shell started.
@@ -257,10 +310,22 @@ pub(crate) fn same_program(binary: &str, wayland_app_id: &str) -> bool {
 /// The Mind View window itself is listed, as the compositor sees it.
 pub fn shell_windows() -> Vec<WindowEntry> {
     let (discovered, front) = compositor_snapshot();
-    let in_mind_view = crate::mind_view::app_pids();
-    let mut launched = crate::running::running();
+    merge_windows(&launched_on_desktop(), discovered, front.as_deref())
+}
+
+/// The apps the shell launched onto this desktop: the launch registry, less the apps drawing in
+/// Mind View (see `shell_windows`). The one answer for the taskbar's list and for which apps are
+/// starting, so the two cannot disagree about a mind's app.
+fn launched_on_desktop() -> Vec<crate::running::RunningApp> {
+    not_in_mind_view(crate::running::running(), &crate::mind_view::app_pids())
+}
+
+fn not_in_mind_view(
+    mut launched: Vec<crate::running::RunningApp>,
+    in_mind_view: &std::collections::HashSet<u32>,
+) -> Vec<crate::running::RunningApp> {
     launched.retain(|app| !in_mind_view.contains(&app.pid));
-    merge_windows(&launched, discovered, front.as_deref())
+    launched
 }
 
 /// The name one of our app ids goes by on screen.
@@ -1017,6 +1082,43 @@ mod tests {
         assert_eq!(merged.iter().map(|w|w.app_id.as_str()).collect::<Vec<_>>(),["editor","terminal","notes"]);
     }
 
+
+    /// Email launched a moment ago with no window yet is starting, and says so in the list; once
+    /// the compositor has its window it is not (`starting`).
+    #[test]
+    fn a_launch_is_starting_until_its_window_is_seen() {
+        let now = crate::running::now_unix();
+        let email = RunningApp { since_unix: now, ..launched("email", "yantrik-email") };
+        assert_eq!(windowless(&[email.clone()], &seen(&[": Terminal"]), now), ["email"]);
+        let merged = merge_windows(&[email.clone()], seen(&[": Terminal"]), None);
+        assert_eq!(merged[0].subtitle, crate::starting::MARK);
+        assert!(windowless(&[email], &seen(&[": Terminal", ": Email"]), now).is_empty());
+        // An old launch whose window was never seen is not starting for ever.
+        assert!(windowless(&[launched("email", "yantrik-email")], &[], now).is_empty());
+    }
+
+    /// An app a mind opened in Mind View is not on this desktop: not listed, and so never
+    /// "Starting…" in the person's dock while it waits for a window that comes elsewhere.
+    #[test]
+    fn an_app_in_mind_view_is_not_starting_on_the_desktop() {
+        let now = crate::running::now_unix();
+        let mind = RunningApp { pid: 7, since_unix: now, ..launched("terminal", "foot") };
+        let person = RunningApp { pid: 8, since_unix: now, ..launched("email", "yantrik-email") };
+        let in_mind_view = std::collections::HashSet::from([7]);
+        let here = not_in_mind_view(vec![mind, person], &in_mind_view);
+        assert_eq!(windowless(&here, &[], now), ["email"]);
+    }
+
+    /// The nine-second reading while nothing is starting; about a second while something is, so
+    /// the two asks of one poll tick spawn `wlrctl` once, not twice.
+    #[test]
+    fn a_reading_is_trusted_for_a_second_while_an_app_is_starting() {
+        assert!(reading_is_stale(None, false), "no reading yet");
+        assert!(!reading_is_stale(Some(Duration::from_secs(5)), false));
+        assert!(reading_is_stale(Some(COMPOSITOR_TTL), false));
+        assert!(!reading_is_stale(Some(Duration::from_millis(200)), true), "same tick, asked again");
+        assert!(reading_is_stale(Some(STARTING_TTL), true));
+    }
 
     /// The case the shell used to get wrong: the launch registry is empty because this process
     /// has just started, and four apps are on screen because the compositor did not restart.

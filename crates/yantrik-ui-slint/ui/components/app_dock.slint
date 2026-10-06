@@ -16,6 +16,9 @@ export struct DockItem {
     icon: image,
     has-icon: bool,
     is-running: bool,
+    // Launched and no window yet. Drawn as "Starting…" so the seconds before a slow app's window
+    // arrives do not read as nothing having happened.
+    is-starting: bool,
 }
 
 // AppDock lived here: the Mac-style auto-hide dock of square tiles bearing LETTERS --

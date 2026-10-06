@@ -32,6 +32,9 @@ use yantrik_ipc_contracts::email::{
 /// What the app has been told about the mail service, and about the account behind it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MailState {
+    /// The window is up and the mail service has not answered yet: the first look runs on a
+    /// worker (see `startup`). Not unreachable — nothing has failed — and not "no account".
+    Starting,
     /// The service could not be started or could not be answered. Carries the reason, which is
     /// the thing that used to be thrown away.
     Unreachable { reason: String },
@@ -54,6 +57,7 @@ impl MailState {
     /// What `describe` reports under `service`.
     pub fn service_word(&self) -> &'static str {
         match self {
+            MailState::Starting => "starting",
             MailState::Unreachable { .. } => "unreachable",
             _ => "up",
         }
@@ -66,7 +70,7 @@ impl MailState {
     /// been told whether an account exists, and saying it has none is a claim it cannot support.
     pub fn has_account(&self) -> Option<bool> {
         match self {
-            MailState::Unreachable { .. } => None,
+            MailState::Starting | MailState::Unreachable { .. } => None,
             MailState::NoAccount { .. } => Some(false),
             MailState::Ready { .. } => Some(true),
         }
@@ -86,6 +90,7 @@ impl MailState {
     /// The one line a caller surveying every window pays for.
     pub fn summary(&self) -> String {
         match self {
+            MailState::Starting => "Email — starting; the mail service has not answered yet".to_string(),
             MailState::Unreachable { reason } => {
                 format!("Email — the mail service could not be reached: {reason}")
             }
@@ -98,7 +103,7 @@ impl MailState {
 
     pub fn config_path(&self) -> &str {
         match self {
-            MailState::Unreachable { .. } => "",
+            MailState::Starting | MailState::Unreachable { .. } => "",
             MailState::NoAccount { config_path, .. } => config_path,
             MailState::Ready { config_path, .. } => config_path,
         }
@@ -106,7 +111,7 @@ impl MailState {
 
     pub fn secrets_are_plaintext(&self) -> bool {
         match self {
-            MailState::Unreachable { .. } => false,
+            MailState::Starting | MailState::Unreachable { .. } => false,
             MailState::NoAccount { secrets_are_plaintext, .. } => *secrets_are_plaintext,
             MailState::Ready { secrets_are_plaintext, .. } => *secrets_are_plaintext,
         }
@@ -126,6 +131,8 @@ impl MailState {
                        sign-in is available on this build."
                     .to_string(),
             },
+            // Not drawn while starting: the setup form is not on screen until the service answers.
+            MailState::Starting => GoogleSignIn::default(),
             MailState::NoAccount { google, .. } => google.clone(),
             MailState::Ready { google, .. } => google.clone(),
         }
@@ -135,6 +142,19 @@ impl MailState {
         match self {
             MailState::Ready { account, .. } => account.id.clone(),
             _ => String::new(),
+        }
+    }
+
+    /// Why there is no mailbox to act on, as the end of "Cannot search: …": the service could
+    /// not be reached, Email is still starting, or no account is configured. Starting is not a
+    /// failure, so it is not worded as one.
+    pub fn why_no_mailbox(&self) -> String {
+        match self {
+            MailState::Starting => "Email is still starting; try again in a moment".to_string(),
+            MailState::Unreachable { reason } => {
+                format!("the mail service could not be reached: {reason}")
+            }
+            _ => "no email account is configured".to_string(),
         }
     }
 
@@ -232,6 +252,18 @@ impl Counted {
         }
     }
 
+    /// The counts while the account's mailbox has not answered its first look (see `startup`):
+    /// not known. The header holds 0 of 0 before anything is read, and saying that would be the
+    /// false empty folder #131 removed.
+    pub fn connecting() -> Self {
+        Counted::Unavailable { reason: STILL_CONNECTING.to_string() }
+    }
+
+    /// Whether these are [`Counted::connecting`]'s.
+    pub fn is_connecting(&self) -> bool {
+        matches!(self, Counted::Unavailable { reason } if reason == STILL_CONNECTING)
+    }
+
     /// The counts, if there are any.
     pub fn known(&self) -> Option<FolderCounts> {
         match self {
@@ -281,6 +313,14 @@ impl FolderCounts {
             total: self.total + 1,
         }
     }
+}
+
+/// Why the counts are not known while the first look is still connecting.
+pub const STILL_CONNECTING: &str = "still connecting";
+
+/// The one line while the account is known and its mailbox has not answered yet.
+pub fn connecting_summary(account: &str) -> String {
+    format!("Email — connecting to {account}")
 }
 
 /// The one line over a folder that is open, when nothing is being read or written.

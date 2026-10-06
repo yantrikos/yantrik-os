@@ -155,6 +155,8 @@ mod render_backend;
 /// `describe shell` and the mind panel read this and never wait on the worker.
 mod recipes;
 mod running;
+/// Apps launched and not yet windowed, which the dock, START and `describe shell` call "starting".
+mod starting;
 mod streaming;
 mod surfaces;
 mod system_context;
