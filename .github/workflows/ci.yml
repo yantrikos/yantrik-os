@@ -175,6 +175,12 @@ jobs:
       - name: The Mind's launcher gives it its name and its person's
         run: python3 deploy/yantrik-os/yantrik-mind-launch-selftest.py
 
+      # First boot left git with no identity, so `git commit` from a mind, an editor or a
+      # harness died with "Please tell me who you are" (#680). This runs the session's
+      # defaulting block under a temporary HOME with the account faked.
+      - name: The session gives git an identity from the account
+        run: python3 deploy/yantrik-os/yantrik-session-git-identity-selftest.py
+
       # The updater's own offline checks, against a scratch $YANTRIK_PREFIX. Same story as the
       # two above: it has existed for a while and only ever run on somebody's machine. It holds
       # where the update channel comes from, and that `.version` is written from the same string
