@@ -7,8 +7,10 @@ approvals and its memory exactly as it always does, and this file carries text b
 and the desktop's chat.
 
 Everything that makes Hermes Hermes — the model, the endpoint, the keys, the memory provider —
-stays in ~/.hermes, where Hermes keeps it. Nothing here reads or passes any of it to the OS, and the
-socket protocol has no field that could carry it.
+stays in ~/.hermes, where Hermes keeps it. Only two words of it are ever shown to the OS: the
+model name and the host of the endpoint Hermes calls, which `_detail()` puts on the attach line
+so the Settings map can name the provider. No URL, no path, no query — a key can ride in one of
+those, and none of them ever leaves.
 
 Two things differ from a chat app, and both come from the desktop thinking in turns:
 
@@ -29,6 +31,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -76,9 +79,12 @@ def check_requirements() -> bool:
 
 
 def _detail() -> str:
-    """What the mind picker shows under the name: Hermes' version and the model it thinks with.
+    """What the mind picker shows under the name: Hermes' version, the model it thinks with, and
+    the host of the endpoint it calls, so the Settings map can name the provider.
 
-    Read for display only, and only as Hermes itself reports it.
+    Read for display only, and only as Hermes itself reports it. The endpoint goes as a bare
+    host: a URL can carry a key in its user info or query string, and the OS names a provider
+    from a host alone.
     """
     parts = []
     try:
@@ -90,9 +96,16 @@ def _detail() -> str:
     try:
         from hermes_cli.config import load_config
 
-        model = (load_config().get("model") or {}).get("default")
-        if model:
-            parts.append(str(model))
+        model = load_config().get("model") or {}
+        if isinstance(model, dict):
+            if model.get("default"):
+                parts.append(str(model["default"]))
+            base_url = model.get("base_url")
+            # hostname drops any credentials, path and query along with the port.
+            if isinstance(base_url, str):
+                host = urlsplit(base_url).hostname
+                if host:
+                    parts.append(host.lower())
     except Exception:
         pass
     return " · ".join(parts)
