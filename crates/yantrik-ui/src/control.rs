@@ -349,6 +349,75 @@ fn clip(text: &str, max: usize) -> String {
 
 /// The tool calls in one message, each with its arguments, as the trail carried them.
 /// Refuse a caller the desktop takes for an agent: what it asked for is the person's own.
+/// Whether the caller of `send_message … run=ID` may start a run: the person's own session (their
+/// account, `own_uid`, from a process no attached mind started) or root. Never an agent token,
+/// a harness or anything it started, the mind account, the built-in companion, or another
+/// account; and never a call with no socket caller at all. A run is what a run grant covers, so
+/// whoever stamps one on a turn spends that grant: only the person who gave it, or root.
+///
+/// `in_agent_job`: the caller descends from a command the agent terminal is running
+/// ([`caller_in_agent_job`]). Those run as the person, on an agent's word, so they are refused
+/// too. Same-uid code outside both is told apart only by the run secret, checked after this.
+pub(crate) fn run_starter_ok(
+    requester: &crate::mind_view::Requester,
+    caller_uid: Option<u32>,
+    own_uid: u32,
+    agent_token: bool,
+    in_agent_job: bool,
+) -> Result<(), String> {
+    const NOTHING: &str = "nothing was sent";
+    if agent_token {
+        return Err(format!("a run is started by the person or root, and an agent is calling: refused, {NOTHING}"));
+    }
+    if in_agent_job {
+        return Err(format!(
+            "a run is started by the person or root, and the caller is inside a command an agent ran in the agent terminal: refused, {NOTHING}"
+        ));
+    }
+    if let crate::mind_view::Requester::Mind(who) = requester {
+        return Err(format!("a run is started by the person or root, and {who} is calling: refused, {NOTHING}"));
+    }
+    match caller_uid {
+        Some(uid) if uid == own_uid || uid == 0 => Ok(()),
+        Some(uid) => Err(format!("a run is started by the person or root, and uid {uid} is neither: refused, {NOTHING}")),
+        None => Err(format!("a run is started from the person's session or root's, over the control socket: refused, {NOTHING}")),
+    }
+}
+
+/// A run's caller must have been pinned at accept: its start time read while the kernel's pid was
+/// still that process (L8 of #667's review, round 3). With none, the caller had already exited by
+/// then, and its pid could since name another process of the person's whose ancestry the walk
+/// would read as whole, so the call is refused.
+pub(crate) fn caller_pinned(started: Option<u64>) -> Result<(), String> {
+    match started {
+        Some(_) => Ok(()),
+        None => Err("a run is started by a caller this shell could pin at accept, and this caller's start time \
+                     could not be read (it had already exited): refused, nothing was sent"
+            .into()),
+    }
+}
+
+/// Whether any pid in `chain` (the caller and its ancestors) is one of `live_jobs`, the agent
+/// terminal's running commands.
+pub(crate) fn descends_from_a_job(chain: &[i32], live_jobs: &[i32]) -> bool {
+    chain.iter().any(|pid| live_jobs.contains(pid))
+}
+
+/// Whether the call on this thread comes from inside a command the agent terminal is running:
+/// the caller's ancestry, pinned to its start time at accept, holds a live job's pid.
+fn caller_in_agent_job() -> bool {
+    let Some(caller) = yantrik_app_runtime::control::caller() else { return false };
+    let live = crate::control_agent_terminal::jobs().live_pids();
+    if live.is_empty() {
+        return false;
+    }
+    let chain: Vec<i32> = yantrik_ipc_transport::peer_identity::walk_pinned(caller.pid, caller.started)
+        .iter()
+        .map(|f| f.pid)
+        .collect();
+    descends_from_a_job(&chain, &live)
+}
+
 pub(crate) fn persons_only(action: &str) -> Result<(), String> {
     if yantrik_app_runtime::control::agent_is_calling() {
         return Err(format!(
@@ -1317,11 +1386,51 @@ pub fn publish(
             // reaches this with a token has to know why, not see a question go unanswered.
             Action::new("send_message", "Ask the desktop something, as if typed into the Lens (the person's; an agent talks to another agent with new_agent or send_to_agent)")
                 .arg(Param::text("text").describe("What to say"))
+                .arg(
+                    Param::text("run")
+                        .describe("Start this message as run ID, which a run grant (yantrik-update mind-grant add --scope run --run-id ID) covers. The person's own session or root only, with run_secret")
+                        .optional(),
+                )
+                .arg(
+                    Param::text("run_secret")
+                        .describe("With run: the one-time run secret `mind-grant add --scope run` printed. Never shown or kept; `yos` reads it from stdin with run_secret=-")
+                        .optional(),
+                )
                 .defers(),
             move |args| {
                 if yantrik_app_runtime::control::agent_is_calling() {
                     return Err("send_message puts words in the person's chat, and an agent is calling: refused, nothing was sent. An agent talks to another agent with new_agent or send_to_agent.".into());
                 }
+                // A run (M2 of #667's review): stamped on the turn by the host, so only the
+                // person's own session or root may name one. Checked before anything is sent.
+                let run = match args.get("run").filter(|r| !r.is_null()) {
+                    None => None,
+                    Some(r) => {
+                        let run = r.as_str().ok_or("`run` must be text; nothing was sent")?.trim().to_string();
+                        let caller = yantrik_app_runtime::control::caller();
+                        // SAFETY: cannot fail.
+                        let me = unsafe { libc::geteuid() };
+                        let token = yantrik_app_runtime::control::agent_token().is_some();
+                        run_starter_ok(&crate::mind_view::requester_now(), caller.as_ref().map(|c| c.uid), me, token, caller_in_agent_job())?;
+                        caller_pinned(caller.as_ref().and_then(|c| c.started))?;
+                        if !yantrik_harness::grants::scope_id_ok(&run) {
+                            return Err(format!("{run:?} is not a run id: 1 to 64 of A-Z a-z 0-9 . _ : -; nothing was sent"));
+                        }
+                        // The run id is in a file every account reads; its one-time secret was
+                        // printed only to whoever started the run (M2-r2 of #667's review).
+                        let secret = args.get("run_secret").and_then(|v| v.as_str()).unwrap_or_default().trim();
+                        yantrik_harness::grants::run_secret_ok(
+                            std::path::Path::new(yantrik_harness::grants::RUN_SECRETS_PATH),
+                            std::path::Path::new(yantrik_harness::grants::GRANTS_PATH),
+                            (0, 0),
+                            &run,
+                            secret,
+                            yantrik_harness::grants::now(),
+                        )
+                        .map_err(|why| format!("{why}: refused, nothing was sent"))?;
+                        Some(run)
+                    }
+                };
                 let ui = ask_ui()?;
                 let text = args["text"].as_str().unwrap_or_default().trim().to_string();
                 if text.is_empty() {
@@ -1329,10 +1438,19 @@ pub fn publish(
                 }
                 // The shell's own callback, not a private path beside it: whatever a person
                 // typing gets — the mind picker, the bubbles, the streaming state — this gets
-                // too, because it is the same call.
-                ui.invoke_send_message(text.clone().into());
+                // too, because it is the same call. A run rides on it to the turn it queues.
+                let carried = match &run {
+                    Some(run) => crate::wire::chat::in_run(run.clone(), || ui.invoke_send_message(text.clone().into())),
+                    None => {
+                        ui.invoke_send_message(text.clone().into());
+                        false
+                    }
+                };
                 Ok(serde_json::json!({
                     "asked": text,
+                    // The run the turn carries (`turn["run"]`), or null: none was asked for, or the
+                    // message went where no turn takes one (the built-in companion, Private mode).
+                    "run": if carried { serde_json::json!(run) } else { serde_json::Value::Null },
                     // Named here because it is the whole question this action tends to be
                     // asked in service of: which mind is about to answer.
                     "mind": crate::wire::harness::host()
@@ -3550,5 +3668,99 @@ mod status_gate_tests {
         let field = &src[at..at + 260];
         assert!(field.contains("if agent_reading { String::new() }"), "{field}");
         assert!(field.contains("status_for_describe"), "{field}");
+    }
+}
+
+/// `send_message … run=ID` (M2 of #667's review): the run is stamped on the turn by the host, and
+/// a run grant covers only a turn that carries its run, so only the person's own session or root
+/// may name one.
+#[cfg(test)]
+mod run_starter_tests {
+    use super::run_starter_ok;
+    use crate::mind_view::Requester;
+    use yantrik_app_runtime::control::{AgentTokenScope, Caller, CallerScope};
+
+    const ME: u32 = 1000;
+
+    #[test]
+    fn the_persons_own_session_and_root_may_start_a_run() {
+        assert_eq!(run_starter_ok(&Requester::Person, Some(ME), ME, false, false), Ok(()));
+        assert_eq!(run_starter_ok(&Requester::Person, Some(0), ME, false, false), Ok(()), "root");
+    }
+
+    #[test]
+    fn an_agent_a_harness_another_account_or_no_caller_may_not() {
+        assert!(run_starter_ok(&Requester::Person, Some(ME), ME, true, false).unwrap_err().contains("an agent is calling"));
+        for mind in ["Yantrik Mind", "the companion", "an agent"] {
+            let why = run_starter_ok(&Requester::Mind(mind.into()), Some(ME), ME, false, false).unwrap_err();
+            assert!(why.contains(mind) && why.contains("nothing was sent"), "{why}");
+        }
+        assert!(run_starter_ok(&Requester::Person, Some(1001), ME, false, false).unwrap_err().contains("uid 1001"));
+        assert!(run_starter_ok(&Requester::Person, None, ME, false, false).is_err(), "nothing in-process starts a run");
+    }
+
+    #[test]
+    fn an_agent_token_send_message_with_run_is_refused() {
+        // A call over the socket from the person's own account, presenting an agent token: the
+        // shape a harness's tool has when it reaches the control socket.
+        // SAFETY: cannot fail.
+        let me = unsafe { libc::geteuid() };
+        let _caller = CallerScope::enter(Some(Caller { pid: std::process::id() as i32 + 1, uid: me, gid: me, started: None }));
+        let _token = AgentTokenScope::enter(Some("t-run-667".into()));
+        assert!(yantrik_app_runtime::control::agent_is_calling(), "refused at the top of the handler");
+        let requester = crate::mind_view::requester_now();
+        assert!(matches!(requester, Requester::Mind(_)), "{requester:?}");
+        let token = yantrik_app_runtime::control::agent_token().is_some();
+        assert!(run_starter_ok(&requester, Some(me), me, token, false).is_err());
+    }
+
+    #[test]
+    fn a_caller_inside_an_agent_terminal_job_may_not() {
+        let why = run_starter_ok(&Requester::Person, Some(ME), ME, false, true).unwrap_err();
+        assert!(why.contains("agent terminal") && why.contains("nothing was sent"), "{why}");
+        // The caller, its shell, the job's bash, the person's terminal: the job is in the chain.
+        assert!(super::descends_from_a_job(&[7311, 7300, 4240, 900, 1], &[4240]));
+        assert!(!super::descends_from_a_job(&[7311, 7300, 900, 1], &[4240]), "not under a job");
+        assert!(!super::descends_from_a_job(&[], &[4240]));
+    }
+
+    #[test]
+    fn a_run_caller_with_no_start_time_at_accept_is_refused() {
+        let why = super::caller_pinned(None).unwrap_err();
+        assert!(why.contains("start time") && why.contains("nothing was sent"), "{why}");
+        assert_eq!(super::caller_pinned(Some(987_654)), Ok(()));
+        // And in the handler, after the starter check and before the secret or the send.
+        let src = include_str!("control.rs");
+        let at = src.find("Action::new(\"send_message\"").unwrap();
+        let body = &src[at..at + 5000];
+        let starter = body.find("run_starter_ok(").unwrap();
+        let pinned = body.find("caller_pinned(").unwrap();
+        let secret = body.find("run_secret_ok(").unwrap();
+        assert!(starter < pinned && pinned < secret, "the starter, then the pin, then the secret");
+    }
+
+    #[test]
+    fn a_run_without_its_secret_is_refused_before_anything_is_sent() {
+        let src = include_str!("control.rs");
+        let at = src.find("Action::new(\"send_message\"").unwrap();
+        let body = &src[at..at + 5000];
+        let secret = body.find("run_secret_ok(").unwrap();
+        let sent = body.find("crate::wire::chat::in_run(").unwrap();
+        assert!(secret < sent, "the secret is checked before the send");
+        assert!(body.contains("RUN_SECRETS_PATH") && body.contains("(0, 0)"), "root's file, root's only");
+        assert!(!body[..sent].contains("tracing::"), "the secret is never logged on the way");
+    }
+
+    #[test]
+    fn the_handler_checks_the_run_before_anything_is_sent_and_carries_it_on_the_turn() {
+        let src = include_str!("control.rs");
+        let at = src.find("Action::new(\"send_message\"").unwrap();
+        let body = &src[at..at + 5000];
+        let refused = body.find("agent_is_calling()").unwrap();
+        let checked = body.find("run_starter_ok(").unwrap();
+        let sent = body.find("crate::wire::chat::in_run(").unwrap();
+        assert!(refused < checked && checked < sent, "the agent refusal, then the run check, then the send");
+        let chat = include_str!("wire/chat.rs");
+        assert!(chat.contains("if let Some(run) = take_turn_run() {\n        turn = turn.with_run(run);"), "the turn carries it");
     }
 }

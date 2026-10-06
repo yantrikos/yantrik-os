@@ -607,7 +607,7 @@ mod tests {
         }
 
         fn caller(uid: u32) -> Option<Caller> {
-            Some(Caller { pid: 4242, uid, gid: uid })
+            Some(Caller { pid: 4242, uid, gid: uid, started: None })
         }
 
         #[test]

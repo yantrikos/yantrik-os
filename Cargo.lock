@@ -9536,6 +9536,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "383ad40bb927465ec0ce7720e033cb4ca06912855fc35db31b5755d0de75b1ee"
 
 [[package]]
+name = "unicode-security"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e4ddba1535dd35ed8b61c52166b7155d7f4e4b8847cec6f48e71dc66d8b5e50"
+dependencies = [
+ "unicode-normalization",
+ "unicode-script",
+]
+
+[[package]]
 name = "unicode-segmentation"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11497,6 +11507,7 @@ name = "yantrik-harness"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.2.17",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",
@@ -11504,6 +11515,9 @@ dependencies = [
  "tokio",
  "tracing",
  "unicode-normalization",
+ "unicode-properties",
+ "unicode-script",
+ "unicode-security",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
 ]
@@ -11953,6 +11967,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "slint",
  "sysinfo",
  "tokio",

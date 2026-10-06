@@ -16,6 +16,7 @@ import { ProviderPresetGroup } from "provider_presets.slint";
 import { YDialog } from "components/y_dialog.slint";
 import { AccountList, ProviderGroup, AddChoice } from "components/minds_panel.slint";
 import { FreeAiCard } from "components/free_ai_card.slint";
+import { MindGrantsCard, MindGrantRow } from "components/mind_grants.slint";
 export { DecisionPreset, DecisionUse }
 
 // ── Settings sidebar category item ──
@@ -535,6 +536,10 @@ export component SettingsScreen inherits Rectangle {
     in property <[HarnessRowData]> harness-rows: [];
     in property <string> harness-error: "";
     callback use-harness(string);
+    // The Mind's search grants (components/mind_grants.slint), on the Harnesses page.
+    in property <[MindGrantRow]> mind-grants: [];
+    in property <string> mind-grants-error: "";
+    callback revoke-mind-grant(string);
     callback install-harness(string);
     callback start-harness(string);
     callback configure-harness(string);
@@ -3794,6 +3799,12 @@ SettingRow{label:"About this device";description:"Detailed information about thi
                                     }
                                 }
                             }
+                        }
+
+                        MindGrantsCard {
+                            grants: root.mind-grants;
+                            error: root.mind-grants-error;
+                            revoke(id) => { root.revoke-mind-grant(id); }
                         }
 
                         // Only when the machine really has nothing to offer — no manifests

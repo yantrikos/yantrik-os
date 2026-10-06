@@ -498,6 +498,17 @@ def main():
               (last_act("notifications") or {}).get("args") == {"id": "67", "reason": 3},
               last_act("notifications"))
 
+        # A run secret is a secret: `run_secret=-` reads it from stdin, never from argv.
+        held_stdin = sys.stdin
+        try:
+            sys.stdin = io.StringIO("0123456789abcdef0123456789abcdef\n")
+            parsed = yos.parse_args(["text=go", "run=research-42", "run_secret=-"])
+        finally:
+            sys.stdin = held_stdin
+        check("run_secret=- is read from stdin, the rest as typed",
+              parsed == {"text": "go", "run": "research-42", "run_secret": "0123456789abcdef0123456789abcdef"}, parsed)
+        check("and `-` for anything else is the text `-`", yos.parse_args(["text=-"]) == {"text": "-"})
+
         surfaces["notifications"].calls.clear()
         # 16 hex digits, and about one revision in six thousand is all of them decimal. It
         # guards the call rather than being an argument to it, so no app declares it — and as a

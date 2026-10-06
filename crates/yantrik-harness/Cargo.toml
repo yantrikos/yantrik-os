@@ -18,7 +18,16 @@ rusqlite = { workspace = true }
 # needle, lowercased, so the same words typed composed or decomposed, in any case, are the same
 # needle.
 sha2 = { workspace = true }
-unicode-normalization = "0.1"
+unicode-normalization = "=0.1.25"
+# The grants reader opens its file O_NOFOLLOW (`grants`).
+libc = { workspace = true }
+# A search query the grant card shows is screened by `host::screen`: NFKC (above), general
+# category, script and UTS #39 skeleton. That module is copied verbatim into another repository, so the crates
+# it uses are pinned exactly: a newer Unicode table must not change what passes unnoticed.
+unicode-properties = { version = "=0.1.4", default-features = false, features = ["general-category"] }
+unicode-script = "=0.5.8"
+# The UTS #39 skeleton, for lookalike words from any script (`host::screen`).
+unicode-security = "=0.1.2"
 
 [dev-dependencies]
 # Only the examples need a socket; the host itself is deliberately transport-free so it can be

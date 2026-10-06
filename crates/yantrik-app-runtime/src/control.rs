@@ -1458,7 +1458,7 @@ mod tests {
     #[test]
     fn a_call_with_a_token_is_an_agent_and_the_persons_own_is_not() {
         let me = unsafe { libc::getuid() };
-        let _person = CallerScope::enter(Some(Caller { pid: 4242, uid: me, gid: me }));
+        let _person = CallerScope::enter(Some(Caller { pid: 4242, uid: me, gid: me, started: None }));
         assert!(!agent_is_calling(), "the person's own account, no token");
         {
             let _agent = AgentTokenScope::enter(Some("tok-anything".into()));

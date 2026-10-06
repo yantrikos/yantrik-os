@@ -13,6 +13,34 @@ use crate::app_context::AppContext;
 use crate::bridge::CompanionBridge;
 use crate::{apps, lens, streaming, App};
 
+thread_local! {
+    /// The run the message being dispatched on this thread belongs to: set by `send_message
+    /// … run=ID` (control.rs), for exactly one synchronous `on_send_message`, and taken by
+    /// [`dispatch`] onto the turn it queues for a harness. Nothing else sets it.
+    static TURN_RUN: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Run `send` (which invokes `on_send_message`) with its message in run `run`; whether a turn
+/// took the run. A message that went anywhere but an attached harness (a recipe's word, the
+/// built-in companion, Private mode) takes none, and the run is dropped with the call either way.
+pub(crate) fn in_run(run: String, send: impl FnOnce()) -> bool {
+    struct Clear;
+    impl Drop for Clear {
+        fn drop(&mut self) {
+            TURN_RUN.with(|r| r.borrow_mut().take());
+        }
+    }
+    TURN_RUN.with(|r| *r.borrow_mut() = Some(run));
+    let _clear = Clear;
+    send();
+    TURN_RUN.with(|r| r.borrow().is_none())
+}
+
+/// The run [`in_run`] set for this message, taken: once, by the turn that carries it.
+fn take_turn_run() -> Option<String> {
+    TURN_RUN.with(|r| r.borrow_mut().take())
+}
+
 /// What the desktop tells a mind about where a turn came from: facts about the machine, as JSON.
 ///
 /// A mind keeps its own clock but has no way to know where the computer is. Asked "what is the
@@ -212,7 +240,12 @@ fn dispatch(
         Some(h) => (crate::agents::handover::with_handover(h, text), context),
         None => (text.to_string(), context),
     };
-    let answer = host.send(yantrik_harness::Turn::new(sent).with_context(context).with_origin(yantrik_harness::protocol::Origin::desk()));
+    let mut turn = yantrik_harness::Turn::new(sent).with_context(context).with_origin(yantrik_harness::protocol::Origin::desk());
+    // The person's own `send_message … run=ID`: the host stamps it on the turn (`turn["run"]`).
+    if let Some(run) = take_turn_run() {
+        turn = turn.with_run(run);
+    }
+    let answer = host.send(turn);
     // The same turn, recorded as this mind's agent on the Agents screen; the answer passes through.
     let answer = crate::agents::feed::lens_turn(&host.active_id(), text, answer);
     let run_of = crate::agents::feed::main_agent(&host.active_id());
@@ -508,6 +541,18 @@ mod handover_context_tests {
 
 #[cfg(test)]
 mod tests {
+    /// A run set by `send_message … run=ID` is taken once, by the turn that carries it, and never
+    /// outlives the one message: a message that took none leaves nothing for the next.
+    #[test]
+    fn a_run_rides_on_one_message_only() {
+        assert!(super::in_run("research-42".into(), || assert_eq!(super::take_turn_run().as_deref(), Some("research-42"))));
+        assert_eq!(super::take_turn_run(), None, "taken once");
+        assert!(!super::in_run("research-42".into(), || {}), "a message no turn took");
+        assert_eq!(super::take_turn_run(), None, "and nothing is left for the next message");
+        let _ = std::panic::catch_unwind(|| super::in_run("r".into(), || panic!("a send that fails")));
+        assert_eq!(super::take_turn_run(), None, "nor after a panic");
+    }
+
     /// This file, read as text.
     ///
     /// The bug this guards was not a wrong line — it was a MISSING one, and no type, signature or

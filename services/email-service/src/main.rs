@@ -1364,7 +1364,7 @@ mod tests {
     #[test]
     fn a_raw_send_from_a_program_not_the_desktops_is_refused() {
         use yantrik_service_sdk::ServiceHandler as _;
-        let peer = yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 };
+        let peer = yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0, started: None };
         let err = super::EmailHandler::new()
             .handle_from(yantrik_ipc_contracts::email::method::SEND_MESSAGE, serde_json::json!({ "to": ["x@example.com"] }), Some(peer))
             .unwrap_err();

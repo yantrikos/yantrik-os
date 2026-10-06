@@ -665,6 +665,11 @@ def declared_types(target, action, pairs):
     return types
 
 
+# Arguments that may be read from stdin by passing `-`: secrets, which never belong on argv.
+# `run_secret=-` reads the one-time run secret `yantrik-update mind-grant add --scope run` printed.
+STDIN_ARGS = {"run_secret"}
+
+
 def parse_args(pairs, types=None):
     """`name=notes count=3` into a dict, each value read as its parameter is declared.
 
@@ -678,6 +683,10 @@ def parse_args(pairs, types=None):
         if "=" not in pair:
             die("arguments look like key=value, got %r" % pair)
         key, value = pair.split("=", 1)
+        if key in STDIN_ARGS and value == "-":
+            # A secret on the command line is in /proc/<pid>/cmdline for every account to read.
+            out[key] = sys.stdin.readline().strip()
+            continue
         out[key] = read_value(value, types.get(key))
     return out
 

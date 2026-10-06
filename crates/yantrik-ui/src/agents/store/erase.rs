@@ -369,7 +369,7 @@ mod tests {
         s.approval_answered(&pi, "appr-1", true);
         s.event(
             &pi,
-            &Event::Request { request_id: "forget-1".into(), prompt: "Forget Priya?".into(), options: vec!["Keep".into(), "Erase".into()] },
+            &Event::Request { request_id: "forget-1".into(), prompt: "Forget Priya?".into(), options: vec!["Keep".into(), "Erase".into()], by_host: false },
             Provenance::Reported,
         );
         s.question_answered(&pi, "forget-1", "Erase");

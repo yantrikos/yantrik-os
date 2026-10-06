@@ -157,6 +157,10 @@ pub struct PeerCred {
     pub pid: i32,
     pub uid: u32,
     pub gid: u32,
+    /// The peer's start time (`/proc/<pid>/stat` field 22), read at accept: what tells the peer
+    /// from a later process that took its pid (`peer_identity::walk_pinned`). `None` when it
+    /// could not be read, or the credentials did not come from an accept.
+    pub started: Option<u64>,
 }
 
 /// Trait for service method dispatch. Implement this in each service.
@@ -329,7 +333,10 @@ impl RpcServer {
             let peer = stream
                 .peer_cred()
                 .ok()
-                .map(|c| PeerCred { pid: c.pid().unwrap_or(0), uid: c.uid(), gid: c.gid() });
+                .map(|c| {
+                let pid = c.pid().unwrap_or(0);
+                PeerCred { pid, uid: c.uid(), gid: c.gid(), started: crate::peer_identity::start_time(pid) }
+            });
             let handler = handler.clone();
             tokio::spawn(async move {
                 let (reader, writer) = stream.into_split();
@@ -525,7 +532,10 @@ async fn serve_door(listener: tokio::net::UnixListener, handler: Arc<dyn Service
         let peer = stream
             .peer_cred()
             .ok()
-            .map(|c| PeerCred { pid: c.pid().unwrap_or(0), uid: c.uid(), gid: c.gid() });
+            .map(|c| {
+                let pid = c.pid().unwrap_or(0);
+                PeerCred { pid, uid: c.uid(), gid: c.gid(), started: crate::peer_identity::start_time(pid) }
+            });
         match peer {
             Some(p) if crate::mind_door::is_mind(p.uid) => {
                 let handler = handler.clone();

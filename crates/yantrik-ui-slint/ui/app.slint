@@ -25,6 +25,8 @@ import { OnboardingScreen } from "onboarding.slint";
 import { InstallerScreen, InstallerDisk, KeyboardChoice } from "installer.slint";
 export { InstallerDisk, KeyboardChoice }
 export { DecisionPreset, DecisionUse, ThemeCardData } from "settings.slint";
+import { MindGrantRow } from "components/mind_grants.slint";
+export { MindGrantRow }
 export { ProviderPresetData, ProviderPresetRow, ProviderPresetGroup } from "provider_presets.slint";
 import { ProviderPresetData, ProviderPresetGroup } from "provider_presets.slint";
 import { DesktopScreen } from "desktop.slint";
@@ -759,6 +761,9 @@ export component App inherits Window {
     in property <string> active-harness-id: "";
     in-out property <string> harness-error: "";
     callback use-harness(string);
+    in property <[MindGrantRow]> mind-grants: [];
+    in-out property <string> mind-grants-error: "";
+    callback revoke-mind-grant(string);
     // Both change the machine, so both are jobs whose output lands back on the row.
     callback install-harness(string);
     callback start-harness(string);
@@ -2088,6 +2093,9 @@ export component App inherits Window {
                 harness-busy: root.harness-busy;
                 harness-error: root.harness-error;
                 use-harness(id) => { root.use-harness(id); }
+                mind-grants: root.mind-grants;
+                mind-grants-error: root.mind-grants-error;
+                revoke-mind-grant(id) => { root.revoke-mind-grant(id); }
                 install-harness(id) => { root.install-harness(id); }
                 start-harness(id) => { root.start-harness(id); }
                 configure-harness(id) => { root.configure-harness(id); }

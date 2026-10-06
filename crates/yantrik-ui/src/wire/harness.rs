@@ -222,6 +222,15 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             yantrik_app_runtime::notify::send(notice);
         }
     });
+    // The Mind asks before it searches the web in its own words; the person's card answers, and
+    // root writes a grant on *This session* or *Always* (design/mind-egress-2026-09-29.md, 6).
+    // Only a `mind` attached as the yantrik-mind account is listened to.
+    let host = host.with_grants(
+        yantrik_harness::grants::GRANTS_PATH,
+        (0, 0),
+        yantrik_ipc_transport::mind_door::mind_uid(),
+        crate::mind_grants::on_notice,
+    );
     let _ = HOST.set(host.clone());
 
     // The agent terminal's side of agents (design/agents-workspace-2026-09-23.md, decision 3):
@@ -296,6 +305,24 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     }
 
     crate::wire::harness_provider::wire(ui);
+
+    // Revoke on a search grant: root rewrites the grants without it, then the list is read again.
+    {
+        let weak = ui.as_weak();
+        ui.on_revoke_mind_grant(move |id| {
+            let id = id.to_string();
+            let weak = weak.clone();
+            std::thread::spawn(move || {
+                let error = crate::mind_grants::revoke(&id).err().unwrap_or_default();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = weak.upgrade() {
+                        ui.set_mind_grants_error(error.into());
+                        publish_mind_grants(&ui);
+                    }
+                });
+            });
+        });
+    }
 
     publish(ui, &host);
 
@@ -579,8 +606,20 @@ fn publish_catalogue(ui: &App, entries: &[yantrik_harness::Entry]) {
     if let Some(model) = crate::models::changed(ui.get_harness_rows(), rows) {
         ui.set_harness_rows(model);
     }
+    publish_mind_grants(ui);
     // Drives the one animation on the page, and only while something is really running.
     ui.set_harness_busy(busy);
+}
+
+/// The Mind's search grants in force, for the Harnesses page.
+fn publish_mind_grants(ui: &App) {
+    let rows: Vec<crate::MindGrantRow> = crate::mind_grants::rows()
+        .into_iter()
+        .map(|(id, title, detail)| crate::MindGrantRow { id: id.into(), title: title.into(), detail: detail.into() })
+        .collect();
+    if let Some(model) = crate::models::changed(ui.get_mind_grants(), rows) {
+        ui.set_mind_grants(model);
+    }
 }
 
 /// How often a shell whose harness socket another process holds looks again (#367).
@@ -850,7 +889,7 @@ mod tests {
         // an install the account migration has not reached.
         let params = serde_json::json!({ "id": "mind", "name": "Yantrik Mind", "conversations": true });
         let me = unsafe { libc::getuid() };
-        let peer = yantrik_ipc_transport::PeerCred { pid: std::process::id() as i32, uid: me, gid: me };
+        let peer = yantrik_ipc_transport::PeerCred { pid: std::process::id() as i32, uid: me, gid: me, started: None };
         service.handle_from(protocol::ATTACH, params, Some(peer)).unwrap();
         let agent = service.host.start_agent("mind").unwrap();
         let credential =
@@ -868,7 +907,7 @@ mod tests {
         let service = HarnessService { host: Host::new(vec![]), door_served: true };
         let params = serde_json::json!({ "id": "mind", "name": "Yantrik Mind", "conversations": true });
         let me = unsafe { libc::getuid() };
-        let peer = yantrik_ipc_transport::PeerCred { pid: std::process::id() as i32, uid: me, gid: me };
+        let peer = yantrik_ipc_transport::PeerCred { pid: std::process::id() as i32, uid: me, gid: me, started: None };
         let refused = service.handle_from(protocol::ATTACH, params, Some(peer)).unwrap_err();
         assert!(refused.message.contains("person's own Yantrik Mind"), "{}", refused.message);
         assert!(!refused.message.contains("  "), "one sentence, no stray spaces: {}", refused.message);

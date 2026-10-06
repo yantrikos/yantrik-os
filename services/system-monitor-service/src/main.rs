@@ -938,7 +938,7 @@ mod tests {
     fn a_raw_kill_from_a_program_not_the_desktops_is_refused() {
         use yantrik_service_sdk::ServiceHandler as _;
         let mut child = std::process::Command::new("sleep").arg("30").spawn().expect("a sleep of our own");
-        let peer = yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 };
+        let peer = yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0, started: None };
         let err = super::SysMonHandler::new()
             .handle_from("sysmon.kill_process", serde_json::json!({ "pid": child.id() }), Some(peer))
             .unwrap_err();

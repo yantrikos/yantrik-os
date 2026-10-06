@@ -499,7 +499,46 @@ pub fn actions(surface: ControlSurface) -> ControlSurface {
         .action(kill, |args| agent_kill(args, Call::current()))
 }
 
+/// Whether `line`, a command line or typed text, may run `yantrik-update mind-grant`: it names
+/// `mind-grant` or `yantrik-update`, in any case, once the quotes, backslashes, braces and commas
+/// a shell strips or expands are taken out — however it is reached (`sudo`, `sudo -n`, `env`, a
+/// full path, `bash -c`). Every `yantrik-update` is asked about, not only `mind-grant`, so a
+/// subcommand spelt some other way is still asked. It reads the text: a command that builds the
+/// name at run time (a variable, a glob, a decoded string, a script written earlier) is not seen
+/// here.
+pub(crate) fn runs_mind_grant(line: &str) -> bool {
+    let plain: String = line.chars().filter(|c| !matches!(c, '\\' | '\'' | '"' | '{' | '}' | ',')).collect::<String>().to_lowercase();
+    plain.contains("mind-grant") || plain.contains("yantrik-update")
+}
+
+/// Whether this call of `action` must be asked about on its own, every time: an `agent_run` or
+/// `agent_input` whose line may run `yantrik-update mind-grant` ([`runs_mind_grant`]). A person
+/// uid process can mint a Mind grant with that command, so it runs only with a person's Allow for
+/// exactly that line: in every mode, full bypass included, never under a session rule, and the
+/// card offers none.
+pub(crate) fn asks_each_time(action: &str, args: &Value) -> bool {
+    let line = match action {
+        "agent_run" => args.get("command"),
+        "agent_input" => args.get("text"),
+        _ => None,
+    };
+    line.and_then(Value::as_str).is_some_and(runs_mind_grant)
+}
+
+/// The refusal for a call [`asks_each_time`] covers that carries no grant of its own.
+fn needs_its_own_allow(action: &str, granted: bool, args: &Value) -> Result<(), String> {
+    if !granted && asks_each_time(action, args) {
+        return Err(format!(
+            "GRANT: shell.{action} with a line that may run `yantrik-update mind-grant` runs only with a \
+             person's Allow for exactly this line: ask with request_approval and call again with its \
+             grant. No mode and no session rule answers it. Nothing was run."
+        ));
+    }
+    Ok(())
+}
+
 fn agent_run(args: &Value, call: Call) -> Result<Value, String> {
+    needs_its_own_allow("agent_run", control::call_was_granted(), args)?;
     let command = text(args, "command");
     let cwd = args
         .get("cwd")
@@ -573,6 +612,7 @@ fn agent_job(args: &Value, call: Call) -> Result<Value, String> {
 }
 
 fn agent_input(args: &Value, call: Call) -> Result<Value, String> {
+    needs_its_own_allow("agent_input", control::call_was_granted(), args)?;
     let job = job_arg(args)?;
     let typed = text(args, "text");
     if typed.is_empty() {
@@ -716,6 +756,41 @@ mod tests {
             assert!(s.agent(&a).unwrap().cards().all(|c| c.call != jb.0));
             assert!(s.agent(&b).unwrap().cards().all(|c| c.call != ja.0));
         });
+    }
+
+    /// A line that may run `yantrik-update mind-grant` runs only with its own grant: matched
+    /// through sudo, `sudo -n`, env, a full path, `bash -c` and quoting, and refused before
+    /// anything is started (review of #667, M6).
+    #[test]
+    fn a_line_that_may_run_mind_grant_needs_its_own_allow_every_time() {
+        for line in [
+            "yantrik-update mind-grant add --scope run search",
+            "sudo yantrik-update mind-grant add --scope always",
+            "sudo -n /usr/local/bin/yantrik-update mind-grant list",
+            "env FOO=1 sudo -n -- /usr/local/bin/yantrik-update mind-grant add",
+            "cd /tmp && SUDO_ASKPASS=x sudo -A yantrik-update 'mind-grant' add",
+            "bash -c \"sudo yantrik-update mind\\-grant add\"",
+            "sudo yantrik-update \"mind\"-'grant' add",
+            "sudo yantrik-update mind-gran{t,} add",
+            "/usr/local/bin/Yantrik-Update status",
+            "setsid -f sudo -n yantrik-update mind-grant add --scope run x",
+        ] {
+            assert!(runs_mind_grant(line), "{line}");
+            assert!(asks_each_time("agent_run", &json!({ "command": line })), "{line}");
+            let err = needs_its_own_allow("agent_run", false, &json!({ "command": line })).unwrap_err();
+            assert!(err.starts_with("GRANT:") && err.contains("No mode and no session rule"), "{err}");
+            assert_eq!(needs_its_own_allow("agent_run", true, &json!({ "command": line })), Ok(()), "a grant for it runs it");
+        }
+        assert!(asks_each_time("agent_input", &json!({ "job": "j", "text": "sudo -n yantrik-update mind-grant add\n" })));
+        for line in ["cargo test", "grep -r grant src", "ls /usr/local/bin", "git log --grep mind"] {
+            assert!(!runs_mind_grant(line), "{line}");
+            assert_eq!(needs_its_own_allow("agent_run", false, &json!({ "command": line })), Ok(()));
+        }
+        assert!(!asks_each_time("agent_kill", &json!({ "job": "yantrik-update mind-grant" })));
+        // Refused on the UI thread, before any agent or terminal is looked at.
+        let err = agent_run(&json!({ "command": "sudo -n yantrik-update mind-grant add" }), Call { pid: None, token: None })
+            .unwrap_err();
+        assert!(err.starts_with("GRANT:"), "{err}");
     }
 
     /// The token is not an argument of any of the four, so nothing that shows or keeps

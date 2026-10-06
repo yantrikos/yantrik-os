@@ -130,6 +130,11 @@ pub enum Event {
         /// The answers to offer as buttons, when there is a fixed set ("Allow", "Deny").
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         options: Vec<String>,
+        /// Set only by the host, on the question it makes of a `grant_request` (`host::grant`): the
+        /// card is drawn as the desktop's, not the agent's. Never read from or written to the
+        /// wire, so no harness can set it.
+        #[serde(skip)]
+        by_host: bool,
     },
     /// After the person answered *Erase* to the agent's Keep/Erase question `request_id`, the
     /// agent asks the shell to erase the same words from its own copies: the agent's pane
@@ -141,13 +146,27 @@ pub enum Event {
         request_id: String,
         needles: Vec<Needle>,
     },
+    /// The Mind asks to search the web in its own words (`crate::host::grant`). A grant in force
+    /// answers it at once; otherwise the host turns it into a [`Event::Request`] in its own
+    /// words, with the exact query and four fixed answers, and only that reaches a reader.
+    GrantRequest {
+        /// The harness's own id for the question, unique within the run.
+        request_id: String,
+        /// `web_search_own_words`, the only one there is.
+        capability: String,
+        /// The exact search, as the card shows it.
+        query: String,
+        // No `run_id`: a run grant is matched against the run the host stamped on the turn
+        // (`turn["run"]`), never against one the harness names. One that still names a run is
+        // refused (`Host::event`).
+    },
 }
 
 impl Event {
     /// Every `kind` this build reads. Anything else is a newer harness talking to an older
     /// desktop, and is ignored; one of these that does not parse is malformed, and is counted.
     pub const KINDS: &'static [&'static str] =
-        &["tool_start", "tool_output", "tool_end", "thinking", "status", "usage", "request", "redact"];
+        &["tool_start", "tool_output", "tool_end", "thinking", "status", "usage", "request", "redact", "grant_request"];
 
     /// Read one event from the wire. `None` for a kind this build does not know, or one that is
     /// malformed: the caller logs it and carries on, and the turn is not failed over it.
@@ -166,6 +185,7 @@ impl Event {
             Event::Usage { .. } => "usage",
             Event::Request { .. } => "request",
             Event::Redact { .. } => "redact",
+            Event::GrantRequest { .. } => "grant_request",
         }
     }
 
@@ -235,8 +255,9 @@ mod tests {
             Event::Thinking { delta: "d".into() },
             Event::Status { text: "t".into() },
             Event::Usage { model: String::new(), input_tokens: None, output_tokens: None, cost_usd: None },
-            Event::Request { request_id: "r".into(), prompt: "p".into(), options: vec![] },
+            Event::Request { request_id: "r".into(), prompt: "p".into(), options: vec![], by_host: false },
             Event::Redact { request_id: "r".into(), needles: vec![Needle::of("p")] },
+            Event::GrantRequest { request_id: "g".into(), capability: "web_search_own_words".into(), query: "q".into() },
         ];
         assert_eq!(every.len(), Event::KINDS.len());
         for event in every {

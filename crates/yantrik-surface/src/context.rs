@@ -38,17 +38,20 @@ pub struct Caller {
     pub pid: i32,
     pub uid: u32,
     pub gid: u32,
+    /// The peer's start time, read at accept (`PeerCred::started`): what pins a later `/proc`
+    /// walk to this process rather than one that took its pid since.
+    pub started: Option<u64>,
 }
 
 impl From<PeerCred> for Caller {
     fn from(p: PeerCred) -> Caller {
-        Caller { pid: p.pid, uid: p.uid, gid: p.gid }
+        Caller { pid: p.pid, uid: p.uid, gid: p.gid, started: p.started }
     }
 }
 
 impl From<Caller> for PeerCred {
     fn from(c: Caller) -> PeerCred {
-        PeerCred { pid: c.pid, uid: c.uid, gid: c.gid }
+        PeerCred { pid: c.pid, uid: c.uid, gid: c.gid, started: c.started }
     }
 }
 
@@ -227,14 +230,14 @@ mod tests {
         // request. Outside a scope there is no caller at all — not a stale one.
         assert_eq!(caller(), None, "nothing is calling before anything has called");
 
-        let hermes = Caller { pid: 696, uid: 1000, gid: 1000 };
+        let hermes = Caller { pid: 696, uid: 1000, gid: 1000, started: None };
         {
             let _scope = CallerScope::enter(Some(hermes));
             assert_eq!(caller(), Some(hermes));
 
             // Nested, because `describe` inside an `act` is a real shape.
             {
-                let _inner = CallerScope::enter(Some(Caller { pid: 4242, uid: 1000, gid: 1000 }));
+                let _inner = CallerScope::enter(Some(Caller { pid: 4242, uid: 1000, gid: 1000, started: None }));
                 assert_eq!(caller().map(|c| c.pid), Some(4242));
             }
             assert_eq!(caller(), Some(hermes), "the outer dispatch gets its own caller back");
@@ -248,7 +251,7 @@ mod tests {
         // attributed to the process that crashed the previous one, and the shell would print
         // that pid on an approval card as a verified fact.
         let panicked = std::panic::catch_unwind(|| {
-            let _scope = CallerScope::enter(Some(Caller { pid: 7, uid: 0, gid: 0 }));
+            let _scope = CallerScope::enter(Some(Caller { pid: 7, uid: 0, gid: 0, started: None }));
             assert_eq!(caller().map(|c| c.pid), Some(7));
             panic!("a handler blew up");
         });

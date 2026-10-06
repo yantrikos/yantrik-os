@@ -505,6 +505,17 @@ impl Jobs {
             .collect()
     }
 
+    /// The pid of every command still running: each is its `bash`, the session leader of
+    /// everything the command started. The shell refuses a run stamp from any process with one
+    /// of these in its ancestry, because those processes run as the person on an agent's word.
+    pub fn live_pids(&self) -> Vec<i32> {
+        lock(&self.inner.jobs)
+            .values()
+            .filter(|j| matches!(j.status().0, JobState::Running { .. }))
+            .map(|j| j.pid)
+            .collect()
+    }
+
     // ── The view's side: the shell's own, so no agent is asked for ──
 
     /// Whose job this is.

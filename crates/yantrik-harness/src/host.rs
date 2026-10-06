@@ -61,6 +61,8 @@ use crate::run_store::{RunError, RunState, RunStore};
 use crate::{Answer, Capabilities, Chunk, Harness, Health, Turn};
 
 mod erase;
+pub mod grant;
+pub mod screen;
 pub use erase::{Redactor, ShellErased, ShellErasure, ShellPlan, ShellRedactor};
 
 /// The summary a call gets when its turn ended before it did.
@@ -113,6 +115,16 @@ struct Flight {
     /// silently: see [`Host::with_late_answer`]. Never logged.
     late: String,
     calls: HashMap<String, Call>,
+    /// Grant requests this turn asked the person, by request id, until answered (`host::grant`).
+    grant_asks: HashMap<String, grant::Asked>,
+    /// The run this turn belongs to, as the desktop stamped it when the harness took the turn
+    /// (`Turn::run`, `turn["run"]`): the only run a run grant is matched against on this turn.
+    run: Option<String>,
+    /// Grant cards this turn raised ([`grant::MOST_CARDS_PER_TURN`]).
+    grant_cards: usize,
+    /// The person answered one of this turn's grant cards with anything but a pressed yes, so it
+    /// raises no more.
+    grant_declined: bool,
 }
 
 /// Why a turn's chunks have nowhere to go.
@@ -169,6 +181,10 @@ impl Flight {
             drop_logged: false,
             late: String::new(),
             calls: HashMap::new(),
+            grant_asks: HashMap::new(),
+            run: None,
+            grant_cards: 0,
+            grant_declined: false,
         }
     }
 
@@ -214,6 +230,8 @@ impl Flight {
                 }
             },
             Event::Thinking { .. } | Event::Status { .. } | Event::Usage { .. } | Event::Request { .. } => Ok(()),
+            // Turned into a `Request` before it is admitted (`Host::event`); never one itself.
+            Event::GrantRequest { .. } => Err("a `grant_request` is asked as a question".to_string()),
             // Taken before a turn's stream is looked at (`Host::redact`); never one of its events.
             Event::Redact { .. } => Err("a `redact` is not part of a turn's stream".to_string()),
         }
@@ -616,6 +634,9 @@ struct State {
     /// Turns a re-attaching harness picked back up, waiting for the shell to take their
     /// answers ([`Host::take_resumed`]).
     resumed: Vec<Resumed>,
+    /// When each harness id last raised grant cards, newest last, within
+    /// [`grant::CARD_WINDOW`]. In memory only: a shell restart starts it empty.
+    grant_cards: HashMap<String, VecDeque<Instant>>,
 }
 
 /// A turn a harness was still answering when it lost this desktop, taken back on its re-attach
@@ -652,6 +673,9 @@ pub struct Host {
     /// Erases the shell's own copy of a conversation (the agent's pane transcript) once a `redact`
     /// is accepted, when the shell said how: see [`Host::with_redactor`].
     redactor: Option<Redactor>,
+    /// Where the Mind's search grants are read, and who is told of answers and uses: see
+    /// [`Host::with_grants`].
+    grants: Option<grant::Grants>,
 }
 
 /// How the host decides who carries a memory credential, and how it digests one. The decision
@@ -681,6 +705,7 @@ impl Host {
                 next_session: 1,
                 issued: HashSet::new(),
                 events: EventCounts::default(),
+                grant_cards: HashMap::new(),
                 resumed: Vec::new(),
             })),
             liveness: Arc::new(pid_alive),
@@ -690,7 +715,29 @@ impl Host {
             paused: Arc::new(std::sync::RwLock::new(None)),
             late_answer: None,
             redactor: None,
+            grants: None,
         }
+    }
+
+    /// The same host, reading the Mind's search grants from `path` (believed only when `owner`,
+    /// uid and gid, alone may write it and its directory: root's on a machine) and telling `hook`
+    /// of every answer to a `grant_request` card and every search a grant in force covered. The
+    /// shell journals both and has root write a grant on *This session* or *Always*.
+    ///
+    /// `mind_uid` is the `yantrik-mind` account's uid: a `grant_request` is looked at only from a
+    /// `mind` that the kernel said, at attach, runs as that account. Anything else attached as
+    /// `mind` (any process of the person's that reached the socket while the Mind was away), or
+    /// a machine with no such account (`None`), is refused before a grant is matched or a card
+    /// raised. Without this call every `grant_request` is refused. See [`grant`].
+    pub fn with_grants(
+        mut self,
+        path: impl Into<std::path::PathBuf>,
+        owner: (u32, u32),
+        mind_uid: Option<u32>,
+        hook: impl Fn(grant::GrantNotice) + Send + Sync + 'static,
+    ) -> Host {
+        self.grants = Some(grant::Grants { path: path.into(), owner, mind_uid, hook: Arc::new(hook) });
+        self
     }
 
     /// The same host, telling `hook` once when a turn ends well after the person had left its chat
@@ -803,7 +850,34 @@ impl Host {
             });
         };
         store.answer(run_id, request_id, answer, by_option).map_err(|e| e.to_string())?;
-        harness.answers.push(serde_json::json!({ "turn_id": run_id, "request_id": request_id, "answer": answer }));
+        // A grant request's answer is one of four words, whatever the card's label (`grant`).
+        let asked = harness.in_flight.get_mut(&run_id).and_then(|f| f.grant_asks.remove(request_id));
+        let Some(asked) = asked else {
+            harness.answers.push(serde_json::json!({ "turn_id": run_id, "request_id": request_id, "answer": answer }));
+            return Ok(());
+        };
+        let key = grant::answer_key(answer, by_option);
+        if key == "no" {
+            // A No, or a typed answer: this turn asks no more.
+            if let Some(flight) = harness.in_flight.get_mut(&run_id) {
+                flight.grant_declined = true;
+            }
+        }
+        let mut entry = serde_json::json!({ "turn_id": run_id, "request_id": request_id, "answer": key });
+        if key == "session" {
+            entry["scope_id"] = serde_json::json!(asked.scope_id);
+        }
+        harness.answers.push(entry);
+        let notice = grant::GrantNotice::Answered {
+            harness: harness.announced.id.clone(),
+            query: asked.query,
+            scope_id: asked.scope_id,
+            answer: key,
+        };
+        drop(state);
+        if let Some(grants) = &self.grants {
+            (grants.hook)(notice);
+        }
         Ok(())
     }
 
@@ -1050,6 +1124,11 @@ impl Host {
             ));
         }
         let conversation = agent.conversation().to_string();
+        if let Some(run) = &turn.run {
+            if !crate::grants::scope_id_ok(run) {
+                return Err(format!("{run:?} is not a run id: 1 to 64 of A-Z a-z 0-9 . _ : -"));
+            }
+        }
         let mut state = self.lock();
         self.reap(&mut state);
         let st = &mut *state;
@@ -1084,6 +1163,7 @@ impl Host {
                 memory_credential: String::new(),
                 memory_url: String::new(),
                 origin: turn.origin,
+                run: turn.run,
             },
             tx,
         });
@@ -1773,9 +1853,9 @@ impl Host {
                         assignment.context = with_notes(assignment.context.take(), agent.take_notes());
                     }
                 }
-                harness
-                    .in_flight
-                    .insert(assignment.turn_id, Flight::new(assignment.conversation.clone(), tx));
+                let mut flight = Flight::new(assignment.conversation.clone(), tx);
+                flight.run = assignment.run.clone();
+                harness.in_flight.insert(assignment.turn_id, flight);
                 // The turn becomes a run when a harness takes it, owned by the session that did.
                 let (run, who, session) = (assignment.turn_id, harness.announced.id.clone(), harness.session.clone());
                 self.record("start", run, |s| s.start(run, &who, &assignment.conversation, &session));
@@ -1838,10 +1918,15 @@ impl Host {
     fn event(&self, params: &serde_json::Value, peer: Peer) -> Result<serde_json::Value, String> {
         let turn_id = params["turn_id"].as_u64().ok_or("`turn_id` must be a number")?;
         let raw = &params["event"];
+        // Read off the lock: the grants in force, for a `grant_request` only.
+        let on_file = (raw.get("kind").and_then(|k| k.as_str()) == Some("grant_request"))
+            .then(|| self.grants.as_ref().map(grant::Grants::in_force).unwrap_or_default());
         let mut state = self.lock();
         let st = &mut *state;
         let harness = Self::touch(&mut st.attached, params, peer, &*self.descends)?;
         let who = harness.announced.id.clone();
+        let attached_uid = harness.uid;
+        let session_scope = on_file.is_some().then(|| crate::grants::session_scope_id(&harness.session));
         if raw.get("kind").and_then(|k| k.as_str()) == Some("redact") {
             // Not part of the turn's stream: it may come after the turn closed, and it is never
             // passed on to a reader. Its own rule, off the host's lock (`host::erase`).
@@ -1850,6 +1935,9 @@ impl Host {
             return Ok(self.redact(turn_id, &who, &session, raw));
         }
         let counts = &mut st.events;
+        // Whether any of this harness's turns has a grant card still waiting on the person.
+        let card_open = harness.in_flight.values().any(|f| !f.grant_asks.is_empty());
+        let card_times = st.grant_cards.entry(who.clone()).or_default();
 
         let Some(flight) = harness.in_flight.get_mut(&turn_id) else {
             if harness.finished.contains(&turn_id) {
@@ -1889,6 +1977,14 @@ impl Host {
             tracing::debug!(harness = %who, kind, "event of a kind this desktop does not know; ignored");
             return Ok(serde_json::json!({ "ignored": format!("`{kind}` is not a kind this desktop knows") }));
         }
+        if kind == "grant_request" && raw.get("run_id").is_some() {
+            counts.malformed += 1;
+            return Ok(refused(
+                "a `grant_request` no longer names a run: a run grant covers only a turn the desktop \
+                 stamped with that run (`turn[\"run\"]`); send it without `run_id`"
+                    .to_string(),
+            ));
+        }
         let event: Event = match serde_json::from_value(raw.clone()) {
             Ok(event) => event,
             Err(e) => {
@@ -1902,12 +1998,60 @@ impl Host {
             tracing::warn!(harness = %who, turn = turn_id, kind, "tool event with an empty `call`; refused");
             return Ok(refused(format!("a `{kind}` event needs a `call` id")));
         }
+        // A grant request: answered by a grant in force, or asked as a question in the host's words.
+        let mut grant_ask: Option<(String, grant::Asked)> = None;
+        let event = match event {
+            Event::GrantRequest { request_id, capability, query } => {
+                if let Err(why) = grant::screen(&who, &capability, &query) {
+                    return Ok(refused(why));
+                }
+                // The Mind by the kernel's word at attach, not by the id it announced.
+                if let Err(why) = grant::is_the_mind(self.grants.as_ref(), attached_uid) {
+                    tracing::warn!(harness = %who, uid = ?attached_uid, "grant_request from an attach that is not the mind account; refused");
+                    return Ok(refused(why));
+                }
+                let scope_id = session_scope.unwrap_or_default();
+                let now = crate::grants::now();
+                // The run is the one the desktop stamped on this turn, never one the Mind names.
+                let run = flight.run.clone();
+                let covering = on_file.iter().flatten().find(|g| g.covers(&who, Some(&scope_id), run.as_deref(), now));
+                if let Some(g) = covering.cloned() {
+                    counts.accepted += 1;
+                    drop(state);
+                    let reply = serde_json::json!({ "granted": { "id": g.id, "scope": g.scope, "expires_at": g.expires_at } });
+                    if let Some(grants) = &self.grants {
+                        (grants.hook)(grant::GrantNotice::Used { harness: who, query, grant: g });
+                    }
+                    return Ok(reply);
+                }
+                // The OS's own limits on asking, whatever the Mind holds itself to.
+                if let Err(why) = grant::may_raise(card_open, flight.grant_cards, flight.grant_declined, card_times, Instant::now()) {
+                    counts.malformed += 1;
+                    tracing::warn!(harness = %who, turn = turn_id, why = %why, "grant_request over a card limit; refused");
+                    return Ok(refused(why));
+                }
+                grant_ask = Some((request_id.clone(), grant::Asked { query: query.clone(), scope_id }));
+                Event::Request { request_id, prompt: grant::prompt(&query), options: grant::labels(), by_host: true }
+            }
+            // The grant card's four answers are the host's: a harness may not ask them itself, so
+            // the person never sees a copy of the card whose "Always" grants nothing.
+            Event::Request { ref prompt, ref options, .. } if grant::copies_the_card(prompt, options) => {
+                counts.malformed += 1;
+                tracing::warn!(harness = %who, turn = turn_id, "a request that looks like the grant card; refused");
+                return Ok(refused(
+                    "a `request` may not look like the search grant card: no `Always` or `This session` \
+                     answer, and not its words; ask for a search with `grant_request`"
+                        .to_string(),
+                ));
+            }
+            other => other,
+        };
         if let Err(why) = flight.admit(&event) {
             counts.out_of_order += 1;
             tracing::warn!(harness = %who, turn = turn_id, why = %why, "event out of order; refused");
             return Ok(refused(why));
         }
-        if let Event::Request { request_id, prompt, options } = &event {
+        if let Event::Request { request_id, prompt, options, .. } = &event {
             // A question is only asked if it can be answered exactly once, which needs the store.
             let Some(store) = &self.runs else {
                 return Ok(refused("this desktop keeps no runs, so it cannot take a question".to_string()));
@@ -1918,6 +2062,11 @@ impl Host {
             }
             if let Err(e) = store.ask(turn_id, request_id, &serde_json::json!({ "prompt": prompt, "options": options })) {
                 return Ok(refused(e.to_string()));
+            }
+            if let Some((id, asked)) = grant_ask {
+                flight.grant_asks.insert(id, asked);
+                flight.grant_cards += 1;
+                card_times.push_back(Instant::now());
             }
         } else {
             self.record("event", turn_id, |s| s.append(turn_id, "event", raw));

@@ -856,7 +856,7 @@ mod tests {
     fn a_waiting_question_is_a_decision_and_counts_in_the_header() {
         let mut s = Store::new();
         let a = start(&mut s, "pi:c-1", "pi", "tidy the photos folder");
-        let ask = Event::Request { request_id: "q1".into(), prompt: "Which folder?".into(), options: vec![] };
+        let ask = Event::Request { request_id: "q1".into(), prompt: "Which folder?".into(), options: vec![], by_host: false };
         s.event(&a, &ask, Provenance::Reported);
         let w = compose_for(&s);
         assert_eq!(w.requests, 1);
@@ -912,7 +912,7 @@ mod tests {
         let mut s = Store::new();
         let a = start(&mut s, "pi:c-1", "pi", "task a");
         let b = start(&mut s, "hermes:c-2", "Hermes", "task b");
-        let ask = |request: &str| Event::Request { request_id: request.into(), prompt: format!("prompt {request}"), options: vec![] };
+        let ask = |request: &str| Event::Request { request_id: request.into(), prompt: format!("prompt {request}"), options: vec![], by_host: false };
         s.event(&a, &ask("older"), Provenance::Reported);
         s.event(&b, &ask("newer"), Provenance::Reported);
         let mut w = compose_for(&s);
@@ -1232,7 +1232,7 @@ mod tests {
     fn describe_tells_a_mind_the_counts_and_the_person_the_desks() {
         let mut s = Store::new();
         let a = start(&mut s, "pi:c-1", "pi", "tidy the photos folder");
-        let ask = Event::Request { request_id: "q1".into(), prompt: "Which folder?".into(), options: vec![] };
+        let ask = Event::Request { request_id: "q1".into(), prompt: "Which folder?".into(), options: vec![], by_host: false };
         s.event(&a, &ask, Provenance::Reported);
         let room = compose_for(&s);
         let person = for_describe(&room, "workroom", None, None, false);

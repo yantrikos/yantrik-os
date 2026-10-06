@@ -264,6 +264,12 @@ pub struct Assignment {
     /// is unchanged for a turn that does not say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<Origin>,
+    /// The run this turn belongs to, as `run` on the wire: set only by the desktop, from the
+    /// person's own `send_message … run=ID` (or root's), never from anything a harness or an
+    /// agent sent. The host remembers it for this turn; a run grant covers a `grant_request` on
+    /// this turn only when the grant's `scope_id` is this id. Absent for a turn in no run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
 }
 
 /// What stands in for a secret when a struct holding one is printed: whether there is one, never
@@ -298,6 +304,7 @@ impl std::fmt::Debug for Assignment {
             .field("memory_credential", &redacted(&self.memory_credential))
             .field("memory_url", &self.memory_url)
             .field("origin", &self.origin)
+            .field("run", &self.run)
             .finish()
     }
 }
@@ -359,6 +366,7 @@ mod tests {
             memory_credential: String::new(),
             memory_url: String::new(),
             origin: None,
+            run: None,
         };
         let wire = serde_json::to_value(&turn).unwrap();
         assert!(wire.get("origin").is_none(), "{wire}");
@@ -392,6 +400,7 @@ mod tests {
             memory_credential: credential.clone(),
             memory_url: "unix:/run/yantrik-mind/1000/memory.sock".into(),
             origin: None,
+            run: None,
         };
         let resume = Resume { conversation: "main".into(), agent_token: token.into(), turn_id: Some(7), prompt: "hi".into() };
         for printed in [format!("{turn:?}"), format!("{resume:?}"), format!("{:#?}", Attach {

@@ -1510,7 +1510,7 @@ mod tests {
 
         // A real process that is not a Yantrik binary — this test runner itself.
         let pid = std::process::id();
-        let peer = PeerCred { pid: pid as i32, uid: 0, gid: 0 };
+        let peer = PeerCred { pid: pid as i32, uid: 0, gid: 0, started: None };
         let err = handler
             .handle_from(method::WIFI_SCAN, serde_json::json!({ "rescan": false }), Some(peer))
             .unwrap_err();

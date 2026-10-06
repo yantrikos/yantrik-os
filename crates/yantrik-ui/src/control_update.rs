@@ -55,6 +55,13 @@ pub struct Run {
 
 /// Run the updater and wait. Blocking — callers on the UI thread put it on a worker.
 pub fn run_updater(args: &[&str]) -> Result<Run, String> {
+    run_updater_with_input(args, None)
+}
+
+/// [`run_updater`], writing `input` to its stdin: for what must not be on a command line, which
+/// every account reads in /proc and sudo writes to its log (a search query, `mind-grant add
+/// --query-stdin`). With `None`, stdin is the shell's, as before.
+pub fn run_updater_with_input(args: &[&str], input: Option<&[u8]>) -> Result<Run, String> {
     let bin = update_bin();
     if !bin.exists() {
         return Err(format!(
@@ -62,10 +69,25 @@ pub fn run_updater(args: &[&str]) -> Result<Run, String> {
             bin.display()
         ));
     }
-    let out = Command::new(&bin)
-        .args(args)
-        .output()
-        .map_err(|e| format!("could not run the updater: {e}"))?;
+    let mut cmd = Command::new(&bin);
+    cmd.args(args);
+    let out = match input {
+        None => cmd.output(),
+        Some(bytes) => (|| {
+            use std::io::Write;
+            let mut child = cmd
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()?;
+            // Dropped at the end of the block, so the updater reads to the end.
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(bytes)?;
+            }
+            child.wait_with_output()
+        })(),
+    }
+    .map_err(|e| format!("could not run the updater: {e}"))?;
     Ok(Run {
         // -1 for a signal death. It is not a code the script can return, so it cannot be
         // confused with one, and `parse_check` treats anything it does not recognise as an error.

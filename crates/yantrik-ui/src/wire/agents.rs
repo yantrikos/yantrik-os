@@ -1347,6 +1347,7 @@ fn lens_question(agent: &str, mind: &str, q: &crate::agents::model::Question) ->
         )),
         asked: clock(q.asked).into(),
         removes: erase_removes(q).into(),
+        by_host: q.by_host,
     }
 }
 
@@ -1401,6 +1402,7 @@ fn question_of(q: &crate::agents::model::Question, key: String) -> AgentItemData
         explain: q.closed.as_str().into(),
         asked: clock(q.asked).into(),
         removes: erase_removes(q).into(),
+        by_host: q.by_host,
         ..Default::default()
     }
 }
@@ -1611,6 +1613,7 @@ fn card_of(c: &Card, key: String, open: bool, revealed: bool) -> AgentItemData {
         masked,
         revealed: masked && revealed,
         removes: Default::default(),
+        by_host: false,
     }
 }
 
@@ -2085,6 +2088,7 @@ mod tests {
             request_id: "q-describe-1".into(),
             prompt: "Delete the 3 old installers?".into(),
             options: vec!["Yes".into(), "No".into()],
+            by_host: false,
         };
         agents::store().event(&agent, &ask, agents::model::Provenance::Reported);
         let mine = |v: serde_json::Value| -> Vec<serde_json::Value> {
@@ -2110,6 +2114,7 @@ mod tests {
             request_id: "q-stale-1".into(),
             prompt: "Keep or Erase?".into(),
             options: vec!["Keep".into(), "Erase".into()],
+            by_host: false,
         };
         agents::store().event(&agent, &ask, agents::model::Provenance::Reported);
         let mine = || -> usize {
@@ -2412,6 +2417,7 @@ mod tests {
                 request_id: "forget".into(),
                 prompt: "Forget the code Zanzibar-7741?".into(),
                 options: vec!["Keep".into(), "Erase".into()],
+                by_host: false,
             },
             crate::agents::Provenance::Reported,
         );
@@ -2949,6 +2955,7 @@ mod first_prompt_attribution_tests {
             answer: String::new(),
             closed: String::new(),
             asked: 0,
+            by_host: false,
         };
         let keep_erase = ["Keep", "Erase"];
         let removes = |prompt: &str| erase_removes(&ask(prompt, &keep_erase));
@@ -2983,6 +2990,7 @@ mod first_prompt_attribution_tests {
             answer: String::new(),
             closed: String::new(),
             asked: 0,
+            by_host: false,
         };
         let card = lens_question("hermes:main", "Hermes", &q);
         assert_eq!((card.agent.as_str(), card.mind.as_str(), card.request.as_str()), ("hermes:main", "Hermes", "r1"));
@@ -3011,6 +3019,7 @@ mod first_prompt_attribution_tests {
             answer: String::new(),
             closed: String::new(),
             asked: 0,
+            by_host: false,
         };
         let card = question_of(&q, "t1.0".into());
         assert_eq!((card.kind.as_str(), card.request.as_str(), card.text.as_str()), ("question", "r1", "Delete 3 installers?"));
@@ -3025,6 +3034,29 @@ mod first_prompt_attribution_tests {
         assert_eq!(card.options.row_count(), QUESTION_OPTIONS);
         assert_eq!(card.options.row_data(0).unwrap().chars().count(), QUESTION_OPTION_CHARS);
         assert_eq!(card.text.chars().count(), QUESTION_CHARS);
+    }
+
+    /// The desktop's search grant card is drawn as the desktop's in both places it is drawn, and
+    /// only when the host marked it: an agent's question is never, whatever it says.
+    #[test]
+    fn only_the_hosts_grant_card_is_drawn_as_the_desktops() {
+        let mut q = crate::agents::model::Question {
+            request: "g1".into(),
+            prompt: yantrik_harness::host::grant::prompt("rust 2027 edition"),
+            options: yantrik_harness::host::grant::labels(),
+            answer: String::new(),
+            closed: String::new(),
+            asked: 0,
+            by_host: true,
+        };
+        assert!(question_of(&q, "t1.0".into()).by_host);
+        assert!(lens_question("mind:main", "Yantrik Mind", &q).by_host);
+        q.by_host = false;
+        assert!(!question_of(&q, "t1.0".into()).by_host);
+        assert!(!lens_question("mind:main", "Yantrik Mind", &q).by_host);
+        let card = read("../yantrik-ui-slint/ui/components/question_card.slint");
+        assert!(card.contains("if root.by-host : Rectangle"), "the band is drawn only for the host's card");
+        assert!(card.contains("Yantrik asks \\u{00b7} search permission"), "and headed in the desktop's name");
     }
 
     /// Only the person answers a run's question: the card's callback is the one caller of

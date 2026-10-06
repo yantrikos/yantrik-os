@@ -835,6 +835,7 @@ mod tests {
             exe: exe.into(),
             short_cmdline: cmdline.into(),
             started: pid as u64 * 100,
+            leader: false,
         }
     }
 

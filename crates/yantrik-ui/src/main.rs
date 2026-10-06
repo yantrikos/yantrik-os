@@ -114,6 +114,7 @@ mod lens_history;
 mod lock;
 mod lock_wallpaper;
 mod memory_grants;
+mod mind_grants;
 mod markdown;
 /// What the mind may do without being asked: plan / ask / auto / bypass / bypass_all. See its module doc.
 mod mind_mode;

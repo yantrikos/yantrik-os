@@ -225,6 +225,13 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                         }
                     }
                     _ if held_from_phone => crate::mind_mode::Decision::Ask,
+                    // A command line that may run `yantrik-update mind-grant` is asked about every
+                    // time, in every mode but plan (which refused above), full bypass included, and
+                    // no session rule answers it: a Mind grant is minted only on a person's Allow
+                    // for exactly that line (review of #667, M6).
+                    _ if app == "shell" && crate::control_agent_terminal::asks_each_time(&action, &parsed) => {
+                        crate::mind_mode::Decision::Ask
+                    }
                     other => other,
                 };
                 match decision {
@@ -2360,7 +2367,11 @@ mod control_approvals_tests {
     const SECRET_PERMITTED: &[&str] = &["pin_app"];
 
     /// Arguments whose names may contain one of those words. `pinned` is `pin_app`'s flag.
-    const SECRET_PARAM_PERMITTED: &[&str] = &["pinned"];
+    /// `run_secret` is `send_message`'s one-time run token: `mind-grant add --scope run` prints
+    /// it once and root keeps only its SHA-256, which the shell checks it against. It is not a
+    /// vault secret and opens nothing but that one run's grant, and `yos` reads it from stdin
+    /// (`run_secret=-`), so it is never in argv.
+    const SECRET_PARAM_PERMITTED: &[&str] = &["pinned", "run_secret"];
 
     /// Only a person's keystrokes can supply a vault passphrase.
     ///
@@ -3759,7 +3770,7 @@ mod grant_spends_tests {
         // The kernel's account of the call being dispatched: the peer is this test process, a
         // direct caller — this binary is `yantrik_ui-…`, not one of the desktop's forwarders —
         // so the tokens are checked against this pid, which is the harness they were issued to.
-        let _who = CallerScope::enter(Some(Caller { pid: me as i32, uid: super::own_uid(), gid: 0 }));
+        let _who = CallerScope::enter(Some(Caller { pid: me as i32, uid: super::own_uid(), gid: 0, started: None }));
 
         // A request asked for agent A, which the person allowed.
         let args = serde_json::json!({"text": "shopping"});
@@ -3869,6 +3880,7 @@ mod grant_spends_tests {
             pid: std::process::id() as i32,
             uid: super::own_uid(),
             gid: 0,
+            started: None,
         }));
         let _token = AgentTokenScope::enter(Some("t-victim-182".into()));
 
@@ -3904,6 +3916,7 @@ mod grant_spends_tests {
             pid: std::process::id() as i32,
             uid: super::own_uid(),
             gid: 0,
+            started: None,
         }));
         let _token = AgentTokenScope::enter(Some("t-fwd-182".into()));
         let args = serde_json::json!({ "caller_pid": 999_998 });
