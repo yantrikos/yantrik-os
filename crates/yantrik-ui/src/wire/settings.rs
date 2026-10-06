@@ -390,6 +390,40 @@ pub fn next_auto_lock(current: i32) -> i32 {
     at.map_or(AUTO_LOCK_CHOICES[0], |i| AUTO_LOCK_CHOICES[(i + 1) % AUTO_LOCK_CHOICES.len()])
 }
 
+/// Whether `secs` is one of the offered timeouts, refusing the rest by naming them.
+///
+/// Split out from `set_auto_lock_secs` so the refusal is testable without a settings file —
+/// the write path takes its path from `HOME`, which no test in here touches.
+fn check_auto_lock_choice(secs: i32) -> Result<(), String> {
+    if AUTO_LOCK_CHOICES.contains(&secs) {
+        Ok(())
+    } else {
+        let choices: Vec<String> = AUTO_LOCK_CHOICES.iter().map(|c| c.to_string()).collect();
+        Err(format!(
+            "{secs} is not an auto-lock timeout; the timeouts offered are {} (0 means never)",
+            choices.join(", ")
+        ))
+    }
+}
+
+/// Set the idle lock to one of the offered timeouts, the same contract as `set_dnd_mode`:
+/// `set_auto_lock` answers `settled`, so a failed write has to come back as an error rather
+/// than as a setting that quietly didn't change. Only an offered value is taken — the idle
+/// watcher trusts the number it is given, and the Settings row would have to show something
+/// for a timeout nobody offered (#527).
+pub fn set_auto_lock_secs(secs: i32) -> Result<(), String> {
+    check_auto_lock_choice(secs)?;
+    if let Some(shared) = LIVE.get() {
+        if let Ok(mut settings) = shared.lock() {
+            settings.auto_lock_secs = secs;
+        }
+        return persist(shared);
+    }
+    let mut settings = load();
+    settings.auto_lock_secs = secs;
+    save(&settings)
+}
+
 /// Load persisted settings (or defaults if missing/corrupt).
 pub fn load() -> UserSettings {
     offered_choices(load_file())
@@ -1592,5 +1626,50 @@ mod tests {
              never read.",
             path.display()
         );
+    }
+
+    /// The idle lock is a security decision, so a caller gets only the timeouts Settings offers
+    /// and the rest are refused by naming them: 45 seconds was never measured against the idle
+    /// watch, and a timeout the Settings row cannot show is one the file should not hold (#527).
+    #[test]
+    fn the_idle_lock_takes_every_offered_timeout_and_refuses_the_rest() {
+        for &secs in AUTO_LOCK_CHOICES {
+            check_auto_lock_choice(secs)
+                .unwrap_or_else(|e| panic!("{secs} is offered and must be taken: {e}"));
+        }
+        for secs in [45, -1, 1, 7200, 30000] {
+            let err = check_auto_lock_choice(secs).expect_err("a timeout nobody offered must be refused");
+            assert!(err.contains("30, 60"), "the refusal must list the choices: {err}");
+            assert!(err.contains("never"), "the refusal must say what 0 means: {err}");
+        }
+    }
+
+    /// The refusal happens before the disk. `set_auto_lock` answers `settled` through this
+    /// function, so a refused value must not be written on the way to saying no.
+    #[test]
+    fn the_idle_lock_refuses_before_touching_the_settings_file() {
+        let err = set_auto_lock_secs(45).expect_err("45 is not an offered timeout");
+        assert_eq!(err, check_auto_lock_choice(45).unwrap_err());
+    }
+
+    /// `0` means never, and it is the value that matters most for "did the lock actually go
+    /// off" — it has to survive the file rather than read back as the five-minute default.
+    #[test]
+    fn the_never_timeout_survives_the_write_and_the_reload() {
+        let path = scratch("auto-lock-never");
+        let name = path.to_string_lossy().to_string();
+
+        let mut settings = UserSettings::default();
+        settings.auto_lock_secs = 0;
+        save_to(&name, &settings).expect("the settings file is written");
+
+        let raw = std::fs::read_to_string(&path).expect("the settings file is on the disk");
+        assert!(
+            raw.contains("auto_lock_secs: 0"),
+            "the durable copy says nothing about the idle lock:\n{raw}"
+        );
+        assert_eq!(reload(&path).auto_lock_secs, 0, "never did not survive the reload");
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }
