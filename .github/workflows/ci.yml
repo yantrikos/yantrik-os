@@ -91,6 +91,67 @@ jobs:
       - name: The mind's direct set comes from the person's policy
         run: YANTRIK_EGRESS_BIN=target/debug/yantrik-egress bash deploy/yantrik-os/yantrik-update selftest
 
+  # The tree has never been linted, so this reports and does not enforce:
+  # continue-on-error means the warnings show up on every pull request without the check
+  # failing every pull request on the day it lands. A lint family that has been fixed can
+  # later be promoted to blocking; that is a later decision, not this job's.
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # The setup below is a copy of the test job's, not a YAML anchor pointing at it. This
+    # file uses no anchors, and an anchor can only sit on a step that already exists —
+    # reusing these steps would mean editing the test job, which this issue asks to leave
+    # unchanged. The apt list is the part that can drift (it is read off the -sys crates in
+    # Cargo.lock); sharing it properly is a decision about the whole file's style, not
+    # about this job.
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same swap the test job has, for the same reason: clippy runs the same rustc
+      # over the generated UI crate, and a runner killed at the peak lists no warnings at
+      # all — which, in a non-blocking job, nobody would notice.
+      - name: Swap for the generated UI crate
+        run: |
+          sudo swapoff -a || true
+          sudo fallocate -l 12G /mnt/yantrik-swap
+          sudo chmod 600 /mnt/yantrik-swap
+          sudo mkswap /mnt/yantrik-swap > /dev/null
+          sudo swapon /mnt/yantrik-swap
+          free -h
+
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libasound2-dev \
+            libudev-dev \
+            libssl-dev \
+            libspeechd-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libinput-dev \
+            libgbm-dev \
+            libegl1-mesa-dev
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-v1
+
+      # --cap-lints warn: clippy's deny-by-default lints (never_loop and the like) would stop
+      # the build at the first crate that has one, and every crate after it would go unlinted.
+      # Capped, they are listed as warnings with the rest, and the whole workspace is read.
+      - name: Clippy
+        continue-on-error: true
+        run: cargo clippy --workspace --locked -- --cap-lints warn
+
   shell-scripts:
     name: shell scripts
     runs-on: ubuntu-latest
