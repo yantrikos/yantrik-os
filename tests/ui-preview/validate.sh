@@ -53,6 +53,7 @@ run target/ui-validation/lens-answers.png 640 800 verify-lens-answers
 run target/ui-validation/approval-card.png 1280 800 verify-approval-card
 run target/ui-validation/chat.png 1280 800 verify-chat
 run target/ui-validation/approval-pointer-only.png 1280 800 verify-approval-pointer-only
+run target/ui-validation/approval-pinned.png 1280 800 verify-approval-pinned
 run target/ui-validation/approval-fit-800x600.png 800 600 verify-approval-fit
 run target/ui-validation/approval-fit-1280x720.png 1280 720 verify-approval-fit
 run target/ui-validation/approval-fit.png 1280 800 verify-approval-fit

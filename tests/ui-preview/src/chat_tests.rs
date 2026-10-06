@@ -288,14 +288,11 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     }
     assert!(filled, "a starter puts words in the composer");
     assert_eq!(ui.get_sends(), 0, "and never sends them by itself");
-    // The person thinks better of it: select all and delete, and the box is as it was. Without
-    // this the starter's words stayed in the box for the rest of the scene, and the "hello" typed
-    // in section 5 went out as "Help me plan hello". The app was right (the scene had chosen
-    // "Plan something"); the scene never put the box back.
-    w.dispatch_event(WindowEvent::KeyPressed { text: Key::Control.into() });
-    key(w, "a");
-    w.dispatch_event(WindowEvent::KeyReleased { text: Key::Control.into() });
-    key(w, Key::Backspace);
+    // The person thinks better of it: select all and delete, and the box is as it was. This is
+    // the scene's one clear: without it the starter's words stayed in the box for the rest of the
+    // scene, and the "hello" typed in section 5 went out as "Help me plan hello". The app was
+    // right (the scene had chosen "Plan something"); the scene never put the box back.
+    clear_field(w);
     // The box only: the starter keeps its hover fill under the pointer that pressed it.
     let composer_rows = |p: &Pixels| -> Vec<slint::Rgb8Pixel> {
         (H as usize - 172..H as usize - 60)
@@ -365,10 +362,8 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     wheel(w, 20000.0);
     settle(w);
     assert!(!ui.get_following());
+    // The box is empty: section 3 cleared what its starter put there.
     crate::click(w, PANEL_X + 150.0, 690.0);
-    // Step 3's starter left its words in the box (a starter fills and never sends); a person
-    // clears them before writing their own.
-    clear_field(w);
     settle(w);
     for c in "hello".chars() {
         key(w, c.to_string());

@@ -418,8 +418,11 @@ chmod +x "$LABWC_DIR/autostart"
 
 # labwc rc.xml — the shipped one, config/labwc/rc.xml, which is where every key is bound (the
 # snap keys, the shell's own keys, the cheat sheet reads it). deploy-vbox.sh uploads it beside
-# this script; by hand, scp it as labwc-rc.xml next to deploy-stack.sh. This script kept its own
-# copy once, and it drifted: its Super+arrow still snapped to an edge after the real file moved on.
+# this script, both in a directory of their own made with `mktemp -d` (mode 700); by hand, do the
+# same and scp it there as labwc-rc.xml. Never stage either in /tmp itself, where anyone on the
+# machine could have put a file of that name first and had root install it. This script kept its
+# own copy once, and it drifted: its Super+arrow still snapped to an edge after the real file
+# moved on.
 RC_XML="${RC_XML:-$(dirname "$0")/labwc-rc.xml}"
 if [ ! -f "$RC_XML" ]; then
     echo "ERROR: $RC_XML not found. Copy config/labwc/rc.xml there (or set RC_XML) and re-run."
@@ -474,7 +477,7 @@ bright6=80d8e8     # bright cyan
 bright7=e0e0e8     # bright white
 
 [key-bindings]
-# Super+Shift+S: dump scrollback to file (for "fix this error" tool), in the private dir the
+# Control+Shift+S: dump scrollback to file (for "fix this error" tool), in the private dir the
 # terminal tools read (yantrik_ml::private_dir::scratch_dir). `test`, not `[ ]`: a bracket
 # inside the command would end foot's [...] argv early.
 pipe-scrollback=[sh -c 'd="$XDG_RUNTIME_DIR/yantrik-scratch"; test -d "$XDG_RUNTIME_DIR" || d="$HOME/.cache/yantrik/tmp"; mkdir -p "$d" && chmod 700 "$d" && rm -f "$d/yantrik-scrollback.txt" && cat > "$d/yantrik-scrollback.txt"']  Control+Shift+s

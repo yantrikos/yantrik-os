@@ -155,11 +155,19 @@ echo "  Binary uploaded to /tmp/yantrik-ui"
 # ── Step 4: Upload deploy-stack.sh + config ──
 echo
 echo "[4/6] Uploading deploy script and config..."
-$SCP_CMD "$SCRIPT_DIR/deploy-stack.sh" "$SSH_HOST:/tmp/deploy-stack.sh"
-$SSH_CMD "chmod +x /tmp/deploy-stack.sh"
+# Staged in a directory of their own, mode 700, not in /tmp itself: anyone on the VM can write
+# /tmp, and a labwc-rc.xml or deploy-stack.sh put there first would be installed or run as root.
+STAGE=$($SSH_CMD "mktemp -d /tmp/yantrik-deploy.XXXXXX")
+case "$STAGE" in
+    /tmp/yantrik-deploy.*) ;;
+    *) echo "ERROR: could not make a staging directory on the VM (got '$STAGE')"; exit 1 ;;
+esac
+$SSH_CMD "chmod 700 '$STAGE'"
+$SCP_CMD "$SCRIPT_DIR/deploy-stack.sh" "$SSH_HOST:$STAGE/deploy-stack.sh"
+$SSH_CMD "chmod 700 '$STAGE/deploy-stack.sh'"
 # The compositor's keys and rules: deploy-stack.sh installs this file, it keeps no copy of its own.
-$SCP_CMD "$CONFIG_DIR/labwc/rc.xml" "$SSH_HOST:/tmp/labwc-rc.xml"
-echo "  deploy-stack.sh and labwc-rc.xml uploaded."
+$SCP_CMD "$CONFIG_DIR/labwc/rc.xml" "$SSH_HOST:$STAGE/labwc-rc.xml"
+echo "  deploy-stack.sh and labwc-rc.xml uploaded to $STAGE."
 
 # ── Step 5: Run deploy-stack.sh on VM ──
 echo
@@ -167,9 +175,10 @@ echo "[5/6] Running deploy-stack.sh on VM..."
 echo "  This will install packages, download models (~1.8GB), and configure the desktop."
 echo "  This takes 5-15 minutes depending on internet speed."
 echo
-$SSH_CMD "cd /tmp && ./deploy-stack.sh" 2>&1 | while IFS= read -r line; do
+$SSH_CMD "cd '$STAGE' && ./deploy-stack.sh" 2>&1 | while IFS= read -r line; do
     echo "  [VM] $line"
 done
+$SSH_CMD "rm -rf '$STAGE'"
 echo
 echo "  Deploy stack complete."
 
