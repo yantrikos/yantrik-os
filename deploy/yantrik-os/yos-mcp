@@ -2609,6 +2609,9 @@ def run_tool(tool, args, present=None):
         argv.append("--no-ask")
         if grant:
             argv += ["--grant", grant]
+        if agent_call and args.get("action") in AGENT_COMMANDS:
+            # The raw answer, so the command's result can lead (see `command_answer`).
+            argv.append("--full")
     timeout = tool["timeout"]
     if callable(timeout):
         timeout = timeout(args)
@@ -2680,14 +2683,8 @@ def run_tool(tool, args, present=None):
         # policy answer, as GRANT is: the desktop is healthy and said no, naming the role.
         return policy_answer(re.sub(r"^yos: ", "", err.strip())), False
     if p.returncode != 0:
-        # The note goes on a failure as well. A person who has just pressed Allow and then hears
-        # only "failed (exit 1)" has been told the wrong half of what happened — and worse, the
-        # grant is spent, so the retry will ask them again.
-        return prefix(note, "failed (exit %d)%s%s" % (
-            p.returncode,
-            ("\n" + out) if out else "",
-            ("\n" + err) if err else "",
-        )), True
+        command = tool["name"] == "os_act" and agent_call and args.get("action") in AGENT_COMMANDS
+        return failure_answer(note, p.returncode, out, err, command), True
     if tool["name"] == "os_act" and p.returncode == 0 and not agent_call:
         # Not for a command in the agent's own terminal: it is drawn in the agent's pane, and
         # raising a window for it — the Terminal's, or anyone's — is what that pane replaces.
@@ -2701,6 +2698,13 @@ def run_tool(tool, args, present=None):
         # by os_act as by the hand_off tool.
         _SAW_PRIVATE.append("shell.hand_off")
 
+    if tool["name"] == "os_act" and agent_call and args.get("action") in AGENT_COMMANDS:
+        try:
+            parsed = json.loads(out) if out else {}
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            return command_answer(parsed, note), False
     if not out:
         return prefix(note, "(the command succeeded and printed nothing)"
                       + (("\n" + err) if err else "")), False
@@ -2752,6 +2756,100 @@ def policy_answer(refusal):
 def prefix(note, text):
     """Put what the person decided in front of what the machine did, or leave the text alone."""
     return text if not note else note + "\n\n" + text
+
+
+# The agent's own terminal actions, whose answer is a command's result, not a change to a surface.
+AGENT_COMMANDS = {"agent_run", "agent_job", "agent_input"}
+
+_UNASKED = re.compile(
+    r"Nobody was asked about this\. The desktop is in `([^`]+)` mode"
+    r"(?: and they have allowed (\S+?) for this session)?, so it ran straight away;.*?"
+    r"Report it as something you did, not as something you were permitted\.",
+    re.S)
+
+
+def short_note(note):
+    """The grant note in one line, for a command's answer, where it goes last.
+
+    The unasked note is written for a whole surface act and runs to about four hundred
+    characters. In front of a command's output it buried the output: on the live instance the
+    Mind ran `cat PLAN.md` four times in one turn and never saw the plan, because the note, the
+    shell's own summary and its state came first and the output was cut off behind them (2 Oct
+    2026). What the note must still say is that nobody was asked and that it is on the record.
+    Any other note (a person's answer, a warning that the record could not be written) is kept
+    whole, after the line.
+    """
+    if not note:
+        return ""
+    m = _UNASKED.search(note)
+    if not m:
+        return note
+    rest = (note[:m.start()] + note[m.end():]).strip()
+    why = ("%s is allowed for this session" % m.group(2)) if m.group(2) else (
+        "the desktop is in `%s` mode" % m.group(1))
+    line = ("(Ran without asking anyone: %s. It is in the machine's record of unasked actions; "
+            "report it as something you did.)" % why)
+    return line + (("\n" + rest) if rest else "")
+
+
+def failure_answer(note, code, out, err, command):
+    """A failed act's answer. The note goes on a failure as well: a person who has just pressed
+    Allow and then hears only "failed (exit 1)" has been told the wrong half of what happened, and
+    the grant is spent, so the retry will ask them again.
+
+    For a command in the agent's own terminal, the failure leads and the note follows in one line,
+    as on success. On the live instance `agent_run` with `wait: true` was refused because `wait`
+    is a number of seconds, but the 400-character unasked note came first, the Mind's log cut the
+    answer off behind it, and the Mind never read why (2 Oct 2026).
+    """
+    body = "failed (exit %d)%s%s" % (code, ("\n" + out) if out else "", ("\n" + err) if err else "")
+    if command:
+        line = short_note(note)
+        return body + (("\n" + line) if line else "")
+    return prefix(note, body)
+
+
+def command_answer(reply, note):
+    """A command's answer, output first, for the agent's own terminal actions.
+
+    `reply` is the shell's app.act answer (`yos act --full`). What the call was for is the
+    command's output, so it leads, whole; then how it ended and where it left the directory, or
+    that it is still running and how to wait for it; then the grant note in one line. The shell's
+    summary, its state and the `settled` line are left out: none of them is about the command,
+    and `settled: False` (the action defers) read to a mind as "look at the screen again".
+    """
+    result = reply.get("result") if isinstance(reply, dict) else None
+    if not isinstance(result, dict):
+        text = json.dumps(reply, ensure_ascii=False) if reply else "(the shell gave no answer)"
+        return prefix(note, text)
+    tail = result.get("tail") or ""
+    lines = []
+    if result.get("running"):
+        job = result.get("job", "?")
+        lines.append("Still running, as job %s." % job)
+        if tail:
+            lines.append("Output so far:\n" + tail)
+        lines.append("Wait for it with os_act on shell: agent_job with job=%s and a wait in seconds; "
+                     "answer a prompt it is waiting on with agent_input; stop it with agent_kill."
+                     % job)
+    else:
+        lines.append(tail if tail else "(the command printed nothing)")
+        if "exit_code" in result:
+            how = "exit code %s" % result["exit_code"]
+        elif "signal" in result:
+            how = "stopped by signal %s" % result["signal"]
+        else:
+            how = "finished"
+        where = (" · now in %s" % result["cwd_after"]) if result.get("cwd_after") else ""
+        lines.append("(%s%s)" % (how, where))
+    extra = {k: v for k, v in result.items()
+             if k not in ("tail", "running", "job", "exit_code", "signal", "cwd_after")}
+    if extra:
+        lines.append("(also: %s)" % json.dumps(extra, ensure_ascii=False))
+    short = short_note(note)
+    if short:
+        lines.append(short)
+    return "\n".join(lines)
 
 
 # Several calls can be in flight at once now, and they all answer down one pipe. Two threads

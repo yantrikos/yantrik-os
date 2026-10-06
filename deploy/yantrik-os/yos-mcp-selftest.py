@@ -2480,6 +2480,40 @@ with tempfile.TemporaryDirectory() as t:
 # A bare value an action with several parameters cannot place is refused with the exact call that
 # would work, the caller's own value already in the content parameter (a 27B model on the live
 # instance repeated the same bare string three times against a refusal that only named them).
+# A command's answer leads with the command's output, whole, and the grant note shrinks to one
+# line at the end. On the live instance the Mind ran `cat PLAN.md` four times in one turn and never
+# saw the plan: the 400-character note, the shell's summary and `settled: False` came first, and
+# the output was cut off behind them (2 Oct 2026).
+UNASKED = ("Nobody was asked about this. The desktop is in `bypass` mode and they have allowed "
+           "shell.agent_run for this session, so it ran straight away; in `ask` mode this would "
+           "have put a card in front of the person. It has been written into the machine's record "
+           "of unasked actions, which they can read from the mode chip in the status bar. Report "
+           "it as something you did, not as something you were permitted.")
+done = module.command_answer(
+    {"summary": "Yantrik — desktop screen", "accepted": True, "settled": False,
+     "result": {"exit_code": 0, "cwd_after": "/home/yantrik", "tail": "# Starfall plan\n- [ ] 1. index.html"}},
+    UNASKED)
+check("a command's answer starts with its output", done.startswith("# Starfall plan\n- [ ] 1. index.html"), done)
+check("then says how it ended and where", "(exit code 0 · now in /home/yantrik)" in done, done)
+check("and leaves out the shell's summary and the settled line",
+      "desktop screen" not in done and "settled" not in done, done)
+check("the grant note is one line, last, and still says nobody was asked",
+      done.splitlines()[-1].startswith("(Ran without asking anyone: shell.agent_run is allowed for this session")
+      and "record of unasked actions" in done.splitlines()[-1] and len(done.splitlines()[-1]) < 200, done)
+running = module.command_answer({"result": {"running": True, "job": "j7", "tail": "compiling…"}}, "")
+check("a command still running says so, shows its output so far, and how to wait for it",
+      running.startswith("Still running, as job j7.") and "Output so far:\ncompiling…" in running
+      and "agent_job with job=j7" in running, running)
+refused = module.failure_answer(UNASKED, 1, "", "yos: shell.app.act refused: `wait` is a number of seconds.", True)
+check("a failed command leads with why it failed",
+      refused.startswith("failed (exit 1)\nyos: shell.app.act refused: `wait` is a number of seconds."), refused)
+check("and its grant note is the one line after it",
+      refused.splitlines()[-1].startswith("(Ran without asking anyone:") and len(refused.splitlines()) == 3, refused)
+other = module.failure_answer(UNASKED, 1, "", "yos: boom", False)
+check("any other failed act keeps the whole note in front", other.startswith(UNASKED) and other.endswith("yos: boom"), other)
+asked = "The person at the machine was asked and allowed this once, just now, for exactly these arguments."
+check("a person's answer is kept whole, not shortened", module.short_note(asked) == asked, module.short_note(asked))
+
 sample = module.bare_value_refusal("notes", "new_note", ["title", "text"], "- Water\n- Snacks")
 shown = json.loads(sample[sample.index("{"):])
 check("a bare value's refusal says nothing ran", "Nothing was run" in sample, sample)
