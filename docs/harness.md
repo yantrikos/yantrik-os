@@ -365,9 +365,11 @@ Each of these is refused with a reason to log:
   `:fr`, `<3`), which SearXNG and DuckDuckGo read as another engine, a language or a timeout.
   `site:x`, `filetype:pdf`, `a!b` and `C++` are words;
 - scripts: a word mixing scripts; a query with Latin, Common and Inherited plus more than one other
-  script (Han with kana, Han with Bopomofo, and Han with Hangul each count as one); and a Cyrillic
-  or Greek word made only of letters that read as Latin ones (`расе`, a lone `а`; a fixed set, not
-  the UTS #39 skeleton);
+  script (Han with kana, Han with Bopomofo, and Han with Hangul each count as one); a Latin letter
+  outside Basic Latin, Latin-1 Supplement, Latin Extended-A and -B and Latin Extended Additional
+  (so the IPA block U+0250–02AF, `ɡ`, is refused); and a word that is not ASCII but whose UTS #39
+  skeleton (`unicode-security`) is: `расе`, a lone Cyrillic `а`, Armenian `օ`, Cherokee `Ꭺ`, and
+  also `it’s`, an en dash `–` or `1920×1080`, which read as ASCII they are not;
 - right-to-left letters (Hebrew, Arabic, …) with digits or Latin letters, which the card would draw
   in another order. A query purely right-to-left, with spaces and punctuation, passes.
 
@@ -380,8 +382,12 @@ The OS limits the cards, whatever the Mind holds itself to; over a limit the rep
 - one grant card open at a time for the harness (one the person closed without answering stays
   open until its turn ends);
 - at most 2 per turn;
-- none for the rest of a turn after a **No** or a typed answer;
+- none for the rest of that turn after a **No** or a typed answer. This is per turn: the next turn
+  may ask again;
 - at most 3 per harness in 10 minutes. This window is kept in memory, so a shell restart resets it.
+
+So the real bound on how often the person is asked is 3 cards per 10 minutes, and that bound
+starts again when the shell restarts.
 
 **There is no `run_id`.** A run grant covers a request only on a turn the desktop stamped with that
 run: the person (or root) starts the run with `yos act shell send_message text=… run=ID
@@ -400,14 +406,21 @@ account can read in the grants file, is not enough. `run` is also refused:
 - from any process inside a command the agent terminal is running (`shell.agent_run`);
 - from a caller whose process ancestry the shell cannot read whole: one that exited before it was
   looked at, a pid reused since the socket was accepted (the walk is pinned to the start time read
-  at accept), or a walk that does not reach a session leader or pid 1.
+  at accept), or a walk that does not reach a session leader or pid 1;
+- from a caller whose start time could not be read at accept (it had already exited), since its
+  walk would be pinned to nothing.
+
+`shell.agent_run` and `shell.agent_input` ask every time, in every mode (full bypass included),
+for a line that names `mind-grant` or `yantrik-update` (through `sudo`, `sudo -n`, `env`, a full
+path or quoting): the card offers no **Allow for this session**, no session rule answers it, and
+the command runs only with a grant for exactly that line.
 
 The reply is one of:
 
 - `{"granted": {"id": "g-…", "scope": "session"|"run"|"always", "expires_at": n|null}}`: a grant in
   force covers it. Search; the shell has journalled the use. No card.
-- `{}`: the person is asked. The card is in the shell's words, with the query exactly as sent, and
-  four answers: **Once**, **This session**, **Always**, **No**. The answer arrives once, on a later
+- `{}`: the person is asked. The card is in the shell's words, with the query exactly as sent, the
+  line "It may go to the search service and its fallback engine.", and four answers: **Once**, **This session**, **Always**, **No**. The answer arrives once, on a later
   poll, like any answer: `answers: [{"turn_id", "request_id", "answer": "once"|"session"|"always"|"no",
   "scope_id"?}]`. `once`, `session` and `always` each allow this query; `session` and `always`
   also store a grant (root writes it; `session` carries its `scope_id`), and `once` stores nothing.

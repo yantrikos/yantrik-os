@@ -379,18 +379,28 @@ never the `yantrik-mind` or `yantrik-egress` account, whatever else is true. No 
 and no new socket. The proxy's control socket was not used: the proxy runs as `yantrik-egress`
 and cannot write a root-owned file. The mind account has no path to the writer: it is not in the
 sudo rule, and nothing it can call passes `mind-grant` to the updater (the control surface runs
-the updater only with fixed arguments). **What this does not close:** anything running as the
-person can run the updater as the person does, so a mind the person lets run commands as them
-(`shell.agent_run`, a sensitive act with its own card) could ask for a grant that way; and every
-grant written is in the journal.
+the updater only with fixed arguments).
+
+**An agent's commands.** An agent process runs as the person's uid, and the person's uid may run
+the updater through the sudo rule. So a person-uid agent process can obtain a grant only through an
+explicit, per-command person approval: `shell.agent_run` (and `shell.agent_input`, whose text a
+shell runs the same way) asks every time for a line that names `mind-grant` or `yantrik-update`,
+whether through `sudo`, `sudo -n`, `env`, a full path or quoting
+(`control_agent_terminal::runs_mind_grant`). That card offers no *Allow for this session*, no
+session rule answers it, no mode skips it (full bypass included; plan refuses it), and the command
+runs only with a grant spent for exactly that line. **What this does not close:** the match is on
+the line's text, so a command that builds the name at run time (a variable, a glob, a decoded
+string, a script written by an earlier command) is not asked about; and anything else running as
+the person, outside the agent terminal, can run the updater as the person does. Every grant written
+is in the journal.
 
 **How the Mind asks.** A `grant_request` event on the turn it is answering (docs/harness.md):
 `{"kind": "grant_request", "request_id", "capability": "web_search_own_words", "query"}`. It is
 looked at only from a `mind` the kernel said, at attach, runs as the `yantrik-mind` account. The
 query is shown exactly or refused, each with a reason the Mind can log. The screen is one
 self-contained module, `crates/yantrik-harness/src/host/screen.rs`, using only `std`,
-`unicode-normalization`, `unicode-properties` and `unicode-script` at pinned versions, so the Mind
-can copy it as it is and screen a query before it asks. It refuses:
+`unicode-normalization`, `unicode-properties`, `unicode-script` and `unicode-security` at pinned
+versions, so the Mind can copy it as it is and screen a query before it asks. It refuses:
 
 - characters that draw as nothing or as something else: control, format, separator, private-use,
   unassigned and surrogate characters, variation selectors, tag characters, other spaces and
@@ -402,18 +412,22 @@ can copy it as it is and screen a query before it asks. It refuses:
 - a word starting with `!`, `:` or `<`, which SearXNG and DuckDuckGo read as another engine, a
   language or a timeout: a grant to search the web would otherwise send the query elsewhere;
 - a word mixing scripts, more than one script beside Latin in a query (Han with kana, Bopomofo or
-  Hangul is one), and a Cyrillic or Greek word made only of Latin lookalikes (a fixed set, not
-  the UTS #39 skeleton): each word choice would otherwise be a bit the person cannot see;
+  Hangul is one), a Latin letter outside Basic Latin, Latin-1, Latin Extended-A and -B and Latin
+  Extended Additional (the IPA block U+0250–02AF among them), and a word that is not ASCII but
+  whose UTS #39 skeleton is (Cyrillic `расе`, Armenian `օ`, Cherokee `Ꭺ`, an en dash): each word
+  choice would otherwise be a bit the person cannot see;
 - right-to-left letters with digits or Latin letters, which bidi layout draws in another order.
 
 The OS caps the cards, whatever the Mind holds itself to (`grant::may_raise`): one open at a time
-per harness, at most 2 per turn, none for the rest of a turn after a No or a typed answer, and at
-most 3 per harness per 10 minutes. The window is in memory, so a shell restart resets it. Over a
+per harness, at most 2 per turn, none for the rest of that turn after a No or a typed answer, and
+at most 3 per harness per 10 minutes. "None after a No" is per turn: the next turn may ask again.
+The real bound is 3 cards per 10 minutes, and since that window is in memory, a shell restart
+resets it. Over a
 limit the reply is `refused` and the refusal is journalled. If a grant in
 force covers it (this session's, the turn's run's, or always) the reply is `{"granted": {"id",
 "scope", "expires_at"}}` and the use is journalled. Otherwise the shell shows the host's own card,
-headed in the desktop's name with an accent band no agent's question has, the exact query, and four
-answers: **Once** (this query only, nothing stored), **This session**, **Always**, **No**. A
+headed in the desktop's name with an accent band no agent's question has, the exact query, the
+line "It may go to the search service and its fallback engine.", and four answers: **Once** (this query only, nothing stored), **This session**, **Always**, **No**. A
 harness `request` offering `Always` or `This session` (case-folded, trimmed, in any order or
 company), or whose prompt starts with the card's first line, is refused. The answer comes back on a later
 poll as `once`, `session` (with the grant's `scope_id`), `always` or `no`; a typed answer is `no`.
@@ -437,7 +451,9 @@ also refused:
 - from a caller whose ancestry the shell cannot read whole. `mind_view::classify` now fails
   closed: an empty walk (the caller exited first), a walk that does not reach a session leader or
   pid 1, or a pid whose start time is not the one read at accept (`PeerCred::started`, so a pid
-  reused since is nobody) is not the person.
+  reused since is nobody) is not the person;
+- from a caller whose start time could not be read at accept (`started` is none), whose walk would
+  be pinned to nothing (`control::caller_pinned`).
 
 Same-uid code outside all of these, such as a double fork with `setsid` from an agent's command,
 is not told from the person by `/proc`; the secret is what stops it, and that code never saw the
