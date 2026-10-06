@@ -1,0 +1,136 @@
+// Settings → AI & Intelligence → AI accounts (#673).
+//
+// Every account the person added — saved providers, custom endpoints and the free tiers switched
+// on — with how many models each has and what they can do. The one list the picker and the local
+// model gateway read. No key ever reaches this file: Rust sends names, counts and sentences
+// (crates/yantrik-ui/src/wire/ai_accounts_card.rs).
+
+import { Theme } from "theme.slint";
+import { YButton } from "y_button.slint";
+
+export struct AiAccountRow {
+    id: string,            // the gateway's account id: "ollama-cloud", "free-groq"
+    name: string,
+    summary: string,       // "41 models · 12 think · 8 see images"
+    state: string,         // "ready" · "failed" · "pending"
+    detail: string,        // where the list came from, or why it did not come
+    local: bool,           // on this machine or the local network
+    private-ok: bool,      // the person allowed minds that send private context to use it
+    private-words: string, // "Private context: allowed" …
+    switchable: bool,      // the person may switch it: not local, and not a free tier that trains
+}
+
+export global AiAccountsState {
+    in-out property <[AiAccountRow]> rows;
+    in-out property <string> summary;      // "4 accounts · 63 models"
+    in-out property <string> gateway;      // "Gateway: 127.0.0.1:7460 · 3 minds use it"
+    in-out property <bool> refreshing;
+    callback refresh();
+    // Allow or stop minds that send the person's private context using this account.
+    callback toggle-private(string);
+}
+
+component Row inherits Rectangle {
+    in property <AiAccountRow> item;
+    height: col.preferred-height;
+    col := VerticalLayout {
+        spacing: 2px;
+        padding-top: Theme.sp-2;
+        padding-bottom: Theme.sp-2;
+        HorizontalLayout {
+            spacing: Theme.sp-2;
+            Rectangle {
+                width: 7px;
+                height: 7px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 3.5px;
+                background: root.item.state == "ready" ? Theme.color-success
+                    : root.item.state == "failed" ? Theme.amber : Theme.text-dim;
+            }
+            Text {
+                text: root.item.name;
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+                font-weight: 600;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            Text {
+                text: root.item.summary;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-caption;
+                vertical-alignment: center;
+            }
+        }
+        Text {
+            text: root.item.detail;
+            color: root.item.state == "failed" ? Theme.amber : Theme.text-dim;
+            font-size: Theme.fs-caption;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: Theme.sp-2;
+            alignment: start;
+            Text {
+                text: root.item.private-words;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-caption;
+                vertical-alignment: center;
+            }
+            if root.item.switchable : YButton {
+                label: root.item.private-ok ? "Stop" : "Allow";
+                variant: 1;
+                size: 0;
+                clicked => { AiAccountsState.toggle-private(root.item.id); }
+            }
+        }
+    }
+}
+
+export component AiAccountsCard inherits Rectangle {
+    max-width: 600px;
+    background: Theme.bg-card;
+    border-radius: Theme.r-lg;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+    height: layout.preferred-height;
+
+    layout := VerticalLayout {
+        padding: Theme.sp-4;
+        spacing: Theme.sp-2;
+        HorizontalLayout {
+            spacing: Theme.sp-2;
+            Text {
+                text: AiAccountsState.summary;
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+                font-weight: 700;
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+            }
+            YButton {
+                label: AiAccountsState.refreshing ? "Listing…" : "List models again";
+                variant: 1;
+                size: 0;
+                clicked => { AiAccountsState.refresh(); }
+            }
+        }
+        Text {
+            text: "Add a provider once and every mind can use its models through the picker in the ask bar. Keys stay in the vault and the saved provider; minds are given a token for the local gateway, never a key.";
+            color: Theme.text-dim;
+            font-size: Theme.fs-caption;
+            wrap: word-wrap;
+        }
+        if AiAccountsState.gateway != "" : Text {
+            text: AiAccountsState.gateway;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+        }
+        for r in AiAccountsState.rows : Row { item: r; }
+        if AiAccountsState.rows.length == 0 : Text {
+            text: "No accounts yet. Add a provider below, or switch on a free one.";
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+        }
+    }
+}

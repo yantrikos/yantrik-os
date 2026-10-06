@@ -32,6 +32,8 @@ use std::path::PathBuf;
 use yantrik_companion::CompanionConfig;
 
 mod accounts;
+// The AI accounts the person added and their models (#673): Settings, the picker, the gateway.
+mod ai_accounts;
 mod activity_feed;
 /// Every agent — one conversation with one mind — and its session, drawn by the Agents screen.
 mod agents;

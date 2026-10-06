@@ -16,6 +16,7 @@ import { ProviderPresetGroup } from "provider_presets.slint";
 import { YDialog } from "components/y_dialog.slint";
 import { AccountList, ProviderGroup, AddChoice } from "components/minds_panel.slint";
 import { FreeAiCard } from "components/free_ai_card.slint";
+import { AiAccountsCard } from "components/ai_accounts_card.slint";
 export { DecisionPreset, DecisionUse }
 
 // ── Settings sidebar category item ──
@@ -1129,6 +1130,25 @@ export component SettingsScreen inherits Rectangle {
                                         }
                                     }
                                 }
+                            }
+
+                            // ── AI ACCOUNTS ──
+                            // Every account and its models: what the picker and the gateway use.
+                            VerticalLayout {
+                                spacing: Theme.sp-2;
+                                HorizontalLayout {
+                                    spacing: Theme.sp-2;
+                                    Rectangle { width: 3px; height: 14px; border-radius: 1.5px; background: Theme.accent; }
+                                    Text {
+                                        text: "AI ACCOUNTS";
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.fs-caption;
+                                        font-weight: 600;
+                                        letter-spacing: 3px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                AiAccountsCard { }
                             }
 
                             // ── FREE AI ACCOUNTS ──
