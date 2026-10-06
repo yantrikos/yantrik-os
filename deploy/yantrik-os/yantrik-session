@@ -77,6 +77,25 @@ esac
 # either, and die. The `:-` so a person's own EDITOR, set above this session, still wins.
 export EDITOR="${EDITOR:-nano}"
 
+# ── git identity ────────────────────────────────────────────────────────────────────────
+# Same reason as EDITOR above, and the same failure: `git commit` from the Mind, an editor or a
+# harness died with "Please tell me who you are", because nothing ever set user.name/user.email
+# and git refuses to commit without them (#680). Default them from the account — the full name
+# from passwd, an address that is at least unique on this machine — and never touch anything
+# already set: either key present means the person (or Settings) chose them.
+# >>> git identity (#680)
+if command -v git >/dev/null 2>&1; then
+  if [ -z "$(git config --global --get user.name 2>/dev/null)" ] &&
+     [ -z "$(git config --global --get user.email 2>/dev/null)" ]; then
+    GIT_ID_NAME="$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f5 | cut -d, -f1)"
+    [ -n "$GIT_ID_NAME" ] || GIT_ID_NAME="$(id -un)"
+    git config --global user.name "$GIT_ID_NAME" || true
+    git config --global user.email "$(id -un)@$(hostname).local" || true
+    unset GIT_ID_NAME
+  fi
+fi
+# <<< git identity (#680)
+
 # ── The desktop's own chrome ────────────────────────────────────────────────────────────
 # For apps the answer is a themed frame rather than no frame. labwc reads its config from the
 # user's home, so this needs no root and re-applies on every start; a machine deployed before
