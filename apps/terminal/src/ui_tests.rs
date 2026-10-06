@@ -263,14 +263,14 @@ fn real_window_shell_tabs_search_clipboard_resize_and_idle() {
         "An idle real terminal session must not request redraws"
     );
     ui.invoke_action("new".into());
-    for _ in 0..8 {
+    while state.borrow().tabs.len() < MAX_TABS {
         ui.invoke_action("new".into());
     }
-    assert_eq!(state.borrow().tabs.len(), 8);
+    assert_eq!(state.borrow().tabs.len(), MAX_TABS);
     wait(&queue, &window, || {
         ui.get_screen_text().contains("yantrik $")
     });
-    save(&window, "terminal-eight-tabs.png");
+    save(&window, "terminal-max-tabs.png");
     key(&window, "exit 7\n");
     wait(&queue, &window, || !ui.get_alive());
     assert_eq!(state.borrow().session().unwrap().snapshot().exit, Some(7));
@@ -282,10 +282,10 @@ fn real_window_shell_tabs_search_clipboard_resize_and_idle() {
     wait(&queue, &window, || {
         state.borrow().session().unwrap().has_children()
     });
-    ui.invoke_close_tab(7);
+    ui.invoke_close_tab((MAX_TABS - 1) as i32);
     assert!(ui.get_confirm_close());
     ui.invoke_action("confirm-close".into());
-    assert_eq!(state.borrow().tabs.len(), 7);
+    assert_eq!(state.borrow().tabs.len(), MAX_TABS - 1);
     assert!(!ui.get_confirm_close());
 
     // ── What the mind is shown, and what it is told afterwards ──
@@ -327,6 +327,18 @@ fn keyboard_encoding_preserves_shell_controls_and_application_mode() {
     assert_eq!(encode_key(&e, false).unwrap(), "日本語".as_bytes());
     e.text = Key::Backspace.into();
     assert_eq!(encode_key(&e, false).unwrap(), b"\x7f");
+}
+
+#[test]
+fn the_tab_limit_is_the_constant_and_the_refusal_names_it() {
+    assert_eq!(MAX_TABS, 32);
+    assert_eq!(tabs_full(MAX_TABS - 1), None);
+    let full = tabs_full(MAX_TABS).expect("the cap should refuse at MAX_TABS");
+    assert!(
+        full.contains(&MAX_TABS.to_string()),
+        "the refusal does not name the real number: {full}"
+    );
+    assert!(full.contains("Close a tab"), "{full}");
 }
 
 #[test]
@@ -515,20 +527,20 @@ fn the_terminal_answers_with_what_the_shell_did(
     )
     .expect("open a tab in a real folder");
     assert_eq!(opened["directory"], folder.display().to_string(), "answer: {opened}");
-    assert_eq!(opened["tabs"], 8, "answer: {opened}");
+    assert_eq!(opened["tabs"], MAX_TABS, "answer: {opened}");
     assert_eq!(opened["alive"], true, "answer: {opened}");
     assert_ne!(opened["shell_pid"], pid, "a new tab is a new shell: {opened}");
 
-    // The eight-tab cap used to `return` in silence while the surface answered `{"tabs": 8}`.
+    // The tab cap used to `return` in silence while the surface answered `{"tabs": n}`.
     let capped = act_on(published, "new_tab", serde_json::json!({}))
-        .expect_err("a ninth tab must be refused, not silently dropped");
+        .expect_err("a tab past the cap must be refused, not silently dropped");
     assert!(
-        capped.contains("eight"),
+        capped.contains(&MAX_TABS.to_string()),
         "the refusal has to say why: {capped}"
     );
-    assert_eq!(state.borrow().tabs.len(), 8, "and nothing may have been opened");
+    assert_eq!(state.borrow().tabs.len(), MAX_TABS, "and nothing may have been opened");
     assert!(
-        ui.get_notice().contains("eight"),
+        ui.get_notice().contains(&MAX_TABS.to_string()),
         "and the person at the window is told too: {:?}",
         ui.get_notice()
     );

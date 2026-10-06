@@ -72,7 +72,7 @@ export component TerminalWorkbench inherits Rectangle {
                 window-bar: root.window-bar;
                 app-id: "terminal"; title: "Terminal"; icon: Icons.terminal; subtitle: root.directory;
                 actions: [
-                    { id: "new", label: "New tab", icon: Icons.plus, emphasis: 2, disabled: root.tabs.length >= 8 },
+                    { id: "new", label: "New tab", icon: Icons.plus, emphasis: 2, disabled: root.tabs.length >= 32 },
                     { id: "find", label: "Find", icon: Icons.search, active: root.show-search },
                     { id: "copy", label: "Copy screen", icon: Icons.copy },
                     { id: "paste", label: "Paste", icon: Icons.clipboard, disabled: !root.alive },
@@ -94,24 +94,30 @@ export component TerminalWorkbench inherits Rectangle {
             }
             Rectangle {
                 height: 42px; background: Theme.bg-surface;
-                HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px; spacing: 2px; alignment: start;
-                    for tab[index] in root.tabs : Rectangle {
-                        width: min(192px, max(72px, (root.width - 32px) / max(1, root.tabs.length)));
-                        height: 42px; background: tab.active ? Theme.bg-deep : tab-touch.has-hover ? Theme.hover-fill : transparent;
-                        accessible-role: AccessibleRole.tab; accessible-label: tab.title;
-                        accessible-action-default => { root.select-tab(index); terminal-keys.focus(); }
-                        tab-focus := FocusScope {
-                            key-pressed(e) => {
-                                if (e.text == "\n" || e.text == " ") { root.select-tab(index); terminal-keys.focus(); return accept; }
-                                reject
+                // The tab strip. Tabs shrink to 72px and their titles elide; past that the strip
+                // scrolls sideways so every tab stays reachable now that up to 32 may be open (#683).
+                Flickable {
+                    viewport-height: self.height;
+                    viewport-width: max(self.width, tab-row.preferred-width);
+                    tab-row := HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; spacing: 2px; alignment: start;
+                        for tab[index] in root.tabs : Rectangle {
+                            width: min(192px, max(72px, (root.width - 32px) / max(1, root.tabs.length)));
+                            height: 42px; background: tab.active ? Theme.bg-deep : tab-touch.has-hover ? Theme.hover-fill : transparent;
+                            accessible-role: AccessibleRole.tab; accessible-label: tab.title;
+                            accessible-action-default => { root.select-tab(index); terminal-keys.focus(); }
+                            tab-focus := FocusScope {
+                                key-pressed(e) => {
+                                    if (e.text == "\n" || e.text == " ") { root.select-tab(index); terminal-keys.focus(); return accept; }
+                                    reject
+                                }
                             }
+                            tab-touch := TouchArea { mouse-cursor: pointer; clicked => { root.select-tab(index); terminal-keys.focus(); } }
+                            Rectangle { x: 10px; y: 19px; width: 5px; height: 5px; border-radius: 3px; background: tab.alive ? #78c9b8 : #8390a0; }
+                            Text { x: 23px; width: parent.width - 49px; height: 100%; text: tab.title; color: tab.active ? Theme.text-primary : Theme.text-secondary; font-size: 12px; vertical-alignment: center; overflow: elide; }
+                            YButton { x: parent.width - 26px; y: 9px; width: 24px; height: 24px; label: "Close " + tab.title; icon-path: Icons.close; icon-only: true; variant: 1; size: 0; clicked => { root.close-tab(index); terminal-keys.focus(); } }
+                            Rectangle { y: parent.height - 2px; height: 2px; width: parent.width; background: tab.active || tab-focus.has-focus ? Theme.accent : transparent; }
                         }
-                        tab-touch := TouchArea { mouse-cursor: pointer; clicked => { root.select-tab(index); terminal-keys.focus(); } }
-                        Rectangle { x: 10px; y: 19px; width: 5px; height: 5px; border-radius: 3px; background: tab.alive ? #78c9b8 : #8390a0; }
-                        Text { x: 23px; width: parent.width - 49px; height: 100%; text: tab.title; color: tab.active ? Theme.text-primary : Theme.text-secondary; font-size: 12px; vertical-alignment: center; overflow: elide; }
-                        YButton { x: parent.width - 26px; y: 9px; width: 24px; height: 24px; label: "Close " + tab.title; icon-path: Icons.close; icon-only: true; variant: 1; size: 0; clicked => { root.close-tab(index); terminal-keys.focus(); } }
-                        Rectangle { y: parent.height - 2px; height: 2px; width: parent.width; background: tab.active || tab-focus.has-focus ? Theme.accent : transparent; }
                     }
                 }
             }
