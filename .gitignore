@@ -73,6 +73,9 @@ lib.long-type-*.txt
 # ...and the app tiles (design/icons/generate.py): the shell embeds them, and committing them is
 # what lets it build without Python or resvg.
 !crates/yantrik-ui-kit/assets/app-icons/*/*.png
+# ...and the pre-boot unlock screen's password field (276 bytes): plymouth draws no shapes, and
+# the initramfs hook copies it beside the theme.
+!deploy/yantrik-os/boot-unlock/theme/*.png
 
 # Secrets
 google_client_*

@@ -1,0 +1,72 @@
+# Yantrik OS — the pre-boot screen (plymouth script plugin).
+#
+# Asks for the disk's password once: the person's name, the field, the words the keyscript
+# passes as the prompt ("Type your password to start Yantrik OS", or why the last one did not
+# open the disk), and the keyboard layout the installer set. Nothing typed is drawn but dots.
+#
+# The two lines below are filled in by the initramfs hook (yantrik-unlock); left empty, the
+# screen draws neither.
+name_text = "";
+layout_text = "";
+
+Window.SetBackgroundTopColor(0.055, 0.063, 0.094);
+Window.SetBackgroundBottomColor(0.020, 0.024, 0.039);
+
+screen_w = Window.GetWidth();
+screen_h = Window.GetHeight();
+cx = Window.GetX() + screen_w / 2;
+cy = Window.GetY() + screen_h / 2;
+
+font_name = "Sans 22";
+font_body = "Sans 12";
+font_small = "Sans 10";
+
+fun centred(sprite, image, y, z) {
+    sprite.SetImage(image);
+    sprite.SetX(cx - image.GetWidth() / 2);
+    sprite.SetY(y);
+    sprite.SetZ(z);
+    sprite.SetOpacity(1);
+}
+
+fun hidden(sprite) {
+    sprite.SetOpacity(0);
+}
+
+brand = Sprite();
+centred(brand, Image.Text("Yantrik OS", 0.62, 0.66, 0.76, 1, font_small), Window.GetY() + screen_h - 48, 1);
+
+name_sprite = Sprite();
+field_sprite = Sprite();
+dots_sprite = Sprite();
+prompt_sprite = Sprite();
+layout_sprite = Sprite();
+field_image = Image("field.png");
+
+fun show_password(prompt, bullets) {
+    if (name_text != "")
+        centred(name_sprite, Image.Text(name_text, 0.93, 0.94, 0.97, 1, font_name), cy - 110, 2);
+    centred(field_sprite, field_image, cy - 22, 2);
+    dots = "";
+    for (i = 0; i < bullets && i < 28; i++)
+        dots += "•";
+    if (dots == "")
+        dots = " ";
+    centred(dots_sprite, Image.Text(dots, 0.93, 0.94, 0.97, 1, font_body), cy - 10, 3);
+    centred(prompt_sprite, Image.Text(prompt, 0.75, 0.78, 0.85, 1, font_body), cy + 40, 2);
+    if (layout_text != "")
+        centred(layout_sprite, Image.Text("Keyboard: " + layout_text, 0.55, 0.58, 0.66, 1, font_small), cy + 72, 2);
+}
+Plymouth.SetDisplayPasswordFunction(show_password);
+
+fun show_normal() {
+    hidden(name_sprite);
+    hidden(field_sprite);
+    hidden(dots_sprite);
+    hidden(prompt_sprite);
+    hidden(layout_sprite);
+}
+Plymouth.SetDisplayNormalFunction(show_normal);
+
+# No message function: cryptsetup's own lines ("cryptsetup: ERROR: ... bad password or
+# options?") are not drawn. The prompt already says what happened, in words a person reads.

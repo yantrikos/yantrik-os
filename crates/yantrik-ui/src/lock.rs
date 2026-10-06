@@ -52,7 +52,7 @@ impl Secret {
 }
 
 /// The account this desktop runs as, from the system rather than the environment.
-fn account_name() -> Option<String> {
+pub(crate) fn account_name() -> Option<String> {
     let out = std::process::Command::new("/usr/bin/id").arg("-un").output().ok()?;
     let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
     (out.status.success() && !name.is_empty()).then_some(name)

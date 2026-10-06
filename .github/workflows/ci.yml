@@ -94,7 +94,7 @@ jobs:
   shell-scripts:
     name: shell scripts
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
@@ -220,6 +220,21 @@ jobs:
           # The link is absolute: its target must exist inside the rootfs, not on this runner.
           test -f "$root$(readlink "$link")"
           test -f "$root/etc/systemd/system/mbpfan.service.d/yantrik-apple.conf"
+
+      # The one-password start (#646): the disk's password typed once, on the pre-boot screen,
+      # signs the person in. Stubs first (keyscript, marker, the root helper's one-shot answer,
+      # enrolment), then a real initramfs built with the hook, in graphical, text-fallback and
+      # untouched shapes. The live system's shutdown leaves an internal installer partition alone.
+      - name: The pre-boot unlock asks, falls back to text, and marks only a typed unlock
+        run: sh deploy/yantrik-os/boot-unlock/selftest
+      - name: The pre-boot unlock builds into a real initramfs with its theme and keymap
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq initramfs-tools cryptsetup-initramfs \
+            plymouth plymouth-label console-setup busybox fonts-dejavu-core kbd xkb-data jq > /dev/null
+          sudo sh deploy/yantrik-os/boot-unlock/initramfs-check.sh --scratch-system
+      - name: The live system's shutdown never ejects an internal disk or waits for ENTER
+        run: sh deploy/yantrik-os/yantrik-live-medium-eject selftest
 
       # The session's shell supervisor (#247): a crash brings the shell back, a crash loop stops,
       # a logout ends it. Fake shells and a fake display socket; no compositor needed.

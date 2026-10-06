@@ -1,0 +1,56 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# enrol USER [LUKS-DEVICE] — whose password opens this machine's disk, for the one-password start
+# ═══════════════════════════════════════════════════════════════════════════════════════
+#
+# Run as root by the installer, inside the installed system, after USER's password is set and
+# the disk encrypted with that same password, with the root open as yantrik-root (or the LUKS
+# device named). Writes /etc/yantrik/boot-unlock.conf, root's and 0600:
+#
+#   user=<USER>        the account a typed disk password signs in (consume), and whose name the
+#                      pre-boot screen shows (initramfs-hook)
+#   shadow=<sha256>    a digest of USER's /etc/shadow password field as it is now. Once the
+#                      password changes the digest no longer matches, the disk's passphrase is
+#                      no longer known to be the account's password, and the lock screen asks.
+#   header=<sha256>    a digest of the LUKS2 header's keyslots (ids, salts, kdf parameters) and
+#                      tokens as they are now, which must be exactly one keyslot and no token.
+#                      An added keyslot or a changed disk passphrase (luksAddKey, luksChangeKey)
+#                      no longer matches, and the lock screen asks.
+#
+# And makes USER the only member of yantrik-boot-unlock, the group that may ask consume.
+#
+# No password is read, written or passed here; only what /etc/shadow and the LUKS header already
+# hold, digested. Without a header it can read, it still records the account (the pre-boot
+# screen shows its name) but no header, so the lock screen always asks, and it exits 1.
+set -eu
+CONF="${YANTRIK_UNLOCK_CONF:-/etc/yantrik/boot-unlock.conf}"
+SHADOW="${YANTRIK_UNLOCK_SHADOW:-/etc/shadow}"
+GROUP=yantrik-boot-unlock
+user="${1:?usage: enrol USER [LUKS-DEVICE]}"
+dev="${2:-}"
+case "$user" in *[!a-z0-9_-]*|[!a-z_]*) echo "enrol: not an account name: $user" >&2; exit 1 ;; esac
+field="$(awk -F: -v u="$user" '$1 == u { print $2; exit }' "$SHADOW")"
+case "$field" in ''|'*'|'!'*) echo "enrol: $user has no password to enrol" >&2; exit 1 ;; esac
+digest="$(printf '%s\n' "$field" | sha256sum | cut -d' ' -f1)"
+
+# The same digest consume compares (luks_header there).
+[ -n "$dev" ] || dev="$(cryptsetup status yantrik-root 2>/dev/null | sed -n 's/^[[:space:]]*device:[[:space:]]*\([^[:space:]]*\)$/\1/p' | head -n1)" || dev=""
+header=""
+if [ -n "$dev" ] && json="$(cryptsetup luksDump --disable-locks --dump-json-metadata "$dev" 2>/dev/null)" \
+    && printf '%s\n' "$json" | jq -e '(.keyslots | length) == 1 and (.tokens | length) == 0' >/dev/null 2>&1; then
+    header="$(printf '%s\n' "$json" | jq -cS '{keyslots: .keyslots, tokens: .tokens}' | sha256sum | cut -d' ' -f1)"
+fi
+
+mkdir -p "$(dirname "$CONF")"
+umask 077
+{
+    printf 'user=%s\nshadow=%s\n' "$user" "$digest"
+    [ -z "$header" ] || printf 'header=%s\n' "$header"
+} > "$CONF.new"
+chmod 0600 "$CONF.new"
+mv -f "$CONF.new" "$CONF"
+
+groupadd -f --system "$GROUP"
+gpasswd -M "$user" "$GROUP" >/dev/null
+
+[ -n "$header" ] || { echo "enrol: no single-keyslot LUKS2 header readable on ${dev:-yantrik-root}; the lock screen will ask after boot" >&2; exit 1; }

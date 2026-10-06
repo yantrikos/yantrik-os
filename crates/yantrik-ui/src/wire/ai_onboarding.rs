@@ -234,7 +234,8 @@ fn measure_install_target() -> (bool, String) {
 
 /// The disk the wizard will install to unless the person picks another: the
 /// installer's own listing and its own preselection (`wire::installer::preselect`,
-/// which never picks a disk holding macOS), sized with `lsblk -b`. The listing is run here rather
+/// which picks only a lone internal disk without macOS, never a USB one), sized with `lsblk -b`;
+/// `None` when it picks nothing. The listing is run here rather
 /// than read off the picker's selection property because the scan and the
 /// picker are populated on separate threads, and UI properties are not ours
 /// to read from this one.

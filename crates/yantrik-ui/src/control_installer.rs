@@ -118,7 +118,6 @@ const FIELDS: &[&str] = &[
     "keyboard",
     "timezone",
     "disk",
-    "erase_macos",
     "encrypt",
 ];
 
@@ -155,6 +154,31 @@ fn disks(ui: &App) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// The disk `installer_set disk=<value>` names, or why it is refused.
+///
+/// A typo here costs a disk, so the name has to be one the installer found (`found`). And it
+/// only ever names the disk to erase: while the installer is set to install beside what is on a
+/// disk (`beside`), it is refused rather than switching to erasing one. That switch is
+/// installer_choose_target's `whole_disk`, graded `sensitive`; this field is `standard`, and
+/// used to make the switch itself, which went round the grade.
+fn disk_field<'a>(value: &'a str, found: &[String], beside: bool) -> Result<&'a str, String> {
+    if beside {
+        return Err("the installer is set to install beside what is on a disk, so there is no disk to erase \
+                    to choose; to erase a whole disk instead, call installer_choose_target with whole_disk \
+                    true, then set the disk"
+            .into());
+    }
+    let want = value.trim().trim_start_matches("/dev/");
+    if !found.iter().any(|n| n == want) {
+        return Err(if found.is_empty() {
+            "the installer found no disks on this machine".to_string()
+        } else {
+            format!("no disk `{want}` here; it found: {}", found.join(", "))
+        });
+    }
+    Ok(want)
+}
+
 /// The keyboard layouts the Welcome screen offers.
 fn keyboards(ui: &App) -> Vec<String> {
     ui.get_onboard_keyboards().iter().map(|k| k.code.to_string()).collect()
@@ -183,6 +207,14 @@ pub fn blocked_by(ui: &App) -> Option<String> {
             .collect(),
         macos_disks: ui.get_onboard_macos_disks().to_string(),
         erase_macos: ui.get_onboard_erase_macos_disk().to_string(),
+        into_partition: ui.get_onboard_into_partition(),
+        install_target: ui.get_onboard_install_target().to_string(),
+        eligible_targets: ui.get_onboard_eligible_targets().to_string(),
+        target_fingerprint: {
+            let target = ui.get_onboard_install_target().to_string();
+            let disk = yantrik_install_target::parse_target_id(&target).map(|(d, _)| d).unwrap_or_default();
+            crate::wire::installer_partition::fingerprint_for(&ui.get_onboard_table_fingerprints(), &disk)
+        },
     };
     form.problem(Path::new("/usr/share/zoneinfo"))
 }
@@ -201,6 +233,13 @@ struct Form {
     macos_disks: String,
     /// The disk confirmed as erasable although it holds macOS.
     erase_macos: String,
+    /// Installing beside what is there (control_installer_target.rs) rather than erasing a disk.
+    into_partition: bool,
+    install_target: String,
+    /// What may be installed into, space-separated ids.
+    eligible_targets: String,
+    /// The scanned table of the target's disk; empty when it was never scanned.
+    target_fingerprint: String,
 }
 
 impl Form {
@@ -224,17 +263,28 @@ impl Form {
         if let Some(why) = installer_rules::hostname_problem(&self.hostname) {
             return Some(format!("hostname: {}", lower(why)));
         }
-        if self.selected_disk.trim().is_empty() {
+        if self.into_partition {
+            if let Some(why) = crate::control_installer_target::problem(
+                &self.install_target,
+                &self.eligible_targets,
+                &self.target_fingerprint,
+            ) {
+                return Some(why);
+            }
+        } else if self.selected_disk.trim().is_empty() {
             return Some(if self.disks.is_empty() {
                 "no disk to install to was found".into()
             } else {
                 format!("no disk chosen; this machine has: {}", self.disks.join(", "))
             });
         }
-        if let Some(why) =
-            installer_rules::disk_problem(&self.selected_disk, &self.macos_disks, &self.erase_macos)
+        if let Some(why) = installer_rules::disk_problem(&self.selected_disk, &self.macos_disks, &self.erase_macos)
+            .filter(|_| !self.into_partition)
         {
-            return Some(format!("disk: {why}; to erase it, set erase_macos to `{}`", self.selected_disk));
+            return Some(format!(
+                "disk: {why}; to erase it, call installer_erase_macos with disk `{}`",
+                self.selected_disk
+            ));
         }
         if let Some(why) = installer_rules::timezone_problem(&self.timezone, zoneinfo) {
             return Some(format!("timezone: {}", lower(why)));
@@ -277,6 +327,13 @@ pub fn state(ui: &App) -> serde_json::Value {
         "disks": disks(ui),
         "disks_scanned": ui.get_onboard_disks_scanned(),
         "selected_disk": ui.get_onboard_selected_disk().to_string(),
+        // Beside what is there (installer_choose_target): every partition and run of free space
+        // on the GPT disks, each with whether it may be chosen and why not.
+        "into_partition": ui.get_onboard_into_partition(),
+        "install_into": ui.get_onboard_install_target().to_string(),
+        "boot_first": ui.get_onboard_boot_first(),
+        "targets": crate::control_installer_target::targets(ui),
+        "partitions_scanned": ui.get_onboard_partitions_scanned(),
         // Measured in the background whether or not a screen shows it: the first-boot AI
         // setup recommends from it, and a caller deciding where to install can read it here.
         "hardware": {
@@ -337,8 +394,12 @@ pub fn summary(ui: &App) -> String {
     match blocked_by(ui) {
         Some(why) => format!("Yantrik installer — on the {step} step, not ready to install: {why}"),
         None => format!(
-            "Yantrik installer — on the {step} step, ready to install to {}{}",
-            ui.get_onboard_selected_disk(),
+            "Yantrik installer — on the {step} step, ready to install {}{}",
+            if ui.get_onboard_into_partition() {
+                format!("into {}, changing nothing else on the disk", ui.get_onboard_install_target())
+            } else {
+                format!("to {}, erasing it", ui.get_onboard_selected_disk())
+            },
             if ui.get_onboard_encrypt() { ", encrypted" } else { ", NOT encrypted" }
         ),
     }
@@ -373,16 +434,18 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
     let install_ui = ui_for.clone();
     let reboot_ui = ui_for;
 
-    surface
+    let surface = crate::control_installer_consent::add_erase_macos(surface, ui);
+    crate::control_installer_target::add(surface, ui)
         .action(
             Action::new(
                 "installer_set",
                 "Fill in one field of the installer, as if typed into it",
             )
             .arg(Param::text("field").describe(
-                "full_name, username, password, password_confirm, hostname, keyboard, timezone, disk, \
-                 encrypt (true or false; on unless turned off), erase_macos (the chosen disk's name, \
-                 when it holds macOS and may be erased; empty to withdraw)",
+                "full_name, username, password, password_confirm, hostname, keyboard, timezone, disk \
+                 (the disk to erase; refused while installing beside what is on a disk, which only \
+                 installer_choose_target whole_disk changes), encrypt (true or false; on unless turned \
+                 off). Confirming that a disk holding macOS may be erased is installer_erase_macos",
             ))
             .arg(Param::text("value")),
             move |args| {
@@ -451,39 +514,22 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                         ui.set_onboard_timezone(want.into());
                     }
                     "disk" => {
-                        // A typo here costs a disk, so the name has to be one the installer
-                        // actually found rather than anything the caller cares to type.
                         let found = disks(&ui);
                         let names: Vec<String> = found
                             .iter()
                             .filter_map(|d| d["name"].as_str().map(String::from))
                             .collect();
-                        let want = value.trim().trim_start_matches("/dev/");
-                        if !names.iter().any(|n| n == want) {
-                            return Err(if names.is_empty() {
-                                "the installer found no disks on this machine".to_string()
-                            } else {
-                                format!("no disk `{want}` here; it found: {}", names.join(", "))
-                            });
-                        }
+                        let want = disk_field(&value, &names, ui.get_onboard_into_partition())?;
+                        // Never a change of mode: that is installer_choose_target's, graded
+                        // above filling in a field, and it says on its card what it switches to.
                         ui.set_onboard_selected_disk(want.into());
                     }
-                    // The Disk screen's "Erase macOS on /dev/sdX". The value is that disk's name,
-                    // typed again: a yes/no could be carried over to a disk it was never about.
+                    // The Disk screen's "Erase macOS on /dev/sdX" is an action of its own, graded
+                    // above filling in a name (control_installer_consent.rs).
                     "erase_macos" => {
-                        let want = value.trim().trim_start_matches("/dev/");
-                        if !want.is_empty() {
-                            let macos = ui.get_onboard_macos_disks().to_string();
-                            if !installer_rules::disk_in_list(want, &macos) {
-                                return Err(format!("`{want}` is not a disk here that holds macOS"));
-                            }
-                            if want != ui.get_onboard_selected_disk().as_str() {
-                                return Err(format!(
-                                    "`{want}` is not the chosen disk; choose it with the disk field first"
-                                ));
-                            }
-                        }
-                        ui.set_onboard_erase_macos_disk(want.into());
+                        return Err("erase_macos is not a field: confirm erasing macOS with installer_erase_macos, \
+                                    which a person approves with the disk named"
+                            .into())
                     }
                     // The Disk screen's "Encrypt with my password". Only a plain yes or no: a
                     // value misread as "off" would leave a disk readable by whoever takes it.
@@ -552,11 +598,26 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             // minutes. A caller that treats the reply as "installed" is wrong on both counts.
             Action::new(
                 "installer_install",
-                "Erase the chosen disk and install Yantrik OS onto it. What was on the disk is \
-                 not recoverable.",
+                "Install Yantrik OS: into the chosen partition or free space, changing nothing \
+                 else on that disk (installer_choose_target), or onto the chosen disk, erasing \
+                 it; what was on an erased disk is not recoverable.",
             )
             .risk("dangerous")
-            .defers(),
+            .defers()
+            // The card names the device and whether it is erased, as the installer holds them
+            // when the card is built: "Install into /dev/sda4 (199 GB, YANTRIK, FAT32); nothing
+            // else changes", or "ERASE /dev/sda, which holds macOS".
+            .explain({
+                let weak = ui.as_weak();
+                move |_| match weak.upgrade() {
+                    Some(ui) => crate::control_installer_consent::install_card(
+                        &crate::control_installer_consent::install_view(&ui),
+                    ),
+                    None => "Install Yantrik OS; the installer could not be read to say which disk it writes or \
+                             whether it erases one"
+                        .into(),
+                }
+            }),
             move |_| {
                 let ui = install_ui()?;
                 if ui.get_onboard_installing() {
@@ -585,8 +646,10 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     ui.set_current_screen(2);
                     ui.invoke_navigate(2);
                 }
+                let into = ui.get_onboard_into_partition().then(|| ui.get_onboard_install_target().to_string());
                 Ok(serde_json::json!({
-                    "installing_to": disk.to_string(),
+                    "installing_to": into.clone().unwrap_or_else(|| disk.to_string()),
+                    "erases_disk": into.is_none(),
                     "encrypted": ui.get_onboard_encrypt(),
                     "watch": "describe the shell and read installer.progress and installer.status; \
                               the machine restarts by itself about ten seconds after it finishes",
@@ -691,7 +754,49 @@ mod tests {
             disks: vec!["sda".into(), "nvme0n1".into()],
             macos_disks: String::new(),
             erase_macos: String::new(),
+            into_partition: false,
+            install_target: String::new(),
+            eligible_targets: String::new(),
+            target_fingerprint: String::new(),
         }
+    }
+
+    #[test]
+    fn setting_the_disk_field_never_switches_beside_to_erase() {
+        let found = vec!["sda".to_string(), "sdb".to_string()];
+        let e = disk_field("sda", &found, true).unwrap_err();
+        assert!(e.contains("installer_choose_target with whole_disk true"), "{e}");
+        assert_eq!(disk_field("/dev/sdb", &found, false), Ok("sdb"));
+        assert!(disk_field("sdc", &found, false).unwrap_err().contains("no disk `sdc` here"));
+        assert!(disk_field("sda", &[], false).unwrap_err().contains("found no disks"));
+        // Only installer_choose_target changes the mode: nothing in this file's actions does.
+        let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/control_installer.rs")).unwrap();
+        let actions = src.split("#[cfg(test)]").next().unwrap();
+        assert!(!actions.contains("set_onboard_into_partition("), "installer_set must not switch the mode");
+    }
+
+    #[test]
+    fn installing_beside_macos_needs_a_target_not_a_disk_to_erase() {
+        let zi = std::env::temp_dir().join(format!("yos-ci-zoneinfo-beside-{}", std::process::id()));
+        // The Mac booted from its own YANTRIK-INS partition: no disk offered for erasing, and the
+        // internal disk holds macOS. Beside it, that is no obstacle.
+        let mut f = ready_form(&zi);
+        f.selected_disk = String::new();
+        f.disks = Vec::new();
+        f.macos_disks = "sda".into();
+        f.into_partition = true;
+        f.eligible_targets = "sda3".into();
+        assert!(f.problem(&zi).unwrap().contains("install_into: nothing chosen; what may be chosen: sda3"));
+        f.install_target = "sda2".into();
+        assert!(f.problem(&zi).unwrap().contains("may not be installed into"));
+        f.install_target = "sda3".into();
+        assert!(f.problem(&zi).unwrap().contains("not scanned"));
+        f.target_fingerprint = "a7df3a2a0968d199".into();
+        assert_eq!(f.problem(&zi), None);
+        // Erasing instead: the old rules hold, macOS confirmation included.
+        f.into_partition = false;
+        f.selected_disk = "sda".into();
+        assert!(f.problem(&zi).unwrap().starts_with("disk: /dev/sda holds macOS"));
     }
 
     #[test]
@@ -726,7 +831,7 @@ mod tests {
         // A disk holding macOS needs its own confirmation, naming it.
         let mac = with(&|f| f.macos_disks = "sda".into());
         assert!(mac.starts_with("disk: /dev/sda holds macOS"), "{mac}");
-        assert!(mac.contains("set erase_macos to `sda`"), "{mac}");
+        assert!(mac.contains("call installer_erase_macos with disk `sda`"), "{mac}");
         assert!(with(&|f| {
             f.macos_disks = "sda".into();
             f.erase_macos = "nvme0n1".into();

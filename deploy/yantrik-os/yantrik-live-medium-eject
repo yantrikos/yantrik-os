@@ -1,0 +1,54 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# yantrik-live-medium-eject — what the live system does with its medium as it shuts down
+# ═══════════════════════════════════════════════════════════════════════════════════════
+#
+# Installed over live-tools' /bin/live-medium-eject (dpkg-divert, build-debian-iso.sh), which
+# systemd runs from /lib/systemd/system-shutdown at every reboot and power-off of the live
+# system, `reboot -f` from the installer's Restart now included. live-tools' version ejected the
+# whole disk the medium is on whenever it was not USB, then printed "Please remove the
+# live-medium, close the tray (if any) and press ENTER to continue" and waited. On the Mac mini
+# the installer runs from YKINSTALL, a partition of the internal disk macOS is on: it sent an
+# eject to that disk and told the person to remove something that cannot be removed.
+#
+# This one says nothing and waits for nothing. A disc's tray is opened, as the Installed screen
+# says it will be; a USB drive, an internal partition, or anything it cannot tell is left alone.
+#
+#   yantrik-live-medium-eject            (as systemd-shutdown runs it)
+#   yantrik-live-medium-eject selftest
+set -u
+
+# What to do for the device /run/live/medium is mounted from: "eject" or "leave".
+decide() { # source-device cmdline
+    case " $2 " in *" boot=live "*) ;; *) echo leave; return ;; esac
+    case " $2 " in *" noeject "*|*" toram "*|*" toram="*) echo leave; return ;; esac
+    case "${1#/dev/}" in
+        sr[0-9]*) echo eject ;;
+        *) echo leave ;;
+    esac
+}
+
+if [ "${1:-}" = selftest ]; then
+    fails=0
+    t() { got="$(decide "$2" "$3")"; [ "$got" = "$1" ] && echo "ok   $4" || { echo "FAIL $4 (got $got)"; fails=$((fails + 1)); }; }
+    t leave /dev/sda3 "boot=live quiet" "YKINSTALL on the Mac's internal disk is left alone, silently"
+    t leave /dev/sdb1 "boot=live quiet" "a USB drive is left alone"
+    t eject /dev/sr0 "boot=live quiet" "a disc's tray opens"
+    t leave /dev/sr0 "boot=live noeject" "noeject is honoured"
+    t leave /dev/sr0 "boot=live toram" "a medium copied to RAM is left alone"
+    t leave /dev/sr0 "quiet splash" "an installed system is never touched"
+    t leave "" "boot=live" "nothing mounted: nothing done"
+    if grep -nE 'press ENTER|read |watch-keystroke|printf .*console' "$0" | grep -v '^[0-9]*:#' | grep -v "grep -nE"; then
+        echo "FAIL it neither prints to the console nor waits"; fails=$((fails + 1))
+    else
+        echo "ok   it neither prints to the console nor waits"
+    fi
+    [ "$fails" = 0 ] && echo "yantrik-live-medium-eject selftest: all passed" && exit 0
+    exit 1
+fi
+
+src="$(findmnt -Un -o SOURCE /run/live/medium 2>/dev/null)"
+[ "$(decide "$src" "$(cat /proc/cmdline 2>/dev/null)")" = eject ] || exit 0
+[ -b "$src" ] && command -v eject >/dev/null 2>&1 || exit 0
+eject -m "$src" >/dev/null 2>&1
+exit 0

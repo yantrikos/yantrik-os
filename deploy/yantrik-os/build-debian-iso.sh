@@ -300,6 +300,7 @@ systemctl --global disable podman.socket 2>/dev/null || true
 apt-get install -y -qq \
     jq parted rsync openssh-server openssl \
     dosfstools e2fsprogs grub-efi-amd64-bin grub-pc-bin \
+    efibootmgr \
     libpam-modules initramfs-tools || true
 
 # ── Disk encryption (#400 step b) ──
@@ -308,6 +309,13 @@ apt-get install -y -qq \
 # passphrase typed on a German keyboard is read as German. Copied onto the disk with the rest of
 # the live system. No `|| true`: without them an encrypted install cannot boot.
 apt-get install -y -qq     cryptsetup     cryptsetup-initramfs     console-setup
+
+# The pre-boot screen the disk's password is typed on (stage-boot-unlock.sh): plymouth draws it
+# on whatever framebuffer the firmware left (simpledrm/efifb on a Mac mini, no GPU driver),
+# plymouth-label and DejaVu write its words, busybox runs the keyscript in the initramfs. Without
+# any of them the keyscript asks in text, with the same words; so `|| true` is not needed to
+# boot, but they are expected, and the stage below checks.
+apt-get install -y -qq     plymouth     plymouth-label     fonts-dejavu-core     busybox
 
 # ── Calamares installer ──
 apt-get install -y -qq \
@@ -385,6 +393,62 @@ case "$MISE_SAYS" in
     *) fail "mise ${MISE_VERSION} does not run inside the image (it said: ${MISE_SAYS:-nothing})" ;;
 esac
 ok "mise ${MISE_VERSION} (sha256 checked) in /usr/local/bin"
+
+# ── The one-password start (an encrypted install asks once, before boot) ──
+# The keyscript, the initramfs hook and marker, the session's root helper and the plymouth theme.
+# Nothing in them acts unless an install names the keyscript in crypttab, so the live system
+# and an unencrypted install are unchanged.
+sudo sh "$SCRIPT_DIR/stage-boot-unlock.sh" "$ROOTFS" \
+    || fail "stage-boot-unlock.sh failed — an encrypted install would ask for its password in plain text"
+sudo chroot "$ROOTFS" plymouth-set-default-theme yantrik \
+    || warn "plymouth could not select the Yantrik theme; the installed initramfs hook still names it"
+# The socket's group. Empty in the image; enrol makes the installed account its one member.
+sudo chroot "$ROOTFS" groupadd -f --system yantrik-boot-unlock \
+    || fail "could not make group yantrik-boot-unlock — the boot-unlock socket would not start"
+for required in usr/lib/yantrik/boot-unlock/askpass usr/lib/yantrik/boot-unlock/consume \
+                etc/initramfs-tools/hooks/yantrik-unlock etc/initramfs-tools/scripts/local-bottom/yantrik-unlock \
+                usr/share/plymouth/themes/yantrik/yantrik.script usr/sbin/plymouthd \
+                etc/systemd/system/sockets.target.wants/yantrik-boot-unlock.socket \
+                etc/systemd/system/multi-user.target.wants/yantrik-boot-unlock-expire.service \
+                usr/bin/jq usr/sbin/cryptsetup; do
+    # Inside the image: the .wants links are absolute, and would be read against the build host.
+    sudo chroot "$ROOTFS" test -e "/$required" || fail "$required missing from the image — the one-password start would not work"
+done
+sudo chroot "$ROOTFS" getent group yantrik-boot-unlock >/dev/null \
+    || fail "group yantrik-boot-unlock missing from the image — the boot-unlock socket would not start"
+ok "Pre-boot unlock screen, keyscript and signed-in marker staged"
+
+# ── The live system's shutdown says nothing about removing its medium ──
+# live-tools' system-shutdown hook ejected the disk the medium is on and waited for ENTER after
+# "Please remove the live-medium". On a Mac the installer is a partition of the internal disk
+# (YKINSTALL). Ours opens a disc's tray and otherwise does nothing (yantrik-live-medium-eject).
+#
+# Diverted under both names. With merged /usr they are one file, but dpkg matches a diversion by
+# the path a package lists: live-tools ships /bin/live-medium-eject today, and a live-tools that
+# moved it to /usr/bin would, with only the /bin diversion, write its own over ours through the
+# /bin symlink. The first --rename moves the package's file aside; the second finds nothing left
+# to move and only records the name.
+for name in /bin/live-medium-eject /usr/bin/live-medium-eject; do
+    sudo chroot "$ROOTFS" dpkg-divert --local --rename --divert "$name.live-tools" --add "$name" >/dev/null \
+        || fail "could not set live-tools' $name aside"
+done
+sudo install -m 0755 -o root -g root "$SCRIPT_DIR/yantrik-live-medium-eject" "$ROOTFS/bin/live-medium-eject" \
+    || fail "could not install yantrik-live-medium-eject"
+# Without merged /usr the two names are two files, and both are ours.
+[ "$ROOTFS/bin/live-medium-eject" -ef "$ROOTFS/usr/bin/live-medium-eject" ] \
+    || sudo install -m 0755 -o root -g root "$SCRIPT_DIR/yantrik-live-medium-eject" "$ROOTFS/usr/bin/live-medium-eject" \
+    || fail "could not install yantrik-live-medium-eject as /usr/bin/live-medium-eject"
+# dpkg-divert --truename is where dpkg writes a package's copy of a name: for both names it must
+# be the .live-tools path, never a path holding our script; and what the shutdown hook runs,
+# /bin/live-medium-eject (and /usr/bin/live-medium-eject), must be our script.
+for name in /bin/live-medium-eject /usr/bin/live-medium-eject; do
+    truename="$(sudo chroot "$ROOTFS" dpkg-divert --truename "$name")"
+    [ "$truename" = "$name.live-tools" ] \
+        || fail "dpkg would write live-tools' $name to $truename, over ours"
+    sudo cmp -s "$SCRIPT_DIR/yantrik-live-medium-eject" "$ROOTFS$name" \
+        || fail "$name is not yantrik-live-medium-eject"
+done
+ok "The live system's shutdown leaves an internal installer partition alone"
 
 # ── Intel Macs (the Mac mini 2012 is the first real machine this image runs on) ──
 # Fan control, and the Broadcom BCM4331 Wi-Fi driver fetched from Debian on the machine once it
@@ -604,6 +668,11 @@ for required in yantrik-ui yantrik yantrik-notes weather-service yos; do
     [ -e "$ROOTFS/opt/yantrik/bin/$required" ] \
         || fail "$required missing from the image — the ISO would boot without it"
 done
+# The text installer's planner for installing beside macOS (crates/yantrik-install-target). It
+# comes with the workspace build like every other binary; without it yantrik-install.sh refuses
+# to install beside anything, so an image that lacks it is not one to ship.
+[ -x "$ROOTFS/opt/yantrik/bin/yantrik-install-target" ] \
+    || fail "yantrik-install-target missing from the image — the text installer could not install beside macOS"
 
 # Copy i18n files if they exist
 if [ -d "$PROJECT_ROOT/crates/yantrik-ui/i18n" ]; then
@@ -1361,24 +1430,24 @@ set menu_color_highlight=white/blue
 # installer mode. Both entries used to pass it, so there was no way to boot this image and
 # simply try the desktop — an ISO that can only be installed is one nobody evaluates first.
 menuentry "Install Yantrik OS" {
-    linux /live/vmlinuz boot=live yantrik.install=true live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 quiet
+    linux /live/vmlinuz boot=live yantrik.install=true live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 plymouth.enable=0 quiet
     initrd /live/initrd
 }
 
 menuentry "Try Yantrik OS (live, no install)" {
-    linux /live/vmlinuz boot=live live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 quiet
+    linux /live/vmlinuz boot=live live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 plymouth.enable=0 quiet
     initrd /live/initrd
 }
 
 menuentry "Install Yantrik OS (Safe Mode — software rendering)" {
-    linux /live/vmlinuz boot=live yantrik.install=true live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 nomodeset quiet
+    linux /live/vmlinuz boot=live yantrik.install=true live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 plymouth.enable=0 nomodeset quiet
     initrd /live/initrd
 }
 
 # No `quiet`, so the kernel and systemd say what they are doing on the serial line. This is
 # the entry a bug report is made from, and the one an automated boot check selects.
 menuentry "Try Yantrik OS (verbose, serial console)" {
-    linux /live/vmlinuz boot=live live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 nomodeset systemd.log_level=info
+    linux /live/vmlinuz boot=live live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 plymouth.enable=0 nomodeset systemd.log_level=info
     initrd /live/initrd
 }
 GRUBCFG

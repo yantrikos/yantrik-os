@@ -1,0 +1,51 @@
+{
+   "disk": {
+      "path": "/dev/sdb",
+      "size": "488397168s",
+      "model": "Samsung Portable SSD T5",
+      "transport": "scsi",
+      "logical-sector-size": 512,
+      "physical-sector-size": 512,
+      "label": "gpt",
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-3b4c5d6e7f80",
+      "max-partitions": 128,
+      "partitions": [
+         {
+            "number": 0,
+            "start": "34s",
+            "end": "39s",
+            "size": "6s",
+            "type": "free"
+         },
+         {
+            "number": 1,
+            "start": "40s",
+            "end": "409639s",
+            "size": "409600s",
+            "type": "primary",
+            "type-uuid": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+            "uuid": "e5f6a7b8-c9d0-4e1f-8a2b-4c5d6e7f8091",
+            "name": "EFI System Partition",
+            "filesystem": "fat32",
+            "flags": [
+               "boot",
+               "esp"
+            ]
+         },
+         {
+            "number": 2,
+            "start": "409640s",
+            "end": "488396799s",
+            "size": "487987160s",
+            "type": "primary",
+            "type-uuid": "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7",
+            "uuid": "f6a7b8c9-d0e1-4f2a-9b3c-5d6e7f8091a2",
+            "name": "YANTRIK-backup",
+            "filesystem": "fat32",
+            "flags": [
+               "msftdata"
+            ]
+         }
+      ]
+   }
+}

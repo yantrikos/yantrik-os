@@ -23,8 +23,163 @@ use slint::{ModelRc, SharedString, VecModel};
 pub fn run(window: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     for (w, h) in [(1280u32, 800u32), (800, 600)] {
         run_at(window, output, w, h)?;
+        beside_macos(window, output, w, h)?;
     }
     println!("PASS: installer welcome, you, disk, review, installing and installed at 1280x800 and 800x600");
+    println!("PASS: installing beside macOS: the disk's bar, the placeholder chosen, nothing chosen until something may be");
+    Ok(())
+}
+
+/// One stretch of the Mac's disk as crates/yantrik-install-target describes it: what may be
+/// chosen says what installing does, what may not says why not, in both its sentence and card.
+fn seg(id: &str, kind: &str, title: &str, size: &str, share: f32, kept: bool, eligible: bool) -> InstallerSegment {
+    let device = if kind == "free" { "a new partition in the free space on /dev/sda".to_string() } else { format!("/dev/{id}") };
+    let reason = match kind {
+        "esp" => format!("{device} is the EFI system partition; Yantrik OS puts its boot loader beside what is there, and never installs into it or formats it"),
+        "macos" => format!("{device} holds macOS (APFS); it is kept"),
+        "medium" => format!("{device} is what this installer is running from"),
+        "free" => format!("the free space at sectors 1950152680-1953525134 is {size}; Yantrik OS needs at least 20 GB"),
+        _ => format!("{device} is kept"),
+    };
+    let (reason, sentence, card) = if eligible {
+        (
+            String::new(),
+            format!("Yantrik OS will be installed into {device} ({size}). Nothing else on this disk changes."),
+            format!("Install into {device} ({size}, {title}); nothing else changes"),
+        )
+    } else {
+        (reason.clone(), reason.clone(), reason)
+    };
+    InstallerSegment {
+        id: id.into(),
+        disk: "sda".into(),
+        kind: kind.into(),
+        title: title.into(),
+        size: size.into(),
+        share,
+        kept,
+        eligible,
+        reason: reason.into(),
+        sentence: sentence.into(),
+        card: card.into(),
+    }
+}
+
+/// The Mac mini this is for: a 1 TB disk with its 209.7 MB EFI partition, APFS shrunk to 790 GB
+/// in macOS, a 200 GB FAT32 YANTRIK placeholder, and the 8 GB YANTRIK-INS partition the installer
+/// booted from (so the whole-disk list is empty: #644 never offers the disk the installer runs from).
+fn beside_macos(
+    window: &MinimalSoftwareWindow,
+    output: &str,
+    width: u32,
+    height: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let ui = InstallerProbe::new()?;
+    ui.set_canvas_width(width as f32);
+    ui.set_canvas_height(height as f32);
+    ui.on_is_macos_disk(|d, l| rules::disk_in_list(&d, &l));
+    ui.on_target_listed(|t, l| rules::disk_in_list(&t, &l));
+    ui.on_check_timezone(|_| SharedString::new());
+    ui.set_target_disks(ModelRc::new(VecModel::from(vec![InstallerTargetDisk {
+        name: "sda".into(),
+        title: "APPLE HDD HTS541010A9E662 · 931.5G (/dev/sda)".into(),
+    }])));
+    let placeholders = vec![
+        seg("sda1", "esp", "EFI system", "209.7 MB", 0.0002, true, false),
+        seg("sda2", "macos", "macOS (APFS)", "790 GB", 0.79, true, false),
+        seg("sda3", "placeholder", "YANTRIK (FAT32)", "200 GB", 0.2, false, true),
+        seg("sda4", "medium", "YANTRIK-INS (this installer)", "8 GB", 0.008, true, false),
+        seg("sda@1950152680-1953525134", "free", "Free space", "1.7 GB", 0.0017, false, false),
+    ];
+    ui.set_segments(ModelRc::new(VecModel::from(placeholders)));
+    ui.set_eligible_targets("sda3".into());
+    ui.set_into_partition(true);
+    ui.set_install_target("sda3".into());
+    ui.set_timezone("Europe/Berlin".into());
+    ui.set_step(2);
+
+    ui.show()?;
+    window.set_size(slint::PhysicalSize::new(width, height));
+    let draw = || {
+        slint::platform::update_timers_and_animations();
+        let mut p = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(width, height);
+        window.request_redraw();
+        window.draw_if_needed(|r| {
+            r.render(p.make_mut_slice(), width as usize);
+        });
+        p
+    };
+    let save = |name: &str| -> Result<(), Box<dyn std::error::Error>> {
+        for _ in 0..4 {
+            draw();
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        let pixels = draw();
+        let path = output.replace(".png", &format!("-{width}x{height}-{name}.png"));
+        let mut e = png::Encoder::new(BufWriter::new(File::create(path)?), width, height);
+        e.set_color(png::ColorType::Rgb);
+        e.set_depth(png::BitDepth::Eight);
+        e.write_header()?.write_image_data(pixels.as_bytes())?;
+        Ok(())
+    };
+
+    save("disk-beside-macos")?;
+    assert!(ui.get_disk_ok(), "the YANTRIK placeholder may be installed into");
+    // Nothing chosen: Next waits. The macOS partition is never a target, whatever is written.
+    ui.set_install_target("".into());
+    draw();
+    assert!(!ui.get_disk_ok());
+    ui.set_install_target("sda2".into());
+    draw();
+    assert!(!ui.get_disk_ok(), "macOS is not a target even when named");
+    ui.set_install_target("sda4".into());
+    draw();
+    assert!(!ui.get_disk_ok(), "nor the partition the installer runs from");
+    // A row is chosen by pointing at it, left of the Back button, walking up from the bottom.
+    let x = width as f32 / 2.0 - 200.0;
+    let mut y = height as f32 - 6.0;
+    while y > 0.0 && ui.get_install_target() != "sda3" {
+        click(window, x, y);
+        draw();
+        y -= 6.0;
+    }
+    assert_eq!(ui.get_install_target(), "sda3", "the placeholder's row can be chosen");
+    assert!(ui.get_disk_ok());
+
+    // Erasing a whole disk is the other choice; with no disk it offers, nothing is ready.
+    ui.set_into_partition(false);
+    save("disk-beside-macos-erase")?;
+    assert!(!ui.get_disk_ok(), "the disk the installer runs from is not offered for erasing");
+    ui.set_into_partition(true);
+
+    // Review says where it goes, and Install no longer says it erases.
+    ui.set_full_name("Ada Lovelace".into());
+    ui.set_step(3);
+    save("review-beside-macos")?;
+
+    // Free space beside APFS instead of a placeholder.
+    ui.set_step(2);
+    ui.set_segments(ModelRc::new(VecModel::from(vec![
+        seg("sda1", "esp", "EFI system", "209.7 MB", 0.0002, true, false),
+        seg("sda2", "macos", "macOS (APFS)", "790 GB", 0.79, true, false),
+        seg("sda@1543378392-1953525134", "free", "Free space", "210 GB", 0.21, false, true),
+    ])));
+    ui.set_eligible_targets("sda@1543378392-1953525134".into());
+    ui.set_install_target("sda@1543378392-1953525134".into());
+    save("disk-free-beside-macos")?;
+    assert!(ui.get_disk_ok());
+
+    // The Mac as it arrived: nothing to install into until macOS makes room.
+    ui.set_segments(ModelRc::new(VecModel::from(vec![
+        seg("sda1", "esp", "EFI system", "209.7 MB", 0.0002, true, false),
+        seg("sda2", "macos", "macOS (APFS)", "1000 GB", 0.9998, true, false),
+    ])));
+    ui.set_eligible_targets("".into());
+    ui.set_install_target("".into());
+    save("disk-macos-no-room")?;
+    assert!(!ui.get_disk_ok());
+
+    ui.hide()?;
     Ok(())
 }
 
