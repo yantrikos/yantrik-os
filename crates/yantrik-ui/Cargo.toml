@@ -16,6 +16,8 @@ path = "src/bin/test_brain.rs"
 # The lock screen's helpers shared with yantrik-lock (yantrik_ui_kit::lock_shared).
 yantrik-ui-kit = { workspace = true }
 yantrik-harness = { workspace = true }
+# The local model gateway the shell serves (#673): every mind's models, keys kept here.
+yantrik-gateway = { workspace = true }
 # Agents' commands, each in a PTY the shell owns (design/agents-workspace-2026-09-23.md, decision 3).
 yantrik-agent-terminal = { workspace = true }
 yantrik-companion = { workspace = true }
