@@ -571,6 +571,7 @@ fn publish_catalogue(ui: &App, entries: &[yantrik_harness::Entry]) {
             configure_label: row.configure.into(),
             provider_line: row.provider_line.into(),
             can_assign_provider: row.can_assign_provider,
+            can_use_saved: row.can_use_saved,
             can_revert_provider: row.can_revert_provider,
             docs: row.docs.into(),
         })

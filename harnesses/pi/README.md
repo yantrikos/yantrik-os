@@ -82,6 +82,15 @@ holding a key:
 }
 ```
 
+## Yantrik models
+
+**Settings → Harnesses → Pi → Use Yantrik models** adds one provider to Pi's own
+`~/.pi/agent/models.json`, `yantrik`, at the desktop's model gateway with a gateway token of Pi's
+own (never a key), and sets `"provider": "yantrik", "model": "picked"` in
+`~/.config/yantrik/pi.json`. `picked` is whichever model you pick for Pi in the ask bar; every
+model of your AI accounts is also listed for Pi's own `/model`. Your other providers stay. Revert
+puts both files back and withdraws the token.
+
 ## Pi's own tools are off, and that is a decision
 
 Pi arrives with `bash`, `read`, `write` and `edit`. On this desktop they are a **second,

@@ -163,6 +163,14 @@ After editing `mcp.servers`, `openclaw mcp reload` is enough — the gateway doe
 restarting. Changing `gateway.auth` or `gateway.http` does need a restart, and OpenClaw's config
 watcher performs it itself.
 
+## Yantrik models
+
+**Settings → Harnesses → OpenClaw → Use Yantrik models** adds one provider to OpenClaw's own
+`~/.openclaw/openclaw.json` (`models.providers.yantrik`, at the desktop's model gateway with a
+gateway token of OpenClaw's own) and asks for `yantrik/picked` through `model` in
+`~/.config/yantrik/openclaw.json`. An `openclaw.json` with comments (JSON5) is left alone, and the
+desktop says so: add the provider by hand. Revert puts both files back and withdraws the token.
+
 ## The config file
 
 `~/.config/yantrik/openclaw.json`, **written by you**, and optional — with no file at all this

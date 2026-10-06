@@ -91,6 +91,7 @@ export struct HarnessRowData {
     // "Provider: NVIDIA NIM · model (from your saved providers)", or "its own settings".
     provider-line: string,
     can-assign-provider: bool,
+    can-use-saved: bool,       // "Use a provider" writes a saved provider into its own file
     can-revert-provider: bool,
     docs: string,
 }
@@ -3792,7 +3793,15 @@ SettingRow{label:"About this device";description:"Detailed information about thi
                                         variant: 1;
                                         clicked => { root.configure-harness(h.id); }
                                     }
-                                    if h.can-assign-provider && root.assigning-harness != h.id : YButton {
+                                    // Every mind the desktop can point at its model gateway: the
+                                    // accounts from AI & Intelligence, a token of its own, no key.
+                                    if h.can-assign-provider && !h.can-revert-provider : YButton {
+                                        label: "Use Yantrik models";
+                                        size: 0;
+                                        variant: 0;
+                                        clicked => { root.plan-provider(h.id, "yantrik-models"); }
+                                    }
+                                    if h.can-use-saved && h.can-assign-provider && root.assigning-harness != h.id : YButton {
                                         label: "Use a provider";
                                         size: 0;
                                         variant: 1;

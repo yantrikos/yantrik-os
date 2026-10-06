@@ -360,6 +360,9 @@ pub struct Row {
     pub provider_line: String,
     /// It can be given a saved provider: it has an adapter and it is installed.
     pub can_assign_provider: bool,
+    /// "Use a provider" applies to it: a saved provider can be written into its own file. The
+    /// others take Yantrik models only (`can_assign_provider`).
+    pub can_use_saved: bool,
     /// It was given one here, and Revert would put its own file back.
     pub can_revert_provider: bool,
     pub unit: String,
@@ -397,9 +400,10 @@ pub fn rows(machine: &Machine, minds: &[Entry]) -> Vec<Row> {
             can_install: false,
             can_start: false,
             configure: String::new(),
-            provider_line: String::new(),
-            can_assign_provider: false,
-            can_revert_provider: false,
+            provider_line: crate::provider_handoff::row_line(&machine.home, &entry.id),
+            can_assign_provider: crate::provider_handoff::adapter_for(&entry.id).is_some(),
+            can_use_saved: false,
+            can_revert_provider: crate::provider_handoff::marker(&machine.home, &entry.id).is_some(),
             unit: String::new(),
             docs: String::new(),
         });
@@ -436,9 +440,10 @@ pub fn rows(machine: &Machine, minds: &[Entry]) -> Vec<Row> {
             can_install: false,
             can_start: false,
             configure: String::new(),
-            provider_line: String::new(),
-            can_assign_provider: false,
-            can_revert_provider: false,
+            provider_line: crate::provider_handoff::row_line(&machine.home, &entry.id),
+            can_assign_provider: crate::provider_handoff::adapter_for(&entry.id).is_some(),
+            can_use_saved: false,
+            can_revert_provider: crate::provider_handoff::marker(&machine.home, &entry.id).is_some(),
             unit: String::new(),
             docs: String::new(),
         });
@@ -560,6 +565,7 @@ fn from_manifest(machine: &Machine, manifest: &Manifest, attached: Option<&Entry
         can_assign_provider: !busy
             && crate::provider_handoff::adapter_for(&manifest.id).is_some()
             && !matches!(state, State::NotInstalled | State::Installing),
+        can_use_saved: crate::provider_handoff::adapter_for(&manifest.id).is_some_and(|a| a.takes_saved_provider()),
         can_revert_provider: crate::provider_handoff::marker(&machine.home, &manifest.id).is_some(),
         configure: match &manifest.configure {
             Some(c) if !busy && !matches!(state, State::NotInstalled | State::Installing) => c.label.clone(),
