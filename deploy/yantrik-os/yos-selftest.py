@@ -951,6 +951,14 @@ def main():
             out, err, code = run(lambda: yos.cmd_describe(["greeter"]))
             check("`describe greeter` answers as howdy", code is None and "nobody greeted" in out,
                   (out, err))
+            out, err, code = run(lambda: yos.cmd_describe(["greeter", "--json"]))
+            try:
+                answer = json.loads(out)
+            except ValueError:
+                answer = {}
+            check("`describe greeter --json` is one JSON document and nothing else",
+                  code is None and answer.get("app") == "howdy"
+                  and out.strip() == json.dumps(answer), (out, err))
             out, err, code = run(lambda: yos.cmd_describe(["sysmonitor"]))
             check("an alias of a closed window reaches the service that answers for it",
                   code is None and "System — CPU" in out, (out, err))

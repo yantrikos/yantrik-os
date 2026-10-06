@@ -17,6 +17,7 @@ protocol and prints what came back.
                                         desktop's own sockets that are not surfaces
     yos describe shell                  what the desktop is showing
     yos describe notes                  what an app is showing
+    yos describe notes --json           the same, as one JSON document, for a script to read
     yos screen                          the whole screen in one reading: each window, what it
                                         shows and what it can be asked to do, with ids
     yos screen text [mind-view] [x,y,w,h]
@@ -976,8 +977,13 @@ def without_raw_breaks(json_text):
 
 def cmd_describe(argv):
     if not argv:
-        die("usage: yos describe <shell|notes|...>")
+        die("usage: yos describe <shell|notes|...> [--json]")
     view = call(argv[0], "app.describe")
+    if "--json" in argv:
+        # The result as it came back, one JSON document, nothing else on stdout, so a script can
+        # pipe it straight to jq; the text below is rendered for a person to read.
+        print(json.dumps(view))
+        return
     print(one_line(view.get("summary", "(no summary)")))
     if "revision" in view:
         print("revision: %s" % view["revision"])
