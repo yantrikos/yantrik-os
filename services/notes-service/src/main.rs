@@ -453,7 +453,7 @@ mod tests {
         std::fs::write(notes.dir.join("keep.md"), "# keep
 
 mine").unwrap();
-        let peer = yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 };
+        let peer = yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0, started: None };
         let err = notes.handle_from("notes.delete", serde_json::json!({ "id": "keep" }), Some(peer)).unwrap_err();
         assert_eq!(err.code, -32001, "{}", err.message);
         assert!(err.message.contains("app.act"), "{}", err.message);
