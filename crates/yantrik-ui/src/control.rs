@@ -384,6 +384,19 @@ pub(crate) fn run_starter_ok(
     }
 }
 
+/// A run's caller must have been pinned at accept: its start time read while the kernel's pid was
+/// still that process (L8 of #667's review, round 3). With none, the caller had already exited by
+/// then, and its pid could since name another process of the person's whose ancestry the walk
+/// would read as whole, so the call is refused.
+pub(crate) fn caller_pinned(started: Option<u64>) -> Result<(), String> {
+    match started {
+        Some(_) => Ok(()),
+        None => Err("a run is started by a caller this shell could pin at accept, and this caller's start time \
+                     could not be read (it had already exited): refused, nothing was sent"
+            .into()),
+    }
+}
+
 /// Whether any pid in `chain` (the caller and its ancestors) is one of `live_jobs`, the agent
 /// terminal's running commands.
 pub(crate) fn descends_from_a_job(chain: &[i32], live_jobs: &[i32]) -> bool {
@@ -1394,11 +1407,12 @@ pub fn publish(
                     None => None,
                     Some(r) => {
                         let run = r.as_str().ok_or("`run` must be text; nothing was sent")?.trim().to_string();
-                        let caller = yantrik_app_runtime::control::caller().map(|c| c.uid);
+                        let caller = yantrik_app_runtime::control::caller();
                         // SAFETY: cannot fail.
                         let me = unsafe { libc::geteuid() };
                         let token = yantrik_app_runtime::control::agent_token().is_some();
-                        run_starter_ok(&crate::mind_view::requester_now(), caller, me, token, caller_in_agent_job())?;
+                        run_starter_ok(&crate::mind_view::requester_now(), caller.as_ref().map(|c| c.uid), me, token, caller_in_agent_job())?;
+                        caller_pinned(caller.as_ref().and_then(|c| c.started))?;
                         if !yantrik_harness::grants::scope_id_ok(&run) {
                             return Err(format!("{run:?} is not a run id: 1 to 64 of A-Z a-z 0-9 . _ : -; nothing was sent"));
                         }
@@ -3708,6 +3722,21 @@ mod run_starter_tests {
         assert!(super::descends_from_a_job(&[7311, 7300, 4240, 900, 1], &[4240]));
         assert!(!super::descends_from_a_job(&[7311, 7300, 900, 1], &[4240]), "not under a job");
         assert!(!super::descends_from_a_job(&[], &[4240]));
+    }
+
+    #[test]
+    fn a_run_caller_with_no_start_time_at_accept_is_refused() {
+        let why = super::caller_pinned(None).unwrap_err();
+        assert!(why.contains("start time") && why.contains("nothing was sent"), "{why}");
+        assert_eq!(super::caller_pinned(Some(987_654)), Ok(()));
+        // And in the handler, after the starter check and before the secret or the send.
+        let src = include_str!("control.rs");
+        let at = src.find("Action::new(\"send_message\"").unwrap();
+        let body = &src[at..at + 5000];
+        let starter = body.find("run_starter_ok(").unwrap();
+        let pinned = body.find("caller_pinned(").unwrap();
+        let secret = body.find("run_secret_ok(").unwrap();
+        assert!(starter < pinned && pinned < secret, "the starter, then the pin, then the secret");
     }
 
     #[test]
