@@ -62,6 +62,7 @@ use crate::{Answer, Capabilities, Chunk, Harness, Health, Turn};
 
 mod erase;
 pub mod grant;
+pub mod screen;
 pub use erase::{Redactor, ShellErased, ShellErasure, ShellPlan, ShellRedactor};
 
 /// The summary a call gets when its turn ended before it did.
@@ -119,6 +120,11 @@ struct Flight {
     /// The run this turn belongs to, as the desktop stamped it when the harness took the turn
     /// (`Turn::run`, `turn["run"]`): the only run a run grant is matched against on this turn.
     run: Option<String>,
+    /// Grant cards this turn raised ([`grant::MOST_CARDS_PER_TURN`]).
+    grant_cards: usize,
+    /// The person answered one of this turn's grant cards with anything but a pressed yes, so it
+    /// raises no more.
+    grant_declined: bool,
 }
 
 /// Why a turn's chunks have nowhere to go.
@@ -177,6 +183,8 @@ impl Flight {
             calls: HashMap::new(),
             grant_asks: HashMap::new(),
             run: None,
+            grant_cards: 0,
+            grant_declined: false,
         }
     }
 
@@ -626,6 +634,9 @@ struct State {
     /// Turns a re-attaching harness picked back up, waiting for the shell to take their
     /// answers ([`Host::take_resumed`]).
     resumed: Vec<Resumed>,
+    /// When each harness id last raised grant cards, newest last, within
+    /// [`grant::CARD_WINDOW`]. In memory only: a shell restart starts it empty.
+    grant_cards: HashMap<String, VecDeque<Instant>>,
 }
 
 /// A turn a harness was still answering when it lost this desktop, taken back on its re-attach
@@ -694,6 +705,7 @@ impl Host {
                 next_session: 1,
                 issued: HashSet::new(),
                 events: EventCounts::default(),
+                grant_cards: HashMap::new(),
                 resumed: Vec::new(),
             })),
             liveness: Arc::new(pid_alive),
@@ -845,6 +857,12 @@ impl Host {
             return Ok(());
         };
         let key = grant::answer_key(answer, by_option);
+        if key == "no" {
+            // A No, or a typed answer: this turn asks no more.
+            if let Some(flight) = harness.in_flight.get_mut(&run_id) {
+                flight.grant_declined = true;
+            }
+        }
         let mut entry = serde_json::json!({ "turn_id": run_id, "request_id": request_id, "answer": key });
         if key == "session" {
             entry["scope_id"] = serde_json::json!(asked.scope_id);
@@ -1917,6 +1935,9 @@ impl Host {
             return Ok(self.redact(turn_id, &who, &session, raw));
         }
         let counts = &mut st.events;
+        // Whether any of this harness's turns has a grant card still waiting on the person.
+        let card_open = harness.in_flight.values().any(|f| !f.grant_asks.is_empty());
+        let card_times = st.grant_cards.entry(who.clone()).or_default();
 
         let Some(flight) = harness.in_flight.get_mut(&turn_id) else {
             if harness.finished.contains(&turn_id) {
@@ -2003,17 +2024,23 @@ impl Host {
                     }
                     return Ok(reply);
                 }
+                // The OS's own limits on asking, whatever the Mind holds itself to.
+                if let Err(why) = grant::may_raise(card_open, flight.grant_cards, flight.grant_declined, card_times, Instant::now()) {
+                    counts.malformed += 1;
+                    tracing::warn!(harness = %who, turn = turn_id, why = %why, "grant_request over a card limit; refused");
+                    return Ok(refused(why));
+                }
                 grant_ask = Some((request_id.clone(), grant::Asked { query: query.clone(), scope_id }));
                 Event::Request { request_id, prompt: grant::prompt(&query), options: grant::labels(), by_host: true }
             }
             // The grant card's four answers are the host's: a harness may not ask them itself, so
             // the person never sees a copy of the card whose "Always" grants nothing.
-            Event::Request { options, .. } if grant::copies_the_card(&options) => {
+            Event::Request { ref prompt, ref options, .. } if grant::copies_the_card(prompt, options) => {
                 counts.malformed += 1;
-                tracing::warn!(harness = %who, turn = turn_id, "a request offering the grant card's answers; refused");
+                tracing::warn!(harness = %who, turn = turn_id, "a request that looks like the grant card; refused");
                 return Ok(refused(
-                    "a `request` may not offer the search grant card's answers (Once, This session, Always, \
-                     No): ask for a search with `grant_request`"
+                    "a `request` may not look like the search grant card: no `Always` or `This session` \
+                     answer, and not its words; ask for a search with `grant_request`"
                         .to_string(),
                 ));
             }
@@ -2038,6 +2065,8 @@ impl Host {
             }
             if let Some((id, asked)) = grant_ask {
                 flight.grant_asks.insert(id, asked);
+                flight.grant_cards += 1;
+                card_times.push_back(Instant::now());
             }
         } else {
             self.record("event", turn_id, |s| s.append(turn_id, "event", raw));

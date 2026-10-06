@@ -30,16 +30,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
-use unicode_script::{Script, UnicodeScript};
-
 use crate::grants::{self, Grant};
 
 /// The answers on the card, in order, and what each tells the Mind.
 pub const OPTIONS: [(&str, &str); 4] = [("Once", "once"), ("This session", "session"), ("Always", "always"), ("No", "no")];
 
-/// The longest query a card shows.
-pub const MOST_QUERY_CHARS: usize = 300;
+pub use super::screen::MOST_QUERY_CHARS;
 
 /// What the shell is told, to journal and to have root write a grant.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -75,6 +71,7 @@ pub(super) struct Asked {
 }
 
 /// Whether `harness` may ask this at all; why not, for the `refused` reply (the Mind logs it).
+/// The query itself is screened by [`super::screen::query`]: shown exactly or not at all.
 pub fn screen(harness: &str, capability: &str, query: &str) -> Result<(), String> {
     if capability != grants::CAPABILITY {
         return Err(format!("no such capability: `{capability}` (there is only {})", grants::CAPABILITY));
@@ -82,87 +79,52 @@ pub fn screen(harness: &str, capability: &str, query: &str) -> Result<(), String
     if harness != grants::AGENT {
         return Err(format!("search grants are the Yantrik Mind's (`{}`), not `{harness}`'s", grants::AGENT));
     }
-    if query.trim().is_empty() || query.trim() != query {
-        return Err("the query is the exact search, with no space around it".into());
+    super::screen::query(query)
+}
+
+/// At most this many grant cards on one turn.
+pub const MOST_CARDS_PER_TURN: usize = 2;
+
+/// At most this many grant cards from one harness within [`CARD_WINDOW`].
+pub const MOST_CARDS_PER_WINDOW: usize = 3;
+
+/// The window [`MOST_CARDS_PER_WINDOW`] counts over.
+pub const CARD_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Whether one more grant card may be raised, by the OS's own limits on asking, whatever the
+/// Mind holds itself to: one card open at a time for the harness (`open`: one of its turns has a
+/// card the person has not answered, which includes a card the person closed), at most
+/// [`MOST_CARDS_PER_TURN`] on a turn (`on_turn` raised so far), none for the rest of a turn after
+/// a No or a typed answer (`declined`), and at most [`MOST_CARDS_PER_WINDOW`] per harness per
+/// [`CARD_WINDOW`] (`raised`: when its cards were raised, oldest first; ones older than the window
+/// are dropped here). The window is kept in memory, so a shell restart starts it empty. Why not,
+/// for the `refused` reply.
+pub fn may_raise(
+    open: bool,
+    on_turn: usize,
+    declined: bool,
+    raised: &mut std::collections::VecDeque<std::time::Instant>,
+    now: std::time::Instant,
+) -> Result<(), String> {
+    while raised.front().is_some_and(|at| now.saturating_duration_since(*at) >= CARD_WINDOW) {
+        raised.pop_front();
     }
-    if query.chars().count() > MOST_QUERY_CHARS {
-        return Err(format!("a query is at most {MOST_QUERY_CHARS} characters"));
+    if open {
+        return Err("a search grant card is already waiting on the person; ask again once it is answered".into());
     }
-    // Shown exactly or not at all: every character must draw as itself on the card.
-    if let Some((c, why)) = query.chars().find_map(|c| unshowable(c).map(|why| (c, why))) {
+    if declined {
+        return Err("the person said no to a search on this turn; ask no more on it".into());
+    }
+    if on_turn >= MOST_CARDS_PER_TURN {
+        return Err(format!("this turn has asked {MOST_CARDS_PER_TURN} search grants, the most one turn may"));
+    }
+    if raised.len() >= MOST_CARDS_PER_WINDOW {
         return Err(format!(
-            "the query holds U+{:04X} ({why}), which the card cannot show as it is; a query is shown exactly or not at all",
-            c as u32
-        ));
-    }
-    if let Some((word, scripts)) = mixed_script_word(query) {
-        return Err(format!(
-            "the query mixes {} letters in the word {:?}, which can read as another word; refused",
-            scripts.join(" and "),
-            word
+            "{MOST_CARDS_PER_WINDOW} search grant cards in the last {} minutes is the most; ask later",
+            CARD_WINDOW.as_secs() / 60
         ));
     }
     Ok(())
-}
-
-/// Why `c` may not be in a query the card shows, if it may not: what it is, for the refusal.
-///
-/// An allowlist by category: letters, marks, numbers, punctuation, symbols and the one space
-/// U+0020. Refused are the categories that draw as nothing or as something else (Cc control,
-/// Cf format, Zl and Zp separators, Co private use, Cn unassigned, Cs surrogates), every space
-/// but U+0020, the variation selectors, the tag characters, the other default-ignorable marks
-/// that draw as nothing, and the card's own quote marks, which would close its quote.
-pub fn unshowable(c: char) -> Option<&'static str> {
-    match c {
-        ' ' => return None,
-        '\u{201c}' | '\u{201d}' | '"' => return Some("a quote mark, which would end the card's quote"),
-        '\u{fe00}'..='\u{fe0f}' | '\u{e0100}'..='\u{e01ef}' => return Some("a variation selector"),
-        '\u{e0000}'..='\u{e007f}' => return Some("a tag character"),
-        // Default-ignorable, so drawn as nothing, though not Cf: the combining grapheme joiner,
-        // the Hangul fillers, the Khmer inherent vowels and the Mongolian variation selectors.
-        '\u{034f}' | '\u{115f}' | '\u{1160}' | '\u{17b4}' | '\u{17b5}' | '\u{180b}'..='\u{180f}' | '\u{3164}' | '\u{ffa0}' => {
-            return Some("a character that draws as nothing")
-        }
-        _ => {}
-    }
-    match c.general_category() {
-        GeneralCategory::Control => Some("a control character"),
-        GeneralCategory::Format => Some("an invisible format character"),
-        GeneralCategory::LineSeparator => Some("a line separator"),
-        GeneralCategory::ParagraphSeparator => Some("a paragraph separator"),
-        GeneralCategory::PrivateUse => Some("a private-use character"),
-        GeneralCategory::Unassigned => Some("an unassigned code point"),
-        GeneralCategory::Surrogate => Some("a surrogate"),
-        GeneralCategory::SpaceSeparator => Some("a space other than U+0020"),
-        _ if c.is_whitespace() => Some("whitespace other than U+0020"),
-        _ => None,
-    }
-}
-
-/// The first word (split at U+0020) whose letters come from more than one script, with the
-/// scripts' names: `раypal` (Cyrillic and Latin), `ΑpplΕ` (Greek and Latin). Common and
-/// inherited characters (digits, punctuation, marks) belong to every script. Han with Hiragana
-/// and Katakana, Han with Bopomofo, and Han with Hangul are each one writing system, as UTS #39
-/// has it, so Japanese, Chinese and Korean words pass.
-pub fn mixed_script_word(query: &str) -> Option<(String, Vec<&'static str>)> {
-    const ONE_SYSTEM: [&[Script]; 3] = [
-        &[Script::Han, Script::Hiragana, Script::Katakana],
-        &[Script::Han, Script::Bopomofo],
-        &[Script::Han, Script::Hangul],
-    ];
-    for word in query.split(' ') {
-        let mut seen: Vec<Script> = Vec::new();
-        for c in word.chars() {
-            let script = c.script();
-            if !matches!(script, Script::Common | Script::Inherited | Script::Unknown) && !seen.contains(&script) {
-                seen.push(script);
-            }
-        }
-        if seen.len() > 1 && !ONE_SYSTEM.iter().any(|system| seen.iter().all(|s| system.contains(s))) {
-            return Some((word.to_string(), seen.iter().map(|s| s.full_name()).collect()));
-        }
-    }
-    None
 }
 
 /// Whether the attach that sent a `grant_request` is the Mind by the kernel's word: the uid
@@ -179,11 +141,15 @@ pub(super) fn is_the_mind(grants: Option<&Grants>, attached_uid: Option<u32>) ->
     }
 }
 
-/// Whether a harness's own `request` offers the grant card's answers: refused, so a harness cannot
-/// draw a copy of the card whose *Always* grants nothing and that it could still read as consent.
-pub fn copies_the_card(options: &[String]) -> bool {
+/// Whether a harness's own `request` looks like the grant card: refused, so a harness cannot draw a
+/// copy of the card whose *Always* grants nothing and that it could still read as consent. Any
+/// option that is `always` or `this session` (case-folded, trimmed) is the card's, in any order and
+/// among any others, and so is a prompt that opens with the card's own first line.
+pub fn copies_the_card(prompt: &str, options: &[String]) -> bool {
     let fold = |o: &str| o.trim().to_lowercase();
-    options.len() == OPTIONS.len() && options.iter().zip(OPTIONS).all(|(o, (label, _))| fold(o) == fold(label))
+    let card_only = ["always", "this session"];
+    let first_line = self::prompt("").lines().next().unwrap_or_default().to_string();
+    options.iter().any(|o| card_only.contains(&fold(o).as_str())) || prompt.trim_start().starts_with(&first_line)
 }
 
 /// The card's words: the host's, around the exact query.
@@ -320,9 +286,9 @@ mod tests {
     fn once_stores_nothing_and_a_typed_answer_is_no() {
         let (host, told) = host_reading(&scratch("once"));
         let (session, turn, _answer) = minds_turn(&host);
-        grant_request(&host, &session, turn, "a", "q one");
-        grant_request(&host, &session, turn, "b", "q two");
+        assert_eq!(grant_request(&host, &session, turn, "a", "q one"), json!({}));
         host.answer(turn, "a", &json!("Once"), true).unwrap();
+        assert_eq!(grant_request(&host, &session, turn, "b", "q two"), json!({}));
         host.answer(turn, "b", &json!("Always"), false).unwrap();
         let polled = poll(&host, &session);
         let answers: Vec<&str> = polled["answers"].as_array().unwrap().iter().map(|a| a["answer"].as_str().unwrap()).collect();
@@ -465,84 +431,137 @@ mod tests {
         assert_eq!(send_event(&host, &session, turn, own), json!({}));
         let shown: Vec<Chunk> = answer.try_iter().collect();
         assert!(matches!(shown.last(), Some(Chunk::Event(Event::Request { by_host: false, .. }))), "{shown:?}");
-        assert!(!copies_the_card(&["Once".into(), "Always".into(), "No".into()]));
-        assert!(copies_the_card(&labels()));
+        assert!(copies_the_card("x", &labels()));
     }
 
-    // ── H1: the card shows the exact query or none ──
+    // ── L4-r2: anything like the card is the card ──
 
-    fn refused(query: &str) -> bool {
-        screen("mind", "web_search_own_words", query).is_err()
+    #[test]
+    fn a_request_offering_always_or_this_session_in_any_order_is_refused() {
+        let (host, _) = host_reading(&scratch("copy-r2"));
+        let (session, turn, answer) = minds_turn(&host);
+        for (i, options) in [
+            json!(["Always", "Once", "This session", "No"]),
+            json!(["Once", "This session", "Always"]),
+            json!(["Once", "This session", "Always", "No", "Cancel"]),
+            json!(["Yes", " ALWAYS "]),
+            json!(["this session", "no"]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let copy = json!({"kind": "request", "request_id": format!("r{i}"), "prompt": "May I?", "options": options});
+            assert!(send_event(&host, &session, turn, copy)["refused"].is_string(), "{options}");
+        }
+        assert_eq!(cards(&answer), 0);
+        let s = |v: &[&str]| v.iter().map(|o| o.to_string()).collect::<Vec<_>>();
+        assert!(copies_the_card("May I?", &s(&["Yes", "always"])));
+        assert!(copies_the_card("May I?", &s(&["\tThis Session "])));
+        assert!(!copies_the_card("May I?", &s(&["Once", "No", "Always ask me"])), "a longer answer is not the card's");
     }
 
     #[test]
-    fn only_the_minds_one_capability_with_a_plain_query_is_asked() {
+    fn a_request_whose_prompt_opens_with_the_cards_words_is_refused() {
+        let (host, _) = host_reading(&scratch("copy-prompt"));
+        let (session, turn, answer) = minds_turn(&host);
+        let first = prompt("").lines().next().unwrap().to_string();
+        assert_eq!(first, "The Mind wants to search the web in its own words:");
+        for (i, p) in [prompt("rust"), first.clone(), format!("  {first} please")].into_iter().enumerate() {
+            let copy = json!({"kind": "request", "request_id": format!("p{i}"), "prompt": p, "options": ["Yes", "No"]});
+            assert!(send_event(&host, &session, turn, copy)["refused"].is_string(), "{p}");
+        }
+        assert_eq!(cards(&answer), 0);
+        assert!(!copies_the_card("Should the Mind search the web?", &["Yes".into(), "No".into()]));
+    }
+
+    // ── M4: the OS limits how often the person is asked ──
+
+    /// A second turn for the Mind's session, after closing `turn`.
+    fn next_turn(host: &Host, session: &str, turn: u64) -> (u64, crate::Answer) {
+        call(host, Some(MIND_UID), protocol::COMPLETE, json!({"session": session, "turn_id": turn}));
+        let agent = host.start_agent("mind").unwrap();
+        let answer = host.send_to(&agent, Turn::new("more")).unwrap();
+        let handed = poll(host, session);
+        (handed["turn_id"].as_u64().expect("a turn"), answer)
+    }
+
+    #[test]
+    fn one_open_grant_card_at_a_time() {
+        let (host, told) = host_reading(&scratch("limit-open"));
+        let (session, turn, answer) = minds_turn(&host);
+        assert_eq!(grant_request(&host, &session, turn, "a", "q one"), json!({}));
+        // Unanswered, or closed by the person (which tells the host nothing): still open.
+        let reply = grant_request(&host, &session, turn, "b", "q two");
+        assert!(reply["refused"].as_str().unwrap().contains("already waiting"), "{reply}");
+        assert_eq!(cards(&answer), 1);
+        assert!(told.lock().unwrap().is_empty());
+        host.answer(turn, "a", &json!("Once"), true).unwrap();
+        assert_eq!(grant_request(&host, &session, turn, "c", "q three"), json!({}), "answered, so another may be asked");
+    }
+
+    #[test]
+    fn at_most_two_grant_cards_per_turn() {
+        let (host, _) = host_reading(&scratch("limit-turn"));
+        let (session, turn, answer) = minds_turn(&host);
+        for id in ["a", "b"] {
+            assert_eq!(grant_request(&host, &session, turn, id, "q"), json!({}));
+            host.answer(turn, id, &json!("Once"), true).unwrap();
+        }
+        let reply = grant_request(&host, &session, turn, "c", "q");
+        assert!(reply["refused"].as_str().unwrap().contains("the most one turn may"), "{reply}");
+        assert_eq!(cards(&answer), 2);
+    }
+
+    #[test]
+    fn no_grant_card_for_the_rest_of_a_turn_after_a_no_or_a_typed_answer() {
+        for (said, pressed) in [("No", true), ("Always", false), ("sure, go ahead", false)] {
+            let (host, _) = host_reading(&scratch("limit-no"));
+            let (session, turn, answer) = minds_turn(&host);
+            assert_eq!(grant_request(&host, &session, turn, "a", "q"), json!({}));
+            host.answer(turn, "a", &json!(said), pressed).unwrap();
+            let reply = grant_request(&host, &session, turn, "b", "q");
+            assert!(reply["refused"].as_str().unwrap().contains("said no"), "{said}: {reply}");
+            assert_eq!(cards(&answer), 1);
+            // The next turn may ask again.
+            let (next, answer) = next_turn(&host, &session, turn);
+            assert_eq!(grant_request(&host, &session, next, "c", "q"), json!({}), "{said}");
+            assert_eq!(cards(&answer), 1);
+        }
+    }
+
+    #[test]
+    fn at_most_three_grant_cards_per_harness_in_ten_minutes() {
+        let (host, _) = host_reading(&scratch("limit-window"));
+        let (session, turn, _first) = minds_turn(&host);
+        for id in ["a", "b"] {
+            assert_eq!(grant_request(&host, &session, turn, id, "q"), json!({}));
+            host.answer(turn, id, &json!("Once"), true).unwrap();
+        }
+        let (next, answer) = next_turn(&host, &session, turn);
+        assert_eq!(grant_request(&host, &session, next, "c", "q"), json!({}));
+        host.answer(next, "c", &json!("Once"), true).unwrap();
+        let reply = grant_request(&host, &session, next, "d", "q");
+        assert!(reply["refused"].as_str().unwrap().contains("10 minutes"), "{reply}");
+        assert_eq!(cards(&answer), 1);
+
+        // The window itself: cards older than ten minutes no longer count.
+        let now = std::time::Instant::now();
+        let mut raised: std::collections::VecDeque<_> = [now; 3].into();
+        assert!(may_raise(false, 0, false, &mut raised, now).is_err());
+        assert_eq!(may_raise(false, 0, false, &mut raised, now + CARD_WINDOW), Ok(()));
+        assert!(raised.is_empty());
+    }
+
+    // ── H1: the card shows the exact query or none (each case is in `host::screen`'s tests) ──
+
+    #[test]
+    fn only_the_minds_one_capability_with_a_screened_query_is_asked() {
         assert!(screen("mind", "web_search_own_words", "rust 1.97 release notes").is_ok());
         assert!(screen("mind", "web_search_anything", "x").unwrap_err().contains("no such capability"));
         assert!(screen("pi", "web_search_own_words", "x").is_err());
-        assert!(refused(""));
-        assert!(refused(" padded "));
-        assert!(refused(&"x".repeat(MOST_QUERY_CHARS + 1)));
-    }
-
-    #[test]
-    fn ordinary_queries_in_any_one_script_pass() {
-        for ok in [
-            "weather in Pune",
-            "café crème brûlée recipe",
-            "Москва погода",
-            "Москва weather",
-            "αβγ decay",
-            "東京 天気",
-            "ラーメン屋 渋谷",
-            "日本語の文法",
-            "서울 날씨",
-            "北京 天气 注音ㄅㄆ",
-            "naïve Bayes 2027",
-            "C++ std::vector",
-            "pizza 🍕 near me",
-            "it's 3/4 – ok?",
-            "हिन्दी समाचार",
-        ] {
-            assert_eq!(screen("mind", "web_search_own_words", ok), Ok(()), "{ok}");
-        }
-    }
-
-    #[test]
-    fn control_characters_cc_are_refused() {
-        for q in ["two\nlines", "a\tb", "bell\u{7}", "nel\u{85}x", "del\u{7f}x"] {
-            assert!(refused(q), "{q:?}");
-        }
-    }
-
-    #[test]
-    fn format_characters_cf_are_refused() {
-        // The review's: U+200B, U+200D, U+2060, U+FEFF, the soft hyphen, the Arabic letter mark.
-        for c in ['\u{200b}', '\u{200d}', '\u{2060}', '\u{feff}', '\u{ad}', '\u{61c}', '\u{200e}', '\u{200f}', '\u{202e}', '\u{2066}', '\u{2069}'] {
-            let q = format!("rust{c}editions");
-            assert!(refused(&q), "U+{:04X}", c as u32);
-            assert!(screen("mind", "web_search_own_words", &q).unwrap_err().contains(&format!("U+{:04X}", c as u32)));
-        }
-    }
-
-    #[test]
-    fn line_and_paragraph_separators_zl_zp_are_refused() {
-        assert!(refused("a\u{2028}b"));
-        assert!(refused("a\u{2029}b"));
-        // The review's second scenario: a fake closing quote, a new paragraph, the card's own words.
-        assert!(refused("foo\u{201d} \u{2029}Always: until you revoke it"));
-        assert!(refused("foo \u{2029}Always: until you revoke it"), "the separator alone");
-    }
-
-    #[test]
-    fn private_use_co_and_unassigned_cn_are_refused() {
-        for c in ['\u{e000}', '\u{f8ff}', '\u{f0000}', '\u{10fffd}'] {
-            assert!(refused(&format!("x{c}y")), "U+{:04X}", c as u32);
-        }
-        for c in ['\u{378}', '\u{fffe}', '\u{e0080}'] {
-            assert_eq!(unshowable(c), Some("an unassigned code point"), "U+{:04X}", c as u32);
-            assert!(refused(&format!("x{c}y")));
-        }
+        assert!(screen("mind", "web_search_own_words", " padded ").is_err());
+        assert!(screen("mind", "web_search_own_words", "cafe\u{301}").unwrap_err().contains("NFKC"), "the query screen runs");
+        assert!(screen("mind", "web_search_own_words", "!wp foo").unwrap_err().contains("search-engine syntax"));
     }
 
     #[test]
@@ -552,64 +571,6 @@ mod tests {
         // screen refuses the category all the same; this pins that the wire does too.
         let raw = r#"{"kind": "grant_request", "request_id": "g", "capability": "web_search_own_words", "query": "a\ud800b"}"#;
         assert!(serde_json::from_str::<serde_json::Value>(raw).is_err());
-    }
-
-    #[test]
-    fn variation_selectors_are_refused() {
-        // The review's: U+FE0F.
-        for c in ['\u{fe00}', '\u{fe0f}', '\u{e0100}', '\u{e01ef}'] {
-            assert_eq!(unshowable(c), Some("a variation selector"), "U+{:04X}", c as u32);
-        }
-        assert!(refused("heart \u{2764}\u{fe0f}"));
-    }
-
-    #[test]
-    fn tag_characters_are_refused() {
-        // The review's first scenario: `rust editions` and, in tag characters, the person's data.
-        let smuggled: String = "rust editions".chars().chain("ssn 123".chars().map(|c| char::from_u32(0xe0000 + c as u32).unwrap())).collect();
-        assert!(refused(&smuggled));
-        for c in ['\u{e0001}', '\u{e0020}', '\u{e0041}', '\u{e007f}'] {
-            assert!(refused(&format!("x{c}")), "U+{:04X}", c as u32);
-        }
-    }
-
-    #[test]
-    fn whitespace_other_than_the_space_is_refused() {
-        for c in ['\u{a0}', '\u{2002}', '\u{2003}', '\u{2009}', '\u{200a}', '\u{202f}', '\u{205f}', '\u{3000}', '\u{1680}', '\u{b}', '\u{c}', '\r'] {
-            assert!(refused(&format!("a{c}b")), "U+{:04X}", c as u32);
-        }
-        assert!(!refused("a b c"), "U+0020 is the one space");
-        assert!(!refused("a  b"), "two of them are still spaces, shown as they are");
-    }
-
-    #[test]
-    fn other_marks_that_draw_as_nothing_are_refused() {
-        for c in ['\u{34f}', '\u{115f}', '\u{1160}', '\u{17b4}', '\u{180e}', '\u{3164}', '\u{ffa0}'] {
-            assert!(refused(&format!("a{c}b")), "U+{:04X}", c as u32);
-        }
-    }
-
-    #[test]
-    fn the_cards_own_quote_marks_are_refused() {
-        // The review's: U+201D, the card's closing quote; its opening one and the straight one too.
-        for q in ["foo\u{201d} bar", "\u{201c}foo", "say \"hi\""] {
-            assert!(screen("mind", "web_search_own_words", q).unwrap_err().contains("quote"), "{q}");
-        }
-        assert!(!refused("it's ‘fine’ «ok»"), "other quote marks cannot close the card's");
-    }
-
-    #[test]
-    fn a_word_mixing_scripts_is_refused_with_its_scripts_named() {
-        // The review's Cyrillic homoglyphs: р and а in "paypal".
-        let why = screen("mind", "web_search_own_words", "\u{440}\u{430}ypal login").unwrap_err();
-        assert!(why.contains("Cyrillic") && why.contains("Latin"), "{why}");
-        // Greek omicron in "google".
-        let why = screen("mind", "web_search_own_words", "g\u{3bf}ogle").unwrap_err();
-        assert!(why.contains("Greek") && why.contains("Latin"), "{why}");
-        assert!(refused("Αpple"), "Greek capital alpha");
-        assert!(refused("abcабв"));
-        assert!(refused("東京tokyo"), "Han and Latin in one word");
-        assert_eq!(mixed_script_word("Москва weather"), None, "two words, one script each");
     }
 
     #[test]
