@@ -1,0 +1,37 @@
+configure: 1280x32
+configure: 1280x32
+configure: 1280x32
+configure: 1280x32
+configure: 1280x32
+configure: 1280x32
+configure: 1280x32
+configure: 1280x32
+bar: painted (Stats { renders: 2, pixels_painted: 43264, commits: 2 })
+pointer press at (1220.0, 16.0)
+bar: painted (Stats { renders: 3, pixels_painted: 43876, commits: 3 })
+bar: painted (Stats { renders: 2, pixels_painted: 41572, commits: 2 })
+configure: 1280x32
+configure: 360x200
+keyboard enter (popover: true)
+configure: 1280x32
+configure: 360x200
+configure: 1280x32
+configure: 360x200
+configure: 1280x32
+configure: 360x200
+popover: painted (Stats { renders: 3, pixels_painted: 91968, commits: 3 })
+key XK_h (popover has focus: true)
+key XK_i (popover has focus: true)
+popover: painted (Stats { renders: 4, pixels_painted: 101952, commits: 4 })
+wake: asked for Some(491ms), slept 284.511µs, animating false
+wake: asked for Some(485ms), slept 349.875774ms, animating false
+key XK_Escape (popover has focus: true)
+wake: asked for Some(130ms), slept 2.689204ms, animating false
+bar: painted (Stats { renders: 4, pixels_painted: 44488, commits: 4 })
+bar: painted (Stats { renders: 3, pixels_painted: 42184, commits: 3 })
+configure: 1280x32
+wake: asked for None, slept 2.023728ms, animating false
+wake: asked for None, slept 100.424µs, animating false
+wake: asked for None, slept 1.333660087s, animating false
+Io error: Broken pipe (os error 32)
+report: bars=2 wakeups=18 renders=7 commits=7 pixels_painted=86672 cpu_ticks(user,sys)=(13, 1) (1 tick = 10 ms)

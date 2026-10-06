@@ -1,0 +1,29 @@
+[package]
+name = "yantrik-panel-spike"
+version = "0.0.0"
+edition = "2021"
+description = "Spike: the bar as a wlr-layer-shell panel, drawn by Slint's software renderer (saga #4). Not shipped."
+publish = false
+
+[[bin]]
+name = "yantrik-panel-spike"
+path = "src/main.rs"
+
+[dependencies]
+slint = { workspace = true }
+chrono = { workspace = true }
+# Same pins as yantrik-lock, which already ships a Slint-on-wl_shm client: no new lock entries
+# for the Wayland stack.
+smithay-client-toolkit = { version = "0.20", default-features = false, features = ["calloop", "xkbcommon"] }
+wayland-client = "0.31"
+# So build.rs can resolve the shared theme's include path via `links`.
+yantrik-design-tokens = { workspace = true }
+
+# Test helpers only (they drive the spike on a headless compositor; see the design doc):
+# a plain xdg toplevel, and a virtual pointer and keyboard to click and type without hardware.
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+xkbcommon = { version = "0.8", default-features = false }
+
+[build-dependencies]
+slint-build = "1.17"

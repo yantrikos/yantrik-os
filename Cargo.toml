@@ -41,6 +41,8 @@ members = [
     "crates/yantrik-app-runtime",
     # The lock screen as a Wayland session lock (#313).
     "crates/yantrik-lock",
+    # Spike (saga #4): the bar as a wlr-layer-shell panel. Not shipped.
+    "crates/yantrik-panel-spike",
     "crates/yantrik-mind-view-title",
     # The one way out for the mind account: a CONNECT proxy by the person's policy.
     "crates/yantrik-egress",

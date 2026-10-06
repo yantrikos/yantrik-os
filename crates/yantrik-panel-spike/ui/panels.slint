@@ -1,0 +1,72 @@
+// The spike's two surfaces, as two separate Slint windows: the bar (top layer, 32px, exclusive
+// zone) and the popover (overlay layer, 360x200). Each is its own `Window` because each becomes
+// its own wl_surface; the shell's one big window cannot be both at once.
+import { Theme } from "theme.slint";
+
+export component BarView inherits Window {
+    in property <string> time: "00:00";
+    in property <bool> popover-open: false;
+    callback toggle-popover();
+    default-font-family: Theme.font-ui;
+    background: Theme.bg-surface;
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 4px;
+        padding-bottom: 4px;
+        spacing: 12px;
+        alignment: space-between;
+        Text {
+            text: "Yantrik";
+            color: Theme.text-dim;
+            font-size: Theme.fs-caption;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.time;
+            color: Theme.text-primary;
+            font-size: Theme.fs-body;
+            vertical-alignment: center;
+        }
+        Rectangle {
+            width: 96px;
+            background: area.has-hover ? Theme.bg-elevated : Theme.bg-card;
+            border-radius: 6px;
+            Text {
+                text: root.popover-open ? "Close" : "Open";
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+            }
+            area := TouchArea { clicked => { root.toggle-popover(); } }
+        }
+    }
+}
+
+export component PopoverView inherits Window {
+    // What was typed, so a test can see the keyboard reached THIS window and not the bar.
+    out property <string> typed <=> field.text;
+    callback dismiss();
+    default-font-family: Theme.font-ui;
+    background: Theme.bg-card;
+    forward-focus: field;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+        Text { text: "Popover on the overlay layer"; color: Theme.text-primary; font-size: Theme.fs-body-strong; }
+        Text { text: "It is its own surface, above app windows."; color: Theme.text-dim; font-size: Theme.fs-caption; wrap: word-wrap; }
+        Rectangle {
+            background: Theme.bg-input;
+            border-radius: 6px;
+            height: 32px;
+            field := TextInput {
+                x: 8px;
+                width: parent.width - 16px;
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
