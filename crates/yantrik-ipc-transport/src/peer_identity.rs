@@ -89,6 +89,9 @@ pub struct ProcessFacts {
     /// read before and after the other two files and the facts are thrown away if it moved, so
     /// a chain entry can never be half one process and half another.
     pub started: u64,
+    /// Whether it leads its session (field 6 of `stat`, the session id, is its own pid): a login
+    /// shell, a terminal's shell, `systemd --user`'s services. See [`reaches_the_top`].
+    pub leader: bool,
 }
 
 impl ProcessFacts {
@@ -396,6 +399,41 @@ pub fn walk(pid: i32) -> Vec<ProcessFacts> {
     Vec::new()
 }
 
+/// [`walk`], pinned to the process the kernel named at accept: `started` is its start time read
+/// then ([`start_time`]). If the pid now names a process that started at another time, the pid
+/// was reused and the walk is of somebody else, so it is empty. `None` pins nothing.
+pub fn walk_pinned(pid: i32, started: Option<u64>) -> Vec<ProcessFacts> {
+    let chain = walk(pid);
+    match (started, chain.first()) {
+        (Some(at), Some(first)) if first.started != at => Vec::new(),
+        _ => chain,
+    }
+}
+
+/// A process's start time (field 22 of `/proc/<pid>/stat`), read at accept so a later walk can
+/// tell the peer from a process that took its pid. `None` when it is gone or there is no `/proc`.
+pub fn start_time(pid: i32) -> Option<u64> {
+    if pid <= 0 {
+        return None;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        parse_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?).map(|s| s.started)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// Whether a walk is a whole ancestry, as far as `/proc` can say: not empty, and reaching a
+/// session leader or the top (pid 1, or `systemd`/`init`). An empty walk is a caller that exited
+/// before it was looked at, a pid reused since accept, or no `/proc`; a walk that stops short is
+/// a parent that vanished mid-walk. Neither says who the caller was, so neither is the person.
+pub fn reaches_the_top(chain: &[ProcessFacts]) -> bool {
+    chain.iter().any(|f| f.leader) || chain.last().is_some_and(is_root)
+}
+
 /// One process's facts, or `None` if it moved underneath the read.
 ///
 /// `stat` is read twice around the other two files. If the start time changed, the pid was
@@ -419,6 +457,7 @@ fn facts(pid: i32) -> Option<(ProcessFacts, i32)> {
             exe,
             short_cmdline: parse_cmdline(&cmdline),
             started: before.started,
+            leader: before.session == pid,
         },
         before.ppid,
     ))
@@ -431,6 +470,8 @@ fn facts(pid: i32) -> Option<(ProcessFacts, i32)> {
 pub struct StatFacts {
     pub ppid: i32,
     pub started: u64,
+    /// The session id, field 6.
+    pub session: i32,
 }
 
 /// Parse `/proc/<pid>/stat`, from the LAST `)`.
@@ -449,6 +490,7 @@ pub fn parse_stat(text: &str) -> Option<StatFacts> {
     Some(StatFacts {
         ppid: fields.get(4 - 3)?.parse().ok()?,
         started: fields.get(22 - 3)?.parse().ok()?,
+        session: fields.get(6 - 3)?.parse().ok()?,
     })
 }
 
@@ -521,6 +563,7 @@ mod tests {
             exe: exe.to_string(),
             short_cmdline: cmdline.to_string(),
             started: pid as u64 * 100,
+            leader: false,
         }
     }
 
@@ -535,6 +578,46 @@ mod tests {
     }
 
     // ── The /proc text parsers ──
+
+    // ── A whole, pinned ancestry (#667 review round 2, M2-r2) ──
+
+    #[test]
+    fn stat_gives_the_session_and_a_leader_is_its_own_session() {
+        let line = "1234 (bash) S 1200 1234 1234 34816 1300 4194304 900 0 0 0 5 2 0 0 20 0 \
+                    1 0 987654 12345678 900 18446744073709551615";
+        assert_eq!(parse_stat(line).unwrap().session, 1234);
+        let me = std::process::id() as i32;
+        let chain = walk(me);
+        if let Some(first) = chain.first() {
+            let stat = parse_stat(&std::fs::read_to_string(format!("/proc/{me}/stat")).unwrap()).unwrap();
+            assert_eq!(first.leader, stat.session == me);
+        }
+    }
+
+    #[test]
+    fn an_empty_or_cut_walk_does_not_reach_the_top() {
+        assert!(!reaches_the_top(&[]), "a caller that exited before it was looked at");
+        let cut = vec![facts(7311, "/usr/bin/python3.11", "python3 yos"), facts(7300, "/usr/bin/python3.11", "python3 x")];
+        assert!(!reaches_the_top(&cut), "a parent that vanished mid-walk");
+        assert!(reaches_the_top(&hermes_chain()), "up to systemd");
+        let mut led = cut.clone();
+        led[1].leader = true;
+        assert!(reaches_the_top(&led), "a session leader");
+        assert!(walk(i32::MAX).is_empty() && !reaches_the_top(&walk(i32::MAX)), "no such pid");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_walk_is_pinned_to_the_start_time_read_at_accept() {
+        let me = std::process::id() as i32;
+        let at = start_time(me).expect("our own start time");
+        assert!(!walk_pinned(me, Some(at)).is_empty(), "the same process");
+        assert!(reaches_the_top(&walk_pinned(me, Some(at))));
+        assert!(walk_pinned(me, Some(at + 1)).is_empty(), "a pid reused since accept walks nobody");
+        assert!(!walk_pinned(me, None).is_empty(), "nothing pinned, nothing checked");
+        assert_eq!(start_time(0), None);
+        assert_eq!(start_time(i32::MAX), None);
+    }
 
     #[test]
     fn stat_is_parsed_from_the_last_paren() {
@@ -593,7 +676,7 @@ mod tests {
         let forged = parse_cmdline("evil.py\0ok\n\u{201c}Yantrik\u{201d} says\u{202E}x\0".as_bytes());
         assert_eq!(forged, "evil.py ok \u{201c}Yantrik\u{201d} says x");
         // And a file name with them in it, named as the binary.
-        let named = ProcessFacts { pid: 9, exe: "/tmp/yantrik\nui".into(), short_cmdline: String::new(), started: 1 };
+        let named = ProcessFacts { pid: 9, exe: "/tmp/yantrik\nui".into(), short_cmdline: String::new(), started: 1, leader: false };
         assert_eq!(named.label(), "yantrik ui");
     }
 

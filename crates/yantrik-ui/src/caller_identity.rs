@@ -358,6 +358,12 @@ pub fn resolve_with(pid: i32, minds: &[Mind]) -> CallerIdentity {
     identify(peer_identity::walk(pid), minds)
 }
 
+/// [`resolve`], pinned to the process the kernel named at accept: `started` is the start time
+/// read then (`Caller::started`). A pid reused since walks as nobody (an empty chain).
+pub fn resolve_pinned(pid: i32, started: Option<u64>) -> CallerIdentity {
+    identify(peer_identity::walk_pinned(pid, started), &attached_minds())
+}
+
 /// The minds attached to this desktop, as the picker shows them.
 pub fn attached_minds() -> Vec<Mind> {
     crate::wire::harness::host()
@@ -377,6 +383,7 @@ mod caller_identity_tests {
             exe: exe.to_string(),
             short_cmdline: cmdline.to_string(),
             started: pid as u64 * 100,
+            leader: false,
         }
     }
 
@@ -792,7 +799,7 @@ mod caller_identity_tests {
         let who = identify(chain, &minds);
         assert_eq!(who.attached_mind.as_deref(), Some("Agent Server"), "classified as the mind");
         assert_eq!(who.shown_mind, None, "but the card names no mind by common words");
-        let facts = crate::mind_view::CallerFacts { pid: Some(9001), agent: None, attached_mind: who.attached_mind.clone(), mind_account: false };
+        let facts = crate::mind_view::CallerFacts { pid: Some(9001), agent: None, attached_mind: who.attached_mind.clone(), mind_account: false, whole: true };
         assert_eq!(crate::mind_view::classify(&facts, 1), crate::mind_view::Requester::Mind("Agent Server".into()));
     }
 

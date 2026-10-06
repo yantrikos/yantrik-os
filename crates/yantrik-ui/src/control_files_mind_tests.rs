@@ -227,7 +227,7 @@ fn as_a_mind<T>(check: impl FnOnce() -> T) -> T {
     use yantrik_app_runtime::control::{AgentTokenScope, Caller, CallerScope};
     let _held = crate::control_agent_terminal::RESOLVER_TESTS.lock().unwrap_or_else(|e| e.into_inner());
     let me = unsafe { libc::getuid() };
-    let _caller = CallerScope::enter(Some(Caller { pid: 4242, uid: me, gid: me }));
+    let _caller = CallerScope::enter(Some(Caller { pid: 4242, uid: me, gid: me, started: None }));
     let _token = AgentTokenScope::enter(Some("tok-files-mind-test".into()));
     assert_ne!(requester_now(), Requester::Person, "the scopes make this a mind's call");
     check()

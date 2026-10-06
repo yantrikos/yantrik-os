@@ -3759,7 +3759,7 @@ mod grant_spends_tests {
         // The kernel's account of the call being dispatched: the peer is this test process, a
         // direct caller — this binary is `yantrik_ui-…`, not one of the desktop's forwarders —
         // so the tokens are checked against this pid, which is the harness they were issued to.
-        let _who = CallerScope::enter(Some(Caller { pid: me as i32, uid: super::own_uid(), gid: 0 }));
+        let _who = CallerScope::enter(Some(Caller { pid: me as i32, uid: super::own_uid(), gid: 0, started: None }));
 
         // A request asked for agent A, which the person allowed.
         let args = serde_json::json!({"text": "shopping"});
@@ -3869,6 +3869,7 @@ mod grant_spends_tests {
             pid: std::process::id() as i32,
             uid: super::own_uid(),
             gid: 0,
+            started: None,
         }));
         let _token = AgentTokenScope::enter(Some("t-victim-182".into()));
 
@@ -3904,6 +3905,7 @@ mod grant_spends_tests {
             pid: std::process::id() as i32,
             uid: super::own_uid(),
             gid: 0,
+            started: None,
         }));
         let _token = AgentTokenScope::enter(Some("t-fwd-182".into()));
         let args = serde_json::json!({ "caller_pid": 999_998 });

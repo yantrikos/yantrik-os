@@ -889,7 +889,7 @@ mod tests {
         // an install the account migration has not reached.
         let params = serde_json::json!({ "id": "mind", "name": "Yantrik Mind", "conversations": true });
         let me = unsafe { libc::getuid() };
-        let peer = yantrik_ipc_transport::PeerCred { pid: std::process::id() as i32, uid: me, gid: me };
+        let peer = yantrik_ipc_transport::PeerCred { pid: std::process::id() as i32, uid: me, gid: me, started: None };
         service.handle_from(protocol::ATTACH, params, Some(peer)).unwrap();
         let agent = service.host.start_agent("mind").unwrap();
         let credential =
@@ -907,7 +907,7 @@ mod tests {
         let service = HarnessService { host: Host::new(vec![]), door_served: true };
         let params = serde_json::json!({ "id": "mind", "name": "Yantrik Mind", "conversations": true });
         let me = unsafe { libc::getuid() };
-        let peer = yantrik_ipc_transport::PeerCred { pid: std::process::id() as i32, uid: me, gid: me };
+        let peer = yantrik_ipc_transport::PeerCred { pid: std::process::id() as i32, uid: me, gid: me, started: None };
         let refused = service.handle_from(protocol::ATTACH, params, Some(peer)).unwrap_err();
         assert!(refused.message.contains("person's own Yantrik Mind"), "{}", refused.message);
         assert!(!refused.message.contains("  "), "one sentence, no stray spaces: {}", refused.message);

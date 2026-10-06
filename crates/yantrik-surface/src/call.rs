@@ -246,7 +246,7 @@ mod tests {
         // Let through before anything asks who is calling: nobody here is the mind account, so
         // this is the exemption itself answering, for any caller.
         let call = ActCall::parse(&json!({"action": "memory_validate"})).unwrap();
-        let someone = Some(Caller { pid: 4242, uid: 1000, gid: 1000 });
+        let someone = Some(Caller { pid: 4242, uid: 1000, gid: 1000, started: None });
         assert!(call.require_standing("shell", someone).is_ok());
         assert!(call.require_standing("shell", None).is_ok());
     }

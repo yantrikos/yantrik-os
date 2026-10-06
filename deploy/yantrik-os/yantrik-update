@@ -2828,6 +2828,14 @@ reconcile_mind_egress() {
 #   /run/yantrik-mind-egress/grants.json   every grant in force: run, session and always (tmpfs,
 #                                          gone at reboot; put back from the next file at boot)
 #   /var/lib/yantrik/mind-grants.json      the always-list, which outlives a reboot
+#   /run/yantrik-mind-egress/run-secrets.json  the SHA-256 of each run grant's one-time secret,
+#                                          beside the /run grants and pruned with them
+#
+# A run grant comes with a one-time run secret: 128 random bits, printed once to whoever ran
+# `mind-grant add --scope run` (stdout, `run_secret=<hex>`) and never written anywhere; root keeps
+# only its SHA-256. The shell stamps a run on a turn only for `send_message run=ID run_secret=…`
+# whose secret hashes to the one kept for that run (#667 review, round 2, M2-r2), so the run id
+# in the world-readable grants file is not enough to spend the grant.
 #
 # Who may write: root, or the desktop's owner through this updater's own sudo rule (sudo names the
 # caller, SUDO_UID). Never the mind account, never the egress account: neither can run this as
@@ -2836,17 +2844,20 @@ reconcile_mind_egress() {
 # Every rewrite (add, revoke, publish) holds MIND_GRANTS_LOCK from its read to its last write, so
 # a publish that read a grant cannot write it back after a revoke took it out. A revoke writes
 # /run (what readers believe) first and the always-list second; an add and a publish write the
-# always-list first and /run second. The /run write is tried twice.
+# always-list first and /run second. The /run write is tried twice. The run secrets are written
+# between the two, either way: a secret with no grant in force spends nothing.
 MIND_GRANTS_RUN=/run/yantrik-mind-egress/grants.json
 MIND_GRANTS_ALWAYS=/var/lib/yantrik/mind-grants.json
 MIND_GRANTS_LOCK=/run/yantrik-mind-grants.lock
 
 # The one program that reads, checks and rewrites the grants: argv op, now, always-file, run-file,
-# then the op's own (`list`: the uid that must own the file). Prints the always-list, then everything in force (one JSON line each), then
-# one line for the journal; `list` prints rows instead. Exit 3: refused, with why on stderr.
+# run-secrets file, then the op's own (`list`: the uid that must own the file). Prints the
+# always-list, then everything in force (one JSON line each), then one line for the journal, then
+# the run secrets (one JSON line), then a new run secret or an empty line; `list` prints rows
+# instead. Exit 3: refused, with why on stderr. The new secret is never in the journal line.
 PY_MIND_GRANTS='
-import json, os, re, secrets, stat, sys
-op, now, always_path, run_path, args = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5:]
+import hashlib, json, os, re, secrets, stat, sys
+op, now, always_path, run_path, secrets_path, args = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6:]
 CAPABILITIES = {"web_search_own_words"}
 AGENTS = {"mind"}
 DAY, MOST, BIGGEST = 86400, 64, 65536
@@ -2855,6 +2866,8 @@ SKEW = 300
 KEYS = {"id", "agent", "capability", "scope", "scope_id", "granted_at", "expires_at", "granted_by"}
 SCOPE_ID = re.compile(r"[A-Za-z0-9._:-]{1,64}\Z")
 GRANT_ID = re.compile(r"g-[0-9a-f]{12}\Z")
+SECRET_KEYS = {"grant", "run", "sha256", "expires_at"}
+SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 def refuse(why):
     print(why, file=sys.stderr)
@@ -2881,24 +2894,34 @@ def valid(g):
 # The writer reads files it wrote (its own uid); `list` reads as anyone, files root wrote.
 OWNER = int(args[0]) if op == "list" and args else os.geteuid()
 
-def load(path, scopes):
+# What read_doc answers for a file it would not open or believe; it has said why.
+REFUSED = object()
+
+def read_doc(path):
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
-        return []
+        return None
     except OSError as e:
-        print(f"{path}: {e}; read as no grants", file=sys.stderr)
-        return []
+        print(f"{path}: {e}; read as none", file=sys.stderr)
+        return REFUSED
     with os.fdopen(fd, "rb") as f:
         st = os.fstat(f.fileno())
         if not stat.S_ISREG(st.st_mode) or st.st_uid != OWNER or st.st_mode & 0o022:
-            print(f"{path} is not a file only its writer may change; read as no grants", file=sys.stderr)
-            return []
+            print(f"{path} is not a file only its writer may change; read as none", file=sys.stderr)
+            return REFUSED
         raw = f.read(BIGGEST + 1)
     try:
-        doc = json.loads(raw) if len(raw) <= BIGGEST else None
+        return json.loads(raw) if len(raw) <= BIGGEST else None
     except ValueError:
-        doc = None
+        return None
+
+def load(path, scopes):
+    if not os.path.lexists(path):
+        return []
+    doc = read_doc(path)
+    if doc is REFUSED:
+        return []
     # `true` and `1.0` are == 1 in Python; the version is the integer 1 or the file is not read.
     if not isinstance(doc, dict) or type(doc.get("version")) is not int or doc["version"] != 1 \
             or not isinstance(doc.get("grants"), list):
@@ -2914,7 +2937,25 @@ def load(path, scopes):
             kept.append(g)
     return kept
 
+# The run secrets: hashes only, each for a run grant; a line that does not check is dropped.
+def load_secrets(path):
+    if not path or not os.path.lexists(path):
+        return []
+    doc = read_doc(path)
+    if doc is REFUSED:
+        return []
+    if not isinstance(doc, dict) or type(doc.get("version")) is not int or doc["version"] != 1 \
+            or not isinstance(doc.get("runs"), list):
+        print(f"{path} is not version 1 run secrets; read as none", file=sys.stderr)
+        return []
+    return [e for e in doc["runs"] if isinstance(e, dict) and set(e) == SECRET_KEYS
+            and isinstance(e["grant"], str) and GRANT_ID.match(e["grant"])
+            and isinstance(e["run"], str) and SCOPE_ID.match(e["run"])
+            and isinstance(e["sha256"], str) and SHA256.match(e["sha256"]) and number(e["expires_at"])]
+
 always = load(always_path, {"always"})
+run_secrets = load_secrets(secrets_path) if op != "list" else []
+new_secret = ""
 # /run holds the always grants too; the writer takes those from the always-list, `list` from /run.
 held = load(run_path, {"run", "session", "always"} if op == "list" else {"run", "session"})
 note = ""
@@ -2948,6 +2989,11 @@ if op == "add":
     (always if scope == "always" else held).append(grant)
     if len(always) + len(held) > MOST:
         refuse(f"at most {MOST} grants at once; revoke one first")
+    if scope == "run":
+        # 128 random bits, shown once to the run starter; only the hash is kept.
+        new_secret = secrets.token_hex(16)
+        run_secrets.append({"grant": grant["id"], "run": scope_id, "sha256": hashlib.sha256(new_secret.encode()).hexdigest(),
+                            "expires_at": grant["expires_at"]})
     note = "added {id} agent={agent} capability={capability} scope={scope} scope_id={scope_id} expires_at={expires_at} by={granted_by}".format(**grant)
 elif op == "revoke":
     if len(args) != 1 or not (args[0] == "all" or GRANT_ID.match(args[0])):
@@ -2969,9 +3015,15 @@ else:
 
 doc = lambda grants: json.dumps({"version": 1, "written_at": now,
                                  "grants": sorted(grants, key=lambda g: (g["granted_at"], g["id"]))}, separators=(", ", ": "))
+# A secret is kept only while its run grant is in force.
+live_runs = {(g["id"], g["scope_id"]) for g in held if g["scope"] == "run"}
+run_secrets = [e for e in run_secrets if (e["grant"], e["run"]) in live_runs and e["expires_at"] > now]
 print(doc(always))
 print(doc(always + held))
 print(note)
+print(json.dumps({"version": 1, "written_at": now, "runs": sorted(run_secrets, key=lambda e: (e["run"], e["grant"]))},
+                 separators=(", ", ": ")))
+print(new_secret)
 '
 
 # Is <dir> one only this writer (root) may change? Made 0755 if missing; refused if it is a link,
@@ -3030,7 +3082,8 @@ mind_grant_put_run() { # <doc>
 # out of what readers believe even if the always-list then fails; an add or a publish writes the
 # always-list first, so /run never holds an always grant the next boot would not put back.
 mind_grant_write_locked() { # <op> [args]
-  local out always_doc run_doc note
+  local out always_doc run_doc note secrets_doc secret secrets_path
+  secrets_path="$(dirname "$MIND_GRANTS_RUN")/run-secrets.json"
   mind_grant_dir_ok "$(dirname "$MIND_GRANTS_ALWAYS")" \
     || { warn "$(dirname "$MIND_GRANTS_ALWAYS") is not a directory only root writes; no grant changed"; return 1; }
   if ! mind_grant_dir_ok "$(dirname "$MIND_GRANTS_RUN")"; then
@@ -3038,20 +3091,31 @@ mind_grant_write_locked() { # <op> [args]
     warn "$(dirname "$MIND_GRANTS_RUN") is not a directory only root writes; no grant is in force"
     return 1
   fi
-  out="$(python3 -I -c "$PY_MIND_GRANTS" "$1" "$(date +%s)" "$MIND_GRANTS_ALWAYS" "$MIND_GRANTS_RUN" "${@:2}")" || return $?
+  out="$(python3 -I -c "$PY_MIND_GRANTS" "$1" "$(date +%s)" "$MIND_GRANTS_ALWAYS" "$MIND_GRANTS_RUN" "$secrets_path" "${@:2}")" || return $?
   always_doc="$(printf '%s\n' "$out" | sed -n 1p)"
   run_doc="$(printf '%s\n' "$out" | sed -n 2p)"
   note="$(printf '%s\n' "$out" | sed -n 3p | LC_ALL=C tr -c '[:print:]' '?')"
+  secrets_doc="$(printf '%s\n' "$out" | sed -n 4p)"
+  secret="$(printf '%s\n' "$out" | sed -n 5p)"
   if [ "$1" = revoke ]; then
     mind_grant_put_run "$run_doc" || { warn "the grant is still in force: $MIND_GRANTS_RUN could not be written"; return 1; }
+    printf '%s\n' "$secrets_doc" | write_file_atomic "$secrets_path" \
+      || warn "revoked, but $secrets_path could not be written; a secret with no grant in force spends nothing"
     printf '%s\n' "$always_doc" | write_file_atomic "$MIND_GRANTS_ALWAYS" \
       || { warn "revoked in $MIND_GRANTS_RUN, but $MIND_GRANTS_ALWAYS could not be written; revoke it again"; return 1; }
   else
     printf '%s\n' "$always_doc" | write_file_atomic "$MIND_GRANTS_ALWAYS" || return 1
+    printf '%s\n' "$secrets_doc" | write_file_atomic "$secrets_path" \
+      || { [ -z "$secret" ] || { warn "$secrets_path could not be written; the run grant was not added"; return 1; }; }
     mind_grant_put_run "$run_doc" || return 1
   fi
   [ "$1" = publish ] && { info "$note"; return 0; }
   mind_grant_journal "$note (caller uid $(mind_grant_caller))"
+  # Shown once, to whoever ran this, on stdout; the journal line above never holds it.
+  if [ -n "$secret" ]; then
+    info "the run's one-time secret follows; send_message run=ID needs it as run_secret, and it is not kept" >&2
+    printf 'run_secret=%s\n' "$secret"
+  fi
 }
 
 # The query a search asked with, read from stdin (never argv: /proc/*/cmdline and sudo's log show
@@ -3085,10 +3149,10 @@ cmd_mind_grant() {
   case "$sub" in
     list)
       [ -r "$MIND_GRANTS_RUN" ] || { echo "no grants in force"; return 0; }
-      python3 -I -c "$PY_MIND_GRANTS" list "$(date +%s)" "" "$MIND_GRANTS_RUN" "${MIND_GRANTS_OWNER:-0}"
+      python3 -I -c "$PY_MIND_GRANTS" list "$(date +%s)" "" "$MIND_GRANTS_RUN" "" "${MIND_GRANTS_OWNER:-0}"
       return 0 ;;
     add|revoke) ;;
-    *) fail "usage: yantrik-update mind-grant add --scope run|session|always [--run-id ID|--session-id ID] [--ttl 4h] [--query-stdin] | list | revoke ID|all" ;;
+    *) fail "usage: yantrik-update mind-grant add --scope run|session|always [--run-id ID|--session-id ID] [--ttl 4h] [--query-stdin] | list | revoke ID|all (--scope run prints run_secret=… once)" ;;
   esac
   local scope="" id="" ttl="" capability=web_search_own_words agent=mind query_stdin="" target=""
   while [ $# -gt 0 ]; do
@@ -4670,6 +4734,9 @@ open(sys.argv[1], "w").write(json.dumps(d))' "$mgr"
           */yantrik-mind-egress/grants.json)
             echo run >> "$gq/writes"
             if [ "$n" -lt "${GQ_FAIL_RUN:-0}" ]; then echo $((n + 1)) > "$gq/run-fails"; cat >/dev/null; return 1; fi ;;
+          */yantrik-mind-egress/run-secrets.json)
+            echo secrets >> "$gq/writes"
+            if [ -n "${GQ_FAIL_SECRETS:-}" ]; then cat >/dev/null; return 1; fi ;;
           *) echo always >> "$gq/writes"
             if [ -n "${GQ_FAIL_ALWAYS:-}" ]; then cat >/dev/null; return 1; fi ;;
         esac
@@ -4737,10 +4804,10 @@ d = json.load(open(sys.argv[1])); d["grants"][0]["granted_at"] = 4000000000; ope
 
   # L6: an add writes the always-list, then /run; a revoke /run, then the always-list.
   gq_reset; gq_run add mind web_search_own_words always "" ""
-  is "mind-grant: an add writes the always-list first, then /run" "always run" "$(tr '\n' ' ' < "$gq/writes" | sed 's/ $//')"
+  is "mind-grant: an add writes the always-list first, then the run secrets, then /run" "always secrets run" "$(tr '\n' ' ' < "$gq/writes" | sed 's/ $//')"
   rid="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["grants"][0]["id"])' "$gqa")"
   : > "$gq/writes"; gq_run revoke "$rid"
-  is "mind-grant: a revoke writes /run first, then the always-list" "run always" "$(tr '\n' ' ' < "$gq/writes" | sed 's/ $//')"
+  is "mind-grant: a revoke writes /run first, then the run secrets, then the always-list" "run secrets always" "$(tr '\n' ' ' < "$gq/writes" | sed 's/ $//')"
   gq_reset; gq_run add mind web_search_own_words always "" ""
   rid="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["grants"][0]["id"])' "$gqa")"
   GQ_FAIL_ALWAYS=1 gq_run revoke "$rid"
@@ -4750,7 +4817,7 @@ d = json.load(open(sys.argv[1])); d["grants"][0]["granted_at"] = 4000000000; ope
   gq_reset; gq_run add mind web_search_own_words always "" ""
   rid="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["grants"][0]["id"])' "$gqa")"
   rm -f "$gq/run-fails"; : > "$gq/writes"; GQ_FAIL_RUN=1 gq_run revoke "$rid"
-  is "mind-grant: a /run write that fails once is tried again" "0 run run always no no" \
+  is "mind-grant: a /run write that fails once is tried again" "0 run run secrets always no no" \
     "$? $(tr '\n' ' ' < "$gq/writes")$(gq_has "$gqr" "$rid") $(gq_has "$gqa" "$rid")"
   gq_reset; gq_run add mind web_search_own_words always "" ""
   rid="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["grants"][0]["id"])' "$gqa")"
@@ -4758,7 +4825,7 @@ d = json.load(open(sys.argv[1])); d["grants"][0]["granted_at"] = 4000000000; ope
   is "mind-grant: a revoke whose /run write fails twice: refused, both files unchanged" "1 run run yes yes" \
     "$? $(tr '\n' ' ' < "$gq/writes")$(gq_has "$gqr" "$rid") $(gq_has "$gqa" "$rid")"
   gq_reset; rm -f "$gq/run-fails"; GQ_FAIL_RUN=1 gq_run add mind web_search_own_words session s-9 600
-  is "mind-grant: an add whose /run write fails once is tried again" "0 always run run 1" \
+  is "mind-grant: an add whose /run write fails once is tried again" "0 always secrets run run 1" \
     "$? $(tr '\n' ' ' < "$gq/writes")$(mg_count "$gqr" session)"
 
   # L5: the query comes on stdin, never argv, and is journalled escaped with its SHA-256.
@@ -4773,6 +4840,70 @@ d = json.load(open(sys.argv[1])); d["grants"][0]["granted_at"] = 4000000000; ope
   t "mind-grant: ... and says to send it on stdin" "on stdin" "$(cat "$gq/err")"
   is "mind-grant: the elevated run is told to read stdin, and given no query" "yes no" \
     "$(declare -f cmd_mind_grant | grep -q 'query_stdin:+--query-stdin' && echo yes || echo no) $(declare -f cmd_mind_grant | grep -q -- '--query "\$query"' && echo yes || echo no)"
+
+  # M2-r2 (round 2): a run grant's one-time secret is printed once, to whoever added it, and
+  # root keeps only its SHA-256, beside the /run grants, for as long as the grant is in force.
+  rs_run() { # rs_run <op> [args]: mind_grant_write against $gq; stdout is the answer, stderr into $gq/err
+    ( MIND_GRANTS_RUN="$gq/run/yantrik-mind-egress/grants.json" MIND_GRANTS_ALWAYS="$gq/lib/yantrik/mind-grants.json"
+      MIND_GRANTS_LOCK="$gq/lock"
+      logger() { printf '%s\n' "$*" >> "$gq/journal"; }
+      mind_grant_write "$@" ) 2>"$gq/err"
+  }
+  local gqs="$gq/run/yantrik-mind-egress/run-secrets.json"
+  rs_field() { # rs_field <python expression over d, the secrets file>
+    python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$gqs" "$1" 2>/dev/null || echo '[no file]'
+  }
+  gq_reset
+  local said secret rgid
+  said="$(rs_run add mind web_search_own_words run research-42 3600 | grep '^run_secret=')"
+  secret="${said#run_secret=}"
+  is "mind-grant: a run grant prints its one-time secret, once, as run_secret=<32 hex>" "1 yes" \
+    "$(printf '%s\n' "$said" | grep -c .) $(printf '%s' "$said" | grep -Eq '^run_secret=[0-9a-f]{32}$' && echo yes || echo no)"
+  rgid="$(python3 -I -c 'import json,sys; print([g["id"] for g in json.load(open(sys.argv[1]))["grants"] if g["scope"]=="run"][0])' "$gqr")"
+  is "mind-grant: ... root keeps its SHA-256 for that run and that grant" \
+    "1 research-42 $rgid $(printf '%s' "$secret" | sha256sum | cut -d' ' -f1)" \
+    "$(rs_field 'len(d["runs"])') $(rs_field 'd["runs"][0]["run"]') $(rs_field 'd["runs"][0]["grant"]') $(rs_field 'd["runs"][0]["sha256"]')"
+  is "mind-grant: ... and the secret itself in no file and no journal line" "absent" \
+    "$(grep -rqF "$secret" "$gq" && echo present || echo absent)"
+  is "mind-grant: ... the secrets file is the writer's, 0644, beside the grants" "644 $(id -u):$(id -g) $(stat -c %a "$(dirname "$gqr")")" \
+    "$(stat -c %a "$gqs") $(stat -c %u:%g "$gqs") $(stat -c %a "$(dirname "$gqs")")"
+  is "mind-grant: ... it expires with its grant" "yes" \
+    "$([ "$(rs_field 'd["runs"][0]["expires_at"]')" = "$(python3 -I -c 'import json,sys; print([g["expires_at"] for g in json.load(open(sys.argv[1]))["grants"] if g["scope"]=="run"][0])' "$gqr")" ] && echo yes || echo no)"
+  is "mind-grant: a session or always grant prints no secret" "0" \
+    "$( { rs_run add mind web_search_own_words session s-1 600; rs_run add mind web_search_own_words always "" ""; } | grep -c run_secret)"
+  is "mind-grant: ... and leaves the run's secret as it was" "1 $(printf '%s' "$secret" | sha256sum | cut -d' ' -f1)" \
+    "$(rs_field 'len(d["runs"])') $(rs_field 'd["runs"][0]["sha256"]')"
+  local again; again="$(rs_run add mind web_search_own_words run research-42 600 | grep '^run_secret=')"
+  is "mind-grant: the same run again: a new secret, the old one's hash gone" "1 yes no" \
+    "$(rs_field 'len(d["runs"])') $([ "$again" != "$said" ] && echo yes || echo no) $(grep -qF "$(printf '%s' "$secret" | sha256sum | cut -d' ' -f1)" "$gqs" && echo yes || echo no)"
+  rgid="$(python3 -I -c 'import json,sys; print([g["id"] for g in json.load(open(sys.argv[1]))["grants"] if g["scope"]=="run"][0])' "$gqr")"
+  rs_run revoke "$rgid" >/dev/null
+  is "mind-grant: revoking the run grant takes its secret out too" "0" "$(rs_field 'len(d["runs"])')"
+  rs_run add mind web_search_own_words run research-7 600 >/dev/null
+  python3 -I -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["runs"].append({"grant": "g-00000000beef", "run": "forged", "sha256": "0" * 64, "expires_at": 4000000000})
+d["runs"].append({"grant": "g-00000000bee2", "run": "x", "sha256": "not a hash", "expires_at": 4000000000})
+open(sys.argv[1], "w").write(json.dumps(d))' "$gqs"
+  rs_run publish >/dev/null
+  is "mind-grant: a secret line with no grant in force, or that does not check, is dropped" "1 research-7" \
+    "$(rs_field 'len(d["runs"])') $(rs_field 'd["runs"][0]["run"]')"
+  python3 -I -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+for g in d["grants"]:
+    if g["scope"] == "run":
+        g["granted_at"], g["expires_at"] = 1000, 2000
+open(sys.argv[1], "w").write(json.dumps(d))' "$gqr"
+  rs_run publish >/dev/null
+  is "mind-grant: an expired run grant's secret goes at the next rewrite" "0" "$(rs_field 'len(d["runs"])')"
+  gq_reset; rm -f "$gq/run-fails"; : > "$gq/writes"
+  ( GQ_FAIL_SECRETS=1 gq_run add mind web_search_own_words run research-9 600 ); local frc=$?
+  is "mind-grant: a run grant whose secret cannot be kept is not added" "1 absent" \
+    "$frc $(grep -q research-9 "$gqr" 2>/dev/null && echo present || echo absent)"
+  is "mind-grant: the usage names the secret" "yes" \
+    "$(declare -f cmd_mind_grant | grep -q 'run_secret' && echo yes || echo no)"
 
   # The blanket sudo rules taken away once the narrow one is in place (#397), cloud-init's included.
   local sd="$root/sudoers.d"; mkdir -p "$sd"
@@ -4808,6 +4939,7 @@ usage() {
     "  install-mind BUNDLE SHA256                put a Yantrik Mind bundle in place, and prove it attaches" \
     "  mind-egress apply                         hold the mind account to its egress proxy (root; its units run it)" \
     "  mind-grant add --scope run|session|always [--run-id ID|--session-id ID] [--ttl 4h]" \
+    "                                            (--scope run prints run_secret=<hex> once)" \
     "  mind-grant list | revoke ID|all          what the Mind may search for in its own words" \
     "  selftest                                  offline checks, no network" \
     "" \

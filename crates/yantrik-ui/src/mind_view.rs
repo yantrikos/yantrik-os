@@ -162,6 +162,11 @@ pub struct CallerFacts {
     /// Whether the kernel says the caller is the mind account (#411): a caller that came in
     /// through the mind door. A mind by what it is, before anything it says or any /proc walk.
     pub mind_account: bool,
+    /// Whether the `/proc` walk up from the caller is whole: pinned to the start time the kernel's
+    /// pid had at accept, not empty, and reaching a session leader or the top
+    /// (`peer_identity::reaches_the_top`). A caller that exited before it was looked at, a pid
+    /// reused since, or a walk cut short says nothing about who called, so it is not the person.
+    pub whole: bool,
 }
 
 /// Sort a caller into the person or a mind.
@@ -171,6 +176,8 @@ pub struct CallerFacts {
 ///   still not the person (`control_agent_terminal::calling_agent` holds the same line).
 /// - This process: the built-in companion, which calls the shell's own socket from inside it.
 /// - A process descended from an attached mind (Hermes, pi through `yos-mcp`).
+/// - A caller whose ancestry could not be read whole ([`CallerFacts::whole`]): not the person,
+///   because nothing says it is (#667 review, round 2, M2-r2).
 /// - Anything else — `yos` typed in the Terminal, labwc's Ctrl+Alt+T — is the person.
 pub fn classify(facts: &CallerFacts, own_pid: u32) -> Requester {
     // First: the kernel's word on the account outranks everything, a missing pid included.
@@ -188,6 +195,7 @@ pub fn classify(facts: &CallerFacts, own_pid: u32) -> Requester {
     }
     match &facts.attached_mind {
         Some(name) => Requester::Mind(name.clone()),
+        None if !facts.whole => Requester::Mind("a caller whose process ancestry could not be read".to_string()),
         None => Requester::Person,
     }
 }
@@ -198,15 +206,18 @@ pub fn requester_now() -> Requester {
     let caller = yantrik_app_runtime::control::caller();
     let pid = caller.as_ref().and_then(|c| u32::try_from(c.pid).ok()).filter(|p| *p > 0);
     let agent = crate::control_agent_terminal::calling_agent().map(|r| r.is_ok());
-    // The /proc walk is only worth doing when nothing cheaper has decided it.
-    let attached_mind = match (pid, agent) {
+    // The /proc walk is only worth doing when nothing cheaper has decided it. Pinned to the start
+    // time read at accept, so a pid reused since is nobody's.
+    let (attached_mind, whole) = match (pid, agent) {
         (Some(pid), None) if pid != std::process::id() => {
-            crate::caller_identity::resolve(pid as i32).attached_mind
+            let who = crate::caller_identity::resolve_pinned(pid as i32, caller.as_ref().and_then(|c| c.started));
+            let whole = yantrik_ipc_transport::peer_identity::reaches_the_top(&who.chain);
+            (who.attached_mind, whole)
         }
-        _ => None,
+        _ => (None, false),
     };
     let mind_account = caller.as_ref().is_some_and(|c| yantrik_ipc_transport::mind_door::is_mind(c.uid));
-    classify(&CallerFacts { pid, agent, attached_mind, mind_account }, std::process::id())
+    classify(&CallerFacts { pid, agent, attached_mind, mind_account, whole }, std::process::id())
 }
 
 /// Where one launch goes, decided while the call that asked for it is still on this thread.
@@ -768,13 +779,13 @@ mod tests {
     const SHELL: u32 = 4242;
 
     fn facts(pid: Option<u32>, agent: Option<bool>, mind: Option<&str>) -> CallerFacts {
-        CallerFacts { pid, agent, attached_mind: mind.map(str::to_string), mind_account: false }
+        CallerFacts { pid, agent, attached_mind: mind.map(str::to_string), mind_account: false, whole: true }
     }
 
     #[test]
     fn a_caller_the_kernel_says_is_the_mind_account_is_a_mind_whatever_else_is_true() {
         let own = 4242;
-        let door = CallerFacts { pid: Some(777), agent: None, attached_mind: None, mind_account: true };
+        let door = CallerFacts { pid: Some(777), agent: None, attached_mind: None, mind_account: true, whole: true };
         assert_eq!(classify(&door, own), Requester::Mind("a mind".to_string()), "no token, no ancestry: still a mind");
         let named = CallerFacts { attached_mind: Some("Pi".to_string()), ..door };
         assert_eq!(classify(&named, own), Requester::Mind("Pi".to_string()));
@@ -822,6 +833,17 @@ mod tests {
         mark_exited(990_001);
         mark_exited(990_002);
         assert_eq!(app_named("Notes"), None, "gone once it exits");
+    }
+
+    #[test]
+    fn a_caller_whose_ancestry_is_empty_or_cut_short_is_not_the_person() {
+        // The caller exited before the walk, its pid was reused since accept, or the walk did
+        // not reach a session leader or pid 1: the shell cannot say who it was.
+        let gone = CallerFacts { whole: false, ..facts(Some(9001), None, None) };
+        assert_eq!(classify(&gone, SHELL), Requester::Mind("a caller whose process ancestry could not be read".into()));
+        assert_eq!(classify(&facts(Some(9001), None, None), SHELL), Requester::Person, "a whole walk with no mind in it");
+        // A click has no caller to walk, and is the person.
+        assert_eq!(classify(&CallerFacts { whole: false, ..facts(None, None, None) }, SHELL), Requester::Person);
     }
 
     #[test]

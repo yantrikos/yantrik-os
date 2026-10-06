@@ -354,15 +354,25 @@ fn clip(text: &str, max: usize) -> String {
 /// a harness or anything it started, the mind account, the built-in companion, or another
 /// account; and never a call with no socket caller at all. A run is what a run grant covers, so
 /// whoever stamps one on a turn spends that grant: only the person who gave it, or root.
+///
+/// `in_agent_job`: the caller descends from a command the agent terminal is running
+/// ([`caller_in_agent_job`]). Those run as the person, on an agent's word, so they are refused
+/// too. Same-uid code outside both is told apart only by the run secret, checked after this.
 pub(crate) fn run_starter_ok(
     requester: &crate::mind_view::Requester,
     caller_uid: Option<u32>,
     own_uid: u32,
     agent_token: bool,
+    in_agent_job: bool,
 ) -> Result<(), String> {
     const NOTHING: &str = "nothing was sent";
     if agent_token {
         return Err(format!("a run is started by the person or root, and an agent is calling: refused, {NOTHING}"));
+    }
+    if in_agent_job {
+        return Err(format!(
+            "a run is started by the person or root, and the caller is inside a command an agent ran in the agent terminal: refused, {NOTHING}"
+        ));
     }
     if let crate::mind_view::Requester::Mind(who) = requester {
         return Err(format!("a run is started by the person or root, and {who} is calling: refused, {NOTHING}"));
@@ -372,6 +382,27 @@ pub(crate) fn run_starter_ok(
         Some(uid) => Err(format!("a run is started by the person or root, and uid {uid} is neither: refused, {NOTHING}")),
         None => Err(format!("a run is started from the person's session or root's, over the control socket: refused, {NOTHING}")),
     }
+}
+
+/// Whether any pid in `chain` (the caller and its ancestors) is one of `live_jobs`, the agent
+/// terminal's running commands.
+pub(crate) fn descends_from_a_job(chain: &[i32], live_jobs: &[i32]) -> bool {
+    chain.iter().any(|pid| live_jobs.contains(pid))
+}
+
+/// Whether the call on this thread comes from inside a command the agent terminal is running:
+/// the caller's ancestry, pinned to its start time at accept, holds a live job's pid.
+fn caller_in_agent_job() -> bool {
+    let Some(caller) = yantrik_app_runtime::control::caller() else { return false };
+    let live = crate::control_agent_terminal::jobs().live_pids();
+    if live.is_empty() {
+        return false;
+    }
+    let chain: Vec<i32> = yantrik_ipc_transport::peer_identity::walk_pinned(caller.pid, caller.started)
+        .iter()
+        .map(|f| f.pid)
+        .collect();
+    descends_from_a_job(&chain, &live)
 }
 
 pub(crate) fn persons_only(action: &str) -> Result<(), String> {
@@ -1344,7 +1375,12 @@ pub fn publish(
                 .arg(Param::text("text").describe("What to say"))
                 .arg(
                     Param::text("run")
-                        .describe("Start this message as run ID, which a run grant (yantrik-update mind-grant add --scope run --run-id ID) covers. The person's own session or root only")
+                        .describe("Start this message as run ID, which a run grant (yantrik-update mind-grant add --scope run --run-id ID) covers. The person's own session or root only, with run_secret")
+                        .optional(),
+                )
+                .arg(
+                    Param::text("run_secret")
+                        .describe("With run: the one-time run secret `mind-grant add --scope run` printed. Never shown or kept; `yos` reads it from stdin with run_secret=-")
                         .optional(),
                 )
                 .defers(),
@@ -1362,10 +1398,22 @@ pub fn publish(
                         // SAFETY: cannot fail.
                         let me = unsafe { libc::geteuid() };
                         let token = yantrik_app_runtime::control::agent_token().is_some();
-                        run_starter_ok(&crate::mind_view::requester_now(), caller, me, token)?;
+                        run_starter_ok(&crate::mind_view::requester_now(), caller, me, token, caller_in_agent_job())?;
                         if !yantrik_harness::grants::scope_id_ok(&run) {
                             return Err(format!("{run:?} is not a run id: 1 to 64 of A-Z a-z 0-9 . _ : -; nothing was sent"));
                         }
+                        // The run id is in a file every account reads; its one-time secret was
+                        // printed only to whoever started the run (M2-r2 of #667's review).
+                        let secret = args.get("run_secret").and_then(|v| v.as_str()).unwrap_or_default().trim();
+                        yantrik_harness::grants::run_secret_ok(
+                            std::path::Path::new(yantrik_harness::grants::RUN_SECRETS_PATH),
+                            std::path::Path::new(yantrik_harness::grants::GRANTS_PATH),
+                            (0, 0),
+                            &run,
+                            secret,
+                            yantrik_harness::grants::now(),
+                        )
+                        .map_err(|why| format!("{why}: refused, nothing was sent"))?;
                         Some(run)
                     }
                 };
@@ -3622,19 +3670,19 @@ mod run_starter_tests {
 
     #[test]
     fn the_persons_own_session_and_root_may_start_a_run() {
-        assert_eq!(run_starter_ok(&Requester::Person, Some(ME), ME, false), Ok(()));
-        assert_eq!(run_starter_ok(&Requester::Person, Some(0), ME, false), Ok(()), "root");
+        assert_eq!(run_starter_ok(&Requester::Person, Some(ME), ME, false, false), Ok(()));
+        assert_eq!(run_starter_ok(&Requester::Person, Some(0), ME, false, false), Ok(()), "root");
     }
 
     #[test]
     fn an_agent_a_harness_another_account_or_no_caller_may_not() {
-        assert!(run_starter_ok(&Requester::Person, Some(ME), ME, true).unwrap_err().contains("an agent is calling"));
+        assert!(run_starter_ok(&Requester::Person, Some(ME), ME, true, false).unwrap_err().contains("an agent is calling"));
         for mind in ["Yantrik Mind", "the companion", "an agent"] {
-            let why = run_starter_ok(&Requester::Mind(mind.into()), Some(ME), ME, false).unwrap_err();
+            let why = run_starter_ok(&Requester::Mind(mind.into()), Some(ME), ME, false, false).unwrap_err();
             assert!(why.contains(mind) && why.contains("nothing was sent"), "{why}");
         }
-        assert!(run_starter_ok(&Requester::Person, Some(1001), ME, false).unwrap_err().contains("uid 1001"));
-        assert!(run_starter_ok(&Requester::Person, None, ME, false).is_err(), "nothing in-process starts a run");
+        assert!(run_starter_ok(&Requester::Person, Some(1001), ME, false, false).unwrap_err().contains("uid 1001"));
+        assert!(run_starter_ok(&Requester::Person, None, ME, false, false).is_err(), "nothing in-process starts a run");
     }
 
     #[test]
@@ -3643,20 +3691,42 @@ mod run_starter_tests {
         // shape a harness's tool has when it reaches the control socket.
         // SAFETY: cannot fail.
         let me = unsafe { libc::geteuid() };
-        let _caller = CallerScope::enter(Some(Caller { pid: std::process::id() as i32 + 1, uid: me, gid: me }));
+        let _caller = CallerScope::enter(Some(Caller { pid: std::process::id() as i32 + 1, uid: me, gid: me, started: None }));
         let _token = AgentTokenScope::enter(Some("t-run-667".into()));
         assert!(yantrik_app_runtime::control::agent_is_calling(), "refused at the top of the handler");
         let requester = crate::mind_view::requester_now();
         assert!(matches!(requester, Requester::Mind(_)), "{requester:?}");
         let token = yantrik_app_runtime::control::agent_token().is_some();
-        assert!(run_starter_ok(&requester, Some(me), me, token).is_err());
+        assert!(run_starter_ok(&requester, Some(me), me, token, false).is_err());
+    }
+
+    #[test]
+    fn a_caller_inside_an_agent_terminal_job_may_not() {
+        let why = run_starter_ok(&Requester::Person, Some(ME), ME, false, true).unwrap_err();
+        assert!(why.contains("agent terminal") && why.contains("nothing was sent"), "{why}");
+        // The caller, its shell, the job's bash, the person's terminal: the job is in the chain.
+        assert!(super::descends_from_a_job(&[7311, 7300, 4240, 900, 1], &[4240]));
+        assert!(!super::descends_from_a_job(&[7311, 7300, 900, 1], &[4240]), "not under a job");
+        assert!(!super::descends_from_a_job(&[], &[4240]));
+    }
+
+    #[test]
+    fn a_run_without_its_secret_is_refused_before_anything_is_sent() {
+        let src = include_str!("control.rs");
+        let at = src.find("Action::new(\"send_message\"").unwrap();
+        let body = &src[at..at + 5000];
+        let secret = body.find("run_secret_ok(").unwrap();
+        let sent = body.find("crate::wire::chat::in_run(").unwrap();
+        assert!(secret < sent, "the secret is checked before the send");
+        assert!(body.contains("RUN_SECRETS_PATH") && body.contains("(0, 0)"), "root's file, root's only");
+        assert!(!body[..sent].contains("tracing::"), "the secret is never logged on the way");
     }
 
     #[test]
     fn the_handler_checks_the_run_before_anything_is_sent_and_carries_it_on_the_turn() {
         let src = include_str!("control.rs");
         let at = src.find("Action::new(\"send_message\"").unwrap();
-        let body = &src[at..at + 4000];
+        let body = &src[at..at + 5000];
         let refused = body.find("agent_is_calling()").unwrap();
         let checked = body.find("run_starter_ok(").unwrap();
         let sent = body.find("crate::wire::chat::in_run(").unwrap();

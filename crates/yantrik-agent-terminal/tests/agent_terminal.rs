@@ -364,3 +364,19 @@ fn every_running_group_dies_when_the_jobs_are_dropped() {
     drop(jobs);
     eventually("the shell closing to take the command with it", || gone(child));
 }
+
+/// The shell refuses a run stamp from inside a running command (#667 review, round 2): it needs
+/// the pid of every command still running, and only those.
+#[test]
+fn live_pids_are_the_running_commands_and_only_those() {
+    let jobs = jobs();
+    let job = jobs.start(&pi(), "sleep 30", None).unwrap();
+    let live = jobs.live_pids();
+    assert_eq!(live.len(), 1, "{live:?}");
+    assert!(std::fs::read_to_string(format!("/proc/{}/stat", live[0])).is_ok(), "a real process");
+    jobs.kill(&pi(), &job).unwrap();
+    eventually("the killed command is no longer live", || jobs.live_pids().is_empty());
+    let done = jobs.start(&deepseek(), "true", None).unwrap();
+    let _ = jobs.job(&deepseek(), &done, LONG);
+    eventually("a finished command is not live", || jobs.live_pids().is_empty());
+}

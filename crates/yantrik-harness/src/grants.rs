@@ -16,6 +16,13 @@
 //!   ahead, it would otherwise hold until that future date.
 //!
 //! A file that fails any of these is read as **no grants**: the Mind asks.
+//!
+//! A run grant also has a one-time run secret (#667 review, round 2, M2-r2). `mind-grant add
+//! --scope run` prints 128 random bits to whoever ran it, once, and root keeps only their SHA-256
+//! in [`RUN_SECRETS_PATH`], under the same trust checks. The shell stamps a run on a turn only for
+//! a `send_message run=ID run_secret=…` whose secret hashes to the one kept for that run's grant
+//! in force ([`run_secret_ok`]), so the run id, readable by every account in [`GRANTS_PATH`], is
+//! not enough to spend the grant.
 
 use std::io::Read;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -25,6 +32,8 @@ use serde::{Deserialize, Serialize};
 
 /// Every grant in force, written by root.
 pub const GRANTS_PATH: &str = "/run/yantrik-mind-egress/grants.json";
+/// The SHA-256 of each run grant's one-time secret, written by root beside [`GRANTS_PATH`].
+pub const RUN_SECRETS_PATH: &str = "/run/yantrik-mind-egress/run-secrets.json";
 /// The one capability there is.
 pub const CAPABILITY: &str = "web_search_own_words";
 /// The one agent that holds it: the first-party Yantrik Mind's harness id.
@@ -121,6 +130,12 @@ pub fn session_scope_id(session: &str) -> String {
 /// only writer — `(0, 0)` on a machine, the test's own account in a test. `Err` says why the
 /// file is not believed; a reader takes that as no grants.
 pub fn read(path: &Path, owner: (u32, u32), now: u64) -> Result<Vec<Grant>, String> {
+    parse(&read_trusted(path, owner)?, now)
+}
+
+/// The bytes of `path`, if it and its directory pass the trust checks with `owner` as the only
+/// writer.
+fn read_trusted(path: &Path, owner: (u32, u32)) -> Result<Vec<u8>, String> {
     let dir = path.parent().ok_or("no directory")?;
     let d = std::fs::symlink_metadata(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     if !d.is_dir() || (d.uid(), d.gid()) != owner || d.mode() & 0o022 != 0 {
@@ -138,9 +153,62 @@ pub fn read(path: &Path, owner: (u32, u32), now: u64) -> Result<Vec<Grant>, Stri
     let mut raw = Vec::new();
     (&mut f).take(BIGGEST + 1).read_to_end(&mut raw).map_err(|e| e.to_string())?;
     if raw.len() as u64 > BIGGEST {
-        return Err("the grants file is too large".into());
+        return Err(format!("{} is too large", path.display()));
     }
-    parse(&raw, now)
+    Ok(raw)
+}
+
+/// One run's secret, as root keeps it: never the secret, only its SHA-256.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunSecret {
+    /// The run grant it belongs to.
+    grant: String,
+    run: String,
+    /// Lowercase hex SHA-256 of the secret as printed (32 lowercase hex digits).
+    sha256: String,
+    expires_at: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunSecrets {
+    version: u64,
+    #[allow(dead_code)]
+    written_at: u64,
+    runs: Vec<serde_json::Value>,
+}
+
+/// Whether `secret` is the one-time secret of a run grant for `run` in force at `now`: it hashes
+/// to the SHA-256 root kept in `secrets_path` for that run, and the grant that entry names is in
+/// `grants_path`, in force, scoped to that run. Both files pass the trust checks with `owner` as
+/// their only writer. `Err` says why not, never what the secret or its hash was.
+pub fn run_secret_ok(secrets_path: &Path, grants_path: &Path, owner: (u32, u32), run: &str, secret: &str, now: u64) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+    if secret.len() != 32 || !secret.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        return Err("a run secret is the 32 lowercase hex digits `mind-grant add --scope run` printed".into());
+    }
+    let file: RunSecrets = serde_json::from_slice(&read_trusted(secrets_path, owner)?)
+        .map_err(|e| format!("{} is not run secrets: {e}", secrets_path.display()))?;
+    if file.version != VERSION {
+        return Err(format!("run secrets version {} is not one this build reads", file.version));
+    }
+    let digest: String = Sha256::digest(secret.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+    // Every entry is compared, all the way through, so the time taken says nothing about which.
+    let same = |a: &str, b: &str| a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0;
+    let mut matched: Option<String> = None;
+    for entry in file.runs.into_iter().filter_map(|e| serde_json::from_value::<RunSecret>(e).ok()) {
+        if same(&entry.sha256, &digest) && entry.run == run && now < entry.expires_at {
+            matched = Some(entry.grant);
+        }
+    }
+    let grant = matched.ok_or_else(|| format!("that is not the run secret of a run grant in force for {run:?}"))?;
+    let grants = read(grants_path, owner, now)?;
+    if grants.iter().any(|g| g.id == grant && g.scope == "run" && g.scope_id.as_deref() == Some(run)) {
+        Ok(())
+    } else {
+        Err(format!("the run grant for {run:?} that secret belongs to is no longer in force"))
+    }
 }
 
 /// The grants in force in a file's bytes: version 1, each grant checked, expired ones dropped.
@@ -194,6 +262,64 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
         d
+    }
+
+    // ── M2-r2: a run is spent only with its one-time secret ──
+
+    /// `d` holding a run grant for `run` and the SHA-256 of `secret` for it, as root writes them.
+    fn run_files(d: &std::path::Path, run: &str, secret: &str, expires: u64) {
+        use sha2::{Digest, Sha256};
+        use std::os::unix::fs::PermissionsExt;
+        let mut g = grant("run", Some(run), Some(expires));
+        g["granted_at"] = json!(expires - 3600);
+        std::fs::write(d.join("grants.json"), serde_json::to_vec(&json!({"version": 1, "written_at": 1, "grants": [g]})).unwrap()).unwrap();
+        let digest: String = Sha256::digest(secret.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+        let runs = json!({"version": 1, "written_at": 1, "runs": [{"grant": "g-0123456789ab", "run": run, "sha256": digest, "expires_at": expires}]});
+        std::fs::write(d.join("run-secrets.json"), serde_json::to_vec(&runs).unwrap()).unwrap();
+        for f in ["grants.json", "run-secrets.json"] {
+            std::fs::set_permissions(d.join(f), std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+    }
+
+    const SECRET: &str = "0123456789abcdef0123456789abcdef";
+
+    fn check(d: &std::path::Path, run: &str, secret: &str, now: u64) -> Result<(), String> {
+        run_secret_ok(&d.join("run-secrets.json"), &d.join("grants.json"), me(), run, secret, now)
+    }
+
+    #[test]
+    fn the_run_secret_spends_its_own_run_and_nothing_else() {
+        let d = scratch("secret");
+        run_files(&d, "research-42", SECRET, 10_000);
+        assert_eq!(check(&d, "research-42", SECRET, 9_000), Ok(()));
+        // The run id alone, or with a wrong secret, is nothing.
+        assert!(check(&d, "research-42", "ffffffffffffffffffffffffffffffff", 9_000).is_err());
+        assert!(check(&d, "research-42", "", 9_000).is_err());
+        assert!(check(&d, "research-42", &SECRET.to_uppercase(), 9_000).is_err(), "only the form printed");
+        // The hash, read from the file, is not the secret.
+        use sha2::{Digest, Sha256};
+        let hash: String = Sha256::digest(SECRET.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+        assert!(check(&d, "research-42", &hash, 9_000).is_err());
+        // Another run, or the same secret after the grant expired.
+        assert!(check(&d, "research-43", SECRET, 9_000).is_err());
+        assert!(check(&d, "research-42", SECRET, 10_000).is_err());
+    }
+
+    #[test]
+    fn a_run_secret_without_its_grant_in_force_or_in_an_untrusted_file_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = scratch("secret-revoked");
+        run_files(&d, "research-42", SECRET, 10_000);
+        // Revoked: the grant is gone from the grants file, though its secret line lingers.
+        std::fs::write(d.join("grants.json"), br#"{"version": 1, "written_at": 1, "grants": []}"#).unwrap();
+        assert!(check(&d, "research-42", SECRET, 9_000).unwrap_err().contains("no longer in force"));
+        // A secrets file anyone may write is not believed.
+        run_files(&d, "research-42", SECRET, 10_000);
+        std::fs::set_permissions(d.join("run-secrets.json"), std::fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(check(&d, "research-42", SECRET, 9_000).is_err());
+        // Nor is a missing one.
+        std::fs::remove_file(d.join("run-secrets.json")).unwrap();
+        assert!(check(&d, "research-42", SECRET, 9_000).is_err());
     }
 
     #[test]
