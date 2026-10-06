@@ -274,11 +274,12 @@ apt-get install -y -qq     swaybg     xdg-utils     espeak-ng
 # The first hour on a machine: the image had no text editor and no process viewer at all, so
 # the terminal could edit a file only through Python and list processes only through the
 # System Monitor app. nano is what yantrik-session exports as EDITOR, so `git commit`,
-# `crontab -e` and everything else that asks has something to open — the image ships no vi
-# either. htop complements, and does not replace, the app. No `|| true`: release-check
-# (tier ci) asserts both commands on the booted image, and yantrik-update reconciles them
-# on machines whose base system drifted from this list (#210).
-apt-get install -y -qq     nano     htop
+# `crontab -e` and everything else that asks has something to open. htop complements, and
+# does not replace, the app. vim-tiny: muscle memory and scripts call `vi`, and the
+# fresh-install audit found `command not found: vi` on the shipped image (#678).
+# No `|| true`: release-check (tier ci) asserts these commands on the booted image, and
+# yantrik-update reconciles them on machines whose base system drifted from this list (#210).
+apt-get install -y -qq     nano     htop     vim-tiny
 
 # ── A developer's baseline (#401) ──
 # git: the image used to install it only to build llama.cpp and then remove it, so a machine

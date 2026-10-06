@@ -233,6 +233,7 @@ IMAGE_COMMANDS = {
     "python3": "yos itself is a python3 script",
     "nano": "EDITOR, exported by yantrik-session",
     "htop": "the process view beside the System Monitor app",
+    "vi": "the editor muscle memory and scripts call, shipped as vim-tiny (#678)",
     "swaybg": "the wallpaper, and the label Mind View shows while it is empty",
     "git": "the developer's baseline: the image once removed it after building llama.cpp (#401)",
     "podman": "the runtime the Container Manager app runs, rootless, as the person (#401)",

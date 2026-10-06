@@ -144,10 +144,12 @@ packages:
   # other direction (#210).
   - iproute2
   - iputils-ping
-  # A person's first hour: an editor for the terminal (yantrik-session exports EDITOR=nano)
-  # and a process view beside the System Monitor app. The image shipped neither (#210).
+  # A person's first hour: an editor for the terminal (yantrik-session exports EDITOR=nano),
+  # a process view beside the System Monitor app, and vi for the hands and scripts that call
+  # it (vim-tiny, #678). The image shipped none of these (#210).
   - nano
   - htop
+  - vim-tiny
   # A developer's baseline (#401): git, completion in the terminal, and rootless podman for the
   # Container Manager app, with what rootless needs beside it (uidmap, passt, fuse-overlayfs).
   # yantrik-update reconciles the same list on every machine.
