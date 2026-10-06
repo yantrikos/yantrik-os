@@ -28,7 +28,7 @@ A reviewer compared its UI with Omarchy and called it "really really bad". The d
 
 ## Building and testing
 - `cargo check --offline -p yantrik-ui` catches most errors fast. If `--offline` fails in a fresh environment, drop it for the first fetch.
-- Run the full suite with `cargo test -p yantrik-ui --bin yantrik-ui`, plus the crates you touched. CI also runs `cargo build --workspace --locked`, `cargo test --workspace --locked` and the selftests listed in `docs/CONTRIBUTING.md`. Run the parts your change touches before opening the PR.
+- Run the full suite with `cargo test -p yantrik-ui --bin yantrik-ui`, plus the crates you touched. CI also runs `cargo build --workspace --locked`, `cargo test --workspace --locked` and the selftests listed in `CONTRIBUTING.md`. Run the parts your change touches before opening the PR.
 - `yantrik-ui-slint` is one huge generated crate. Any `.slint` change recompiles it in about 10 minutes and uses about 14 GB of RAM, so batch your Slint edits before building. Use `CARGO_INCREMENTAL=0` if disk is tight.
 - **Rendered UI checks.** `tests/ui-preview` draws the real Slint screens headlessly. Read `tests/ui-preview/validate.sh` and `tests/ui-preview/src/main.rs` to see how a scene is written; `verify-controls`, `verify-idle`, `verify-taskbar-menu` and `verify-cards-waiting` are good models.
   - Run a check with `cargo run --manifest-path tests/ui-preview/Cargo.toml --profile fast -- target/ui-validation/<name>.png 1280 800 <verify-name>`.
@@ -37,7 +37,7 @@ A reviewer compared its UI with Omarchy and called it "really really bad". The d
 - **Rebase before you open the PR,** and again if asked: `git fetch origin && git rebase origin/main`, keep both sides, rebuild, re-run, then `git push --force-with-lease`. Other stories merge while you work.
 - **Executable scripts:** any new script with a `#!` line needs `git update-index --chmod=+x <file>`, or CI fails.
 
-## How code is written here (from docs/CONTRIBUTING.md; enforced in review)
+## How code is written here (from CONTRIBUTING.md; enforced in review)
 - **One concern per PR.** If you find something else wrong, note it in the PR description. Don't fix it in this PR.
 - **Reuse, never duplicate.** One shared component or module, used everywhere. Kit components live in `crates/yantrik-ui-kit/slint/` (YIndicator, YPopover, YSlider, YToggleTile and others), and the shell re-exports them through a shim in `crates/yantrik-ui-slint/ui/components/`. Never write a second copy of anything.
 - **Small files.** Add a focused new file rather than growing a large one. `app.slint` is about 3,000 lines; add only the wiring you must.

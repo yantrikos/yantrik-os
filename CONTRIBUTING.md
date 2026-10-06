@@ -17,17 +17,17 @@ Pick whichever fits what you know:
   are scoped, real and unassigned. Comment with the one you want and it is yours.
 - **Make an app agent-ready.** An app becomes something a mind can use by publishing a *surface*:
   `describe` (what it holds) and `act` (what it can be asked to do, each action graded). Start
-  with [`docs/sdk/python-quickstart.md`](sdk/python-quickstart.md) or
-  [`docs/sdk/rust-quickstart.md`](sdk/rust-quickstart.md), then
-  [`docs/sdk/wrap-an-app.md`](sdk/wrap-an-app.md) for an existing program.
-- **Improve a harness.** Minds attach through [`harnesses/`](../harnesses): Hermes, Pi, DeepSeek and
+  with [`docs/sdk/python-quickstart.md`](docs/sdk/python-quickstart.md) or
+  [`docs/sdk/rust-quickstart.md`](docs/sdk/rust-quickstart.md), then
+  [`docs/sdk/wrap-an-app.md`](docs/sdk/wrap-an-app.md) for an existing program.
+- **Improve a harness.** Minds attach through [`harnesses/`](harnesses): Hermes, Pi, DeepSeek and
   OpenClaw, each a small Python adapter. If you use one of those agents day to day, you know it
-  better than we do. The protocol is in [`docs/harness.md`](harness.md); the shared tests are in
+  better than we do. The protocol is in [`docs/harness.md`](docs/harness.md); the shared tests are in
   `harnesses/tests`.
 - **Add a tool to the built-in companion** (Rust), or a **YAML plugin / theme** (no Rust): see
   [Recipes](#recipes) below.
 - **Run it on real hardware.** Every image is boot-tested in QEMU, and real machines and UEFI are
-  untested ([`docs/hardware-requirements.md`](hardware-requirements.md)). A report of what worked
+  untested ([`docs/hardware-requirements.md`](docs/hardware-requirements.md)). A report of what worked
   and what did not on your laptop is a real contribution: open an issue with the machine, the
   image version and what you saw.
 - **Docs.** If something here or in `docs/` was wrong or unclear when you tried it, a fix to the
@@ -126,7 +126,7 @@ Changes there are welcome; expect questions.
 ## Reporting a security problem
 
 Please do not open a public issue for a vulnerability. Use GitHub's private report: the
-**Security** tab of the repository, then **Report a vulnerability**. See [`SECURITY.md`](../SECURITY.md).
+**Security** tab of the repository, then **Report a vulnerability**. See [`SECURITY.md`](SECURITY.md).
 
 ## Recipes
 
@@ -152,7 +152,7 @@ impl Tool for MyTool {
 
 Grades: `Safe` (reads only) < `Standard` (reversible writes) < `Sensitive` (system changes) <
 `Dangerous` (destructive). Add `pub mod mytool;` to `lib.rs` and call `mytool::register(reg)` from
-`register_all()`; [`git.rs`](../crates/yantrik-companion-tools/src/git.rs) is a full example. Use
+`register_all()`; [`git.rs`](crates/yantrik-companion-tools/src/git.rs) is a full example. Use
 `validate_path()` for any file access, keep output short enough for a model to read, and grade
 honestly: the grade decides whether a person is asked first.
 
@@ -160,7 +160,7 @@ honestly: the grade decides whether a person is asked first.
 
 Each feature's wiring lives in `crates/yantrik-ui/src/wire/<name>.rs` as a
 `pub fn wire(ui: &App, ctx: &AppContext)` registering its Slint callbacks, called once from
-[`wire/mod.rs`](../crates/yantrik-ui/src/wire/mod.rs). Its markup is in
+[`wire/mod.rs`](crates/yantrik-ui/src/wire/mod.rs). Its markup is in
 `crates/yantrik-ui-slint/ui/`, built from the shared components in `crates/yantrik-ui-kit/slint/`.
 
 ### A YAML plugin (no Rust)

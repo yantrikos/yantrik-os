@@ -242,4 +242,4 @@ Each app consists of:
 2. **Backend logic** — `.rs` file in `crates/yantrik-ui/src/wire/`
 3. **Registration** — entry in `apps.rs`, `app.slint`, `wire/mod.rs`, and the dock
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for details on adding new apps.
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for details on adding new apps.
