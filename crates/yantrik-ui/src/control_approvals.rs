@@ -2360,7 +2360,11 @@ mod control_approvals_tests {
     const SECRET_PERMITTED: &[&str] = &["pin_app"];
 
     /// Arguments whose names may contain one of those words. `pinned` is `pin_app`'s flag.
-    const SECRET_PARAM_PERMITTED: &[&str] = &["pinned"];
+    /// `run_secret` is `send_message`'s one-time run token: `mind-grant add --scope run` prints
+    /// it once and root keeps only its SHA-256, which the shell checks it against. It is not a
+    /// vault secret and opens nothing but that one run's grant, and `yos` reads it from stdin
+    /// (`run_secret=-`), so it is never in argv.
+    const SECRET_PARAM_PERMITTED: &[&str] = &["pinned", "run_secret"];
 
     /// Only a person's keystrokes can supply a vault passphrase.
     ///
