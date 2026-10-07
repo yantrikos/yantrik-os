@@ -122,6 +122,8 @@ export component DesktopScreen inherits Rectangle {
     in property <int> lens-waiting-runs: 0;
     in property <string> lens-mode-label: "Ask";
     in property <string> lens-identity: "";
+    in property <string> lens-outcome-state: "";
+    in property <string> lens-outcome: "";
     // Where the composer's words go, or "" when that is not known (app.slint says where from).
     in property <string> lens-destination: "";
     callback lens-mode-clicked();
@@ -651,6 +653,8 @@ export component DesktopScreen inherits Rectangle {
         waiting-runs: root.lens-waiting-runs;
         mode-label: root.lens-mode-label;
         identity: root.lens-identity;
+        outcome-state: root.lens-outcome-state;
+        outcome: root.lens-outcome;
         destination: root.lens-destination;
         mode-clicked => { root.lens-mode-clicked(); }
         mind-clicked => { root.active-mind-clicked(); }
