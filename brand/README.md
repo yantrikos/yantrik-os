@@ -1,149 +1,123 @@
 # The Yantrik OS mark
 
-Two files in this directory are the brand:
+**One script draws the brand.** `build.py` holds every number of the emblem and the name and
+writes the SVGs below; `render.py` turns them into every raster the project uses. Nothing
+downstream redraws the mark: the OS shows these SVG files themselves (Slint renders them with
+the resvg it ships), the app icon is rendered from them, and the cards and avatar embed them.
+To change the mark, change `build.py` and run two commands.
 
-| file | what it is |
-|---|---|
-| `yantrik-mark.svg` | the mark alone, 128×128, transparent |
-| `yantrik-wordmark.svg` | the mark + "Yantrik OS", 483×128, transparent |
+| file | what it is | where it is used |
+|---|---|---|
+| `yantrik-emblem.svg` | the full emblem, 512 field | the OS above 64 px (boot, login), the GitHub avatar, wallpapers |
+| `yantrik-mark.svg` | the core: the Y, its channels, the bindu | the OS at 64 px and below (status bar, About), favicons |
+| `yantrik-icon.svg` | the core on a rounded navy tile | the app icon, hicolor `yantrik` |
+| `yantrik-name.svg` | "YANTRIK OS" alone | boot, About and login, under or beside the mark |
+| `yantrik-wordmark.svg` | horizontal lockup: emblem + name | website header, README banners, the OG card |
+| `yantrik-lockup-stacked.svg` | stacked lockup: emblem over name | splash and print |
 
-**Every other surface derives from these two files.** The favicon, the app icon in the
-launcher, the GitHub avatar, the Open Graph card, the login screen, the status bar, the
-About box and the website header are all either these files or a render of them. If the
-mark changes, it changes here, `python3 render.py` runs, and the change reaches everything.
-Nothing downstream redraws it.
-
-This directory exists because for a while nothing obeyed that rule. The product had five
-different marks — the real one on the boot screen, a hand-rolled double circle on login,
-the companion's orb on the lock screen, a bare dot in the status bar, and an indigo rounded
-square with an Inter "Y" on the website — and a create-next-app default favicon. That is
-one product wearing five faces, which is the same as having none.
+All six are generated — do not edit them by hand.
 
 ## What the mark is
 
-A dark sphere with a lit rim, carrying a Y.
+*Yantra* is *yam* ("to hold, to control") + *-tra* ("instrument"): an instrument of control.
+*Yāntrika* means "mechanical". The OS is an instrument a person controls, and the mark is drawn
+as one: a precise object, not an illustration.
 
-The rim is teal on the upper-left shoulder and violet on the lower-right. It is made by
-subtraction — a teal disc, a violet disc offset down and right over it, and the dark sphere
-over the middle — because the Slint renderer will not clip a gradient to a border radius but
-will happily draw a solid fill round. `crates/yantrik-ui-slint/ui/components/yantrik_mark.slint`
-carries the full argument for why; the SVG here is that component's arithmetic carried out
-once, at `mark-size: 128px`, with no approximation:
+- **The Y**, centred: its junction is the exact centre of the field. Arms 42° off vertical,
+  cut flat at the top with the outer tip flared, a stem that ends in chamfers. Gold, machined:
+  a broad face with a narrow reflected band, and 5.5-unit bevels lit from the upper left.
+- **Three channels** cut dark into the bars, with blue light inside them, converging on
+- **the bindu** — the yantra's centre point: one blue well holding one gold pearl. It is the
+  only bright point in the mark.
+- **The gear**: sixteen shallow teeth, darker than the Y and behind it — *yāntrika*.
+- **The lattice**: four triangles in the yantra's own discipline — every apex lands on another
+  triangle's base, and no two bases coincide. Quiet: it rewards a second look at boot size.
+- **The bhupura**: the four T-gates every yantra stands in, with a stud and a ray at each
+  cardinal point, and an outer ring broken at the gates.
 
-- the three rim/sphere discs, the two inner highlights — Slint `Rectangle`s of side *S* with
-  `border-radius: S/2`, which is a circle of radius *S/2*
-- the Y — three Slint `Path`s with a 20×20 viewbox, fitted `Contain` into
-  (width − stroke-width, height − stroke-width) and offset by stroke-width/2, which places
-  the junction at exactly (64, 61.472) and the three ends at (41.248, 41.248),
-  (86.752, 41.248) and (64, 86.752), stroked 3.2px with butt caps
+The direction is Pranab's (a gold Y over a gear inside a yantra, October 2026). It was redrawn
+as exact geometry and then put through an outside critique by GPT-6 (Astra), whose ten changes
+— the Y's proportions, the metal, light from recesses, one bindu, quieter surroundings, a
+correct lattice — are all in `build.py`.
 
-The Y is three strokes meeting off-centre: two arms up, one stem down. A letter, and also a
-junction — three paths converging.
+**It is not the orb.** `components/orb.slint` is the companion's presence: it pulses when the
+mind is thinking. A logo that animates is not a logo, it is a widget. The orb stays on the lock
+and onboarding screens; it is never the product mark.
 
-**It is not the orb.** `components/orb.slint` is the companion's presence: it pulses when
-the mind is thinking and brightens when it speaks. A logo that animates is not a logo, it is
-a widget. The orb stays on the lock and onboarding screens, where it means "someone is
-here", and is never used as the product mark.
+## Sizes
+
+Two levels of one drawing, not two logos. Above 64 px the full emblem; at 64 px and below the
+core, because the gates, lattice and hairline rings turn to noise at a status-bar size. The core
+is the same Y, channels and bindu — only what is around them is left off. `YantrikMark` in
+`crates/yantrik-ui-slint/ui/components/yantrik_mark.slint` makes that choice from its size.
+
+The core carries a 2-unit dark edge, so the gold holds on white (app stores, GitHub light mode).
 
 ## Colours
 
-| role | hex | where |
-|---|---|---|
-| sphere | `#0d1420` | the body of the mark |
-| rim, teal shoulder | `#2fd4c4` | also the Y's left arm |
-| rim, violet shoulder | `#8b5cf6` | |
-| Y, right arm | `#5eb8ff` | |
-| Y, stem | `#3fc9ea` | |
-| inner highlights | `#2fd4c4` / `#8b5cf6` at alpha `0x0c` (4.7%) | barely there, on purpose |
-| ground | `#0b0d12` | every card, avatar and app icon that needs one |
-| wordmark, name | `#e8eaef` | `Theme.text-primary` |
-| wordmark, "OS" | `#a5afbf` | `Theme.text-secondary` |
+| role | hex |
+|---|---|
+| gold face, light → dark | `#FFF5D2` `#FFE9A8` `#F0C674` `#EABB66` `#D59A42` `#BC8439` `#A96E28` |
+| gold bevel: lit / mid / shadow | `#FFF0B7` / `#C18D43` / `#75491D` |
+| core, flat gold | `#E4B368` |
+| channel light / hot centre / recess | `#168CFF` / `#A0E6FF` / `#03101D` |
+| bindu well, rim | `#165BA4` → `#030B18`, `#63C7FF` |
+| pearl | `#FFFAE0` → `#EDB652` → `#B67523` |
+| gear | `#80643A` → `#35281B` |
+| instrument lines (gates, ring, lattice) | `#B88C49` `#AA8145` `#BD9658` |
+| ground | `#05070d` (cards), `#09111F` (icon tile) |
+| dark edge, for white grounds | `#17202B` |
 
-The product's UI accent is `#4ecdc4` (`Theme.accent`, dark mode). The mark's teal `#2fd4c4`
-is a shade of the same idea and is the value the mark uses; do not swap one for the other.
+The UI keeps its own teal accent (`Theme.accent`). Gold belongs to the mark.
 
-## Clear space
+## The name
 
-**16px per 128px of mark height** — one eighth — on all four sides, and nothing in it. The
-mark is a full-bleed circle, so it has no optical margin of its own; without the rule it
-collides with whatever it is set next to.
+**YANTRIK OS**, in capitals, set in Marcellus (Brian J. Bonislawsky / Astigmatic, SIL OFL 1.1,
+vendored in `fonts/` with its licence). 64-unit capitals, 4 units of tracking after kerning, and
+34 units of ink between the K and the O so the category reads as a second word. The A loses its
+crossbar and stands over a small blue triangle: a Λ over a point, the yantra's triangle in the
+name. The name is outlines, never `<text>`, so it renders the same on every machine; the OS
+never sets it in a UI font.
 
-Minimum sizes: 16px is the floor, and at 16px the mark reads as a dark disc with a rim — the
-Y's strokes are 2.5% of the mark's width, which is well under a pixel there. That is
-acceptable for a favicon (the rim is the recognisable part at that size) and is why
-`yantrik-mark.ico` carries a 32px frame, which most browsers and every OS tab strip prefer.
-Do not thicken the Y to fix 16px; that would give the product a second mark again.
+## Clear space and minimum size
 
-## The wordmark
-
-The boot screen sets the name at 44px/600 in `#e8eaef` and the category at 44px/300 in
-`#a5afbf`, ten pixels apart. `yantrik-wordmark.svg` is that lockup turned horizontal,
-because a navbar, an OG card and a README header all want it that way. The weights, the
-colours and the name→category gap ratio are the boot screen's exactly. The **one**
-thing set for the horizontal arrangement rather than copied from the boot screen is the type
-size relative to the mark: 72px type beside a 128px mark, where the boot screen has 44px
-type under a 132px mark. A stacked lockup and a horizontal one cannot share that ratio.
-
-The type is Barlow, and it is **converted to outlines** — no `<text>`, no `font-family`, no
-webfont. A logo that depends on which typeface the reader's machine has is not a logo, which
-is the same argument `yantrik_mark.slint` makes for drawing the Y with strokes. The two
-weights the repo did not already carry are vendored in `fonts/` so the wordmark can be
-regenerated from this directory alone. Barlow is by Jeremy Tribby, licensed SIL OFL 1.1.
+Clear space is one eighth of the mark's height on every side. The core is legible down to
+16 px, where it is a gold Y with a blue centre. The full emblem is not used below 72 px.
 
 ## Regenerating
 
-`render.py` makes everything that is not one of the two SVGs. It rasterises with **cairosvg**
-if the module imports, else **rsvg-convert** if it is on `PATH`. Pillow is used only to write
-the `.ico` container, check the dimensions and build the contact sheet — it never traces the
-SVG, because Pillow cannot render SVG and a hand-traced mark is the disease this directory
-cures.
-
-cairosvg needs libcairo, which a Windows checkout does not have. Run it from WSL:
-
 ```sh
-wsl.exe -e bash -lc 'cd /mnt/c/Users/sync/codes/yantrik-os/brand && python3 render.py'
+pip install fonttools uharfbuzz resvg-py pillow
+python3 brand/render.py             # build.py's SVGs, then every raster, then preview.png
+python3 brand/build.py              # the SVGs only
+python3 brand/render.py --rasters   # the rasters only
 ```
 
-```
-python3 render.py             # wordmark + all rasters + preview.png, then check every size
-python3 render.py --rasters   # rasters only
-python3 render.py --wordmark  # regenerate yantrik-wordmark.svg only
-```
+`render.py` rasterises with **resvg_py** when it is installed — the renderer Slint uses, so a
+PNG here is what the OS draws — else cairosvg, else `rsvg-convert`. Pillow only writes the .ico
+and checks sizes; it never traces the mark.
 
-Needs `pillow` and `fonttools`; `uharfbuzz` is optional but wanted — without it the wordmark
-is set without kerning and "Ya" goes loose. One-time setup on a bare box:
-
-```sh
-pip install cairosvg pillow fonttools uharfbuzz     # or: sudo apt install librsvg2-bin
-```
-
-What it writes, all into this directory:
+What it writes, into this directory:
 
 | file | for |
 |---|---|
-| `yantrik-mark-{16,32,48,64,128,256,512,1024}.png` | the icon ladder; 48/128/256 ship to `hicolor` |
-| `yantrik-mark.ico` | 16 + 32 + 48, each rendered at its own size, not downsampled |
-| `apple-icon-180.png` | iOS home screen — on the ground, because iOS forbids transparency |
+| `yantrik-icon-{16,32,48,64,128,256,512,1024}.png` | the app icon ladder; 48/128/256 ship to `hicolor` and are committed |
+| `yantrik-mark.ico` | favicon: 16 + 32 + 48, each rendered at its own size |
+| `apple-icon-180.png` | iOS home screen, on the ground (iOS forbids transparency) |
 | `og-image-1200x630.png` | the site's Open Graph and Twitter card |
 | `social-preview-1280x640.png` | GitHub's repo social preview |
 | `github-avatar-512.png` | the org avatar |
-| `preview.png` | contact sheet — everything above, in one picture |
-
-`preview.png` shows the icon ladder at actual pixels on both the product ground and white,
-so a favicon can be judged before it ships rather than after.
+| `preview.png` | contact sheet: everything above in one picture, on dark and on white |
 
 ## Where it is used
 
-- **OS** — boot (`boot.slint`), login (`login.slint`), the status bar
-  (`components/status_bar.slint`), About (`about.slint`); all four import `YantrikMark` from
-  `components/yantrik_mark.slint`
-- **Icons on disk** — `deploy/yantrik-os/build-release.sh` stages `yantrik-mark.svg` and the
-  48/128/256 PNGs into `share/icons/hicolor/…/apps/yantrik.*`, which the session puts on
-  `XDG_DATA_DIRS`; `build-debian-iso.sh` also lands them in `/usr/share/icons/hicolor`;
-  `yantrik-update` mirrors `share/` and so carries them to installed machines. Every
+- **OS**: boot (`boot.slint`), login (`login.slint`), the status bar
+  (`components/status_bar.slint`) and About (`about.slint`) use `YantrikMark` and
+  `YantrikName` from `components/yantrik_mark.slint`, which embed the SVGs here.
+- **Icons on disk**: `deploy/yantrik-os/build-release.sh` stages `yantrik-icon.svg` and the
+  48/128/256 PNGs as hicolor `yantrik`; `build-debian-iso.sh` also lands them in
+  `/usr/share/icons/hicolor`; `yantrik-update` mirrors `share/` to installed machines. Every
   `apps/desktop-files/*.desktop` says `Icon=yantrik`.
-- **Website** — `yantrik-website/public/brand/` is a copy of the files here;
-  `src/app/{icon.svg,apple-icon.png,favicon.ico,opengraph-image.png,twitter-image.png}` and
-  `src/components/YantrikMark.tsx`
-- **GitHub** — see `GITHUB.md`; the org avatar and the repo social preview have to be
-  uploaded by hand
+- **Website**: `yantrik-website/public/brand/` should be a copy of the files here; re-copy after
+  a change.
+- **GitHub**: see `GITHUB.md`; the org avatar and the repo social preview are uploaded by hand.

@@ -3,7 +3,7 @@ Type=Application
 Name=System Monitor
 Comment=CPU, memory, disk, network monitoring
 Exec=/opt/yantrik/bin/yantrik-system-monitor
-# One mark for now: brand/yantrik-mark.svg, installed as hicolor `yantrik`.
+# One mark for now: brand/yantrik-icon.svg, installed as hicolor `yantrik`.
 Icon=yantrik
 Categories=System;Monitor;
 Keywords=cpu;memory;disk;processes;

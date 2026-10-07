@@ -13,7 +13,7 @@ use slint::{ModelRc, VecModel};
 
 /// A picture standing in for an icon resolved from the icon theme.
 fn theme_icon() -> slint::Image {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../brand/yantrik-mark-128.png");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../brand/yantrik-icon-128.png");
     slint::Image::load_from_path(std::path::Path::new(path)).expect("the brand mark")
 }
 

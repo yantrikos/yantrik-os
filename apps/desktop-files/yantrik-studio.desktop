@@ -3,7 +3,7 @@ Type=Application
 Name=Studio
 Comment=Image generation on your own GPU or a hosted service
 Exec=/opt/yantrik/bin/yantrik-studio
-# One mark for now: brand/yantrik-mark.svg, installed as hicolor `yantrik`.
+# One mark for now: brand/yantrik-icon.svg, installed as hicolor `yantrik`.
 Icon=yantrik
 Categories=Graphics;
 Keywords=image;picture;generate;comfyui;

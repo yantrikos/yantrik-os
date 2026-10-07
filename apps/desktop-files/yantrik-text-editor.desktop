@@ -3,7 +3,7 @@ Type=Application
 Name=Editor
 Comment=Text and code editor with syntax highlighting
 Exec=/opt/yantrik/bin/yantrik-text-editor
-# One mark for now: brand/yantrik-mark.svg, installed as hicolor `yantrik`.
+# One mark for now: brand/yantrik-icon.svg, installed as hicolor `yantrik`.
 Icon=yantrik
 Categories=Utility;TextEditor;
 Keywords=text;editor;code;

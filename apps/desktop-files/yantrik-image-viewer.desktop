@@ -3,7 +3,7 @@ Type=Application
 Name=Images
 Comment=Image viewer with zoom and rotate
 Exec=/opt/yantrik/bin/yantrik-image-viewer
-# One mark for now: brand/yantrik-mark.svg, installed as hicolor `yantrik`.
+# One mark for now: brand/yantrik-icon.svg, installed as hicolor `yantrik`.
 Icon=yantrik
 Categories=Graphics;Viewer;
 Keywords=image;photo;picture;viewer;

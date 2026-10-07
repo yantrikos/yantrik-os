@@ -3,7 +3,7 @@ Type=Application
 Name=Email
 Comment=Full-featured email client with AI assist
 Exec=/opt/yantrik/bin/yantrik-email
-# One mark for now: brand/yantrik-mark.svg, installed as hicolor `yantrik`.
+# One mark for now: brand/yantrik-icon.svg, installed as hicolor `yantrik`.
 Icon=yantrik
 Categories=Network;Email;
 Keywords=email;mail;imap;smtp;

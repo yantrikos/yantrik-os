@@ -3,7 +3,7 @@ Type=Application
 Name=Calendar
 Comment=Calendar with Google Calendar sync
 Exec=/opt/yantrik/bin/yantrik-calendar
-# One mark for now: brand/yantrik-mark.svg, installed as hicolor `yantrik`.
+# One mark for now: brand/yantrik-icon.svg, installed as hicolor `yantrik`.
 Icon=yantrik
 Categories=Office;Calendar;
 Keywords=calendar;events;schedule;

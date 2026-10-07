@@ -3,7 +3,7 @@ Type=Application
 Name=Downloads
 Comment=File download manager with queue
 Exec=/opt/yantrik/bin/yantrik-download-manager
-# One mark for now: brand/yantrik-mark.svg, installed as hicolor `yantrik`.
+# One mark for now: brand/yantrik-icon.svg, installed as hicolor `yantrik`.
 Icon=yantrik
 Categories=Network;FileTransfer;
 Keywords=download;transfer;

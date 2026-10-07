@@ -5,7 +5,7 @@ import { Theme } from "theme.slint";
 import { Icon, Icons } from "components/icon.slint";
 import { AppHeader } from "components/app_header.slint";
 import { AppColor, AppIdentity } from "components/app_color.slint";
-import { YantrikMark } from "components/yantrik_mark.slint";
+import { YantrikMark, YantrikName } from "components/yantrik_mark.slint";
 import { ModelTierBadge } from "components/model_tier_badge.slint";
 
 // What is installed, and nothing else.
@@ -179,9 +179,9 @@ export component AboutScreen inherits Rectangle {
                         // in a colour the mark does not contain. Amber is this shell's warning
                         // and queue colour; it was never the brand.
                         //
-                        // Set the way the boot screen sets it: the name solid in text-primary
-                        // at 600, the category light in text-secondary at 300, ten pixels
-                        // apart. The About box and the first screen of the machine now agree.
+                        // The horizontal lockup, from the brand directory's own files: the mark
+                        // and brand/yantrik-name.svg. The About box and the first screen of the
+                        // machine show the same name because neither of them sets it in type.
                         HorizontalLayout {
                             alignment: center;
                             spacing: 0;
@@ -191,20 +191,9 @@ export component AboutScreen inherits Rectangle {
                                 y: (parent.height - self.height) / 2;
                             }
                             Rectangle { width: 16px; }
-                            Text {
-                                text: "Yantrik";
-                                color: Theme.text-primary;
-                                font-size: 34px;
-                                font-weight: 600;
-                                vertical-alignment: center;
-                            }
-                            Rectangle { width: 10px; }
-                            Text {
-                                text: "OS";
-                                color: Theme.text-secondary;
-                                font-size: 34px;
-                                font-weight: 300;
-                                vertical-alignment: center;
+                            YantrikName {
+                                cap-height: 24px;
+                                y: (parent.height - self.height) / 2;
                             }
                         }
 

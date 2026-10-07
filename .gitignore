@@ -154,6 +154,6 @@ Dockerfile.build
 
 # The three app-icon sizes build-release.sh ships are inputs to a release, so they are kept;
 # everything else brand/render.py draws is regenerated.
-!brand/yantrik-mark-48.png
-!brand/yantrik-mark-128.png
-!brand/yantrik-mark-256.png
+!brand/yantrik-icon-48.png
+!brand/yantrik-icon-128.png
+!brand/yantrik-icon-256.png

@@ -3,7 +3,7 @@ Type=Application
 Name=Containers
 Comment=Docker/Podman container management
 Exec=/opt/yantrik/bin/yantrik-container-manager
-# One mark for now: brand/yantrik-mark.svg, installed as hicolor `yantrik`.
+# One mark for now: brand/yantrik-icon.svg, installed as hicolor `yantrik`.
 Icon=yantrik
 Categories=Development;System;
 Keywords=docker;podman;container;

@@ -22,7 +22,7 @@
 
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "components/icon.slint";
-import { YantrikMark } from "components/yantrik_mark.slint";
+import { YantrikMark, YantrikName } from "components/yantrik_mark.slint";
 
 export struct BootStage {
     label: string,
@@ -188,23 +188,12 @@ export component BootScreen inherits Rectangle {
 
         Rectangle { height: Theme.sp-5; }
 
-        // The wordmark: the name solid, the category light. One word carries the weight.
+        // The name, as the brand sets it (brand/yantrik-name.svg): the stacked lockup.
         HorizontalLayout {
             alignment: center;
-            spacing: 10px;
-            Text {
-                text: "Yantrik";
-                color: Theme.text-primary;
-                font-size: Theme.fs-hero;
-                font-weight: Theme.fw-hero;
-            }
-            Text {
-                text: "OS";
-                color: Theme.text-secondary;
-                font-size: Theme.fs-hero;
-                font-weight: 300;
-            }
+            YantrikName { cap-height: 30px; }
         }
+        Rectangle { height: Theme.sp-3; }
         HorizontalLayout {
             alignment: center;
             Text {
