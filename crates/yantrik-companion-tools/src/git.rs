@@ -174,6 +174,24 @@ impl Tool for GitDiffTool {
 
 // ── Git Clone ──
 
+/// Build the `git clone` command for a clone the model asked for.
+///
+/// A repository can carry symlinks pointing anywhere the person can write (e.g.
+/// `~/.config/autostart/x.desktop`), and any later writer that follows links under the clone
+/// would be steered through them past the home_paths rule (#664). `core.symlinks=false` makes
+/// git materialise each link as a small plain file holding the target text instead, closing the
+/// planting at its source; the `clone --config` form also writes it into the new repo's
+/// `.git/config`, so later checkouts/pulls in that repo stay link-free too.
+fn clone_command(url: &str, dest: &str, shallow: bool) -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("clone").arg("--config").arg("core.symlinks=false");
+    if shallow {
+        cmd.args(["--depth", "1"]);
+    }
+    cmd.arg("--").arg(url).arg(dest);
+    cmd
+}
+
 pub struct GitCloneTool;
 
 impl Tool for GitCloneTool {
@@ -224,12 +242,7 @@ impl Tool for GitCloneTool {
             Err(e) => return format!("Error: {e}"),
         };
 
-        let mut cmd = std::process::Command::new("git");
-        cmd.arg("clone");
-        if shallow {
-            cmd.args(["--depth", "1"]);
-        }
-        cmd.arg(url).arg(&expanded);
+        let mut cmd = clone_command(url, &expanded, shallow);
 
         match cmd.output() {
             Ok(o) if o.status.success() => {
@@ -492,5 +505,70 @@ impl Tool for GitDiffFileTool {
         } else {
             out
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clone_does_not_plant_symlinks() {
+        // Skip only when git is not installed; the test itself needs no symlink support.
+        if std::process::Command::new("git").arg("--version").output().is_err() {
+            eprintln!("skipping: git is not on PATH");
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!("yantrik-git-clone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+
+        let src = dir.join("src");
+        let run = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .current_dir(&src)
+                .args(args)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?} succeeded");
+        };
+        run(&["init"]);
+        std::fs::write(src.join("normal.txt"), "hello").unwrap();
+        let mut hash = std::process::Command::new("git")
+            .current_dir(&src)
+            .args(["hash-object", "-w", "--stdin"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        use std::io::Write;
+        hash.stdin.take().unwrap().write_all(b"/tmp/somewhere-outside").unwrap();
+        let blob = hash.wait_with_output().unwrap();
+        assert!(blob.status.success());
+        let blob = String::from_utf8(blob.stdout).unwrap();
+        let blob = blob.trim();
+        // A symlink entry (mode 120000) committed without needing symlink support on the host.
+        run(&["update-index", "--add", "--cacheinfo", &format!("120000,{blob},evil_link")]);
+        run(&["add", "normal.txt"]);
+        run(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "x"]);
+
+        let dest = dir.join("dest");
+        let mut cmd = clone_command(src.to_str().unwrap(), dest.to_str().unwrap(), false);
+        // The command must carry the config that turns links into plain files.
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(args.iter().any(|a| a == "core.symlinks=false"), "args: {args:?}");
+
+        let out = cmd.output().unwrap();
+        assert!(out.status.success(), "clone failed: {}", String::from_utf8_lossy(&out.stderr));
+
+        assert!(dest.join("normal.txt").is_file());
+        let meta = std::fs::symlink_metadata(dest.join("evil_link")).unwrap();
+        assert!(!meta.file_type().is_symlink(), "evil_link must not be a symlink");
+        assert!(meta.file_type().is_file(), "evil_link must be a plain file");
+        // The unfixed command (no core.symlinks=false) would leave evil_link a symlink.
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
