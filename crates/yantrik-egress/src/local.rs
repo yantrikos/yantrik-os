@@ -193,14 +193,14 @@ fn is_wide(ip: IpAddr, len: u8) -> bool {
     place_of(ip) == Place::Internet && len < if ip.is_ipv4() { WIDE_V4 } else { WIDE_V6 }
 }
 
-/// This machine's addresses, the prefixes that are its network and its routers, now — or `None`
-/// when the kernel would not say (found on VM 520: the unit's `RestrictAddressFamilies` had left
-/// out the netlink socket `getifaddrs` asks through, the list came back empty, and this machine's
-/// own LAN address was let through).
 /// Whether netlink has ever answered a route dump on this machine; once it has, a later netlink
 /// failure is a failed read, not a `/proc` fallback that would drop policy routes and IPv6 (#672).
 static NETLINK_ANSWERED: AtomicBool = AtomicBool::new(false);
 
+/// This machine's addresses, the prefixes that are its network and its routers, now — or `None`
+/// when the kernel would not say (found on VM 520: the unit's `RestrictAddressFamilies` had left
+/// out the netlink socket `getifaddrs` asks through, the list came back empty, and this machine's
+/// own LAN address was let through).
 #[cfg(unix)]
 pub fn addresses() -> Option<Net> {
     let mut addrs = Vec::new();
@@ -695,6 +695,35 @@ mod tests {
         assert_eq!(w.now().unwrap().own.len(), 1);
         UP.store(false, Ordering::SeqCst);
         assert_eq!(w.now().map(|n| n.own), Some(vec![ip("127.0.0.1")]), "the last good one");
+    }
+
+    /// Once a read has succeeded, a persistent failure keeps the last good network for ever: there
+    /// is no time or count after which `Watch` gives up, so `now()` keeps returning it and
+    /// `refresh()` keeps returning `None`. A destination on a LAN that came up meanwhile is still
+    /// judged by the stale network, so an address on the new LAN is `Place::Internet` (and thus
+    /// allowed on the public door) until a read succeeds again.
+    #[test]
+    fn a_persistent_failure_keeps_the_last_good_network_for_ever() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static READS: AtomicUsize = AtomicUsize::new(0);
+        fn read() -> Option<Net> {
+            // Succeed once, then fail every time after.
+            if READS.fetch_add(1, Ordering::SeqCst) == 0 {
+                Some(Net { own: vec![ip("127.0.0.1")], links: vec![(ip("192.168.1.10"), 24)], ..Net::default() })
+            } else {
+                None
+            }
+        }
+        let w = Watch::new(read, Duration::ZERO);
+        let first = w.now().expect("the first read succeeds");
+        assert_eq!(first.links, vec![(ip("192.168.1.10"), 24)]);
+        for _ in 0..1000 {
+            assert_eq!(w.now().unwrap().links, vec![(ip("192.168.1.10"), 24)], "the last good network is kept, however many reads fail");
+            assert!(w.refresh().is_none(), "a read now says it failed");
+        }
+        // A new LAN's address is not on the stale network, so it is judged by its range alone: a
+        // public subnet that came up meanwhile is the internet to the stale network.
+        assert_eq!(place(ip("81.2.69.170"), Some(&w.now().unwrap())), Place::Internet);
     }
 
     /// A home device on the ISP's global prefix, on a public IPv4 subnet, or the router, is the
