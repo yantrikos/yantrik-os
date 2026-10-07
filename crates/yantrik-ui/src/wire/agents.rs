@@ -649,6 +649,19 @@ fn publish_lens(g: &AgentsState, s: &Store) {
     if g.get_lens_identity() != identity {
         g.set_lens_identity(identity.into());
     }
+    let outcome = s
+        .agent(&feed::main_agent(&active))
+        .and_then(lens_work::outcome_of);
+    let (outcome_state, outcome_text) = match outcome {
+        Some((state, text)) => (state, text),
+        None => ("", String::new()),
+    };
+    if g.get_lens_outcome_state() != outcome_state {
+        g.set_lens_outcome_state(outcome_state.into());
+    }
+    if g.get_lens_outcome() != outcome_text {
+        g.set_lens_outcome(outcome_text.into());
+    }
 }
 
 /// The latest status line of the active mind's open turn, for `describe shell`; empty when it has

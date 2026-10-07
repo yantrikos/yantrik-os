@@ -142,6 +142,11 @@ export global AgentsState {
     in-out property <int> lens-waiting: 0;
     // "Built-in mind" or "Attached mind", for the conversation header.
     in-out property <string> lens-identity: "";
+    // How the last turn of any kind ended, as the header's durable completion chip says it:
+    // the state key ("finished" | "stopped" | "failed") and the words ("Finished · 12 s").
+    // Both "" while the turn is open or there is no turn.
+    in-out property <string> lens-outcome-state: "";
+    in-out property <string> lens-outcome: "";
     // The run opened on the screen, or the one a window shows.
     in-out property <string> selected: "";
     // The agent shown: the selected one on the screen, the window's own in a popped-out window.
