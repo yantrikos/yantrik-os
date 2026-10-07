@@ -39,6 +39,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -196,6 +197,10 @@ fn is_wide(ip: IpAddr, len: u8) -> bool {
 /// when the kernel would not say (found on VM 520: the unit's `RestrictAddressFamilies` had left
 /// out the netlink socket `getifaddrs` asks through, the list came back empty, and this machine's
 /// own LAN address was let through).
+/// Whether netlink has ever answered a route dump on this machine; once it has, a later netlink
+/// failure is a failed read, not a `/proc` fallback that would drop policy routes and IPv6 (#672).
+static NETLINK_ANSWERED: AtomicBool = AtomicBool::new(false);
+
 #[cfg(unix)]
 pub fn addresses() -> Option<Net> {
     let mut addrs = Vec::new();
@@ -262,7 +267,7 @@ pub fn addresses() -> Option<Net> {
         let p = unsafe { libc::if_indextoname(index, buf.as_mut_ptr()) };
         (!p.is_null()).then(|| unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned())
     };
-    let routes = route_tables(|| crate::netlink::dump(&name), |p| std::fs::read_to_string(p))?;
+    let routes = route_tables(|| crate::netlink::dump(&name), |p| std::fs::read_to_string(p), &NETLINK_ANSWERED)?;
     Some(Net::build(&addrs, &devs, &routes))
 }
 
@@ -270,11 +275,21 @@ pub fn addresses() -> Option<Net> {
 /// `read` reads, which hold IPv4's main table only. `None` when neither said: a failed read, so
 /// the last good network is kept rather than one with no routes and no routers. A missing IPv6
 /// table is no IPv6, not a failure; a missing IPv4 one is no fallback.
-pub fn route_tables(dump: impl FnOnce() -> std::io::Result<Vec<Route>>, read: impl Fn(&str) -> std::io::Result<String>) -> Option<Vec<Route>> {
+pub fn route_tables(dump: impl FnOnce() -> std::io::Result<Vec<Route>>, read: impl Fn(&str) -> std::io::Result<String>, netlink_answered: &AtomicBool) -> Option<Vec<Route>> {
     let e = match dump() {
-        Ok(r) => return Some(r),
+        Ok(r) => {
+            netlink_answered.store(true, Ordering::SeqCst);
+            return Some(r);
+        }
         Err(e) => e,
     };
+    // Once netlink has answered, a later netlink failure is a failed read, not a /proc fallback:
+    // /proc holds IPv4's main table only, so it would replace the last good network with one
+    // missing policy routes, other tables and IPv6 routers (#672).
+    if netlink_answered.load(Ordering::SeqCst) {
+        tracing::warn!(error = %e, "netlink answered before but now failed to dump routes; not falling back to /proc");
+        return None;
+    }
     log_once(
         "route-dump".into(),
         &format!("the kernel would not dump its routes over netlink ({e}); reading /proc, which lists IPv4's main table only"),
@@ -742,21 +757,22 @@ mod tests {
             }
         };
         let from_netlink = vec![on("81.2.69.0", 24, "eth0")];
-        assert_eq!(route_tables(|| Ok(from_netlink.clone()), files(Some(libc::EMFILE), None)), Some(from_netlink), "netlink, not /proc");
-        assert_eq!(route_tables(nl_down, files(None, Some(libc::ENOENT))).map(|r| r.len()), Some(1), "/proc; no IPv6 is no IPv6 routes");
-        assert_eq!(route_tables(nl_down, files(Some(libc::EMFILE), None)), None, "IPv4's table unreadable");
-        assert_eq!(route_tables(nl_down, files(None, Some(libc::EACCES))), None, "IPv6's table unreadable");
-        assert_eq!(route_tables(nl_down, files(Some(libc::ENOENT), None)), None, "netlink failed and no /proc to fall back on");
+        assert_eq!(route_tables(|| Ok(from_netlink.clone()), files(Some(libc::EMFILE), None), &AtomicBool::new(false)), Some(from_netlink), "netlink, not /proc");
+        assert_eq!(route_tables(nl_down, files(None, Some(libc::ENOENT)), &AtomicBool::new(false)).map(|r| r.len()), Some(1), "/proc; no IPv6 is no IPv6 routes");
+        assert_eq!(route_tables(nl_down, files(Some(libc::EMFILE), None), &AtomicBool::new(false)), None, "IPv4's table unreadable");
+        assert_eq!(route_tables(nl_down, files(None, Some(libc::EACCES)), &AtomicBool::new(false)), None, "IPv6's table unreadable");
+        assert_eq!(route_tables(nl_down, files(Some(libc::ENOENT), None), &AtomicBool::new(false)), None, "netlink failed and no /proc to fall back on");
         assert_eq!(Error::from_raw_os_error(libc::ENOENT).kind(), ErrorKind::NotFound);
 
         // And Watch then keeps the last good network, routers and all.
         use std::sync::atomic::{AtomicBool, Ordering};
         static ROUTES: AtomicBool = AtomicBool::new(true);
+        static NETLINK: AtomicBool = AtomicBool::new(false);
         fn read() -> Option<Net> {
             let ok = ROUTES.load(Ordering::SeqCst);
             let routes = route_tables(|| if ok { Ok(vec![via("81.2.69.1", "eth0")]) } else { Err(Error::from_raw_os_error(libc::EMFILE)) }, |_| {
                 Err(Error::from_raw_os_error(libc::EMFILE))
-            })?;
+            }, &NETLINK)?;
             Some(Net::build(&[addr("lo", "127.0.0.1", 8)], &devs(&[("eth0", Dev::Shared)]), &routes))
         }
         let w = Watch::new(read, Duration::ZERO);
@@ -764,6 +780,26 @@ mod tests {
         ROUTES.store(false, Ordering::SeqCst);
         assert_eq!(w.now().unwrap().gateways, vec![ip("81.2.69.1")], "the last good one, with its router");
         assert!(w.refresh().is_none(), "a read now says it failed");
+    }
+
+    /// Once netlink has answered, a later netlink failure is a failed read, not a /proc fallback
+    /// that would drop policy routes and IPv6 routers (#672). A fresh flag (netlink never worked
+    /// here) still falls back to /proc.
+    #[test]
+    fn a_route_table_netlink_failure_after_it_answered_is_a_failed_read() {
+        use std::io::{Error, ErrorKind};
+        let nl_down = || Err(Error::from_raw_os_error(libc::EAFNOSUPPORT));
+        let v4 = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\neth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n";
+        let read = |p: &str| match p.ends_with("/route") {
+            true => Ok(v4.to_string()),
+            false => Ok(String::new()),
+        };
+        let answered = AtomicBool::new(false);
+        let from_netlink = vec![on("81.2.69.0", 24, "eth0")];
+        assert_eq!(route_tables(|| Ok(from_netlink.clone()), read, &answered), Some(from_netlink), "netlink answered");
+        assert_eq!(route_tables(nl_down, read, &answered), None, "a later netlink failure is a failed read, not /proc");
+        assert_eq!(route_tables(nl_down, read, &AtomicBool::new(false)).map(|r| r.len()), Some(1), "a fresh flag still falls back to /proc");
+        assert_eq!(Error::from_raw_os_error(libc::ENOENT).kind(), ErrorKind::NotFound);
     }
 
     /// The /56 is a guess, so it is said, and only made on a shared network: not around a VPN's
