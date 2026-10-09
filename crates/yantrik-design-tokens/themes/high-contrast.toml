@@ -1,0 +1,21 @@
+# High Contrast: near-black grounds and near-white text, for people who need the strongest
+# possible difference between what is read and what is behind it.
+id = "high-contrast"
+name = "High Contrast"
+description = "Near-black grounds and near-white text, for people who need the strongest contrast."
+dark = true
+accent = "cyan"
+wallpaper = "lake"
+overrides = true
+
+[palette]
+bg_deep = "#000000"
+bg_surface = "#0a0a0a"
+bg_card = "#141414"
+bg_elevated = "#1f1f1f"
+amber = "#d4a574"   # needs-you: the same on every theme (colour system)
+cyan = "#38d8cd"    # the minds' teal: the same on every theme (colour system)
+text_primary = "#ffffff"
+text_secondary = "#f0f0f0"
+text_dim = "#d0d0d0"
+accent = "#ffffff"
