@@ -38,6 +38,7 @@ pub const DEFAULT: &str = "lake";
 const FILES: &[&str] = &[
     include_str!("../../../yantrik-design-tokens/themes/lake.toml"),
     include_str!("../../../yantrik-design-tokens/themes/nightfall.toml"),
+    include_str!("../../../yantrik-design-tokens/themes/high-contrast.toml"),
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -304,6 +305,29 @@ mod tests {
         }
         let ids: Vec<_> = all().iter().map(|t| &t.id).collect();
         assert_eq!(ids.len(), ids.iter().collect::<std::collections::HashSet<_>>().len(), "ids are unique");
+    }
+
+    #[test]
+    fn a_high_contrast_theme_ships_and_meets_the_ratio() {
+        let t = find("high-contrast").expect("a high-contrast theme ships");
+        assert!(t.dark && t.overrides, "it replaces the stock palette on the dark ground");
+
+        // WCAG relative luminance of a #rrggbb colour, each channel linearised.
+        let luminance = |hex: &str| {
+            let [r, g, b] = rgb(hex).expect("#rrggbb");
+            let linear = |c: u8| {
+                let c = f64::from(c) / 255.0;
+                if c <= 0.03928 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+            };
+            0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+        };
+        let ratio = |lighter: &str, darker: &str| {
+            let (l1, l2) = (luminance(lighter), luminance(darker));
+            (l1 + 0.05) / (l2 + 0.05)
+        };
+
+        assert!(ratio(&t.palette.text_primary, &t.palette.bg_surface) >= 7.0, "text_primary over bg_surface meets WCAG AAA");
+        assert!(ratio(&t.palette.text_secondary, &t.palette.bg_card) >= 7.0, "text_secondary over bg_card meets WCAG AAA");
     }
 
     /// Lake turns the overrides off and says its palette is the tokens' own. If theme.slint's
