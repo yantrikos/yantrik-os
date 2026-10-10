@@ -1,120 +1,188 @@
 # Many minds, one witness: the Lens when minds start anywhere (2026-10-10)
 
-People will start minds from everywhere. Pranab types `hermes chat` in a terminal, launches an agent from the Agents screen, a timer starts a nightly job, and someone ssh-es in and runs Claude Code. Each runs independently. Today the Lens (the chat bar) sees only one of these: the active mind's `main` conversation. This doc says what the Lens should show and what the OS has to build underneath for that to be true.
+People start minds everywhere. Pranab types `hermes chat` in a terminal, launches an agent from the Agents screen, a timer starts a nightly job, someone ssh-es in and runs Claude Code. Each runs independently. Today the Lens (the chat bar) sees only the active mind's `main` conversation. This doc says what the Lens shows and what the OS builds underneath for that to be true.
 
-The mockups are in the "Many Minds" artifact. The first concept, "the chat bar as a switchboard", was critiqued blind by DeepSeek V4 Pro, GLM 5.3 and Kimi K3 (`F:/yantrik/qwen/lead-work/switchboard-critiques.json`). All three said the same thing in different words: *the chat bar is a view, not the architecture.* This revision starts from that.
+**History.**
+- The first concept was "the chat bar as a switchboard", with @-names, a presence rail and leases. DeepSeek V4 Pro, GLM 5.3 and Kimi K3 critiqued it blind (`F:/yantrik/qwen/lead-work/switchboard-critiques.json`) and agreed: *the chat bar is a view, not the architecture.*
+- A second draft built the ledger first. Fable then reviewed it against the code (`fable-design-review.md`) and corrected the ledger seam, the trust vocabulary and the row source. It also designed terminal-connect, which this version adopts.
+- yantrik-mind-72 set one hard constraint (the `mind` wall, below).
+
+The mockups are in the "Many Minds" artifact.
 
 ## The idea
 
-**The OS is the witness.** Every action any mind takes on the desktop goes through `app.act`, and the kernel says which process made the call. No other system on the market has that position: a chat product knows only what its own agent says it did. So the Lens shows two kinds of statements, and never mixes them up:
+**The OS is the witness.** Every action any mind takes on the desktop goes through `app.act`, and the kernel says which process made the call. A chat product knows only what its own agent says it did. So the Lens shows two kinds of statements and never mixes them:
 
-- **Seen**: the OS recorded it. "10:42 · moved 3 files in Downloads". The act happened; that part is certain.
-- **Says**: a mind reported it. "Drafting the reply", "Finished the refactor". The mind may be wrong or lying.
+- **Seen**: the OS recorded it ("10:42 · moved 3 files in Downloads"). The act happened; that part is certain.
+- **Says**: a mind, or our bridge running inside a mind's process tree, reported it ("Drafting the reply"). It may be wrong.
 
-The agents store already carries this distinction (`Provenance Reported|Verified`, `crates/yantrik-ui/src/agents/model.rs:164`); this design makes it the Lens's visual grammar. It also matches what the provenance pilot measured: labels a model can read barely change what it believes. People need the distinction even more than models do, and the OS can supply it honestly.
+The agents store already has this distinction (`Provenance Reported|Verified`, `crates/yantrik-ui/src/agents/model.rs:164`). This design makes it the Lens's visual grammar. The paper's 30-plant pilot is a reason to take it seriously: a provenance label a model reads did not lower how often it adopted a false memory (36% hidden, 40% shown, across 7 families). The person needs the distinction drawn for them, by the OS.
 
 ## What the OS can and cannot know
 
-This is the part the first concept got wrong. It assumed the OS sees sessions. It sees acts.
+The OS sees acts, not sessions.
 
 | | What the OS knows | How sure |
 |---|---|---|
-| An act happened (app, action, outcome) | Always: the app ran it | Certain |
-| Which process tree called | `SO_PEERCRED` + the `/proc` walk (`yantrik-ipc-transport/src/peer_identity.rs`) | Certain at the moment of the call |
-| Which **mind** it was | Verified only for an attached harness (agent token + pid descent, `host.rs:400-416`) or the `yantrik-mind` account. Otherwise only *recognised* by program name, which a program running as the person can imitate | Verified / recognised |
-| Where it was started (terminal, ssh, timer, desktop) | Derivable from the chain and the cgroup; nothing reads this today | Good, not proof |
-| What it is *doing* or *about to do* | Only what an attached harness reports (`status`, `tool_start`) | Says, never seen |
-| A session that has not acted yet | Nothing, unless it attached | Invisible |
+| An act happened (app, action, outcome) | Always: the app ran or refused it | Certain |
+| Which process tree called | `SO_PEERCRED` + the `/proc` walk (`peer_identity.rs`) | Certain at call time |
+| That a later call comes from the same session | Attach: every later call from the attach pid or a descendant, with an OS-minted token on every act (`host.rs:400-416`, `1138-1153`) | **Continuity**, not identity |
+| Which mind it is | Only the `yantrik-mind` account is *verified* (`wire/harness.rs:740-758`). Any other `id` and `name` is self-declared: a process running as the person can be anything (`approvals-2026-09-21.md:704-712`) | Says |
+| Where it was started | The chain, tty, cgroup and `sshd` (#718) | Good evidence, not proof |
+| What it is doing | Only what an attached harness reports | Says |
 
-So: a Hermes started by hand in a terminal is, to the OS today, **the person** (`Caller::NoAgent`, `control_agents.rs:94-108`). The design must not pretend otherwise. It can show "Hermes (recognised, not verified) · from a terminal" because the chain says so, and it must keep that qualifier.
+**One vocabulary, used everywhere** (strip, card, ledger), taken from the approval card's own words (`caller_identity.rs:84-91`):
 
-## The Lens, revised
+| Tier | Established by | Shown as |
+|---|---|---|
+| **Your Mind** | the `yantrik-mind` uid at attach | "Yantrik Mind" |
+| **Attached** | pid continuity + token | "Hermes · says it is Hermes · python -m hermes_cli chat · terminal · attached 10:58" |
+| **Not attached** | a call with no token | "a program · python3 nightly.py · ssh from 192.168.4.12 · not attached" |
 
-### 1. At the machine (a strip, not a rail)
+"Verified" is reserved for your Mind. "Recognised" is dropped: it would have been a third vocabulary.
 
-Under the Lens header, one collapsed line: **"3 minds at the machine · 1 needs you"**. Expanded, one 44px row per mind that is attached *or has acted in the last 15 minutes*. Nothing else: a silent process is not shown (the critique's "the rail becomes noise").
+## Terminal-connect: how a mind started anywhere reaches the Lens
 
-Each row:
-- the mind's name; for a recognised-not-verified caller, the name in the secondary colour with "recognised" after it;
-- where it started, as plain metadata text ("terminal", "ssh from 192.168.4.12", "timer · nightly-sync", "desktop"), never an icon that becomes its identity;
-- its state, in the one vocabulary from `minds-surfaces-spec-2026-10-02.md` (Working · Needs you · Paused · Finished · …) **only when an attached harness reports it**. For anything else: "Last seen 10:42 · moved 3 files". Never an inferred "Working".
-- Tap: **Look in** (below). No hover-only information.
+Today `hermes chat` in a terminal never reaches the harness socket. The Hermes adapter is a gateway platform plugin, and the protocol has no way for a harness to start a turn itself (`adapter.py:416-420`). So every act from that Hermes is `Caller::NoAgent`, the person (`control_agents.rs:94-108`). That's the gap.
+
+**Separate presence from driving.** Today attaching means both "I exist" and "the desktop gives me turns". Add a presence-only mode, and attach where the OS already is inside every third-party harness: **`yos-mcp`**. Every MCP harness with the desktop's tools (Hermes CLI, Claude Code, pi, openclaw, anything over ssh) runs our bridge as a child for the life of its session. When the bridge starts with no `YANTRIK_AGENT_TOKEN` in its environment, it attaches presence-only and puts the minted token on every `yos act`. Every such session becomes visible, addressable for approvals, and holdable, with **no change to third-party code**. Where a real adapter exists (the Hermes gateway), the adapter attaches as today and hands the bridge its token; the bridge then does nothing new.
+
+### Protocol additions (harness → OS, poll-based, backwards compatible)
+
+- **`harness.attach` gains optional fields:**
+  - `shared: bool` (default false: replace, as today). A shared attach never replaces another; the host mints its key (below) and answers `{session, as: "hermes.1"}`. Capped at `MAX_SHARED_PER_ID = 4`.
+  - `takes_turns: bool` (default true). With `false` (presence-only), the host never queues an assignment for it, and `send_to` is refused: "`hermes.2` takes its turns in its terminal; leave it a note instead". It polls every 20 s, inside the 90 s presence timeout, for `cancelled`, `ended` and `answers`.
+  - `scope` (phase 2): `{apps, paths, network}`. Recorded and shown; enforcement is reach (below).
+- **New `harness.open {session, conversation?, text?}` → `{turn_id, conversation, agent_token}`** opens a turn the harness is answering somewhere else. Everything after it is the existing wire: `chunk`, `event`, `complete` and `fail`.
+  - One turn in flight per conversation.
+  - A new conversation counts toward `MAX_LIVE_AGENTS`; `main` is exempt, as today.
+  - A missing `text` is drawn as "a turn in its terminal", never as a person's bubble.
+  - The run store records `origin: self`.
+- **Origin and program are the OS's, never the harness's.** At attach, the shell walks the attach pid (`peer_identity::walk`, then `origin_of` from #718) and annotates the entry (`Host::annotate`). `Entry` and `AgentEntry` gain `program`, `origin`, `shared` and `takes_turns`.
+
+### The `mind` wall (hard constraint, yantrik-mind-72)
+
+Today the OS trusts the id `mind` only when the kernel says the caller is the yantrik-mind uid. Grant requests, search-grant cards, first-party memory defaults and egress lean on that (`wire/harness.rs:740-758`, `memory_grants.rs:130, 318-319`, `control_approvals.rs:510, 531, 1293`). A self-attached mind must never stand under `mind`, or under any id a grant, card or search grant is bound to. This is enforced in **one function**, `Host::allocate_key(announced, shared, uid, is_mind)` in `host.rs`, called before anything is inserted:
+
+1. An `id` in `RESERVED` (`mind`, `companion`, every built-in) from a uid other than the mind account is refused. The shell's `first_party_claim_refused` stays as the outer wall; the host repeats the check, so a test proves it without the shell.
+2. A shared attach never takes a bare id. It always gets `<id>.<n>`, even when `<id>` is free. A dotted `id` is refused on the wire, so nobody can *ask* for `hermes.2`.
+3. `<n>` is the smallest integer unused for this run of the host (`State.issued_keys`); it restarts only with the shell. Nothing is ever granted to a dotted key by default. A grant made in Settings names the key *and* the program line, so tomorrow's `hermes.2`, running a different program, inherits nothing.
+4. Approvals, `Verified.agent` and `grant_belongs` already bind to `<key>:<conversation>` and the token, never to a display name.
+
+The test is `a_shared_or_terminal_attach_never_takes_a_grant_bearing_id`, beside the shell's `only_the_mind_account_attaches_as_the_first_party_mind…`. It covers:
+- `mind` refused from uid 1000;
+- a shared `hermes` keyed `hermes.1` even when `hermes` is free;
+- an exclusive `hermes` alongside it;
+- no memory credential for `hermes.1`;
+- `hermes.2` refused on the wire;
+- the counter restarting with a new `Host`, and an old token refused on `resume`.
+
+**The bridge under the mind account never auto-attaches**: its acts already need a live agent token (`call.rs:141-147`).
+
+### Trust and consent
+
+Attaching grants nothing: no memory, standard reach, every act still graded. So there is **no card at attach**, because it would be approving a name nobody can check. The person confirms where they confirm today: at the first graded act, on a card that now carries the instance, the program line and the origin. Granting an instance memory or wider reach goes through the existing grants UI, per key. Bridge-reported events are Says (a hostile harness can run a fake bridge); the ledger entry for the same act is Seen.
+
+### A Lens turn into a terminal-driven session
+
+Only harnesses with a real adapter take turns from the Lens. The host already serialises turns per conversation (`host.rs:1686-1697`): a Lens turn waits while a self-opened turn is in flight. It carries `origin.channel = "lens"`, so the terminal prints `▸ from the desktop: …` and answers in its own loop. The terminal stays primary: a self-opened turn never waits for the Lens.
+
+For presence-only sessions, **Talk to it becomes Leave a note**. `Host::note_for` (`host.rs:1316`) queues it, and the bridge delivers it in the reply of the session's next `yos act` as `notes`, printed "Desktop note (from you, 10:59): …". Only the person may leave notes (`Caller::NoAgent`), never another agent.
+
+### Session state
+
+- **Presence-only:** the bridge opens a turn on the first act after idle, sends `tool_start` and `tool_end` per act and `status` while it waits on a card, and closes the turn after 30 s idle. The state is Working while a turn is open, Needs you when the shell holds a card for its token (an OS fact), and otherwise "Last update 10:42". Never Finished, because the bridge can't know.
+- **Real adapters** also mirror the harness's own approvals as `Request` events (`event.rs:125-133`). Hermes's `/approve` becomes a card in the one inbox, and the answer rides back on `poll.answers`. Today those approvals are invisible to the OS; this is the biggest usability win in the design.
+
+### Failure modes
+
+- **The terminal closes or the harness crashes:** the pid dies and the entry is reaped (`host.rs:426-429`). Open self-turns end orphaned. The row reads "Connection lost", then stays ledger-only for 15 min.
+- **Two terminals:** `hermes.1` and `hermes.2`, each with its own program line and tty. The gateway stays exclusive on `hermes`. An old adapter without `shared` keeps replace semantics (`host.rs:1506-1526`).
+- **A spoofed name:** "Hermes · says it is Hermes · python3 evil.py · terminal". `caller_identity::mismatch` must compare against the instance the token resolves to, not "any Hermes", or a genuine second instance would fire the warning.
+- **Private mode:** attach and poll are refused (`wire/harness.rs:708-718`). The bridge prints one line and re-attaches when the mode ends. The strip shows "Private · 4 attempts refused".
+- **A shell restart:** resume works as today.
+
+## The Lens
+
+### 1. At the machine
+
+Under the header, one collapsed line, "3 minds at the machine · 1 needs you", expands to one 44px row per mind that is attached or acted in the last 15 minutes. The rows are a read model that merges three sources:
+- `Host::list()` (an idle attached Hermes has no agent row, `host.rs:1060-1068`);
+- `Host::agents()`;
+- the ledger's actors, keyed by token when attached, else by `program + chain_root_pid + started`.
+
+Each row shows the name and its tier line, with origin as plain text (never an icon), and a state from the shared vocabulary only when it is reported or is an OS fact. Otherwise it shows "Last update 10:42".
 
 ### 2. One approvals inbox
 
-Pending approvals already appear in the Lens from any caller (`control_approvals.rs:1172-1182`). Make them the top of the Lens whenever any exist, oldest first, each card carrying the verified line ("Hermes · from a terminal · recognised, not verified") that `approvals::Verified` already computes, plus the origin. One place to answer every mind, wherever it was started. The existing card rules stand: Approve once / Decline, no approve-all, the approval binds to the action as displayed.
+All pending approvals sit at the top whenever any exist, oldest first. Each card carries the program line (the card already prints it; keep that rather than the self-declared name), the instance and the origin. Mirrored harness `Request`s join them. The existing rules stand: Approve once / Decline, no approve-all, and the approval binds to the action as displayed.
 
 ### 3. Ask the machine, instead of @all
 
-The person asks the home mind in plain words: "Who's touching my Documents?", "What did anything do while I was out?", "Which mind changed index.html?". The home mind answers **from the ledger**, by a read-only query, with each line marked seen and a Look in link. Nothing is broadcast to other minds: the OS answers faster and more truthfully than they can, and a broadcast is a prompt-injection path into every session at once (Kimi).
+"Who's touching my Documents?" The home mind answers from the ledger with a read-only tool graded `safe` and filtered by reach: the person sees everything, an agent only its own token's rows. Nothing is broadcast to other minds, so there is no new path for an injected prompt. When the Lens opens after idle, it suggests "Since you left".
 
-### 4. Talk to a mind by what it is doing, not by a handle
+### 4. Address by what it is doing
 
-No `@hermes-terminal-2`. To send to a specific mind, the person either taps **Talk to it** on its row (which puts a target chip in the composer: "To Hermes ×"), or says it: "tell the one editing index.html to stop". The home mind resolves "the one editing index.html" through the ledger to one agent and shows the chip for the person to confirm. A send never changes the active mind (today `chat_with` swaps it, `wire/agents.rs:344-359`) and never re-targets an existing draft.
+There are no @-handles. "Tell the one editing index.html to stop" resolves by token through the ledger to one instance, and becomes a chip ("To Claude Code ×") that the person can see and remove. Turn-takers get **Talk to it**; presence-only minds get **Leave a note**. Callers that aren't attached get no chip, only "not attached".
 
-Only minds attached to the OS can be talked to; that is a protocol fact, not a policy. For the rest, the chip offers what the OS can do instead (see Hold, phase 2).
+### 5. Look in
 
-### 5. Look in (read-only, one rule)
+One rule: show what the OS knows, and nothing it doesn't.
+- **Attached:** its self-turns with tool cards (Says), interleaved with its ledger rows (Seen).
+- **Not attached:** ledger only, with the banner "Give it the desktop's tools and it appears here".
 
-The critiques were right that "sometimes you can send, sometimes it summarises" makes people unsure who they are talking to. One rule: **Look in shows what the OS knows about that mind, and nothing it doesn't.**
-- An attached mind with a desktop conversation: its transcript (from the agents store), read-only, with the work card and **Talk to it** at the bottom.
-- Anything else: its ledger, the acts it was seen making, newest first, with the banner "Started in a terminal. The OS can show what it did, not what it is thinking." and the one line to attach it (`yantrik attach hermes`, once that exists).
+### 6. Holds (phase 2)
 
-### 6. Declared scopes and holds (phase 2)
+**A hold is reach.** `reaches::hold` already limits an agent to some surfaces and a ceiling on every door, keyed on its token (`reaches.rs:46`, `control.rs:605-612`). Phase 2 narrows it to apps and paths, driven by `Attach.scope` and an overlap forecast ("Hermes.1 and Claude Code can both write to ~/Projects/site").
 
-Leases that block are out: they deadlock, and they assume the OS knows what a mind is about to touch, which it doesn't. Instead:
-- An attaching harness **declares its scope** (apps, folders, network), like a mobile permission sheet. The OS records it and shows it on the row.
-- Overlapping scopes between two live minds produce a **forecast**, not a lock: "Hermes and Claude Code can both write to ~/Projects/site. Hermes edited index.html 3 times in the last 5 minutes." With Let it be / Hold Hermes.
-- **Hold** is a capability the person grants and revokes: "Hold Hermes from Downloads" makes `app.act` refuse that mind's acts in that scope with `HELD:` until released. It works on unattached callers too, keyed on the recognised program chain, with that qualifier shown.
-- Undeclared minds show "No scope declared".
-
-Any harness-protocol change here (`harness.attach` gaining `scope`) goes to yantrik-mind-72 before it reaches 520.
+Per-name holds on unattached callers are out: renaming dodges them. Instead, one switch, **"Hold everything not attached"**, refuses tokenless acts above `safe`. It can't be dodged by a name, and the switch says plainly that your own bare `yos act` is affected too.
 
 ### 7. Time travel (phase 3)
 
-Because the ledger is append-only and ordered, the Lens can show the machine as of a moment: "At 10:42: Hermes had moved 3 files; Claude Code had opened index.html." Undo, where an app's act has an inverse, hangs off the same rows. Both depend on phase 1 only.
+"The machine as of 10:42", and undo where an app's act has an inverse.
 
-## What has to be built
+## The ledger (#148)
 
-### The ledger (#148, never built)
-
-One append-only record of every `app.act`, written by the OS, not reported by `yos-mcp`.
-
-- **Where it is written.** At the one seam every act already passes: `ActCall::log` (`crates/yantrik-surface/src/call.rs:197-211`), called from `ControlRpc::dispatch` (`crates/yantrik-app-runtime/src/control.rs`) before the handler, and once more with the outcome after it. The app runtime sends the entry to the ledger service; it never writes a file itself.
-- **Who keeps it.** A new supervised process, `services/action-ledger`, built on `yantrik-service-sdk` like `services/perception-journal` and for the same reason that doc gives: the shell is the most crash-prone thing on the machine, and a record must not depend on its uptime. Reuse perception-journal's segment-and-cursor journal (`services/perception-journal/src/journal.rs`); do not write a second one.
-- **An entry.** `seq`, `at`, the reporting app, `action`, a short args summary (the same one an approval card shows; never raw file contents, never secrets: anything an action marks sensitive is reduced to its kind), grade, `granted`, outcome (`ok` / `refused:<kind>` / `stale` / `held`), `action_id`, revision, and the **actor**: `{agent?, harness?, verified: bool, program, chain_root_pid, started, origin, uid}`.
-- **Trust.** Entries are hash-chained (each carries the hash of the one before), so an edit or a deletion shows. The service accepts `ledger.record` only from the desktop's own programs, using the same check every service's raw methods already use (`yantrik_ipc_transport::owner::desktop_programs_only`), and it records which reporter sent each entry. Stated plainly in the doc comment and the UI: tamper-evident, and hard to forge, but not proof against a program running as the person that is set on it (the same limit `peer_identity.rs` states). The `yantrik-mind` account cannot touch it at all.
-- **Readers.** The service's raw `ledger.since {seq|time, actor?, app?, path?}` is also for the desktop's own programs only (the shell and the built-in mind's worker). Everyone else reads through a graded, read-only action on the shell's `app.act`, which filters by caller. The person sees everything; any other mind sees only its own entries. The ledger is a map of what every other mind did, so handing it to a third-party agent would be a leak. `yos ledger` (a python script, which the raw check refuses) goes through that action too.
-- **Replaces** the mind audit (`mind-audit.jsonl`, `mind_mode.rs:1276-1340`) as the source for "Recent actions"; the mind audit's readers move over in the phase that builds the Lens strip.
-
-### Origin
-
-A pure classifier in `yantrik-ipc-transport` beside `peer_identity`, from the chain and `/proc/<pid>/cgroup`, `/proc/<pid>/stat` (tty), and the chain's comms:
-`desktop` (a scope under the graphical session, or started by the shell) · `terminal` (has a tty, under a terminal emulator) · `ssh` (an `sshd` ancestor; with the peer address when `SSH_CONNECTION` is readable in the root's environ, else without) · `timer` (a `.service` unit started by a `.timer`, named) · `service` (another systemd unit, named) · `unknown`. Never a guess: `unknown` when the facts don't say.
-
-### Sessions from the ledger
-
-The Lens strip's rows come from two sources merged: `Host::agents()` (attached, with reported state) and the ledger's distinct actors in the last 15 minutes (keyed on agent id when verified, else on `program + chain_root_pid + started`). That is a read model in the shell, not a new store.
+- **The seam.** `ActCall::log` (`call.rs:197-211`) is a tracing line that runs once, before the handler, after every refusal has already returned (`control.rs:601-633`), so it is **not** the seam. Record at dispatch entry, right after `ActCall::parse` (`control.rs:599`), and again on the `Result` the dispatch returns, including refusals (`PRIVATE`, standing, reach, grant, the handler's `Err`). The test: a `PRIVATE` refusal appears with `outcome: refused:private`.
+- **The keeper.** A supervised `services/action-ledger` on `yantrik-service-sdk`, not the shell, which is the most crash-prone thing on the machine. It reuses the shared segment journal (#717).
+- **An entry:**
+  - `seq`, `at`, the reporting app, `action`;
+  - an args summary (the card's; secrets reduced to their kind);
+  - grade, `granted`, outcome, `action_id`, revision;
+  - the actor `{tier, key?, says_name?, program, chain_root_pid, started, origin, uid}`.
+- **Trust.** The entries are hash-chained, so an edit or deletion shows. `ledger.record` is accepted only from the desktop's own programs (`owner::desktop_programs_only`), and the reporter is recorded. It is tamper-evident and hard to forge, not proof against a determined same-user program; the `yantrik-mind` account can't touch it at all.
+- **Readers.** The raw `ledger.since` serves desktop programs only. Everyone else, `yos ledger` included, reads through a graded read-only action on the shell's `app.act`, filtered by caller: the person sees everything, a mind only its own entries.
+- **What it replaces.** The ledger replaces `mind-audit.jsonl` as the source for Recent actions.
 
 ## Phases
 
-**Phase 1 (foundation, no visible change except Recent actions):**
-1. `action-ledger` service: hash-chained journal, `ledger.record` (reporter-checked), `ledger.since`, `ledger.status`, retention.
-2. The app runtime records every act (pre and post) through `ActCall::log`'s seam, with the actor resolved at call time.
-3. The origin classifier, with fixture `/proc` trees in tests.
-4. `yos ledger` (read-only) and the mind panel's Recent actions reading the ledger.
+S = Claude security review. P = harness-protocol change: yantrik-mind-72 gets the spec before it reaches 520.
 
-**Phase 2 (the Lens):** the At the machine strip, the approvals inbox at the top with origin, Ask the machine (the built-in mind's ledger tool), target chips and Talk to it, Look in. Then declared scopes, forecasts and holds (protocol change: mind-72 first).
+1. #717: the shared segment journal crate (in review, PR #722).
+2. #718: the origin classifier. S.
+3. `services/action-ledger`: the hash chain, `ledger.record/since/status`, retention, `desktop_programs_only`. S.
+4. The runtime records every act at dispatch entry and on its `Result`, refusals included. S.
+5. `yos ledger` and the mind panel's Recent actions read the ledger; the mind-audit readers move over.
+6. Protocol: `Attach.shared/takes_turns`, `as`, `Host::allocate_key` (the `mind` wall and its test), the caps, the `Entry` fields, `annotate`. P, S.
+7. Protocol: `harness.open`; the run-store origin; presence-only `send_to` refusal. P, S.
+8. Shell: annotate attaches with program and origin; per-instance `caller_identity` and `mismatch`. S.
+9. `yos-mcp` auto-attaches presence-only, with the token on every act, self-turns, and notes in replies. S, P (tell mind-72).
+10. Harness lib: `shared`, `takes_turns`, `open_turn`, slow poll; pi mirrors its own approvals as `Request`s.
+11. The Lens strip (the merged read model) and the one vocabulary.
+12. The approvals inbox at the top, with origin and instance.
+13. Ask the machine: the built-in mind's ledger tool, filtered by reach. S.
+14. Talk to it, Leave a note, chips and resolve-by-ledger. S (the note channel).
+15. Look in, in both shapes.
+16. `Attach.scope`, the overlap forecast, holds as narrowed reach, "Hold everything not attached". P, S.
+17. Phase 3: the as-of view, and undo.
 
-**Phase 3:** time travel, undo where an inverse exists.
+## Pranab's decisions (Claude's and Fable's recommendations agree)
 
-## Decisions that are Pranab's
-
-1. **Retention.** Proposed: 90 days, then segments are dropped. A ledger is a record of the minds, but it also records the person's own `yos` use, because an unattached Hermes looks exactly like the person.
-2. **Private mode.** Proposed: nothing is recorded while private mode is on, except a count of refused attempts per actor ("Hermes tried 4 times"). Acts are already refused then, so there is little to record; the count is a security signal.
-3. **Erase.** Proposed: "Erase my data" includes the ledger (today's erase code knows `runs.db`).
-4. **Whether recognised-not-verified minds may be held** (phase 2): holding by program name can be dodged by renaming, so a hold on an unverified caller is a speed bump, and the UI says so.
+1. **Retention:** 90 days or 256 MiB, whichever comes first. Record your own `yos` use too: a chain with holes is where a hostile act hides.
+2. **Private mode:** record nothing but two boundary entries ("private on 10:42", "private off 11:03 · Hermes refused 4"), so the gap reads as deliberate.
+3. **Erase:** include the ledger, and leave one final entry, "erased 1,204 entries on 2026-10-10 by you".
+4. **Unverified minds:** no per-name holds. Offer the single "Hold everything not attached" switch instead.
 
 ## Left out, on purpose
 
-`@all`; @-handles; a live hybrid tap-in; origin glyphs as identity; blocking leases; inferred states; the Lens taking over a mind started elsewhere (a terminal session stays the terminal's).
+`@all`; @-handles; a live hybrid tap-in; origin glyphs as identity; blocking leases; inferred states; "verified" for anything but your Mind; a card at attach; the Lens taking over a mind started elsewhere.
