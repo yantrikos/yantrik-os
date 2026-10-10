@@ -320,6 +320,10 @@ class Scene:
         self.bpy = bpy_mod
         self.notice = ""          # the last app-level refusal; cleared on the next success
         self.last_render = None   # {path, seconds, bytes} of the last render this process did
+        # The render in flight, if any: {output, started, as_of}. Set on the main thread just
+        # before it blocks and cleared when it unblocks, so it can be read from the socket's
+        # own thread while that thread is unavailable — see `busy_snapshot`.
+        self.rendering = None
         # Our own dirty flag, tracked per action. `bpy.data.is_dirty` is Blender's, but in
         # `blender -b` it is stuck True (verified: True at start, after save, after open, on
         # a second read), so it cannot answer "are there unsaved changes" headless. Where
@@ -396,6 +400,27 @@ class Scene:
         if state["unsaved"] and state["file"]:
             parts.append("unsaved")
         return ", ".join(parts)
+
+    def busy_snapshot(self):
+        """(summary, state) for a describe that could not reach the main thread, or None if
+        nothing is in flight. Never touches `bpy`, so the socket's own thread may call it.
+
+        The state is the scene as of the moment the render took the main thread — it cannot be
+        more current than that, since reading it now is exactly what is impossible. So the
+        line says what is running and for how long, and a caller sees a rendering app rather
+        than a hung one.
+        """
+        job = self.rendering
+        if job is None:
+            return None
+        summary, state = job["as_of"]
+        state = dict(state)
+        state["rendering"] = {
+            "output": job["output"],
+            "seconds": int(time.monotonic() - job["started"]),
+        }
+        return "%s, rendering to %s (%ds)" % (
+            summary, os.path.basename(job["output"]), state["rendering"]["seconds"]), state
 
     def _engine_key(self):
         raw = self.bpy.context.scene.render.engine
@@ -838,6 +863,18 @@ class Scene:
         scene = self.bpy.context.scene
         scene.render.filepath = output
         started = time.monotonic()
+        # Published before the render takes this thread and cleared after it gives the thread
+        # back, because a render holds the main thread for as long as the scene takes — up to
+        # the 30 minutes `render` is published with — and a describe arriving in that window
+        # would otherwise be indistinguishable from a dead app. `as_of` is read here, on the
+        # main thread, one statement before reading it stops being possible.
+        self.rendering = {"output": output, "started": started, "as_of": self.snapshot()}
+        try:
+            return self._render(output, started)
+        finally:
+            self.rendering = None
+
+    def _render(self, output, started):
         try:
             outcome = self.bpy.ops.render.render(write_still=True)
         except RuntimeError as e:

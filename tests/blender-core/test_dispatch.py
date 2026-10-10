@@ -519,6 +519,98 @@ class TestBridgeTimeout(unittest.TestCase):
         self.assertEqual(caught.exception.message, "app did not answer within 1800s")
 
 
+class TestDescribeDuringARender(unittest.TestCase):
+    """#95: a render holds Blender's main thread for as long as the scene takes — up to the 30
+    minutes `render` is published with — and a Blender two minutes into a Cycles frame has not
+    stopped answering. It answers from what the render published before it took that thread.
+    """
+
+    def render_with_the_thread_held(self, output, inside):
+        """One real `render` through a surface whose bridge stops answering the moment the
+        render takes Blender's main thread — the hold is how a render behaves, and nothing else
+        gets through — with `inside(surface)` called in that window, where a caller's describe
+        would land. Returns (surface, the summary from before the render, what the render
+        answered).
+
+        Holding is also what makes these cases test the busy answer and not the happy path:
+        anything it reaches for on the main thread meets this timeout and comes back as an
+        error instead of an answer.
+        """
+        class HogBridge(DirectBridge):
+            def __init__(self):
+                self.held = False
+
+            def submit(self, fn, timeout=None):
+                if self.held:
+                    raise BridgeTimeout()
+                return fn()
+
+        bridge = HogBridge()
+        surface, fake, path = make_surface(bridge=bridge)
+        self.addCleanup(os.unlink, path)
+        before = surface.snapshot()[0]
+        real = fake.ops.render.render
+
+        def render(write_still=False):
+            bridge.held = True
+            try:
+                inside(surface)
+                return real(write_still=write_still)
+            finally:
+                bridge.held = False
+
+        fake.ops.render.render = render
+        return surface, before, surface.act({"action": "render", "args": {"output": output}})
+
+    def test_a_describe_during_a_render_is_answered(self):
+        seen = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.abspath(os.path.join(tmp, "x.png"))
+            _, before, _ = self.render_with_the_thread_held(
+                out, lambda surface: seen.update(described=surface.describe_json()))
+
+        described = seen["described"]
+        self.assertEqual(described["summary"], "%s, rendering to x.png (0s)" % before,
+                         "the scene as of the moment the render took the thread, and what is "
+                         "running now — a caller sees a rendering app, not a hung one")
+        self.assertEqual(described["state"]["rendering"], {"output": out, "seconds": 0})
+        self.assertEqual(described["revision"],
+                         wire.revision(described["summary"], described["state"]),
+                         "the revision is of the state it is actually giving back, so an act "
+                         "carrying it is guarded against that state and not another one")
+        self.assertEqual([a["name"] for a in described["actions"]], ALL_ACTION_NAMES,
+                         "still says what it offers, so a caller can plan what to ask after "
+                         "the frame")
+
+    def test_the_render_itself_still_comes_back_when_the_thread_gives_back(self):
+        # Answering a describe from the busy path must not cost the render its own answer.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.abspath(os.path.join(tmp, "x.png"))
+            _, _, outcome = self.render_with_the_thread_held(out, lambda surface: None)
+
+        self.assertTrue(outcome["accepted"])
+        self.assertEqual(outcome["result"]["path"], out)
+        self.assertGreater(outcome["result"]["bytes"], 0)
+
+    def test_an_act_during_a_render_still_fails_because_nothing_ran(self):
+        # The busy answer is for a describe, which asks for nothing. An act whose turn never
+        # came has to keep reporting the transport's own words: answering it with a state would
+        # read as "done", and nothing ran.
+        seen = {}
+
+        def inside(surface):
+            try:
+                surface.act({"action": "add_primitive", "args": {"kind": "cube"}})
+            except wire.RpcError as e:
+                seen["error"] = e
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.render_with_the_thread_held(os.path.join(tmp, "x.png"), inside)
+
+        self.assertEqual(seen["error"].code, wire.RPC_TRANSPORT_ERROR)
+        self.assertEqual(seen["error"].message, "app did not answer within 30s")
+
+
 class TestQueuedBridge(unittest.TestCase):
     """The real bridge, with a pump thread standing in for Blender's main thread."""
 
