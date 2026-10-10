@@ -83,6 +83,8 @@ The test is `a_shared_or_terminal_attach_never_takes_a_grant_bearing_id`, beside
 - `YANTRIK_YOS_MCP_NO_ATTACH=1` is in its environment. The Mind sets this on its own `yos-mcp` launch from boot, through `set_server_env`. It covers machines where the Mind still runs as the person's account because it was never migrated with `migrate-minds`; there, the Mind starts `yos-mcp` without a token and sets one only on its first turn (yantrik-mind-72, 10 Oct).
 - **The host refuses it** when the attaching pid descends from an already-attached harness's pid. The answer is "already covered by `<key>`", and the bridge then carries on without attaching. This is the general rule; the environment variable is the explicit one.
 
+**Nothing that sits beside a mind can starve it** (yantrik-mind-72). `main` agents never count toward `MAX_LIVE_AGENTS`, and conversations a shared key opens have their own cap (`MAX_OPENED_PER_KEY = 2`) outside it. No code matches an id by prefix or splits it on `.`: grants and the Mind check stay exactly `== "mind"`.
+
 **Replace semantics stay.** A non-shared attach still replaces the previous session under its id. The Mind depends on this for `mind`: it re-attaches plainly on start and after "lost the desktop", and reads only `reply["session"]` (mind-core `harness.rs` ~428-460). A test pins it: a second plain `mind` attach from the mind uid replaces the first.
 
 **Conditions on `harness.open`** (yantrik-mind-72), because it creates turns the person did not type:
@@ -271,7 +273,7 @@ S = Claude security review. P = harness-protocol change: yantrik-mind-72 gets th
 5. `yos ledger` and the mind panel's Recent actions read the ledger; the mind-audit readers move over.
 6. Protocol: `Attach.shared/takes_turns`, `as`, `Host::allocate_key` (the `mind` wall and its test), the caps, the `Entry` fields, `annotate`. P, S.
 7. Protocol: `harness.open`; the run-store origin; presence-only `send_to` refusal. P, S.
-8. Shell: annotate attaches with program and origin; per-instance `caller_identity` and `mismatch`. S.
+8. Shell: annotate attaches with program and origin; per-instance `caller_identity` and `mismatch`; cards raised inside an opened turn name the opening key and program line; `turn_origin` exposed to the shell, with an enforcing test that an `Opened` turn under `hermes.1` sending a `grant_request`, or hitting a run grant, is refused. Task 9 does not ship before this test. S.
 9. `yos-mcp` auto-attaches presence-only, with the token on every act, self-turns, and notes in replies. S, P (tell mind-72).
 10. Harness lib: `shared`, `takes_turns`, `open_turn`, slow poll; pi mirrors its own approvals as `Request`s.
 11. The Lens strip (the merged read model) and the one vocabulary.
