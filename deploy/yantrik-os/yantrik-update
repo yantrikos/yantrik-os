@@ -783,6 +783,7 @@ from it. Change it with: yantrik-update set-channel nightly" ;;
     reconcile_private_dirs || true
     private_config || true
     reconcile_egress_seeds || true
+    reconcile_hermes_launcher || true
     reconcile_mind_egress || true
     return 0
   fi
@@ -2240,6 +2241,36 @@ reconcile_egress_seeds() {
     printf '%s\n' "$result" | while IFS= read -r line; do info "$line"; done
   else
     warn "$result"
+  fi
+  return 0
+}
+
+# Repoint a Hermes launcher that still names the installer's temporary Python (#712). The running
+# gateway is fine; only the next restart would fail, so nothing is restarted here. The heal runs
+# as the desktop's owner, never as root, so root never writes into a home.
+reconcile_hermes_launcher() {
+  [ "$(id -u)" = 0 ] || return 0
+  tree_is_roots || return 0
+  local owner home="" ouid="" ogid="" setpriv lib out
+  owner="$(desktop_owner)"
+  case "$owner" in
+    ''|root|*[!a-z0-9_-]*) ;;
+    *) home="$(getent passwd "$owner" | cut -d: -f6)"; ouid="$(id -u "$owner" 2>/dev/null)"; ogid="$(id -g "$owner" 2>/dev/null)" ;;
+  esac
+  case "$ouid:$ogid" in *[!0-9:]*|0:*) home=""; ouid=""; ogid="" ;; esac
+  [ -n "$home" ] && [ -n "$ouid" ] || return 0
+  [ -d "$home/.hermes/hermes-agent/.hermes/bin" ] || return 0
+  lib="$PREFIX/share/harnesses/lib/install/hermes-launcher.sh"
+  [ -f "$lib" ] || return 0
+  setpriv="$(command -v setpriv)" || return 0
+  if out="$(env -i HOME="$home" PATH=/usr/bin:/bin "$setpriv" --reuid="$ouid" --regid="$ogid" \
+      --clear-groups --no-new-privs -- sh -c '. "$1"; heal_hermes_launcher "$2"' sh "$lib" "$home" 9>&-)"; then
+    if [ -n "$out" ]; then
+      printf '%s\n' "$out" | while IFS= read -r line; do info "$line"; done
+      info "Hermes's launcher was repointed; the running gateway is fine and the next restart will work"
+    fi
+  else
+    warn "could not repoint Hermes's launcher: $out"
   fi
   return 0
 }
