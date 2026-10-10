@@ -207,6 +207,35 @@ Shell:
 
 These are phase-plan tasks 18–22.
 
+## The UI direction: the Witness (10 Oct)
+
+Pranab asked for something incredible, consulting DeepSeek V4 Pro, GLM 5.3 and GPT-6 Astra (the prompt and answers are in `F:/yantrik/qwen/lead-work/ui-incredible*`). The direction is built as an interactive prototype in the "The Witness" artifact.
+
+1. **The Witness clutch** (Astra). Hold `Super+\`, or press and hold the Witness control in the Lens header, and every word a mind wrote withdraws: 120 ms ease-out, a 12 px slide and fade. What the OS recorded, the approvals and the capture gaps stay. Release, and the claims come back in 100 ms. With reduced motion it is instant. It works across the Lens, the board and Look in. Where nothing was recorded the space says "No OS record attached", not "Nothing happened".
+2. **Countersigned, never matched** (GLM's Settlement, made honest). A claim (Says) is countersigned only by the acts its own turn recorded, linked structurally by that turn's token and `action_id`, with no semantic claim-to-act matching. With no act, the claim stays on a dotted baseline and reads "no act recorded in this turn": an observation, never "false". "Approved" is not "done" either: the receipt appears only when the OS records the act.
+3. **Carved and lifted** (DeepSeek). Seen sits on a continuous 1 px witness rail, set in JetBrains Mono 12/18 with square notches. Says is an inset block in Barlow 15/21, set 16 px in from the rail.
+4. **Back after 3 hours.**
+   - The header line comes from Seen alone: "Away 14:07–17:12 · 3 minds · 214 acts recorded · 1 approval · 2 decisions".
+   - Needs-you comes first.
+   - Then groups by **target** (yantrikos.com, Downloads, Journal), each with a witness footer: "1 file write · 1 command exited 0 · last update 14:35". The counts link to the exact events.
+   - Ledger gaps appear in place: "capture gap · the ledger restarted".
+5. **A mind needs you while you're in another app.** One 288×64 edge tab with a 3 px amber edge, entering 8 px over 140 ms, without taking focus. No pulse, no sound, no Lens flying open. A click opens the card itself. Tabs stack to three, then "+2".
+6. **Three threads.** Lanes with a 36–44 px header and the latest receipt. Each witnessed act flashes a 3 px teal tick on the lane edge (200 ms) and crossfades the receipt (150 ms). The panel ticks only with real kernel events.
+7. **The board, revised.** No paper, no rotation (all three said so).
+   - Cards are 240 px wide, with a body, a 24 px drag header and a receipt foot.
+   - A lane gains a 2 px white outline as a drop target, and the card snaps in 140 ms.
+   - The foot reads "queued · waiting for pickup" until the OS records the hand-over.
+   - Only your own notes can be dragged to a mind.
+8. **Cut:**
+   - the permanently expanded strip, which becomes a 34 px presence row that expands for identity details;
+   - routing chips unless more than one thread is live or the message names one;
+   - Look in as a separate place, since it is an expanded lane;
+   - DeepSeek's first-run "Oath" screen, which contradicts "no card at attach".
+9. **Kept, against two critics.** "Accept all" for decisions stays, but only as "Review all N → accept these N", a sheet listing each recommendation and its reason. Pranab used exactly that ("I will go with your recommendation"). Action approvals never batch.
+10. **Risk (Astra).** Witness mode can imply completeness. Every view shows capture gaps, and keeps "a recorded action" apart from "a verified outcome".
+
+All motion is translate and opacity only, so it is safe on a software renderer.
+
 ## The board: sticky notes between you and your minds
 
 Pranab, 10 Oct: "We should also add the sticky note board." The Lens is the conversation; **the board is the asynchronous space**: what you leave for your minds, what they leave for you, and what is still open between you. It gathers in one visible place several things this design already has: Leave a note, decisions, cross-thread notes and the digest.
