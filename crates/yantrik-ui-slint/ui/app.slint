@@ -1721,6 +1721,8 @@ export component App inherits Window {
             lens-waiting-runs: AgentsState.lens-waiting;
             lens-mode-label: root.mind-mode-label;
             lens-identity: AgentsState.lens-identity;
+            lens-outcome-state: AgentsState.lens-outcome-state;
+            lens-outcome: AgentsState.lens-outcome;
             // The same choice the status bar chip opens; it changes nothing by itself.
             lens-mode-clicked => {
                 root.mind-menu-open = !root.mind-menu-open;

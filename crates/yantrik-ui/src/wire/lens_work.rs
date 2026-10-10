@@ -62,6 +62,30 @@ fn state_of(a: &Agent, t: &Turn) -> &'static str {
     }
 }
 
+/// How the last turn of any kind ended, as the Lens header's durable completion chip says it.
+/// The strip and the spinner own "in progress", so an open turn is `None`; the chip appears only
+/// once the turn has ended and is cleared the moment the next turn opens. The state and the word
+/// come from `state_of`/`words`, so the chip never claims more than the store recorded.
+pub fn outcome_of(a: &Agent) -> Option<(&'static str, String)> {
+    let t = a.turns.last()?;
+    if t.open() {
+        return None;
+    }
+    let state = state_of(a, t);
+    let mut text = words(state).to_string();
+    if let Some(ended) = t.ended {
+        let secs = ended.saturating_sub(t.started);
+        let duration = if secs < 60 {
+            format!("{secs} s")
+        } else {
+            format!("{} min {} s", secs / 60, secs % 60)
+        };
+        text.push_str(" \u{b7} ");
+        text.push_str(&duration);
+    }
+    Some((state, text))
+}
+
 /// The one line under the state: a recorded call, or when anything was last heard.
 fn activity_of(a: &Agent, t: &Turn, state: &str, now: u64) -> String {
     let calls = t.cards().count();
@@ -235,6 +259,37 @@ mod tests {
         assert_eq!(w.label, "Stopped");
         assert!(w.activity.starts_with("Last update "), "unobservable work says when it was last heard: {}", w.activity);
         assert!(!w.can_review, "a run with nothing recorded has nothing to review");
+    }
+
+    #[test]
+    fn the_header_chip_says_how_the_last_turn_really_ended() {
+        // An open last turn has no durable end yet: the strip and spinner own "in progress".
+        let mut a = agent(State::RunningTool);
+        a.turns.push(turn(None, None, false, &[]));
+        assert_eq!(outcome_of(&a), None);
+
+        // A plain turn with no calls still gets a finish, although `is_run` is false.
+        let mut a = agent(State::Done);
+        a.turns.push(turn(Some(22), Some(true), false, &[]));
+        assert_eq!(outcome_of(&a), Some(("finished", "Finished \u{b7} 12 s".to_string())));
+
+        let mut a = agent(State::Done);
+        a.turns.push(turn(Some(22), Some(false), false, &[]));
+        let (state, text) = outcome_of(&a).unwrap();
+        assert_eq!(state, "failed");
+        assert!(text.starts_with("Couldn\u{2019}t finish"), "{}", text);
+
+        let mut a = agent(State::Done);
+        a.turns.push(turn(Some(22), None, true, &[]));
+        assert_eq!(outcome_of(&a).map(|(s, _)| s), Some("stopped"));
+
+        // Only the LAST turn counts: an older failure is not the conversation's finish.
+        let mut a = agent(State::Done);
+        a.turns.push(turn(Some(22), Some(false), false, &[]));
+        a.turns.push(turn(Some(30), Some(true), false, &[]));
+        assert_eq!(outcome_of(&a).map(|(s, _)| s), Some("finished"));
+
+        assert_eq!(outcome_of(&agent(State::Done)), None, "no turns, no chip");
     }
 
     #[test]
