@@ -46,6 +46,10 @@ export component SpreadsheetApp inherits AppWindow {
     // ── Status bar ──
     in property <string> status-text <=> sheet.status-text;
 
+    // ── Import / Export ──
+    // The screen has no file dialog, so a path is handed in here (see main.rs).
+    in property <string> csv-path;
+
     // ── AI Assist ──
     in-out property <bool> show-ai-panel <=> sheet.show-ai-panel;
     in property <bool> sheet-ai-working <=> sheet.sheet-ai-working;
