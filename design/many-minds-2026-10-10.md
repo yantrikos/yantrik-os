@@ -77,7 +77,21 @@ The test is `a_shared_or_terminal_attach_never_takes_a_grant_bearing_id`, beside
 - `hermes.2` refused on the wire;
 - the counter restarting with a new `Host`, and an old token refused on `resume`.
 
-**The bridge under the mind account never auto-attaches**: its acts already need a live agent token (`call.rs:141-147`).
+**When the bridge does not auto-attach.** Each of these alone is enough:
+- It runs under the mind account. Its acts already need a live agent token (`call.rs:141-147`).
+- `YANTRIK_AGENT_TOKEN` is in its environment.
+- `YANTRIK_YOS_MCP_NO_ATTACH=1` is in its environment. The Mind sets this on its own `yos-mcp` launch from boot, through `set_server_env`. It covers machines where the Mind still runs as the person's account because it was never migrated with `migrate-minds`; there, the Mind starts `yos-mcp` without a token and sets one only on its first turn (yantrik-mind-72, 10 Oct).
+- **The host refuses it** when the attaching pid descends from an already-attached harness's pid. The answer is "already covered by `<key>`", and the bridge then carries on without attaching. This is the general rule; the environment variable is the explicit one.
+
+**Replace semantics stay.** A non-shared attach still replaces the previous session under its id. The Mind depends on this for `mind`: it re-attaches plainly on start and after "lost the desktop", and reads only `reply["session"]` (mind-core `harness.rs` ~428-460). A test pins it: a second plain `mind` attach from the mind uid replaces the first.
+
+**Conditions on `harness.open`** (yantrik-mind-72), because it creates turns the person did not type:
+1. A self-opened turn never carries `turn["run"]`. Run grants stay person-stamped only.
+2. Any card raised inside a self-opened turn names the opening key and its program line, so the person never takes it for a desktop request of their own.
+3. Its `agent_token` is scoped to that one turn.
+4. A grant given to one key (a session search grant to `mind`, say) never applies to a turn opened under another key.
+
+Each condition gets a test in task 7.
 
 ### Trust and consent
 
