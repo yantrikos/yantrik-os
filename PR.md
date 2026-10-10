@@ -1,225 +1,173 @@
-# The documented way to install Yantrik OS installed a different operating system
+# A Blender that is rendering is reported as a Blender that died
 
-Branch: `feature/install-truth` · off `origin/main` at `d595bbf`
+Branch: `qwen/95b-blender-render-describe-progress` · off `origin/main` at `0a366af`
+
+Closes #95.
 
 ## What a person hit
 
-`docs/getting-started.md` told a newcomer to install **Alpine Linux 3.18+** on their machine
-and then run:
+`render` is published with `timeout=1800.0`, and its own description, three lines above at
+`apps/blender/addon/yantrik_blender/surface.py:122`, says "With Cycles on a big scene this can
+take minutes." A Cycles frame on a real scene runs for minutes.
 
-```bash
-curl -fsSL https://get.yantrikos.com/install.sh | sh
+While it runs, `bpy.ops.render.render` holds Blender's **main thread**, and the main thread is
+the only thing that serves the app's control socket: `QueuedBridge.pump()` (`bridge.py:78`) is
+what runs queued jobs, and it is reached from a `bpy.app.timers` callback in a window or the
+bootstrap's own loop in `blender -b`. Neither turns up from inside a render op. So a caller's
+`app.describe` sits in the queue, `submit`'s `job.done.wait(timeout)` expires (`bridge.py:67`),
+`BridgeTimeout` becomes `NotAnswered` (`apps/blender/addon/yantrik_blender/surface.py:196`), and
+the caller is handed:
+
+```
+-32000  app did not answer within 10s
 ```
 
-That URL is live and serves the March installer — `install.sh` at the repository root, 38 KB
-— which installs a set of binaries onto an Alpine system, downloads them from a third domain
-`get.yantrik.dev` (**does not resolve**, verified), and sets up `yantrik-upgrade`, a program
-that no longer exists. Yantrik OS has been a Debian 13 live ISO since spring. Following the
-documentation got you a different operating system with an unrelated set of files on it.
+That is the sentence for a dead app, said about an app doing exactly what it was asked to do.
+Three things go wrong in that window — the one window a render guarantees:
 
-The same page sent people to `https://releases.yantrikos.com/stable/install.sh` (**404**) and
-implied a stable channel (`https://iso.yantrikos.com/stable/latest.json` — **404**; only
-`nightly` has ever been published). `hardware-requirements.md` gave Alpine as the OS row and a
-tokens-per-second table with no statement of what hardware produced any of it.
-`architecture.md`, `apps.md`, `CONTRIBUTING.md` and `companion.md` still said Alpine, `apk`,
-OpenRC and `/bin/ash`. `README.md` promised "No cloud dependency", "conversations and memories
-never leave the machine" and "no telemetry, no phone-home, no cloud calls", counted "Sixteen
-application binaries", and listed ySheets and Music as shipped features — all three retracted
-publicly in September and never corrected here.
-
-Found by the Discord steward.
+- **The gate refuses to ask the person.** Before an act graded `sensitive` or `dangerous` puts
+  a card up, `crates/yantrik-ui/src/control_approvals.rs:885` does an `app.describe` with a 500 ms
+  timeout to read the action's grade. Mid-render it fails, and the act dies *before* the card:
+  "`blender` did not say what `save` is graded (…), so nothing was put in front of the person."
+  So while Blender renders, `save`, `open` and `run_python` cannot be approved at all — not
+  refused by the gate, never offered by it.
+- **`open_app`'s glance goes empty.** `crates/yantrik-ui/src/app_glance.rs:23` asks
+  `app.describe` for the app's summary and action list, 800 ms, and returns `None` when nothing
+  answers — so a mind that opens a rendering Blender is told nothing about it, which is the exact
+  failure `app_glance.rs`'s own header was written to fix.
+- **A harness polling to see how the render is going is told the app is gone** — the one question
+  it was asking.
 
 ## What this changes
 
-### `install.sh` — replaced
+The rule: **a describe may be answered from what the app kept readable while its thread was
+busy; an act may not.** A describe asks for nothing, so a state beside it is a fact. An act whose
+turn never came has done nothing, and a state beside it reads as "done".
 
-The 1046-line Alpine installer is gone from the root. In its place is a 200-line POSIX `sh`
-script that **installs nothing**.
+### `sdk/python/yantrik_surface/surface.py` — one override point, `busy_answer`
 
-Piped into a shell with no flag it fetches `nightly/latest.json`, prints the file, version,
-size, sha256 and URL, says that nightly is the only published channel and that the audits are
-in `design/`, and stops. It writes no file, asks for no privilege and touches nothing.
+`describe_json` now passes a `busy` callback into `_turn` (`surface.py:744`). On `NotAnswered`,
+`_turn` gives the app one chance to say what it is doing before it falls back to the transport's
+words — and only for a caller that passed `busy`, so `act` is untouched and keeps failing exactly
+as it did.
 
-With `--download` it fetches the ISO into the directory you ran it from — to a `.part` name,
-renamed only once all the bytes are there, so an interrupted download is never the thing that
-gets written to a USB stick — verifies its sha256 against `latest.json`, and then prints how
-to write it to a stick (`dd` with the device-not-partition warning and how to find the device
-on each platform, Rufus, balenaEtcher) and that `yantrik-install` is inside the live session.
+`busy_answer()` (`surface.py:667`) is the new app hook. It defaults to `None`, which is the
+timeout, so every app that does not implement it is unchanged. It is documented as running on
+the **caller's** thread and never the app's, so nothing it reads may need the app's thread —
+that is the whole point of it.
 
-It refuses to download at all if neither `sha256sum` nor `shasum` is present, rather than
-fetching 1.3 GiB it cannot check. It takes no `--channel`: there is no stable channel to point
-it at, and offering the flag would only produce a confident error.
+The busy answer is a real describe, not a stub: the same `actions` list, so a caller can still
+plan what to ask after the frame, and a `revision` computed from the summary and state it is
+actually returning (`_as_read`, `surface.py:715`), so an act carrying it is guarded against the
+state it was given and not some other one.
 
-The old script is kept at **`deploy/yantrik-os/legacy/install-alpine-2026-03.sh`** with a
-header saying what it was, that it is not used, and that nothing references it. **My call was
-to keep rather than delete it**, for one reason: `get.yantrikos.com` still serves it, so until
-that server is redeployed the repository should contain the thing strangers are being handed.
-It stays mode 755 only because CI requires every tracked file starting with `#!` to be
-executable.
+### `apps/blender/addon/yantrik_blender/scene.py` — the render says what it is before it takes the thread
 
-### `docs/getting-started.md` — rewritten
+`_do_render` publishes `self.rendering = {"output", "started", "as_of"}` (`scene.py:871`) one
+statement before the render op takes the thread and clears it in a `finally`. `as_of` is
+`self.snapshot()`, read **on the main thread** at the last moment reading is possible — the
+freshest scene anyone will get until the render finishes.
 
-Around the real path: download and verify from `iso.yantrikos.com/nightly/`; try it in a VM
-(with the settings that are known to work, and the CI boot test's smaller ones); write it to a
-USB stick; the four GRUB entries and what each does; the two facts about the live session
-people need before putting it on a network (`yantrik`/`yantrik` with passwordless sudo; SSH
-installed and disabled); what first-run setup asks; **attaching a mind**, which is where
-`docs/harness.md` is pointed at and where the "no model ships" fact lives; the mind modes; the
-disk installer, both ways in; `yantrik-update` with the commands and exits it really has; and
-`yos`. Keyboard shortcuts now match `config/labwc/rc.xml` — the terminal is `Ctrl`+`Alt`+`T`,
-not `Win`+`T` as the old page said.
+`busy_snapshot()` (`scene.py:404`) builds the answer from that alone: no `bpy` call, so the
+socket's own thread may run it. It returns the as-of state plus a `rendering` block —
 
-One thing found by checking a command rather than writing it down: the installer has to be
-invoked as **`sudo /opt/yantrik/bin/yantrik-install`**, not `sudo yantrik-install`.
-`yantrik-session` puts `/opt/yantrik/bin` on the user's `PATH` — verified in the running
-shell's `/proc/<pid>/environ` on the test machine — but Debian's `sudo` replaces `PATH` with
-`secure_path`, which does not include it. Checked on the VM: `command -v yantrik-install`
-resolves, `sudo -n sh -c 'command -v yantrik-install'` does not. Both the doc and the script
-now print the full path and say why.
+```
+Blender — 3 objects, cycles 1920x1080, rendering to hero.png (87s)
 
-Honest at the top about what it is: nightly-only, early, things break, and the audits are in
-`design/`.
+state: {"objects_total": 3, …, "rendering": {"output": "/tmp/hero.png", "seconds": 87}}
+```
 
-### `docs/hardware-requirements.md` — rewritten
+— and `None` when nothing is in flight, which leaves the timeout standing for every other kind
+of silence. The summary says what is running and for how long rather than passing the as-of
+picture off as current, because the state beside it cannot be more current than the moment the
+render took the thread.
 
-Debian 13, not Alpine. Every number is labelled **measured**, **configured** or **not
-measured**, and where nothing has been measured it says so instead of printing a figure:
+`_do_render`/`_render` is a split so the publish/clear wraps the whole op without re-indenting
+it. Nothing about what a render does changed.
 
-- Image size **1,411,915,776 bytes / 1.31 GiB** — measured, from `latest.json`.
-- CI boot test **4096 MB, 4 CPUs, virtio-vga, BIOS, no disk** — configured, from
-  `boottest.py`. This is the one configuration every published image is known to boot in.
-- The test machine **4 cores, 7.8 GiB, virtio-gpu, 32 GB disk, QEMU/KVM Q35 + SeaBIOS, kernel
-  6.12.107+deb13-amd64** — measured over SSH, read-only, 2026-09-22.
-- `/opt/yantrik` **measured** per directory: `bin` 757 MB, `models` 354 MB (whisper 147,
-  tts 120, embedder 88; `llm/` empty), `data` 64 MB, `logs` 9.3 MB, `share` 616 KB — about
-  **1.2 GB**. Stated with the caveat that this machine's `bin/` holds ~112 MB of hand-deploy
-  duplicates, and that its `backups/` (2.0 GB) and `ui-deployments/` (6.5 GB) are development
-  debris, not an install. **A fresh installed footprint is not measured, and the page says so.**
-- **Not measured**, said outright: real hardware, the UEFI path, any GPU but QEMU's, Wi-Fi on
-  real adapters, VirtualBox against a current build.
-- The tokens-per-second table is gone. There is no measurement in this repository behind it.
+### `apps/blender/addon/yantrik_blender/surface.py` — Blender's side of the hook
 
-### `docs/architecture.md`, `apps.md`, `CONTRIBUTING.md`, `companion.md`
-
-- `architecture.md`: the stack line is Debian 13, with a sentence saying what it used to say
-  and that `apk`/OpenRC/`/bin/ash` are not on the machine.
-- `apps.md`: `/bin/ash` → `$SHELL` falling back to `/bin/bash`; "Alpine's `apk`" → `apt-get`
-  through `sudo` (checked against `wire/apt.rs` and `companion-tools/src/package.rs`, which
-  detect the manager and use apt here). **ySheets and Music are marked SHELVED** with the
-  reason, what brings each back, and a pointer to `design/shelved-2026-09-20.md` — including
-  the separation the shelved record insists on, that audio *does* play through the shell's own
-  media screen and never went through the Music app.
-- `CONTRIBUTING.md`: "Deploy Alpine VM / `setup-alpine-vm.sh`" replaced with booting the
-  published image, and a named list of the Alpine-era deploy scripts with "do not start from
-  one".
-- `companion.md`: the `package` and `service` tool descriptions said apk and OpenRC; they are
-  apt and systemd on this machine (both tools detect at runtime and land there).
-
-### `README.md` — three retractions
-
-1. **The privacy claims.** "Local-first … No cloud dependency, works offline, and conversations
-   and memories never leave the machine" and "No telemetry, no phone-home, no cloud calls" are
-   replaced with what is true: **the OS itself sends nothing anywhere** — no telemetry, no
-   phone-home, no call it makes on its own; the image ships pointed at loopback and nothing
-   else. But this OS is built to be driven by any mind, cloud models included — that is the
-   point of the harness protocol, and the token-efficiency comparison this project publishes
-   was itself measured against a cloud model. Point it at Ollama or llama.cpp and nothing
-   leaves the machine; point it at a provider and what you type goes to that provider. And the
-   desktop says which: the status bar chip names the answering mind and whether it is local or
-   cloud (`components/status_bar.slint` — the harness chip and the privacy/provider chip).
-   The backend table now has a "where what you type goes" column instead of "notes".
-2. **The count.** "Sixteen application binaries" → **fifteen ship**, seventeen are in the tree,
-   two are shelved. Arcade was missing from the old table; it is there now. The ASCII diagram
-   (`16 app binaries`), the prose (`23 crates, 16 apps`) and the tree (`apps/ 16 application
-   binaries`) all corrected.
-3. **ySheets and Music.** Out of the shipped table, into a shelved table with the reason and
-   the condition for coming back.
-
-Also: the install section now leads with the ISO rather than cloud-init; the channel table says
-nightly is the only one with builds; the Links section adds the image index and Discord.
+`busy_answer` returns `self.scene.busy_snapshot()` (`surface.py:181`), plus a paragraph in the
+module docstring saying why the file has a second way to answer a describe.
 
 ## How this was verified
 
-- **Every URL printed in every changed file returns 200**, checked with `curl`:
-  `iso.yantrikos.com/nightly/` and `/latest.json`, `releases.yantrikos.com`,
-  `get.yantrikos.com/install.sh`, `rufus.ie`, `etcher.balena.io`, the GitHub blob and issue
-  links, `discord.gg/7cDw3jd3Xf`. The only non-200 URLs that appear are the two the text names
-  *as* 404s (`iso.yantrikos.com/stable/latest.json`, `releases.yantrikos.com/stable/install.sh`)
-  and `get.yantrik.dev`, which does not resolve — all three cited as facts, none offered as a
-  link.
-- **The checksum flow was run end to end in WSL against the real nightly.**
-  `sh install.sh --download` fetched `yantrik-os-v0.1.0-304-g7bc7d6b.iso`, all 1,411,915,776
-  bytes of it, and printed `sha256 ok 9c89169ee3222e72a33e15fedb737b3b86bceb7aac1ba742af78bd509fa8bdb7`
-  — matching `latest.json`. Exit 0. The ISO was deleted afterwards.
-- **The failure path was exercised too**: a deliberately corrupt file of the right name is
-  detected, both hashes printed, "do not boot it", exit 1. Also checked: no-flag run leaves the
-  directory empty, `--help` works when piped into `sh` (it is a heredoc, not a `sed` over
-  `$0`, which would print nothing in exactly the situation the script is most often run in),
-  and an unknown flag is an error.
-- **`bash -n` and `sh -n` clean** on the new `install.sh`, and `bash -n` across every script in
-  the tree that CI parses — 0 failures. **shellcheck is not installed** on this machine, so it
-  was not run.
-- **CI's script checks pass**: every tracked file starting with `#!` is executable in git
-  (`install.sh` needed `git update-index --chmod=+x`; the legacy file kept 755 through the
-  rename).
-- **The CI selftests are green**: `yos-selftest.py`, `yos-mcp-selftest.py`,
-  `server/publish_selftest.py`, `yantrik-update selftest`, and the cloud-init YAML parse.
-- **The harness suite** (`python3 -m unittest discover -s harnesses/tests`) — **176 tests, OK
-  in 41s**. It reported one failure on an earlier run —
-  `test_openclaw.CliRouteTests.test_stop_ends_the_child_and_closes_the_turn_once` — taking
-  331s while the 1.3 GiB ISO download ran alongside it. Unloaded it passes, as do all 61
-  openclaw tests in isolation. It is a process-termination timing test that goes flaky under
-  contention; nothing in this branch touches `harnesses/`. Worth knowing if it ever goes red
-  on a busy runner.
-- **No Rust was touched**, and nothing in `crates/`, `apps/` or `tests/` references the root
-  `install.sh` or any of these documents, so nothing needs rebuilding.
-- Facts read off the running VM at `192.168.4.44`, **read-only** (`du`, `free`, `nproc`,
-  `lspci`, `cat`): nothing installed, nothing restarted, nothing configured.
+`tests/blender-core/test_dispatch.py` — `TestDescribeDuringARender`, 3 cases through a bridge
+that stops answering the moment the render op is entered and starts again when it leaves. The
+hold is what makes them test the busy path and not the happy one: anything that reaches for the
+main thread inside that window meets the timeout and comes back an error.
+
+- a describe mid-render **is answered**: the as-of summary plus `rendering to x.png (0s)`, the
+  `rendering` state block, the revision of the state actually returned, all 14 action names still
+  listed;
+- the render **still gets its own answer** when the thread comes back — `accepted`, the path,
+  non-zero bytes. Answering from the busy path does not cost the render its result;
+- an act mid-render **still fails** with `app did not answer within 30s`, unchanged.
+
+`tests/blender-core/test_scene.py` — one case with a spy **inside** `bpy.ops.render.render`, the
+only place a mid-render describe can be observed: the summary and state are the as-of ones, the
+`rendering` block is there, and `busy_snapshot()` is `None` again once the render is over.
+
+`sdk/python/tests/test_refusals.py` — the same contract for any app written against the SDK, with
+a `Busy` surface that reports an export in flight: described as busy, revision of the state it
+gave, actions intact, and its `act` still refused with the transport's words. The other 33 tests
+in that file cover the default — an app with nothing to say still times out.
+
+**Suites run:** `sdk/python/tests/test_refusals.py` 34 passed; `sdk/python/tests/test_later.py`
+5 passed; `tests/blender-core/test_dispatch.py` + `test_scene.py` 128 passed, 2 failed; the six
+socket-free SDK files 77 passed, 11 failed; `tests/blender-core` as a whole 143 passed, 13
+failed. Every failure is environmental and accounted for below.
 
 ## What I could not verify
 
-- **shellcheck** — not installed here.
-- **`get.yantrikos.com` still serves the old Alpine script.** The docs describe it serving the
-  new one, which is true after you deploy it. I did not touch that server, as instructed.
-- **The disk installer.** Not run. The docs say to treat it as the least-proven part and to use
-  a machine you can afford to wipe, which is what the ISO's own README.txt already says.
-- **`https://iso.yantrikos.com/nightly/README.txt` is stale on the server** — it describes
-  build `v0.1.0-226` from 21 September, says "14 first-party apps", and is dated a day before
-  the current image. `latest.json` is current. Not something a PR to this repository can fix;
-  worth a look at what writes it (`deploy/yantrik-os/server/yantrik-publish`).
+This machine is Windows and this suite is Linux-only (Unix domain sockets, `grp`/`pwd`, and no
+`AF_UNIX` in this Python at all). I ran the pure-logic tests against a throwaway stub for
+`socketserver.ThreadingUnixStreamServer`, deleted before committing. **Nothing was run on Linux
+or against a real Blender.**
+
+- **The 2 failures in `test_scene.py` are path normalization, not this change.**
+  `test_open_refuses_a_file_that_is_not_there` (`:541`) and
+  `test_a_missing_file_is_refused_by_name` (`:324`) assert a refusal naming
+  `` `/tmp/no-such.blend` `` and get one naming `` `F:\tmp\no-such.blend` ``, because
+  `os.path.abspath` (`scene.py:776`, `:936`) rewrites it here. Both sites are outside the three
+  hunks this branch adds.
+- **The other 11 are the transport this box has no equivalent of**: 8 in `test_wire.py`
+  (socket dir, server roundtrip), 2 in `test_startup.py` (a real AF_UNIX server), 1 in
+  `test_release_layout.py` (the bootstrap's socket beside the SDK).
+- **The 11 in the SDK batch** are 10 in `test_example.py` against `os.getuid`, which does not
+  exist here (`yantrik_surface/wire.py:231`, `"/tmp/yantrik-%d" % os.getuid()`), and 1 in
+  `test_gate.py` that splits a path on `"/"`.
+- **`sdk/python/tests/test_stopping.py` hangs here** — it waits on the Unix transport. Not run.
+- **The 87-second render in the example above is illustrative.** The `(87s)` line is
+  `int(time.monotonic() - started)`; the tests pin the format at `(0s)` because a fake render op
+  is instant. How the number behaves over minutes of real Cycles is unobserved.
+- **The three shell-side symptoms are read off the code, not reproduced.** The grade-lookup
+  failure and the empty glance follow from the timeouts named above and the `describe` call at
+  each site; I did not run the shell with a rendering Blender attached.
 
 ## Next thing somebody should look at
 
-The deploy scripts that still target Alpine. They are tooling, not documentation, so this PR
-leaves them alone — but they are the remaining Alpine surface in the tree and one of them is
-still named in a way that invites use:
+**The Rust runtime has the same hole and this branch does not touch it.**
+`crates/yantrik-app-runtime/src/control.rs:517` does `rx.recv_timeout(UI_ROUNDTRIP)` — 3 seconds,
+tighter than Blender's 10 — and on expiry `unanswered()` raises `-32000 "app did not answer
+within 3s"` for `app.describe` as readily as for `app.act` (`control.rs:596`). Any Rust app whose
+UI thread is tied up with something it could describe — an export, an import, a transcode — is
+reported dead in exactly the way Blender was. The fix has the same shape: a `busy_answer`-shaped
+hook on the registry, consulted on the timeout path for `app.describe` only. The Python SDK is
+the port of that crate, so the two should not drift on this.
 
-| Script | Alpine references |
-|---|---|
-| `deploy/yantrik-os/build-vbox-image.sh` | 25 |
-| `deploy/yantrik-os/setup-vbox.sh` | 18 |
-| `deploy/yantrik-os/deploy-stack.sh` | 16 |
-| `deploy/yantrik-os/build-iso.sh` | 16 |
-| `deploy/yantrik-os/setup-alpine-vm.sh` | 15 |
-| `deploy/yantrik-os/deploy-vbox.sh` | 8 |
-| `deploy/yantrik-os/boot-desktop.sh` | 2 |
-| `deploy/yantrik-os/setup-wsl2.sh` | 1 |
+Two smaller ones found while reading and deliberately left alone:
 
-`build-iso.sh` is the one to look at first — the name says it builds this project's ISO and it
-does not; `build-debian-iso.sh` is what CI runs.
-
-Two smaller ones found while reading and deliberately not changed here:
-
-- `crates/yantrik-ui/src/terminal.rs:77` still prefers `/bin/ash` over `/bin/bash` when
-  `$SHELL` is unset. The app binary (`apps/terminal/src/session.rs`) has it right. Dead on
-  Debian, but it is the shell-embedded terminal's fallback and it names a binary that does not
-  exist on this OS.
-- `README.md` says "23 crates" while `crates/` holds 25 directories. 23 is the workspace-member
-  count from that directory; `yantrik-harness` and `yantrik-mcp` are the other two. Left alone
-  as out of scope for this PR.
+- `crates/yantrik-ui/src/app_glance.rs:30` ends with `.ok()?`, so a describe that *answers slowly
+  but correctly* and a describe that never answer both produce `None`. With this change Blender
+  answers mid-render, so the case is rarer; but an 800 ms budget against a 30 s default
+  `act_timeout` app is still a thin margin, and the caller cannot tell "busy" from "absent".
+- `busy_snapshot` reports `seconds` as an `int` and the summary repeats it. A render that has run
+  an hour says `(3600s)`. Fine for a line a mind reads; worth knowing before anything tries to
+  format it for a person.
 
 ---
 
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Code <noreply@anthropic.com>
 
-https://claude.ai/code/session_012NJMVuSihrV9NvSwpz5mei
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
