@@ -205,6 +205,8 @@ pub fn run_think_cycle(service: &mut CompanionService) {
 
         // Gap 5: Memory pruning
         if cfg.variable_halflife_enabled && memory_evolution::should_prune(conn, cfg) {
+            let swept = memory_evolution::sweep_junk(&service.db, cfg);
+            tracing::info!(swept = swept, "Junk sweep complete");
             memory_evolution::run_pruning(&service.db, &*service.llm, cfg);
         }
 
