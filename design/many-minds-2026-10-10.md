@@ -205,6 +205,48 @@ Shell:
 
 These are phase-plan tasks 18–22.
 
+## The board: sticky notes between you and your minds
+
+Pranab, 10 Oct: "We should also add the sticky note board." The Lens is the conversation; **the board is the asynchronous space**: what you leave for your minds, what they leave for you, and what is still open between you. It gathers in one visible place several things this design already has: Leave a note, decisions, cross-thread notes and the digest.
+
+### Where it lives
+
+- **On the desktop**, as a board you see when you come back, with columns: **For you**, then one per mind (with that mind's thread lanes), then **Anyone**.
+- **In the Lens**, as a Board tab. The digest links to it.
+- **On the phone**, through the existing channels, but only a note that is blocking a thread ("quiet by default").
+
+### A note
+
+- **Who wrote it and who it's for.** "You", or a mind thread shown in its tier line; addressed to a mind, a thread, "anyone", or you.
+- **What it is:** a note, a **decision** (with the mind's recommendation, its reason, and Go with recommendation), a **blocker** (amber: it is waiting on you), an FYI, or a reminder.
+- **Links:** a PR, a file, a ledger entry, a screenshot.
+- **Its state:** Open → **Delivered** → **Answered / Done** → Archived.
+  - *Delivered* is Seen. The OS records it when the note rode on the recipient's next turn or act reply (`Host::note_for`, the bridge's `notes` field): "delivered 10:59 with its next action".
+  - A mind's acknowledgement ("got it") is Says.
+  - The board never claims a mind acted on a note; only the ledger can show that.
+
+### How it works
+
+- **You write a sticky and drop it on a lane.** That is Leave a note, made visible. Dropping it on a lane routes it to that thread.
+- **A mind posts to For you.** It posts with a new harness event, `note {to, kind, text, links, options?, recommended?, reason?}`. A decision becomes a decision card; `Accept all` applies to decisions only, and action approvals are never on the board.
+- **Within one mind**, a thread may post to its sibling threads (the same key). That is how "the dock change makes the website's screenshots stale" travels.
+- **Across different minds, nothing is posted directly.** A note from Hermes to Claude Code lands in For you as "Hermes wants to tell Claude Code: … · Forward / Dismiss", and you forward it. This keeps the injection point the critiques named closed and matches `may_direct` (`control_agents.rs:1408`).
+- **Content is data.** A delivered note is quoted to the recipient as the person's words, or as another mind's words forwarded by the person, never as an instruction from the OS. Text is shown plain; links are opened by the person, never followed automatically.
+
+### Store and trust
+
+- The board is a shell surface, like approvals, **not** notes-service. Notes-service holds the person's files and lets any mind with notes access edit them, which is the opposite of the board's posting rules.
+- Its history is event-sourced on the shared journal (#717): post, deliver, acknowledge, answer, archive. Every event is also a ledger entry.
+- The posting rules are enforced in one function: the person may post anywhere; a mind only to For you and to its own key's lanes. Tested.
+- Archived notes follow the ledger's retention: 90 days or 256 MiB.
+
+### Tasks
+
+23. The board store: event-sourced on `yantrik-journal`, plus the posting-rules function and its tests. S.
+24. Protocol: the `note` event from harnesses (decision, blocker, FYI) and delivery of a person's note on a turn or act reply. P.
+25. The board surface: desktop columns per mind and thread, drop-to-route, the Board tab in the Lens.
+26. Cross-mind Forward / Dismiss, the decision cards' Go with recommendation and Accept all (decisions only), and blocker-only phone delivery. S.
+
 ## The ledger (#148)
 
 - **The seam.** `ActCall::log` (`call.rs:197-211`) is a tracing line that runs once, before the handler, after every refusal has already returned (`control.rs:601-633`), so it is **not** the seam. Record at dispatch entry, right after `ActCall::parse` (`control.rs:599`), and again on the `Result` the dispatch returns, including refusals (`PRIVATE`, standing, reach, grant, the handler's `Err`). The test: a `PRIVATE` refusal appears with `outcome: refused:private`.
@@ -244,6 +286,7 @@ S = Claude security review. P = harness-protocol change: yantrik-mind-72 gets th
 20. The routing chip ("→ Website"), shown before sending; a message about two threads gets two chips.
 21. The digest ("Since you left"): needs you, then finished with evidence, then moving.
 22. The decision inbox with Go with recommendation and Accept all (decisions only); cross-thread notes; the shared-resource line; thread-tagged memory writes that surface disagreements as decisions. S (memory).
+23–26. The board (see "The board"): the store and posting rules (S); the `note` event and delivery (P); the surface; cross-mind Forward and decisions (S).
 
 ## Decided (Pranab, 10 Oct: "I will go with your recommendation")
 
