@@ -67,6 +67,7 @@ members = [
     "apps/studio",
     "crates/yantrik-harness",
     "crates/yantrik-agent-terminal",
+    "crates/yantrik-journal",
     # The surface SDK's example, template and guide samples (docs/sdk): built and tested with
     # everything else, so what an outside author copies is what CI ran.
     "examples/hello-surface",
@@ -162,6 +163,7 @@ libc = "0.2"
 # Internal crates
 yantrik-harness = { path = "crates/yantrik-harness" }
 yantrik-agent-terminal = { path = "crates/yantrik-agent-terminal" }
+yantrik-journal = { path = "crates/yantrik-journal" }
 yantrik-companion-core = { path = "crates/yantrik-companion-core" }
 yantrik-companion-instincts = { path = "crates/yantrik-companion-instincts" }
 yantrik-companion-cortex = { path = "crates/yantrik-companion-cortex" }
