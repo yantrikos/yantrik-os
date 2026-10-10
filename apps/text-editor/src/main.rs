@@ -116,6 +116,7 @@ fn main() {
     let prefs = theme::load();
     ui.global::<ThemeMode>().set_dark(prefs.dark);
     ui.global::<AccentPreset>().set_index(prefs.accent_index);
+    ui.global::<ThemeMode>().set_high_contrast(prefs.high_contrast);
     let state = wire(&ui, document::recovery_path(), true);
     if let Some(path) = path {
         open(&ui, &state, path);

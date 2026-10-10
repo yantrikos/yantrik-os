@@ -284,6 +284,7 @@ fn main() {
     let saved = theme::load();
     ui.global::<ThemeMode>().set_dark(saved.dark);
     ui.global::<AccentPreset>().set_index(saved.accent_index);
+    ui.global::<ThemeMode>().set_high_contrast(saved.high_contrast);
     let state = wire(&ui, true);
     run_until_closed(&ui, "yantrik-terminal");
     for tab in state.borrow_mut().tabs.drain(..) {

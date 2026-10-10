@@ -59,6 +59,7 @@ fn main() {
     let prefs = theme::load();
     ui.global::<ThemeMode>().set_dark(prefs.dark);
     ui.global::<AccentPreset>().set_index(prefs.accent_index);
+    ui.global::<ThemeMode>().set_high_contrast(prefs.high_contrast);
 
     let engine = Engine::new();
     // Held for the life of the window: a dropped Slint timer stops, and a stopped redraw timer is a

@@ -95,6 +95,7 @@ fn main() {
     let theme = theme::load();
     app.global::<ThemeMode>().set_dark(theme.dark);
     app.global::<AccentPreset>().set_index(theme.accent_index);
+    app.global::<ThemeMode>().set_high_contrast(theme.high_contrast);
 
     // Nothing has been asked yet, so nothing is known. The first refresh below decides, and until
     // it has run the window says "unknown" rather than "off".

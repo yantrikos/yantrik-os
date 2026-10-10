@@ -79,6 +79,7 @@ fn main() {
     let prefs = theme::load();
     ui.global::<ThemeMode>().set_dark(prefs.dark);
     ui.global::<AccentPreset>().set_index(prefs.accent_index);
+    ui.global::<ThemeMode>().set_high_contrast(prefs.high_contrast);
     let dir = std::env::var_os("YANTRIK_NOTES_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {

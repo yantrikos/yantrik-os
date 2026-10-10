@@ -99,6 +99,7 @@ fn main() {
     let theme = theme::load();
     app.global::<ThemeMode>().set_dark(theme.dark);
     app.global::<AccentPreset>().set_index(theme.accent_index);
+    app.global::<ThemeMode>().set_high_contrast(theme.high_contrast);
 
     // Nothing has been asked yet, so nothing is known; the first refresh below decides.
     let health: Health = Rc::new(RefCell::new(runtime::Availability::Unreachable(

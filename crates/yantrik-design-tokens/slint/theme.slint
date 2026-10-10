@@ -16,6 +16,9 @@ import "fonts/JetBrainsMono-Medium.ttf";
 
 export global ThemeMode {
     in-out property <bool> dark: true;
+    // High contrast: the body text and the deep background go to full black/white. Only that
+    // pair — borders and accents keep their hue (colour roles; an accent may not mean something).
+    in-out property <bool> high-contrast: false;
 }
 
 // Accent color presets — index selects which accent palette is active.
@@ -140,7 +143,8 @@ export global Theme {
     // base → default → raised → floating
     // Each tier a clear step in luminance for depth without blur.
     out property <color> bg-deep:     ThemeOverrides.enabled ? ThemeOverrides.bg-deep-override
-        : (ThemeMode.dark ? #0e1117 : #eef1f6);
+        : (ThemeMode.high-contrast ? (ThemeMode.dark ? #000000 : #ffffff)
+           : (ThemeMode.dark ? #0e1117 : #eef1f6));
     out property <color> bg-surface:  ThemeOverrides.enabled ? ThemeOverrides.bg-surface-override
         : (ThemeMode.dark ? #161b23 : #e6eaf1);
     out property <color> bg-card:     ThemeOverrides.enabled ? ThemeOverrides.bg-card-override
@@ -293,7 +297,8 @@ export global Theme {
     // Primary near-white, secondary a clear light grey, dim for metadata — every one readable
     // on bg-card, which is where text mostly sits (ratios in the note above Theme).
     out property <color> text-primary:   ThemeOverrides.enabled ? ThemeOverrides.text-primary-override
-        : (ThemeMode.dark ? #f4f6fa : #0e1116);
+        : (ThemeMode.high-contrast ? (ThemeMode.dark ? #ffffff : #000000)
+           : (ThemeMode.dark ? #f4f6fa : #0e1116));
     out property <color> text-secondary: ThemeOverrides.enabled ? ThemeOverrides.text-secondary-override
         : (ThemeMode.dark ? #c0c8d6 : #444e5e);
     out property <color> text-dim:       ThemeOverrides.enabled ? ThemeOverrides.text-dim-override

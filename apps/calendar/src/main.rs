@@ -97,6 +97,7 @@ fn main() {
     let theme = theme::load();
     app.global::<ThemeMode>().set_dark(theme.dark);
     app.global::<AccentPreset>().set_index(theme.accent_index);
+    app.global::<ThemeMode>().set_high_contrast(theme.high_contrast);
 
     // Held here rather than dropped at the end of `wire`. A Slint timer stops when it is dropped,
     // and `let _keep = ...` inside the function that starts it is how System Monitor came to take

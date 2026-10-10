@@ -9,17 +9,21 @@
 
 use std::path::PathBuf;
 
-/// The two theme choices the shell exposes. Fields mirror the shell's `UserSettings`.
+/// The theme choices apps read from the shell's settings file. `dark` and `accent_index` mirror
+/// the shell's `UserSettings`; the shell does not write `high_contrast` yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ThemeSettings {
     pub dark: bool,
     /// Index into `AccentPreset`: 0 soft blue, 2 violet, 4 pink (see `ACCENTS`).
     pub accent_index: i32,
+    /// Full black/white text-on-background. The key is spelled like `dark_mode` because the
+    /// shell's settings file (`~/.config/yantrik/settings.yaml`) is the one source.
+    pub high_contrast: bool,
 }
 
 impl Default for ThemeSettings {
     fn default() -> Self {
-        Self { dark: true, accent_index: 0 }
+        Self { dark: true, accent_index: 0, high_contrast: false }
     }
 }
 
@@ -60,7 +64,7 @@ pub fn settings_path() -> PathBuf {
 
 /// Read the theme settings, falling back to the defaults for anything missing or unreadable.
 ///
-/// Only the two keys this module cares about are parsed; the rest of the file is the shell's
+/// Only the three keys this module cares about are parsed; the rest of the file is the shell's
 /// business and may change shape without breaking apps.
 pub fn load() -> ThemeSettings {
     let Ok(text) = std::fs::read_to_string(settings_path()) else {
@@ -78,6 +82,7 @@ fn parse(text: &str) -> ThemeSettings {
         match key.trim() {
             "dark_mode" => t.dark = value != "false",
             "accent_color" => t.accent_index = accent_name_to_index(value),
+            "high_contrast" => t.high_contrast = value != "false",
             _ => {}
         }
     }
@@ -91,7 +96,7 @@ mod tests {
     #[test]
     fn parses_the_two_keys_and_ignores_the_rest() {
         let t = parse("user_name: Pranab\ndark_mode: false\naccent_color: purple\nwallpaper: aurora\n");
-        assert_eq!(t, ThemeSettings { dark: false, accent_index: 2 });
+        assert_eq!(t, ThemeSettings { dark: false, accent_index: 2, high_contrast: false });
     }
 
     #[test]
@@ -118,5 +123,24 @@ mod tests {
     #[test]
     fn missing_file_means_defaults() {
         assert_eq!(parse(""), ThemeSettings::default());
+    }
+
+    #[test]
+    fn high_contrast_defaults_off() {
+        assert!(!ThemeSettings::default().high_contrast);
+        assert!(!parse("").high_contrast);
+    }
+
+    #[test]
+    fn high_contrast_parses_both_ways() {
+        assert!(parse("high_contrast: true\n").high_contrast);
+        assert!(!parse("high_contrast: false").high_contrast);
+    }
+
+    /// A settings file written before the key existed must not turn the mode on.
+    #[test]
+    fn an_old_settings_file_leaves_high_contrast_off() {
+        let t = parse("user_name: Pranab\ndark_mode: true\naccent_color: purple\n");
+        assert!(!t.high_contrast);
     }
 }

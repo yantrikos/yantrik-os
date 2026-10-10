@@ -487,6 +487,7 @@ fn main() {
     let theme = theme::load();
     app.global::<ThemeMode>().set_dark(theme.dark);
     app.global::<AccentPreset>().set_index(theme.accent_index);
+    app.global::<ThemeMode>().set_high_contrast(theme.high_contrast);
 
     let recovery_path = deck::recovery_path();
     let (deck, recovery, notice) = start(path, &recovery_path);

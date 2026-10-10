@@ -111,6 +111,7 @@ fn main() {
     let theme = theme::load();
     app.global::<ThemeMode>().set_dark(theme.dark);
     app.global::<AccentPreset>().set_index(theme.accent_index);
+    app.global::<ThemeMode>().set_high_contrast(theme.high_contrast);
 
     // Held for the life of the window: a dropped Slint timer stops. This one was bound inside
     // `wire` and dropped at the end of it, so the window took its readings once at startup and
