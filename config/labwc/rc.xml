@@ -554,6 +554,36 @@
       <action name="MoveToEdge" direction="down" snapWindows="no" />
       <action name="MoveRelative" x="0" y="-80" />
     </windowRule>
+    <!--
+      The Lens is a window of its own (crates/yantrik-ui/src/lens_window.rs, #733), so opening
+      the chat no longer raises the whole fullscreen shell over every app. It is the shell's own
+      surface: no title bar, not in the taskbar or Alt+Tab, and above the apps while it is up.
+
+      Matched on its title, as the OSD's rule is. Slint 1.17 names a window's Wayland app_id only
+      process-wide (slint::set_xdg_app_id), and reads it again each time a hidden window is mapped,
+      so no one window of the shell can be given an app_id of its own; `identifier` would match
+      nothing. The title is LENS_WINDOW_TITLE in crates/yantrik-ui/src/windows.rs.
+
+      Every name here is labwc 0.8.3's own, from its man pages (docs/labwc-config.5.scd, WINDOW
+      RULES; docs/labwc-actions.5.scd): the serverDecoration, skipTaskbar and skipWindowSwitcher
+      properties ("skipTaskbar removes window foreign-toplevel protocol handle", so wlrctl and the
+      shell's focus stream never list it either), and the ToggleAlwaysOnTop and MoveToEdge actions.
+      Actions run when a window maps; Slint destroys a window on Wayland when it is hidden
+      (i-slint-backend-winit 1.17, "Wayland doesn't support hiding a window, only destroying it
+      entirely"), so every time the Lens opens it is a new window and the rule runs again.
+
+      Placement, as the OSD's: nothing here is a screen size. The window is 464px wide (the 440px
+      panel, Theme.chat-panel-width, and its 12px margins) and as tall as the room between the
+      bars, which the shell works out from its own height. MoveToEdge right puts it against the
+      right edge and MoveToEdge up against the top of the usable area, which starts under the
+      36px status bar because of the <margin top> above; its foot is then above the 48px dock.
+      lens_window.rs's tests hold this rule's names to the window's.
+    -->
+    <windowRule title="yantrik-lens" serverDecoration="no" skipTaskbar="yes" skipWindowSwitcher="yes">
+      <action name="ToggleAlwaysOnTop" />
+      <action name="MoveToEdge" direction="right" snapWindows="no" />
+      <action name="MoveToEdge" direction="up" snapWindows="no" />
+    </windowRule>
     <!-- The shell is the desktop itself: present on every workspace, never switched away from. -->
     <windowRule title="Yantrik OS">
       <action name="ToggleOmnipresent" />

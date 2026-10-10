@@ -47,6 +47,7 @@ run target/ui-validation/settings-verify.png 1280 800 verify-settings
 run target/ui-validation/settings-verify-compact.png 800 600 verify-settings
 run target/ui-validation/quick-settings.png 1280 800 verify-quick-settings
 run target/ui-validation/osd.png 1280 800 verify-osd
+run target/ui-validation/lens-window.png 464 716 verify-lens-window
 run target/ui-validation/battery.png 1280 800 verify-battery
 run target/ui-validation/network.png 1280 800 verify-network
 run target/ui-validation/lens-answers.png 640 800 verify-lens-answers

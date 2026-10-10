@@ -35,7 +35,7 @@ use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_m
     self as manager, ZwlrForeignToplevelManagerV1,
 };
 
-use crate::windows::SHELL_WINDOW_TITLE;
+use crate::windows::{is_shell_surface, SHELL_WINDOW_TITLE};
 
 /// How recently the shell must have taken focus for it to count as the click's own doing.
 ///
@@ -278,13 +278,14 @@ impl Watch {
     }
 
     /// Copy what is known into [`SNAPSHOT`]. A window that has not had its first `done` has no
-    /// title yet and is not listed.
+    /// title yet and is not listed, and neither is one of the shell's own surfaces (the Lens,
+    /// the on-screen display): they are not windows a person switches to.
     fn publish(&self) {
         if let Ok(mut snap) = SNAPSHOT.lock() {
             *snap = self
                 .windows
                 .iter()
-                .filter(|(_, w)| !w.title.is_empty())
+                .filter(|(_, w)| !w.title.is_empty() && !is_shell_surface(&w.title))
                 .map(|(k, w)| TopWindow { id: id_of(k), title: w.title.clone(), app_id: w.app_id.clone() })
                 .collect();
         }
@@ -298,8 +299,15 @@ impl Watch {
         &mut self.windows.last_mut().expect("just pushed").1
     }
 
+    /// The activated window, unless it is one of the shell's own surfaces. The Lens taking the
+    /// keyboard is not the person leaving the window they were in: that window is still the one
+    /// to hand the keyboard back to when the Lens closes (lens_window.rs), and a card waiting in
+    /// the Lens is not covered by the Lens (card_watch). `None` is not recorded (see `observe`).
     fn front(&self) -> Option<(ObjectId, String)> {
-        self.windows.iter().find(|(_, w)| w.activated).map(|(k, w)| (k.clone(), w.title.clone()))
+        self.windows
+            .iter()
+            .find(|(_, w)| w.activated && !is_shell_surface(&w.title))
+            .map(|(k, w)| (k.clone(), w.title.clone()))
     }
 }
 

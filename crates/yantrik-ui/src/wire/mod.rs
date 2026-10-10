@@ -120,6 +120,8 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     // The network mark and its popover, and the one reading every surface shows of the network.
     network::wire(ui);
     lens::wire(ui, ctx);
+    // The Lens's own window (#733): after `lens`, whose open and close it follows.
+    crate::lens_window::wire(ui);
     navigate::wire(ui, ctx);
     // The letter on the tile of an app there is no art and no theme icon for (AppTile).
     ui.global::<crate::AppInitial>().on_of(|id| yantrik_ui_kit::app_tile::initial(&id).into());

@@ -980,6 +980,9 @@ pub fn publish(
                         // The action that puts it away, as every other overlay says; "" when
                         // there is nothing up to put away.
                         "close_with": if ui.get_lens_open() { "close_lens" } else { "" },
+                        // Whether its own window is up (#733): the shell's surface, above the
+                        // apps, and never one of the `windows` listed here.
+                        "window_shown": ui.get_lens_window_up(),
                     }),
                 )
                 // The launcher, for the same reason. `open_app name=launchpad` opened it under
@@ -1398,9 +1401,9 @@ pub fn publish(
             // `safe`: it shows a panel. Nothing is sent, nothing is spawned, nothing is written.
             //
             // The answer is the OBSERVED state, read back off the shell after the calls, not an
-            // `accepted: true` — which was the point of the exercise. The Lens is drawn by the
-            // desktop screen and nowhere else, so opening it means going to the desktop first;
-            // if that did not take, `lens_open` comes back false and the caller knows.
+            // `accepted: true` — which was the point of the exercise. The Lens is a window of its
+            // own (#733) and opens over whatever screen or app is in front; if it did not open,
+            // `lens_open` comes back false and the caller knows.
             Action::new("open_lens", "Open the ask bar (the Lens) and put the cursor in it")
                 .risk("safe")
                 .arg(
@@ -1411,13 +1414,6 @@ pub fn publish(
             move |args| {
                 let ui = lens_ui()?;
                 let text = args["text"].as_str().unwrap_or_default().to_string();
-
-                // The Lens lives on the desktop screen. Set-then-invoke, the pair every caller
-                // in the shell uses: the property shows the screen, `navigate` loads it.
-                if ui.get_current_screen() != 1 {
-                    ui.set_current_screen(1);
-                    ui.invoke_navigate(1);
-                }
 
                 // Prefilled before the panel opens, so the results the Lens builds on open are
                 // the results for this text rather than for an empty field.
@@ -1434,24 +1430,10 @@ pub fn publish(
                 // Whoever calls this is, by construction, somewhere else: Ctrl+K already works
                 // when the shell has the keyboard, so this action is what Super+K reaches for
                 // from inside another window. The first time it ran on a machine with Notes in
-                // front, it answered `lens_open: true` and was right — the Lens had opened,
-                // underneath Notes, where nobody could see it or type into it. The shell is an
-                // ordinary toplevel to the compositor, so it is asked to come forward the way
-                // the taskbar asks for any other window. Off the UI thread: wlrctl is a process.
-                std::thread::spawn(|| {
-                    match std::process::Command::new("wlrctl")
-                        .args(["toplevel", "focus", "title:Yantrik OS"])
-                        .status()
-                    {
-                        Ok(status) if status.success() => {}
-                        Ok(status) => tracing::warn!(
-                            code = status.code().unwrap_or(-1),
-                            "the Lens is open but the shell could not be brought in front of it"
-                        ),
-                        Err(e) => tracing::warn!(error = %e, "could not run wlrctl to raise the shell"),
-                    }
-                });
-
+                // front, the Lens opened underneath Notes, where nobody could see it; raising the
+                // whole shell fixed that by covering Notes instead. The Lens is a window of its
+                // own now, above the apps (#733): opening it showed that window, beside Notes,
+                // and gave it the keyboard (`invoke_open_lens` → `lens_window::sync`).
                 Ok(serde_json::json!({
                     "lens_open": ui.get_lens_open(),
                     "screen": screen_name(ui.get_current_screen()),

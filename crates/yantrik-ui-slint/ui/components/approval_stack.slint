@@ -1,0 +1,39 @@
+// The one approval card waiting on the person, and how many more wait behind it.
+//
+// Drawn in two places that never show it at once: top right over the shell's own screens
+// (app.slint), and in the Lens's own window (lens_window.slint), which is above every app (#733).
+// One component, so the card the person answers is the same card wherever it is drawn.
+import { Theme } from "theme.slint";
+import { ApprovalRequest, ApprovalCard } from "intent_lens.slint";
+
+export component ApprovalStack inherits VerticalLayout {
+    // Zero or one entry: `pending-approvals`, the card in front (control_approvals::publish).
+    in property <[ApprovalRequest]> cards;
+    // How many further requests are queued behind it.
+    in property <int> waiting: 0;
+    // The room the card has; a taller card scrolls its details instead (#218).
+    in property <length> height-limit;
+    callback allow(string);
+    callback allow-session(string);
+    callback deny(string);
+
+    spacing: Theme.sp-1;
+    alignment: start;
+
+    for item in root.cards : ApprovalCard {
+        data: item;
+        height-limit: root.height-limit;
+        allow => { root.allow(item.id); }
+        allow-session => { root.allow-session(item.id); }
+        deny => { root.deny(item.id); }
+    }
+
+    if root.waiting > 0 : Text {
+        text: root.waiting + " more waiting — this one first";
+        color: Theme.text-dim;
+        font-size: Theme.fs-micro;
+        horizontal-alignment: center;
+        wrap: no-wrap;
+        overflow: elide;
+    }
+}

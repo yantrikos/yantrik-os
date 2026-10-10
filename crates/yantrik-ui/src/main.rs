@@ -109,6 +109,7 @@ mod i18n;
 #[allow(dead_code)]
 mod mime_dispatch;
 mod lens;
+mod lens_window;
 /// The Lens's conversation put back from the saved session when it opens empty (#246).
 mod lens_history;
 mod lock;
@@ -131,6 +132,7 @@ mod open_url;
 mod session_lock;
 // The snap layouts: rc.xml's regions and keys, and the window menu, kept in step (tests only).
 mod snap_layouts;
+mod theme_sync;
 // The keyboard cheat sheet (Super+/), generated from rc.xml.
 mod cheat_sheet;
 // Every key the screens advertise is bound in rc.xml, and every binding names a real action (tests only).

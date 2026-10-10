@@ -18,6 +18,20 @@ pub(crate) const SHELL_WINDOW_TITLE: &str = "Yantrik OS";
 /// front" must never offer or name it.
 pub(crate) const OSD_WINDOW_TITLE: &str = "Yantrik OSD";
 
+/// The Lens's own window (lens_window.rs, #733), from `title:` in yantrik-ui-slint/ui/
+/// lens_window.slint, and the title its windowRule in config/labwc/rc.xml matches. labwc's
+/// `skipTaskbar` keeps it out of the compositor's toplevel list, so `wlrctl` and the focus stream
+/// never see it; should that rule not be loaded, it is still the shell's own surface and never an
+/// app's window: never in the taskbar, Alt+Tab, `describe shell`'s windows or Mind View's routing.
+pub(crate) const LENS_WINDOW_TITLE: &str = "yantrik-lens";
+
+/// Whether a toplevel is one of the shell's own extra windows — the on-screen display or the
+/// Lens — rather than a window of an app. The shell's main window is not one of these: it is the
+/// desktop, which the switcher offers and the focus stream follows.
+pub(crate) fn is_shell_surface(title: &str) -> bool {
+    title == OSD_WINDOW_TITLE || title == LENS_WINDOW_TITLE
+}
+
 /// A running window on the desktop.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowEntry {
@@ -524,9 +538,11 @@ pub fn present_app(app_id: &str) -> bool {
 /// The shell is an ordinary toplevel to labwc — see the `<margin>` note in config/labwc/rc.xml,
 /// which exists because the status bar and dock are a fullscreen window rather than a layer-shell
 /// panel — so it gets in front the same way any other window does, and it cannot raise itself
-/// under Wayland. Every surface that puts something in front of a person needs this:
-/// `control_approvals` already asks for it when a card goes up, `open_lens` when the ask bar
-/// opens, and `show_screen` because a screen nobody can see has not been shown.
+/// under Wayland. Every surface of that window that puts something in front of a person needs
+/// this: `show_screen`, because a screen nobody can see has not been shown, and `control_approvals`
+/// for a card in an agent's pane on the Agents screen. Not the Lens, nor the card in front: they
+/// are a window of their own above the apps (lens_window.rs, #733), and raising this one for them
+/// covered every app the person had open.
 ///
 /// Restored first, as [`present`] does, because a minimised window cannot take focus: a shell
 /// minimised by anything would otherwise stay down with every card in it (second review of the
@@ -694,7 +710,7 @@ fn wlrctl_windows() -> Vec<WindowEntry> {
         // desktop's own "open windows" list both offered to switch you to the desktop you are
         // already looking at.
         .filter(|line| split_toplevel_line(line).0 != SHELL_WINDOW_TITLE)
-        .filter(|line| split_toplevel_line(line).0 != OSD_WINDOW_TITLE)
+        .filter(|line| !is_shell_surface(&split_toplevel_line(line).0))
         .map(toplevel_entry)
         .collect()
 }
@@ -763,7 +779,7 @@ fn activation(text: &str) -> Activation {
         // The person is looking at the desktop, or one of its screens. No app window is in front.
         return Activation::Shell;
     }
-    if title.is_empty() || title == OSD_WINDOW_TITLE {
+    if title.is_empty() || is_shell_surface(&title) {
         return Activation::Unknown;
     }
     Activation::Window(title)

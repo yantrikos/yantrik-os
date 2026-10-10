@@ -418,14 +418,6 @@ fn wire_open_close(ui: &App, ctx: &AppContext) {
     ui.on_open_lens(move || {
         tracing::debug!("Lens opened");
         if let Some(ui) = ui_weak_open.upgrade() {
-            // The chat is part of the shell's own window, behind any app in front of it: from
-            // the Editor, the taskbar's Chat button opened a Lens nobody could see (#241, the
-            // same as the Apps button in #219). Bring the shell forward when it opens.
-            if ui.get_lens_open() {
-                if let Err(why) = crate::windows::raise_shell() {
-                    tracing::warn!(%why, "The chat opened, but the shell could not be brought in front of the window over it");
-                }
-            }
             // An empty Lens is one the shell has just started under: put the conversation back
             // from the saved session before anything else looks at it (#246).
             crate::lens_history::restore_if_empty(&ui);
@@ -459,6 +451,12 @@ fn wire_open_close(ui: &App, ctx: &AppContext) {
             let recents = lens::frecency_to_recents(&frecency_entries);
             drop(frecency_ref);
             ui.set_lens_recents(ModelRc::new(VecModel::from(recents)));
+
+            // The Lens is a window of its own above the apps (#733): it shows, beside whatever
+            // is in front, and the shell's own window stays where it is. From the Editor, the
+            // taskbar's Chat button once opened a Lens nobody could see (#241); raising the whole
+            // shell fixed that by covering every app, which is what this replaces.
+            crate::lens_window::sync(&ui);
         }
     });
 
@@ -470,6 +468,8 @@ fn wire_open_close(ui: &App, ctx: &AppContext) {
             ui.set_lens_suggestions(ModelRc::new(VecModel::<LensResult>::default()));
             ui.set_lens_recents(ModelRc::new(VecModel::<LensResult>::default()));
             ui.set_lens_chat_mode(false);
+            // Its window goes now, not on the next tick, and the keyboard goes back.
+            crate::lens_window::sync(&ui);
         }
     });
 }

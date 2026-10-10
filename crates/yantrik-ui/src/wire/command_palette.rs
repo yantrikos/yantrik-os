@@ -198,15 +198,9 @@ fn wire_selected(ui: &App, ctx: &AppContext) {
         } else if action == "system:power" {
             ui.set_power_menu_open(true);
         } else if action.starts_with("ai:") || action.starts_with("search:") {
-            // The Lens, which the desktop screen draws and no other screen does. Six rows set
-            // `lens-open` and stopped there, so choosing "Ask AI" or "Search Files" from any
-            // screen but the desktop flipped a property behind a screen that does not render the
-            // panel: the palette closed and nothing else happened. Same two lines the ask bar,
-            // the orb and Ctrl+K use.
-            if ui.get_current_screen() != 1 {
-                ui.set_current_screen(1);
-                ui.invoke_navigate(1);
-            }
+            // The Lens. Six rows once set `lens-open` and stopped there, behind a screen that did
+            // not draw it; it is a window of its own now (#733) and opens over any screen. Same
+            // two lines the ask bar, the orb and Ctrl+K use.
             ui.set_lens_open(true);
             ui.invoke_open_lens();
         } else if action == "system:screenshot" {

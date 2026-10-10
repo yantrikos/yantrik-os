@@ -1207,7 +1207,7 @@ mod tests {
         // Drawn after the taskbar (over the screens) and before the approval card (under it).
         let panel_at = app.find("if root.mind-panel-shown : MindPanel {").unwrap();
         assert!(app.find("GroundedDock {").unwrap() < panel_at);
-        assert!(panel_at < app.find("for item in root.pending-approvals : ApprovalCard").unwrap());
+        assert!(panel_at < app.find("approval-stack := ApprovalStack {").unwrap());
     }
 
     /// `describe shell` reads it and `set_mind_panel` sets it, graded safe: it only changes how much

@@ -43,7 +43,7 @@ use std::cell::RefCell;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use slint::{ComponentHandle, ModelRc, Timer, TimerMode, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 use yantrik_app_runtime::control::{Action, App as ControlSurface, Param};
 
 use crate::approvals::{self, Card, Status};
@@ -314,25 +314,35 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // the same turn of the event loop that accepted the request — so the card is up
                 // before the caller's reply leaves the socket, and a poll that arrives
                 // immediately can never see a request the person has not been shown.
-                if let Some(ui) = request_ui.upgrade() {
-                    sync(&ui);
-                }
+                //
+                // The card in front is drawn in the Lens's own window, above every app (#733):
+                // that window shows now, and nothing else moves.
+                let in_lens_window = request_ui
+                    .upgrade()
+                    .map(|ui| {
+                        sync(&ui);
+                        crate::lens_window::sync(&ui);
+                        ui.get_lens_window_up() && ui.get_pending_approvals().row_count() > 0
+                    })
+                    .unwrap_or(false);
 
                 // Drawn is not seen. The first time this ran on a real machine, the mind had
                 // Calendar open and focused; the card was drawn in the shell's window, top
                 // right, and the Calendar window covered it completely — only the card's orange
                 // border showed past the edge. The person would never have seen it and the
-                // request would have expired on its own. The shell is an ordinary toplevel to
-                // labwc, so it has to ask to come forward, exactly as `open_lens` does for the
-                // same reason (see its comment in control.rs — the Lens once opened underneath
-                // Notes). Off the UI thread: wlrctl is a process.
+                // request would have expired on its own. A card in the Lens's window is above
+                // Calendar already. One drawn in the shell's own window — in an agent's pane on
+                // the Agents screen — still needs the shell to ask to come forward, as labwc
+                // raises any toplevel. Off the UI thread: wlrctl is a process.
                 //
                 // Only for a question the person has not already been shown. A repeat of an
                 // identical pending request hands back the card that is already up, and raising
                 // the shell again for it would let anything that can call a `safe` action hold
                 // somebody's screen by asking the same thing in a loop.
                 if asked.fresh {
-                    take_the_screen();
+                    if !in_lens_window {
+                        take_the_screen();
+                    }
                     // And say so where everything else is said. The card is on screen for two
                     // minutes; the notification is what is still there afterwards, so a person
                     // who was away learns that a mind asked for something and got no answer.
@@ -3103,12 +3113,16 @@ mod control_approvals_tests {
         assert!(!super::in_the_lens(&card("appr-9", Status::Pending, ""), ""), "no agent is no Lens's");
         assert!(super::in_the_lens(&card("appr-9", Status::Pending, "pi:main"), "pi:main"));
 
-        // The overlay hides for the Lens only on the Lens's own card.
-        let app = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../yantrik-ui-slint/ui/app.slint")).unwrap();
+        // The Lens's window draws the card in front itself, and steps aside for its own
+        // conversation only on the Lens's own card; the shell's corner stands down while that
+        // window is up (#733), so the question is asked in one place.
+        let window = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../yantrik-ui-slint/ui/lens_window.slint")).unwrap();
         assert!(
-            app.contains("!(root.lens-open && root.lens-chat-mode && root.current-screen == 1 && root.approval-in-lens)"),
-            "the top-right card steps aside for an open Lens only when the Lens hosts the card"
+            window.contains("!(root.lens-open && root.lens-chat-mode && root.approval-in-lens)"),
+            "the Lens window's card steps aside for an open Lens only when the Lens hosts the card"
         );
+        let app = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../yantrik-ui-slint/ui/app.slint")).unwrap();
+        assert!(app.contains("&& !root.lens-window-up"), "the corner stands down while the Lens's window is up");
         let src = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/control_approvals.rs")).unwrap();
         let src = src.split("#[cfg(test)]").next().unwrap();
         assert!(src.contains("!lens.is_empty() && card.verified.agent == lens"), "the Lens matches by the verified agent alone");

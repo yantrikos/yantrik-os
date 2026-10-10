@@ -1,0 +1,169 @@
+// The Lens in a window of its own (#733).
+//
+// The shell is one fullscreen window, and the Lens used to be drawn inside it: opening the chat
+// meant raising that window over every app, and to the person every window they had open
+// vanished. This window is only the Lens. labwc places it at the right edge between the status
+// bar and the dock and keeps it above the apps while it is up (the windowRule for its title in
+// config/labwc/rc.xml), so it opens beside the person's work and covers only its own strip.
+//
+// The state is the shell's. Every property here is one of App's, copied in by
+// crates/yantrik-ui/src/lens_window.rs, and every press is handed back to App's own callbacks, so
+// the code that fills and answers the Lens (wire/chat.rs, wire/lens.rs, wire/agents.rs,
+// control_approvals.rs) is the code it always was. The Lens itself is `IntentLens`, drawn here
+// and nowhere else in the shell.
+//
+// It also draws the approval card in front, as the shell's top-right corner does over its own
+// screens: a card is how a person decides what a mind does, and this is the one surface of the
+// shell that is never behind an app. With the Lens closed the window is just that card.
+import { Theme } from "theme.slint";
+import { IntentLens, LensResult, ApprovalRequest } from "components/intent_lens.slint";
+import { ApprovalStack } from "components/approval_stack.slint";
+import { MessageData } from "components/message_bubble.slint";
+import { WorkCardData } from "components/work_card.slint";
+import { QuestionRequest } from "components/question_card.slint";
+
+export component LensWindow inherits Window {
+    // Must equal windows::LENS_WINDOW_TITLE and the windowRule's title in rc.xml.
+    title: "yantrik-lens";
+    no-frame: true;
+    background: transparent;
+    default-font-family: Theme.font-ui;
+
+    // The room between the status bar and the dock: the shell's own height less both bars, set
+    // by the shell before the window is shown.
+    in property <length> usable-height: 716px;
+
+    // ── App's Lens state, copied in ──
+    in-out property <bool> lens-open: false;
+    in-out property <string> lens-input-text: "";
+    in property <[LensResult]> lens-results: [];
+    in property <bool> lens-chat-mode: false;
+    in property <string> lens-destination: "";
+    in property <[LensResult]> lens-suggestions: [];
+    in property <[LensResult]> lens-recents: [];
+    in property <[MessageData]> messages: [];
+    in property <bool> is-generating: false;
+    in property <bool> is-thinking: false;
+    in property <string> companion-status: "idle";
+    in property <bool> companion-online: true;
+    in property <string> active-harness-name: "";
+    in property <string> mind-mode-label: "Ask";
+    in property <bool> lens-can-open-in-agents: false;
+    in property <[QuestionRequest]> lens-questions: [];
+    // The Lens's own mind's records and card, the card in front, and whether that card is the
+    // Lens's own (control_approvals::publish).
+    in property <[ApprovalRequest]> approvals: [];
+    in property <[ApprovalRequest]> pending-approvals: [];
+    in property <int> approvals-waiting: 0;
+    in property <bool> approval-in-lens: false;
+    // AgentsState's part of the Lens (wire/lens_work.rs): a window has its own copy of every
+    // global, so these come across as properties.
+    in property <[WorkCardData]> lens-cards: [];
+    in property <WorkCardData> lens-strip;
+    in property <int> lens-live: 0;
+    in property <int> lens-waiting: 0;
+    in property <string> lens-identity: "";
+
+    // ── Presses, handed to App ──
+    callback lens-query(string);
+    callback lens-submit(string);
+    callback lens-result-selected(string);
+    callback close-lens();
+    callback send-message(string);
+    callback mic-pressed();
+    callback approval-allow(string);
+    callback approval-allow-session(string);
+    callback approval-deny(string);
+    callback question-answer(string, string, string, bool);
+    callback open-run(string);
+    callback lens-open-in-agents();
+    callback lens-open-history();
+    callback lens-new-chat();
+    callback mode-clicked();
+    callback mind-clicked();
+    callback view-desk(string);
+
+    // The card in front, drawn here unless the Lens's conversation hosts it (its own mind's card,
+    // in chat mode): the same rule the shell's corner kept while the Lens was in its window.
+    out property <bool> card-shown: root.pending-approvals.length > 0
+        && !(root.lens-open && root.lens-chat-mode && root.approval-in-lens);
+
+    // The panel and its margins, 440px and 12px either side; the panel's height while the Lens
+    // is open, else just the card's, so the strip under it is not a window catching clicks.
+    width: Theme.chat-panel-width + 2 * Theme.chat-panel-gap;
+    height: root.lens-open ? root.usable-height : max(Theme.sp-4, card-box.height + 2 * Theme.sp-4);
+
+    IntentLens {
+        width: 100%;
+        height: 100%;
+        // The window is already between the bars.
+        top-inset: 0px;
+        bottom-inset: 0px;
+        edge-resizable: false;
+        is-open: root.lens-open;
+        input-text <=> root.lens-input-text;
+        is-thinking: root.is-thinking;
+        results: root.lens-results;
+        companion-status: root.companion-status;
+        companion-online: root.companion-online;
+        chat-mode: root.lens-chat-mode;
+        // So the conversation header says who is answering — the same name the status bar
+        // chip carries, rather than a generic "Conversation".
+        mind-name: root.active-harness-name;
+        can-open-in-agents: root.lens-can-open-in-agents;
+        open-in-agents => { root.lens-open-in-agents(); }
+        open-history => { root.lens-open-history(); }
+        new-chat => { root.lens-new-chat(); }
+        work-cards: root.lens-cards;
+        strip: root.lens-strip;
+        live-runs: root.lens-live;
+        waiting-runs: root.lens-waiting;
+        mode-label: root.mind-mode-label;
+        identity: root.lens-identity;
+        destination: root.lens-destination;
+        mode-clicked => { root.mode-clicked(); }
+        mind-clicked => { root.mind-clicked(); }
+        view-desk(run) => { root.view-desk(run); }
+        messages: root.messages;
+        is-generating: root.is-generating;
+        suggestions: root.lens-suggestions;
+        recents: root.lens-recents;
+        approvals: root.approvals;
+        approvals-waiting: root.approvals-waiting;
+        approval-allow(id) => { root.approval-allow(id); }
+        approval-allow-session(id) => { root.approval-allow-session(id); }
+        approval-deny(id) => { root.approval-deny(id); }
+        questions: root.lens-questions;
+        question-answer(agent, request, answer, pressed) => { root.question-answer(agent, request, answer, pressed); }
+        open-run(run) => { root.open-run(run); }
+        query-changed(text) => { root.lens-query(text); }
+        submit-query(text) => { root.lens-submit(text); }
+        result-selected(id) => { root.lens-result-selected(id); }
+        close-lens => {
+            root.lens-open = false;
+            root.close-lens();
+        }
+        send-message(text) => { root.send-message(text); }
+        mic-pressed => { root.mic-pressed(); }
+    }
+
+    // Where the shell's corner draws it: one sp-4 under the status bar, 404px wide, one sp-4 in
+    // from the right edge — over the panel's top when the Lens is open.
+    card-box := Rectangle {
+        x: root.width - 404px - Theme.sp-4;
+        y: Theme.sp-4;
+        width: 404px;
+        height: root.card-shown ? stack.preferred-height : 0px;
+        visible: root.card-shown;
+        background: transparent;
+
+        stack := ApprovalStack {
+            cards: root.pending-approvals;
+            waiting: root.approvals-waiting;
+            height-limit: root.usable-height - 2 * Theme.sp-4;
+            allow(id) => { root.approval-allow(id); }
+            allow-session(id) => { root.approval-allow-session(id); }
+            deny(id) => { root.approval-deny(id); }
+        }
+    }
+}

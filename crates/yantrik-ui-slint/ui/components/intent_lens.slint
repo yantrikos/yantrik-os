@@ -1228,8 +1228,15 @@ export component IntentLens inherits Rectangle {
     // The panel's width: 440px until the person drags its left edge, then between 380 and 560.
     // It is kept for this session only.
     in-out property <length> panel-width: Theme.chat-panel-width;
+    // Whether that left edge can be dragged at all.
+    in property <bool> edge-resizable: true;
+    // What of the component's height the shell's own bars take, above and below. The whole
+    // screen has the status bar and the dock in it; the Lens's own window (lens_window.slint,
+    // #733) is placed between them by the compositor and passes zero for both.
+    in property <length> top-inset: Theme.status-bar-height;
+    in property <length> bottom-inset: Theme.taskbar-height;
     // The panel's own height, between the two bars and inside its margins.
-    out property <length> panel-height: root.height - Theme.status-bar-height - Theme.taskbar-height
+    out property <length> panel-height: root.height - root.top-inset - root.bottom-inset
         - 2 * Theme.chat-panel-gap;
     // What the transcript is doing, for `describe` and for the preview checks (the transcript is
     // inside the chat-mode block, whose ids cannot be named from out here): following the newest
@@ -1356,7 +1363,7 @@ export component IntentLens inherits Rectangle {
     // purpose; it simply never subtracted the chrome it was underneath.
     Rectangle {
         x: root.is-open ? root.width - root.panel-width - Theme.chat-panel-gap : root.width;
-        y: Theme.status-bar-height + Theme.chat-panel-gap;
+        y: root.top-inset + Theme.chat-panel-gap;
         width: root.panel-width;
         height: root.panel-height;
         border-radius: Theme.chat-radius;
@@ -2372,7 +2379,10 @@ export component IntentLens inherits Rectangle {
         // as it grows, so the drag is measured against the pointer's place on the screen, not
         // against the handle it is dragging: measured against the handle, every step would
         // change what the next one was measured from and the edge would shudder.
-        if root.chat-mode : resize-handle := TouchArea {
+        //
+        // Not in the Lens's own window (#733): its width is the compositor's to place, from the
+        // right edge, and a window that grew would grow off the screen to the right.
+        if root.chat-mode && root.edge-resizable : resize-handle := TouchArea {
             x: 0;
             width: 8px;
             height: parent.height;

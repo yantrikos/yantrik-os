@@ -8,6 +8,11 @@
 //! turn, and the conclusion was that approvals were broken (2 Oct 2026). A card is how a person
 //! decides what a mind does. Hidden, it is a decision nobody can make.
 //!
+//! The card in front is drawn in the Lens's own window now (lens_window.rs, #733), which labwc
+//! keeps above every app, so nothing that takes focus can cover it and none of this runs for it:
+//! see [`card_in_lens_window`]. What follows is for a card drawn in the shell's own window — one
+//! answered in an agent's pane on the Agents screen — until that screen is a window of its own.
+//!
 //! So while a card waits, a change of focus to any other window brings the shell back in front.
 //! The changes come from `toplevel_watch`, which follows the compositor's own stream, so nothing
 //! here polls. What two security reviews asked for shapes it:
@@ -60,6 +65,8 @@ pub const PRESS_GUARD: Duration = Duration::from_millis(700);
 const MIND_VIEW_TITLE: &str = "Mind View";
 
 static WAITING: AtomicBool = AtomicBool::new(false);
+/// Whether the card in front is up in the Lens's own window, above every app.
+static IN_LENS_WINDOW: AtomicBool = AtomicBool::new(false);
 static RAISES: AtomicU32 = AtomicU32::new(0);
 static RECHECK_PENDING: AtomicBool = AtomicBool::new(false);
 static LAST: Mutex<Option<Instant>> = Mutex::new(None);
@@ -188,9 +195,20 @@ pub fn just_raised() -> bool {
         .is_some_and(|at| at.elapsed() < PRESS_GUARD)
 }
 
+/// The Lens's window says whether it is up with the card in front drawn in it (lens_window.rs).
+pub fn card_in_lens_window(shown: bool) {
+    IN_LENS_WINDOW.store(shown, Ordering::Relaxed);
+}
+
+/// Whether a change of focus can be covering a card: something waits, and it is not drawn in the
+/// Lens's window, which no window covers (#733).
+fn coverable(waiting: bool, in_lens_window: bool) -> bool {
+    waiting && !in_lens_window
+}
+
 /// The compositor says another toplevel now has focus. Called from `toplevel_watch`'s thread.
 pub fn front_changed(title: &str) {
-    if !WAITING.load(Ordering::Relaxed) {
+    if !coverable(WAITING.load(Ordering::Relaxed), IN_LENS_WINDOW.load(Ordering::Relaxed)) {
         return;
     }
     let since = LAST.lock().ok().and_then(|l| l.map(|at| at.elapsed()));
@@ -244,9 +262,9 @@ fn raise(title: &str) {
     }
     // Off this thread: the raise waits on the compositor, and the stream must keep flowing.
     std::thread::spawn(|| {
-        // The card may have been answered while this was being decided. Raising now would take
-        // the screen back from the window the hand-back just returned it to.
-        if !WAITING.load(Ordering::Relaxed) {
+        // The card may have been answered while this was being decided, or gone up in the
+        // Lens's window. Raising now would take the screen back for nothing.
+        if !coverable(WAITING.load(Ordering::Relaxed), IN_LENS_WINDOW.load(Ordering::Relaxed)) {
             return;
         }
         match crate::windows::raise_shell() {
@@ -287,6 +305,15 @@ fn recheck_after(wait: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A card in the Lens's own window is above every app (#733): nothing taking focus covers it,
+    /// and the shell is not raised over the person's work for it.
+    #[test]
+    fn a_card_in_the_lens_window_is_never_covered() {
+        assert!(coverable(true, false));
+        assert!(!coverable(true, true));
+        assert!(!coverable(false, false));
+    }
 
     /// The case from the live instance: a card waiting, and Mind View takes focus over it.
     #[test]
