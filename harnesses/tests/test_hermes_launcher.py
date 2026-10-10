@@ -98,6 +98,17 @@ class HermesLauncherTests(unittest.TestCase):
         self.assertIn("hermes", result.stdout)
         self.assertEqual(launcher.read_text(), before)
 
+    def test_dotdot_interpreter_is_not_followed_out_of_tools(self):
+        outside = self.home / "elsewhere" / "python3"
+        outside.parent.mkdir(parents=True)
+        outside.write_text("#!/bin/sh\necho escaped\n")
+        outside.chmod(0o755)
+        launcher = self.make_launcher("/tmp/tmp.AbC123/tools/../../elsewhere/python3")
+        before = launcher.read_text()
+        result = heal(self.home)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(launcher.read_text(), before)
+
     def test_unrelated_tmp_mention_not_rewritten(self):
         self.make_python()
         launcher = self.bin / "hermes"

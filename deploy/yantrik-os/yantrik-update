@@ -2257,8 +2257,10 @@ reconcile_hermes_launcher() {
     ''|root|*[!a-z0-9_-]*) ;;
     *) home="$(getent passwd "$owner" | cut -d: -f6)"; ouid="$(id -u "$owner" 2>/dev/null)"; ogid="$(id -g "$owner" 2>/dev/null)" ;;
   esac
-  case "$ouid:$ogid" in *[!0-9:]*|0:*) home=""; ouid=""; ogid="" ;; esac
-  [ -n "$home" ] && [ -n "$ouid" ] || return 0
+  # Never run the heal with root's uid OR root's group: the same guard reconcile_egress_seeds puts
+  # on its setpriv identity.
+  case "$ouid:$ogid" in :*|*:|0:*|*:0|*[!0-9:]*) return 0 ;; esac
+  [ -n "$home" ] || return 0
   [ -d "$home/.hermes/hermes-agent/.hermes/bin" ] || return 0
   lib="$PREFIX/share/harnesses/lib/install/hermes-launcher.sh"
   [ -f "$lib" ] || return 0
@@ -2266,11 +2268,12 @@ reconcile_hermes_launcher() {
   if out="$(env -i HOME="$home" PATH=/usr/bin:/bin "$setpriv" --reuid="$ouid" --regid="$ogid" \
       --clear-groups --no-new-privs -- sh -c '. "$1"; heal_hermes_launcher "$2"' sh "$lib" "$home" 9>&-)"; then
     if [ -n "$out" ]; then
-      printf '%s\n' "$out" | while IFS= read -r line; do info "$line"; done
+      # The lines name files in the owner's home: drop control characters before root prints them.
+      printf '%s\n' "$out" | tr -d '\000-\010\013-\037\177' | while IFS= read -r line; do info "$line"; done
       info "Hermes's launcher was repointed; the running gateway is fine and the next restart will work"
     fi
   else
-    warn "could not repoint Hermes's launcher: $out"
+    warn "could not repoint Hermes's launcher: $(printf '%s' "$out" | tr -d '\000-\037\177' | cut -c1-300)"
   fi
   return 0
 }

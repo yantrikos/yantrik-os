@@ -34,6 +34,13 @@ heal_hermes_launcher() {
         old=$(grep -o '/tmp/[^/ "]*/tools/[^ "]*' "$f" 2>/dev/null | head -n 1) || old=""
         [ -n "$old" ] || continue
         rest=${old#/tmp/*/tools/}
+        # The mapped interpreter must stay under ~/.hermes/tools: never follow a `..` out of it.
+        case "/$rest/" in
+            */../*|*/./*)
+                say "left $f alone: its interpreter $old is not repointable"
+                still_bad=1
+                continue ;;
+        esac
         new="$tools/$rest"
         if [ -e "$old" ] || [ ! -x "$new" ]; then
             say "left $f alone: its interpreter $old is not repointable"
@@ -46,9 +53,9 @@ heal_hermes_launcher() {
         backup="$f.before-tmp-fix"
         [ -e "$backup" ] || cp -p "$f" "$backup"
         tmp="$f.tmp.$$"
-        # The path holds `.` and `+`; escape the regex metacharacters so sed matches it literally
-        # rather than building a regex from the path.
-        pat=$(printf '%s' "$old" | sed 's/\./\\./g')
+        # The path holds `.` and `+`; escape every basic-regex metacharacter and the `|` delimiter,
+        # so sed matches it literally rather than building a regex from the path.
+        pat=$(printf '%s' "$old" | sed 's/[][\.*^$|]/\\&/g')
         rep=$(printf '%s' "$new" | sed 's/[&\\|]/\\&/g')
         sed "s|$pat|$rep|g" "$f" > "$tmp" || { rm -f "$tmp"; still_bad=1; continue; }
         chmod --reference="$f" "$tmp" 2>/dev/null || true
