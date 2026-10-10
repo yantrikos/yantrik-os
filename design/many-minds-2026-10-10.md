@@ -118,6 +118,58 @@ For presence-only sessions, **Talk to it becomes Leave a note**. `Host::note_for
 - **Private mode:** attach and poll are refused (`wire/harness.rs:708-718`). The bridge prints one line and re-attaches when the mode ends. The strip shows "Private · 4 attempts refused".
 - **A shell restart:** resume works as today.
 
+## Every kind of mind (coverage check, 10 Oct)
+
+Pranab asked whether this covers every harness. Checked against the code. The design started from "one session per process tree, acting through `yos`", and three facts break that:
+
+1. **Gateways multiplex sessions.** The Hermes and OpenClaw gateways serve the desktop, Telegram and Slack, their own terminal UIs and their own cron jobs, all from one long-lived process. Its tools are one `yos-mcp` child for all of them.
+2. **Hermes never sends a token.** The adapter doesn't use one (`harnesses/hermes/adapter.py`, and `host.rs`'s resume comment: "A harness that never used its token (Hermes) presents none"). So **every Hermes act today is tokenless, even a desktop turn's**, and reads as the person.
+3. **Most of a coding agent's work never touches `app.act`.** Hermes ships its own terminal, file and code tools, which its README calls "a second, ungraded route". Pi, Claude Code and Codex do their real work through their own Bash and Edit tools. So the OS-as-witness, as designed, would see almost nothing a coding agent does.
+
+### The matrix
+
+| Mind | How it runs | Reaches the desktop | Its own tools (outside `app.act`) | Its own approvals | Started outside the desktop | Status, then fix |
+|---|---|---|---|---|---|---|
+| **Yantrik Mind** | own account; attaches `mind` | `yos-mcp` with its token; `NO_ATTACH` from boot | its own, under the mind uid | desktop cards | its unit (systemd) | **Covered**, verified tier. Perception attribution by the mind uid. |
+| **Built-in companion** | inside the shell | in-process tools | none | desktop cards | never | **To verify**: whether its acts go through `app.act` (task 4's seam) or straight into surfaces. If straight in, record them at the same seam. |
+| **Hermes** | gateway + desktop platform plugin | one `yos-mcp` under the gateway, **no token** | terminal, file, code, browser (ungraded unless `platform_toolsets` limits the yantrik platform; the other platforms keep them) | `/approve`, inline | `hermes chat` is its own process with its own `yos-mcp`; the gateway also serves Telegram and the rest | **Gaps A, B, C** below. |
+| **OpenClaw** | its own gateway daemon + our stdlib HTTP harness | `yos-mcp` registered in `~/.openclaw/openclaw.json`, spawned by the gateway, no token | its own tools unless the profile is `minimal` + `bundle-mcp` | exec and device approvals in OpenClaw's own UI; reaching them needs Ed25519 pairing, which a stdlib harness can't do | its TUI, `openclaw agent`, channels, cron | **Gaps A, B**. Approvals can't be mirrored: say so on its row ("may also ask in OpenClaw's own app"). |
+| **Pi** | one `pi --mode rpc` per desktop conversation | its extension → `yos-mcp`, **with** the conversation's token | its own `bash`, `edit`, `write` (unless `--no-builtin-tools`) | none (permissive by design) | a `pi` typed in a terminal loads no desktop extension (it's passed only with `-e`) | Desktop turns **covered**. **Gap B**. A terminal `pi` is "a program · pi · not attached" until fix D. |
+| **DeepSeek** | our stdlib harness as a user unit | `yos-mcp` with the token | none | desktop cards | never (desktop only) | **Covered.** |
+| **Claude Code, Codex, Gemini CLI** (brought by the person) | the person's terminal or ssh | **nothing registers `yos-mcp` for them** (the OS writes MCP config only for the Mind) | Bash and Edit are their main work | their own in-terminal prompts | always | **Gaps B, D.** |
+| **Timers, scripts** | systemd units | `yos` directly, no token | everything they run | none | always | "a program · timer · not attached". **Gap B** gives them Seen. |
+
+### The fixes
+
+**A. Covered-by tokens.** A `yos-mcp` running under an attached harness (a gateway's) is refused a shared attach today: "already covered by `hermes`". It still acts tokenless, so the act reads as the person. Instead, the refusal returns a token for that harness's `gateway` agent: `{covered_by: "hermes", agent_token}`. The bridge puts it on every act.
+- The trust is the same as `admits`, which already accepts a descendant of the attach pid as that harness.
+- Its acts then read "Hermes · gateway · session not reported", never the person.
+- Which gateway session (desktop, Telegram, terminal) is honestly unknown unless the adapter reports it with `harness.open`. The Hermes adapter can for desktop turns, and the token it gets there replaces the gateway one for that turn's acts.
+
+Protocol change (P): yantrik-mind-72 reviews it.
+
+**B. The kernel witnesses what `app.act` doesn't.** perception-service already observes process launches and exits (`Launched {command}`, `Ended {exit_code}`), file saves (`Saved {path}`) and more, each with the acting process and its parent (`services/perception-service/src/observation.rs`).
+- **Attribution.** At attach, the shell records each mind's **root pid**: the recognisable program the bridge's chain names (`claude`, `hermes`, `pi`), or the harness pid. The ledger takes perception's observations whose actor descends from a live root and records them as **kernel-seen**: "ran `cargo test` · exit 0", "saved `src/main.rs`".
+- **Display.** Kernel-seen rows sit on the same witness rail with a hollow notch. Seen-through-`app.act` rows keep the filled one. Both are Seen; a kernel-seen row carries no grade and no approval.
+- **Honest limits.** The witness footer and Look in name them:
+  - perception watches only the paths and events it is configured for;
+  - its ring can drop (the journal records gaps, and they show as capture gaps);
+  - a process that detaches from its tree (double-fork, `setsid`) leaves the mind's tree and is attributed to nobody.
+- **Privacy.** These observations already exist and already feed memory. Attributing them to minds adds nothing new to collect. A mind's Look in shows only its own.
+
+**C. Mirror what can be mirrored.** Hermes's `/approve` queue is visible to the adapter (`_approval_pending`), so the adapter raises it as a `Request` and the card joins the one inbox. OpenClaw's approvals can't be reached from a stdlib harness, so its row says so. Pi has none.
+
+**D. "Give it the desktop's tools."** Settings → Harnesses lists the CLIs it finds (`claude`, `codex`, `gemini`, a terminal `pi`) with one button each. The button writes that CLI's MCP config (`claude mcp add yantrik-os /opt/yantrik/bin/yos-mcp`, Codex's `config.toml`, Gemini's `settings.json`; for Pi, copy the extension to `~/.pi/agent/extensions/`).
+- Only the person can start it (a `Caller::NoAgent` action), never a mind. It shows what it will write, and it can be removed again.
+- From then on, the bridge attaches each session presence-only.
+
+**Tasks** (appended to the plan):
+- 27: A, covered-by tokens. P, S.
+- 28: B, kernel-seen attribution into the ledger. S.
+- 29: C, the Hermes adapter mirrors `/approve` and uses its desktop turn tokens. P (harness lib).
+- 30: D, "Give it the desktop's tools". S.
+- 31: verify the built-in companion's acts reach the seam.
+
 ## The Lens
 
 ### 1. At the machine
@@ -317,6 +369,7 @@ S = Claude security review. P = harness-protocol change: yantrik-mind-72 gets th
 20. The routing chip ("→ Website"), shown before sending; a message about two threads gets two chips.
 21. The digest ("Since you left"): needs you, then finished with evidence, then moving.
 22. The decision inbox with Go with recommendation and Accept all (decisions only); cross-thread notes; the shared-resource line; thread-tagged memory writes that surface disagreements as decisions. S (memory).
+27–31. Every kind of mind (see "Every kind of mind"): covered-by tokens for gateways (P, S); kernel-seen attribution from perception into the ledger (S); the Hermes adapter mirrors `/approve` and uses its desktop turn tokens (P); "Give it the desktop's tools" for Claude Code, Codex, Gemini and a terminal Pi (S); verify the built-in companion's acts reach the seam.
 23–26. The board (see "The board"): the store and posting rules (S); the `note` event and delivery (P); the surface; cross-mind Forward and decisions (S).
 
 ## Decided (Pranab, 10 Oct: "I will go with your recommendation")
