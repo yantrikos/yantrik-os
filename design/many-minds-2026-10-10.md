@@ -155,6 +155,56 @@ Per-name holds on unattached callers are out: renaming dodges them. Instead, one
 
 "The machine as of 10:42", and undo where an app's act has an inverse.
 
+## One mind, many threads
+
+**The scenario** (Pranab, 10 Oct): "I asked you to work on the OS UI, the website, and the YantrikDB part." That is one mind with three jobs, not three minds. It is also what this machine already looks like: about 25 Claude sessions, many of them threads of the same Claude (yantrik-os-22, yantrik-mind-72, yantrikdb-…). Today they show as 25 unrelated sessions.
+
+**The principle.** The person talks to a mind, not to processes. Pranab's words: "Memories are what makes something whole, not the llm." So threads share one memory and one identity, and the Lens shows **one mind with lanes**, never three chats.
+
+### What a thread is
+
+A thread is a conversation, `<key>:<conversation>`, with a **title** and a **goal**. The protocol already models several conversations per harness (`Attach.conversations`, `AgentMeta {mind, parent, role}`); what's missing is a name a person reads.
+- The person starts one in plain words ("work on the website"). The mind opens it with `start_agent` or `harness.open`, both gaining `title` and `goal`.
+- Separate instances started separately (two terminals: `hermes.1`, `hermes.2`) are grouped under the name they say. **The grouping is display only.** Each lane keeps its own tier line, and grants, approvals and holds stay bound to the key. A process that borrows the name joins the group visually and gains nothing else; its lane's program line gives it away.
+
+### In the Lens
+
+1. **One row per mind.** The strip shows one row, "Claude · 3 threads · 1 needs you", which expands to lanes. Each lane has a title, a state from the one vocabulary, one Seen line and one Says line:
+   - OS UI · Working · "PR #721 in review"
+   - Website · Needs you · "merge PR #1?"
+   - YantrikDB · Paused · "waiting for the model window"
+2. **Routing you can see.** A plain message goes to the mind. It works out which thread the message is about (from the thread titles, the ledger and the message itself) and shows a chip, "→ Website", **before** sending, so the person can change it. Tapping a lane sets the chip directly. A message about two threads gets two chips.
+3. **One digest, never three reports.** "Since you left" is a single message, ordered by what the person must do, not by thread:
+   - what needs you;
+   - what finished, with evidence (PR links, screenshots; Seen);
+   - what is moving (one line per thread).
+
+   Every line carries its thread tag.
+4. **Decisions with a recommendation.** A thread's question is a `Request` with `kind: decision`, its `options`, one `recommended`, and a one-line reason. The inbox collects decisions from every thread. Each has **Go with recommendation**, and there is **Accept all recommendations** for decisions only. Approvals of actions never batch: the existing no-approve-all rule stands, and the two kinds are visibly different cards. (This is the pattern Pranab just used: "I will go with your recommendation.")
+5. **Cross-thread awareness.** When one thread's work touches another's (overlapping paths in the ledger, or a dependency a thread declared), the mind says so once, where it matters: "The dock change (OS UI) makes the website's screenshots stale; I added a refresh to the Website thread."
+6. **Shared resources, shown honestly.** Threads share the model window, the build box and the test VM. The mind shows the queue as it is: "YantrikDB paused until 18:00: the Ollama 5-hour window is spent." The person can reorder in words ("website first"), and the mind confirms what moved.
+7. **Quiet by default.** A notification fires only when a thread is blocked on the person. Everything else waits for the digest.
+
+### Memory across threads
+
+One memory, many hands. Every memory a thread writes is tagged with its thread (provenance). When two threads disagree, the mind does not pick silently; the disagreement becomes a decision: "The Website thread has the brand gold as #C9A227; the UI thread uses #D4AF37. Which is right?" The paper's pilot is the reason: a label alone did not stop models adopting false memories, so the mind must reconcile, not just tag.
+
+### What changes
+
+Protocol (P, yantrik-mind-72 first):
+- `title` and `goal` on `harness.open` and `start_agent`;
+- `Request` gains `kind: decision | approval`, `options`, `recommended` and `reason`.
+
+Shell:
+- the grouped strip and lanes;
+- the routing chip;
+- the digest;
+- the decision inbox with Accept all, for decisions only;
+- cross-thread notes from ledger overlaps;
+- the resource line.
+
+These are phase-plan tasks 18–22.
+
 ## The ledger (#148)
 
 - **The seam.** `ActCall::log` (`call.rs:197-211`) is a tracing line that runs once, before the handler, after every refusal has already returned (`control.rs:601-633`), so it is **not** the seam. Record at dispatch entry, right after `ActCall::parse` (`control.rs:599`), and again on the `Result` the dispatch returns, including refusals (`PRIVATE`, standing, reach, grant, the handler's `Err`). The test: a `PRIVATE` refusal appears with `outcome: refused:private`.
@@ -189,8 +239,13 @@ S = Claude security review. P = harness-protocol change: yantrik-mind-72 gets th
 15. Look in, in both shapes.
 16. `Attach.scope`, the overlap forecast, holds as narrowed reach, "Hold everything not attached". P, S.
 17. Phase 3: the as-of view, and undo.
+18. Protocol: thread `title` and `goal`; decision `Request`s with `options`, `recommended` and `reason`. P.
+19. The strip groups one mind's threads into lanes (display only; trust stays per key).
+20. The routing chip ("→ Website"), shown before sending; a message about two threads gets two chips.
+21. The digest ("Since you left"): needs you, then finished with evidence, then moving.
+22. The decision inbox with Go with recommendation and Accept all (decisions only); cross-thread notes; the shared-resource line; thread-tagged memory writes that surface disagreements as decisions. S (memory).
 
-## Pranab's decisions (Claude's and Fable's recommendations agree)
+## Decided (Pranab, 10 Oct: "I will go with your recommendation")
 
 1. **Retention:** 90 days or 256 MiB, whichever comes first. Record your own `yos` use too: a chain with holes is where a hostile act hides.
 2. **Private mode:** record nothing but two boundary entries ("private on 10:42", "private off 11:03 · Hermes refused 4"), so the gap reads as deliberate.
