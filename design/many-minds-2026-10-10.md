@@ -148,6 +148,13 @@ Pranab asked whether this covers every harness. Checked against the code. The de
 
 Protocol change (P): yantrik-mind-72 reviews it.
 
+**Never for `mind`** (yantrik-mind-72). A `mind:gateway` token would be a standing credential acting as the Mind outside any turn. Everything the Mind does hangs off a turn: its per-turn token, grants scoped to the turn, and cards that name it. So:
+- A bridge under the attached `mind` harness gets "covered by mind; acts need the Mind's turn token", and no token.
+- **Every tokenless act from a pid descending from the attached `mind` harness is refused, whatever the uid.** Under the mind account that is already true (`call.rs:141-147`). This makes it true on an unmigrated install too, where the Mind runs as the person, so nothing in the Mind's tree can act as the person. That covers a coder lane's CLI or anything else that brings its own `yos-mcp`: it can act only with a turn token the Mind gave it.
+- Enforced in `require_standing`. The shell publishes the attached Mind's pid to the app runtimes over the same channel it already uses for reach (`yantrik_ipc_transport::reach`).
+- The test: a tokenless act from a pid descending from `mind` is refused even when that uid is the person's.
+- The Mind's own bridge is unaffected: `NO_ATTACH` from boot, and the turn token from its first turn (E.HARN1, b9d6496).
+
 **B. The kernel witnesses what `app.act` doesn't.** perception-service already observes process launches and exits (`Launched {command}`, `Ended {exit_code}`), file saves (`Saved {path}`) and more, each with the acting process and its parent (`services/perception-service/src/observation.rs`).
 - **Attribution.** At attach, the shell records each mind's **root pid**: the recognisable program the bridge's chain names (`claude`, `hermes`, `pi`), or the harness pid. The ledger takes perception's observations whose actor descends from a live root and records them as **kernel-seen**: "ran `cargo test` · exit 0", "saved `src/main.rs`".
 - **Display.** Kernel-seen rows sit on the same witness rail with a hollow notch. Seen-through-`app.act` rows keep the filled one. Both are Seen; a kernel-seen row carries no grade and no approval.
@@ -156,6 +163,7 @@ Protocol change (P): yantrik-mind-72 reviews it.
   - its ring can drop (the journal records gaps, and they show as capture gaps);
   - a process that detaches from its tree (double-fork, `setsid`) leaves the mind's tree and is attributed to nobody.
 - **Privacy.** These observations already exist and already feed memory. Attributing them to minds adds nothing new to collect. A mind's Look in shows only its own.
+- **The same redaction and retention as every ledger entry** (yantrik-mind-72). Kernel-seen entries carry paths and window titles, so they go through the ledger's args-summary redaction (sensitive values reduced to their kind) and its 90-day / 256 MiB retention. There is no separate unredacted stream.
 
 **C. Mirror what can be mirrored.** Hermes's `/approve` queue is visible to the adapter (`_approval_pending`), so the adapter raises it as a `Request` and the card joins the one inbox. OpenClaw's approvals can't be reached from a stdlib harness, so its row says so. Pi has none.
 
