@@ -878,6 +878,13 @@ pub fn backfill_tiers(conn: &Connection, config: &MemoryEvolutionConfig) {
     );
 }
 
+/// Importance below which a memory is considered low-value. Shared by the
+/// pruning query and the junk sweep so both agree on the line.
+const LOW_IMPORTANCE: f64 = 0.3;
+
+/// Text shorter than this carries nothing worth recalling.
+const JUNK_MIN_TEXT: usize = 3;
+
 /// Check if pruning is due.
 pub fn should_prune(conn: &Connection, config: &MemoryEvolutionConfig) -> bool {
     let last: f64 = conn
@@ -905,7 +912,7 @@ pub fn run_pruning(
     let stale: Vec<(String, String, String)> = {
         let mut stmt = match conn.prepare(
             "SELECT rid, text, domain FROM memories
-             WHERE importance < 0.3
+             WHERE importance < ?2
                AND (consolidation_status IS NULL OR consolidation_status = 'active')
                AND created_at < ?1
              ORDER BY domain, created_at
@@ -919,7 +926,7 @@ pub fn run_pruning(
             }
         };
 
-        stmt.query_map([cutoff], |row| {
+        stmt.query_map([cutoff, LOW_IMPORTANCE], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -1022,6 +1029,45 @@ pub fn run_pruning(
         checked = stale.len(),
         "Pruning cycle complete"
     );
+}
+
+/// Sweep junk memories that pruning will never summarize: empty or
+/// whitespace-only text, stubs too short to carry meaning, and exact
+/// duplicate text beyond the oldest. Real deletes — junk carries nothing
+/// worth keeping. Returns the number of rows removed.
+pub fn sweep_junk(db: &YantrikDB, _config: &MemoryEvolutionConfig) -> usize {
+    let conn = &db.conn();
+
+    let empty = conn
+        .execute("DELETE FROM memories WHERE TRIM(text) = ''", [])
+        .unwrap_or(0);
+    if empty > 0 {
+        tracing::debug!(count = empty, "Swept empty memories");
+    }
+
+    let stubs = conn
+        .execute(
+            "DELETE FROM memories WHERE LENGTH(text) < ?1 AND importance < ?2",
+            rusqlite::params![JUNK_MIN_TEXT as i64, LOW_IMPORTANCE],
+        )
+        .unwrap_or(0);
+    if stubs > 0 {
+        tracing::debug!(count = stubs, "Swept stub memories");
+    }
+
+    let duplicates = conn
+        .execute(
+            "DELETE FROM memories
+             WHERE importance < ?1
+               AND rowid > (SELECT MIN(m2.rowid) FROM memories m2 WHERE m2.text = memories.text)",
+            rusqlite::params![LOW_IMPORTANCE],
+        )
+        .unwrap_or(0);
+    if duplicates > 0 {
+        tracing::debug!(count = duplicates, "Swept duplicate memories");
+    }
+
+    empty + stubs + duplicates
 }
 
 // ── Memory Graph Weaving (idle-time proactive linking) ──────────────────────
@@ -1477,4 +1523,45 @@ fn now_ts() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs_f64()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn insert_memory(db: &YantrikDB, rid: &str, text: &str, importance: f64, ts: f64) {
+        db.conn()
+            .execute(
+                "INSERT INTO memories (rid, text, importance, created_at, updated_at, last_access)
+                 VALUES (?1, ?2, ?3, ?4, ?4, ?4)",
+                rusqlite::params![rid, text, importance, ts],
+            )
+            .expect("insert memory");
+    }
+
+    #[test]
+    fn sweep_junk_removes_empty_stubs_and_duplicates() {
+        let db = YantrikDB::new(":memory:", 384).expect("in-memory database");
+
+        insert_memory(&db, "junk-empty", "   ", 0.5, 100.0);
+        insert_memory(&db, "junk-stub", "hi", 0.1, 101.0);
+        insert_memory(&db, "dup-old", "same note", 0.1, 102.0);
+        insert_memory(&db, "dup-new", "same note", 0.1, 103.0);
+        insert_memory(&db, "short-high", "ok", 0.9, 104.0);
+        insert_memory(&db, "long-low", "a perfectly reasonable long memory", 0.1, 105.0);
+
+        let removed = sweep_junk(&db, &MemoryEvolutionConfig::default());
+        assert_eq!(removed, 3);
+
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare("SELECT rid FROM memories ORDER BY rid")
+            .expect("query remaining");
+        let remaining: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query remaining")
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(remaining, ["dup-old", "long-low", "short-high"]);
+    }
 }
