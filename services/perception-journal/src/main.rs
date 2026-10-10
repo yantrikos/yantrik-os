@@ -153,7 +153,7 @@ fn main() {
     yantrik_service_sdk::init_tracing("perception-journal");
 
     let dir = state_dir();
-    let journal = match Journal::open(&dir) {
+    let journal = match Journal::open(&dir, journal::LIMITS) {
         Ok(j) => Arc::new(Mutex::new(j)),
         Err(e) => {
             // Nothing useful can be done without somewhere durable to write. Refusing to start is

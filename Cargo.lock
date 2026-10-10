@@ -6373,6 +6373,7 @@ dependencies = [
  "tracing",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
+ "yantrik-journal",
  "yantrik-service-sdk",
 ]
 
@@ -11501,6 +11502,15 @@ dependencies = [
  "tokio",
  "tracing",
  "yantrik-ipc-contracts",
+]
+
+[[package]]
+name = "yantrik-journal"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]
