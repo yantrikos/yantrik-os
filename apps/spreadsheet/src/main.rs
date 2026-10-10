@@ -5,6 +5,9 @@
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use yantrik_app_runtime::prelude::*;
 
+mod csv;
+mod formula;
+
 slint::include_modules!();
 
 fn main() {
@@ -55,9 +58,15 @@ fn wire(app: &SpreadsheetApp) {
             let idx = (row * cols + col) as usize;
             if idx < grid.row_count() {
                 if let Some(mut cell) = grid.row_data(idx) {
-                    cell.text = text;
-                    cell.is_formula = cell.text.as_str().starts_with('=');
+                    cell.text = text.clone();
+                    cell.is_formula = text.as_str().starts_with('=');
+                    let is_formula = cell.is_formula;
                     grid.set_row_data(idx, cell);
+                    // The cell struct has no separate formula field, so the formula stays in
+                    // `text` and the evaluated value is shown in the status bar.
+                    if is_formula {
+                        ui.set_status_text(evaluate(&grid, cols, &text).into());
+                    }
                 }
             }
         });
@@ -77,7 +86,11 @@ fn wire(app: &SpreadsheetApp) {
                 if let Some(mut cell) = grid.row_data(idx) {
                     cell.text = formula.clone();
                     cell.is_formula = formula.as_str().starts_with('=');
+                    let is_formula = cell.is_formula;
                     grid.set_row_data(idx, cell);
+                    if is_formula {
+                        ui.set_status_text(evaluate(&grid, cols, &formula).into());
+                    }
                 }
             }
             ui.set_cell_data(formula);
@@ -97,8 +110,95 @@ fn wire(app: &SpreadsheetApp) {
     app.on_set_text_color(|idx| { tracing::info!("Set text color: {idx}"); });
 
     // ── Import / Export ──
-    app.on_import_csv(|| { tracing::info!("Import CSV"); });
-    app.on_export_csv(|| { tracing::info!("Export CSV"); });
+    {
+        let weak = app.as_weak();
+        app.on_import_csv(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let path = ui.get_csv_path().to_string();
+            if path.is_empty() {
+                ui.set_status_text("Import: no file path set.".into());
+                return;
+            }
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    let rows = csv::parse_csv(&text);
+                    let row_count = rows.len() as i32;
+                    let col_count = rows.iter().map(|r| r.len() as i32).max().unwrap_or(0);
+                    if row_count > ui.get_row_count() {
+                        ui.set_row_count(row_count);
+                    }
+                    if col_count > ui.get_col_count() {
+                        ui.set_col_count(col_count);
+                    }
+                    let cols = ui.get_col_count();
+                    let mut cells: Vec<SpreadsheetCell> = Vec::new();
+                    for row in &rows {
+                        for field in row {
+                            cells.push(SpreadsheetCell {
+                                text: field.clone().into(),
+                                is_formula: field.starts_with('='),
+                                ..SpreadsheetCell::default()
+                            });
+                        }
+                        for _ in row.len()..cols as usize {
+                            cells.push(SpreadsheetCell::default());
+                        }
+                    }
+                    ui.set_cell_grid(ModelRc::new(VecModel::from(cells)));
+                    ui.set_status_text(
+                        format!("Imported {row_count} rows and {col_count} columns.").into(),
+                    );
+                }
+                Err(e) => {
+                    ui.set_status_text(format!("Import failed: {e}").into());
+                }
+            }
+        });
+    }
+    {
+        let weak = app.as_weak();
+        app.on_export_csv(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let path = ui.get_csv_path().to_string();
+            if path.is_empty() {
+                ui.set_status_text("Export: no file path set.".into());
+                return;
+            }
+            let grid = ui.get_cell_grid();
+            let cols = ui.get_col_count();
+            let rows = ui.get_row_count();
+            let mut out: Vec<Vec<String>> = Vec::new();
+            for r in 0..rows {
+                let mut row = Vec::new();
+                for c in 0..cols {
+                    let idx = (r * cols + c) as usize;
+                    let text = if idx < grid.row_count() {
+                        grid.row_data(idx)
+                            .map(|cell| {
+                                if cell.is_formula {
+                                    evaluate(&grid, cols, &cell.text)
+                                } else {
+                                    cell.text.to_string()
+                                }
+                            })
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    row.push(text);
+                }
+                out.push(row);
+            }
+            match std::fs::write(&path, csv::to_csv(&out)) {
+                Ok(()) => {
+                    ui.set_status_text(format!("Exported {} rows to {}.", rows, path).into());
+                }
+                Err(e) => {
+                    ui.set_status_text(format!("Export failed: {e}").into());
+                }
+            }
+        });
+    }
     app.on_save_sheet(|| { tracing::info!("Save sheet"); });
     app.on_load_sheet(|| { tracing::info!("Load sheet"); });
 
@@ -202,6 +302,22 @@ fn wire(app: &SpreadsheetApp) {
             if let Some(ui) = weak.upgrade() { say_unavailable(&ui); }
         }
     });
+}
+
+/// Evaluate a formula against the grid, returning the value or the error string.
+///
+/// The grid is a flat model indexed by `row * cols + col`. A referenced cell that holds a
+/// formula is read as its raw text (see `formula::eval_formula` for the MVP limit).
+fn evaluate(grid: &ModelRc<SpreadsheetCell>, cols: i32, input: &str) -> String {
+    formula::eval_formula(input, |row, col| {
+        let idx = (row * cols + col) as usize;
+        if idx < grid.row_count() {
+            grid.row_data(idx).map(|cell| cell.text.to_string())
+        } else {
+            None
+        }
+    })
+    .unwrap_or_else(|e| e)
 }
 
 /// The one sentence every shelved AI button in this app says, so six ways of being unfinished
