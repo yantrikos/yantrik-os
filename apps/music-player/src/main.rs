@@ -3,8 +3,10 @@
 //! Manages local music library, playlists, queue, and playback state.
 //! Playback engine integration (mpv) is stubbed for now.
 
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use yantrik_app_runtime::prelude::*;
+
+mod library;
 
 slint::include_modules!();
 
@@ -45,6 +47,13 @@ fn wire(app: &MusicPlayerApp) {
         let weak = app.as_weak();
         app.on_play_pause(move || {
             let Some(ui) = weak.upgrade() else { return };
+            // Nothing to play: the queue is empty, so "playing" would be a lie. The window's
+            // only status line is `scan-status`, so the message goes there.
+            if ui.get_queue_tracks().row_count() == 0 {
+                ui.set_is_playing(false);
+                ui.set_scan_status("Nothing to play — the queue is empty.".into());
+                return;
+            }
             let playing = ui.get_is_playing();
             ui.set_is_playing(!playing);
             tracing::info!("Play/pause toggled: {}", !playing);
@@ -161,9 +170,131 @@ fn wire(app: &MusicPlayerApp) {
     app.on_playlist_remove_track(|_pl, _tr| {});
 
     // Scan folders
-    app.on_scan_add_folder(|path| { tracing::info!("Add scan folder: {} (stub)", path); });
-    app.on_scan_remove_folder(|_idx| {});
-    app.on_scan_rescan(|| { tracing::info!("Rescan library (stub)"); });
+    {
+        let weak = app.as_weak();
+        app.on_scan_add_folder(move |path| {
+            let Some(ui) = weak.upgrade() else { return };
+            let path = path.to_string();
+
+            // A folder already in the list is refused, not scanned twice.
+            let folders = ui.get_scan_folders();
+            let already = (0..folders.row_count())
+                .filter_map(|i| folders.row_data(i))
+                .any(|f| f.path.as_str() == path);
+            if already {
+                ui.set_scan_status(format!("Already scanning {path}").into());
+                return;
+            }
+
+            let tracks = library::scan_folder(std::path::Path::new(&path));
+            let count = tracks.len() as i32;
+
+            // Append the found tracks to the library.
+            let library = ui.get_library_tracks();
+            let model = library
+                .as_any()
+                .downcast_ref::<VecModel<MusicTrackData>>()
+                .expect("library-tracks is a VecModel");
+            for track in tracks {
+                model.push(MusicTrackData {
+                    title: track.title.into(),
+                    artist: track.artist.into(),
+                    album: track.album.into(),
+                    genre: track.genre.into(),
+                    duration_text: library::duration_text(track.duration_secs).into(),
+                    duration_secs: track.duration_secs as f32,
+                    path: track.path.into(),
+                    is_current: false,
+                    format_info: "".into(),
+                    bitrate: "".into(),
+                });
+            }
+            ui.set_library_track_count(ui.get_library_track_count() + count);
+
+            // Record the folder itself.
+            let folders = ui.get_scan_folders();
+            let model = folders
+                .as_any()
+                .downcast_ref::<VecModel<MusicScanFolderData>>()
+                .expect("scan-folders is a VecModel");
+            model.push(MusicScanFolderData {
+                path: path.clone().into(),
+                track_count: count,
+                is_scanning: false,
+            });
+
+            ui.set_scan_status(format!("Scanned {path}: {count} tracks").into());
+        });
+    }
+
+    {
+        let weak = app.as_weak();
+        app.on_scan_remove_folder(move |idx| {
+            let Some(ui) = weak.upgrade() else { return };
+            let idx = idx as usize;
+
+            let folders = ui.get_scan_folders();
+            let Some(folder) = folders.row_data(idx) else { return };
+            let path = folder.path.to_string();
+
+            // Drop the folder entry.
+            if let Some(model) = folders.as_any().downcast_ref::<VecModel<MusicScanFolderData>>() {
+                model.remove(idx);
+            }
+
+            // Remove its tracks from the library, matching on the path prefix.
+            let library = ui.get_library_tracks();
+            if let Some(model) = library.as_any().downcast_ref::<VecModel<MusicTrackData>>() {
+                let mut i = 0;
+                while i < model.row_count() {
+                    if model.row_data(i).map(|t| t.path.starts_with(&path)).unwrap_or(false) {
+                        model.remove(i);
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            ui.set_library_track_count(ui.get_library_tracks().row_count() as i32);
+        });
+    }
+
+    {
+        let weak = app.as_weak();
+        app.on_scan_rescan(move || {
+            let Some(ui) = weak.upgrade() else { return };
+
+            // Re-scan every folder and replace the library wholesale.
+            let folders = ui.get_scan_folders();
+            let paths: Vec<String> = (0..folders.row_count())
+                .filter_map(|i| folders.row_data(i))
+                .map(|f| f.path.to_string())
+                .collect();
+
+            let mut all = Vec::new();
+            for path in &paths {
+                all.extend(library::scan_folder(std::path::Path::new(path)));
+            }
+
+            let tracks: Vec<MusicTrackData> = all
+                .into_iter()
+                .map(|track| MusicTrackData {
+                    title: track.title.into(),
+                    artist: track.artist.into(),
+                    album: track.album.into(),
+                    genre: track.genre.into(),
+                    duration_text: library::duration_text(track.duration_secs).into(),
+                    duration_secs: track.duration_secs as f32,
+                    path: track.path.into(),
+                    is_current: false,
+                    format_info: "".into(),
+                    bitrate: "".into(),
+                })
+                .collect();
+            ui.set_library_tracks(ModelRc::new(VecModel::from(tracks)));
+            ui.set_library_track_count(ui.get_library_tracks().row_count() as i32);
+            ui.set_scan_status("Library rescanned".into());
+        });
+    }
 
     // Folder watch + equalizer
     app.on_music_toggle_folder_watch(|| { tracing::info!("Toggle folder watch (stub)"); });
