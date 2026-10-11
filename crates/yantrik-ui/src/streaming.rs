@@ -103,6 +103,7 @@ pub fn say(ui_weak: &slint::Weak<App>, asked: Option<&str>, role: &str, said: &s
             content: SharedString::from(text),
             is_streaming: false,
             blocks: ModelRc::default(),
+            ..Default::default()
         });
         ui.set_lens_chat_mode(true);
     }
@@ -112,6 +113,7 @@ pub fn say(ui_weak: &slint::Weak<App>, asked: Option<&str>, role: &str, said: &s
         content: SharedString::from(said),
         is_streaming: false,
         blocks: ModelRc::default(),
+        ..Default::default()
     });
 }
 
@@ -167,6 +169,7 @@ fn open_bubbles(ui_weak: &slint::Weak<App>, asked: Option<&str>) -> Option<usize
             content: SharedString::from(text),
             is_streaming: false,
             blocks: ModelRc::default(),
+            ..Default::default()
         });
     }
     model.push(MessageData {
@@ -175,6 +178,7 @@ fn open_bubbles(ui_weak: &slint::Weak<App>, asked: Option<&str>) -> Option<usize
         content: "".into(),
         is_streaming: true,
         blocks: ModelRc::default(),
+        ..Default::default()
     });
     ui.set_is_generating(true);
     ui.set_is_thinking(true);

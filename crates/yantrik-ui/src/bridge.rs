@@ -149,6 +149,15 @@ pub enum CompanionCommand {
         domain: String,
         importance: f64,
     },
+    /// "Less of this" (#754): back a kind of proactive message off one level.
+    ProactiveLessOfThis { kind: String },
+    /// Settings: put a kind of proactive message back to normal (#754).
+    ProactiveKindReset { kind: String },
+    /// What became of a proactive card of this kind, for the per-kind throttle (#754).
+    ProactiveOutcome {
+        kind: String,
+        outcome: yantrik_companion::proactive_backoff::Outcome,
+    },
     /// Update the system context string for LLM prompt injection.
     SetSystemContext {
         context: String,
@@ -823,6 +832,21 @@ impl CompanionBridge {
         });
     }
 
+    /// "Less of this" on a proactive message or card: back that kind off one level (#754).
+    pub fn proactive_less_of_this(&self, kind: String) {
+        let _ = self.cmd_tx.send(CompanionCommand::ProactiveLessOfThis { kind });
+    }
+
+    /// Put a kind of proactive message back to normal (#754).
+    pub fn proactive_kind_reset(&self, kind: String) {
+        let _ = self.cmd_tx.send(CompanionCommand::ProactiveKindReset { kind });
+    }
+
+    /// What became of a proactive card of this kind (#754).
+    pub fn proactive_outcome(&self, kind: String, outcome: yantrik_companion::proactive_backoff::Outcome) {
+        let _ = self.cmd_tx.send(CompanionCommand::ProactiveOutcome { kind, outcome });
+    }
+
     /// Update the system context for LLM prompt injection.
     pub fn set_system_context(&self, context: String) {
         let _ = self.cmd_tx.send(CompanionCommand::SetSystemContext { context });
@@ -1134,6 +1158,11 @@ fn worker_loop(
     // Cooldown tracker for delivered proactive messages (key → last_delivered_ts)
     let mut delivered_cooldowns: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
     const DELIVERED_COOLDOWN_SECS: f64 = 7200.0; // 2 hours between same proactive key
+    // A backed-off kind's own cooldown, before its level's multiplier (#754).
+    const KIND_BASE_COOLDOWN_SECS: f64 = 1800.0;
+    // The kind of the last proactive message delivered, so a reply or a timeout teaches the
+    // per-kind throttle about that kind (#754).
+    let mut last_proactive_kind: Option<yantrik_companion::proactive_backoff::ProactiveKind> = None;
 
     // "Suppressing EXECUTE urges — LLM offline" is logged once per outage, not once per
     // think cycle: a backend that was down all day filled the log with these (#30).
@@ -1153,6 +1182,7 @@ fn worker_loop(
     // looked merely slow. A silent gap before a loop that must never stop is worth four lines.
     tracing::debug!("Worker startup: pushing initial state");
     push_state(&companion, &ui_weak, online.load(Ordering::Relaxed));
+    push_proactive_kinds(&companion, &ui_weak);
 
     // Sync initial bond level
     tracing::debug!("Worker startup: syncing bond level");
@@ -1373,6 +1403,15 @@ fn worker_loop(
                     // V25: If user responded to a proactive message, record as "accepted"
                     if had_pending {
                         companion.record_proactive_outcome("proactive", yantrik_companion::silence_policy::InterventionOutcome::Accepted);
+                        if let Some(kind) = last_proactive_kind.take() {
+                            yantrik_companion::proactive_backoff::KindBackoff::record_outcome(
+                                &companion.db.conn(),
+                                kind,
+                                yantrik_companion::proactive_backoff::Outcome::Accepted,
+                                now_r,
+                            );
+                            push_proactive_kinds(&companion, &ui_weak);
+                        }
                     }
                 }
                 let start = std::time::Instant::now();
@@ -1686,6 +1725,35 @@ fn worker_loop(
                 execute_suppression_logged = false;
                 tracing::info!("LLM reloaded successfully");
             }
+            Ok(CompanionCommand::ProactiveLessOfThis { kind }) => {
+                if let Some(kind) = yantrik_companion::proactive_backoff::ProactiveKind::from_key(&kind) {
+                    let level = yantrik_companion::proactive_backoff::KindBackoff::less_of_this(
+                        &companion.db.conn(),
+                        kind,
+                        now_secs(),
+                    );
+                    tracing::info!(kind = kind.key(), level = level.words(), "Less of this");
+                }
+                push_proactive_kinds(&companion, &ui_weak);
+            }
+            Ok(CompanionCommand::ProactiveKindReset { kind }) => {
+                if let Some(kind) = yantrik_companion::proactive_backoff::ProactiveKind::from_key(&kind) {
+                    yantrik_companion::proactive_backoff::KindBackoff::reset(&companion.db.conn(), kind, now_secs());
+                    tracing::info!(kind = kind.key(), "Proactive kind back to normal");
+                }
+                push_proactive_kinds(&companion, &ui_weak);
+            }
+            Ok(CompanionCommand::ProactiveOutcome { kind, outcome }) => {
+                if let Some(kind) = yantrik_companion::proactive_backoff::ProactiveKind::from_key(&kind) {
+                    yantrik_companion::proactive_backoff::KindBackoff::record_outcome(
+                        &companion.db.conn(),
+                        kind,
+                        outcome,
+                        now_secs(),
+                    );
+                }
+                push_proactive_kinds(&companion, &ui_weak);
+            }
             Ok(CompanionCommand::RecordSystemEvent { text, domain, importance }) => {
                 if companion.is_incognito() {
                     tracing::debug!("Incognito: skipping RecordSystemEvent");
@@ -1778,6 +1846,7 @@ fn worker_loop(
                                     content: SharedString::from(&text),
                                     is_streaming: false,
                                     blocks: ModelRc::default(),
+                                    ..Default::default()
                                 });
                                 // Through the notifications service, and only when the Lens is
                                 // shut: with it open the answer is already in the conversation
@@ -2181,6 +2250,7 @@ fn worker_loop(
                                     text,
                                     urge_ids: vec![format!("playbook:{}", playbook_id)],
                                     generated_at: pb_now,
+                                    ..Default::default()
                                 };
                                 companion.set_proactive_message(msg);
                             }
@@ -2213,6 +2283,7 @@ fn worker_loop(
                                     text,
                                     urge_ids: vec![format!("playbook:{}", playbook_id)],
                                     generated_at: pb_now,
+                                    ..Default::default()
                                 };
                                 companion.set_proactive_message(msg);
                             }
@@ -2365,6 +2436,14 @@ fn worker_loop(
                                 text: response_text,
                                 urge_ids: vec![exec_urge.cooldown_key.clone()],
                                 generated_at: now_ts,
+                                kind: yantrik_companion::proactive_backoff::ProactiveKind::from_source(&instinct_name)
+                                    .key()
+                                    .into(),
+                                why: yantrik_companion::proactive_backoff::why_text(
+                                    yantrik_companion::proactive_backoff::ProactiveKind::from_source(&instinct_name),
+                                    &exec_urge.context,
+                                ),
+                                ..Default::default()
                             };
                             companion.set_proactive_message(msg);
                             execute_produced_message = true;
@@ -2430,6 +2509,24 @@ fn worker_loop(
                     );
 
                     let gate_suppressed = matches!(gate_result, yantrik_companion::synthesis_gate::GateDecision::Suppress { .. });
+
+                    // Do Not Disturb holds the mind too, and a kind the person backed off waits
+                    // longer or says nothing (#754). Both are asked before anything is recorded
+                    // as sent.
+                    let msg_kind = yantrik_companion::proactive_backoff::ProactiveKind::from_key(&msg.kind)
+                        .unwrap_or(yantrik_companion::proactive_backoff::ProactiveKind::Ideas);
+                    let quiet = yantrik_companion::proactive_backoff::quiet_hold(
+                        crate::wire::settings::dnd_mode(),
+                        msg_kind,
+                        msg.generated_at,
+                        now_ts,
+                    );
+                    let backoff_held = {
+                        let conn = companion.db.conn();
+                        let level = yantrik_companion::proactive_backoff::KindBackoff::level(&conn, msg_kind);
+                        let since = now_ts - yantrik_companion::proactive_backoff::KindBackoff::last_delivered(&conn, msg_kind);
+                        yantrik_companion::proactive_backoff::held_by_backoff(level, 1.0, 0.0, since, KIND_BASE_COOLDOWN_SECS)
+                    };
                     if let yantrik_companion::synthesis_gate::GateDecision::Suppress { ref reason } = gate_result {
                         tracing::info!(
                             reason = %reason,
@@ -2453,6 +2550,24 @@ fn worker_loop(
                             urges = ?msg.urge_ids,
                             "Refused a proactive message: it is not something to say"
                         );
+                        companion.record_suppressed_urge(&delivery_key, why);
+                        event_bus.emit(
+                            yantrik_os::EventKind::ProactiveSuppressed {
+                                reason: why.into(),
+                                urge_ids: msg.urge_ids.clone(),
+                            },
+                            yantrik_os::EventSource::ProactiveEngine,
+                        );
+                    } else if quiet != yantrik_companion::proactive_backoff::QuietHold::Deliver {
+                        if quiet == yantrik_companion::proactive_backoff::QuietHold::Wait {
+                            tracing::debug!(kind = msg_kind.key(), "Do Not Disturb: proactive message waits");
+                            companion.set_proactive_message(msg);
+                        } else {
+                            tracing::info!(kind = msg_kind.key(), "Do Not Disturb outlasted a proactive message; dropped");
+                            companion.record_suppressed_urge(&delivery_key, "do not disturb");
+                        }
+                    } else if let Some(why) = backoff_held {
+                        tracing::info!(kind = msg_kind.key(), why, "Proactive message held back by its kind's level");
                         companion.record_suppressed_urge(&delivery_key, why);
                         event_bus.emit(
                             yantrik_os::EventKind::ProactiveSuppressed {
@@ -2548,8 +2663,18 @@ fn worker_loop(
                             last_cortex_fire_ts = now_ts;
                         }
 
+                        // The kind's own cooldown and the throttle's next lesson (#754).
+                        yantrik_companion::proactive_backoff::KindBackoff::record_delivery(
+                            &companion.db.conn(),
+                            msg_kind,
+                            now_ts,
+                        );
+                        last_proactive_kind = Some(msg_kind);
+
                         let text = msg.text.clone();
                         let notif_text = msg.text.clone();
+                        let why = msg.why.clone();
+                        let kind_key = msg_kind.key().to_string();
                         let weak = ui_weak.clone();
                         // Where this goes depends on who is answering. The transcript belongs
                         // to the mind the person is talking to; when that is not this one, an
@@ -2558,6 +2683,7 @@ fn worker_loop(
                         // somebody watched happen.
                         let route = crate::wire::notifications::deliver_proactive(
                             &msg.text,
+                            &msg.why,
                             move |_lens_was_closed| {
                                 let _ = slint::invoke_from_event_loop(move || {
                                     if let Some(ui) = weak.upgrade() {
@@ -2572,6 +2698,8 @@ fn worker_loop(
                                             content: SharedString::from(&text),
                                             is_streaming: false,
                                             blocks: ModelRc::default(),
+                                            why: SharedString::from(&why),
+                                            kind: SharedString::from(&kind_key),
                                         });
                                         // Raised only when the Lens is closed — re-checked here on
                                         // the UI thread, which is the one place that reading is
@@ -2583,6 +2711,7 @@ fn worker_loop(
                                         crate::wire::notifications::companion_thought(
                                             &ui,
                                             &notif_text,
+                                            &why,
                                         );
                                     }
                                 });
@@ -2642,6 +2771,15 @@ fn worker_loop(
                             companion.user_model.on_proactive_ignored(now_ts);
                             // V25: Record as "ignored" in silence policy
                             companion.record_proactive_outcome("proactive", yantrik_companion::silence_policy::InterventionOutcome::Ignored);
+                            if let Some(kind) = last_proactive_kind.take() {
+                                yantrik_companion::proactive_backoff::KindBackoff::record_outcome(
+                                    &companion.db.conn(),
+                                    kind,
+                                    yantrik_companion::proactive_backoff::Outcome::Ignored,
+                                    now_ts,
+                                );
+                                push_proactive_kinds(&companion, &ui_weak);
+                            }
                             tracing::info!("UserModel: proactive message expired (2h without response)");
                         }
                     }
@@ -2758,6 +2896,7 @@ fn worker_loop(
                             text: notify_text,
                             urge_ids: vec![format!("task_queue:{}", task.task_id)],
                             generated_at: now_ts,
+                            ..Default::default()
                         };
                         companion.set_proactive_message(msg);
                         tracing::info!(
@@ -2906,6 +3045,45 @@ pub fn assistant_offline_notice(companion_online: bool) -> Option<&'static str> 
 }
 
 /// Push current state to the Slint UI thread.
+fn now_secs() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+}
+
+/// Every kind of proactive message with its level, to Settings and the whisper cards (#754).
+fn push_proactive_kinds(companion: &CompanionService, ui_weak: &slint::Weak<App>) {
+    let levels = yantrik_companion::proactive_backoff::KindBackoff::all(&companion.db.conn());
+    crate::cards::publish_levels(levels.iter().copied());
+    let rows: Vec<(String, String, String, bool)> = levels
+        .iter()
+        .map(|(kind, level)| {
+            (
+                kind.key().to_string(),
+                kind.label().to_string(),
+                level.words().to_string(),
+                *level != yantrik_companion::proactive_backoff::BackoffLevel::Normal,
+            )
+        })
+        .collect();
+    let weak = ui_weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = weak.upgrade() {
+            let rows: Vec<crate::ProactiveKindRow> = rows
+                .into_iter()
+                .map(|(kind, label, level, backed_off)| crate::ProactiveKindRow {
+                    kind: kind.into(),
+                    label: label.into(),
+                    level: level.into(),
+                    backed_off,
+                })
+                .collect();
+            ui.set_proactive_kind_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+        }
+    });
+}
+
 fn push_state(companion: &CompanionService, ui_weak: &slint::Weak<App>, companion_online: bool) {
     let snapshot = build_snapshot(companion);
     let weak = ui_weak.clone();

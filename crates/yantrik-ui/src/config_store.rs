@@ -124,7 +124,8 @@ pub fn save(path: impl AsRef<Path>, yaml: &str) -> Result<(), String> {
 pub fn search_categories(query: &str) -> Vec<i32> {
     const INDEX: [&str; 9] = [
         "appearance theme dark light accent color colour wallpaper background display",
-        "ai intelligence provider model api endpoint routing budget usage privacy local cloud",
+        "ai intelligence provider model api endpoint routing budget usage privacy local cloud \
+         assistant proactive messages less of this reminders check-ins suggestions",
         "desktop workspace overview agent shortcuts keyboard windows",
         "network wifi wi-fi wireless ethernet wired ip address connection",
         "accounts sign in subscription claude codex gemini qwen xai plan login vendor",

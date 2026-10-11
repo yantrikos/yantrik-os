@@ -103,6 +103,7 @@ export component DesktopScreen inherits Rectangle {
     in property <[QuestionRequest]> questions: [];
     callback question-answer(string, string, string, bool);
     callback open-run(string);
+    callback proactive-less-of-this(string);
     callback approval-allow(string);
     /// The same grant plus a standing rule for that (app, action) — see mind_mode.rs.
     callback approval-allow-session(string);
@@ -133,6 +134,7 @@ export component DesktopScreen inherits Rectangle {
     // Whisper Cards (floating notifications)
     in property <[WhisperCardItem]> whisper-cards: [];
     callback whisper-card-dismissed(string);
+    callback whisper-card-less-of-this(string);
     callback whisper-card-action(string);
     callback whisper-hint-clicked();
 
@@ -600,6 +602,7 @@ export component DesktopScreen inherits Rectangle {
         y: Theme.status-bar-height + 8px;
         cards: root.whisper-cards;
         card-dismissed(id) => { root.whisper-card-dismissed(id); }
+        card-less-of-this(id) => { root.whisper-card-less-of-this(id); }
         card-action(id) => { root.whisper-card-action(id); }
     }
 
@@ -668,6 +671,7 @@ export component DesktopScreen inherits Rectangle {
         questions: root.questions;
         question-answer(agent, request, answer, pressed) => { root.question-answer(agent, request, answer, pressed); }
         open-run(run) => { root.open-run(run); }
+        less-of-this(kind) => { root.proactive-less-of-this(kind); }
         query-changed(text) => { root.lens-query(text); }
         submit-query(text) => { root.lens-submit(text); }
         result-selected(id) => { root.lens-result-selected(id); }

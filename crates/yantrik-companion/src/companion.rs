@@ -696,6 +696,8 @@ impl CompanionService {
         BondTracker::ensure_tables(&db.conn());
         Evolution::ensure_tables(&db.conn());
         Narrative::ensure_table(&db.conn());
+        // Proactive deliveries and the per-kind "less of this" levels (#754).
+        crate::proactive_backoff::KindBackoff::ensure_table(&db.conn());
 
         let urge_queue = UrgeQueue::new(&db.conn(), config.urges.clone());
         let instincts = instincts::load_instincts(&config.instincts);
@@ -3685,8 +3687,11 @@ impl CompanionService {
     /// here — the bridge, the Telegram relay, the HTTP server — and only the bridge applied the
     /// rule before delivery, so a refused message still reached the other two. Judging at the one
     /// place thoughts are queued means no consumer can miss it.
-    pub fn set_proactive_message(&mut self, msg: ProactiveMessage) {
+    pub fn set_proactive_message(&mut self, mut msg: ProactiveMessage) {
         const MAX_PENDING: usize = 32;
+        // Every proactive message says why it appeared and what kind it is (#754). A maker that
+        // left them empty gets them from the message's first key, by fixed template.
+        crate::proactive_backoff::stamp(&mut msg);
         if let Some(why) = crate::proactive::must_not_be_said(&msg.text) {
             tracing::warn!(why, text = %msg.text.chars().take(40).collect::<String>(), "Proactive thought refused at the queue, not delivered");
             return;
@@ -5770,7 +5775,7 @@ mod proactive_queue_tests {
     }
 
     fn msg(text: &str) -> ProactiveMessage {
-        ProactiveMessage { text: text.into(), urge_ids: vec![], generated_at: now_ts() }
+        ProactiveMessage { text: text.into(), urge_ids: vec![], generated_at: now_ts(), ..Default::default() }
     }
 
     #[test]

@@ -38,6 +38,7 @@ pub(crate) fn message(role: &str, content: &str) -> MessageData {
         is_streaming: false,
         blocks: ModelRc::new(VecModel::from(Vec::<ContentBlock>::new())),
         run: "".into(),
+        ..Default::default()
     }
 }
 

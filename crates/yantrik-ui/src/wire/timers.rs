@@ -96,12 +96,17 @@ fn wire_frecency_persist(ctx: &AppContext) {
 /// Whisper card tick — drives auto-dismiss animations at 100ms.
 fn wire_card_tick(ui: &App, ctx: &AppContext) {
     let card_mgr = ctx.card_manager.clone();
+    let bridge = ctx.bridge.clone();
     let ui_weak = ui.as_weak();
     let timer = Timer::default();
     timer.start(TimerMode::Repeated, Duration::from_millis(100), move || {
         let mut mgr = card_mgr.borrow_mut();
         if mgr.tick() {
             cards::sync_whisper_ui(&mgr, &ui_weak);
+        }
+        // Cards that faded unanswered teach the per-kind throttle (#754).
+        for (kind, outcome) in mgr.take_outcomes() {
+            bridge.proactive_outcome(kind.key().to_string(), outcome);
         }
     });
     std::mem::forget(timer);

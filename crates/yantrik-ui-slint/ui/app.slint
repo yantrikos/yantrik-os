@@ -32,7 +32,7 @@ import { BondScreen, BondData } from "bond.slint";
 import { PersonalityScreen, OpinionData, SharedRefData } from "personality.slint";
 import { LockScreen } from "lock.slint";
 import { LoginScreen } from "login.slint";
-import { SettingsScreen, SettingsCategoryItem, AIProviderData, AIModelData, AIStatusData, HarnessData, HarnessRowData, DecisionPreset, DecisionUse, RunsOnRow, InUseRow, ThemeCardData } from "settings.slint";
+import { SettingsScreen, SettingsCategoryItem, AIProviderData, AIModelData, AIStatusData, HarnessData, HarnessRowData, DecisionPreset, DecisionUse, RunsOnRow, InUseRow, ThemeCardData, ProactiveKindRow } from "settings.slint";
 import { SkillData } from "skill_store.slint";
 import { MemoryBrowser, MemoryItem } from "memory_browser.slint";
 import { FileBrowser, FileEntry, BreadcrumbSegment, FileDetailData, FileTabData, FileOpItem, FilePlaceData, FileRecentData, OpenWithItem } from "file_browser.slint";
@@ -83,7 +83,7 @@ import { YMenuAction, YContextMenu } from "components/y_context_menu.slint";
 import { Icons } from "components/icon.slint";
 import { Tr } from "translations.slint";
 
-export { HarnessData, HarnessRowData, Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, ToolCallData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, ApprovalRequest, QuestionRequest, MindRule, MindAuditEntry, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, NotifActionData, ProcessData, ClipboardEntryData, CheatRowData, AppGridItem, ServiceItem, WindowItem, SwitcherCell, DockItem, DockButton, DockWindow, ToastData, ToastActionData, PackageData, PendingAction, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction, ProblemRow, WorkCardData }
+export { HarnessData, HarnessRowData, Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, ToolCallData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, ApprovalRequest, QuestionRequest, MindRule, MindAuditEntry, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, NotifActionData, ProcessData, ClipboardEntryData, CheatRowData, AppGridItem, ServiceItem, WindowItem, SwitcherCell, DockItem, DockButton, DockWindow, ToastData, ToastActionData, PackageData, PendingAction, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction, ProblemRow, WorkCardData, ProactiveKindRow }
 
 export component App inherits Window {
     default-font-family: Theme.font-ui;
@@ -254,6 +254,9 @@ export component App inherits Window {
     in property <string> minds-keys-line: "";
     // What runs on what (crates/yantrik-ui/src/wire/runs_on_card.rs): one resolver, three places.
     in property <[RunsOnRow]> runs-on-rows: [];
+    // Settings → AI & Intelligence → Assistant: each kind of message the mind starts (#754).
+    in property <[ProactiveKindRow]> proactive-kind-rows: [];
+    callback proactive-kind-reset(string);
     in property <string> runs-on-summary: "";
     in property <string> runs-on-answering: "";
     in property <[InUseRow]> in-use-providers: [];
@@ -1397,6 +1400,10 @@ export component App inherits Window {
     callback show-desktop();
     callback close-lens();
     callback whisper-card-dismissed(string);
+    // "Less of this" on a whisper card (its id) and under a message the mind said first (its
+    // kind): both back that kind of message off (#754).
+    callback whisper-card-less-of-this(string);
+    callback proactive-less-of-this(string);
     callback whisper-card-action(string);
     callback whisper-hint-clicked();
 
@@ -1739,6 +1746,8 @@ export component App inherits Window {
             // Whisper Cards
             whisper-cards: root.whisper-cards;
             whisper-card-dismissed(id) => { root.whisper-card-dismissed(id); }
+            whisper-card-less-of-this(id) => { root.whisper-card-less-of-this(id); }
+            proactive-less-of-this(kind) => { root.proactive-less-of-this(kind); }
             whisper-card-action(id) => { root.whisper-card-action(id); }
             whisper-hint-clicked => { root.whisper-hint-clicked(); }
             // Morning Brief
@@ -2072,6 +2081,8 @@ export component App inherits Window {
                 open-network=>{root.launch-app("network");}
                 choose-accent(name)=>{root.choose-accent(name);}
                 runs-on-rows: root.runs-on-rows;
+                proactive-kind-rows: root.proactive-kind-rows;
+                proactive-kind-reset(kind) => { root.proactive-kind-reset(kind); }
                 runs-on-summary: root.runs-on-summary;
                 in-use-providers: root.in-use-providers;
                 account-groups: root.minds-groups;

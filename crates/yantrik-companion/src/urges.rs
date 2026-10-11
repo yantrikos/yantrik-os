@@ -221,6 +221,17 @@ impl UrgeQueue {
         urges
     }
 
+    /// Mark one pending urge delivered, by id. True when it was pending.
+    pub fn mark_delivered(&self, conn: &Connection, urge_id: &str) -> bool {
+        conn.execute(
+            "UPDATE urges SET status = 'delivered', delivered_at = ?1
+             WHERE urge_id = ?2 AND status = 'pending'",
+            params![now_ts(), urge_id],
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false)
+    }
+
     /// Get all pending urges (for display).
     pub fn get_pending(&self, conn: &Connection, limit: usize) -> Vec<Urge> {
         let mut stmt = conn

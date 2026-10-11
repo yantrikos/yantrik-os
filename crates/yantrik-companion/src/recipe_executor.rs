@@ -1412,6 +1412,7 @@ impl RecipeHost for CompanionService {
             // names the instinct the message came from.
             urge_ids: vec![format!("recipe:{recipe_id}:{at}")],
             generated_at: at,
+            ..Default::default()
         });
     }
 

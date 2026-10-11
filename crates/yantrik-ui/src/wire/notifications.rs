@@ -899,11 +899,11 @@ pub fn companion_said(ui: &App, title: &str, text: &str) {
 /// is not reached (issue #216, when the companion filed 35 chatty notifications in a day). A
 /// result the person *did* ask for — a finished task, an agent that completed — goes through
 /// `companion_said` instead and is never gated; news somebody is waiting on is not chatter.
-pub fn companion_thought(ui: &App, text: &str) {
+pub fn companion_thought(ui: &App, text: &str, why: &str) {
     if ui.get_lens_open() {
         return;
     }
-    notify_companion_thought(text);
+    notify_companion_thought(text, why);
 }
 
 // ── Where a proactive message goes ──────────────────────────────────────────────────────────
@@ -1073,6 +1073,7 @@ pub fn route_result(s: ProactiveSituation) -> ProactiveDelivery {
 /// knows how to make that hop. It runs only for [`ProactiveDelivery::Transcript`].
 pub fn deliver_proactive(
     text: &str,
+    why: &str,
     push_to_transcript: impl FnOnce(bool),
 ) -> ProactiveDelivery {
     let route = route_proactive(situation_now());
@@ -1088,7 +1089,7 @@ pub fn deliver_proactive(
         // not reached. Small talk, machinery and empty findings are dropped here rather than
         // filling the one interruptive channel with chatter.
         ProactiveDelivery::NotifyOnly => {
-            notify_companion_thought(text);
+            notify_companion_thought(text, why);
         }
         // The Lens is ours: the thought is written into it either way, and the callback decides
         // whether it also raises a notification (see `companion_thought`).
@@ -1178,7 +1179,9 @@ fn companion_notification_text(text: &str) -> Option<String> {
 /// File an unprompted companion thought as a notification, if it may become one. Returns whether a
 /// notification was filed. Both delivery routes — the notification-only route and the Lens-closed
 /// transcript route — come through here, so the rule and the cap are applied exactly once.
-fn notify_companion_thought(text: &str) -> bool {
+///
+/// `why` is the message's plain why (#754), from fixed templates; it is the body's last line.
+fn notify_companion_thought(text: &str, why: &str) -> bool {
     let Some(cleaned) = companion_notification_text(text) else {
         tracing::info!(
             text,
@@ -1194,7 +1197,7 @@ fn notify_companion_thought(text: &str) -> bool {
         return false;
     }
     let (title, body) = title_and_body(&cleaned);
-    post_companion(CompanionPost::Reflection, title, body);
+    post_companion(CompanionPost::Reflection, title, with_why(body, why));
     true
 }
 
@@ -1230,6 +1233,18 @@ fn labelled(kind: CompanionPost, body: &str) -> String {
 /// File something the built-in companion said as a notification: the one place one is made, so
 /// every companion post carries its label (security review of #648, L3: the result route filed
 /// unlabelled).
+/// A body with the message's why as its own last line, when it has one (#754).
+fn with_why(body: String, why: &str) -> String {
+    let why = why.trim();
+    if why.is_empty() {
+        body
+    } else if body.is_empty() {
+        why.to_string()
+    } else {
+        format!("{body}\n{why}")
+    }
+}
+
 fn post_companion(kind: CompanionPost, title: String, body: String) {
     notify::send(
         notify::Notification::new("Yantrik Companion", title)

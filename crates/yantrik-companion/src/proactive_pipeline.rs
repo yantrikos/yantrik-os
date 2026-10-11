@@ -17,6 +17,7 @@ use rusqlite::{params, Connection};
 
 use crate::bond::BondLevel;
 use crate::config::ProactiveConfig;
+use crate::proactive_backoff::{BackoffLevel, KindBackoff, Outcome as BackoffOutcome, ProactiveKind};
 use crate::proactive_templates::TemplateEngine;
 use crate::types::{ProactiveMessage, Urge};
 use crate::urges::UrgeQueue;
@@ -240,7 +241,9 @@ impl Generator {
                     InterventionType::Summarize
                 }
             }
-            TriggerKind::DismissalSignal => return candidates, // No action for dismissals
+            // A dismissal is a lesson, not something to say: `ProactivePipeline::run` feeds it to
+            // the per-kind throttle before generation, so one never reaches here.
+            TriggerKind::DismissalSignal => return candidates,
         };
 
         candidates.push(Candidate {
@@ -694,6 +697,21 @@ impl ProactivePipeline {
         // From event patterns
         triggers.extend(self.detector.detect_from_events());
 
+        // Dismissals teach the per-kind throttle (#754): five dismissed or ignored in a row within
+        // a week back that kind off one level. A kind that is off until the person asks says
+        // nothing, and a backed-off kind's urgency is lowered.
+        let now = now_ts();
+        triggers.retain_mut(|t| {
+            let kind = ProactiveKind::from_source(&t.source);
+            if t.kind == TriggerKind::DismissalSignal {
+                KindBackoff::record_outcome(conn, kind, BackoffOutcome::Dismissed, now);
+                return false;
+            }
+            let level = KindBackoff::level(conn, kind);
+            t.raw_urgency *= level.priority_factor();
+            level != BackoffLevel::OffUntilAsked
+        });
+
         if triggers.is_empty() {
             return None;
         }
@@ -745,6 +763,7 @@ impl ProactivePipeline {
             text: best_candidate.draft_text.clone(),
             urge_ids: vec![best_candidate.trigger.cooldown_key.clone()],
             generated_at: now_ts(),
+            ..Default::default()
         };
 
         self.delivery.record_delivery(best_candidate.is_question);
@@ -1072,6 +1091,7 @@ mod tests {
                 text: "Hey Sync, checking in.".into(),
                 urge_ids: vec!["u1".into()],
                 generated_at: now_ts(),
+                ..Default::default()
             }),
             score: CandidateScore {
                 total: 0.8,

@@ -26,11 +26,15 @@ export component ChatMessage inherits Rectangle {
     // The desktop's own offer, while private, to leave Private mode: the one link a reply still
     // carries, because it is the desktop speaking and not a run.
     callback open-run(string);
+    // "Less of this" on a message the mind said first: backs off that kind (#754).
+    callback less-of-this(string);
 
     property <bool> is-user: root.data.role == "user";
     property <bool> is-desktop: root.data.role == "desktop";
     property <bool> has-blocks: root.data.blocks.length > 0 && !root.data.is-streaming;
     property <bool> actions-open: false;
+    // Set once "Less of this" is pressed, so the line says what it did.
+    property <bool> backed-off: false;
 
     height: wrap.preferred-height;
     background: transparent;
@@ -98,6 +102,37 @@ export component ChatMessage inherits Rectangle {
                     color: Theme.chat-text;
                     font-size: Theme.fs-title-2;
                     wrap: word-wrap;
+                }
+
+                // Why a message the mind said first appeared: one small secondary line under it,
+                // with the quiet control that backs that kind off (#754).
+                if root.data.why != "" && !root.data.is-streaming : HorizontalLayout {
+                    padding-top: Theme.sp-1;
+                    spacing: Theme.sp-2;
+                    Text {
+                        horizontal-stretch: 1;
+                        text: root.backed-off
+                            ? "OK, fewer messages like this. Change it in Settings \u{2192} AI & Intelligence."
+                            : root.data.why;
+                        color: Theme.chat-text-2;
+                        font-size: Theme.fs-caption;
+                        wrap: word-wrap;
+                    }
+                    if !root.backed-off && root.data.kind != "" : Rectangle {
+                        width: less-label.preferred-width;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.backed-off = true;
+                                root.less-of-this(root.data.kind);
+                            }
+                        }
+                        less-label := Text {
+                            text: "Less of this";
+                            color: Theme.chat-text-2;
+                            font-size: Theme.fs-caption;
+                        }
+                    }
                 }
 
                 if root.data.run == "private:leave" && !root.data.is-streaming : HorizontalLayout {

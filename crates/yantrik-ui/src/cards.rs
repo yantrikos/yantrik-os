@@ -3,10 +3,30 @@
 //! Cards are scored urges that appear as floating overlays.
 //! Three tiers: Queue (badge only), Whisper (floating, auto-dismiss), Interrupt (persistent).
 
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
 use slint::{Model, ModelRc, VecModel};
+use yantrik_companion::proactive_backoff::{why_text, BackoffLevel, Outcome, ProactiveKind};
 
 use super::{App, WhisperCardItem};
 use crate::features;
+
+/// The cooldown a backed-off kind of card waits between cards, before its level's multiplier
+/// (3x at "less often", 10x at "rarely"). A kind at "normal" has no cooldown of its own.
+const CARD_BASE_COOLDOWN: Duration = Duration::from_secs(10 * 60);
+
+/// How long a card stays after "Less of this", so its line can say what that did.
+const ACK_LINGER: Duration = Duration::from_secs(4);
+
+/// The kind a card's source belongs to, or `None` for a card that is not the shell speaking
+/// first: a relayed app notification is the app's, and is not backed off here (#754).
+fn card_kind(source: &str) -> Option<ProactiveKind> {
+    if source == "NotificationRelay" {
+        return None;
+    }
+    Some(ProactiveKind::from_source(source))
+}
 
 /// Category → RGB accent color.
 fn category_rgb(cat: &features::UrgeCategory) -> (f32, f32, f32) {
@@ -23,11 +43,27 @@ fn category_rgb(cat: &features::UrgeCategory) -> (f32, f32, f32) {
     }
 }
 
+/// Each kind's backoff level, as the mind's database holds it: published by the companion worker
+/// whenever a level changes, and raised here at once when "Less of this" is pressed.
+static LEVELS: std::sync::LazyLock<std::sync::Mutex<HashMap<ProactiveKind, BackoffLevel>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Publish the levels the mind's database holds (any thread).
+pub fn publish_levels(levels: impl IntoIterator<Item = (ProactiveKind, BackoffLevel)>) {
+    if let Ok(mut map) = LEVELS.lock() {
+        *map = levels.into_iter().collect();
+    }
+}
+
 /// Manages floating Whisper Cards (max 3 visible) + hint counter for Queue tier.
 pub struct CardManager {
     cards: Vec<ActiveCard>,
     max_visible: usize,
     hint_count: i32,
+    /// When a card of each kind was last shown, for a backed-off kind's cooldown.
+    last_shown: HashMap<ProactiveKind, Instant>,
+    /// Outcomes not yet handed to the mind's throttle: cards that faded unanswered.
+    outcomes: Vec<(ProactiveKind, Outcome)>,
 }
 
 struct ActiveCard {
@@ -39,6 +75,8 @@ struct ActiveCard {
     #[allow(dead_code)]
     pressure: f32,
     accent: (f32, f32, f32),
+    kind: Option<ProactiveKind>,
+    why: String,
     #[allow(dead_code)]
     created_at: std::time::Instant,
     auto_dismiss_at: Option<std::time::Instant>,
@@ -51,14 +89,46 @@ impl CardManager {
             cards: Vec::new(),
             max_visible: 3,
             hint_count: 0,
+            last_shown: HashMap::new(),
+            outcomes: Vec::new(),
         }
     }
 
     /// Add a scored urge. Queue tier → hint badge only. Whisper/Interrupt → floating card.
     pub fn add(&mut self, scored: &features::ScoredUrge) {
+        self.add_at(scored, crate::wire::settings::dnd_mode(), Instant::now());
+    }
+
+    /// `add`, with Do Not Disturb and the clock given.
+    ///
+    /// Do Not Disturb holds the shell's own cards too (#754): only a security card still floats;
+    /// the rest wait behind the hint badge. A kind that is off until the person asks shows
+    /// nothing; a backed-off kind waits its longer cooldown and never interrupts.
+    pub fn add_at(&mut self, scored: &features::ScoredUrge, dnd: bool, now: Instant) {
         if scored.tier == features::UrgeTier::Queue {
             self.hint_count += 1;
             return;
+        }
+        if dnd && scored.urge.category != features::UrgeCategory::Security {
+            self.hint_count += 1;
+            return;
+        }
+        let kind = card_kind(&scored.urge.source);
+        let mut tier = scored.tier.clone();
+        if let Some(kind) = kind {
+            let level = self.level(kind);
+            let Some(mult) = level.cooldown_multiplier() else {
+                return;
+            };
+            if level != BackoffLevel::Normal {
+                let wait = CARD_BASE_COOLDOWN.mul_f64(mult);
+                if self.last_shown.get(&kind).is_some_and(|t| now.duration_since(*t) < wait) {
+                    return;
+                }
+                if tier == features::UrgeTier::Interrupt {
+                    tier = features::UrgeTier::Whisper;
+                }
+            }
         }
 
         // Dedup by source
@@ -66,7 +136,7 @@ impl CardManager {
             return;
         }
 
-        let auto_dismiss = match scored.tier {
+        let auto_dismiss = match tier {
             features::UrgeTier::Whisper => Some(std::time::Instant::now() + std::time::Duration::from_secs(8)),
             features::UrgeTier::Interrupt => None, // Must be manually dismissed
             _ => Some(std::time::Instant::now() + std::time::Duration::from_secs(5)),
@@ -77,13 +147,19 @@ impl CardManager {
             source: scored.urge.source.clone(),
             title: scored.urge.title.clone(),
             context: scored.urge.body.clone(),
-            tier: scored.tier.clone(),
+            tier,
             pressure: scored.pressure,
             accent: category_rgb(&scored.urge.category),
+            kind,
+            why: kind.map(|k| why_text(k, &serde_json::Value::Null)).unwrap_or_default(),
             created_at: std::time::Instant::now(),
             auto_dismiss_at: auto_dismiss,
             shown: false,
         });
+
+        if let Some(kind) = kind {
+            self.last_shown.insert(kind, now);
+        }
 
         // Trim to max
         while self.cards.len() > self.max_visible + 2 {
@@ -91,14 +167,43 @@ impl CardManager {
         }
     }
 
-    /// Dismiss a card by ID. Returns the source name if found.
-    pub fn dismiss(&mut self, id: &str) -> Option<String> {
+    /// Dismiss a card by ID. Returns the source name and kind if found.
+    pub fn dismiss(&mut self, id: &str) -> Option<(String, Option<ProactiveKind>)> {
         if let Some(pos) = self.cards.iter().position(|c| c.id == id) {
             let card = self.cards.remove(pos);
-            Some(card.source)
+            Some((card.source, card.kind))
         } else {
             None
         }
+    }
+
+    /// "Less of this" on a card: its kind goes one level further back at once, and the card
+    /// stays a moment so its line can say what that did. Returns the kind, for the mind to keep.
+    pub fn less_of_this(&mut self, id: &str) -> Option<ProactiveKind> {
+        let now = Instant::now();
+        let card = self.cards.iter_mut().find(|c| c.id == id)?;
+        let kind = card.kind?;
+        card.auto_dismiss_at = Some(now + ACK_LINGER);
+        // Already answered: its fading out afterwards is not "ignored".
+        card.kind = None;
+        let level = self.level(kind).raised();
+        if let Ok(mut levels) = LEVELS.lock() {
+            levels.insert(kind, level);
+        }
+        Some(kind)
+    }
+
+    fn level(&self, kind: ProactiveKind) -> BackoffLevel {
+        LEVELS
+            .lock()
+            .ok()
+            .and_then(|levels| levels.get(&kind).copied())
+            .unwrap_or(BackoffLevel::Normal)
+    }
+
+    /// Outcomes for the mind's throttle since the last call: cards that faded unanswered.
+    pub fn take_outcomes(&mut self) -> Vec<(ProactiveKind, Outcome)> {
+        std::mem::take(&mut self.outcomes)
     }
 
     /// Tick: auto-dismiss expired cards. Returns true if anything changed.
@@ -106,9 +211,16 @@ impl CardManager {
         let now = std::time::Instant::now();
         let before = self.cards.len();
 
+        let outcomes = &mut self.outcomes;
         self.cards.retain(|c| {
             if let Some(deadline) = c.auto_dismiss_at {
-                now < deadline
+                let keep = now < deadline;
+                if !keep {
+                    if let Some(kind) = c.kind {
+                        outcomes.push((kind, Outcome::Ignored));
+                    }
+                }
+                keep
             } else {
                 true
             }
@@ -158,6 +270,7 @@ pub fn sync_whisper_ui(mgr: &CardManager, ui_weak: &slint::Weak<App>) {
             action_label: "Open".into(),
             shown: c.shown,
             source: c.source.clone().into(),
+            why: c.why.clone().into(),
         })
         .collect();
 
@@ -241,4 +354,77 @@ pub fn push_queue_cards(ui_weak: &slint::Weak<App>, scored: &[features::ScoredUr
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn urge(id: &str, source: &str, category: features::UrgeCategory, tier: features::UrgeTier) -> features::ScoredUrge {
+        features::ScoredUrge {
+            urge: features::Urge {
+                id: id.into(),
+                source: source.into(),
+                title: format!("{id} title"),
+                body: "body".into(),
+                urgency: 0.9,
+                confidence: 0.9,
+                category,
+            },
+            pressure: 0.9,
+            tier,
+        }
+    }
+
+    /// Every card the shell speaks first carries its why; a relayed app notification is the
+    /// app's own and carries neither a why nor "Less of this" (#754).
+    #[test]
+    fn a_card_says_why_it_appeared() {
+        let mut mgr = CardManager::new();
+        let now = Instant::now();
+        mgr.add_at(&urge("a", "resource_guardian", features::UrgeCategory::Resource, features::UrgeTier::Whisper), false, now);
+        mgr.add_at(&urge("b", "NotificationRelay", features::UrgeCategory::Notification, features::UrgeTier::Whisper), false, now);
+        assert_eq!(mgr.cards[0].why, "Your computer needs a look.");
+        assert_eq!(mgr.cards[0].kind, Some(ProactiveKind::System));
+        assert_eq!(mgr.cards[1].why, "");
+        assert_eq!(mgr.cards[1].kind, None);
+    }
+
+    /// Do Not Disturb holds the shell's cards behind the hint badge; a security card still shows.
+    #[test]
+    fn do_not_disturb_holds_cards_but_not_security() {
+        let mut mgr = CardManager::new();
+        let now = Instant::now();
+        mgr.add_at(&urge("a", "network_watcher", features::UrgeCategory::Resource, features::UrgeTier::Whisper), true, now);
+        assert!(mgr.cards.is_empty());
+        assert_eq!(mgr.hint_count, 1);
+        mgr.add_at(&urge("b", "process_sentinel", features::UrgeCategory::Security, features::UrgeTier::Interrupt), true, now);
+        assert_eq!(mgr.cards.len(), 1);
+    }
+
+    /// "Less of this" backs the kind off at once: the next card of that kind waits its longer
+    /// cooldown and no longer interrupts, and the pressed card is not counted as ignored.
+    #[test]
+    fn less_of_this_backs_the_kind_off() {
+        let mut mgr = CardManager::new();
+        let now = Instant::now();
+        mgr.add_at(&urge("a", "tool_suggester", features::UrgeCategory::Focus, features::UrgeTier::Interrupt), false, now);
+        assert_eq!(mgr.less_of_this("a"), Some(ProactiveKind::Suggestions));
+        assert_eq!(mgr.level(ProactiveKind::Suggestions), BackoffLevel::LessOften);
+
+        mgr.add_at(&urge("b", "clipboard_intelligence", features::UrgeCategory::Focus, features::UrgeTier::Interrupt), false, now + Duration::from_secs(60));
+        assert!(mgr.cards.iter().all(|c| c.id != "b"), "inside the backed-off cooldown");
+
+        let later = now + CARD_BASE_COOLDOWN.mul_f64(COOLDOWN_FACTOR_FOR_TEST) + Duration::from_secs(1);
+        mgr.add_at(&urge("c", "focus_flow", features::UrgeCategory::Focus, features::UrgeTier::Interrupt), false, later);
+        let c = mgr.cards.iter().find(|c| c.id == "c").expect("after the cooldown it shows");
+        assert_eq!(c.tier, features::UrgeTier::Whisper, "a backed-off kind never interrupts");
+
+        mgr.cards.iter_mut().for_each(|c| c.auto_dismiss_at = Some(now));
+        mgr.tick();
+        let outcomes = mgr.take_outcomes();
+        assert_eq!(outcomes, vec![(ProactiveKind::Suggestions, Outcome::Ignored)], "only card c faded unanswered");
+    }
+
+    const COOLDOWN_FACTOR_FOR_TEST: f64 = yantrik_companion::proactive_backoff::COOLDOWN_LESS_OFTEN;
 }

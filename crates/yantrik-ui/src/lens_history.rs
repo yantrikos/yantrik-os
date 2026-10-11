@@ -29,6 +29,7 @@ pub fn bubbles(turns: &[Turn], limit: usize) -> Vec<MessageData> {
                 content: turn.prompt.as_str().into(),
                 is_streaming: false,
                 blocks: ModelRc::default(),
+                ..Default::default()
             });
         }
         let (content, blocks) = reply(turn);
@@ -39,6 +40,7 @@ pub fn bubbles(turns: &[Turn], limit: usize) -> Vec<MessageData> {
                 content: content.into(),
                 is_streaming: false,
                 blocks: ModelRc::new(VecModel::from(blocks)),
+                ..Default::default()
             });
         }
     }

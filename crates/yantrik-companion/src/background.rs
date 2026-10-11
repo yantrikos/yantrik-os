@@ -264,6 +264,8 @@ pub fn run_think_cycle(service: &mut CompanionService) {
                 text: msg,
                 urge_ids: Vec::new(),
                 generated_at: now_ts,
+                kind: crate::proactive_backoff::ProactiveKind::Memory.key().into(),
+                ..Default::default()
             });
             tracing::info!(
                 count = contradictions.len(),
@@ -480,6 +482,7 @@ fn generate_proactive_message(
                 text: response_text,
                 urge_ids,
                 generated_at: now_ts(),
+                ..Default::default()
             };
             service.set_proactive_message(msg);
         }

@@ -565,6 +565,13 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     // Published before anything reads a preference out of it.
     let _ = LIVE.set(settings.clone());
 
+    // Settings → AI & Intelligence → Assistant: a kind of message the mind starts, back to
+    // normal (#754). The mind keeps the level; the rows come back from it.
+    let bridge = ctx.bridge.clone();
+    ui.on_proactive_kind_reset(move |kind| {
+        bridge.proactive_kind_reset(kind.to_string());
+    });
+
     // The version on Settings → System. Nothing ever set this, so the row showed the Slint
     // property's own default, `0.1.0`, on every machine this OS has ever run on — a third
     // answer beside About's 0.3.0 and the BUILD marker's git describe.

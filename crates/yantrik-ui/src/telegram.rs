@@ -176,6 +176,7 @@ fn poller_loop(
                                 content: SharedString::from(format!("[Telegram] {}", user_text)),
                                 is_streaming: false,
                                 blocks: ModelRc::default(),
+                                ..Default::default()
                             });
                         }
                     });
@@ -276,6 +277,7 @@ fn poller_loop(
                                 content: SharedString::from(format!("[Telegram] {}", resp_text)),
                                 is_streaming: false,
                                 blocks: ModelRc::default(),
+                                ..Default::default()
                             });
                         }
                     });
@@ -424,6 +426,7 @@ fn handle_voice_message(
                 content: SharedString::from(ui_text),
                 is_streaming: false,
                 blocks: ModelRc::default(),
+                ..Default::default()
             });
         }
     });
@@ -526,6 +529,7 @@ fn handle_voice_message(
                 content: SharedString::from(format!("[Telegram] {}", resp_text)),
                 is_streaming: false,
                 blocks: ModelRc::default(),
+                ..Default::default()
             });
         }
     });

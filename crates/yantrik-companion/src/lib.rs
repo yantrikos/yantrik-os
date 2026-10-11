@@ -43,6 +43,8 @@ pub mod offline_nlp;
 pub mod policy_engine;
 pub mod proactive;
 pub mod proactive_pipeline;
+/// Why a proactive message appeared, and "less of this" (#754).
+pub mod proactive_backoff;
 pub mod proactive_templates;
 pub mod sanitize;
 pub mod silence_policy;

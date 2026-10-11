@@ -352,15 +352,39 @@ fn wire_whisper_cards(ui: &App, ctx: &AppContext) {
     ui.on_whisper_card_dismissed(move |id| {
         let id = id.to_string();
         let mut mgr = mgr.borrow_mut();
-        if let Some(source) = mgr.dismiss(&id) {
+        if let Some((source, kind)) = mgr.dismiss(&id) {
             cards::sync_whisper_ui(&mgr, &ui_weak);
             br.record_system_event(
                 format!("Whisper card dismissed: {}", id),
                 "whisper-cards".to_string(),
                 0.2,
             );
+            if let Some(kind) = kind {
+                br.proactive_outcome(
+                    kind.key().to_string(),
+                    yantrik_companion::proactive_backoff::Outcome::Dismissed,
+                );
+            }
             tracing::debug!(id, source, "Whisper card dismissed");
         }
+    });
+
+    // "Less of this" on a whisper card: its kind backs off one level, kept by the mind (#754).
+    let mgr = card_mgr.clone();
+    let br = bridge.clone();
+    let ui_weak = ui.as_weak();
+    ui.on_whisper_card_less_of_this(move |id| {
+        let mut mgr = mgr.borrow_mut();
+        if let Some(kind) = mgr.less_of_this(id.as_str()) {
+            cards::sync_whisper_ui(&mgr, &ui_weak);
+            br.proactive_less_of_this(kind.key().to_string());
+        }
+    });
+
+    // "Less of this" under a message the mind said first: the same, by its kind (#754).
+    let br = bridge.clone();
+    ui.on_proactive_less_of_this(move |kind| {
+        br.proactive_less_of_this(kind.to_string());
     });
 
     // Action on a whisper card (dismiss + open Lens)
@@ -370,13 +394,19 @@ fn wire_whisper_cards(ui: &App, ctx: &AppContext) {
     ui.on_whisper_card_action(move |id| {
         let id = id.to_string();
         let mut mgr = mgr.borrow_mut();
-        if let Some(source) = mgr.dismiss(&id) {
+        if let Some((source, kind)) = mgr.dismiss(&id) {
             cards::sync_whisper_ui(&mgr, &ui_weak);
             br.record_system_event(
                 format!("Whisper card acted on: {}", id),
                 "whisper-cards".to_string(),
                 0.3,
             );
+            if let Some(kind) = kind {
+                br.proactive_outcome(
+                    kind.key().to_string(),
+                    yantrik_companion::proactive_backoff::Outcome::Accepted,
+                );
+            }
             tracing::debug!(id, source, "Whisper card action");
         }
         if let Some(ui) = ui_weak.upgrade() {

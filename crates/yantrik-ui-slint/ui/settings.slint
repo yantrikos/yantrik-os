@@ -121,6 +121,15 @@ export struct ThemeCardData {
     accent: color,
 }
 
+// One kind of message the mind says first, and how far it is backed off (#754):
+// "Reminders" · "less often". `kind` is the key the reset hands back.
+export struct ProactiveKindRow {
+    kind: string,
+    label: string,
+    level: string,      // "normal" | "less often" | "rarely" | "off until you ask"
+    backed-off: bool,
+}
+
 export struct RunsOnRow {
     name: string,       // "Yantrik Mind"
     state: string,      // "Answering" | "Built in" | "Attached"
@@ -513,6 +522,9 @@ export component SettingsScreen inherits Rectangle {
 
     // ── What runs on what (top of category 1) ──
     in property <[RunsOnRow]> runs-on-rows: [];
+    // The kinds of message the mind says first, each with its level (#754).
+    in property <[ProactiveKindRow]> proactive-kind-rows: [];
+    callback proactive-kind-reset(string);
     in property <string> runs-on-summary: "";
     in property <[InUseRow]> in-use-providers: [];
 
@@ -1128,6 +1140,38 @@ export component SettingsScreen inherits Rectangle {
                                             wrap: word-wrap;
                                         }
                                     }
+                                }
+                            }
+
+                            // ── ASSISTANT: MESSAGES IT STARTS ──
+                            // Every kind of message the mind says first, how often it may, and
+                            // the way back to normal. "Less of this" on a message lands here (#754).
+                            if root.proactive-kind-rows.length > 0 : VerticalLayout {
+                                spacing: Theme.sp-2;
+                                HorizontalLayout {
+                                    spacing: Theme.sp-2;
+                                    Rectangle { width: 3px; height: 14px; border-radius: 1.5px; background: Theme.accent; }
+                                    Text {
+                                        text: "ASSISTANT";
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.fs-caption;
+                                        font-weight: 600;
+                                        letter-spacing: 3px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                Text {
+                                    text: "Messages the assistant starts on its own. Press Less of this on one to see fewer like it.";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.fs-caption;
+                                    wrap: word-wrap;
+                                }
+                                for k in root.proactive-kind-rows : SettingRow {
+                                    label: k.label + ": " + k.level;
+                                    description: k.backed-off ? "Backed off. Put it back to show these as usual." : "Shown as usual.";
+                                    value: k.backed-off ? "Back to normal" : "Normal";
+                                    interactive: k.backed-off;
+                                    activated => { root.proactive-kind-reset(k.kind); }
                                 }
                             }
 

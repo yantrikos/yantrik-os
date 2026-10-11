@@ -17,6 +17,8 @@ export struct WhisperCardItem {
     action-label: string,
     shown: bool,              // false → right of screen; true → slides in
     source: string,           // Feature name badge
+    // Why this card appeared, in the person's words, from fixed templates (#754).
+    why: string,
 }
 
 component WhisperCard inherits Rectangle {
@@ -24,11 +26,14 @@ component WhisperCard inherits Rectangle {
 
     callback dismissed(string);
     callback action-clicked(string);
+    callback less-of-this(string);
 
     property <bool> hovered: hover-area.has-hover;
+    // Set once "Less of this" is pressed, so the card says what it did.
+    property <bool> backed-off: false;
 
     width: 300px;
-    height: hovered ? 100px : 64px;
+    height: hovered || backed-off ? 118px : 82px;
     x: card.shown ? 0px : self.width + 20px;
     opacity: card.shown ? card.target-opacity : 0;
     border-radius: 16px;
@@ -87,6 +92,16 @@ component WhisperCard inherits Rectangle {
             overflow: elide;
         }
 
+        // Why it appeared: one small secondary line (#754). After "Less of this", what that did.
+        if card.why != "" || root.backed-off : Text {
+            text: root.backed-off
+                ? "OK, fewer messages like this. Change it in Settings \u{2192} AI & Intelligence."
+                : card.why;
+            color: Theme.text-dim;
+            font-size: Theme.fs-micro;
+            wrap: word-wrap;
+        }
+
         // Source badge row
         HorizontalLayout {
             spacing: 8px;
@@ -95,6 +110,7 @@ component WhisperCard inherits Rectangle {
             Rectangle {
                 height: 16px;
                 width: max(24px, source-text.preferred-width + 10px);
+                visible: card.source != "";
                 border-radius: 8px;
                 background: Theme.separator;
 
@@ -103,6 +119,23 @@ component WhisperCard inherits Rectangle {
                     color: Theme.text-dim;
                     font-size: Theme.fs-micro;
                     horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            // The quiet control beside the dismiss: backs this kind of card off.
+            if !root.backed-off && card.why != "" : TouchArea {
+                height: 16px;
+                width: less-text.preferred-width;
+                mouse-cursor: pointer;
+                clicked => {
+                    root.backed-off = true;
+                    root.less-of-this(card.id);
+                }
+                less-text := Text {
+                    text: "Less of this";
+                    color: root.hovered ? Theme.text-secondary : Theme.text-dim;
+                    font-size: Theme.fs-micro;
                     vertical-alignment: center;
                 }
             }
@@ -161,6 +194,7 @@ export component WhisperCardStack inherits Rectangle {
 
     callback card-dismissed(string);
     callback card-action(string);
+    callback card-less-of-this(string);
 
     background: transparent;
     width: 300px;
@@ -173,6 +207,7 @@ export component WhisperCardStack inherits Rectangle {
             card: item;
             dismissed(id) => { root.card-dismissed(id); }
             action-clicked(id) => { root.card-action(id); }
+            less-of-this(id) => { root.card-less-of-this(id); }
         }
     }
 }

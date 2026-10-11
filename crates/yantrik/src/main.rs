@@ -572,6 +572,14 @@ fn run_headless_think_cycle(
                     text: response_text,
                     urge_ids: vec![exec_urge.cooldown_key.clone()],
                     generated_at: now_ts,
+                    kind: yantrik_companion::proactive_backoff::ProactiveKind::from_source(&instinct_name)
+                        .key()
+                        .into(),
+                    why: yantrik_companion::proactive_backoff::why_text(
+                        yantrik_companion::proactive_backoff::ProactiveKind::from_source(&instinct_name),
+                        &exec_urge.context,
+                    ),
+                    ..Default::default()
                 };
                 companion.set_proactive_message(msg);
                 execute_produced_message = true;

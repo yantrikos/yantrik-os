@@ -14,6 +14,7 @@ use rusqlite::Connection;
 
 use crate::bond::BondLevel;
 use crate::config::ProactiveConfig;
+use crate::proactive_backoff::{held_by_backoff, why_text, KindBackoff, ProactiveKind};
 use crate::proactive_templates::TemplateEngine;
 use crate::types::{ProactiveMessage, Urge};
 use crate::urges::UrgeQueue;
@@ -133,25 +134,36 @@ impl ProactiveEngine {
             );
         }
 
-        // Peek at top pending urge
-        let pending = urge_queue.get_pending(conn, 1);
-        let urge = match pending.first() {
-            Some(u) => u,
-            None => {
-                tracing::info!("Proactive check: no pending urges");
-                return None;
-            }
-        };
-
-        // Must exceed urgency threshold
-        if urge.urgency < self.config.delivery_threshold {
-            tracing::info!(
-                urgency = urge.urgency,
-                threshold = self.config.delivery_threshold,
-                "Proactive check: urgency below threshold"
-            );
+        // Peek at the top pending urges. A kind the person (or the throttle) backed off has its
+        // urgency lowered and waits longer between messages (#754); the first urge it does not
+        // hold back is the one considered, and a held urge stays pending until it expires.
+        let pending = urge_queue.get_pending(conn, 5);
+        if pending.is_empty() {
+            tracing::info!("Proactive check: no pending urges");
             return None;
         }
+        let urge = pending.iter().find(|u| {
+            let kind = ProactiveKind::from_source(&u.instinct_name);
+            let level = KindBackoff::level(conn, kind);
+            let since = now - KindBackoff::last_delivered(conn, kind);
+            match held_by_backoff(level, u.urgency, self.config.delivery_threshold, since, cooldown_secs) {
+                None => true,
+                Some(why) => {
+                    tracing::debug!(
+                        instinct = u.instinct_name,
+                        kind = kind.key(),
+                        level = level.words(),
+                        urgency = u.urgency,
+                        why,
+                        "Proactive check: urge held back"
+                    );
+                    false
+                }
+            }
+        });
+        let Some(urge) = urge else {
+            return None;
+        };
 
         // Must have a suggested message (instinct should populate this)
         if urge.suggested_message.is_empty() && urge.reason.is_empty() {
@@ -162,9 +174,11 @@ impl ProactiveEngine {
             return None;
         }
 
-        // Pop it (marks as delivered in the urge queue)
-        let delivered = urge_queue.pop_for_interaction(conn, 1);
-        let urge = delivered.into_iter().next()?;
+        // Take it (marks it delivered in the urge queue)
+        if !urge_queue.mark_delivered(conn, &urge.urge_id) {
+            return None;
+        }
+        let urge = urge.clone();
 
         let text = self.compose_message(&urge);
 
@@ -218,10 +232,13 @@ impl ProactiveEngine {
             "Proactive message delivered"
         );
 
+        let kind = ProactiveKind::from_source(&urge.instinct_name);
         Some(ProactiveMessage {
             text,
             urge_ids: vec![urge.urge_id],
             generated_at: now,
+            kind: kind.key().into(),
+            why: why_text(kind, &urge.context),
         })
     }
 

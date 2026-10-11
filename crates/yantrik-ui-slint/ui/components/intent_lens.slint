@@ -1203,6 +1203,8 @@ export component IntentLens inherits Rectangle {
     // id from a resolved approval's "View action" — both land in the Agents screen. Also the
     // desktop's own offer, while private, to leave Private mode (`private:leave`).
     callback open-run(string);
+    // "Less of this" under a message the mind said first: the kind to back off (#754).
+    callback less-of-this(string);
 
     // ── Chat v2 ──
     //
@@ -2302,6 +2304,7 @@ export component IntentLens inherits Rectangle {
                                 mind-name: root.mind-name;
                                 group-start: idx == 0 || root.messages[idx - 1].role != msg.role;
                                 open-run(run) => { root.open-run(run); }
+                                less-of-this(kind) => { root.less-of-this(kind); }
                             }
                             // The run this reply started, as one card, kept in step with the
                             // store: the loop finds it by id, so it is updated in place and
