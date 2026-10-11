@@ -25,6 +25,37 @@ NODE_VERSION=24.21.0
 NODE_SHA256_X64=6e1db87ef58b8819e5d5402eff1536491b18edd8eb7bee5ef7897876e88dc5ff
 NODE_SHA256_ARM64=724282c3b43aec998aa9527380465b45d229e021b58035f5f4f63095eabfe5d5
 
+# env_line FILE KEY VALUE — set KEY=VALUE in a dotenv file: the KEY= line is replaced in place,
+# or the pair appended when absent, every other line kept as it was. Hermes 0.21.x reads its
+# authorization flags from its own .env before a plugin loads, so hermes.sh writes one there.
+# The umask 077 subshell means the file is never readable by others, at no moment, even when it
+# is being created; the temp file next to it and the mv mean a reader sees the old file or the
+# new one, never half of either. The value is only ever written, never printed, and the line is
+# matched on `KEY=` so a key that only shares a prefix (FOOBAR for FOO) is left alone.
+env_line() {
+    file=$1 key=$2 value=$3
+    (
+        umask 077
+        dir=$(dirname "$file") || exit 1
+        mkdir -p "$dir" || exit 1
+        tmp=$(mktemp "$dir/.env.XXXXXX") || exit 1
+        trap 'rm -f "$tmp"' EXIT INT TERM
+        found=0
+        if [ -f "$file" ]; then
+            while IFS= read -r line || [ -n "$line" ]; do
+                case $line in
+                    "$key="*) printf '%s=%s\n' "$key" "$value"; found=1 ;;
+                    *) printf '%s\n' "$line" ;;
+                esac
+            done < "$file" > "$tmp"
+        fi
+        # Appending after a last line that had no newline: the read loop above already gave that
+        # line its newline, so the pair always lands on a line of its own.
+        [ "$found" -eq 1 ] || printf '%s=%s\n' "$key" "$value" >> "$tmp"
+        mv "$tmp" "$file" || exit 1
+    ) || fail "could not write $1"
+}
+
 # node_at_least MAJOR.MINOR — the node on PATH is at least that version.
 node_at_least() {
     command -v node >/dev/null 2>&1 || return 1

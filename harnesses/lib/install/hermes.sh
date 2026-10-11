@@ -50,6 +50,13 @@ mkdir -p "$HOME/.hermes/plugins/yantrik"
 cp -r "$plugin/." "$HOME/.hermes/plugins/yantrik/"
 hermes plugins enable yantrik-desktop || fail "Hermes would not enable the desktop plugin"
 
+# On Hermes 0.21.x the plugin's os.environ.setdefault no longer reaches the gateway's
+# authorization check by process env alone, and the desktop's own owner is refused as an
+# "Unauthorized user" and asked for a pairing code. The value has to be in Hermes's own .env,
+# which the gateway reads at start. Allowing every user is safe here because the harness socket
+# sits in a 0700 runtime directory: whoever reaches it is this machine's owner.
+env_line "$(hermes config env-path 2>/dev/null || printf '%s' "$HOME/.hermes/.env")" YANTRIK_ALLOW_ALL_USERS true
+
 # Hermes's gateway as the person's own user service, started now and at every login: nothing
 # else loads the plugin. `--if-missing` leaves one that is already there alone.
 hermes gateway install --if-missing --start-now --start-on-login </dev/null \
