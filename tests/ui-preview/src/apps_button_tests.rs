@@ -121,7 +121,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     save(&draw(), &output.replace(".png", "-chat.png"), width, height)?;
 
     println!(
-        "PASS: the Apps button opens the launcher from the desktop and closes it again; from Files, Notifications, Recipes and Settings it goes to the desktop, puts the Lens away and the launcher is drawn; Chat opens the Lens on the desktop from Files, Settings and Recipes; Show desktop is the bottom-right corner"
+        "PASS: the Apps button opens the launcher from the desktop and closes it again; from Files, Notifications, Recipes and Settings it goes to the desktop, puts the Lens away and the launcher is drawn; Chat opens the Lens beside Files, Settings and Recipes, which stay on screen; Show desktop is the bottom-right corner"
     );
     Ok(())
 }
