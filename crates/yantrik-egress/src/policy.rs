@@ -98,6 +98,10 @@ pub struct Rule {
     /// written by the person. Re-seeding replaces these and never a rule of the person's.
     #[serde(default, skip_serializing_if = "is_false")]
     pub seeded: bool,
+    /// The search queries this rule approves, each at most 200 chars and at most 16 of them. A
+    /// rule without any (or with the field absent) behaves exactly as before: no query is bound.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub search_queries: Vec<String>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -108,6 +112,12 @@ impl Rule {
     pub fn matches(&self, host: &str, port: u16) -> bool {
         self.ports.contains(&port) && host_matches(&self.host, host)
     }
+}
+
+/// Whether `query` is one `rule` approves. A rule with no `search_queries` approves every query:
+/// it binds nothing, so the ordinary case is untouched.
+pub fn search_allowed(rule: &Rule, query: &str) -> bool {
+    rule.search_queries.is_empty() || rule.search_queries.iter().any(|q| q == query)
 }
 
 /// `*.example.com` covers `a.example.com` and `a.b.example.com`, not `example.com` itself.
@@ -348,6 +358,9 @@ pub fn valid(r: &Rule) -> Result<(), String> {
     if r.why.trim().is_empty() || r.why.len() > 200 {
         return Err("a rule says why, in a sentence".into());
     }
+    if r.search_queries.len() > 16 || r.search_queries.iter().any(|q| q.len() > 200) {
+        return Err("a rule approves at most sixteen search queries, each at most 200 characters".into());
+    }
     Ok(())
 }
 
@@ -356,7 +369,7 @@ mod tests {
     use super::*;
 
     fn rule(host: &str, ports: &[u16]) -> Rule {
-        Rule { host: host.into(), ports: ports.to_vec(), http: false, lan: false, why: "because".into(), seeded: false }
+        Rule { host: host.into(), ports: ports.to_vec(), http: false, lan: false, why: "because".into(), seeded: false, search_queries: Vec::new() }
     }
 
     #[test]
@@ -496,7 +509,7 @@ mod tests {
 
     #[test]
     fn reseeding_replaces_seeded_rules_and_never_the_persons() {
-        let seed = |host: &str, port: u16| Rule { host: host.into(), ports: vec![port], http: true, lan: true, why: "seeded from config.yaml".into(), seeded: false };
+        let seed = |host: &str, port: u16| Rule { host: host.into(), ports: vec![port], http: true, lan: true, why: "seeded from config.yaml".into(), seeded: false, search_queries: Vec::new() };
         let mut p = Policy::default();
         p.allow(rule("api.x.ai", &[443])).unwrap();
         let mut own_lan = rule("192.168.4.42", &[8888]);
@@ -575,6 +588,17 @@ mod tests {
     }
 
     #[test]
+    fn a_search_rule_binds_the_query_to_what_was_approved() {
+        let mut r = rule("searxng.lan", &[8888]);
+        r.search_queries = vec!["rust async".into()];
+        assert!(search_allowed(&r, "rust async"));
+        assert!(!search_allowed(&r, "rust async tutorial"), "a neighbour is not the approved query");
+        let open = rule("searxng.lan", &[8888]);
+        assert!(search_allowed(&open, "rust async tutorial"), "no search_queries binds nothing");
+        assert!(search_allowed(&open, "anything"));
+    }
+
+    #[test]
     fn a_rule_the_person_could_not_have_meant_is_refused() {
         for bad in ["", "*", "*.", "localhost", "a b.com", "Example.com", "x.com/path", "x.com.", "*.x.com.", "x.com.."] {
             assert!(valid(&rule(bad, &[443])).is_err(), "{bad}");
@@ -584,6 +608,12 @@ mod tests {
         let mut r = rule("x.com", &[443]);
         r.why = " ".into();
         assert!(valid(&r).is_err());
+        let mut r = rule("x.com", &[443]);
+        r.search_queries = vec!["a".repeat(201)];
+        assert!(valid(&r).is_err(), "a query longer than 200 chars");
+        let mut r = rule("x.com", &[443]);
+        r.search_queries = (0..17).map(|i| format!("q{i}")).collect();
+        assert!(valid(&r).is_err(), "more than sixteen queries");
     }
 
     #[test]

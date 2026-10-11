@@ -19,8 +19,9 @@ pub enum Target {
     /// the request line, `Host` the authority that was decided on, the proxy's own headers
     /// dropped, and `Connection: close`. `body` is how many bytes follow it (`Content-Length`):
     /// exactly that many are forwarded and no more, so one tunnel carries one request, to the
-    /// host that was decided on.
-    Http { host: String, port: u16, head: Vec<u8>, body: u64 },
+    /// host that was decided on. `query` is the percent-decoded first `q=` parameter of the path,
+    /// `None` when the path has none: the one thing a search rule binds to what is sent.
+    Http { host: String, port: u16, head: Vec<u8>, body: u64, query: Option<String> },
 }
 
 /// Why a head was not a request this proxy serves.
@@ -123,7 +124,54 @@ pub fn parse(head: &[u8]) -> Result<Target, Bad> {
         out.push_str(&format!("Content-Length: {body}\r\n"));
     }
     out.push_str("Connection: close\r\n\r\n");
-    Ok(Target::Http { host, port, head: out.into_bytes(), body })
+    Ok(Target::Http { host, port, head: out.into_bytes(), body, query: query_of(&path) })
+}
+
+/// The percent-decoded value of the first `q=` parameter of `path`, `None` when it has none. The
+/// path is forwarded byte for byte; this is only read to bind a search rule to what is sent.
+fn query_of(path: &str) -> Option<String> {
+    let query = path.split_once('?')?.1;
+    for pair in query.split('&') {
+        let (name, value) = pair.split_once('=')?;
+        if name == "q" {
+            return Some(percent_decode(value));
+        }
+    }
+    None
+}
+
+/// `+` is a space and `%XX` is the byte it names, as a form writes a query; anything else stays.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hi = (bytes[i + 1] as char).to_digit(16);
+                let lo = (bytes[i + 2] as char).to_digit(16);
+                match (hi, lo) {
+                    (Some(h), Some(l)) => {
+                        out.push((h * 16 + l) as u8);
+                        i += 3;
+                    }
+                    _ => {
+                        out.push(b'%');
+                        i += 1;
+                    }
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// `host:port`, `[v6]:port`, or `host` with a default port. The host is lowercased, and must be a
@@ -181,7 +229,8 @@ mod tests {
             b"POST http://192.168.4.20:11434/api/chat?x=1 HTTP/1.1\r\nHost: 192.168.4.20:11434\r\nProxy-Authorization: Basic xyz\r\nConnection: keep-alive\r\nContent-Length: 2\r\n\r\n",
         )
         .unwrap();
-        let Target::Http { host, port, head, body } = t else { panic!() };
+        let Target::Http { host, port, head, body, query } = t else { panic!() };
+        assert_eq!(query, None, "no q= parameter");
         assert_eq!((host.as_str(), port, body), ("192.168.4.20", 11434, 2));
         let head = String::from_utf8(head).unwrap();
         assert!(head.contains("Host: 192.168.4.20:11434\r\n"));
@@ -232,6 +281,16 @@ mod tests {
         ] {
             assert!(parse(bad).is_err(), "{:?}", String::from_utf8_lossy(bad));
         }
+    }
+
+    #[test]
+    fn the_first_q_parameter_is_kept_percent_decoded() {
+        let Target::Http { query, .. } = parse(b"GET http://searxng.lan:8888/search?q=rust+async&x=1 HTTP/1.1\r\n\r\n").unwrap() else { panic!() };
+        assert_eq!(query.as_deref(), Some("rust async"));
+        let Target::Http { query, .. } = parse(b"GET http://searxng.lan:8888/search?x=1&q=rust%20async HTTP/1.1\r\n\r\n").unwrap() else { panic!() };
+        assert_eq!(query.as_deref(), Some("rust async"));
+        let Target::Http { query, .. } = parse(b"GET http://searxng.lan:8888/search?x=1 HTTP/1.1\r\n\r\n").unwrap() else { panic!() };
+        assert_eq!(query, None);
     }
 
     #[test]

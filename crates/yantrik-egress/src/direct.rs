@@ -171,7 +171,7 @@ mod tests {
     use crate::policy::{Mode, Rule};
 
     fn rule(host: &str, ports: &[u16], lan: bool) -> Rule {
-        Rule { host: host.into(), ports: ports.to_vec(), http: true, lan, why: "because".into(), seeded: false }
+        Rule { host: host.into(), ports: ports.to_vec(), http: true, lan, why: "because".into(), seeded: false, search_queries: Vec::new() }
     }
 
     #[test]

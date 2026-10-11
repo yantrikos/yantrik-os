@@ -28,7 +28,7 @@ struct Doors {
 }
 
 fn lan(host: &str, ports: &[u16]) -> Rule {
-    Rule { host: host.into(), ports: ports.to_vec(), http: true, lan: true, why: "one of the Mind's endpoints".into(), seeded: true }
+    Rule { host: host.into(), ports: ports.to_vec(), http: true, lan: true, why: "one of the Mind's endpoints".into(), seeded: true, search_queries: Vec::new() }
 }
 
 /// This machine's network, and on it: the ISP's global prefix 2a02:8070:abcd:1::/64, a public IPv4
@@ -177,7 +177,7 @@ async fn the_public_door_lets_the_internet_through() {
     assert_eq!((s.audited, s.refused), (4, 0));
     // In enforce, by a rule like any other.
     let mut p = Policy { mode: Mode::Enforce, rules: vec![] };
-    p.allow(Rule { host: "1.1.1.1".into(), ports: vec![9], http: true, lan: false, why: "a public site".into(), seeded: false }).unwrap();
+    p.allow(Rule { host: "1.1.1.1".into(), ports: vec![9], http: true, lan: false, why: "a public site".into(), seeded: false, search_queries: Vec::new() }).unwrap();
     let d = start("internet-enforce", p).await;
     for code in both(d.public, "1.1.1.1:9").await {
         assert_ne!(code, 403);
@@ -245,7 +245,7 @@ async fn a_home_device_on_a_global_prefix_or_the_router_is_the_home_network() {
     }
     // In guarded, a rule without lan does not open it; one with lan does, on the endpoint door only.
     let mut p = Policy { mode: Mode::Guarded, rules: vec![] };
-    p.allow(Rule { host: "nas.home.example".into(), ports: vec![445], http: true, lan: false, why: "files".into(), seeded: false }).unwrap();
+    p.allow(Rule { host: "nas.home.example".into(), ports: vec![445], http: true, lan: false, why: "files".into(), seeded: false, search_queries: Vec::new() }).unwrap();
     let d = start("home-guarded-rule", p).await;
     for door in [d.endpoint, d.public] {
         assert_eq!(both(door, "nas.home.example:445").await, [403, 403], "a rule without lan");
@@ -306,7 +306,7 @@ async fn with_no_network_ever_read_nothing_is_reached() {
     }
     for mode in Mode::ALL {
         // A rule for it, so enforce gets as far as the lookup too.
-        let rule = Rule { host: "1.1.1.1".into(), ports: vec![443], http: true, lan: false, why: "x".into(), seeded: false };
+        let rule = Rule { host: "1.1.1.1".into(), ports: vec![443], http: true, lan: false, why: "x".into(), seeded: false, search_queries: Vec::new() };
         let d = start_on(&format!("nonet-{mode:?}"), Policy { mode, rules: vec![rule] }, none).await;
         for door in [d.endpoint, d.public] {
             assert_eq!(both(door, "1.1.1.1:443").await, [503, 503], "{mode:?}");

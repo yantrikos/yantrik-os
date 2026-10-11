@@ -126,7 +126,7 @@ mod tests {
         let mut s = State::load(&d);
         assert!(!s.private);
         s.policy.mode = Mode::Enforce;
-        s.policy.allow(Rule { host: "api.x.ai".into(), ports: vec![443], http: false, lan: false, why: "the model".into(), seeded: false }).unwrap();
+        s.policy.allow(Rule { host: "api.x.ai".into(), ports: vec![443], http: false, lan: false, why: "the model".into(), seeded: false, search_queries: Vec::new() }).unwrap();
         s.save_policy().unwrap();
         s.ledger.record("api.x.ai", 443, Outcome::Allowed, false, false, "", 5);
         s.save_ledger().unwrap();
