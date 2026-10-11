@@ -1,0 +1,12 @@
+{
+  "comment": "A copy of yantrik-mind's deploy/private_ranges.json (E.NET1b, at 55842db): the private and special-use ranges a mind may never reach except by a person's rule that says lan. Read by yantrik-egress (src/ranges.rs, include_str!). Keep v4 and v6 identical to the twin; change both or neither. An IPv4-mapped IPv6 address (::ffff:0:0/96) is judged by its embedded IPv4.",
+  "v4": [
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12",
+    "192.0.0.0/24", "192.0.2.0/24", "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24",
+    "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4"
+  ],
+  "v6": [
+    "::/96", "64:ff9b::/96", "64:ff9b:1::/48", "100::/64", "2001::/32", "2001:db8::/32", "2002::/16", "fc00::/7",
+    "fe80::/10", "fec0::/10", "ff00::/8"
+  ]
+}

@@ -69,6 +69,20 @@ fn where_a_path_really_resolves_is_said_and_whether_a_link_took_it_there() {
 }
 
 #[test]
+fn changed_is_the_ctime_and_a_backdated_mtime_does_not_move_it_back() {
+    let (_d, home) = home();
+    let file = home.join("notes/today.txt");
+    let before = stat("~/notes/today.txt", &home)["changed"].as_i64().unwrap();
+    // `touch -d` moves mtime into the past; ctime goes forward instead.
+    let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+    std::fs::File::options().write(true).open(&file).unwrap().set_modified(old).unwrap();
+    let v = stat("~/notes/today.txt", &home);
+    assert_eq!(v["modified"], 1_000_000_000);
+    assert!(v["changed"].as_i64().unwrap() >= before, "ctime never goes back");
+    assert!(v["changed"].as_i64().unwrap() > 1_000_000_000);
+}
+
+#[test]
 fn missing_is_false_and_says_so() {
     let (_d, home) = home();
     let v = stat("~/notes/tomorrow.txt", &home);

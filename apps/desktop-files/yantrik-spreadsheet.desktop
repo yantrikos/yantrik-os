@@ -3,7 +3,7 @@ Type=Application
 Name=ySheets
 Comment=Spreadsheet editor with formulas and charts
 Exec=/opt/yantrik/bin/yantrik-spreadsheet
-# One mark for now: brand/yantrik-mark.svg, installed as hicolor `yantrik`.
+# One mark for now: brand/yantrik-icon.svg, installed as hicolor `yantrik`.
 Icon=yantrik
 Categories=Office;Spreadsheet;
 Keywords=spreadsheet;excel;csv;

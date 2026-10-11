@@ -32,6 +32,9 @@ yantrik-shell-core = { workspace = true }
 # What is running here, resolved in one place: About, the boot screen, Settings and the
 # /etc/os-release the installer writes all say the same string.
 yantrik-version = { workspace = true }
+# Installing into one partition beside macOS or Windows: what can be chosen, the plan, the
+# re-check before writing (wire/installer_partition.rs, wire/installer_boot.rs).
+yantrik-install-target = { workspace = true }
 slint = { workspace = true }
 # Which window had focus, as the compositor reports it (toplevel_watch.rs). Both are already in
 # the lockfile through winit; these name them for the one protocol the shell listens to itself.

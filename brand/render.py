@@ -1,26 +1,21 @@
 #!/usr/bin/env python3
 """
-brand/render.py — every raster this project uses, made from the two SVGs beside it.
+brand/render.py — every raster this project uses, made from the SVGs beside it.
 
-The rule this file exists to enforce is in brand/README.md: `yantrik-mark.svg` and
-`yantrik-wordmark.svg` are the brand. Nothing else is drawn by hand. Favicons, app icons,
-the GitHub avatar and the social cards are all rendered from those two files, so that when
-the mark changes there is exactly one place to change it and one command to run.
+The SVGs are drawn by build.py from one geometry; this file only rasterises and composes them,
+so a change to the mark is a change to build.py and two commands:
 
-    python3 render.py            # wordmark (if the fonts are here) + all rasters + preview
-    python3 render.py --rasters  # rasters only, leave yantrik-wordmark.svg alone
-    python3 render.py --wordmark # regenerate yantrik-wordmark.svg only
+    python3 build.py             # the SVGs
+    python3 render.py            # the SVGs (via build.py) + all rasters + preview.png
+    python3 render.py --rasters  # rasters only, from the SVGs already on disk
 
 Raster backend, in order of preference:
-    1. cairosvg   (python module — `pip install cairosvg`, needs libcairo)
-    2. rsvg-convert (librsvg2-bin, on PATH)
-Pillow is used only to check dimensions, write the .ico container and build the contact
-sheet. Nothing here traces the SVG with Pillow: Pillow cannot render SVG, and a hand-traced
-approximation of the mark is exactly the disease this directory cures.
-
-On Windows, cairosvg generally has no cairo to bind to. Run this from WSL:
-
-    wsl.exe -e bash -lc 'cd /mnt/c/Users/sync/codes/yantrik-os/brand && python3 render.py'
+    1. resvg_py   (pip install resvg-py — the same renderer Slint uses, so a PNG here is what
+                   the OS draws; ships wheels for Windows and Linux, no system library)
+    2. cairosvg   (needs libcairo)
+    3. rsvg-convert (librsvg2-bin, on PATH)
+Pillow only checks dimensions, writes the .ico container and builds the contact sheet. It never
+traces the mark: a hand-traced approximation is exactly the disease this directory cures.
 """
 
 from __future__ import annotations
@@ -34,22 +29,23 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 
-MARK_SVG = HERE / "yantrik-mark.svg"
-WORDMARK_SVG = HERE / "yantrik-wordmark.svg"
+MARK_SVG = HERE / "yantrik-mark.svg"           # the core: favicons and <= 64 px
+EMBLEM_SVG = HERE / "yantrik-emblem.svg"       # the full emblem
+ICON_SVG = HERE / "yantrik-icon.svg"           # the app icon (hicolor 'yantrik')
+WORDMARK_SVG = HERE / "yantrik-wordmark.svg"   # the horizontal lockup
 
 FONT_DIR = HERE / "fonts"
-BARLOW_SEMIBOLD = FONT_DIR / "Barlow-SemiBold.ttf"          # 600 — "Yantrik"
-BARLOW_LIGHT = FONT_DIR / "Barlow-Light.ttf"                # 300 — "OS", and the tagline
+BARLOW_SEMIBOLD = FONT_DIR / "Barlow-SemiBold.ttf"          # 600 — contact-sheet labels
+BARLOW_LIGHT = FONT_DIR / "Barlow-Light.ttf"                # 300 — the tagline
 
-# The boot screen's own values. theme.slint: text-primary #e8eaef, text-secondary #a5afbf.
-INK_PRIMARY = "#e8eaef"
-INK_SECONDARY = "#a5afbf"
+# The tagline's ink: yantrik-design-tokens/slint/theme.slint, text-secondary in dark mode.
+INK_SECONDARY = "#c0c8d6"
 # The ground the product sits on in every published picture of it.
-GROUND = "#0b0d12"
+GROUND = "#05070d"
 
 TAGLINE = "Your computer. More capable."
 
-MARK_PNG_SIZES = (16, 32, 48, 64, 128, 256, 512, 1024)
+ICON_PNG_SIZES = (16, 32, 48, 64, 128, 256, 512, 1024)
 ICO_SIZES = (16, 32, 48)
 
 
@@ -63,6 +59,14 @@ class Backend:
     def __init__(self) -> None:
         self.name = None
         self.cairosvg = None
+        self.resvg = None
+        try:
+            import resvg_py  # type: ignore
+            self.resvg = resvg_py
+            self.name = "resvg_py (Slint's renderer)"
+            return
+        except Exception:
+            pass
         try:
             import cairosvg  # type: ignore
             self.cairosvg = cairosvg
@@ -76,6 +80,7 @@ class Backend:
         if self.name is None:
             sys.exit(
                 "no SVG rasteriser.\n"
+                "  pip install resvg-py      (preferred: Slint's own renderer, wheels everywhere)\n"
                 "  pip install cairosvg      (needs libcairo — works in WSL, rarely on Windows)\n"
                 "  or: sudo apt install librsvg2-bin   (gives rsvg-convert)\n"
                 "Pillow is not an option: it cannot render SVG, and tracing the mark by hand is\n"
@@ -84,6 +89,9 @@ class Backend:
 
     def render(self, svg: str, out: Path, width: int, height: int) -> None:
         out.parent.mkdir(parents=True, exist_ok=True)
+        if self.resvg is not None:
+            out.write_bytes(bytes(self.resvg.svg_to_bytes(svg_string=svg, width=width, height=height)))
+            return
         if self.cairosvg is not None:
             self.cairosvg.svg2png(
                 bytestring=svg.encode("utf-8"),
@@ -187,7 +195,7 @@ def text_metrics(text: str, ttf: Path, size: float):
 # Reusing the two committed SVGs
 # ───────────────────────────────────────────────────────────────────────────────────────
 
-def _inner(svg_path: Path) -> tuple[str, float, float]:
+def _inner(svg_path: Path) -> tuple[str, float, float, float, float]:
     """The drawable body of an SVG file, and its viewBox width/height.
 
     Everything composed below (the OG card, the avatar, the apple icon) is built by
@@ -198,16 +206,18 @@ def _inner(svg_path: Path) -> tuple[str, float, float]:
     m = re.search(r'viewBox="([\d.\s-]+)"', text)
     if not m:
         raise SystemExit(f"{svg_path.name} has no viewBox")
-    _x, _y, w, h = (float(v) for v in m.group(1).split())
+    vx, vy, w, h = (float(v) for v in m.group(1).split())
     body = text.split(">", 1)[1].rsplit("</svg>", 1)[0]
     body = re.sub(r"<title>.*?</title>", "", body, flags=re.S)
     body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
-    return body.strip(), w, h
+    return body.strip(), w, h, vx, vy
 
 
 def place(svg_path: Path, x: float, y: float, scale: float) -> str:
-    body, _w, _h = _inner(svg_path)
-    return f'<g transform="translate({x:.3f} {y:.3f}) scale({scale:.6f})">{body}</g>'
+    """The file's drawing with its viewBox's top-left corner at (x, y), scaled."""
+    body, _w, _h, vx, vy = _inner(svg_path)
+    return (f'<g transform="translate({x - vx * scale:.3f} {y - vy * scale:.3f}) '
+            f'scale({scale:.6f})">{body}</g>')
 
 
 def canvas(width: int, height: int, body: str, ground: str | None = None) -> str:
@@ -217,64 +227,12 @@ def canvas(width: int, height: int, body: str, ground: str | None = None) -> str
 
 
 # ───────────────────────────────────────────────────────────────────────────────────────
-# The wordmark
-# ───────────────────────────────────────────────────────────────────────────────────────
-#
-# The boot screen sets the name at fs-hero/600 in text-primary and the category at the same
-# size in 300 in text-secondary, ten pixels apart, under a 132px mark. This is that lockup
-# turned on its side, because a horizontal one is what a navbar, an OG card and a README
-# header all need. The weights, the colours and the gap ratio are the boot screen's; the
-# type size relative to the mark is the one thing set for the horizontal arrangement, and
-# it is called out in README.md as such.
-
-MARK_BOX = 128.0
-WORDMARK_TYPE_SIZE = 72.0
-GAP_MARK_TO_TEXT = 26.0
-GAP_NAME_TO_CATEGORY = 10.0 * (WORDMARK_TYPE_SIZE / 44.0)   # boot's 10px, at this size
-
-
-def build_wordmark() -> Path:
-    for f in (BARLOW_SEMIBOLD, BARLOW_LIGHT):
-        if not f.exists():
-            sys.exit(f"missing {f} — the wordmark's outlines come from these two files")
-
-    _, cap = text_metrics("Yantrik", BARLOW_SEMIBOLD, WORDMARK_TYPE_SIZE)
-    baseline = MARK_BOX / 2 + cap / 2
-
-    x = MARK_BOX + GAP_MARK_TO_TEXT
-    name_g, name_w = text_group("Yantrik", BARLOW_SEMIBOLD, WORDMARK_TYPE_SIZE,
-                                x, baseline, INK_PRIMARY)
-    x2 = x + name_w + GAP_NAME_TO_CATEGORY
-    cat_g, cat_w = text_group("OS", BARLOW_LIGHT, WORDMARK_TYPE_SIZE,
-                              x2, baseline, INK_SECONDARY)
-    width = x2 + cat_w
-
-    mark = place(MARK_SVG, 0, 0, 1.0)
-    svg = (
-        '<svg xmlns="http://www.w3.org/2000/svg" '
-        f'viewBox="0 0 {width:.3f} {MARK_BOX:.0f}" width="{width:.0f}" height="{MARK_BOX:.0f}" '
-        'role="img" aria-label="Yantrik OS">\n'
-        '  <title>Yantrik OS</title>\n'
-        '  <!-- Generated by brand/render.py from yantrik-mark.svg + brand/fonts/Barlow-*.ttf.\n'
-        '       Do not edit: edit the mark or render.py and re-run. Text is outlines, not <text>,\n'
-        '       so this file renders the same everywhere and needs no font installed. -->\n'
-        f'  {mark}\n'
-        f'  {name_g}\n'
-        f'  {cat_g}\n'
-        '</svg>\n'
-    )
-    WORDMARK_SVG.write_text(svg, encoding="utf-8", newline="\n")
-    print(f"  wordmark  {WORDMARK_SVG.name}  {width:.0f}x{MARK_BOX:.0f}")
-    return WORDMARK_SVG
-
-
-# ───────────────────────────────────────────────────────────────────────────────────────
 # The composed cards
 # ───────────────────────────────────────────────────────────────────────────────────────
 
 def card(width: int, height: int, tagline_size: float, wordmark_fraction: float) -> str:
     """Ground, wordmark centred, tagline under it. The OG card and the social preview."""
-    _body, ww, wh = _inner(WORDMARK_SVG)
+    _body, ww, wh, _vx, _vy = _inner(WORDMARK_SVG)
     scale = (width * wordmark_fraction) / ww
     w, h = ww * scale, wh * scale
 
@@ -290,18 +248,19 @@ def card(width: int, height: int, tagline_size: float, wordmark_fraction: float)
 
 
 def avatar(size: int) -> str:
-    """The mark on the ground, with clear space. Square; GitHub rounds it itself."""
-    mark = size * 0.72                      # 0.14 x size of margin on every side
-    scale = mark / MARK_BOX
-    return canvas(size, size, place(MARK_SVG, (size - mark) / 2, (size - mark) / 2, scale),
+    """The full emblem on the ground. Square; GitHub crops it to a circle, and the emblem's
+    gates sit inside that circle."""
+    _b, w, _h, _x, _y = _inner(EMBLEM_SVG)
+    mark = size * 0.92
+    return canvas(size, size, place(EMBLEM_SVG, (size - mark) / 2, (size - mark) / 2, mark / w),
                   GROUND)
 
 
 def apple_icon(size: int) -> str:
-    """iOS masks to a rounded rect and forbids transparency, so this one gets a ground."""
-    mark = size * 0.78
-    scale = mark / MARK_BOX
-    return canvas(size, size, place(MARK_SVG, (size - mark) / 2, (size - mark) / 2, scale),
+    """iOS masks to a rounded rect and forbids transparency: the core on a full-bleed ground."""
+    _b, w, _h, _x, _y = _inner(MARK_SVG)
+    mark = size * 0.86
+    return canvas(size, size, place(MARK_SVG, (size - mark) / 2, (size - mark) / 2, mark / w),
                   GROUND)
 
 
@@ -312,11 +271,12 @@ def apple_icon(size: int) -> str:
 def render_all(backend: Backend) -> list[tuple[Path, str]]:
     made: list[tuple[Path, str]] = []
     mark_svg = MARK_SVG.read_text(encoding="utf-8")
+    icon_svg = ICON_SVG.read_text(encoding="utf-8")
 
-    for n in MARK_PNG_SIZES:
-        out = HERE / f"yantrik-mark-{n}.png"
-        backend.render(mark_svg, out, n, n)
-        made.append((out, f"mark {n}"))
+    for n in ICON_PNG_SIZES:
+        out = HERE / f"yantrik-icon-{n}.png"
+        backend.render(icon_svg, out, n, n)
+        made.append((out, f"icon {n}"))
 
     out = HERE / "apple-icon-180.png"
     backend.render(apple_icon(180), out, 180, 180)
@@ -413,8 +373,8 @@ def contact_sheet(made: list[tuple[Path, str]]) -> Path:
             else:
                 tiles.append((label, f"{im.size[0]}x{im.size[1]}", im.convert("RGBA").copy()))
 
-    icons = [t for t in tiles if t[0].startswith("mark ") or t[0] == "favicon.ico"]
-    wide = [t for t in tiles if not (t[0].startswith("mark ") or t[0] == "favicon.ico")]
+    icons = [t for t in tiles if t[0].startswith("icon ") or t[0] == "favicon.ico"]
+    wide = [t for t in tiles if not (t[0].startswith("icon ") or t[0] == "favicon.ico")]
 
     def ladder(ground) -> Image.Image:
         """Every icon, at actual pixels up to 128, wrapped, on one ground."""
@@ -485,18 +445,13 @@ def contact_sheet(made: list[tuple[Path, str]]) -> Path:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--wordmark", action="store_true", help="regenerate yantrik-wordmark.svg only")
-    ap.add_argument("--rasters", action="store_true", help="rasters only")
+    ap.add_argument("--rasters", action="store_true", help="rasters only, from the SVGs on disk")
     args = ap.parse_args()
 
-    do_wordmark = args.wordmark or not args.rasters
-    do_rasters = args.rasters or not args.wordmark
-
-    if do_wordmark:
-        print("wordmark")
-        build_wordmark()
-    if not do_rasters:
-        return 0
+    if not args.rasters:
+        print("svgs — build.py")
+        import build
+        build.build()
 
     backend = Backend()
     print(f"\nrasters — backend: {backend.name}")

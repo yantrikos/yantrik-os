@@ -27,6 +27,7 @@ mod approval_tests;
 mod approval_fit_tests;
 mod approval_expiry_tests;
 mod approval_precedence_tests;
+mod approval_pane_tests;
 mod dock_tests;
 mod taskbar_menu_tests;
 mod alt_tab_tests;

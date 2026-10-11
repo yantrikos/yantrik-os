@@ -29,6 +29,7 @@
 // The agent catalog — roles work can be handed to — and the reach each role's agent is held to
 // (design/desk-and-mind-2026-09-23.md, section 5).
 pub mod catalog;
+mod erasing;
 pub mod feed;
 pub mod handover;
 pub mod launch;
@@ -38,10 +39,12 @@ pub mod reaches;
 pub mod store;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 pub use model::{AgentId, AgentMeta, ApprovalOutcome, CallState, Event, Provenance, RecipeOrigin, RoleMeta, State, Stream, Tab};
+pub use erasing::Redactor;
 pub use store::{RowKey, Store};
 
 /// The title every popped-out agent window starts with, so the window list can tell an agent's
@@ -67,6 +70,14 @@ pub struct Agents {
     store: Mutex<Store>,
     dir: PathBuf,
     saved: Mutex<Instant>,
+    /// Held while sessions are written.
+    ///
+    /// Lock order, everywhere: `disk` before `store`. Nothing takes `disk` while holding `store`.
+    disk: Mutex<()>,
+    /// Counts erasures, bumped under both locks: a save taken before an erasure is stale, and is
+    /// not written over the erased file (see [`Agents::redact`]). Read without a lock, so the UI
+    /// thread's save never waits on an erasure's disk writes.
+    erased: AtomicU64,
 }
 
 static AGENTS: OnceLock<Agents> = OnceLock::new();
@@ -88,7 +99,7 @@ pub fn store() -> &'static Agents {
         #[cfg(test)]
         let store = store.keeping(usize::MAX);
         tracing::info!(agents = store.agents().len(), dir = %dir.display(), "Agents loaded");
-        Agents { store: Mutex::new(store), dir, saved: Mutex::new(Instant::now()) }
+        Agents { store: Mutex::new(store), dir, saved: Mutex::new(Instant::now()), disk: Mutex::new(()), erased: AtomicU64::new(0) }
     })
 }
 
@@ -199,16 +210,39 @@ impl Agents {
             }
             *saved = Instant::now();
         }
+        self.save_now();
+    }
+
+    /// Write out what changed, now.
+    fn save_now(&self) {
+        // Which erasure this save is taken after, read before the store is. An erasure bumps it
+        // under the store's lock, so one that comes between the two makes this save stale, and it
+        // is dropped below; one that came before is in what the save takes.
+        let erasures = self.erasures();
         let (writes, deletes) = self.lock().take_dirty(&self.dir);
         if writes.is_empty() && deletes.is_empty() {
             return;
         }
         let dir = self.dir.clone();
         let _ = std::thread::Builder::new().name("agents-save".into()).spawn(move || {
+            let agents = store();
+            let disk = agents.disk.lock().unwrap_or_else(|e| e.into_inner());
+            if agents.erasures() != erasures {
+                // An erasure was written since this save was taken: what it holds may be the
+                // words the person had erased. Everything is written again, fresh, next time,
+                // and the files it would have deleted are deleted then.
+                drop(disk);
+                agents.lock().mark_all_dirty(&deletes, &dir);
+                return;
+            }
             if let Err(e) = store::write_all(&dir, &writes, &deletes) {
                 tracing::warn!(error = %e, dir = %dir.display(), "Could not save the agents' sessions");
             }
         });
+    }
+
+    fn erasures(&self) -> u64 {
+        self.erased.load(Ordering::SeqCst)
     }
 }
 
@@ -235,11 +269,11 @@ pub fn settle_approvals(status_of: impl Fn(&str) -> Option<(ApprovalOutcome, Str
 }
 
 /// The fields of an agent's `describe shell` entry that are the person's: what they asked it
-/// (`title`), what it says it is doing, the commands it ran and the files it touched, and what is
-/// waiting on the person for it. Another mind reading `describe` is told none of them — only that
+/// (`title`), what it says it is doing, the commands it ran and the files it touched, what is
+/// waiting on the person for it, and what they had erased. Another mind reading `describe` is told none of them — only that
 /// the agent exists, which mind it is, how it stands and the counts — the same boundary as
 /// `read_agent`, which lets an agent read itself and the agents it started, and nothing else.
-pub const PERSONS_FIELDS: [&str; 6] = ["title", "status", "commands", "files", "pending_approvals", "running_jobs"];
+pub const PERSONS_FIELDS: [&str; 7] = ["title", "status", "commands", "files", "pending_approvals", "running_jobs", "erased"];
 
 /// `for_describe`'s answer as an agent may read it: each entry with [`PERSONS_FIELDS`] taken out
 /// and marked `private`.
@@ -313,6 +347,11 @@ pub fn for_describe() -> serde_json::Value {
                     "files": d.files,
                     "approvals": { "asked": d.approvals_asked, "answered": d.approvals_answered },
                     "one_conversation": !a.meta.conversations,
+                    // What was erased at the person's request: how many places and when, never
+                    // the words ("Erased 3 places at your request.").
+                    "erased": a.erasures.iter().map(|e| serde_json::json!({
+                        "request": e.request, "places": e.places, "at": e.at, "said": e.line(),
+                    })).collect::<Vec<_>>(),
                 })
             })
             .collect();
@@ -414,5 +453,36 @@ mod tests {
         assert_eq!(kid_entry["role"]["budget"], json!({"turns": 4, "minutes": 15}));
         assert!(!described.to_string().contains("agent_token"), "{described}");
         jobs.kill(&pi, &job).unwrap();
+    }
+
+    /// An erasure rewrites the agent's saved session before it returns, shows in `describe` as a
+    /// count and never the words, and makes any save taken before it stale.
+    #[test]
+    fn an_erasure_is_on_disk_when_it_returns_and_describe_says_how_many_places() {
+        use yantrik_harness::host::ShellErasure;
+        use yantrik_harness::redact::{Needle, MARKER};
+        let pi = AgentId::new("erasing", "c-e1");
+        store().open_turn(&pi, "my sister is Priya");
+        store().text(&pi, "Noted, Priya.");
+        store().close_turn(&pi, true);
+        let before = store().erasures();
+        let needles = [Needle::of("Priya")];
+        let done = store()
+            .redact(&pi, &ShellErasure { request_id: "forget-1", needles: &needles, places_in_runs: 1 })
+            .unwrap();
+        assert_eq!(done.places, 3, "the prompt, the title and the reply");
+        assert_ne!(store().erasures(), before, "a save taken before it is stale now");
+
+        let saved = std::fs::read_to_string(store::file_for(&store().dir, &pi)).unwrap();
+        assert!(!saved.contains("Priya"), "{saved}");
+        assert!(saved.contains(MARKER));
+        let described = for_describe();
+        let entry = described["agents"].as_array().unwrap().iter().find(|a| a["id"] == "erasing:c-e1").unwrap().clone();
+        assert_eq!(entry["erased"][0]["places"], 4);
+        assert_eq!(entry["erased"][0]["said"], "Erased 4 places at your request.");
+        assert!(!described.to_string().contains("Priya"));
+        let by_an_agent = for_describe_by_an_agent();
+        let entry = by_an_agent["agents"].as_array().unwrap().iter().find(|a| a["id"] == "erasing:c-e1").unwrap().clone();
+        assert!(entry.get("erased").is_none(), "what the person had erased is theirs");
     }
 }

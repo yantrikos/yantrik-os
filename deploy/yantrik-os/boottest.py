@@ -24,6 +24,9 @@ import time
 
 import argparse
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import private_addresses  # noqa: E402
+
 parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument("iso")
@@ -217,10 +220,16 @@ ssh_word = ssh_state.strip().splitlines()[-1].strip() if ssh_state.strip() else 
 check("sshd is not enabled beside a published password",
       ssh_word in ("disabled", "masked", "not-found") or "No such file" in ssh_state, ssh_state)
 
-private = ask("grep -rhoE '(192\\.168|10\\.[0-9]+)\\.[0-9]+\\.[0-9]+' /opt/yantrik/config.yaml "
-              "/opt/yantrik/update.conf /opt/yantrik/bin/yantrik-update 2>/dev/null | sort -u | head -5; echo scanned")
-check("no private network address ships in the config or the updater",
-      private.strip() == "scanned", private)
+# The config names no private address at all; the updater names them only as ranges in CIDR or
+# inside its marked selftest, and nothing anywhere on 192.168.4.x (private_addresses.py says why).
+# grep runs in the guest, where the files are; only its matches come back to be judged here.
+private_files = ["/opt/yantrik/config.yaml", "/opt/yantrik/update.conf", "/opt/yantrik/bin/yantrik-update"]
+private = ask("grep -HnoE '%s' %s 2>/dev/null; echo scanned" % (private_addresses.GREP_ERE, " ".join(private_files)))
+private_found = private_addresses.parse_grep(private.replace("scanned", ""))
+private_found.setdefault(private_files[-1], [])
+private_bad = private_addresses.problems(private_found)
+check("no real network address ships in the config or the updater",
+      private.strip().endswith("scanned") and not private_bad, private_bad or private)
 
 update_conf = ask("cat /opt/yantrik/update.conf")
 check("the updater is pointed at the public host over https",

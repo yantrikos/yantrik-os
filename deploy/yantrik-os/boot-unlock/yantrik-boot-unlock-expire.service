@@ -1,0 +1,18 @@
+# The typed-unlock marker is good for five minutes (consume's WINDOW). This waits out what is left
+# of them and deletes it, so a marker no shell asked for never outlives its window.
+[Unit]
+Description=Yantrik OS: forget an unused typed-unlock marker once its five minutes are over
+ConditionPathExists=/run/yantrik-unlock/typed
+
+[Service]
+Type=exec
+ExecStart=/usr/lib/yantrik/boot-unlock/consume expire
+PrivateNetwork=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=-/run/yantrik-unlock
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

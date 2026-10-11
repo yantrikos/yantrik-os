@@ -8,6 +8,7 @@
 //! its own thread. Nothing here blocks on the network: the callbacks below issue a command and
 //! return, and a timer redraws the list when the engine says something changed.
 
+mod agent_rule;
 mod engine;
 
 use std::cell::RefCell;
@@ -565,6 +566,17 @@ fn publish_control(app: &DownloadManagerApp, engine: Engine) {
                 save_dir.to_string()
             };
             let checksum = args["sha256"].as_str().unwrap_or_default();
+            // An agent saves only where it may write a file at all (agent_rule.rs). The person's
+            // own default folder is made first, so "no folder given" never fails as "not there".
+            let dir = if save_dir.trim().is_empty() {
+                engine.default_dir().to_path_buf()
+            } else {
+                engine::expand_home(save_dir.trim())
+            };
+            if dir == engine.default_dir() {
+                std::fs::create_dir_all(&dir).map_err(|e| format!("cannot use {}: {e}", dir.display()))?;
+            }
+            agent_rule::may_save(&dir, &engine::filename_from_url(&url))?;
             let id = settle(&ui, &engine, engine.add(&url, checksum, Some(save_dir.as_str())))?;
             let download = engine.get(id).ok_or("the download vanished as it was queued")?;
             Ok(serde_json::json!({
@@ -594,7 +606,10 @@ fn publish_control(app: &DownloadManagerApp, engine: Engine) {
     App::new("download-manager")
         .describe(describe)
         .action(
+            // `sensitive`: it fetches a URL the caller chose and writes the result as the person.
+            // In `ask` mode an agent's download now shows the person the URL and the folder first.
             Action::new("add", "Download a URL to this machine")
+                .risk("sensitive")
                 .defers()
                 .arg(Param::text("url").describe("The http(s) URL to fetch"))
                 .arg(
@@ -644,7 +659,16 @@ fn publish_control(app: &DownloadManagerApp, engine: Engine) {
             Action::new("retry", "Start a failed download again from the beginning")
                 .defers()
                 .arg(Param::integer("id")),
-            reporting(engine.clone(), window.clone(), |engine, id| engine.retry(id)),
+            // An agent retries only what did not finish: `retry` deletes the file first, and on a
+            // finished download that is a file the person already has.
+            reporting(engine.clone(), window.clone(), |engine, id| {
+                if yantrik_app_runtime::control::agent_is_calling()
+                    && engine.get(id).is_some_and(|d| d.status == Status::Completed)
+                {
+                    return Err(format!("download {id} finished; an agent may not delete it to fetch it again"));
+                }
+                engine.retry(id)
+            }),
         )
         .action(
             Action::new("verify", "Hash a finished file again and compare it with a checksum")

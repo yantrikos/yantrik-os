@@ -1,0 +1,23 @@
+[package]
+id = "com.yantrikos.perception-journal"
+name = "Perception Journal"
+version = "0.1.0"
+description = "Drains perception-service into a durable journal, so an outage upstream of memory is recoverable rather than silent"
+publisher = "Yantrik OS"
+roles = ["service"]
+icon = "journal"
+
+[[permissions]]
+capability = "filesystem.user_data"
+reason = "Keeps its journal under ~/.local/state/yantrik/perception-journal, capped at 64 MiB with the oldest segments deleted past the cap"
+
+[service]
+binary = "perception-journal"
+methods = [
+    "journal.status",
+    "journal.since",
+]
+# Autostarted: it needs no privilege, and while perception-service is not running it costs
+# one failed connect every 15 s. It must be up before perception is, or the ring overwrites
+# before anything drains it.
+autostart = true
