@@ -109,9 +109,11 @@ pub fn verb_of(action: &str) -> String {
 }
 
 /// Whether the card has to name its target: the app declared a namer for the action, or the
-/// action takes a named thing away.
-pub fn needed(action: &str, declared: bool) -> bool {
-    declared || acts_on_object(action)
+/// action takes a named thing away and is told which one. An action that takes no arguments
+/// (Text Editor's `discard`, which acts on the tab the window is already asking about) has no
+/// target a caller could choose or hide, so there is nothing to name and its card is what it was.
+pub fn needed(action: &str, declared: bool, takes_args: bool) -> bool {
+    declared || (takes_args && acts_on_object(action))
 }
 
 /// The store's rule: a destructive card whose target was asked for and not named cannot be

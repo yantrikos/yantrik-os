@@ -74,8 +74,12 @@ fn which_actions_take_a_named_thing_away() {
     }
     assert_eq!(verb_of("files_delete"), "delete");
     assert_eq!(verb_of("kill_process"), "kill");
-    assert!(needed("update_event", true), "a declared namer is asked whatever the verb");
-    assert!(!needed("update_event", false));
+    assert!(needed("update_event", true, true), "a declared namer is asked whatever the verb");
+    assert!(needed("update_event", true, false), "a declared namer is asked even with no arguments");
+    assert!(!needed("update_event", false, true));
+    assert!(needed("delete_event", false, true), "a destructive verb told which one must name it");
+    // Text Editor's `discard`: no arguments, so no target a caller chose; its card stays allowable.
+    assert!(!needed("discard", false, false));
 }
 
 /// The rule: Decline only, on a destructive card whose target was asked for and not named. A

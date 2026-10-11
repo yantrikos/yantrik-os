@@ -992,7 +992,8 @@ fn published_detail_full_in(
     // The handles the rows stand for are the ones the action declared here, fixed for the action
     // (security review of #652, L2), never ones an answer lists for one call.
     let declared = entry.and_then(|a| a["names_target"].as_bool()).unwrap_or(false);
-    let asking = if !crate::approval_target::needed(action, declared) {
+    let takes_args = params.as_ref().is_some_and(|p| !p.is_empty());
+    let asking = if !crate::approval_target::needed(action, declared, takes_args) {
         TargetAsk::NotNeeded
     } else if declared {
         let handles = entry
