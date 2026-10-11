@@ -323,16 +323,21 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // right, and the Calendar window covered it completely — only the card's orange
                 // border showed past the edge. The person would never have seen it and the
                 // request would have expired on its own. The shell is an ordinary toplevel to
-                // labwc, so it has to ask to come forward, exactly as `open_lens` does for the
-                // same reason (see its comment in control.rs — the Lens once opened underneath
-                // Notes). Off the UI thread: wlrctl is a process.
+                // labwc, so it has to ask to come forward. Off the UI thread: wlrctl is a process.
                 //
                 // Only for a question the person has not already been shown. A repeat of an
                 // identical pending request hands back the card that is already up, and raising
                 // the shell again for it would let anything that can call a `safe` action hold
                 // somebody's screen by asking the same thing in a loop.
+                //
+                // Except a card the Lens hosts while the Lens is up (#733): it is drawn in the
+                // Lens's own window, which the compositor keeps above every other, so it is
+                // already in front of the person, and raising the fullscreen shell would only put
+                // their work behind the desktop.
                 if asked.fresh {
-                    take_the_screen();
+                    if !crate::card_watch::lens_holds_the_card() {
+                        take_the_screen();
+                    }
                     // And say so where everything else is said. The card is on screen for two
                     // minutes; the notification is what is still there afterwards, so a person
                     // who was away learns that a mind asked for something and got no answer.
@@ -1979,7 +1984,9 @@ fn publish(ui: &App, cards: Vec<Card>, pane: &str, lens: &str) {
     //
     // Whether the card in front is the Lens's own: only then does an open Lens stand in for the
     // top-right card. A card the Lens does not host stays in the corner, over the Lens.
-    ui.set_approval_in_lens(front.is_some_and(|c| in_the_lens(c, lens)));
+    let in_lens = front.is_some_and(|c| in_the_lens(c, lens));
+    ui.set_approval_in_lens(in_lens);
+    crate::card_watch::card_in_lens(in_lens);
     // Written into the models already on screen, row by row, whenever the same requests are
     // there: this runs every second while a card waits, and a new model makes Slint rebuild the
     // card — which dropped how far the person had scrolled, whether they had read to the end
@@ -3103,12 +3110,15 @@ mod control_approvals_tests {
         assert!(!super::in_the_lens(&card("appr-9", Status::Pending, ""), ""), "no agent is no Lens's");
         assert!(super::in_the_lens(&card("appr-9", Status::Pending, "pi:main"), "pi:main"));
 
-        // The overlay hides for the Lens only on the Lens's own card.
+        // The overlay hides for the Lens only on the Lens's own card, over any screen: the Lens is
+        // a window of its own now (#733), up wherever the shell is not locked.
         let app = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../yantrik-ui-slint/ui/app.slint")).unwrap();
         assert!(
-            app.contains("!(root.lens-open && root.lens-chat-mode && root.current-screen == 1 && root.approval-in-lens)"),
+            app.contains("!(root.lens-shown && root.lens-chat-mode && root.approval-in-lens)"),
             "the top-right card steps aside for an open Lens only when the Lens hosts the card"
         );
+        // And the card the Lens does not host sits left of the Lens's window, never under it.
+        assert!(app.contains("- root.lens-strip;"), "the corner card keeps clear of the Lens's strip");
         let src = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/control_approvals.rs")).unwrap();
         let src = src.split("#[cfg(test)]").next().unwrap();
         assert!(src.contains("!lens.is_empty() && card.verified.agent == lens"), "the Lens matches by the verified agent alone");

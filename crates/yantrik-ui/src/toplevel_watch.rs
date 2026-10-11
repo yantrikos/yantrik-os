@@ -169,6 +169,30 @@ pub fn recency() -> Vec<String> {
     LOG.lock().map(|log| log.recent.iter().map(|(_, t)| t.clone()).collect()).unwrap_or_default()
 }
 
+/// What the focus log says now: the window in front, the one before it, and whether the shell
+/// took focus from that one a moment ago (a press on its own bar or dock). `None` when the stream
+/// is not being followed. The Lens's window reads it as it opens, to know whose keyboard it is
+/// borrowing (lens_focus.rs).
+pub fn focus_now() -> Option<FocusNow> {
+    if !LIVE.load(Ordering::Relaxed) {
+        return None;
+    }
+    let log = LOG.lock().ok()?;
+    Some(FocusNow {
+        current: log.current.as_ref().map(|(k, t)| (id_of(k), t.clone())),
+        previous: log.previous.as_ref().map(|(k, t)| (id_of(k), t.clone())),
+        shell_just_now: log.shell_took_focus_just_now(SHELL_WINDOW_TITLE, Instant::now()),
+    })
+}
+
+/// One reading of the focus log, by protocol id and title (see [`focus_now`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FocusNow {
+    pub current: Option<(u64, String)>,
+    pub previous: Option<(u64, String)>,
+    pub shell_just_now: bool,
+}
+
 /// Whether the window called `title` was the one in front when the person pressed its taskbar
 /// entry. `false` whenever that is not known, because the cost of a wrong `true` is a window put
 /// away that the person asked to see.
@@ -243,8 +267,13 @@ impl<K: PartialEq + Clone> FocusLog<K> {
             // whatever is activated now is what was in front.
             return current == title;
         }
-        let just_now = self.since.is_some_and(|at| now.saturating_duration_since(at) <= CLICK_TOOK_FOCUS);
-        just_now && self.previous.as_ref().is_some_and(|(_, t)| t == title)
+        self.shell_took_focus_just_now(shell, now) && self.previous.as_ref().is_some_and(|(_, t)| t == title)
+    }
+
+    /// The shell is in front, and it took focus recently enough to be a press's own doing.
+    fn shell_took_focus_just_now(&self, shell: &str, now: Instant) -> bool {
+        self.current.as_ref().is_some_and(|(_, t)| t == shell)
+            && self.since.is_some_and(|at| now.saturating_duration_since(at) <= CLICK_TOOK_FOCUS)
     }
 }
 
@@ -284,7 +313,7 @@ impl Watch {
             *snap = self
                 .windows
                 .iter()
-                .filter(|(_, w)| !w.title.is_empty())
+                .filter(|(_, w)| !w.title.is_empty() && !crate::windows::is_shell_furniture(&w.title))
                 .map(|(k, w)| TopWindow { id: id_of(k), title: w.title.clone(), app_id: w.app_id.clone() })
                 .collect();
         }
@@ -298,8 +327,15 @@ impl Watch {
         &mut self.windows.last_mut().expect("just pushed").1
     }
 
+    /// The activated window, unless it is one of the shell's own furniture windows (the Lens, the
+    /// on-screen display): those are never the window a person was using, nor one a card must
+    /// come back in front of. labwc keeps them out of this stream (`skipTaskbar` in rc.xml); this
+    /// holds if a compositor does not.
     fn front(&self) -> Option<(ObjectId, String)> {
-        self.windows.iter().find(|(_, w)| w.activated).map(|(k, w)| (k.clone(), w.title.clone()))
+        self.windows
+            .iter()
+            .find(|(_, w)| w.activated && !crate::windows::is_shell_furniture(&w.title))
+            .map(|(k, w)| (k.clone(), w.title.clone()))
     }
 }
 
@@ -471,6 +507,19 @@ mod tests {
         log.observe(Some((0, SHELL.into())), t + Duration::from_millis(5));
         assert!(log.was_in_front("Notes", SHELL, t + Duration::from_millis(150)));
         assert!(!log.was_in_front("Terminal", SHELL, t + Duration::from_millis(150)));
+    }
+
+    /// The Lens opening from the dock asks the same question of the log (lens_focus): did the
+    /// shell take focus a moment ago, from a press, or has the person been on the desktop a while?
+    #[test]
+    fn the_shell_taking_focus_from_a_press_is_told_from_the_shell_in_front() {
+        let (mut log, t) = log();
+        log.observe(Some((1, "Notes".into())), t);
+        log.observe(Some((0, SHELL.into())), t + Duration::from_millis(5));
+        assert!(log.shell_took_focus_just_now(SHELL, t + Duration::from_millis(200)), "a press on the dock");
+        assert!(!log.shell_took_focus_just_now(SHELL, t + Duration::from_secs(5)), "the desktop, a while");
+        log.observe(Some((1, "Notes".into())), t + Duration::from_secs(6));
+        assert!(!log.shell_took_focus_just_now(SHELL, t + Duration::from_secs(6)), "Notes is in front, not the shell");
     }
 
     /// The person was on the desktop, and Notes is behind it. Its entry brings it forward.

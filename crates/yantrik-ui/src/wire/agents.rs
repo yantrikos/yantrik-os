@@ -32,9 +32,9 @@ use crate::agents::{self, feed, launch, AgentId, Store};
 use crate::app_context::AppContext;
 use super::agents_workroom as workroom;
 use crate::{
-    AccentPreset, AgentDetailsData, AgentHeaderData, AgentItemData, AgentMindData, AgentRoleData,
+    AgentDetailsData, AgentHeaderData, AgentItemData, AgentMindData, AgentRoleData,
     AgentRunData, AgentWindow, AgentsState, App, ApprovalRequest, ChangeRowData, ChildRunData, DecisionData,
-    DeskCardData, ResultData, RunFactData, ThemeMode, ThemeOverrides, ToolCallData, WorkCardData, WorkNavData,
+    DeskCardData, ResultData, RunFactData, ToolCallData, WorkCardData, WorkNavData,
 };
 use super::lens_work;
 
@@ -1997,30 +1997,10 @@ fn held_for_test(notice: &Notice, test_run: bool) -> bool {
     test_run && matches!(notice, Notice::Finished { .. })
 }
 
-/// A window has its own copy of every global, so it takes the shell's theme — dark or light, the
-/// accent, any community theme — from the shell, and keeps taking it.
+/// A window has its own copy of every global, so it takes the shell's theme from the shell, and
+/// keeps taking it (`theme_sync`, shared with the Lens's window).
 fn sync_theme(ui: &App, window: &AgentWindow) {
-    macro_rules! copy {
-        ($global:ty, $get:ident, $set:ident) => {{
-            let want = ui.global::<$global>().$get();
-            if window.global::<$global>().$get() != want {
-                window.global::<$global>().$set(want);
-            }
-        }};
-    }
-    copy!(ThemeMode, get_dark, set_dark);
-    copy!(AccentPreset, get_index, set_index);
-    copy!(ThemeOverrides, get_enabled, set_enabled);
-    copy!(ThemeOverrides, get_bg_deep_override, set_bg_deep_override);
-    copy!(ThemeOverrides, get_bg_surface_override, set_bg_surface_override);
-    copy!(ThemeOverrides, get_bg_card_override, set_bg_card_override);
-    copy!(ThemeOverrides, get_bg_elevated_override, set_bg_elevated_override);
-    copy!(ThemeOverrides, get_amber_override, set_amber_override);
-    copy!(ThemeOverrides, get_cyan_override, set_cyan_override);
-    copy!(ThemeOverrides, get_text_primary_override, set_text_primary_override);
-    copy!(ThemeOverrides, get_text_secondary_override, set_text_secondary_override);
-    copy!(ThemeOverrides, get_text_dim_override, set_text_dim_override);
-    copy!(ThemeOverrides, get_accent_override, set_accent_override);
+    super::theme_sync::sync_theme!(ui, window);
 }
 
 /// All of a call's output, in the Editor: written to a file beside the sessions and opened there.
@@ -2373,11 +2353,14 @@ mod tests {
         assert!(header.contains("clicked => { root.open-in-agents(); }"));
         let lens = read("../yantrik-ui-slint/ui/components/intent_lens.slint");
         assert!(lens.contains("open-in-agents => { root.open-in-agents(); }"));
-        let desktop = read("../yantrik-ui-slint/ui/desktop.slint");
-        assert!(desktop.contains("open-in-agents => { root.lens-open-in-agents(); }"));
-        assert!(desktop.contains("can-open-in-agents: root.lens-can-open-in-agents;"));
+        // The Lens's own window (#733) forwards it to the App's callback, which this file answers.
+        let window = read("../yantrik-ui-slint/ui/lens_window.slint");
+        assert!(window.contains("open-in-agents => { root.open-in-agents(); }"));
+        assert!(window.contains("can-open-in-agents: root.view.can-open-in-agents;"));
         let app = read("../yantrik-ui-slint/ui/app.slint");
-        assert!(app.contains("lens-open-in-agents => { root.lens-open-in-agents(); }"));
+        assert!(app.contains("can-open-in-agents: root.lens-can-open-in-agents,"));
+        let forward = read("src/wire/lens_window.rs");
+        assert!(forward.contains("to_app!(on_open_in_agents => invoke_lens_open_in_agents());"));
         let this = read("src/wire/agents.rs");
         assert!(this.contains("ui.on_lens_open_in_agents(") && this.contains("feed::main_agent(&host.active_id())"));
     }
@@ -2996,8 +2979,8 @@ mod first_prompt_attribution_tests {
         // `answer_for`; it has no answering of its own.
         let app = read("../yantrik-ui-slint/ui/app.slint");
         assert!(app.contains("question-answer(agent, request, answer, pressed) => { AgentsState.answer-question(agent, request, answer, pressed); }"));
-        let desktop = read("../yantrik-ui-slint/ui/desktop.slint");
-        assert!(desktop.contains("questions: root.questions;"), "the desktop screen hands the Lens its questions");
+        let window = read("../yantrik-ui-slint/ui/lens_window.slint");
+        assert!(window.contains("questions: root.view.questions;"), "the Lens's window hands the Lens its questions");
         let lens = read("../yantrik-ui-slint/ui/components/intent_lens.slint");
         assert!(lens.contains("for q in root.questions : QuestionCard"), "the Lens draws them");
     }

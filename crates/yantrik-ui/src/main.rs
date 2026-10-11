@@ -109,6 +109,8 @@ mod i18n;
 #[allow(dead_code)]
 mod mime_dispatch;
 mod lens;
+/// Where the keyboard goes when the Lens's window opens and closes (#733).
+mod lens_focus;
 /// The Lens's conversation put back from the saved session when it opens empty (#246).
 mod lens_history;
 mod lock;

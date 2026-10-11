@@ -1398,9 +1398,9 @@ pub fn publish(
             // `safe`: it shows a panel. Nothing is sent, nothing is spawned, nothing is written.
             //
             // The answer is the OBSERVED state, read back off the shell after the calls, not an
-            // `accepted: true` — which was the point of the exercise. The Lens is drawn by the
-            // desktop screen and nowhere else, so opening it means going to the desktop first;
-            // if that did not take, `lens_open` comes back false and the caller knows.
+            // `accepted: true` — which was the point of the exercise. The Lens is not opened over
+            // the lock or login screen (the surface's locked-desktop rule refuses there), and if
+            // it did not take, `lens_open` comes back false and the caller knows.
             Action::new("open_lens", "Open the ask bar (the Lens) and put the cursor in it")
                 .risk("safe")
                 .arg(
@@ -1412,14 +1412,8 @@ pub fn publish(
                 let ui = lens_ui()?;
                 let text = args["text"].as_str().unwrap_or_default().to_string();
 
-                // The Lens lives on the desktop screen. Set-then-invoke, the pair every caller
-                // in the shell uses: the property shows the screen, `navigate` loads it.
-                if ui.get_current_screen() != 1 {
-                    ui.set_current_screen(1);
-                    ui.invoke_navigate(1);
-                }
-
-                // Prefilled before the panel opens, so the results the Lens builds on open are
+                // The Lens is a window of its own (#733): it opens over whatever screen is up, so
+                // the screen is left where it is. Prefilled before the panel opens, so the results the Lens builds on open are
                 // the results for this text rather than for an empty field.
                 if !text.is_empty() {
                     ui.set_lens_input_text(text.clone().into());
@@ -1434,24 +1428,10 @@ pub fn publish(
                 // Whoever calls this is, by construction, somewhere else: Ctrl+K already works
                 // when the shell has the keyboard, so this action is what Super+K reaches for
                 // from inside another window. The first time it ran on a machine with Notes in
-                // front, it answered `lens_open: true` and was right — the Lens had opened,
-                // underneath Notes, where nobody could see it or type into it. The shell is an
-                // ordinary toplevel to the compositor, so it is asked to come forward the way
-                // the taskbar asks for any other window. Off the UI thread: wlrctl is a process.
-                std::thread::spawn(|| {
-                    match std::process::Command::new("wlrctl")
-                        .args(["toplevel", "focus", "title:Yantrik OS"])
-                        .status()
-                    {
-                        Ok(status) if status.success() => {}
-                        Ok(status) => tracing::warn!(
-                            code = status.code().unwrap_or(-1),
-                            "the Lens is open but the shell could not be brought in front of it"
-                        ),
-                        Err(e) => tracing::warn!(error = %e, "could not run wlrctl to raise the shell"),
-                    }
-                });
-
+                // front, the Lens opened underneath Notes, where nobody could see it; the cure
+                // then was to raise the whole shell, which put Notes behind the desktop instead.
+                // The Lens's own window, kept on top by the compositor, is shown by
+                // wire/lens_window.rs as `lens-open` turns true, and nothing else moves.
                 Ok(serde_json::json!({
                     "lens_open": ui.get_lens_open(),
                     "screen": screen_name(ui.get_current_screen()),

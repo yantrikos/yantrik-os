@@ -1,0 +1,140 @@
+// The Lens's own window (#733).
+//
+// The Lens used to be drawn inside the shell's one fullscreen window, on the desktop screen, so
+// opening it meant raising that window over every app: Notes, the Editor, the browser all went
+// behind the desktop at once and the person saw their work vanish. It is a window of its own now,
+// a strip on the right between the status bar and the dock, kept above the others by the labwc
+// windowRule for this title (config/labwc/rc.xml) — the way the on-screen display is — so it opens
+// beside the person's work and covers only its own strip.
+//
+// It draws the one IntentLens there is. The App still holds every Lens property the shell writes
+// (`lens-open`, `messages`, `approvals`, …) and reads them into one `LensView`; the shell copies
+// that value here whenever it changes (wire/lens_window.rs) and forwards each callback back to the
+// App's own, so nothing that drives the Lens had to learn where it is drawn.
+import { Theme } from "theme.slint";
+import { IntentLens, LensResult, ApprovalRequest } from "components/intent_lens.slint";
+import { MessageData } from "components/message_bubble.slint";
+import { QuestionRequest } from "components/question_card.slint";
+import { WorkCardData } from "components/work_card.slint";
+
+/// Everything the Lens draws, read off the App in one value (app.slint, `lens-view`).
+export struct LensView {
+    /// Open, and the shell on a screen it may be shown over (never the lock or login screen).
+    shown: bool,
+    input-text: string,
+    results: [LensResult],
+    chat-mode: bool,
+    destination: string,
+    suggestions: [LensResult],
+    recents: [LensResult],
+    messages: [MessageData],
+    is-generating: bool,
+    is-thinking: bool,
+    companion-status: string,
+    companion-online: bool,
+    mind-name: string,
+    approvals: [ApprovalRequest],
+    approvals-waiting: int,
+    questions: [QuestionRequest],
+    can-open-in-agents: bool,
+    work-cards: [WorkCardData],
+    strip: WorkCardData,
+    live-runs: int,
+    waiting-runs: int,
+    mode-label: string,
+    identity: string,
+    /// The display's height, so the window runs from under the bar to above the dock.
+    screen-height: length,
+    /// The theme's switches, so a change of theme reaches this window's copy of the globals
+    /// (a window has its own copy of every global; see `sync_theme` in wire/agents.rs).
+    theme-dark: bool,
+    theme-accent: int,
+    theme-overrides: bool,
+}
+
+export component LensWindow inherits Window {
+    // Must equal windows::LENS_WINDOW_TITLE and the windowRule's title in rc.xml.
+    title: "yantrik-lens";
+    no-frame: true;
+    background: transparent;
+    default-font-family: Theme.font-ui;
+    // The panel and the gap it always kept from the screen's right edge; the window rule puts
+    // the window's top-right corner at the top-right of the space between the bar and the dock.
+    width: Theme.chat-panel-width + Theme.chat-panel-gap;
+    height: max(320px, root.view.screen-height - Theme.status-bar-height - Theme.taskbar-height);
+
+    in property <LensView> view;
+    /// The field's text. Two-way with the App's `lens-input-text`: set from the view, and handed
+    /// back on every edit through `input-edited`.
+    in-out property <string> input-text;
+    changed input-text => { root.input-edited(root.input-text); }
+
+    callback input-edited(string);
+    callback query-changed(string);
+    callback submit-query(string);
+    callback result-selected(string);
+    callback close-lens();
+    callback send-message(string);
+    callback mic-pressed();
+    callback approval-allow(string);
+    callback approval-allow-session(string);
+    callback approval-deny(string);
+    callback question-answer(string, string, string, bool);
+    callback open-run(string);
+    callback open-in-agents();
+    callback open-history();
+    callback new-chat();
+    callback mode-clicked();
+    callback mind-clicked();
+    callback view-desk(string);
+
+    IntentLens {
+        // The window is already the strip between the bars, and its width is fixed by the rule.
+        top-inset: 0px;
+        bottom-inset: 0px;
+        resizable: false;
+        is-open: root.view.shown;
+        input-text <=> root.input-text;
+        is-thinking: root.view.is-thinking;
+        results: root.view.results;
+        companion-status: root.view.companion-status;
+        companion-online: root.view.companion-online;
+        chat-mode: root.view.chat-mode;
+        // So the conversation header says who is answering — the same name the status bar
+        // chip and the machine rail carry, rather than a generic "Conversation".
+        mind-name: root.view.mind-name;
+        can-open-in-agents: root.view.can-open-in-agents;
+        open-in-agents => { root.open-in-agents(); }
+        open-history => { root.open-history(); }
+        new-chat => { root.new-chat(); }
+        work-cards: root.view.work-cards;
+        strip: root.view.strip;
+        live-runs: root.view.live-runs;
+        waiting-runs: root.view.waiting-runs;
+        mode-label: root.view.mode-label;
+        identity: root.view.identity;
+        destination: root.view.destination;
+        mode-clicked => { root.mode-clicked(); }
+        mind-clicked => { root.mind-clicked(); }
+        view-desk(run) => { root.view-desk(run); }
+        messages: root.view.messages;
+        is-generating: root.view.is-generating;
+        suggestions: root.view.suggestions;
+        recents: root.view.recents;
+        approvals: root.view.approvals;
+        approvals-waiting: root.view.approvals-waiting;
+
+        approval-allow(id) => { root.approval-allow(id); }
+        approval-allow-session(id) => { root.approval-allow-session(id); }
+        approval-deny(id) => { root.approval-deny(id); }
+        questions: root.view.questions;
+        question-answer(agent, request, answer, pressed) => { root.question-answer(agent, request, answer, pressed); }
+        open-run(run) => { root.open-run(run); }
+        query-changed(text) => { root.query-changed(text); }
+        submit-query(text) => { root.submit-query(text); }
+        result-selected(id) => { root.result-selected(id); }
+        close-lens => { root.close-lens(); }
+        send-message(text) => { root.send-message(text); }
+        mic-pressed => { root.mic-pressed(); }
+    }
+}

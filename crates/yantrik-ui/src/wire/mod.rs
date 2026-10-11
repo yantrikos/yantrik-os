@@ -49,6 +49,10 @@ pub mod dock_bar;
 pub mod harness;
 pub mod i18n;
 mod lens;
+/// The Lens's own window, beside the person's work (#733).
+pub mod lens_window;
+/// The shell's theme, carried into the windows it opens beside its own.
+mod theme_sync;
 mod navigate;
 pub mod notifications;
 mod power;
@@ -120,6 +124,7 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     // The network mark and its popover, and the one reading every surface shows of the network.
     network::wire(ui);
     lens::wire(ui, ctx);
+    lens_window::wire(ui);
     navigate::wire(ui, ctx);
     // The letter on the tile of an app there is no art and no theme icon for (AppTile).
     ui.global::<crate::AppInitial>().on_of(|id| yantrik_ui_kit::app_tile::initial(&id).into());

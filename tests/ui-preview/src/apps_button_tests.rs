@@ -71,8 +71,8 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     }
 
     // Chat, from anywhere (#241): the mind button at the right end of the dock, found by pressing
-    // leftward across the dock until the Lens opens. From Files and Settings it goes to the
-    // desktop, where the Lens is drawn, and puts the launcher away.
+    // leftward across the dock until the Lens opens. The Lens is a window of its own (#733), so
+    // from Files and Settings the screen stays where it is; it puts the launcher away.
     let shown: Rc<std::cell::Cell<u32>> = Rc::default();
     {
         let shown = shown.clone();
@@ -93,7 +93,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         }
     }
     let chat_x = chat_x.expect("the Chat button opens the Lens");
-    assert_eq!(ui.get_current_screen(), 1, "from Files, Chat goes to the desktop, where the Lens is drawn");
+    assert_eq!(ui.get_current_screen(), 8, "from Files, Chat leaves Files where it is: the Lens is its own window");
     assert_eq!(shown.get(), 0, "finding Chat did not press Show desktop");
     for (screen, name) in [(7, "Settings"), (35, "Recipes")] {
         ui.set_lens_open(false);
@@ -103,7 +103,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         click(w, chat_x, taskbar_y);
         draw();
         assert!(ui.get_lens_open(), "Chat opens the Lens from {name}");
-        assert_eq!(ui.get_current_screen(), 1, "from {name}, on the desktop");
+        assert_eq!(ui.get_current_screen(), screen, "and {name} stays on screen beside it");
         assert!(!ui.get_app_grid_open(), "and from {name} it puts the launcher away");
     }
 
