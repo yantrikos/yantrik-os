@@ -399,6 +399,7 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Watch {
             }
             handle::Event::Done => {
                 let w = watch.window(id);
+                let had_title = !w.title.is_empty();
                 if let Some(title) = w.pending_title.take() {
                     w.title = title;
                 }
@@ -408,8 +409,18 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Watch {
                 if let Some(activated) = w.pending_activated.take() {
                     w.activated = activated;
                 }
+                // A window that just got its first title is the moment a pending raise has been
+                // waiting for: the app was launched and its window has now appeared.
+                let appeared = if !had_title && !w.title.is_empty() {
+                    Some(crate::windows::stream_app_id(&w.app_id, &w.title))
+                } else {
+                    None
+                };
                 watch.count_shell_titled();
                 watch.publish();
+                if let Some(shell_id) = appeared {
+                    crate::wire::already_open::window_appeared(&shell_id);
+                }
                 let front = watch.front();
                 let title = front.as_ref().map(|(_, t)| t.clone());
                 let moved = LOG.lock().is_ok_and(|mut log| log.observe(front, Instant::now()));
