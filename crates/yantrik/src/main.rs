@@ -644,7 +644,7 @@ fn run_headless_think_cycle(
             && matches!(gate_result, yantrik_companion::synthesis_gate::GateDecision::Suppress { .. });
         if gate_suppressed {
             if let yantrik_companion::synthesis_gate::GateDecision::Suppress { ref reason } = gate_result {
-                tracing::info!(reason = %reason, text = msg.text, "Synthesis Gate suppressed proactive message");
+                tracing::info!(reason = %reason, kind = msg.kind.as_str(), "Synthesis Gate suppressed proactive message");
                 companion.record_suppressed_urge(&delivery_key, reason);
             }
         }
