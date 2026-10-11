@@ -33,6 +33,10 @@ struct Lens {
     /// A press in the Lens just handed the person to one of the shell's own screens or menus,
     /// and raised the shell for it: the close that follows leaves the keyboard with the shell.
     to_shell: bool,
+    /// The App's `lens-input-text` as last copied into the field. The field is written only when
+    /// the App's value moves off this, so a keystroke whose `input-edited` has not reached the App
+    /// yet is never overwritten by a sync that something else (a streamed reply) set off.
+    pushed: slint::SharedString,
 }
 
 pub fn wire(ui: &App) {
@@ -58,7 +62,7 @@ pub fn wire(ui: &App) {
             slint::CloseRequestResponse::HideWindow
         }
     });
-    LENS.with(|cell| *cell.borrow_mut() = Some(Lens { window, opening: Opening::default(), to_shell: false }));
+    LENS.with(|cell| *cell.borrow_mut() = Some(Lens { window, opening: Opening::default(), to_shell: false, pushed: Default::default() }));
     ui.on_lens_view_changed({
         let weak = ui.as_weak();
         move || {
@@ -75,7 +79,12 @@ fn sync(ui: &App) {
     let Some(window) = LENS.with(|cell| cell.borrow().as_ref().map(|l| l.window.clone_strong())) else { return };
     let view = ui.get_lens_view();
     super::theme_sync::sync_theme!(ui, window);
-    if window.get_input_text() != view.input_text {
+    let app_moved = LENS.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        let lens = cell.as_mut()?;
+        (lens.pushed != view.input_text).then(|| lens.pushed = view.input_text.clone())
+    });
+    if app_moved.is_some() && window.get_input_text() != view.input_text {
         window.set_input_text(view.input_text.clone());
     }
     let shown = view.shown;
@@ -85,7 +94,7 @@ fn sync(ui: &App) {
     if shown && !up {
         show(&window);
     } else if !shown && up {
-        hide(&window);
+        hide(&window, crate::control::locked_screen(ui.get_current_screen()));
     }
 }
 
@@ -109,7 +118,9 @@ fn show(window: &LensWindow) {
     }
 }
 
-fn hide(window: &LensWindow) {
+/// `locked`: the Lens went away because the screen locked. Nothing is handed the keyboard then:
+/// activating the person's app could bring it over the lock screen (#203).
+fn hide(window: &LensWindow, locked: bool) {
     if let Err(e) = window.hide() {
         tracing::warn!(error = %e, "could not hide the Lens's window");
     }
@@ -119,7 +130,7 @@ fn hide(window: &LensWindow) {
             .map(|lens| (std::mem::take(&mut lens.opening), std::mem::take(&mut lens.to_shell)))
             .unwrap_or_default()
     });
-    if to_shell {
+    if to_shell || locked {
         return;
     }
     let front = crate::toplevel_watch::focus_now().and_then(|f| f.current).map(|(id, _)| id);

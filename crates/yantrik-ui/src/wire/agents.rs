@@ -3037,6 +3037,13 @@ mod first_prompt_attribution_tests {
             for call in ["invoke_answer_question", "invoke_question_answer"] {
                 assert!(!code.contains(call), "{} answers a question for the person: {call}", file.display());
             }
+            // The Lens window's relay of the person's own press, and nowhere else (#733).
+            let relays = code.matches("invoke_lens_question_answer").count();
+            if file.ends_with("wire/lens_window.rs") {
+                assert_eq!(relays, 1, "the Lens window relays its press once");
+            } else {
+                assert_eq!(relays, 0, "{} answers a question through the Lens", file.display());
+            }
             if file != wire {
                 assert!(!code.contains("answer_for(") && !code.contains("answer_question("), "{} can answer a run's question", file.display());
             }
