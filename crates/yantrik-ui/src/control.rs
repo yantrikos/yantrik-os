@@ -164,6 +164,35 @@ pub(crate) fn screen_name(id: i32) -> &'static str {
     }
 }
 
+/// The name a Settings section id answers to, so `describe` can say which section is open rather
+/// than only its number. The ids are the sidebar's indices, the same ints `show_screen`'s
+/// `section` argument resolves through `SETTINGS_SECTIONS`.
+pub(crate) fn settings_section_name(id: i32) -> &'static str {
+    SETTINGS_SECTIONS
+        .iter()
+        .find(|(_, s)| *s == id)
+        .map(|(name, _)| *name)
+        .unwrap_or("unknown")
+}
+
+/// What the Settings screen is showing, as `describe` publishes it under `settings`. The section
+/// is named as well as numbered, so a mind told "the shell is on the settings screen" can read
+/// which section is open instead of photographing the window (#684).
+pub(crate) fn settings_state(ui: &App) -> serde_json::Value {
+    let category = ui.get_settings_category();
+    serde_json::json!({
+        "category": { "id": category, "name": settings_section_name(category) },
+        "query": ui.get_settings_query().to_string(),
+        "dark": ui.get_settings_dark_mode(),
+        "accent": ui.get_settings_accent_color().to_string(),
+        "wallpaper": ui.get_wallpaper_path().to_string(),
+        "save_error": ui.get_settings_save_error(),
+        "save_status": ui.get_settings_save_status().to_string(),
+        "auto_lock_secs": ui.get_settings_auto_lock_secs(),
+        "auto_lock_available": ui.get_settings_auto_lock_available(),
+    })
+}
+
 /// The taskbar entry for the screen the shell is on, as `(name, title)`, when that screen is one a
 /// person reads as a window of its own — Files, Settings, Agents — and `None` on the desktop and
 /// on the screens nobody switches away from (boot, lock, onboarding, login).
@@ -1022,7 +1051,7 @@ pub fn publish(
                 .with("private", crate::private_mode::is_on())
                 // The theme in use and the ones to choose from (`set_theme`).
                 .with("theme", crate::wire::theme::for_describe(ui.get_settings_theme().as_str()))
-                .with("settings", serde_json::json!({"category":ui.get_settings_category(),"query":ui.get_settings_query().to_string(),"dark":ui.get_settings_dark_mode(),"accent":ui.get_settings_accent_color().to_string(),"wallpaper":ui.get_wallpaper_path().to_string(),"save_error":ui.get_settings_save_error(),"save_status":ui.get_settings_save_status().to_string(),"auto_lock_secs":ui.get_settings_auto_lock_secs(),"auto_lock_available":ui.get_settings_auto_lock_available()}))
+                .with("settings", settings_state(&ui))
         }
     };
 
@@ -2243,7 +2272,7 @@ mod persons_fields_tests {
 
 #[cfg(test)]
 mod screen_table_tests {
-    use super::{SCREENS, SETTINGS_SECTIONS, check_launchable, screen_name};
+    use super::{SCREENS, SETTINGS_SECTIONS, check_launchable, screen_name, settings_section_name, settings_state};
     use std::path::Path;
 
     /// Elements that wrap a screen rather than being one.
@@ -2419,6 +2448,62 @@ mod screen_table_tests {
             ids, expected,
             "settings section ids are the sidebar's indices, so they run 0..n with no gaps"
         );
+    }
+
+    /// Every section id `describe` can report has a name, and the name is the one `show_screen`'s
+    /// `section` argument accepts — the two must not drift, or a mind reads a section it cannot
+    /// ask to open.
+    #[test]
+    fn a_settings_section_answers_to_the_name_show_screen_accepts() {
+        for (name, id) in SETTINGS_SECTIONS {
+            assert_eq!(settings_section_name(*id), *name, "section {id}");
+        }
+        assert_eq!(settings_section_name(999), "unknown");
+    }
+
+    /// `describe`'s `settings.category` names the section that is open, not just its number, so a
+    /// mind told "the shell is on the settings screen" can read which section without a screenshot.
+    #[test]
+    fn describe_settings_names_the_open_section() {
+        // A scratch shell, drawn by Slint's software renderer with no window system: the test only
+        // reads and writes properties, so the window adapter is a stub. `set_platform` is once per
+        // process, and no other test in this crate builds a Slint component, so this is safe.
+        use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
+        use slint::platform::{EventLoopProxy, Platform, WindowAdapter};
+        use std::rc::Rc;
+
+        struct StubProxy;
+        impl EventLoopProxy for StubProxy {
+            fn quit_event_loop(&self) -> Result<(), slint::EventLoopError> { Ok(()) }
+            fn invoke_from_event_loop(
+                &self,
+                _event: Box<dyn FnOnce() + Send>,
+            ) -> Result<(), slint::EventLoopError> {
+                Ok(())
+            }
+        }
+
+        struct StubPlatform {
+            window: Rc<MinimalSoftwareWindow>,
+        }
+        impl Platform for StubPlatform {
+            fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
+                Ok(self.window.clone())
+            }
+            fn new_event_loop_proxy(&self) -> Option<Box<dyn EventLoopProxy>> {
+                Some(Box::new(StubProxy))
+            }
+        }
+
+        let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+        let _ = slint::platform::set_platform(Box::new(StubPlatform { window }));
+
+        let ui = crate::App::new().expect("the shell's App constructs headless");
+        ui.set_settings_category(4);
+        let settings = settings_state(&ui);
+        assert_eq!(settings["category"]["id"], 4);
+        assert_eq!(settings["category"]["name"], "accounts");
+        assert_eq!(settings["dark"], ui.get_settings_dark_mode());
     }
 }
 
@@ -3641,11 +3726,11 @@ mod auto_lock_action_tests {
     fn describe_reports_the_idle_lock_timeout() {
         let src = source();
         let at = src
-            .find(".with(\"settings\",")
+            .find("fn settings_state(")
             .expect("describe shell has a `settings` section");
         let settings = &src[at..at + 900];
         assert!(
-            settings.contains("\"auto_lock_secs\":ui.get_settings_auto_lock_secs()"),
+            settings.contains("\"auto_lock_secs\": ui.get_settings_auto_lock_secs()"),
             "describe's `settings` must carry `auto_lock_secs` read off the window, the same \
              property the idle watcher polls. Section as written:\n{settings}"
         );
