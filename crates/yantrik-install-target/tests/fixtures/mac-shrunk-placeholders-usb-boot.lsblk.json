@@ -1,0 +1,41 @@
+{
+   "blockdevices": [
+      {
+         "path": "/dev/sda",
+         "name": "sda",
+         "fstype": null,
+         "label": null,
+         "mountpoint": null,
+         "children": [
+            {
+               "path": "/dev/sda1",
+               "name": "sda1",
+               "fstype": "vfat",
+               "label": "EFI",
+               "mountpoint": null
+            },
+            {
+               "path": "/dev/sda2",
+               "name": "sda2",
+               "fstype": "apfs",
+               "label": null,
+               "mountpoint": null
+            },
+            {
+               "path": "/dev/sda3",
+               "name": "sda3",
+               "fstype": "vfat",
+               "label": "YANTRIK",
+               "mountpoint": null
+            },
+            {
+               "path": "/dev/sda4",
+               "name": "sda4",
+               "fstype": "vfat",
+               "label": "YANTRIK-INS",
+               "mountpoint": null
+            }
+         ]
+      }
+   ]
+}
