@@ -419,3 +419,22 @@ fn a_connection_from_an_address_the_read_did_not_know_is_judged_again() {
     let late = proxy::after_connect(&p, "1.1.1.1", 443, false, Place::Internet, &before, at("1.1.1.1:443"), new).unwrap_err();
     assert_eq!((late.code, late.outcome), (503, Outcome::Refused), "{late:?}");
 }
+
+#[tokio::test]
+async fn a_bound_search_rule_lets_out_only_the_approved_query() {
+    let mut p = Policy { mode: Mode::Enforce, rules: vec![] };
+    let mut rule = Rule { host: "1.1.1.1".into(), ports: vec![9], http: true, lan: false, why: "search".into(), seeded: false, search_queries: Vec::new() };
+    rule.search_queries = vec!["rust async".into()];
+    p.allow(rule).unwrap();
+    let d = start("search-bound", p).await;
+    let at = "1.1.1.1:9";
+    let get = |path: &str| format!("GET http://{at}{path} HTTP/1.1\r\nHost: {at}\r\n\r\n");
+    assert_ne!(status(d.public, &get("/search?q=rust+async")).await, 403, "the approved query");
+    for path in ["/search?q=other", "/search?flag&q=other", "/search?q=rust+async&q=other", "/search?%71=other"] {
+        assert_eq!(status(d.public, &get(path)).await, 403, "{path}");
+    }
+    // A form POST carries its query in the body, and a tunnel carries anything: neither is seen.
+    let post = format!("POST http://{at}/search HTTP/1.1\r\nHost: {at}\r\nContent-Length: 7\r\n\r\nq=other");
+    assert_eq!(status(d.public, &post).await, 403, "a body");
+    assert_eq!(status(d.public, &connect(at)).await, 403, "a tunnel");
+}
