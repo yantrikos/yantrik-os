@@ -28,6 +28,11 @@ fn card_kind(source: &str) -> Option<ProactiveKind> {
     Some(ProactiveKind::from_source(source))
 }
 
+/// Why a security card appeared. A safety signal is never backed off, so it has no kind to back
+/// off and offers no "Less of this" (design/companion-who-cares: safety signals override the
+/// backoff).
+const SECURITY_WHY: &str = "It may put your computer or your data at risk.";
+
 /// Category → RGB accent color.
 fn category_rgb(cat: &features::UrgeCategory) -> (f32, f32, f32) {
     match cat {
@@ -113,7 +118,9 @@ impl CardManager {
             self.hint_count += 1;
             return;
         }
-        let kind = card_kind(&scored.urge.source);
+        // A security card is a safety signal: decided before any backoff, and never throttled.
+        let security = scored.urge.category == features::UrgeCategory::Security;
+        let kind = if security { None } else { card_kind(&scored.urge.source) };
         let mut tier = scored.tier.clone();
         if let Some(kind) = kind {
             let level = self.level(kind);
@@ -151,7 +158,11 @@ impl CardManager {
             pressure: scored.pressure,
             accent: category_rgb(&scored.urge.category),
             kind,
-            why: kind.map(|k| why_text(k, &serde_json::Value::Null)).unwrap_or_default(),
+            why: if security {
+                SECURITY_WHY.to_string()
+            } else {
+                kind.map(|k| why_text(k, &serde_json::Value::Null)).unwrap_or_default()
+            },
             created_at: std::time::Instant::now(),
             auto_dismiss_at: auto_dismiss,
             shown: false,
@@ -271,6 +282,7 @@ pub fn sync_whisper_ui(mgr: &CardManager, ui_weak: &slint::Weak<App>) {
             shown: c.shown,
             source: c.source.clone().into(),
             why: c.why.clone().into(),
+            can_back_off: c.kind.is_some(),
         })
         .collect();
 
@@ -424,6 +436,34 @@ mod tests {
         mgr.tick();
         let outcomes = mgr.take_outcomes();
         assert_eq!(outcomes, vec![(ProactiveKind::Suggestions, Outcome::Ignored)], "only card c faded unanswered");
+    }
+
+    /// A security card is never throttled: not by its kind being off, nor by a cooldown, and it
+    /// still interrupts. Its fading out teaches the throttle nothing, and it offers no
+    /// "Less of this" (#754: safety signals override the backoff).
+    #[test]
+    fn a_security_card_is_never_backed_off() {
+        let mut mgr = CardManager::new();
+        let now = Instant::now();
+        // Weather is used by no other test here; LEVELS is shared across the test threads.
+        if let Ok(mut levels) = LEVELS.lock() {
+            levels.insert(ProactiveKind::Weather, BackoffLevel::OffUntilAsked);
+        }
+        mgr.add_at(&urge("s1", "weather_watch", features::UrgeCategory::Security, features::UrgeTier::Interrupt), false, now);
+        mgr.add_at(&urge("n1", "weather", features::UrgeCategory::Resource, features::UrgeTier::Whisper), false, now);
+        if let Ok(mut levels) = LEVELS.lock() {
+            levels.remove(&ProactiveKind::Weather);
+        }
+        let ids: Vec<&str> = mgr.cards.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["s1"], "the kind that is off is held; the security card shows");
+        let c = &mgr.cards[0];
+        assert_eq!(c.tier, features::UrgeTier::Interrupt, "a security card still interrupts");
+        assert_eq!(c.kind, None, "nothing to back off");
+        assert_eq!(c.why, SECURITY_WHY);
+        assert_eq!(mgr.less_of_this("s1"), None);
+        mgr.cards.iter_mut().for_each(|c| c.auto_dismiss_at = Some(now));
+        mgr.tick();
+        assert!(mgr.take_outcomes().is_empty());
     }
 
     const COOLDOWN_FACTOR_FOR_TEST: f64 = yantrik_companion::proactive_backoff::COOLDOWN_LESS_OFTEN;

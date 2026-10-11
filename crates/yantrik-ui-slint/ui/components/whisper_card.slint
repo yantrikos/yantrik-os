@@ -19,6 +19,8 @@ export struct WhisperCardItem {
     source: string,           // Feature name badge
     // Why this card appeared, in the person's words, from fixed templates (#754).
     why: string,
+    // Whether "Less of this" is offered. A security card never backs off, so it has none.
+    can-back-off: bool,
 }
 
 component WhisperCard inherits Rectangle {
@@ -124,7 +126,7 @@ component WhisperCard inherits Rectangle {
             }
 
             // The quiet control beside the dismiss: backs this kind of card off.
-            if !root.backed-off && card.why != "" : TouchArea {
+            if !root.backed-off && card.can-back-off : TouchArea {
                 height: 16px;
                 width: less-text.preferred-width;
                 mouse-cursor: pointer;
