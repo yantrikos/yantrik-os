@@ -17,7 +17,7 @@ use rusqlite::{params, Connection};
 
 use crate::bond::BondLevel;
 use crate::config::ProactiveConfig;
-use crate::proactive_backoff::{BackoffLevel, KindBackoff, Outcome as BackoffOutcome, ProactiveKind};
+use crate::proactive_backoff::{BackoffLevel, KindBackoff, ProactiveKind};
 use crate::proactive_templates::TemplateEngine;
 use crate::types::{ProactiveMessage, Urge};
 use crate::urges::UrgeQueue;
@@ -58,8 +58,6 @@ pub enum TriggerKind {
     ResourceAlert,
     /// User returned from idle — opportunity for summary.
     UserResumed,
-    /// Event bus: whisper card was dismissed (learning signal).
-    DismissalSignal,
     /// External signal (email arrival, calendar reminder, etc.).
     ExternalSignal,
 }
@@ -241,9 +239,6 @@ impl Generator {
                     InterventionType::Summarize
                 }
             }
-            // A dismissal is a lesson, not something to say: `ProactivePipeline::run` feeds it to
-            // the per-kind throttle before generation, so one never reaches here.
-            TriggerKind::DismissalSignal => return candidates,
         };
 
         candidates.push(Candidate {
@@ -697,16 +692,11 @@ impl ProactivePipeline {
         // From event patterns
         triggers.extend(self.detector.detect_from_events());
 
-        // Dismissals teach the per-kind throttle (#754): five dismissed or ignored in a row within
-        // a week back that kind off one level. A kind that is off until the person asks says
-        // nothing, and a backed-off kind's urgency is lowered.
-        let now = now_ts();
+        // A kind the person stopped says nothing, and a backed-off kind's urgency is lowered
+        // (#754). Dismissals reach the per-kind throttle where they happen: a card's ×, a chat
+        // message's "Not now", a notification closed (`KindBackoff::record_outcome`).
         triggers.retain_mut(|t| {
             let kind = ProactiveKind::from_source(&t.source);
-            if t.kind == TriggerKind::DismissalSignal {
-                KindBackoff::record_outcome(conn, kind, BackoffOutcome::Dismissed, now);
-                return false;
-            }
             let level = KindBackoff::level(conn, kind);
             t.raw_urgency *= level.priority_factor();
             level != BackoffLevel::OffUntilAsked
@@ -947,6 +937,8 @@ mod tests {
             delivered_at: None,
             expires_at: None,
             boost_count: 0,
+            safety: false,
+            memory_ids: vec![],
         };
 
         let trigger = Detector::trigger_from_urge(&urge);
