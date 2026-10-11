@@ -21,7 +21,7 @@
 //! | Claude | `.credentials.json` exists (never opened) | two fields of `.claude.json` (`claude`) | — | its transcripts |
 //! | Codex | `auth.json` exists (never opened) | its session logs (`codex`) | its session logs | its session logs |
 //! | Gemini | `oauth_creds.json` exists (never opened) | — | — | — |
-//! | Qwen, xAI | the desktop's AI provider is theirs | — | — | — |
+//! | Qwen, xAI | a key in AI providers: never an account row, only [`keys_line`] | — | — | — |
 //!
 //! No sign-in file is ever opened, and no vendor is called with a person's token: Anthropic,
 //! OpenAI and Google each say another program must not collect or use their sign-ins, and a
@@ -104,6 +104,8 @@ pub struct Row {
     pub note: String,
     pub meters: Vec<Meter>,
     pub tokens_today: u64,
+    /// What uses this account, for the Accounts page: true by construction, never a guess.
+    pub used_by: String,
 }
 
 /// One vendor and its accounts.
@@ -119,6 +121,19 @@ pub struct Choice {
     pub vendor: &'static Vendor,
     /// "Sign in", "Add account", "Install", "Set up a key".
     pub what: &'static str,
+}
+
+impl Choice {
+    /// A coding plan paid for with a key: set up in AI providers, not signed in here.
+    pub fn by_key(&self) -> bool {
+        matches!(self.vendor.sign_in, SignIn::Key { .. })
+    }
+
+    /// Whether the Minds panel's "+" offers it. The panel is a glance: it signs in and adds
+    /// accounts; installing a program and setting up a key are the Accounts page's.
+    pub fn in_panel(&self) -> bool {
+        matches!(self.what, "Sign in" | "Add account")
+    }
 }
 
 /// What one account's logs and files said.
@@ -162,25 +177,15 @@ pub fn label_name(label: &str) -> String {
     }
 }
 
-/// The panel's rows: each vendor that is here in any way, and its accounts.
+/// The panel's rows: each vendor signed in with its own program, and its accounts.
+///
+/// A key is not an account. It lives in AI providers, and an "ACTIVE" on a key's row meant only
+/// that the companion pointed at it, which read like the account a vendor answers with. Keys in
+/// use are one line under the accounts instead ([`keys_line`]).
 pub fn rows(f: &Facts) -> Vec<Group> {
     let mut out = Vec::new();
     for vendor in VENDORS.iter() {
         if matches!(vendor.sign_in, SignIn::Key { .. }) {
-            if vendor.serves(f.companion_url.as_deref()) {
-                out.push(Group {
-                    vendor,
-                    rows: vec![Row {
-                        id: account_id(vendor.id, PRIMARY),
-                        label: "API key".into(),
-                        plan: "the companion's provider".into(),
-                        state: State::Active,
-                        note: String::new(),
-                        meters: Vec::new(),
-                        tokens_today: 0,
-                    }],
-                });
-            }
             continue;
         }
         let installed = f.installed.contains(&vendor.id);
@@ -220,6 +225,7 @@ pub fn rows(f: &Facts) -> Vec<Group> {
                 note,
                 meters,
                 tokens_today: seen.tokens_today,
+                used_by: used_by(vendor, state),
             });
         }
         if !rows_here.is_empty() {
@@ -227,6 +233,18 @@ pub fn rows(f: &Facts) -> Vec<Group> {
         }
     }
     out
+}
+
+/// What uses an account. A vendor's sign-in is for the vendor's own program, and no mind on this
+/// desktop runs on one yet (none of the shipped harnesses takes a sign-in), so that is said in so
+/// many words: an account must never look like it is what the desktop's minds run on. When a
+/// harness that runs on a sign-in exists, this names it instead.
+fn used_by(vendor: &Vendor, state: State) -> String {
+    match state {
+        State::Active => format!("Used by {} in a terminal. No mind here runs on it.", vendor.program),
+        State::Ready => format!("{} uses it once chosen. No mind here runs on it.", vendor.program),
+        State::SignIn | State::Missing => String::new(),
+    }
 }
 
 /// "Weekly is used up" when a window is full.
@@ -260,6 +278,21 @@ pub fn choices(f: &Facts) -> Vec<Choice> {
             Some(Choice { vendor, what })
         })
         .collect()
+}
+
+/// "Keys in use: xAI, for the companion", for the keys this desktop's AI providers hold that are
+/// a listed vendor's; empty when there are none. Managed in AI providers, not here.
+pub fn keys_line(f: &Facts) -> String {
+    let names: Vec<&str> = VENDORS
+        .iter()
+        .filter(|v| matches!(v.sign_in, SignIn::Key { .. }) && v.serves(f.companion_url.as_deref()))
+        .map(|v| v.name)
+        .collect();
+    if names.is_empty() {
+        String::new()
+    } else {
+        format!("Keys in use: {}, for the companion", names.join(", "))
+    }
 }
 
 /// The header: "2.4M tokens today", or nothing when nothing was counted.
@@ -296,30 +329,12 @@ pub fn left(secs: i64) -> String {
     }
 }
 
-/// Look for the vendors' programs on `path` and in the places a per-person npm puts them, which
-/// a service's `PATH` does not have.
+/// The vendors whose program is installed, by the shell's one answer ([`crate::programs`]), which
+/// the harness catalogue uses too.
 pub fn installed(home: &Path, path: Option<&std::ffi::OsStr>) -> Vec<&'static str> {
-    let mut dirs: Vec<PathBuf> = path.map(|p| std::env::split_paths(p).collect()).unwrap_or_default();
-    for extra in [".npm-global/bin", ".local/bin", ".local/node/bin", ".bun/bin"] {
-        dirs.push(home.join(extra));
-    }
-    VENDORS
-        .iter()
-        .filter(|v| !v.binary.is_empty() && dirs.iter().any(|d| is_program(&d.join(v.binary))))
-        .map(|v| v.id)
-        .collect()
-}
-
-fn is_program(p: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-    }
-    #[cfg(not(unix))]
-    {
-        p.is_file()
-    }
+    let path = path.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    let dirs = crate::programs::search_dirs(&path, home);
+    VENDORS.iter().filter(|v| crate::programs::found(&dirs, v.binary)).map(|v| v.id).collect()
 }
 
 /// The counters, kept between reads so each log is read from where it stopped.
@@ -394,7 +409,7 @@ mod tests {
     fn the_rows_say_which_account_answers_and_what_is_left() {
         let g = rows(&facts());
         let names: Vec<_> = g.iter().map(|g| g.vendor.id).collect();
-        assert_eq!(names, ["claude", "codex", "gemini", "xai"], "qwen's key is not the desktop's provider");
+        assert_eq!(names, ["claude", "codex", "gemini"], "a key is not an account, not even the companion's");
         let claude = &g[0].rows;
         assert_eq!(claude[0].label, "Main");
         assert_eq!(claude[0].state, State::Ready);
@@ -405,7 +420,6 @@ mod tests {
         assert_eq!(codex.state, State::Active);
         assert_eq!(codex.note, "Weekly is used up · back in 4d 8h");
         assert_eq!(g[2].rows[0].state, State::SignIn, "gemini is installed and not signed in");
-        assert_eq!(g[3].rows[0].state, State::Active);
         assert_eq!(today_line(&g), "2.4M tokens today");
     }
 
@@ -417,6 +431,50 @@ mod tests {
         let mut f = facts();
         f.companion_url = None;
         assert!(choices(&f).iter().any(|c| c.vendor.id == "xai" && c.what == "Set up a key"));
+    }
+
+    #[test]
+    fn the_panel_signs_in_and_adds_the_page_also_installs_and_sets_up_keys() {
+        let mut f = facts();
+        f.installed = vec!["claude"];
+        let c = choices(&f);
+        let panel: Vec<_> = c.iter().filter(|c| c.in_panel()).map(|c| (c.vendor.id, c.what)).collect();
+        assert_eq!(panel, [("claude", "Add account")]);
+        let keys: Vec<_> = c.iter().filter(|c| c.by_key()).map(|c| c.vendor.id).collect();
+        assert_eq!(keys, ["qwen"], "xAI's key is already the companion's");
+        assert!(c.iter().any(|c| c.vendor.id == "codex" && c.what == "Install" && !c.in_panel()));
+    }
+
+    #[test]
+    fn a_signed_in_account_says_what_uses_it_and_that_no_mind_does() {
+        let g = rows(&facts());
+        let claude = &g[0].rows;
+        assert_eq!(claude[1].used_by, "Used by Claude Code in a terminal. No mind here runs on it.");
+        assert_eq!(claude[0].used_by, "Claude Code uses it once chosen. No mind here runs on it.");
+        assert_eq!(g[2].rows[0].used_by, "", "gemini is not signed in: nothing uses it");
+    }
+
+    /// "ACTIVE" on an account read as "the desktop runs on this" (VM 520: Claude Max showed ACTIVE
+    /// while no mind used it). It may not come back on any surface that draws accounts or the AI.
+    #[test]
+    fn no_account_or_ai_surface_says_active() {
+        for (name, text) in [
+            ("minds_panel.slint", include_str!("../../../yantrik-ui-slint/ui/components/minds_panel.slint")),
+            ("settings.slint", include_str!("../../../yantrik-ui-slint/ui/settings.slint")),
+        ] {
+            for (n, line) in text.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("");
+                assert!(!code.contains("\"ACTIVE") && !code.contains("\"Active"), "{name}:{}: {line}", n + 1);
+            }
+        }
+    }
+
+    #[test]
+    fn keys_in_use_are_one_line_and_none_is_nothing() {
+        let mut f = facts();
+        assert_eq!(keys_line(&f), "Keys in use: xAI, for the companion");
+        f.companion_url = Some("http://192.168.4.35:11434/v1".into());
+        assert_eq!(keys_line(&f), "");
     }
 
     #[test]

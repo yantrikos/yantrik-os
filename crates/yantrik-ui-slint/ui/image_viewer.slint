@@ -10,36 +10,56 @@ import { AgentRail, AgentContextItem, AgentSuggestion } from "components/agent_r
 import { AgentProposalCard, AgentProposal } from "components/agent_proposal.slint";
 import { AppColor, AppIdentity } from "components/app_color.slint";
 import { YEmptyState } from "components/y_empty_state.slint";
+import { YTooltip } from "components/y_tooltip.slint";
 
-component ToolbarButton inherits TouchArea {
+component ToolbarButton inherits Rectangle {
     in property <string> label;
     in property <string> icon-path;
     in property <bool> icon-only;
     in property <bool> active: false;
+    // Off: dim, no hover, never drawn pressed, and the press goes nowhere.
+    in property <bool> enabled: true;
+    // Said on hover while the button is off: why it is off.
+    in property <string> off-reason: "";
+    callback clicked();
     width: Math.max(32px, txt.preferred-width + 16px);
     height: 28px;
 
+    property <bool> on: root.enabled && root.active;
+
     Rectangle {
         border-radius: 6px;
-        background: active ? Theme.hover-fill-strong
-                   : parent.has-hover ? Theme.hover-fill : transparent;
-        border-width: active ? 1px : 0px;
-        border-color: active ? Theme.accent-dim : transparent;
+        background: root.on ? Theme.hover-fill-strong
+                   : root.enabled && ta.has-hover ? Theme.hover-fill : transparent;
+        border-width: root.on ? 1px : 0px;
+        border-color: root.on ? Theme.accent-dim : transparent;
 
         if root.icon-path != "" : Icon {
             commands: root.icon-path;
             size: 14px;
-            tint: root.active ? AppIdentity.accent : Theme.text-secondary;
+            tint: !root.enabled ? Theme.text-dim : root.on ? AppIdentity.accent : Theme.text-secondary;
             y: (parent.height - self.height) / 2;
         }
         txt := Text {
             text: root.label;
-            color: active ? Theme.accent-light : Theme.text-secondary;
+            color: !root.enabled ? Theme.text-dim : root.on ? Theme.accent-light : Theme.text-secondary;
             font-size: Theme.fs-caption;
-            font-weight: active ? 600 : 400;
+            font-weight: root.on ? 600 : 400;
             horizontal-alignment: center;
             vertical-alignment: center;
         }
+    }
+
+    ta := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { if (root.enabled) { root.clicked(); } }
+    }
+
+    YTooltip {
+        text: root.enabled ? "" : root.off-reason;
+        hovered: ta.has-hover;
+        x: (root.width - self.width) / 2;
+        y: root.height + Theme.sp-1;
     }
 }
 
@@ -134,6 +154,13 @@ export component ImageViewer inherits Rectangle {
     // file. Removed rather than wired, because nothing in this OS can rotate or resize a picture
     // on disk yet; when something can, the buttons come back with it.
 
+    // A picture is on screen. Every view control and every header action acts on one, so with
+    // none (nothing opened, or a file that would not load) they are off and say why, rather than
+    // zooming, turning and describing an empty window. The control surface refuses the same
+    // actions with the same words (`NO_PICTURE` in apps/image-viewer/src/main.rs).
+    property <bool> has-picture: root.current-image.width > 0;
+    property <string> no-picture: "Open a picture first";
+
     // Zoom / pan state (pure Slint, no Rust wiring needed)
     property <float> zoom-level: 1.0;
     property <float> pan-x: 0.0;
@@ -201,6 +228,8 @@ export component ImageViewer inherits Rectangle {
         // transforms get their own strip underneath, which is where every image viewer worth
         // using puts them.
         AppHeader {
+            // Above the rows that follow it, so a tooltip hanging under the bar is not drawn over.
+            z: 1;
             window-bar: root.window-bar;
             show-window-controls: root.show-window-controls;
             maximized: root.maximized;
@@ -214,11 +243,14 @@ export component ImageViewer inherits Rectangle {
             actions: [
                 { id: "slideshow", icon: Icons.play, label: root.viewer-slideshow-active
                     ? (root.viewer-slideshow-paused ? "Resume" : "Pause") : "Slideshow",
-                  active: root.viewer-slideshow-active },
+                  active: root.viewer-slideshow-active, disabled: !root.has-picture,
+                  tooltip: root.has-picture ? "" : root.no-picture },
                 { id: "slideshow-stop", icon: Icons.stop, disabled: !root.viewer-slideshow-active },
                 { id: "ai",    icon: Icons.spark, label: root.ai-is-working ? "Working" : "Describe",
-                  emphasis: 1, loading: root.ai-is-working, active: root.ai-panel-open },
-                { id: "info",  icon: Icons.eye,   label: "Info",  active: root.viewer-info-open },
+                  emphasis: 1, loading: root.ai-is-working, active: root.ai-panel-open,
+                  disabled: !root.has-picture, tooltip: root.has-picture ? "" : root.no-picture },
+                { id: "info",  icon: Icons.eye,   label: "Info",  active: root.has-picture && root.viewer-info-open,
+                  disabled: !root.has-picture, tooltip: root.has-picture ? "" : root.no-picture },
             ];
             action(id) => {
                 if (id == "slideshow") {
@@ -258,6 +290,8 @@ export component ImageViewer inherits Rectangle {
             Rectangle {
                 height: Theme.h-prominent;
                 background: Theme.bg-deep;
+                // Above the picture, so a button's tooltip hanging under the strip shows.
+                z: 1;
 
                 Rectangle {
                     y: parent.height - 1px;
@@ -273,6 +307,7 @@ export component ImageViewer inherits Rectangle {
                     padding-bottom: 4px;
 
                     ToolbarButton {
+                        enabled: root.has-picture; off-reason: root.no-picture;
                         label: ""; icon-only: true; icon-path: Icons.minus;
                         clicked => {
                             root.zoom-level = root.clamp-zoom(root.zoom-level / 1.25);
@@ -284,15 +319,16 @@ export component ImageViewer inherits Rectangle {
                         alignment: center;
                         Text {
                             text: root.zoom-text;
-                            color: root.is-custom-zoom ? Theme.accent-light : Theme.text-dim;
+                            color: root.has-picture && root.is-custom-zoom ? Theme.accent-light : Theme.text-dim;
                             font-size: Theme.fs-caption;
-                            font-weight: root.is-custom-zoom ? 600 : 400;
+                            font-weight: root.has-picture && root.is-custom-zoom ? 600 : 400;
                             min-width: 52px;
                             horizontal-alignment: center;
                         }
                     }
 
                     ToolbarButton {
+                        enabled: root.has-picture; off-reason: root.no-picture;
                         label: ""; icon-only: true; icon-path: Icons.plus;
                         clicked => {
                             root.zoom-level = root.clamp-zoom(root.zoom-level * 1.25);
@@ -301,12 +337,14 @@ export component ImageViewer inherits Rectangle {
                     }
 
                     ToolbarButton {
+                        enabled: root.has-picture; off-reason: root.no-picture;
                         label: "Fit";
                         active: !root.is-custom-zoom;
                         clicked => { root.reset-zoom(); }
                     }
 
                     ToolbarButton {
+                        enabled: root.has-picture; off-reason: root.no-picture;
                         label: "1:1";
                         clicked => {
                             root.zoom-level = 1.0;
@@ -318,6 +356,7 @@ export component ImageViewer inherits Rectangle {
                     }
 
                     ToolbarButton {
+                        enabled: root.has-picture; off-reason: root.no-picture;
                         label: ""; icon-only: true; icon-path: Icons.rotate-ccw;
                         clicked => {
                             root.viewer-rotation = mod(root.viewer-rotation + 270, 360);
@@ -326,6 +365,7 @@ export component ImageViewer inherits Rectangle {
                     }
 
                     ToolbarButton {
+                        enabled: root.has-picture; off-reason: root.no-picture;
                         label: ""; icon-only: true; icon-path: Icons.rotate-cw;
                         clicked => {
                             root.viewer-rotation = mod(root.viewer-rotation + 90, 360);
@@ -334,6 +374,7 @@ export component ImageViewer inherits Rectangle {
                     }
 
                     ToolbarButton {
+                        enabled: root.has-picture; off-reason: root.no-picture;
                         label: ""; icon-only: true; icon-path: Icons.flip-h;
                         active: root.viewer-flip-h;
                         clicked => {
@@ -343,6 +384,7 @@ export component ImageViewer inherits Rectangle {
                     }
 
                     ToolbarButton {
+                        enabled: root.has-picture; off-reason: root.no-picture;
                         label: ""; icon-only: true; icon-path: Icons.sort;
                         active: root.viewer-flip-v;
                         clicked => {
@@ -352,6 +394,7 @@ export component ImageViewer inherits Rectangle {
                     }
 
                     ToolbarButton {
+                        enabled: root.has-picture; off-reason: root.no-picture;
                         label: ""; icon-only: true;
                         icon-path: root.fit-contain ? Icons.maximize : Icons.minimize;
                         clicked => {
@@ -499,6 +542,8 @@ export component ImageViewer inherits Rectangle {
 
                     // Zoom + pan interaction layer
                     touch := TouchArea {
+                        // Nothing to zoom or pan without a picture.
+                        enabled: root.has-picture;
                         x: 0;
                         y: 0;
                         width: 100%;
@@ -673,7 +718,7 @@ export component ImageViewer inherits Rectangle {
                 }
 
                 // ── EXIF Info Panel (right side, 250px) ──
-                if root.viewer-info-open : Rectangle {
+                if root.has-picture && root.viewer-info-open : Rectangle {
                     width: 250px;
                     background: Theme.bg-surface;
                     border-width: 0px;

@@ -52,7 +52,7 @@ impl Secret {
 }
 
 /// The account this desktop runs as, from the system rather than the environment.
-fn account_name() -> Option<String> {
+pub(crate) fn account_name() -> Option<String> {
     let out = std::process::Command::new("/usr/bin/id").arg("-un").output().ok()?;
     let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
     (out.status.success() && !name.is_empty()).then_some(name)
@@ -83,6 +83,73 @@ pub fn account_says_no_password() -> bool {
 pub fn live_session() -> bool {
     std::path::Path::new("/run/live").exists()
         || std::fs::read_to_string("/proc/cmdline").is_ok_and(|c| c.split_whitespace().any(|w| w == "boot=live"))
+}
+
+/// Where a machine's administrator declares it starts open at boot: a public, unattended machine
+/// whose screen is meant to be watched (the live instance), where a lock at boot shows the world a
+/// password prompt and keeps nobody out who matters. Not the account's to set: see
+/// [`declared_open_at_boot`].
+pub const START_OPEN_MARKER: &str = "/etc/yantrik/start-open";
+
+/// Whether this machine's administrator declared that it starts open at boot.
+///
+/// Only a regular file (not a link), owned by root and writable by nobody else, in a directory
+/// owned by root and writable by nobody else, counts. So neither the person's account nor a mind's
+/// can make one: a marker in a place the account could write would let anything running as it
+/// grant itself an open desktop at the next restart, which is the hole #415 closed. Removing the
+/// account's password would have opened the desktop too, and with it a passwordless `su` to the
+/// person's account and their sudo (PAM's `nullok`); this keeps the password.
+///
+/// It counts only in the first [`BOOT_WINDOW_SECS`] after the machine booted, by the kernel's own
+/// uptime. `lock_at_start` runs at every start of the shell, and the session restarts a shell that
+/// dies, so without that a process running as the person could end the lock client and the shell
+/// and have the new one come up open: a lock pressed by hand would be a screen saver (security
+/// review of #547). After the window a restarted shell locks as any other does. The password, the
+/// vault (shut until the password is given), the idle lock and a lock pressed by hand are unchanged.
+pub fn declared_open_at_boot() -> bool {
+    just_booted() && start_open_marker_present()
+}
+
+/// Whether the root-owned start-open marker is in place, whatever the uptime. A restart of such a
+/// machine comes back inside the boot window, so open: the lock screen offers no Restart there
+/// (security review of #601), or Restart would be a one-click unlock.
+pub fn start_open_marker_present() -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let marker = std::path::Path::new(START_OPEN_MARKER);
+    let (Ok(file), Some(Ok(dir))) = (marker.symlink_metadata(), marker.parent().map(|d| d.symlink_metadata())) else {
+        return false;
+    };
+    marker_counts(
+        file.file_type().is_file(),
+        file.uid(),
+        file.mode(),
+        dir.file_type().is_dir(),
+        dir.uid(),
+        dir.mode(),
+    )
+}
+
+/// How long after boot a declared-open machine's shell may start open: long enough for an
+/// autologin session to start its shell, too short to be a way past a lock pressed later.
+pub const BOOT_WINDOW_SECS: f64 = 180.0;
+
+/// Whether the machine booted less than [`BOOT_WINDOW_SECS`] ago, by `/proc/uptime`, which the
+/// kernel keeps and no process can set. Not knowing is not booted.
+fn just_booted() -> bool {
+    std::fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|t| t.split_whitespace().next().and_then(|u| u.parse::<f64>().ok()))
+        .is_some_and(|up| within_boot_window(up))
+}
+
+fn within_boot_window(uptime_secs: f64) -> bool {
+    uptime_secs.is_finite() && (0.0..BOOT_WINDOW_SECS).contains(&uptime_secs)
+}
+
+/// The rule [`declared_open_at_boot`] applies, on what the filesystem said.
+fn marker_counts(is_file: bool, uid: u32, mode: u32, dir_is_dir: bool, dir_uid: u32, dir_mode: u32) -> bool {
+    let not_writable_by_others = |m: u32| m & 0o022 == 0;
+    is_file && uid == 0 && not_writable_by_others(mode) && dir_is_dir && dir_uid == 0 && not_writable_by_others(dir_mode)
 }
 
 /// Which secret unlocks this account's screen. Asked at every lock and every attempt: an
@@ -242,6 +309,35 @@ pub fn check_pin(input: &str) -> bool {
             tracing::warn!(error = %e, "Cannot read the lock PIN file — refusing to unlock");
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod start_open_tests {
+    use super::marker_counts;
+
+    /// Only an administrator's marker opens the desktop at boot: one the account (or a mind) could
+    /// write, or a link to elsewhere, counts for nothing.
+    #[test]
+    fn only_roots_own_marker_starts_the_desktop_open() {
+        assert!(marker_counts(true, 0, 0o100644, true, 0, 0o40755), "root's file in root's directory");
+        assert!(!marker_counts(true, 1000, 0o100644, true, 0, 0o40755), "the person's own file");
+        assert!(!marker_counts(true, 0, 0o100666, true, 0, 0o40755), "a file anyone may rewrite");
+        assert!(!marker_counts(true, 0, 0o100664, true, 0, 0o40755), "a file its group may rewrite");
+        assert!(!marker_counts(true, 0, 0o100644, true, 1000, 0o40755), "in a directory the person owns");
+        assert!(!marker_counts(true, 0, 0o100644, true, 0, 0o40777), "in a directory anyone may write");
+        assert!(!marker_counts(false, 0, 0o120777, true, 0, 0o40755), "a link");
+        assert!(!marker_counts(true, 0, 0o100644, false, 0, 0o40755), "a parent that is not a directory");
+    }
+
+    /// Only the shell a boot starts may start open: one restarted later locks as any other does.
+    #[test]
+    fn only_the_first_minutes_of_a_boot_count() {
+        assert!(super::within_boot_window(12.0));
+        assert!(super::within_boot_window(179.0));
+        assert!(!super::within_boot_window(180.0));
+        assert!(!super::within_boot_window(86_400.0), "a shell restarted a day later");
+        assert!(!super::within_boot_window(f64::NAN) && !super::within_boot_window(-1.0));
     }
 }
 

@@ -1,10 +1,42 @@
-// Personality screen — radar chart + opinions + shared references.
+// Personality screen — four trait bars + opinions + shared references.
 
 import { Theme } from "theme.slint";
 import { Icons } from "components/icon.slint";
 import { AppHeader } from "components/app_header.slint";
 import { AppColor } from "components/app_color.slint";
-import { RadarChart } from "components/radar_chart.slint";
+
+// One trait: its name and its number on a line, a 4px bar under them. The bar is the accent,
+// because a reading is data; amber would say it needs the person, and it does not.
+component TraitBar inherits VerticalLayout {
+    in property <string> label;
+    in property <float> value;
+    spacing: 6px;
+    HorizontalLayout {
+        Text {
+            text: root.label;
+            color: Theme.text-primary;
+            font-size: Theme.fs-body;
+            horizontal-stretch: 1;
+        }
+        Text {
+            text: Math.round(clamp(root.value, 0, 1) * 100) / 100;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-body;
+        }
+    }
+    Rectangle {
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.bg-elevated;
+        Rectangle {
+            x: 0px;
+            width: parent.width * clamp(root.value, 0, 1);
+            height: parent.height;
+            border-radius: 2px;
+            background: Theme.accent;
+        }
+    }
+}
 
 export struct OpinionData {
     topic: string,
@@ -72,24 +104,28 @@ export component PersonalityScreen inherits Rectangle {
                 spacing: 20px;
                 alignment: start;
 
-                // Radar chart, on a card like every other panel in this OS. It used to float
-                // directly on the background, which made it read as a stray diagram rather
-                // than a reading of something.
+                // Four bars with their numbers, on a card. This was a radar chart: two coloured
+                // lines on a cross with four axis words, no scale and no legend, so no reading of
+                // it could be checked against anything. Each trait is a number from 0 to 1, and
+                // the bar and the figure say the same number.
                 Rectangle {
-                    height: 260px;
                     background: Theme.bg-card;
                     border-radius: Theme.radius-card;
+                    height: traits.preferred-height;
 
-                HorizontalLayout {
-                    alignment: center;
-                    RadarChart {
-                        formality: root.formality;
-                        humor: root.humor-ratio;
-                        opinion: root.opinion-strength;
-                        question: root.question-ratio;
-                        size-px: 200;
+                    traits := VerticalLayout {
+                        padding: 16px;
+                        spacing: 14px;
+                        Text {
+                            text: "Each trait from 0 to 1";
+                            color: Theme.text-secondary;
+                            font-size: Theme.fs-caption;
+                        }
+                        TraitBar { label: "Formality"; value: root.formality; }
+                        TraitBar { label: "Humour"; value: root.humor-ratio; }
+                        TraitBar { label: "Opinion strength"; value: root.opinion-strength; }
+                        TraitBar { label: "Question ratio"; value: root.question-ratio; }
                     }
-                }
                 }
 
                 // Opinions section
@@ -115,7 +151,7 @@ export component PersonalityScreen inherits Rectangle {
 
                             Text {
                                 text: op.topic;
-                                color: Theme.amber-light;
+                                color: Theme.text-primary;
                                 font-size: Theme.fs-body;
                                 font-weight: 600;
                             }
@@ -140,7 +176,7 @@ export component PersonalityScreen inherits Rectangle {
                                 width: parent.width * op.confidence;
                                 height: parent.height;
                                 border-radius: 2px;
-                                background: Theme.amber;
+                                background: Theme.accent;
                             }
                         }
                     }

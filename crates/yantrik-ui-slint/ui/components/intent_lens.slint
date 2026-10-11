@@ -11,8 +11,14 @@
 import { Theme } from "theme.slint";
 import { QuestionRequest, QuestionCard } from "question_card.slint";
 import { Icon, Icons } from "icon.slint";
-import { MessageData, MessageBubble } from "message_bubble.slint";
-import { ListView } from "std-widgets.slint";
+import { MessageData } from "message_bubble.slint";
+import { WorkCardData, WorkCard, WorkStrip } from "work_card.slint";
+import { ChatMessage } from "chat_message.slint";
+import { ChatTranscript } from "chat_transcript.slint";
+import { ChatComposer } from "chat_composer.slint";
+import { ChatHeader, ChatEmpty } from "chat_chrome.slint";
+export { WorkCardData } from "work_card.slint";
+import { YButton } from "y_button.slint";
 
 // A single result in the Intent Feed.
 export struct LensResult {
@@ -56,6 +62,15 @@ export struct ApprovalRequest {
     // /proc to the first ancestor a person would recognise. Never empty — `caller_identity`
     // answers "could not be identified" rather than leaving a blank where a fact should be.
     verified: string,
+    // The card's first identity line: the walk's structured findings in words, "Caller process
+    // confirmed: sshd-session · PID 2290461 · from a terminal", with `identity-tag` ("not verified"
+    // when nothing could be established, else empty) drawn beside it and never cut — and under it
+    // `claim`, "Claimed name: “design-sweep”", in amber with "· not verified" beside it. Worded
+    // in approval_wording.rs (review by GPT-6 Astra, B); the fact always comes first (design
+    // sign-off, 4 October, item 2), and neither is read from the caller's argv.
+    identity: string,
+    identity-tag: string,
+    claim: string,
     // What does not add up about this request, one already-bounded sentence per entry — the
     // claimed name names an attached mind the ancestry contradicts, or the claimed grade is not
     // the one the app publishes. Drawn in the same red as `warning`, because they are the same
@@ -97,6 +112,22 @@ export struct ApprovalRequest {
     // carries one, it offers no "Allow for this session" (`can_session` below).
     explained: string,
     warning: string,        // "" unless there is something that cannot be undone
+    // What changes (sign-off item 4), worded in approval_wording.rs with every argument and the
+    // target escaped before they were joined (review of #639, B1):
+    //   what     "Deletes: <target>", else "Deletes: <the arguments>" — one pinned line;
+    //   exactly  every argument as the grant binds it, `; ` between — in full on the card's face
+    //            when the pinned line names a target or is cut at the card's edge;
+    //   undo     "Undo: not possible, the app says so", the caller-only form, or "".
+    what: string,
+    exactly: string,
+    undo: string,
+    // Graded dangerous, or the app says it cannot be undone: the affirmative button is the kit's
+    // filled red and says the action (sign-off item 1). The same reading as `warning`.
+    destructive: bool,
+    // The affirmative button's words: the action from the APP's published id or description —
+    // "Delete event" — on a destructive card, else "Allow once". Never the caller's purpose
+    // (approval_wording::confirm_label is not handed it).
+    confirm-label: string,
     // Whether "Allow for this session" may be offered at all. False for `dangerous` and for any
     // action whose own published sentence says it cannot be undone — the same predicate that
     // draws `warning`, so the card can never offer to stop asking about the thing it is warning
@@ -106,7 +137,11 @@ export struct ApprovalRequest {
     can-session: bool,
     decision: string,       // "" while waiting; then allowed | denied | expired
     record: string,         // the one line that stays in the conversation afterwards
-    age-text: string,       // "94s left", while waiting
+    age-text: string,       // "Expires in 2 min, then declined", while waiting
+    decided-at: string,     // "10:42" once decided: the resolved line's time
+    // Once allowed: whether it was "for this session" (a standing rule) rather than once. The
+    // resolved line says which, because the two are different promises.
+    session: bool,
 }
 
 // One request, or — once it has been answered — the line it leaves behind.
@@ -139,8 +174,22 @@ export component ApprovalCard inherits Rectangle {
     callback allow();
     callback allow-session();
     callback deny();
+    // The resolved line's "View action": the run of the agent that asked.
+    callback view-action();
 
     property <bool> waiting: root.data.decision == "";
+
+    // How hard to look, said by the card's edge before a word is read: a `dangerous` request is
+    // red, a `sensitive` one amber with its name on the heading, and a `standard` one neutral
+    // (it is still a question that waits for the person, and the heading says so). When every
+    // request was amber the grade was only in the small print and the cue was gone (review of
+    // #580). Tokens only, so the colour system can restyle them.
+    property <color> grade-edge: root.data.grade == "dangerous" ? Theme.color-danger
+        : root.data.grade == "sensitive" ? Theme.chat-needs-you : Theme.chat-border;
+    property <color> grade-ink: root.data.grade == "dangerous" ? Theme.color-danger
+        : root.data.grade == "sensitive" ? Theme.chat-needs-you : Theme.chat-text;
+    property <string> grade-label: root.data.grade == "dangerous" ? "Dangerous"
+        : root.data.grade == "sensitive" ? "Sensitive" : "";
 
     // ── The card fits the panel it is drawn in, or it does not answer (#218) ──
     //
@@ -152,25 +201,48 @@ export component ApprovalCard inherits Rectangle {
     // was already at its bottom — and a person could not answer the card at all.
     //
     // So whoever draws the card says how tall it may be, and the card keeps that promise by
-    // making ONE part of itself yield: the details in the middle scroll, while the identity
-    // rows above (who is asking, what the action is) and the buttons below stay pinned where
-    // the layout put them. The default asks for more than any screen has, which leaves the
-    // card exactly as tall as it likes in a pane that scrolls itself (the Agents screen).
+    // making ONE part of itself yield: the middle — the whole sentence and the whole of the app's
+    // word about this call when their pinned lines were cut, the exact name, the agent, Details
+    // and source — which scrolls. Above it a floor is pinned, each line elided rather than
+    // scrolled away: who is asking (the fact and the claim), any discrepancy, and the action's
+    // sentence. Below it are pinned what changes — with every argument the grant binds, in full,
+    // whenever the one-line summary of them cannot carry it — the first line of the app's word
+    // about the call, the undo line, the warning and the buttons (review of #639; on main the
+    // pinned identity rows alone outgrew the Lens's 240px and pushed the buttons out of the
+    // card, over the transcript). The card is never taller than this limit and the buttons are
+    // always inside it: when even the pinned lines do not fit, everything above the buttons
+    // scrolls as one and Allow waits until its end has been in view (fourth review of #639; see
+    // `allow-ready`). Every host passes a limit: the Lens its panel's arithmetic, the top-right
+    // corner the screen between the bars (about 684px at 1280×800, 484px at 800×600), an
+    // agent's pane the visible height of its own scroller (agents.slint, `card-limit`). The
+    // out-of-reach default is for a host that has none of these.
     // Not called `max-height`: that name belongs to the Rectangle this inherits from, where it
     // is a layout constraint, and Slint refuses to let a component shadow a built-in property.
     in property <length> height-limit: 10000px;
 
-    // How much of the purpose block shows before "show more" takes over: three caption lines,
-    // at their 14px line pitch — a rounder number clips the fourth line mid-glyph.
-    // The summary row above already carries the description's first sentence, so the clamped
-    // paragraph is for whoever wants the rest of it — and they ask, instead of the card
-    // spending a sixth of the screen on protocol detail (#218, item 3). It used to be 160px
-    // with a scroll of its own, which is what made the card too tall for the Lens; a scroll
-    // inside the scrolling details section would also fight the outer one for the gesture.
-    property <length> purpose-clamp: 42px;
+    // Details and source: closed by default for a sensitive request, open for a dangerous one
+    // (sign-off item 4). A press is remembered for the request it was made on, so a card that
+    // takes this one's place starts at its own grade's default.
+    // The request whose whole content has been in view: set when the section above the buttons,
+    // having had to scroll, reaches its end. Allow waits for it (see `allow-ready`). Per request
+    // id, like the disclosure below, so the next card in this place starts over.
+    property <string> read-id: "";
+    property <string> toggled-id: "";
+    property <bool> toggled-open: false;
+    property <bool> details-open: root.toggled-id == root.data.id ? root.toggled-open
+        : root.data.grade == "dangerous";
+    // The type size under Details: 13px, secondary (the sign-off's floor is 12px).
+    property <length> details-type: 13px;
+
+    // How much of the app's paragraph shows under Details before "show more" takes over: three
+    // lines at the 13px type's 16px pitch — a rounder number clips the fourth line mid-glyph.
+    // The 18px line already carries the description's first sentence, so the clamped paragraph
+    // is for whoever wants the rest of it, and they ask (#218, item 3). A scroll of its own
+    // inside the scrolling section would fight the outer one for the gesture.
+    property <length> purpose-clamp: 48px;
     property <bool> purpose-open: false;
     // The caller's words get two lines before "show more": they are a claim, not the action.
-    property <length> caller-clamp: 28px;
+    property <length> caller-clamp: 32px;
     property <bool> caller-open: false;
 
     height: body.preferred-height;
@@ -178,547 +250,656 @@ export component ApprovalCard inherits Rectangle {
 
     body := VerticalLayout {
 
-    // Decided: one line in the transcript, and nothing else. The card is gone; the record of
-    // what was decided is not, because "did I allow that?" is a question people ask afterwards.
+    // Decided: one collapsed line in the transcript, and nothing else. The card is gone; the
+    // record of what was decided is not, because "did I allow that?" is a question people ask
+    // afterwards. "Approved" is what the person did, not what happened next: whether the action
+    // then ran is the run's business, and "View action" opens the run where it is recorded. The
+    // whole record sentence stays one hover away as the line's accessible description.
     if !root.waiting : HorizontalLayout {
         padding-left: Theme.sp-4;
         padding-right: Theme.sp-4;
         padding-top: Theme.sp-1;
         padding-bottom: Theme.sp-1;
         spacing: Theme.sp-2;
+        accessible-role: text;
+        accessible-description: root.data.record;
 
-        Rectangle {
-            width: 3px;
-            background: root.data.decision == "allowed" ? Theme.color-success
-                : root.data.decision == "denied" ? Theme.color-danger
-                : Theme.text-dim;
-        }
         Text {
-            text: root.data.record;
-            color: Theme.text-dim;
+            text: root.data.decision == "allowed" ? "Approved by you"
+                : root.data.decision == "denied" ? "Declined by you"
+                : root.data.record;
+            color: Theme.chat-text-2;
+            font-size: Theme.fs-caption;
+            vertical-alignment: center;
+            wrap: no-wrap;
+            horizontal-stretch: root.data.decision == "expired" ? 1 : 0;
+            overflow: root.data.decision == "expired" ? elide : clip;
+        }
+        if root.data.decision != "expired" && root.data.decided-at != "" : Text {
+            text: "\u{00b7} " + root.data.decided-at;
+            color: Theme.chat-text-2;
+            font-size: Theme.fs-caption;
+            vertical-alignment: center;
+            wrap: no-wrap;
+        }
+        // Which action, and for how long. A standing "for this session" rule and a one-off both
+        // read "Approved by you · 10:42" before, so a person scrolling back could not tell that
+        // a rule still stood or what it covered (review of #580). The end of the line is what
+        // gets elided in a narrow panel, never these facts: they are the line's own stretch.
+        if root.data.decision != "expired" && root.data.app != "" : Text {
+            text: "\u{00b7} " + root.data.app + "." + root.data.action
+                + (root.data.decision == "allowed" ? (root.data.session ? " (this session)" : " (once)") : "");
+            color: Theme.chat-text-2;
             font-size: Theme.fs-caption;
             vertical-alignment: center;
             wrap: no-wrap;
             overflow: elide;
             horizontal-stretch: 1;
         }
+        if root.data.decision != "expired" && root.data.app == "" && root.data.decided-at == "" : Text {
+            text: "\u{00b7} " + root.data.record;
+            color: Theme.chat-text-2;
+            font-size: Theme.fs-caption;
+            vertical-alignment: center;
+            wrap: no-wrap;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        if root.data.agent != "" : view-ta := TouchArea {
+            width: view-text.preferred-width;
+            mouse-cursor: pointer;
+            clicked => { root.view-action(); }
+            view-text := Text {
+                text: "\u{2014} View action";
+                color: view-ta.has-hover ? Theme.chat-text : Theme.chat-text-2;
+                font-size: Theme.fs-caption;
+                vertical-alignment: center;
+                wrap: no-wrap;
+            }
+        }
+        Rectangle { horizontal-stretch: 1; }
     }
 
-    if root.waiting : Rectangle {
-        border-radius: Theme.r-lg;
+    if root.waiting : card := Rectangle {
+        border-radius: Theme.chat-radius;
         // Opaque, not glass: this card is drawn over whatever screen is up, and a question about
         // something that cannot be undone must not have another window's words showing through it.
-        background: Theme.bg-card;
+        // The card's own ground (`chat-card`), so Decline reads as an outline in both modes.
+        background: Theme.chat-card;
         border-width: 1px;
-        // The grade colours the edge of the card rather than a badge in the corner, so the one
-        // thing that changes how hard you should look is visible before you start reading.
-        border-color: root.data.grade == "dangerous" ? Theme.color-danger
-            : root.data.grade == "sensitive" ? Theme.color-warning
-            : Theme.glass-border-strong;
+        // The edge carries the grade (`grade-edge` above).
+        border-color: root.grade-edge;
         drop-shadow-blur: 18px;
         drop-shadow-color: Theme.overlay-shadow;
-        // The promise to the panel: never taller than it was told it may be. What yields is the
-        // details section in the middle (see its height below); the rows above it and the
-        // buttons under it keep their arithmetic heights, so the buttons are the one thing on
-        // the card that is always where the layout put them (#218).
-        height: min(card-body.preferred-height, root.height-limit);
+
+        // ── Never taller than its host allows, and the buttons always inside it ──
+        //
+        // Fourth review of #639: at 800×600 the largest card a request may make put its buttons
+        // under the window's edge — a card nobody can answer, held in front by card_watch until it
+        // expires. Whatever the size, Decline and Allow are pinned at the foot, and everything
+        // above them gets the room that is left (`above-room`).
+        //
+        // Three cases. Everything fits: nothing scrolls and Allow is live at once. The pinned lines
+        // fit and the middle does not: the middle scrolls, as it always has, and Allow is live —
+        // every argument the grant binds is on screen. Even the pinned lines do not fit: all of it
+        // scrolls as one, and Allow stays disabled until that scroll has been to its end, so the
+        // person has had every argument in view before they can allow it (`allow-ready`). Decline
+        // is always live.
+        property <length> above-room: max(0px, root.height-limit - decide.preferred-height
+            - 2 * Theme.sp-2 - Theme.sp-2);
+        // Measured on the pinned lines alone — the middle is what yields — so whether the card
+        // overflows never depends on how tall the middle is drawn.
+        property <bool> overflowing: pinned-floor.preferred-height + changes.preferred-height
+            + 2 * Theme.sp-2 > self.above-room + 0.5px;
+        // What the gate checks, and all it checks: that the section above the buttons has been at
+        // its end at least once for this request id. A fling or a dragged scrollbar reaches the
+        // end as surely as reading does; it proves every line was put in view, not that it was
+        // read. And only a click on this card's own Allow reaches `allow()`, the one path to
+        // `approval-allow` / `on_approval_allow` in the shell: nothing else on the card, and
+        // nothing a caller sends, can press it.
+        property <bool> allow-ready: !self.overflowing || root.read-id == root.data.id;
+        // A new request in this card starts at its top, however far the last one was scrolled.
+        property <string> card-id: root.data.id;
+        changed card-id => { above-flick.viewport-y = 0px; }
+        height: card-body.preferred-height;
 
         card-body := VerticalLayout {
-            padding: Theme.sp-3;
+            padding-left: Theme.sp-3;
+            padding-right: Theme.sp-3;
+            padding-top: Theme.sp-2;
+            padding-bottom: Theme.sp-2;
             spacing: Theme.sp-2;
 
-            // Pinned top: who is asking, and what the action is in one line. Everything here is
-            // fixed single-line rows (or the summary's bounded sentence), so this section's
-            // height is arithmetic and the details below can be sized by subtracting it.
-            identity := VerticalLayout {
-                spacing: Theme.sp-2;
-
-            // Who is asking — said twice, on purpose, because the two answers are not the same
-            // kind of thing and the card must not let one pass for the other.
-            //
-            // The first pair is the CLAIM: whatever the caller called itself, with the label
-            // `says the caller` under it. Hermes declares this on the MCP handshake and the
-            // bridge passes it through; anything that can open the shell's socket can put any
-            // string there. It cannot raise privilege (the machine ceiling is enforced from the
-            // app's real grade, not from anything on this card) but it can flatter.
-            //
-            // The second pair is what the MACHINE established, and it is not a rewording of the
-            // first: the kernel stamps the peer's pid on the socket at connect (SO_PEERCRED —
-            // the caller cannot write it), and `caller_identity.rs` walks /proc up from there,
-            // past our own `yos`/`yos-mcp` plumbing, to the first program a person would
-            // recognise. It says `could not be identified` rather than guessing.
-            //
-            // Four fixed single-line rows rather than anything that wraps, so the card's height
-            // stays arithmetic — see the geometry table in design/approvals-2026-09-21.md.
-            HorizontalLayout {
-                spacing: Theme.sp-2;
-
-                Rectangle {
-                    width: 6px; height: 6px;
-                    y: 5px;
-                    border-radius: 3px;
-                    background: Theme.amber;
-                }
-                Text {
-                    text: root.data.requester;
-                    color: Theme.text-primary;
-                    font-size: Theme.fs-micro;
-                    font-weight: 600;
-                    vertical-alignment: center;
-                    wrap: no-wrap;
-                    overflow: elide;
-                    horizontal-stretch: 1;
-                }
-                Text {
-                    text: root.data.age-text;
-                    color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
-                    vertical-alignment: center;
-                }
-            }
-            Text {
-                text: "says the caller · nothing on this machine checked that name";
-                color: Theme.text-dim;
-                font-size: Theme.fs-micro;
-                wrap: no-wrap;
-                overflow: elide;
-            }
-
-            // What the machine knows, in the same value-over-label shape, so the eye reads the
-            // pair rather than a sentence. Spacing 0 inside: the two belong together and the
-            // gap belongs between the pairs, not inside one.
-            VerticalLayout {
-                spacing: 0px;
-
-                Text {
-                    text: root.data.verified;
-                    color: Theme.text-primary;
-                    font-size: Theme.fs-micro;
-                    font-weight: 600;
-                    wrap: no-wrap;
-                    overflow: elide;
-                }
-                Text {
-                    text: "verified by this machine · the kernel said so, not the caller";
-                    color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
-                    wrap: no-wrap;
-                    overflow: elide;
-                }
-            }
-
-            // Which agent — one row, only when there is one, in the same value-over-label shape.
-            // From the token the shell issued that agent, checked against the process above, so it
-            // sits with the machine's facts rather than with the caller's claim.
-            if root.data.agent != "" : VerticalLayout {
-                spacing: 0px;
-
-                Text {
-                    text: "agent " + (root.data.on-behalf == "" ? "" : root.data.on-behalf + " · ") + root.data.agent;
-                    color: Theme.text-primary;
-                    font-size: Theme.fs-micro;
-                    font-weight: 600;
-                    wrap: no-wrap;
-                    overflow: elide;
-                }
-                Text {
-                    text: "named by the token the desktop gave it · also asked in its pane";
-                    color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
-                    wrap: no-wrap;
-                    overflow: elide;
-                }
-            }
-
-            // What the caller said and what the machine found do not agree — the kind of
-            // disagreement a person cannot catch by reading, because the claim will look exactly
-            // right. Same red bar as "cannot be undone" below; one line each, elided, and the
-            // sentences are bounded where they are made (caller_identity.rs, control_approvals.rs)
-            // so the card's height stays arithmetic.
-            for said in root.data.discrepancies : HorizontalLayout {
-                spacing: Theme.sp-2;
-                Rectangle {
-                    width: 3px;
-                    background: Theme.color-danger;
-                }
-                Text {
-                    text: said;
-                    color: Theme.color-danger;
-                    font-size: Theme.fs-caption;
-                    vertical-alignment: center;
-                    wrap: no-wrap;
-                    overflow: elide;
-                    horizontal-stretch: 1;
-                }
-            }
-
-            // What it is. The app and action by their exact names, because those are the names
-            // in every other surface on this machine and a friendly rewording would be a third.
-            Text {
-                text: root.data.app + "." + root.data.action;
-                color: Theme.text-primary;
-                font-size: Theme.fs-body-strong;
-                font-weight: 600;
-                wrap: word-wrap;
-            }
-
-            // What it does, in one line a person can read (#218): the app's own first sentence,
-            // picked out of the published description in approvals.rs. Pinned with the identity
-            // rows rather than down in the details, because the line that says what this call
-            // does is the one thing on the card that must never be what a person has to scroll
-            // or press "show more" for. The label says where the line came from, in the same
-            // voice as the labels around it — it is the app's words, not a third name for the
-            // action beside `app.action` and the paragraph below.
-            // Not behind an `if`: conditional, the pair's last line never reached this
-            // section's preferred height, and the details below started on top of the label.
-            // An empty summary collapses the box to zero height instead, and the clip keeps
-            // the collapsed box from spilling whatever it still draws.
+            // Everything above the buttons. As tall as it likes up to `above-room`, past which it
+            // scrolls; reaching its end is what makes Allow live when it had to scroll.
             Rectangle {
-                height: root.data.summary != "" ? summary-pair.preferred-height : 0px;
+                height: min(above-content.preferred-height, card.above-room);
                 clip: true;
 
-                summary-pair := VerticalLayout {
-                    spacing: 0px;
-
-                    Text {
-                        text: root.data.summary;
-                        color: Theme.text-primary;
-                        font-size: Theme.fs-caption;
-                        wrap: word-wrap;
+                above-flick := Flickable {
+                    viewport-width: self.width;
+                    viewport-height: above-content.preferred-height;
+                    changed viewport-y => {
+                        if (self.viewport-y <= self.height - self.viewport-height + 1px) {
+                            root.read-id = root.data.id;
+                        }
                     }
+
+                    above-content := VerticalLayout {
+                        spacing: Theme.sp-2;
+
+            // ── The floor: who is asking and what the action is ──
+            //
+            // Each one line, cut at the card's edge when it must be — never scrolled away while the
+            // pinned lines fit (review of #639, S1). The labels that say what kind of line each is
+            // ("not verified") are their own Texts beside the cut one, so the cut can
+            // only ever eat the caller's words or the program's name, never the label.
+            pinned-floor := VerticalLayout {
+                spacing: Theme.sp-1;
+
+                HorizontalLayout {
+                    spacing: Theme.sp-2;
                     Text {
-                        text: "what it does · the app's own first sentence";
-                        color: Theme.text-dim;
-                        font-size: Theme.fs-micro;
+                        text: "Approval needed";
+                        color: root.grade-ink;
+                        font-size: Theme.fs-body-strong;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        wrap: no-wrap;
+                    }
+                    if root.grade-label != "" : Text {
+                        text: "\u{00b7} " + root.grade-label;
+                        color: root.grade-ink;
+                        font-size: Theme.fs-body-strong;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        wrap: no-wrap;
+                    }
+                    // How long it waits, in whole minutes, and what happens then (sign-off item 5).
+                    Text {
+                        text: root.data.age-text;
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-caption;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
                         wrap: no-wrap;
                         overflow: elide;
+                        horizontal-stretch: 1;
                     }
+                }
+
+                // Who is asking — the fact first, the claim under it (sign-off item 2). The first
+                // line is what this MACHINE established: the kernel stamps the peer's pid on the
+                // socket at connect (SO_PEERCRED — the caller cannot write it) and
+                // `caller_identity.rs` walks /proc up from there; the words come from that walk's
+                // fields, never from the caller's argv. The second is whatever the caller called
+                // itself, in amber and marked unverified: anything that can open the shell's socket
+                // can put any string there.
+                HorizontalLayout {
+                    spacing: Theme.sp-1;
+                    Text {
+                        text: root.data.identity;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-body;
+                        font-weight: 600;
+                        wrap: no-wrap;
+                        overflow: elide;
+                        // Shrinks, eliding, when the row is short of room; never grows past its
+                        // words, so the tag sits right after them.
+                        horizontal-stretch: 1;
+                        max-width: self.preferred-width;
+                    }
+                    // Only when there is one: a confirmed caller's line says so itself.
+                    if root.data.identity-tag != "" : Text {
+                        text: "\u{00b7} " + root.data.identity-tag;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-body;
+                        font-weight: 600;
+                        wrap: no-wrap;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                HorizontalLayout {
+                    spacing: Theme.sp-1;
+                    Text {
+                        text: root.data.claim;
+                        color: Theme.chat-needs-you;
+                        font-size: Theme.fs-caption;
+                        wrap: no-wrap;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                        max-width: self.preferred-width;
+                    }
+                    Text {
+                        text: "\u{00b7} not verified";
+                        color: Theme.chat-needs-you;
+                        font-size: Theme.fs-caption;
+                        wrap: no-wrap;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+
+                // What the caller said and what the machine found do not agree — the kind of
+                // disagreement a person cannot catch by reading, because the claim will look exactly
+                // right. Same red bar as the warning; one line each, bounded where they are made.
+                for said in root.data.discrepancies : HorizontalLayout {
+                    spacing: Theme.sp-2;
+                    Rectangle {
+                        width: 3px;
+                        background: Theme.color-danger;
+                    }
+                    Text {
+                        text: said;
+                        color: Theme.color-danger;
+                        font-size: Theme.fs-caption;
+                        vertical-alignment: center;
+                        wrap: no-wrap;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                }
+
+                // The action in words, at 18px (sign-off item 3): the app's own first sentence,
+                // picked out of its published description in approvals.rs (`summary_of`) — never
+                // the caller's words. One line here; when it is cut, the whole sentence is the first
+                // thing in the section below.
+                sentence-line := Text {
+                    text: root.data.summary != "" ? root.data.summary
+                        : "The app publishes no description of this action.";
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-title-1;
+                    font-weight: Theme.fw-body-strong;
+                    wrap: no-wrap;
+                    overflow: elide;
                 }
             }
 
-            }   // identity — pinned; everything under here gives way first
-
-            // The scrolling middle: the app's whole paragraph, every argument, the warning and
-            // the grade line.
+            // ── The middle: everything that may yield ──
             //
-            // This is the one part of the card that yields when the card may not be as tall as
-            // it likes (#218): its height is what is left of `height-limit` once the pinned rows
-            // above, the pinned buttons below and the card's own padding and spacing are
-            // subtracted — the 2×sp-3 and 2×sp-2 are exactly those, two paddings and the two
-            // gaps between the three sections. When the details fit — every card on a full
-            // screen, and all of them in a pane that scrolls itself, where `height-limit` is
-            // left at its out-of-reach default — the section is precisely as tall as its
-            // content and nothing scrolls anywhere.
+            // The part that gives way first: its height is what is left of `above-room` once the
+            // floor and what changes are subtracted, with the two gaps between them, and it
+            // scrolls on its own. Where the card has room it is precisely as tall as its content
+            // and nothing scrolls. When even the pinned lines do not fit, the whole section above
+            // the buttons scrolls as one instead (see `overflowing`), and then the middle takes its
+            // natural height inside it — the exact name, the agent, the whole sentence, the app's
+            // word about the call and Details stay reachable by that one scroll, rather than
+            // shrunk to nothing (fifth review of #639). Its own scroll is off then, so the wheel
+            // over it moves the section the gate is watching.
             Rectangle {
-                height: min(details.preferred-height,
-                            max(0px, root.height-limit - identity.preferred-height
-                                - decide.preferred-height
-                                - 2 * Theme.sp-3 - 2 * Theme.sp-2));
+                height: card.overflowing ? mid.preferred-height
+                    : min(mid.preferred-height,
+                          max(0px, card.above-room - pinned-floor.preferred-height
+                              - changes.preferred-height - 2 * Theme.sp-2));
                 clip: true;
 
                 // A Flickable has no preferred height of its own, so the sizing Rectangle is
-                // around it and the layout inside is what gets measured.
+                // around it and the layout inside is what gets measured. Its viewport width is
+                // said so that wrapping text measures its height from the card's width (left to
+                // its default, width into height into width is a binding loop Slint rejects).
                 Flickable {
-                    // Only the vertical scrolls, and the viewport's width has to be said so:
-                    // left at its default it follows the content's minimum width, and the
-                    // wrapping purpose text measures its height from the width it is given —
-                    // width into height into width, which Slint rejects as a binding loop.
                     viewport-width: self.width;
-                    viewport-height: details.preferred-height;
+                    viewport-height: mid.preferred-height;
+                    interactive: !card.overflowing;
 
-                    details := VerticalLayout {
+                    mid := VerticalLayout {
                         spacing: Theme.sp-2;
 
-            // What it does, in the app's own sentence — the whole sentence, all of it readable.
-            //
-            // This used to be a bare wrapping Text fed a purpose cut to 240 characters, and
-            // Studio's `set_backend` publishes 585: the card read "…naming a hosted service means
-            // the sentences typed into this app will leav… (585 characters in full)", cut
-            // mid-word at the clause that said why the grade is what it is, with no way to read
-            // the rest. So the text is no longer cut to fit the card (see `PURPOSE_CHARS` in
-            // approvals.rs). It is still clamped, though — to three lines under "show more"
-            // (#218) — because `run_recipe`'s paragraph is protocol detail for minds, and on
-            // the card it pushed the buttons under the edge of the Lens. What changed since
-            // 22 September is that nothing is lost by the clamp any more: the summary line
-            // above carries the first sentence, "show more" opens the rest in full, and the
-            // section scrolls once the card is at the height its panel allows.
-            //
-            // The label under it says what kind of thing the sentence is, because the two cards
-            // of 22 September were read as the OS warning about THIS call when the sentence is
-            // the app's description of the ACTION and reads the same for `kind: fake` as for a
-            // hosted service. The arguments underneath are what change; their label says so.
-            VerticalLayout {
-                spacing: 0px;
-
-                Rectangle {
-                    height: root.purpose-open ? purpose-text.preferred-height
-                        : min(purpose-text.preferred-height, root.purpose-clamp);
-                    clip: true;
-
-                    purpose-text := Text {
-                        width: parent.width;
-                        // Pinned to the box's top edge, both axes: left to its own geometry the
-                        // paragraph centers itself on the clamped box, and the window then
-                        // shows the middle lines of it instead of the first ones.
-                        y: 0px;
-                        text: root.data.purpose;
-                        color: Theme.text-secondary;
-                        font-size: Theme.fs-caption;
-                        wrap: word-wrap;
-                        vertical-alignment: top;
-                    }
-                }
-                // "show more" rather than a scroll of its own: a second Flickable inside the
-                // scrolling details section would fight the outer one for the same gesture, and
-                // a scrollbar-less clamp gives no sign that there is more. Same shape as the
-                // small hit areas in the Lens header — a TouchArea sized to its label.
-                if purpose-text.preferred-height > root.purpose-clamp : more-hit := TouchArea {
-                    width: more-label.preferred-width + 16px;
-                    height: 20px;
-                    mouse-cursor: pointer;
-                    clicked => { root.purpose-open = !root.purpose-open; }
-
-                    more-label := Text {
-                        width: parent.width;
-                        height: parent.height;
-                        text: root.purpose-open ? "show less" : "show more";
-                        color: more-hit.has-hover ? Theme.amber-light : Theme.text-dim;
-                        font-size: Theme.fs-micro;
-                        vertical-alignment: center;
-                    }
-                }
-                Text {
-                    text: "says the app about the action · the same for every call of it";
-                    color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
-                    wrap: no-wrap;
-                    overflow: elide;
-                }
-            }
-
-            // What the caller says it is for, after the app's sentence and labelled as the
-            // caller's: clamped to two lines under its own "show more", so no length of it can
-            // push the app's sentence down, and it cannot start a line of its own that reads as
-            // one of this card's labels (approvals.rs gives it as one neutralized paragraph).
-            if root.data.caller-says != "" : VerticalLayout {
-                spacing: 0px;
-
-                Rectangle {
-                    height: root.caller-open ? caller-text.preferred-height
-                        : min(caller-text.preferred-height, root.caller-clamp);
-                    clip: true;
-
-                    caller-text := Text {
-                        width: parent.width;
-                        y: 0px;
-                        text: root.data.caller-says;
-                        color: Theme.text-secondary;
-                        font-size: Theme.fs-caption;
-                        font-italic: true;
-                        wrap: word-wrap;
-                        vertical-alignment: top;
-                    }
-                }
-                if caller-text.preferred-height > root.caller-clamp : caller-more := TouchArea {
-                    width: caller-more-label.preferred-width + 16px;
-                    height: 20px;
-                    mouse-cursor: pointer;
-                    clicked => { root.caller-open = !root.caller-open; }
-
-                    caller-more-label := Text {
-                        width: parent.width;
-                        height: parent.height;
-                        text: root.caller-open ? "show less" : "show more";
-                        color: caller-more.has-hover ? Theme.amber-light : Theme.text-dim;
-                        font-size: Theme.fs-micro;
-                        vertical-alignment: center;
-                    }
-                }
-                Text {
-                    text: "says the caller about this call · nothing checks it";
-                    color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
-                    wrap: no-wrap;
-                    overflow: elide;
-                }
-            }
-
-            // The arguments, exactly as the grant is bound to them.
-            //
-            // One Text per argument, `no-wrap` and elided, so the box is exactly as many lines
-            // as there are arguments and the card's height is arithmetic rather than a
-            // measurement. The values arrive already cut to fit (see `ARG_VALUE_CHARS` in
-            // approvals.rs), each cut one naming its true length, and a list longer than eight
-            // arrives with a line saying how many more the grant covers — so the bound is
-            // visible in the text rather than being a silent truncation by the layout.
-            VerticalLayout {
-                spacing: 0px;
-
-                Rectangle {
-                    border-radius: Theme.r-sm;
-                    background: Theme.bg-input;
-                    height: args-body.preferred-height;
-
-                    args-body := VerticalLayout {
-                        padding: Theme.sp-2;
-
-                        for line in root.data.args : Text {
-                            text: line;
-                            color: Theme.text-primary;
-                            font-size: Theme.fs-mono;
-                            wrap: no-wrap;
-                            overflow: elide;
-                        }
-                    }
-                }
-                Text {
-                    text: "asked for in this call · the grant is bound to exactly these";
-                    color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
-                    wrap: no-wrap;
-                    overflow: elide;
-                }
-            }
-
-            // What the app says about THIS call, with these arguments (#137), drawn directly
-            // under the argument box — the bridge in reading order: the purpose states the
-            // rule, the box shows the one call, and this says what that call does. One
-            // sentence, wrapped: it arrives already bounded (see `EXPLAINED_CHARS` in
-            // approvals.rs) and cut at a word like every prose line on this card, and the
-            // details section scrolls however it wraps. Hidden when empty, which is every app
-            // that explains nothing per call: their card is exactly what it was.
-            if root.data.explained != "" : VerticalLayout {
-                spacing: 0px;
-                Text {
-                    // Pinned to the layout's width, like `purpose-text` above: a wrapping Text
-                    // left to its default measures its height at its own unwrapped width, so
-                    // the section's preferred height would count this block as one line tall
-                    // however it wraps — and the details' scroll range is that preferred
-                    // height against the clipped box, so the wrapped lines below the fold
-                    // would be unreachable, the wheel having nothing to scroll.
-                    width: parent.width;
-                    text: root.data.explained;
-                    color: Theme.text-primary;
-                    font-size: Theme.fs-caption;
-                    wrap: word-wrap;
-                }
-                // Wrapped, not elided: this footnote is longer than the card is wide, and the
-                // elided line cut off exactly its point — "not to this sentence". The details
-                // section scrolls, so a wrapped footnote costs nothing but its second line.
-                Text {
-                    width: parent.width;
-                    text: "says the app about this one call, with these arguments · the grant binds to the argument box above, not to this sentence";
-                    color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
-                    wrap: word-wrap;
-                }
-            }
-
-            // What the handle in the box above means, in the words of the app that owns it
-            // (#54) — a line for each handle the app names, so a delete asked by id reads as
-            // the event itself. One Text, `no-wrap` and elided, like every other row: the
-            // card's height is arithmetic, and the line arrives already cut to fit (see
-            // `TARGET_CHARS` in approvals.rs). Hidden when empty, which is the ordinary case.
-            if root.data.target != "" : VerticalLayout {
-                spacing: 0px;
-                Text {
-                    text: root.data.target;
-                    color: Theme.text-primary;
-                    font-size: Theme.fs-caption;
-                    wrap: no-wrap;
-                    overflow: elide;
-                }
-                Text {
-                    text: "says the app what its handle means · the grant binds to the arguments above, not to this line";
-                    color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
-                    wrap: no-wrap;
-                    overflow: elide;
-                }
-            }
-
-            if root.data.warning != "" : HorizontalLayout {
-                spacing: Theme.sp-2;
-                Rectangle {
-                    width: 3px;
-                    background: Theme.color-danger;
-                }
-                Text {
-                    text: root.data.warning;
-                    color: Theme.color-danger;
-                    font-size: Theme.fs-caption;
-                    wrap: word-wrap;
-                    horizontal-stretch: 1;
-                }
-            }
-
-            Text {
-                text: "Graded " + root.data.grade + ". Allowing covers this one action, once.";
-                color: Theme.text-dim;
-                font-size: Theme.fs-micro;
+            // The whole sentence, when the pinned line above had to cut it.
+            if sentence-line.preferred-width > sentence-line.width : Text {
+                width: parent.width;
+                text: sentence-line.text;
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
                 wrap: word-wrap;
             }
 
-                    }   // details
-                }   // Flickable
-            }   // the scrolling middle
+            // The exact name: every other surface on this machine uses it, and a friendly
+            // rewording would be a third. And which agent, from the token the shell issued it.
+            VerticalLayout {
+                spacing: 0px;
+                Text {
+                    text: root.data.app + "." + root.data.action;
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-caption;
+                    wrap: no-wrap;
+                    overflow: elide;
+                }
+                if root.data.agent != "" : Text {
+                    text: "agent " + (root.data.on-behalf == "" ? "" : root.data.on-behalf + " · ") + root.data.agent;
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-caption;
+                    wrap: no-wrap;
+                    overflow: elide;
+                }
+            }
 
-            // Pinned bottom: the answer. Below the scroll, outside it, at a height the card's
-            // arithmetic already reserved — the buttons are the one thing that cannot end up
-            // somewhere a person has to look for it (#218).
-            decide := VerticalLayout {
-                spacing: Theme.sp-2;
+            // The whole of what the app says about THIS call (#137), when its pinned first line
+            // below had to cut it.
+            if root.data.explained != "" && explained-line.preferred-width > explained-line.width : Text {
+                width: parent.width;
+                text: explained-line.text;
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+                wrap: word-wrap;
+            }
 
-            // Deny first, and neither button dressed up as the obvious one.
+            // ── Details and source ──
             //
-            // The failure this guards against is approval fatigue: a prominent, accent-filled
-            // Allow next to a grey Deny trains a person to click the bright one without
-            // reading, which is exactly how the one request that mattered gets waved through.
-            // So Deny is the ordinary filled button and Allow is an outline you have to aim at.
-            HorizontalLayout {
+            // Where each line came from, and the app's and the caller's words in full (sign-off
+            // item 4). Closed by default for a sensitive request, open for a dangerous one. A
+            // TouchArea, like every hit area on this card: nothing here takes keyboard focus.
+            // The open state is kept per request id, so a card that replaces the one a person
+            // closed starts in its own grade's default rather than inheriting the last one's.
+            details-hit := TouchArea {
+                height: 22px;
+                mouse-cursor: pointer;
+                clicked => {
+                    root.toggled-open = !root.details-open;
+                    root.toggled-id = root.data.id;
+                }
+                Text {
+                    x: 0px;
+                    width: parent.width;
+                    height: parent.height;
+                    text: (root.details-open ? "\u{25be} " : "\u{25b8} ") + "Details and source";
+                    color: details-hit.has-hover ? Theme.text-primary : Theme.text-secondary;
+                    font-size: root.details-type;
+                    vertical-alignment: center;
+                    wrap: no-wrap;
+                }
+            }
+
+            if root.details-open : VerticalLayout {
                 spacing: Theme.sp-2;
-                padding-top: Theme.sp-1;
 
-                Rectangle {
-                    height: Theme.h-regular;
-                    horizontal-stretch: 1;
-                    border-radius: Theme.r-md;
-                    background: deny-ta.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated;
-                    border-width: 1px;
-                    border-color: Theme.border-default;
+                // The provenance labels the rows above used to carry, each beside what it says.
+                Text {
+                    width: parent.width;
+                    text: "Who is asking: the first line is what the kernel and this machine's own records said about the caller, not what the caller said; the name under it is the caller's own, and nothing on this machine checked it."
+                        + (root.data.agent != "" ? " The agent is named by the token the desktop gave it, and it is also asked in its pane." : "");
+                    color: Theme.text-secondary;
+                    font-size: root.details-type;
+                    wrap: word-wrap;
+                }
+                Text {
+                    width: parent.width;
+                    text: "The process the kernel's pid resolved to, by its command line (which the program writes itself): " + root.data.verified;
+                    color: Theme.text-secondary;
+                    font-size: root.details-type;
+                    wrap: word-wrap;
+                }
 
-                    deny-ta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { root.deny(); }
-                    }
+                // The app's whole description of the action — the same for every call of it.
+                // Clamped to three lines under "show more", because `run_recipe`'s paragraph is
+                // protocol detail for minds (#218); the 18px line already carries its first
+                // sentence, and "show more" opens the rest in full.
+                VerticalLayout {
+                    spacing: 0px;
                     Text {
-                        text: "Deny";
-                        color: Theme.text-primary;
-                        font-size: Theme.fs-body-strong;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                        text: "What the app says about the action (its own first sentence is the line above):";
+                        color: Theme.text-secondary;
+                        font-size: root.details-type;
+                        wrap: word-wrap;
+                        width: parent.width;
+                    }
+                    Rectangle {
+                        height: root.purpose-open ? purpose-text.preferred-height
+                            : min(purpose-text.preferred-height, root.purpose-clamp);
+                        clip: true;
+
+                        purpose-text := Text {
+                            width: parent.width;
+                            // Pinned to the box's top edge: left to its own geometry the
+                            // paragraph centers itself on the clamped box, and the window then
+                            // shows the middle lines of it instead of the first ones.
+                            y: 0px;
+                            text: root.data.purpose;
+                            color: Theme.text-secondary;
+                            font-size: root.details-type;
+                            wrap: word-wrap;
+                            vertical-alignment: top;
+                        }
+                    }
+                    if purpose-text.preferred-height > root.purpose-clamp : more-hit := TouchArea {
+                        width: more-label.preferred-width + 16px;
+                        height: 20px;
+                        mouse-cursor: pointer;
+                        clicked => { root.purpose-open = !root.purpose-open; }
+
+                        more-label := Text {
+                            width: parent.width;
+                            height: parent.height;
+                            text: root.purpose-open ? "show less" : "show more";
+                            color: more-hit.has-hover ? Theme.amber-light : Theme.text-secondary;
+                            font-size: Theme.fs-caption;
+                            vertical-alignment: center;
+                        }
                     }
                 }
 
-                Rectangle {
-                    height: Theme.h-regular;
-                    horizontal-stretch: 1;
-                    border-radius: Theme.r-md;
-                    background: allow-ta.has-hover ? Theme.amber-glow : transparent;
-                    border-width: 1px;
-                    border-color: Theme.amber;
-
-                    allow-ta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { root.allow(); }
-                    }
+                // What the caller says the call is for, labelled as the caller's words: nothing
+                // checks it, it is never the label on a button, and approvals.rs gives it as one
+                // neutralized paragraph that cannot start a line reading as this card's own.
+                if root.data.caller-says != "" : VerticalLayout {
+                    spacing: 0px;
                     Text {
-                        text: "Allow once";
-                        color: Theme.amber-light;
-                        font-size: Theme.fs-body-strong;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                        width: parent.width;
+                        text: "What the caller says this call is for (its own words; nothing checks them):";
+                        color: Theme.text-secondary;
+                        font-size: root.details-type;
+                        wrap: word-wrap;
                     }
+                    Rectangle {
+                        height: root.caller-open ? caller-text.preferred-height
+                            : min(caller-text.preferred-height, root.caller-clamp);
+                        clip: true;
+
+                        caller-text := Text {
+                            width: parent.width;
+                            y: 0px;
+                            text: root.data.caller-says;
+                            color: Theme.text-secondary;
+                            font-size: root.details-type;
+                            font-italic: true;
+                            wrap: word-wrap;
+                            vertical-alignment: top;
+                        }
+                    }
+                    if caller-text.preferred-height > root.caller-clamp : caller-more := TouchArea {
+                        width: caller-more-label.preferred-width + 16px;
+                        height: 20px;
+                        mouse-cursor: pointer;
+                        clicked => { root.caller-open = !root.caller-open; }
+
+                        caller-more-label := Text {
+                            width: parent.width;
+                            height: parent.height;
+                            text: root.caller-open ? "show less" : "show more";
+                            color: caller-more.has-hover ? Theme.amber-light : Theme.text-secondary;
+                            font-size: Theme.fs-caption;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // The arguments, exactly as the grant is bound to them: one Text per argument,
+                // `no-wrap` and elided, the values cut to fit in approvals.rs with each cut naming
+                // its true length, and escaped in the shell so none can draw a line of its own.
+                VerticalLayout {
+                    spacing: 0px;
+                    Text {
+                        width: parent.width;
+                        text: "The arguments in this call; the grant is bound to exactly these:";
+                        color: Theme.text-secondary;
+                        font-size: root.details-type;
+                        wrap: word-wrap;
+                    }
+                    Rectangle {
+                        border-radius: Theme.r-sm;
+                        background: Theme.bg-input;
+                        height: args-body.preferred-height;
+
+                        args-body := VerticalLayout {
+                            padding: Theme.sp-2;
+
+                            for line in root.data.args : Text {
+                                text: line;
+                                color: Theme.text-primary;
+                                font-size: Theme.fs-mono;
+                                wrap: no-wrap;
+                                overflow: elide;
+                            }
+                        }
+                    }
+                }
+
+                if root.data.explained != "" : Text {
+                    width: parent.width;
+                    text: "\"The app says about this call\" is the app's sentence about these arguments; the grant binds to the arguments, not to the sentence.";
+                    color: Theme.text-secondary;
+                    font-size: root.details-type;
+                    wrap: word-wrap;
+                }
+
+                // What a handle in the arguments names, in the words of the app that owns it (#54).
+                if root.data.target != "" : Text {
+                    width: parent.width;
+                    text: "The name of the target is the app's own, from its describe; the grant binds to the arguments, not to the name.";
+                    color: Theme.text-secondary;
+                    font-size: root.details-type;
+                    wrap: word-wrap;
+                }
+
+                Text {
+                    width: parent.width;
+                    text: "Graded " + root.data.grade + ". Allowing covers this one action, once.";
+                    color: Theme.text-secondary;
+                    font-size: root.details-type;
+                    wrap: word-wrap;
+                }
+            }
+
+                    }   // mid
+                }   // Flickable
+            }   // the section that yields
+
+            // ── What changes: pinned above the buttons ──
+            //
+            // One line that says what the call acts on; when that line names a target, or is cut
+            // at the card's edge, every argument the grant binds, in full and wrapped — never in
+            // the part that scrolls, so nothing the grant covers is out of reach while Allow can be
+            // pressed (re-review of #639: "…temporary files now &…" over a red Run command, with
+            // "rm -rf ~/x" scrolled to nowhere). The arguments are bounded in the shell and
+            // escaped value by value; when even these lines do not fit, the whole section scrolls
+            // and Allow waits until its end has been in view. Then the first line of
+            // the app's word about this call, the undo line in the warning's red, and the warning
+            // when there is one the undo line does not already say.
+            changes := VerticalLayout {
+                spacing: Theme.sp-1;
+
+                what-line := Text {
+                    text: root.data.what;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-body;
+                    wrap: no-wrap;
+                    overflow: elide;
+                    visible: root.data.what != "";
+                    height: root.data.what != "" ? self.preferred-height : 0px;
+                }
+                if root.data.exactly != "" && (root.data.target != "" || what-line.preferred-width > what-line.width) : Text {
+                    width: parent.width;
+                    text: "Exactly: " + root.data.exactly;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-body;
+                    wrap: word-wrap;
+                }
+                // What the app says about THIS call, with these arguments (#137), in the app's
+                // name: some calls cannot be judged from their arguments alone (review of #639,
+                // S2). Its first line, pinned; the whole of it is in the section above when cut.
+                explained-line := Text {
+                    text: "The app says about this call: " + root.data.explained;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-body;
+                    wrap: no-wrap;
+                    overflow: elide;
+                    visible: root.data.explained != "";
+                    height: root.data.explained != "" ? self.preferred-height : 0px;
+                }
+                if root.data.undo != "" : Text {
+                    text: root.data.undo;
+                    color: root.data.undo == "Undo: not possible, the app says so"
+                        || root.data.undo == "Undo: not possible, says the caller" ? Theme.color-danger : Theme.text-primary;
+                    font-size: Theme.fs-body;
+                    wrap: no-wrap;
+                    overflow: elide;
+                }
+
+                // The bar and the sentence placed by hand rather than in a HorizontalLayout: a
+                // wrapping Text in a horizontal layout is measured at its unwrapped width, so the
+                // open-ended warning — four lines — was given one and cut mid-sentence. Here the
+                // Text is told its width, and the box takes the height that width needs.
+                if root.data.warning != "" : Rectangle {
+                    height: warning-text.preferred-height;
+                    Rectangle {
+                        x: 0px;
+                        width: 3px;
+                        height: parent.height;
+                        background: Theme.color-danger;
+                    }
+                    warning-text := Text {
+                        x: 3px + Theme.sp-2;
+                        y: 0px;
+                        width: parent.width - 3px - Theme.sp-2;
+                        text: root.data.warning;
+                        color: Theme.color-danger;
+                        font-size: Theme.fs-caption;
+                        wrap: word-wrap;
+                        vertical-alignment: top;
+                    }
+                }
+            }
+
+                    }   // above-content
+                }   // above-flick
+            }   // everything above the buttons
+
+            // Pinned bottom: the answer.
+            decide := VerticalLayout {
+                spacing: Theme.sp-2;
+
+            // Decline first, outlined; then the affirmative (sign-off item 1). For what cannot be
+            // undone, or is graded dangerous, it is the kit's filled red with the red's own ink,
+            // and it says the action — "Delete event" — in words taken from the app's published
+            // action, never from the caller's purpose (approval_wording::confirm_label). For
+            // anything else it is "Allow once" on the accent fill. The look says which button is
+            // the action, and never chooses for the person.
+            //
+            // Both are `pointer-only`: neither takes keyboard focus, so nothing is focused when
+            // the card appears, Tab cannot land on them and Enter or Space can never press
+            // either. A click is the only way to answer. The press guard in card_watch.rs and
+            // the tests in control_approvals.rs still apply to what the click does.
+            HorizontalLayout {
+                spacing: Theme.sp-2;
+
+                YButton {
+                    label: "Decline";
+                    variant: 1;
+                    pointer-only: true;
+                    horizontal-stretch: 1;
+                    clicked => { root.deny(); }
+                }
+
+                // Disabled — dimmed, and pressing it does nothing — while the request has had to
+                // scroll and its end has not yet been in view (`allow-ready`, fourth review of
+                // #639). Decline never is.
+                YButton {
+                    label: root.data.confirm-label != "" ? root.data.confirm-label : "Allow once";
+                    variant: root.data.destructive ? 3 : 0;
+                    pointer-only: true;
+                    disabled: !card.allow-ready;
+                    tooltip: card.allow-ready ? "" : "Scroll to read the whole request first";
+                    horizontal-stretch: 1;
+                    clicked => { root.allow(); }
                 }
             }
 
@@ -731,7 +912,7 @@ export component ApprovalCard inherits Rectangle {
             // bypass, which is the blunt instrument this is trying to make unnecessary.
             //
             // Below the button row rather than beside it, at caption size, in dim text with a
-            // subtle border: Deny is still the ordinary filled button and the easy default, and
+            // subtle border: Deny is still the secondary button beside the primary, and
             // the standing yes costs the most deliberate aim of the three. Not drawn at all for
             // `dangerous`, or for an action the app says cannot be undone — see `can-session`.
             //
@@ -750,12 +931,16 @@ export component ApprovalCard inherits Rectangle {
                 Rectangle {
                     height: 30px;
                     border-radius: Theme.r-md;
-                    background: session-ta.has-hover ? Theme.hover-fill : transparent;
+                    background: session-ta.has-hover && card.allow-ready ? Theme.hover-fill : transparent;
                     border-width: 1px;
                     border-color: Theme.border-subtle;
+                    opacity: card.allow-ready ? 1.0 : 0.45;
 
+                    // A standing yes is a yes: held back with Allow until the whole request has
+                    // been in view.
                     session-ta := TouchArea {
-                        mouse-cursor: pointer;
+                        enabled: card.allow-ready;
+                        mouse-cursor: card.allow-ready ? pointer : default;
                         clicked => { root.allow-session(); }
                     }
                     Text {
@@ -888,7 +1073,7 @@ export component VaultUnlockCard inherits Rectangle {
                 border-radius: Theme.r-md;
                 background: Theme.bg-elevated;
                 border-width: 1px;
-                border-color: pass-input.has-focus ? Theme.cyan : Theme.border-default;
+                border-color: pass-input.has-focus ? Theme.accent : Theme.border-default;
 
                 HorizontalLayout {
                     padding-left: Theme.sp-2;
@@ -1013,9 +1198,47 @@ export component IntentLens inherits Rectangle {
     in property <int> approvals-waiting: 0;
     /// Questions the mind this conversation is with asked and is waiting on (#25), oldest first.
     in property <[QuestionRequest]> questions: [];
-    callback question-answer(string, string, string);   // agent id, request id, answer
-    // A reply's "Open the run": the run's row id (`mind:main#n`).
+    callback question-answer(string, string, string, bool);   // agent id, request id, answer, pressed
+    // The run's row id (`mind:main#n`), from a work card's Details or Review changes, or an agent's
+    // id from a resolved approval's "View action" — both land in the Agents screen. Also the
+    // desktop's own offer, while private, to leave Private mode (`private:leave`).
     callback open-run(string);
+
+    // ── Chat v2 ──
+    //
+    // What the shell knows of the runs this chat started, from the Agents store: one card per
+    // run, found by the id a reply carries. Nothing here is composed by the mind.
+    in property <[WorkCardData]> work-cards: [];
+    // The run the strip describes (the live one that most needs the person), and how many runs are
+    // live in this chat, and how many of those wait on the person. `strip.run == ""` is none.
+    in property <WorkCardData> strip;
+    in property <int> live-runs: 0;
+    in property <int> waiting-runs: 0;
+    // The composer's mode chip: the mind-mode label ("Ask"). The chip opens the existing choice.
+    in property <string> mode-label: "Ask";
+    // Where the mind runs, as the header says it: "Built-in mind" or "Attached mind".
+    in property <string> identity: "";
+    // Where the composer's words go ("Yantrik Mind · deepseek-v4.1-flash · online, via Ollama
+    // Cloud"), drawn under it; "" when the shell does not know, and then nothing is drawn.
+    in property <string> destination: "";
+    callback mode-clicked();
+    callback mind-clicked();
+    // "View desk": bring Mind View, the mind's own desk, in front.
+    callback view-desk(string);
+    // The panel's width: 440px until the person drags its left edge, then between 380 and 560.
+    // It is kept for this session only.
+    in-out property <length> panel-width: Theme.chat-panel-width;
+    // The panel's own height, between the two bars and inside its margins.
+    out property <length> panel-height: root.height - Theme.status-bar-height - Theme.taskbar-height
+        - 2 * Theme.chat-panel-gap;
+    // What the transcript is doing, for `describe` and for the preview checks (the transcript is
+    // inside the chat-mode block, whose ids cannot be named from out here): following the newest
+    // line, something arrived while reading further up, and how far down it is scrolled.
+    out property <bool> transcript-following: true;
+    out property <bool> transcript-missed: false;
+    out property <length> transcript-y: 0px;
+    // Whether the current-work strip is on screen.
+    out property <bool> strip-shown: root.chat-mode && root.strip.run != "";
 
     // Callbacks
     callback approval-allow(string);   // request id — a click, and nothing else, creates a grant
@@ -1118,7 +1341,7 @@ export component IntentLens inherits Rectangle {
     if root.is-open : TouchArea {
         x: 0;
         y: 0;
-        width: root.width - Theme.chat-panel-width;
+        width: root.width - root.panel-width - Theme.chat-panel-gap;
         height: root.height;
         clicked => { root.close-lens(); }
     }
@@ -1132,11 +1355,11 @@ export component IntentLens inherits Rectangle {
     // dock to hint that something was there. Nothing in the layout said "full height" on
     // purpose; it simply never subtracted the chrome it was underneath.
     Rectangle {
-        x: root.is-open ? root.width - Theme.chat-panel-width : root.width;
-        y: Theme.status-bar-height;
-        width: Theme.chat-panel-width;
-        height: root.height - Theme.status-bar-height - Theme.taskbar-height;
-        border-radius: 0;
+        x: root.is-open ? root.width - root.panel-width - Theme.chat-panel-gap : root.width;
+        y: Theme.status-bar-height + Theme.chat-panel-gap;
+        width: root.panel-width;
+        height: root.panel-height;
+        border-radius: Theme.chat-radius;
         clip: true;
         visible: root.is-open;
 
@@ -1159,14 +1382,18 @@ export component IntentLens inherits Rectangle {
         // A conversation is paragraphs, and at 9% the machine rail behind this panel put
         // "Model ollama-local:qwen3.5:9b-8k" and a column of service names inside the answer.
         // Same panel, two jobs, two treatments.
-        background: @linear-gradient(180deg,
-            Theme.bg-deep.transparentize(root.chat-mode ? 0% : 9%) 0%,
-            Theme.bg-deep.transparentize(root.chat-mode ? 0% : 12%) 50%,
-            Theme.bg-deep.transparentize(root.chat-mode ? 0% : 9%) 100%
-        );
+        //
+        // Chat v2: the conversation is one opaque charcoal panel with a 1px border, which is what
+        // a surface holding paragraphs and a decision should be. The search rows keep their
+        // 10% glass, as a solid fill: the panel is rounded now, and a rounded element with a
+        // gradient fill draws square corners under the software renderer (#172).
+        background: root.chat-mode ? Theme.chat-panel : Theme.bg-deep.transparentize(10%);
+        border-width: root.chat-mode ? 1px : 0px;
+        border-color: Theme.chat-border;
 
-        // Left edge glow (panel border)
+        // Left edge glow (panel border). The conversation has its own 1px border instead.
         Rectangle {
+            visible: !root.chat-mode;
             x: 0; y: 0;
             width: 1px;
             height: 100%;
@@ -1194,139 +1421,19 @@ export component IntentLens inherits Rectangle {
             // In chat mode the search row below was still drawn, so the panel carried TWO text
             // fields — one at the top that ran the app-launcher and one at the bottom that
             // continued the conversation — and they did different things with the same Return
-            // key. Half the time the top one was hidden under the status bar, which is the only
-            // reason it had not been noticed. A conversation gets a header instead: who is
-            // answering, and a way out.
-            if root.chat-mode : Rectangle {
-                height: Theme.lens-input-height;
-                background: Theme.bg-surface;
-
-                HorizontalLayout {
-                    padding-left: 16px;
-                    padding-right: 8px;
-                    spacing: 10px;
-
-                    Icon {
-                        commands: Icons.companion;
-                        size: 16px;
-                        tint: Theme.accent;
-                        y: (parent.height - self.height) / 2;
-                    }
-                    Text {
-                        text: root.mind-name != "" ? root.mind-name : "Conversation";
-                        color: Theme.text-primary;
-                        font-size: Theme.fs-body;
-                        font-weight: 600;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                        overflow: elide;
-                    }
-                    // The Lens is the quick question; the whole of the conversation — every call as
-                    // a card, every command with its output — is this mind's agent on the Agents
-                    // screen (design/agents-workspace-2026-09-23.md, "The shape").
-                    // Every earlier conversation, with any mind: the Agents screen's All tab, where
-                    // each opens with its whole session and can be carried on (#246).
-                    // A new conversation is one press, not something only a restart did (#246).
-                    if root.messages.length > 0 : new-chat-hit := TouchArea {
-                        width: new-chat-label.preferred-width + 16px;
-                        height: 28px;
-                        y: (parent.height - 28px) / 2;
-                        mouse-cursor: pointer;
-                        clicked => { root.new-chat(); }
-
-                        Rectangle {
-                            width: parent.width;
-                            height: parent.height;
-                            border-radius: 6px;
-                            background: new-chat-hit.has-hover ? Theme.hover-fill : transparent;
-                        }
-                        new-chat-label := Text {
-                            width: parent.width;
-                            height: parent.height;
-                            text: "New chat";
-                            color: new-chat-hit.has-hover ? Theme.text-primary : Theme.text-secondary;
-                            font-size: Theme.fs-caption;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                    }
-                    if root.can-open-in-agents : history-hit := TouchArea {
-                        width: history-label.preferred-width + 16px;
-                        height: 28px;
-                        y: (parent.height - 28px) / 2;
-                        mouse-cursor: pointer;
-                        clicked => { root.open-history(); }
-
-                        Rectangle {
-                            width: parent.width;
-                            height: parent.height;
-                            border-radius: 6px;
-                            background: history-hit.has-hover ? Theme.hover-fill : transparent;
-                        }
-                        history-label := Text {
-                            width: parent.width;
-                            height: parent.height;
-                            text: "History";
-                            color: history-hit.has-hover ? Theme.text-primary : Theme.text-secondary;
-                            font-size: Theme.fs-caption;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                    }
-                    if root.can-open-in-agents : agents-hit := TouchArea {
-                        width: agents-label.preferred-width + 16px;
-                        height: 28px;
-                        y: (parent.height - 28px) / 2;
-                        mouse-cursor: pointer;
-                        clicked => { root.open-in-agents(); }
-
-                        Rectangle {
-                            width: parent.width;
-                            height: parent.height;
-                            border-radius: 6px;
-                            background: agents-hit.has-hover ? Theme.hover-fill : transparent;
-                        }
-                        agents-label := Text {
-                            width: parent.width;
-                            height: parent.height;
-                            text: "open in Agents";
-                            color: agents-hit.has-hover ? Theme.text-primary : Theme.accent;
-                            font-size: Theme.fs-caption;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                    }
-                    close-hit := TouchArea {
-                        width: 28px;
-                        height: 28px;
-                        y: (parent.height - 28px) / 2;
-                        mouse-cursor: pointer;
-                        clicked => { root.close-lens(); }
-
-                        Rectangle {
-                            width: 28px;
-                            height: 28px;
-                            border-radius: 6px;
-                            // Named rather than walked up to: `parent.parent` is not a thing
-                            // in Slint, and the id reads better anyway.
-                            background: close-hit.has-hover ? Theme.hover-fill : transparent;
-                            Icon {
-                                commands: Icons.close;
-                                size: 14px;
-                                tint: close-hit.has-hover ? Theme.text-primary : Theme.text-dim;
-                                x: (parent.width - self.width) / 2;
-                                y: (parent.height - self.height) / 2;
-                            }
-                        }
-                    }
-                }
-
-                Rectangle {
-                    y: parent.height - 1px;
-                    width: 100%;
-                    height: 1px;
-                    background: Theme.separator;
-                }
+            // key. A conversation gets a header instead: who is answering, and what a person does
+            // with the conversation as a whole. The Lens is the quick question; the whole of the
+            // conversation, every call as a card, is this mind's agent on the Agents screen.
+            if root.chat-mode : ChatHeader {
+                mind-name: root.mind-name;
+                identity: root.identity;
+                can-new-chat: root.messages.length > 0;
+                can-open-in-agents: root.can-open-in-agents;
+                mind-clicked => { root.mind-clicked(); }
+                new-chat => { root.new-chat(); }
+                history => { root.open-history(); }
+                open-in-agents => { root.open-in-agents(); }
+                close => { root.close-lens(); }
             }
 
             // ── Input area (search mode) ──
@@ -1803,13 +1910,14 @@ export component IntentLens inherits Rectangle {
                                 }
                             }
 
-                            // Score indicator bar (3px on right side)
+                            // Score indicator bar (3px on right side). A result's score is
+                            // data, so the accent; teal is only for minds (colour system).
                             if result.score > 0.0 : Rectangle {
                                 width: 3px;
                                 height: parent.height * 0.6;
                                 y: (parent.height - self.height) / 2;
                                 border-radius: 1.5px;
-                                background: Theme.cyan;
+                                background: Theme.accent;
                                 opacity: result.score;
                             }
 
@@ -2077,14 +2185,14 @@ export component IntentLens inherits Rectangle {
                 // conversation has messages in it.
                 //
                 // The obvious place for this is the `changed is-open` handler on the component
-                // root, beside the one that focuses the search field. It cannot go there:
-                // `chat-input` is inside this `if`, and Slint will not let an id inside a
+                // root, beside the one that focuses the search field. It cannot go there: the
+                // composer is inside this `if`, and Slint will not let an id inside a
                 // conditional be named from outside it. Mirroring `is-open` onto a property of
                 // this element puts the change where the field is visible, which is the same
                 // handler in the only scope that can write it.
                 property <bool> lens-open: root.is-open;
                 changed lens-open => {
-                    if (self.lens-open) { chat-input.focus(); }
+                    if (self.lens-open) { composer.focus-input(); }
                 }
                 // ...and when this block is CREATED already open, which is the usual way in: the
                 // ask bar sets `is-open`, and only then does `open_lens` notice the conversation
@@ -2100,19 +2208,118 @@ export component IntentLens inherits Rectangle {
                     running: parent.focus-owed;
                     triggered => {
                         parent.focus-owed = false;
-                        if (parent.lens-open) { chat-input.focus(); }
+                        if (parent.lens-open) { composer.focus-input(); }
                     }
                 }
 
-                // Messages — fills available panel height, down to `transcript-min` while a
-                // card is waiting (see the property at the top of the component).
-                ListView {
+                // Approval cards and their records, pinned under the header, above the conversation.
+                //
+                // Here rather than interleaved in the transcript because a request is not a
+                // message: it arrives while the person is reading, it has to stay put while they
+                // decide, and a card that scrolls away with the transcript is a card that gets
+                // missed.
+                //
+                // Under the header and not above the reply box, which is where it was, because
+                // everything between this block and the bottom of the panel changes while a
+                // person is aiming at a button: the current-work strip appears when a run goes
+                // live (which is when requests arrive) and the reply box grows as they type, and
+                // each moved the card by 48px or more between the press and the release of a
+                // click (review of #580). The only thing above the card now is the header, which
+                // is one fixed height, so the card's top edge is a constant of the panel, and its
+                // height limit below reserves the worst case for what is under it, so its bottom
+                // edge — where the buttons are — is one too.
+                if root.approvals.length > 0 : VerticalLayout {
+                    spacing: Theme.sp-1;
+                    padding-top: Theme.sp-2;
+                    padding-bottom: Theme.sp-2;
+                    padding-left: Theme.sp-2;
+                    padding-right: Theme.sp-2;
+
+                    for item[idx] in root.approvals : ApprovalCard {
+                        data: item;
+                        // The tallest the card may be and still leave the panel showing
+                        // everything else it owes: the header, the transcript sliver below and
+                        // the strip and reply box under that — the reply box was what went off the
+                        // bottom edge in #218, with the card's buttons a 3px sliver above it. The
+                        // panel is the window between the two bars, less its margins; from it go
+                        // the header, the composer at its tallest, the
+                        // current-work strip, the transcript's floor, this
+                        // block's padding with its "N more waiting" line (40px), and one row
+                        // (32px) per decided record sharing this block with the card. The floor
+                        // keeps a card's identity rows and buttons on any panel tall enough to
+                        // hold them at all.
+                        //
+                        // The composer and the strip are counted at their LARGEST, whether or
+                        // not they are drawn now: a limit that read their current heights would
+                        // resize the card, and move its buttons, when either changed.
+                        height-limit: max(240px, root.panel-height - Theme.chat-header-height
+                            - composer.bar-height-max - Theme.chat-strip-height
+                            - root.transcript-min - 40px - 32px * root.approvals.length);
+                        allow => { root.approval-allow(item.id); }
+                        allow-session => { root.approval-allow-session(item.id); }
+                        deny => { root.approval-deny(item.id); }
+                        view-action => { root.open-run(item.agent); }
+                    }
+
+                    if root.approvals-waiting > 0 : Text {
+                        text: root.approvals-waiting + " more waiting — this one first";
+                        color: Theme.chat-text-2;
+                        font-size: Theme.fs-micro;
+                        horizontal-alignment: center;
+                        wrap: no-wrap;
+                        overflow: elide;
+                    }
+                }
+
+                // The conversation — fills the panel's height, down to `transcript-min` while a
+                // card is waiting (see the property at the top of the component). It follows the
+                // newest line only while the person is at the bottom; scrolled up, it stays put
+                // and says "New reply" (ChatTranscript).
+                Rectangle {
                     vertical-stretch: 1;
                     min-height: root.transcript-min;
 
-                    for msg[idx] in root.messages : MessageBubble {
-                        open-run(run) => { root.open-run(run); }
-                        data: msg;
+                    if root.messages.length == 0 : ChatEmpty {
+                        mind-name: root.mind-name;
+                        starter(words) => { composer.fill(words); }
+                    }
+
+                    transcript := ChatTranscript {
+                        width: 100%;
+                        height: 100%;
+                        visible: root.messages.length > 0;
+                        init => {
+                            root.transcript-following = true;
+                            root.transcript-missed = false;
+                        }
+                        changed following => { root.transcript-following = self.following; }
+                        changed missed => { root.transcript-missed = self.missed; }
+                        changed scroll-y => { root.transcript-y = self.scroll-y; }
+
+                        for msg[idx] in root.messages : VerticalLayout {
+                            ChatMessage {
+                                data: msg;
+                                mind-name: root.mind-name;
+                                group-start: idx == 0 || root.messages[idx - 1].role != msg.role;
+                                open-run(run) => { root.open-run(run); }
+                            }
+                            // The run this reply started, as one card, kept in step with the
+                            // store: the loop finds it by id, so it is updated in place and
+                            // never drawn twice. Plain talk has no run and so no card.
+                            for card in root.work-cards : VerticalLayout {
+                                if card.run == msg.run && msg.run != "" : Rectangle {
+                                    height: work-card.height + Theme.sp-1;
+                                    work-card := WorkCard {
+                                        x: Theme.sp-3 + 16px + Theme.sp-2;
+                                        y: 0;
+                                        width: parent.width - self.x - Theme.sp-4;
+                                        data: card;
+                                        view-desk(run) => { root.view-desk(run); }
+                                        details(run) => { root.open-run(run); }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -2125,229 +2332,64 @@ export component IntentLens inherits Rectangle {
                         mind: q.mind;
                         prompt: q.prompt;
                         options: q.options;
-                        answered(a) => { root.question-answer(q.agent, q.request, a); }
+                        asked: q.asked;
+                        removes: q.removes;
+                        answered(a, pressed) => { root.question-answer(q.agent, q.request, a, pressed); }
                     }
                 }
 
-                // Approval cards and their records, between the conversation and the reply box.
-                //
-                // Here rather than interleaved in the ListView above because a request is not a
-                // message: it arrives while the person is reading, it has to stay put while they
-                // decide, and a card that scrolls away with the transcript is a card that gets
-                // missed. It reads as the newest thing in the conversation, which is what it is.
-                if root.approvals.length > 0 : VerticalLayout {
-                    spacing: Theme.sp-1;
-                    padding-top: Theme.sp-2;
-                    padding-bottom: Theme.sp-2;
-                    padding-left: Theme.sp-2;
-                    padding-right: Theme.sp-2;
-
-                    for item[idx] in root.approvals : ApprovalCard {
-                        data: item;
-                        // The tallest the card may be and still leave the panel showing
-                        // everything else it owes: the header, the transcript sliver above and
-                        // the reply box below — the reply box was what went off the bottom edge
-                        // in #218, with the card's buttons a 3px sliver above it. The panel is
-                        // the window between the two bars; from it go the header row, the reply
-                        // bar at whatever height it has grown to, the transcript's floor, this
-                        // block's padding with its "N more waiting" line (40px), and one row
-                        // (32px) per decided record sharing this block with the card. The floor
-                        // keeps a card's identity rows and buttons on any panel tall enough to
-                        // hold them at all.
-                        height-limit: max(240px, root.height - Theme.status-bar-height
-                            - Theme.taskbar-height - Theme.lens-input-height - chat-bar.height
-                            - root.transcript-min - 40px - 32px * root.approvals.length);
-                        allow => { root.approval-allow(item.id); }
-                        allow-session => { root.approval-allow-session(item.id); }
-                        deny => { root.approval-deny(item.id); }
-                    }
-
-                    if root.approvals-waiting > 0 : Text {
-                        text: root.approvals-waiting + " more waiting — this one first";
-                        color: Theme.text-dim;
-                        font-size: Theme.fs-micro;
-                        horizontal-alignment: center;
-                        wrap: no-wrap;
-                        overflow: elide;
-                    }
+                // The current-work strip: only while a run in this chat is live.
+                if root.strip-shown : WorkStrip {
+                    mind: root.strip.mind;
+                    state-label: root.strip.label;
+                    needs-you: root.strip.state == "needs-you";
+                    live-runs: root.live-runs;
+                    waiting-runs: root.waiting-runs;
+                    can-view-desk: root.strip.can-view-desk;
+                    view-desk => { root.view-desk(root.strip.run); }
+                    view-work => { root.open-in-agents(); }
                 }
 
-                // Typing indicator
-                //
-                // Generating runs as long as thinking does, and this had the same gate and the
-                // same 16 ms as the bar above — three 5px dots holding the display at its frame
-                // rate whether or not the conversation was on screen. 160 ms at 0.05 keeps the
-                // 3.2 s cycle, and the offsets between the dots are unchanged.
-                if root.is-open && root.is-generating : HorizontalLayout {
-                    padding-left: 20px;
-                    padding-bottom: 8px;
-                    spacing: 6px;
-
-                    property <float> dot-phase: 0;
-                    Timer {
-                        interval: 160ms;
-                        running: root.is-open && root.is-generating;
-                        triggered => {
-                            parent.dot-phase = mod(parent.dot-phase + 0.05, 1.0);
-                        }
-                    }
-
-                    Rectangle {
-                        width: 5px; height: 5px; border-radius: 2.5px;
-                        background: Theme.cyan;
-                        opacity: 0.3 + 0.7 * sin(dot-phase * 6.2832 * 1rad);
-                    }
-                    Rectangle {
-                        width: 5px; height: 5px; border-radius: 2.5px;
-                        background: Theme.cyan;
-                        opacity: 0.3 + 0.7 * sin((dot-phase + 0.12) * 6.2832 * 1rad);
-                    }
-                    Rectangle {
-                        width: 5px; height: 5px; border-radius: 2.5px;
-                        background: Theme.cyan;
-                        opacity: 0.3 + 0.7 * sin((dot-phase + 0.24) * 6.2832 * 1rad);
+                composer := ChatComposer {
+                    mind-name: root.mind-name;
+                    mode-label: root.mode-label;
+                    destination: root.destination;
+                    run-active: root.is-generating || root.live-runs > 0;
+                    mic => { root.mic-pressed(); }
+                    mode-clicked => { root.mode-clicked(); }
+                    escape => { root.close-lens(); }
+                    send(text) => {
+                        transcript.jump();
+                        root.send-message(text);
+                        composer.clear();
                     }
                 }
+            }
+        }
 
-                // Input bar for chat mode. Grows with the field inside it (see `chat-input`),
-                // and named because the approval card's height-limit above subtracts what it is
-                // actually holding, not a guess at it.
-                chat-bar := Rectangle {
-                    height: max(48px, min(118px, chat-input.preferred-height + 14px) + 16px);
-                    background: Theme.bg-deep;
 
-                    Rectangle {
-                        y: 0; width: 100%; height: 1px;
-                        background: Theme.separator;
-                    }
-
-                    HorizontalLayout {
-                        padding: 8px;
-                        padding-left: 12px;
-                        padding-right: 12px;
-                        spacing: 8px;
-
-                        // Mic button
-                        TouchArea {
-                            width: 32px;
-                            height: 32px;
-                            clicked => { root.mic-pressed(); }
-
-                            Rectangle {
-                                width: 32px; height: 32px;
-                                border-radius: 16px;
-                                background: Theme.bg-card;
-                                border-width: 1px;
-                                border-color: Theme.cyan-dim;
-
-                                Rectangle {
-                                    x: (parent.width - 8px) / 2;
-                                    y: 8px;
-                                    width: 8px; height: 10px;
-                                    border-radius: 4px;
-                                    background: Theme.cyan;
-                                }
-                            }
-                        }
-
-                        // Chat input
-                        Rectangle {
-                            horizontal-stretch: 1;
-                            // As tall as what has been typed, up to five lines or so. It was a
-                            // fixed 32px around a field that wraps, so the second line of a
-                            // sentence pushed the first one out through the top of the box.
-                            height: max(32px, min(118px, chat-input.preferred-height + 14px));
-                            border-radius: 16px;
-                            background: Theme.bg-input;
-                            border-width: 1px;
-                            border-color: chat-input.has-focus ? Theme.cyan-dim : Theme.border-subtle;
-                            forward-focus: chat-input;
-                            clip: true;
-
-                            animate border-color { duration: 200ms; }
-
-                            chat-input := TextInput {
-                                property <string> chat-text: "";
-                                x: 12px;
-                                // Centred while it fits; past the box's limit the LAST line is
-                                // the one kept in view, because that is where the cursor is.
-                                y: self.preferred-height + 14px <= parent.height
-                                    ? (parent.height - self.preferred-height) / 2
-                                    : parent.height - self.preferred-height - 7px;
-                                width: parent.width - 24px;
-                                color: Theme.text-primary;
-                                font-size: Theme.fs-body;
-                                wrap: word-wrap;
-                                single-line: false;
-                                text <=> chat-text;
-                                // The same reason as the search field: this one takes the cursor
-                                // when the Lens opens in chat mode, and a panel you cannot close
-                                // from the keyboard once you are typing in it is a trap.
-                                key-pressed(event) => {
-                                    if (event.text == Key.Escape) {
-                                        root.close-lens();
-                                        return accept;
-                                    }
-                                    // Enter sends; Shift+Enter is a new line. A multi-line
-                                    // TextInput never fires `accepted` — Enter is a character to
-                                    // it — so the handler below had not run since this field was
-                                    // made multi-line, and the only way to send a second message
-                                    // was to reach for the mouse and press `>`.
-                                    if (event.text == Key.Return && !event.modifiers.shift) {
-                                        if (self.chat-text != "") {
-                                            root.send-message(self.chat-text);
-                                            self.chat-text = "";
-                                        }
-                                        return accept;
-                                    }
-                                    return reject;
-                                }
-                                accepted => {
-                                    if chat-text != "" {
-                                        root.send-message(chat-text);
-                                        chat-text = "";
-                                    }
-                                }
-                            }
-
-                            if chat-input.chat-text == "" : Text {
-                                x: 12px;
-                                y: (parent.height - self.preferred-height) / 2;
-                                text: "Continue conversation...";
-                                color: Theme.text-dim;
-                                font-size: Theme.fs-body;
-                            }
-                        }
-
-                        // Send
-                        TouchArea {
-                            width: 32px;
-                            height: 32px;
-                            clicked => {
-                                if chat-input.chat-text != "" {
-                                    root.send-message(chat-input.chat-text);
-                                    chat-input.chat-text = "";
-                                }
-                            }
-
-                            Rectangle {
-                                width: 32px; height: 32px;
-                                border-radius: 16px;
-                                background: chat-input.chat-text != "" ? Theme.amber : Theme.bg-card;
-
-                                animate background { duration: 150ms; }
-
-                                Text {
-                                    text: ">";
-                                    color: chat-input.chat-text != "" ? Theme.bg-deep : Theme.text-dim;
-                                    font-size: Theme.fs-title-2;
-                                    font-weight: 700;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                            }
-                        }
-                    }
+        // Drag the left edge to resize, between 380 and 560px. The panel's own left edge moves
+        // as it grows, so the drag is measured against the pointer's place on the screen, not
+        // against the handle it is dragging: measured against the handle, every step would
+        // change what the next one was measured from and the edge would shudder.
+        if root.chat-mode : resize-handle := TouchArea {
+            x: 0;
+            width: 8px;
+            height: parent.height;
+            mouse-cursor: ew-resize;
+            property <length> start-width;
+            property <length> start-pointer;
+            pointer-event(event) => {
+                if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                    self.start-width = root.panel-width;
+                    self.start-pointer = self.absolute-position.x + self.mouse-x;
+                }
+            }
+            moved => {
+                if (self.pressed) {
+                    root.panel-width = clamp(
+                        self.start-width - (self.absolute-position.x + self.mouse-x - self.start-pointer),
+                        Theme.chat-panel-min, Theme.chat-panel-max);
                 }
             }
         }

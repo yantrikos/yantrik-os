@@ -14,12 +14,13 @@ Two parts:
 
 The desktop can do all of this for you: **Settings → Harnesses** lists Pi whether or not it is
 installed, says which of the steps below is still missing, and has an *Install* button that runs
-the `npm install` line with its output on the row and a *Start* button for the unit. What follows
-is the same thing by hand.
+`harnesses/lib/install/npm.sh` with its output on the row — a pinned Node 24 into `~/.local` when
+there is none new enough (the image ships none), then Pi — and a *Start* button for the unit.
+Both land in `~/.local/bin`, which the unit puts on its PATH. What follows is the same thing by hand.
 
 ```sh
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent
-pi --version                                    # Node 22+; Debian's Node 20 fails to start it
+npm install -g --prefix ~/.local --ignore-scripts @earendil-works/pi-coding-agent
+pi --version                                    # Node 22.19+; Debian's Node 20 fails to start it
 
 mkdir -p ~/.config/yantrik
 $EDITOR ~/.config/yantrik/pi.json               # see below
@@ -44,8 +45,8 @@ and Pi's default provider is `google`, which is rarely what you meant.
 
 ```json
 {
-  "command": "/home/yantrik/.npm-global/bin/pi",
-  "path": "/home/yantrik/.local/node/bin:/home/yantrik/.npm-global/bin",
+  "command": "/home/yantrik/.local/bin/pi",
+  "path": "/home/yantrik/.local/bin",
   "provider": "ollama",
   "model": "ollama/deepseek-v3.1:671b"
 }
@@ -54,7 +55,7 @@ and Pi's default provider is `google`, which is rarely what you meant.
 | key | default | what it is |
 |-----|---------|------------|
 | `command` | `pi` | The binary, as a string (split like a shell would) or a list. |
-| `path` | — | Prepended to `PATH`. A user service does not get your login shell's PATH, and `pi` and `node` are usually in `~/.npm-global/bin` and `~/.local/node/bin`. |
+| `path` | — | Prepended to `PATH`. A user service does not get your login shell's PATH, and the unit already adds `~/.local/bin`, where *Install* puts `pi` and `node`. For an install elsewhere. |
 | `env` | — | Extra environment for the Pi process. |
 | `provider`, `model` | Pi's own | Passed as `--provider` / `--model`. `--model` takes `provider/id`. |
 | `extension` | the file beside this README | Passed as `-e`. Empty string to load none. |

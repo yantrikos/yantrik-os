@@ -93,14 +93,25 @@ pub fn take_over_orphans(ui: &App) {
     ui.invoke_lock_screen();
 }
 
-/// At startup: an installed machine whose account has a password starts locked (#415).
+/// At startup: an installed machine whose account has a password starts locked (#415), unless
+/// the person typed that password at the pre-boot screen in this boot (boot_unlock.rs).
 ///
 /// The session logs in by itself at boot (agetty --autologin), so a desktop that started open made
 /// every lock a screen saver: restart the machine, or kill the shell, and it was open. It starts
 /// behind the same session lock as every other lock, asking for the account's password, and the
 /// vault opens with that password when it is given. Not on the live image (its password is
-/// published) and not on an account with no password (there is nothing to ask for); and not when
-/// a start screen is named (the GUI installer's login screen, a developer's override).
+/// published), not on a machine its administrator declared open at boot (a root-owned
+/// /etc/yantrik/start-open, for an unattended machine meant to be watched, and only in the first
+/// minutes after boot: a shell restarted later locks), and not on an account
+/// with no password (there is nothing to ask for); and not when a start screen is named (the GUI
+/// installer's login screen, a developer's override).
+///
+/// An encrypted install asks for the password once, before boot (the macOS FileVault model): the
+/// disk opens with it, and this start is signed in. Only on the root helper's one-shot answer,
+/// asked here before anything else decides so that this start uses it up: a shell restarted
+/// later in the same boot (a crash, an update, Alt+SysRq+K at a locked screen) is told `no` and
+/// locks. A key file, a TPM or any unlock without a person typing leaves no marker, and a
+/// password changed since install no longer matches its enrolment, so both lock as before.
 pub fn lock_at_start(ui: &App) {
     // A developer's start screen, in a debug build only. In a shipped one the file that names it
     // (~/.config/labwc/environment) is the user's, so a mind could write "start on the desktop".
@@ -108,6 +119,13 @@ pub fn lock_at_start(ui: &App) {
         return;
     }
     if crate::lock::live_session() {
+        return;
+    }
+    let typed = crate::boot_unlock::ask(std::path::Path::new(crate::boot_unlock::SOCKET));
+    // A machine its administrator declared open at boot (the live instance: a screen meant to be
+    // watched). Only a root-owned marker counts; see lock::declared_open_at_boot.
+    if crate::lock::declared_open_at_boot() {
+        tracing::warn!(marker = crate::lock::START_OPEN_MARKER, "This machine is declared open at boot; the desktop starts unlocked");
         return;
     }
     if crate::lock::account_says_no_password() {
@@ -118,10 +136,16 @@ pub fn lock_at_start(ui: &App) {
     if ui.get_current_screen() == 3 {
         return;
     }
-    // An encrypted disk still starts locked (#400 step b): whatever opened the disk describes the
-    // boot, not this start, and the shell starts again whenever the session does (a crash, or
-    // Alt+SysRq+K at a locked screen); the vault is handed its key by this unlock; and the disk's
-    // passphrase does not follow a later change of the password.
+    if crate::boot_unlock::signs_in(&typed, crate::lock::account_name().as_deref()) {
+        // The vault is not handed this password: it never reached this process. It opens at the
+        // next screen unlock, or asks with its own card when something needs it.
+        crate::vault_unlock::note_signed_in_at_boot();
+        tracing::info!("Starting signed in: this account's password opened the disk at the pre-boot screen in this boot");
+        return;
+    }
+    if let crate::boot_unlock::Answer::Typed(other) = &typed {
+        tracing::warn!(account = %other, "The disk was opened with another account's password; starting locked");
+    }
     tracing::info!("Starting locked: the account's password opens the desktop");
     ui.invoke_lock_screen();
 }
@@ -140,6 +164,38 @@ pub fn answer(
     }
 }
 
+/// What the lock screen says about the person and the machine, read by the shell when it locks and
+/// handed to `yantrik-lock` as plain arguments. No secret, and no notification's text: only how
+/// many are waiting, because the screen can be seen by anyone standing behind the person.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Look {
+    pub name: String,
+    pub network: String,
+    pub notifications: u32,
+    /// The pre-blurred wallpaper, if one has been made (`lock_wallpaper`).
+    pub wallpaper: Option<std::path::PathBuf>,
+    /// The machine is declared open at boot (`lock::start_open_marker_present`): no Restart.
+    pub no_restart: bool,
+}
+
+impl Look {
+    /// The arguments for the lock client. A reading the machine does not have is left out, so the
+    /// client draws nothing for it rather than an empty label.
+    fn args(&self) -> Vec<String> {
+        let mut args = vec!["--name".to_string(), self.name.clone(), "--notifications".to_string(), self.notifications.to_string()];
+        if !self.network.is_empty() {
+            args.extend(["--network".to_string(), self.network.clone()]);
+        }
+        if let Some(path) = &self.wallpaper {
+            args.extend(["--wallpaper".to_string(), path.to_string_lossy().into_owned()]);
+        }
+        if self.no_restart {
+            args.push("--no-restart".to_string());
+        }
+        args
+    }
+}
+
 fn lock_bin() -> std::path::PathBuf {
     std::env::current_exe()
         .ok()
@@ -152,6 +208,7 @@ fn lock_bin() -> std::path::PathBuf {
 pub fn engage(
     ui: slint::Weak<App>,
     greeting: String,
+    look: Look,
     secret: crate::lock::Secret,
     on_unlock: impl Fn(&App, &str, crate::lock::Secret) + Send + Clone + 'static,
 ) {
@@ -166,7 +223,7 @@ pub fn engage(
         return;
     }
     std::thread::spawn(move || loop {
-        hold(&bin, &greeting, secret, &ui, &on_unlock);
+        hold(&bin, &greeting, &look, secret, &ui, &on_unlock);
         // A lock asked for while this thread was on its way out found RUNNING still set and left
         // the work to it: take it, rather than leave that lock without a compositor client.
         RUNNING.store(false, Ordering::SeqCst);
@@ -180,6 +237,7 @@ pub fn engage(
 fn hold(
     bin: &std::path::Path,
     greeting: &str,
+    look: &Look,
     secret: crate::lock::Secret,
     ui: &slint::Weak<App>,
     on_unlock: &(impl Fn(&App, &str, crate::lock::Secret) + Send + Clone + 'static),
@@ -187,7 +245,7 @@ fn hold(
     let mut starts: u32 = 0;
     loop {
         starts += 1;
-        match run_once(bin, greeting, secret) {
+        match run_once(bin, greeting, look, secret) {
             Outcome::Unlocked(pin, checked) => {
                 // Released here as well as by the unlock itself: that runs later, on the UI thread,
                 // and the caller must not read "still wanted" in between.
@@ -237,7 +295,7 @@ enum Outcome {
     Died(String),
 }
 
-fn run_once(bin: &std::path::Path, greeting: &str, secret: crate::lock::Secret) -> Outcome {
+fn run_once(bin: &std::path::Path, greeting: &str, look: &Look, secret: crate::lock::Secret) -> Outcome {
     // A socket pair, not pipes: a pipe can be reopened through /proc/<pid>/fd by any process of
     // the same user, which could then write `ok` to the client or answer for it; a socket cannot
     // be opened that way.
@@ -251,6 +309,7 @@ fn run_once(bin: &std::path::Path, greeting: &str, secret: crate::lock::Secret) 
     };
     let mut child = match Command::new(bin)
         .args(["--greeting", greeting, "--ask", secret.arg()])
+        .args(look.args())
         .stdin(Stdio::from(OwnedFd::from(theirs)))
         .stdout(Stdio::from(OwnedFd::from(theirs_out)))
         .stderr(Stdio::inherit())
@@ -331,6 +390,27 @@ mod tests {
         assert_eq!(answer("pin correct horse", ask, check), None, "the old protocol is not a question");
         assert_eq!(answer("locked", ask, check), None, "not a question");
         assert_eq!(answer("ok", ask, check), None, "the client cannot answer itself");
+    }
+
+    #[test]
+    fn the_lock_client_is_told_who_and_what_but_never_what_a_notification_says() {
+        let look = Look {
+            name: "Pranab".into(),
+            network: "Wi-Fi".into(),
+            notifications: 3,
+            wallpaper: Some("/home/p/.cache/yantrik/lock-wallpaper.png".into()),
+            no_restart: false,
+        };
+        assert_eq!(
+            look.args(),
+            ["--name", "Pranab", "--notifications", "3", "--network", "Wi-Fi", "--wallpaper", "/home/p/.cache/yantrik/lock-wallpaper.png"]
+        );
+        // A machine declared open at boot: the lock draws no Restart, which would come back open.
+        let open = Look { name: "Pranab".into(), no_restart: true, ..Look::default() };
+        assert_eq!(open.args(), ["--name", "Pranab", "--notifications", "0", "--no-restart"]);
+        // Nothing up and no picture: no flags for them, so the lock draws neither.
+        let bare = Look { name: "Pranab".into(), ..Look::default() };
+        assert_eq!(bare.args(), ["--name", "Pranab", "--notifications", "0"]);
     }
 
     #[test]

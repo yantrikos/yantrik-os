@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yantrik Live</title>
+<meta name="description" content="A Yantrik OS machine at work on its own, live. View-only.">
+<meta name="robots" content="noindex">
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --line: #262d36; --text: #e6edf3; --dim: #8b949e;
+    --live: #2dd4bf; --off: #f0883e;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 40px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: .01em; }
+  .status { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--dim); font-size: 13px; }
+  .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+  .status[data-state="live"] { color: var(--text); }
+  .status[data-state="live"]::before { background: var(--live); box-shadow: 0 0 0 3px rgba(45,212,191,.2); }
+  .status[data-state="offline"]::before { background: var(--off); }
+  .screen { position: relative; margin-top: 16px; aspect-ratio: 16 / 10; background: #000;
+    border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  .card { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; gap: 6px;
+    padding: 24px; background: var(--panel); }
+  .card strong { font-size: 17px; font-weight: 600; }
+  .card span { color: var(--dim); }
+  [hidden] { display: none !important; }
+  p.about { color: var(--dim); margin: 16px 0 0; max-width: 70ch; }
+  footer { margin-top: 24px; font-size: 13px; color: var(--dim); }
+  a { color: var(--live); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Yantrik Live</h1>
+    <span class="status" id="status" data-state="connecting" role="status" aria-live="polite">Connecting…</span>
+  </header>
+
+  <div class="screen">
+    <video id="video" muted playsinline autoplay hidden aria-label="The live desktop"></video>
+    <div class="card" id="card">
+      <strong id="card-title">Connecting…</strong>
+      <span id="card-detail">Looking for the stream.</span>
+    </div>
+  </div>
+
+  <p class="about">A Yantrik OS machine at work on its own, live. It holds no one's personal data, and nothing
+  you do here reaches it: this page only watches.</p>
+  <footer><a href="https://yantrikos.com/">yantrikos.com</a></footer>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.6.15/hls.light.min.js"
+  integrity="sha512-+s5Bl3QE0s/yJwRQ5TJLHFBaOQ133gm4y4zw6yzlZhVlQnX0zDuSD+vnW1J2Le0ZViiVspejpPfHX6YdBjHoNg=="
+  crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="live.js"></script>
+</body>
+</html>

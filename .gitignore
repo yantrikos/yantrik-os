@@ -70,6 +70,12 @@ lib.long-type-*.txt
 # ...and the titlebar buttons, for the same reason: generated, tiny, and the window has no
 # close button without them.
 !config/labwc/*.png
+# ...and the app tiles (design/icons/generate.py): the shell embeds them, and committing them is
+# what lets it build without Python or resvg.
+!crates/yantrik-ui-kit/assets/app-icons/*/*.png
+# ...and the pre-boot unlock screen's password field (276 bytes): plymouth draws no shapes, and
+# the initramfs hook copies it beside the theme.
+!deploy/yantrik-os/boot-unlock/theme/*.png
 
 # Secrets
 google_client_*
@@ -108,6 +114,9 @@ test_*.py
 # pass with the file it runs never committed, leaving the table in docs/app-control.md holding
 # nothing: the walk that keeps every method a service answers listed beside its grade.
 !tests/service-methods/test_*.py
+# ...nor the arena's own tests: CI runs a discover over tests/arena, which would pass with the
+# file it runs never committed.
+!tests/arena/test_*.py
 # ...nor the Python surface SDK's conformance suite, which CI discovers the same way.
 !sdk/python/tests/test_*.py
 # ...nor the surface SDK's template, adapter and guide-sample suites (docs/sdk), which CI
@@ -148,6 +157,6 @@ Dockerfile.build
 
 # The three app-icon sizes build-release.sh ships are inputs to a release, so they are kept;
 # everything else brand/render.py draws is regenerated.
-!brand/yantrik-mark-48.png
-!brand/yantrik-mark-128.png
-!brand/yantrik-mark-256.png
+!brand/yantrik-icon-48.png
+!brand/yantrik-icon-128.png
+!brand/yantrik-icon-256.png

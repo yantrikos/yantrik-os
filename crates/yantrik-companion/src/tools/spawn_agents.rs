@@ -77,6 +77,8 @@ impl Tool for SpawnAgentsTool {
             db_path: spawner.db_path.clone(),
             embedding_dim: spawner.embedding_dim,
             companion_config: spawner.config.clone(),
+            ceiling: ctx.max_permission,
+            incognito: ctx.incognito,
         };
 
         tracing::info!(

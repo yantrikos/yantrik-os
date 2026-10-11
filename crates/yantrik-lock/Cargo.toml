@@ -14,8 +14,12 @@ chrono = { workspace = true }
 smithay-client-toolkit = { version = "0.20", default-features = false, features = ["calloop", "xkbcommon"] }
 wayland-client = "0.31"
 libc = "0.2"
+# The wallpaper is decoded from the bytes it read, after size checks (src/wallpaper.rs).
+png = "0.18"
 # So build.rs can resolve the shared theme's include path via `links`.
 yantrik-design-tokens = { workspace = true }
+# Same for the kit: build.rs resolves the lock view's include path through `links`.
+yantrik-ui-kit = { workspace = true }
 
 [build-dependencies]
 slint-build = "1.17"

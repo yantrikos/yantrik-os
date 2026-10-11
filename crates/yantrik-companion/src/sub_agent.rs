@@ -22,6 +22,11 @@ pub struct SubAgentConfig {
     pub db_path: String,
     pub embedding_dim: usize,
     pub companion_config: CompanionConfig,
+    /// The grade the turn that started it may reach: a sub-agent never reaches higher than the
+    /// turn it works for (a phone's turn reads only, and so do its sub-agents).
+    pub ceiling: PermissionLevel,
+    /// The turn it works for keeps nothing (incognito, or asked for from outside): nor does it.
+    pub incognito: bool,
 }
 
 /// Result from a completed sub-agent.
@@ -75,7 +80,7 @@ impl SubAgent {
 
     fn run(self) -> SubAgentResult {
         let start = Instant::now();
-        let max_perm = parse_permission(&self.config.companion_config.tools.max_permission);
+        let max_perm = parse_permission(&self.config.companion_config.tools.max_permission).min(self.config.ceiling);
 
         // System prompt: focused task execution, no personality/bond
         let system = format!(
@@ -184,7 +189,7 @@ impl SubAgent {
                 max_permission: max_perm,
                 registry_metadata: None,
                 task_manager: Some(&task_manager),
-                incognito: false,
+                incognito: self.config.incognito,
                 agent_spawner: None, // Sub-agents cannot spawn further sub-agents
             };
 
@@ -255,8 +260,11 @@ pub fn spawn_parallel_agents(
             let llm = llm.clone();
             let config = config.clone();
             let agent_id = format!("sub-{i}");
+            // The turn's taint goes with it: what it read, and who asked for it.
+            let carried = yantrik_companion_core::taint::carry();
 
             std::thread::spawn(move || {
+                yantrik_companion_core::taint::adopt(carried);
                 match SubAgent::new(task.clone(), agent_id.clone(), llm, config) {
                     Ok(agent) => {
                         tracing::info!(agent = %agent_id, task = %task, "Sub-agent started");

@@ -150,6 +150,9 @@ impl Tool for VaultStoreTool {
         if service.is_empty() || username.is_empty() || password.is_empty() {
             return "Error: service, username, and password are required".to_string();
         }
+        if crate::provider_keys::is_os_entry(service, category.unwrap_or("")) {
+            return format!("Refused: `{service}` is a name the OS keeps for itself; store this under another.");
+        }
 
         // Writing needs the key as much as reading does — a credential encrypted under a key this
         // process does not hold is a credential nobody can read back.
@@ -225,6 +228,8 @@ impl Tool for VaultGetTool {
             return "Error: provide 'service' (exact) or 'search' (partial match)".to_string();
         };
 
+        // The OS's own provider keys are not the companion's to read (provider_keys).
+        let entries: Vec<_> = entries.into_iter().filter(|e| !crate::provider_keys::is_os_entry(&e.service, &e.category)).collect();
         if entries.is_empty() {
             return "No credentials found".to_string();
         }
@@ -274,7 +279,9 @@ impl Tool for VaultListTool {
     fn execute(&self, ctx: &ToolContext, _args: &serde_json::Value) -> String {
         // Bound first: a `match` scrutinee holds its temporaries — here the connection guard —
         // for the whole match, and an arm below asks for the same lock.
-        let listed = yantrikdb_core::vault::list(&ctx.db.conn());
+        let listed = yantrikdb_core::vault::list(&ctx.db.conn()).map(|entries| {
+            entries.into_iter().filter(|e| !crate::provider_keys::is_os_entry(&e.service, &e.category)).collect::<Vec<_>>()
+        });
         match listed {
             Ok(entries) if entries.is_empty() => "Vault is empty. No credentials stored yet.".to_string(),
             Ok(entries) => {
@@ -339,6 +346,9 @@ impl Tool for VaultDeleteTool {
 
         if service.is_empty() {
             return "Error: service is required".to_string();
+        }
+        if crate::provider_keys::is_os_entry(service, "") {
+            return format!("Refused: `{service}` is the OS's own, and is removed from Settings, not here.");
         }
 
         // Deleting does not need the key — the rows come out whatever is in them — but a locked
@@ -504,6 +514,42 @@ mod vault_tool_tests {
 
     fn drain() {
         let _ = take_unlock_request();
+    }
+
+    /// The OS's own provider keys are in the vault and none of the companion's business: no
+    /// vault tool reads, lists, overwrites or deletes one (1 Oct 2026). The person's own entries
+    /// are untouched by this.
+    #[test]
+    fn the_oss_provider_keys_are_out_of_every_vault_tools_reach() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
+        let ctx = ToolContext { db: &db, max_permission: PermissionLevel::Dangerous, registry_metadata: None, task_manager: None, incognito: true, agent_spawner: None };
+        let key = "gsk_SECRETSECRETSECRETSECRETSECRETSECRET1234";
+        crate::provider_keys::store(&db.conn(), "groq", key).expect("stored");
+        let run = |tool: &dyn Tool, args: serde_json::Value| tool.execute(&ctx, &args);
+        run(&VaultStoreTool, serde_json::json!({"service": "github.com", "username": "me", "password": "mine"}));
+
+        let got = run(&VaultGetTool, serde_json::json!({"search": "os:"}));
+        assert!(!got.contains("SECRET"), "vault_get search read the key: {got}");
+        let got = run(&VaultGetTool, serde_json::json!({"service": crate::provider_keys::service("groq")}));
+        assert!(!got.contains("SECRET"), "vault_get read the key: {got}");
+        let listed = run(&VaultListTool, serde_json::json!({}));
+        assert!(!listed.contains("provider-key") && listed.starts_with("1 credentials"), "{listed}");
+        let overwrite = run(&VaultStoreTool, serde_json::json!({"service": crate::provider_keys::service("groq"), "username": "x", "password": "gsk_attacker"}));
+        assert!(overwrite.starts_with("Refused"), "{overwrite}");
+        let sneaky = run(&VaultStoreTool, serde_json::json!({"service": "groq", "username": "x", "password": "y", "category": "os:provider-key"}));
+        assert!(sneaky.starts_with("Refused"), "{sneaky}");
+        let deleted = run(&VaultDeleteTool, serde_json::json!({"service": crate::provider_keys::service("groq")}));
+        assert!(deleted.starts_with("Refused"), "{deleted}");
+
+        // Still there, unchanged, for the pool; and the person's own entry still reads.
+        let kept = crate::provider_keys::load_all(&db.conn()).unwrap();
+        assert_eq!(kept.get("groq").map(String::as_str), Some(key));
+        assert_eq!(kept.len(), 1, "the person's entry is not a provider key");
+        assert_eq!(crate::provider_keys::kept(&db.conn()), vec!["groq".to_string()]);
+        assert!(run(&VaultGetTool, serde_json::json!({"service": "github.com"})).contains("Password: mine"));
+        assert!(crate::provider_keys::remove(&db.conn(), "groq").unwrap());
+        assert!(crate::provider_keys::load_all(&db.conn()).unwrap().is_empty());
     }
 
     /// A retrying caller cannot rewrite what the person is already reading.

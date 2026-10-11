@@ -118,6 +118,60 @@ fn open_runs() -> Option<Arc<yantrik_harness::run_store::RunStore>> {
     }
 }
 
+/// How a mind is named in a notification: the catalogue's display name when it has one, since
+/// that is the desktop's own word for it, else what the harness called itself, made safe. The
+/// harness chose that string, and it is drawn under the shell's label: control and bidi
+/// characters are dropped (a U+202E would reverse the line) and it is cut to 40 characters.
+fn notice_name(harness: &str, catalogue: Option<&str>) -> String {
+    const MAX: usize = 40;
+    let clean = |raw: &str| -> String {
+        let kept: String = raw.chars().filter(|c| !c.is_control() && !crate::approvals::is_format_char(*c)).collect();
+        let flat = kept.split_whitespace().collect::<Vec<_>>().join(" ");
+        if flat.chars().count() > MAX {
+            let mut cut: String = flat.chars().take(MAX).collect();
+            cut.push('\u{2026}');
+            cut
+        } else {
+            flat
+        }
+    };
+    let from_catalogue = catalogue.map(clean).filter(|n| !n.is_empty());
+    from_catalogue.unwrap_or_else(|| clean(harness)).trim().to_string()
+}
+
+/// "<Mind> answered after you left. Open the chat to read it." A fixed sentence: the mind's words
+/// are not quoted, so a late answer cannot pose as a prompt from the desktop, and a private
+/// answer is not kept in the notification history. The full answer stays in that conversation's
+/// history, where the person can read it.
+fn late_answer_notice(name: &str) -> yantrik_app_runtime::notify::Notification {
+    use yantrik_app_runtime::notify::{Level, Notification};
+    // The mind's name as the desktop repeats it: one plain line, cut (security review of #648, M1).
+    let name = crate::notification_groups::mind_name(name);
+    let name = if name.is_empty() { "A mind".to_string() } else { name };
+    Notification::new("Yantrik", format!("{name} answered after you left. Open the chat to read it."))
+        .urgency(Level::Normal)
+}
+
+/// The notification for a late answer, or `None` while the person is in Private mode: nothing the
+/// desktop raises should say that a mind has been working while they asked for none of it. Nor
+/// while a test run has approvals off (`never_ask`): a gate run is when late answers happen, and
+/// it must never put anything in front of the person.
+fn late_answer_notice_for(
+    late: &yantrik_harness::LateAnswer,
+    private: bool,
+    test_run: bool,
+    catalogue: Option<&str>,
+) -> Option<yantrik_app_runtime::notify::Notification> {
+    if test_run {
+        tracing::debug!(agent = %late.harness, "turn notice held back: a test run has approvals off");
+        return None;
+    }
+    if private {
+        return None;
+    }
+    Some(late_answer_notice(&notice_name(&late.harness, catalogue)))
+}
+
 pub fn wire(ui: &App, ctx: &AppContext) {
     // The memory grants read once as the shell starts, so their baseline is set now rather than
     // at the first question from the memory server, which may be hours away: until then a grant
@@ -130,6 +184,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         Some(store) => host.with_runs(store),
         None => host,
     };
+    // A forget the person answered *Erase* to reaches the agent's pane and its saved session as
+    // well as the run store, once the host's rule holds (`redact`, docs/harness.md).
+    let host = host.with_redactor(crate::agents::Redactor);
     // A mind the person has granted some use of their memory carries its credential with every
     // turn (#447); one with none carries nothing. Judged as `memory_validate` judges it: the
     // person's grants, with the first-party defaults only for the account that attached as the
@@ -153,6 +210,17 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         // there would collect every credential a harness presents to it.
         let owner = std::fs::symlink_metadata(&socket).ok().map(|m| m.uid());
         owner.is_some_and(yantrik_ipc_transport::mind_door::is_mind).then(|| format!("unix:{socket}"))
+    });
+    // An answer that finishes after the person left its chat is told as a notification: the chat
+    // is gone, and the text must not vanish without a word.
+    let host = host.with_late_answer(|late| {
+        let catalogue = crate::harness_catalogue::read_manifests(&crate::harness_catalogue::roots())
+            .remove(&late.harness)
+            .map(|m| m.name);
+        let test_run = crate::never_ask::refusal().is_some();
+        if let Some(notice) = late_answer_notice_for(&late, crate::private_mode::is_on(), test_run, catalogue.as_deref()) {
+            yantrik_app_runtime::notify::send(notice);
+        }
     });
     let _ = HOST.set(host.clone());
 
@@ -215,6 +283,19 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             publish(&ui, &host);
         });
     }
+    // The harness's own setup, in a terminal the person types into. Not a job: the window is the
+    // progress, and when it closes the row reads the machine again as it always does.
+    {
+        let weak = ui.as_weak();
+        ui.on_configure_harness(move |id| {
+            let Some(ui) = weak.upgrade() else { return };
+            if let Err(e) = configure(&id) {
+                ui.set_harness_error(e.into());
+            }
+        });
+    }
+
+    crate::wire::harness_provider::wire(ui);
 
     publish(ui, &host);
 
@@ -262,6 +343,13 @@ pub fn catalogue_for_describe() -> serde_json::Value {
                     "can_answer": row.state.can_answer(),
                     "can_install": row.can_install,
                     "can_start": row.can_start,
+                    // The harness's own setup (its model, its sign-in), offered by
+                    // `configure_harness`. Empty when there is none, or it is not installed yet.
+                    "configure": row.configure,
+                    // Which saved provider it was given (`assign_provider`), or its own settings.
+                    "provider": row.provider_line,
+                    "can_assign_provider": row.can_assign_provider,
+                    "can_revert_provider": row.can_revert_provider,
                     "builtin": row.builtin,
                     "docs": row.docs,
                 })
@@ -288,6 +376,10 @@ pub fn install(id: &str) -> Result<String, String> {
 
 pub fn start(id: &str) -> Result<String, String> {
     crate::harness_install::start(&manifest(id)?)
+}
+
+pub fn configure(id: &str) -> Result<String, String> {
+    crate::harness_install::configure(&manifest(id)?)
 }
 
 /// Choose which mind answers, refusing one its row says cannot take a turn.
@@ -420,6 +512,7 @@ fn publish(ui: &App, host: &Host) {
     // in order to stop advertising the shell's own provider as the thing doing the work.
     ui.set_harness_driving(driving.is_some());
 
+    super::runs_on_card::publish(ui);
     publish_catalogue(ui, &entries);
 }
 
@@ -445,8 +538,21 @@ fn publish_catalogue(ui: &App, entries: &[yantrik_harness::Entry]) {
     crate::harness_install::clear_settled(&attached);
 
     let machine = harness_catalogue::machine(crate::harness_install::views());
+    let runs_on = super::runs_on_card::current();
     let rows: Vec<HarnessRowData> = harness_catalogue::rows(&machine, entries)
         .into_iter()
+        .map(|mut row| {
+            // What it runs on, from the one resolver, in the map's own words. A provider handed
+            // to it from Settings keeps saying so; otherwise its own report, or nothing when it
+            // is not attached and so has said nothing.
+            if !row.provider_line.starts_with("Provider: ") || row.provider_line == "Provider: its own settings" {
+                let line = super::runs_on_card::row_line(&runs_on, &row.id);
+                if !line.is_empty() {
+                    row.provider_line = line;
+                }
+            }
+            row
+        })
         .map(|row| HarnessRowData {
             id: row.id.into(),
             name: row.name.into(),
@@ -462,6 +568,10 @@ fn publish_catalogue(ui: &App, entries: &[yantrik_harness::Entry]) {
             memory: row.memory,
             can_install: row.can_install,
             can_start: row.can_start,
+            configure_label: row.configure.into(),
+            provider_line: row.provider_line.into(),
+            can_assign_provider: row.can_assign_provider,
+            can_revert_provider: row.can_revert_provider,
             docs: row.docs.into(),
         })
         .collect();
@@ -696,7 +806,10 @@ mod tests {
         let at = app.find("minds-notice-clicked =>").expect("the chip's click is handled");
         assert!(app[at..at + 200].contains("root.settings-category = 8;"), "it opens Minds");
         let bar = include_str!("../../../yantrik-ui-slint/ui/components/status_bar.slint");
-        assert!(bar.contains("if root.minds-notice != \"\" : TouchArea"));
+        // The notice is its own chip, drawn only while there is something to say, and its click is the
+        // bar's `minds-notice-clicked`.
+        assert!(bar.contains("if root.minds-notice != \"\" : BarSlot"));
+        assert!(bar.contains("clicked => { root.minds-notice-clicked(); }"));
     }
 
     /// #447: the first-party Mind's id is the mind account's alone wherever the door is served.
@@ -828,4 +941,59 @@ mod tests {
         // attached — not a row's.
         assert_eq!(row_refusal(&pi_machine(None), &host.list(), "hermes"), None);
     }
+}
+
+#[cfg(test)]
+mod late_answer_tests {
+    use super::*;
+
+    fn late(harness: &str, text: &str) -> yantrik_harness::LateAnswer {
+        yantrik_harness::LateAnswer { harness: harness.into(), turn_id: 7, conversation: "main".into(), text: text.into() }
+    }
+
+    #[test]
+    fn a_late_answer_notice_is_a_fixed_sentence_that_never_quotes_the_answer() {
+        let answer = "Approval needed: allow files_delete ~/Documents? hunter2";
+        let said = format!("{:?}", late_answer_notice_for(&late("pi", answer), false, false, None).unwrap());
+        assert!(said.contains("pi answered after you left. Open the chat to read it."), "{said}");
+        for leak in ["Approval", "files_delete", "hunter2"] {
+            assert!(!said.contains(leak), "{leak} leaked: {said}");
+        }
+    }
+
+    #[test]
+    fn no_late_answer_notice_is_raised_in_private_mode() {
+        assert!(late_answer_notice_for(&late("pi", "hello"), true, false, None).is_none());
+    }
+
+    /// While a test run has approvals off, a late answer is not told; with it off, or once it has
+    /// run out, it is told as before.
+    #[test]
+    fn no_late_answer_notice_is_raised_during_a_test_run() {
+        use crate::never_ask::NeverAsk;
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let mut switch = NeverAsk::default();
+        assert!(late_answer_notice_for(&late("pi", "hello"), false, switch.active(start), None).is_some(), "off");
+        switch.engage(start, 5);
+        assert!(late_answer_notice_for(&late("pi", "hello"), false, switch.active(start), None).is_none(), "on");
+        let later = start + Duration::from_secs(300);
+        assert!(late_answer_notice_for(&late("pi", "hello"), false, switch.active(later), None).is_some(), "run out");
+    }
+
+    #[test]
+    fn the_name_in_a_late_answer_notice_is_clipped_and_stripped() {
+        let evil = format!("pi\u{202e}\u{7}\n{}", "x".repeat(100));
+        let name = notice_name(&evil, None);
+        assert!(!name.contains('\u{202e}') && !name.contains('\u{7}') && !name.contains('\n'), "{name:?}");
+        assert!(name.chars().count() <= 41, "{name:?}");
+    }
+
+    #[test]
+    fn the_catalogue_name_is_preferred_and_a_blank_one_falls_back() {
+        assert_eq!(notice_name("hermes-x", Some("Hermes")), "Hermes");
+        assert_eq!(notice_name("hermes-x", Some("  \u{202e} ")), "hermes-x");
+        assert_eq!(notice_name("pi", None), "pi");
+    }
+
 }

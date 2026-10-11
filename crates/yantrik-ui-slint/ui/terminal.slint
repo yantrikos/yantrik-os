@@ -214,7 +214,8 @@ export component TerminalScreen inherits Rectangle {
                             }
 
                             Text {
-                                text: tab.title;
+                                // A dead shell says so in words, not only by a red dot.
+                                text: tab.is-alive ? tab.title : tab.title + " (exited)";
                                 color: tab.is-active ? Theme.text-primary : Theme.text-secondary;
                                 font-size: Theme.fs-caption;
                                 font-weight: tab.is-active ? Theme.fw-headline : Theme.fw-body;
@@ -435,13 +436,14 @@ export component TerminalScreen inherits Rectangle {
                     width: smatch-text.preferred-width + Theme.sp-4;
                     height: 24px;
                     border-radius: self.height / 2;
-                    background: root.search-match-count > 0 ? Theme.tint-cyan : Theme.color-danger-dim;
+                    // Matches found is a state: the accent, not teal (teal is only for minds).
+                    background: root.search-match-count > 0 ? Theme.tint-accent : Theme.color-danger-dim;
 
                     smatch-text := Text {
                         text: root.search-match-count > 0
                             ? "\{root.search-current-match}/\{root.search-match-count}"
                             : "0";
-                        color: root.search-match-count > 0 ? AppIdentity.accent : Theme.color-danger;
+                        color: root.search-match-count > 0 ? Theme.accent : Theme.color-danger;
                         font-size: Theme.fs-micro;
                         font-weight: 500;
                         horizontal-alignment: center;
@@ -761,7 +763,7 @@ export component TerminalScreen inherits Rectangle {
                             width: 72px; height: 30px; border-radius: Theme.r-sm;
                             background: parent.has-hover ? Theme.color-danger : Theme.color-danger-dim;
                             border-width: 1px; border-color: Theme.color-danger;
-                            Text { text: "Proceed"; color: parent.is-hov ? Theme.bg-deep : Theme.color-danger; font-size: Theme.fs-caption; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                            Text { text: "Proceed"; color: parent.is-hov ? Theme.text-on-danger : Theme.color-danger; font-size: Theme.fs-caption; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
                 }
@@ -877,8 +879,10 @@ export component TerminalScreen inherits Rectangle {
                 Rectangle {
                     height: 28px;
                     border-radius: Theme.r-sm;
+                    // The chosen profile wears the app's own tint, like its text; it was teal,
+                    // which is only for minds (colour system).
                     background: root.terminal-profile-name == profile-name
-                        ? Theme.tint-cyan
+                        ? AppIdentity.tint
                         : (parent.hov ? Theme.hover-fill : transparent);
                     HorizontalLayout {
                         padding-left: 10px;

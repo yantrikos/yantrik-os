@@ -49,6 +49,9 @@ use yantrik_ipc_transport::SyncRpcClient;
 /// secret travels in. Pure, so `tests/network-core` can exercise it without a window.
 mod connect;
 
+/// Which section the window opens on: the interface the default route leaves by.
+mod opening;
+
 slint::include_modules!();
 
 /// What the last refresh learned, beside the window.
@@ -101,6 +104,8 @@ fn main() {
 
     // What is true now, before the window is shown.
     refresh(&app, &state);
+    // Once, on open: afterwards the section is the person's to choose.
+    open_on_the_link_in_use(&app);
 
     // Published after the first read, so a describe arriving immediately reports the machine
     // rather than a half-built window.
@@ -142,6 +147,21 @@ fn main() {
     refresh_agent_rail(&app, &state);
 
     run_until_closed(&app, "yantrik-network-manager");
+}
+
+/// Select the section for the interface that carries traffic, from the first reading.
+///
+/// The route table is read here rather than through network-service, which reports interfaces
+/// and their addresses but not routes; it is a file on this machine, read once.
+fn open_on_the_link_in_use(ui: &NetworkManagerApp) {
+    let table = std::fs::read_to_string(opening::ROUTE_TABLE).unwrap_or_default();
+    let ethernet: Vec<String> =
+        ui.get_ethernet_interfaces().iter().map(|e| e.name.to_string()).collect();
+    ui.set_active_tab(opening::opening_tab(
+        opening::default_route_interface(&table).as_deref(),
+        &ethernet,
+        ui.get_wifi_adapter_present(),
+    ));
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -188,7 +208,21 @@ fn now_secs() -> u64 {
 fn refresh(ui: &NetworkManagerApp, state: &State) {
     let mut reading = Reading::default();
 
-    // Interfaces first: the ethernet list, and with it whether there is an interface at all.
+    // The resolvers. The property is called wifi-dns because that pane was built first; the
+    // resolvers are the machine's, not the radio's. Read before the interfaces, whose DNS
+    // field is the same list.
+    match call::<DnsConfig>(method::DNS, serde_json::json!({})) {
+        Ok(dns) => {
+            ui.set_wifi_dns(dns.nameservers.join(", ").into());
+            reading.dns = dns;
+        }
+        Err(e) => {
+            reading.service_error.get_or_insert(e);
+            ui.set_wifi_dns("".into());
+        }
+    }
+
+    // The interfaces: the ethernet list, and with it whether there is an interface at all.
     match call::<Vec<NetworkInterfaceInfo>>(method::INTERFACES, serde_json::json!({})) {
         Ok(rows) => {
             reading.service_ok = true;
@@ -201,14 +235,15 @@ fn refresh(ui: &NetworkManagerApp, state: &State) {
                     status: i.state.to_uppercase().into(),
                     ip_address: i.ip_address.clone().unwrap_or_default().into(),
                     mac_address: i.mac_address.as_str().into(),
-                    // The service does not report link speed or per-interface DHCP, gateway and
-                    // resolvers. Left empty rather than invented: an empty field reads as "not
-                    // known", a made-up one reads as fact.
-                    speed: "".into(),
+                    // What the service could not read stays empty, and the window says "not
+                    // reported" for it: an empty field reads as unknown, a made-up one as fact.
+                    speed: speed_text(i.speed_mbps).into(),
+                    // Per-interface DHCP is still not reported; the badge is the old assumption.
                     is_dhcp: true,
-                    subnet: "".into(),
-                    gateway: "".into(),
-                    dns: "".into(),
+                    subnet: i.subnet.clone().unwrap_or_default().into(),
+                    gateway: i.gateway.clone().unwrap_or_default().into(),
+                    // The machine's resolvers: there is one list, whichever link carries a lookup.
+                    dns: reading.dns.nameservers.join(", ").into(),
                 })
                 .collect();
             ui.set_ethernet_interfaces(ModelRc::new(VecModel::from(eth)));
@@ -244,19 +279,6 @@ fn refresh(ui: &NetworkManagerApp, state: &State) {
             ui.set_status_state("disconnected".into());
             ui.set_status_connection_type("".into());
             ui.set_status_ip_address("".into());
-        }
-    }
-
-    // The resolvers. The property is called wifi-dns because that pane was built first; the
-    // resolvers are the machine's, not the radio's.
-    match call::<DnsConfig>(method::DNS, serde_json::json!({})) {
-        Ok(dns) => {
-            ui.set_wifi_dns(dns.nameservers.join(", ").into());
-            reading.dns = dns;
-        }
-        Err(e) => {
-            reading.service_error.get_or_insert(e);
-            ui.set_wifi_dns("".into());
         }
     }
 
@@ -621,7 +643,8 @@ fn refresh_agent_rail(ui: &NetworkManagerApp, state: &State) {
                 reading.firewall.kind.clone().unwrap_or_default()
             ),
             FirewallStatus::Inactive => "Firewall installed, not filtering".to_string(),
-            FirewallStatus::Absent => "No firewall installed".to_string(),
+            // Only the tools were looked for; the kernel's rules were not read.
+            FirewallStatus::Absent => "No supported firewall manager detected; active filtering rules not checked".to_string(),
             FirewallStatus::Unknown => "Firewall state unknown".to_string(),
         }
         .into(),
@@ -917,6 +940,11 @@ fn publish_control(app: &NetworkManagerApp, state: &State) {
                             "state": i.status.to_string(),
                             "ip": text_or_null(&i.ip_address),
                             "mac": text_or_null(&i.mac_address),
+                            // What the pane shows, null where it says "not reported".
+                            "speed": text_or_null(&i.speed),
+                            "subnet": text_or_null(&i.subnet),
+                            "gateway": text_or_null(&i.gateway),
+                            "dns": text_or_null(&i.dns),
                         })
                     })
                     .collect()
@@ -1012,8 +1040,8 @@ fn publish_control(app: &NetworkManagerApp, state: &State) {
                         "answered": reading.service_ok,
                         "read_at": reading.read_at,
                         // What each half of this view was read with, so a caller can judge it.
-                        "interfaces": "/proc/net/dev and SIOCGIFADDR, via network-service",
-                        "dns": "/etc/resolv.conf, via network-service",
+                        "interfaces": "/proc/net/dev, SIOCGIFADDR and SIOCGIFNETMASK, /sys/class/net/<if>/speed and /proc/net/route, via network-service",
+                        "dns": "/etc/resolv.conf, or systemd-resolved's upstream list behind its stub, via network-service",
                         "wifi": "/sys/class/net for the adapter, nmcli for the rest",
                         "firewall": "nft, ufw or firewall-cmd, read unprivileged",
                         "error": reading.service_error,
@@ -1217,6 +1245,12 @@ fn no_adapter(ui: &NetworkManagerApp, state: &State) -> String {
 /// System Monitor's lesson, one app over: an empty `cpu_model` and an empty `ip` read to an
 /// auditor as measurements of an empty thing. `null` is the value that means "this app does not
 /// know", and `""` is not it.
+/// A link speed in the words nmcli uses for a Wi-Fi rate (`1000 Mbit/s`), so the two panes'
+/// "Speed" read alike; empty when the link reports none.
+fn speed_text(mbps: Option<u32>) -> String {
+    mbps.map(|n| format!("{n} Mbit/s")).unwrap_or_default()
+}
+
 fn text_or_null(text: &SharedString) -> serde_json::Value {
     if text.is_empty() {
         serde_json::Value::Null

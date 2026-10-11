@@ -5,6 +5,8 @@
 //!     cargo run --release -p yantrik-companion --example judge_probe
 //!   JUDGE_URL=http://127.0.0.1:8009 JUDGE_MODEL=kev-latest cargo run ... --example judge_probe
 //!
+//!   JUDGE_URL=http://127.0.0.1:11434 JUDGE_MODEL=nimble cargo run ... --example judge_probe   # Ollama 0.35+
+//!
 //! The whole catalogue is offered at once, which is harder than the similarity shortlist the
 //! companion offers, so the accuracy here is a floor. Kev in particular spreads its probability
 //! thin over this many options (on 2026-09-26: 11/14 right, but no pick above 0.35 bar two), so
@@ -18,7 +20,7 @@ use yantrik_companion::config::CompanionConfig;
 use yantrik_companion::judge_route::{ask, decide, NO_TOOL};
 use yantrik_companion::tool_cache::build_compact_card;
 use yantrik_companion::tools::{build_registry, PermissionLevel};
-use yantrik_ml::judge::SystemOneJudge;
+use yantrik_ml::judge::{Judge, SystemOneJudge};
 
 const REQUESTS: &[(&str, &[&str])] = &[
     ("what's it like outside in Dallas right now?", &["get_weather"]),
@@ -57,9 +59,27 @@ fn main() -> Result<(), String> {
         registry.definitions_for(names, PermissionLevel::Dangerous).iter().map(|d| d.to_string().len()).sum()
     };
     let (mut right, mut followed, mut followed_right, mut ms_total) = (0, 0, 0, 0u128);
+    // A judge that takes fewer options than the catalogue (Ollama's take 26) is offered, per
+    // request, the tools that answer it and then distractors in catalogue order up to its cap —
+    // the size of the shortlist the companion really sends, without the similarity ranking.
+    let cap = judge.max_choice_options();
+    if let Some(cap) = cap {
+        println!("{model} takes at most {cap} options: each request offers its answer plus distractors, {} in all
+", cap - 1);
+    }
     for (request, want) in REQUESTS {
+        let offered: Vec<(f32, String, String)> = match cap {
+            None => catalogue.clone(),
+            Some(cap) => {
+                let (mut first, rest): (Vec<_>, Vec<_>) =
+                    catalogue.iter().cloned().partition(|(_, name, _)| want.contains(&name.as_str()));
+                first.extend(rest);
+                first.truncate(cap - 1);
+                first
+            }
+        };
         let started = Instant::now();
-        let r = ask(&judge, request, &[], &catalogue)?;
+        let r = ask(&judge, request, &[], &offered)?;
         let ms = started.elapsed().as_millis();
         ms_total += ms;
         let pick = r.pick.clone().unwrap_or_else(|| NO_TOOL.into());

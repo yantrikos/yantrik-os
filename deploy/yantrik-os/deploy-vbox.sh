@@ -157,7 +157,9 @@ echo
 echo "[4/6] Uploading deploy script and config..."
 $SCP_CMD "$SCRIPT_DIR/deploy-stack.sh" "$SSH_HOST:/tmp/deploy-stack.sh"
 $SSH_CMD "chmod +x /tmp/deploy-stack.sh"
-echo "  deploy-stack.sh uploaded."
+# The compositor's keys and rules: deploy-stack.sh installs this file, it keeps no copy of its own.
+$SCP_CMD "$CONFIG_DIR/labwc/rc.xml" "$SSH_HOST:/tmp/labwc-rc.xml"
+echo "  deploy-stack.sh and labwc-rc.xml uploaded."
 
 # ── Step 5: Run deploy-stack.sh on VM ──
 echo

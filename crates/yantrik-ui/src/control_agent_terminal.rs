@@ -74,7 +74,11 @@ pub fn jobs() -> &'static Jobs {
         // agent the terminal started it for — so one agent's output can never land in another's
         // card. On the job's worker thread; the store is behind a lock of its own, so no hop to
         // the UI thread is needed.
-        jobs.on_output(|agent, job, bytes| crate::agents::store().command_output(agent, &job.0, bytes));
+        jobs.on_output(|agent, job, bytes| {
+            crate::agents::store().command_output(agent, &job.0, bytes);
+            // And the same bytes to the terminal in Mind View, for an agent whose commands are shown.
+            crate::mind_agent_terminal::mirror(&agent.0, bytes);
+        });
         jobs.on_finish(|answer| {
             crate::agents::store().command_finished(
                 &answer.agent,
@@ -356,11 +360,21 @@ fn job_arg(args: &Value) -> Result<JobId, String> {
 }
 
 /// `wait`, in seconds: the design's default, and never past the terminal's own bound.
+///
+/// A yes or no is read as what it plainly means: `true` waits the default, `false` only starts
+/// the command. Minds send `wait: true` whatever the parameter says. On the live instance the
+/// Mind did it twice in one turn, was refused twice, and went on without the output it had asked
+/// for (2 Oct 2026). Refusing a request whose meaning is not in doubt helps nobody.
 fn wait_arg(args: &Value) -> Result<Duration, String> {
     let most = jobs().limits().max_wait.as_secs();
     let Some(given) = args.get("wait").filter(|v| !v.is_null()) else {
         return Ok(DEFAULT_WAIT);
     };
+    match given.as_bool() {
+        Some(true) => return Ok(DEFAULT_WAIT),
+        Some(false) => return Ok(Duration::ZERO),
+        None => {}
+    }
     let secs = given
         .as_f64()
         .or_else(|| given.as_str().and_then(|s| s.trim().parse().ok()))
@@ -398,7 +412,7 @@ const WHO: &str = " Acts for the agent named by the agent token your call carrie
                    an argument.";
 
 /// The four actions as published: what `describe shell` lists and a caller is asked for.
-fn specs() -> [Action; 4] {
+pub(crate) fn specs() -> [Action; 4] {
     [
         // Sensitive, like the Terminal's own `run`: whatever the command does, it does as the
         // person. Deferred because the answer may be `running: true` — the work outlives the call
@@ -409,7 +423,8 @@ fn specs() -> [Action; 4] {
             "agent_run",
             &format!(
                 "Run one command line in a fresh terminal of your own, in your pane — not the \
-                 person's Terminal. Answers when it exits, with `exit_code` (or `signal`), \
+                 person's Terminal. Its output is also shown live in a terminal in Mind View, \
+                 your desk; `shown_in` in the answer says whether it was. Answers when it exits, with `exit_code` (or `signal`), \
                  `cwd_after` and the `tail` of its output; if it is still going after `wait` it \
                  answers `running: true` with a `job` id. The directory carries to your next \
                  command; exported variables and other shell state do not. The environment is \
@@ -498,12 +513,50 @@ fn agent_run(args: &Value, call: Call) -> Result<Value, String> {
         // Started, then carded, then waited on: the card opens in the agent's pane the moment the
         // command exists, and fills as its terminal does. `run` would be the same two steps with
         // nothing between them.
-        let job = jobs().start(&agent, &command, cwd)?;
+        // The command's line is put in the Mind View log first, so no output can arrive ahead of it.
+        let mirror = crate::mind_agent_terminal::begin(&agent.0, &command);
+        let job = match jobs().start(&agent, &command, cwd) {
+            Ok(job) => job,
+            Err(e) => {
+                if matches!(mirror, crate::mind_agent_terminal::Begin::Log(_)) {
+                    crate::mind_agent_terminal::abandon(&agent.0);
+                }
+                return Err(e);
+            }
+        };
         let started_in = jobs().answer(&job).map(|a| a.cwd.display().to_string()).unwrap_or_default();
         crate::agents::store().command_started(&agent, &job.0, &command, &started_in);
+        // Opened on a worker beside the running command, so neither the first start of Mind View
+        // nor the viewer's window wait delays the answer or the command's `wait`. `tail -n +1`
+        // shows everything the log already holds.
+        let shown = match mirror {
+            crate::mind_agent_terminal::Begin::Log(log) => {
+                Some(crate::mind_agent_terminal::show_later(&agent.0, log))
+            }
+            crate::mind_agent_terminal::Begin::Failed(why) => {
+                Some(crate::mind_agent_terminal::Shown::Not(why))
+            }
+            crate::mind_agent_terminal::Begin::Off => None,
+        };
         let answer = jobs().job(&agent, &job, wait)?;
         told(&answer);
-        Ok(answer_json(&answer))
+        let mut out = answer_json(&answer);
+        match &shown {
+            Some(shown) => {
+                if let (Some(into), Some(from)) =
+                    (out.as_object_mut(), crate::mind_agent_terminal::answer_fields(shown).as_object())
+                {
+                    into.extend(from.clone());
+                }
+            }
+            None => {
+                out["shown_in"] = "nowhere on screen".into();
+                out["shown_note"] = "minds' commands are shown in Mind View only while the setting \
+                    `minds open apps in Mind View` is on; the output is in this answer and on the Agents screen"
+                    .into();
+            }
+        }
+        Ok(out)
     })
 }
 
@@ -759,6 +812,13 @@ mod tests {
         // The bounds on `wait`, refused before anything is started.
         let err = agent_run(&json!({"command": "true", "wait": 601}), call("t-pi")).unwrap_err();
         assert!(err.contains("between 0 and 600"), "{err}");
+        // A yes or no is what it plainly means, not a refusal: on 561 the Mind sent
+        // `wait: true` twice and never saw its output.
+        assert_eq!(wait_arg(&json!({"wait": true})).unwrap(), DEFAULT_WAIT);
+        assert_eq!(wait_arg(&json!({"wait": false})).unwrap(), Duration::ZERO);
+        let yes = agent_run(&json!({"command": "echo yes-wait", "wait": true}), call("t-pi")).unwrap();
+        assert_eq!(yes["exit_code"], 0, "`wait: true` waits for the command: {yes}");
+        assert!(wait_arg(&json!({"wait": "soon"})).unwrap_err().contains("number of seconds"));
 
         // ── Wired to the harness host, as the shell does when it makes one ──
         //

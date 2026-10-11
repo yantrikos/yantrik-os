@@ -361,7 +361,7 @@ impl Config {
                 config_path().map(|p| p.display().to_string()).unwrap_or_else(|| "~/.config/yantrik/studio.json".into())
             )
         } else if kind == Kind::Fake {
-            "The fake backend is chosen, so every picture is a placeholder drawn from the prompt's hash. Nothing leaves this machine.".to_string()
+            "The placeholder backend is chosen, so every picture is drawn from the prompt's hash. Nothing leaves this machine.".to_string()
         } else if kind == Kind::OpenAiImages && !key_is_present {
             match self.backend.api_key() {
                 Ok(_) => String::new(),

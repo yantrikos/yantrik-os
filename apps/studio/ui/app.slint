@@ -66,6 +66,10 @@ export component StudioApp inherits AppWindow {
     in property <string> notice;
     in property <string> status;
     in property <bool> busy;
+    // What the primary button says. "Make placeholder" while the placeholder backend is chosen,
+    // because "Generate" there promises a picture of the sentence and what arrives is a pattern
+    // drawn from its hash.
+    in property <string> generate-label: "Generate";
     // Whether the window is wide enough for the record pane on the right. Handed in from Rust
     // rather than read here, because `if root.width > …` inside this layout is a binding loop on
     // `layoutinfo-h`: the window's own width is derived from the layout's preferred size, so a
@@ -107,7 +111,7 @@ export component StudioApp inherits AppWindow {
                 { id: "refresh", icon: Icons.refresh, label: "Refresh" },
                 { id: "folder", icon: Icons.folder, label: "Output folder" },
                 { id: "backend", icon: Icons.settings, label: "Where pictures are made" },
-                { id: "generate", icon: Icons.spark, label: "Generate", emphasis: 2 },
+                { id: "generate", icon: Icons.spark, label: root.generate-label, emphasis: 2 },
             ];
             action(id) => { root.action(id); }
         }
@@ -191,8 +195,16 @@ export component StudioApp inherits AppWindow {
                                 size: 0;
                                 clicked => { root.action("cancel"); }
                             }
+                            // Beside the primary rather than down in the record pane, which a
+                            // narrow window does not draw: what the button makes depends on it.
                             YButton {
-                                label: root.busy ? "Working…" : "Generate";
+                                label: "Change…";
+                                variant: 1;
+                                size: 0;
+                                clicked => { root.action("backend"); }
+                            }
+                            YButton {
+                                label: root.busy ? "Working…" : root.generate-label;
                                 variant: 0;
                                 size: 0;
                                 disabled: root.busy;
@@ -261,7 +273,7 @@ export component StudioApp inherits AppWindow {
                             horizontal-alignment: center;
                         }
                         Text {
-                            text: "Type a sentence above and press Generate. The picture is saved as a file in your Pictures folder, with a small record beside it saying exactly how it was made.";
+                            text: "Type a sentence above and press " + root.generate-label + ". The picture is saved as a file in your Pictures folder, with a small record beside it saying exactly how it was made.";
                             color: Theme.text-secondary;
                             font-size: 13px;
                             wrap: word-wrap;
@@ -359,9 +371,12 @@ export component StudioApp inherits AppWindow {
                                             size: 0;
                                             clicked => { root.action("open:" + shot.path); }
                                         }
+                                        // At rest, not filled: one red square per row
+                                        // made the column of deletes the loudest thing
+                                        // in the gallery.
                                         YIconButton {
                                             icon-path: Icons.trash;
-                                            variant: 3;
+                                            variant: 4;
                                             size: 0;
                                             clicked => { root.action("delete:" + shot.path); }
                                         }
@@ -401,12 +416,6 @@ export component StudioApp inherits AppWindow {
                             color: Theme.text-secondary;
                             font-size: 12px;
                             wrap: word-wrap;
-                        }
-                        YButton {
-                            label: "Change…";
-                            variant: 2;
-                            size: 0;
-                            clicked => { root.action("backend"); }
                         }
 
                         Rectangle { height: 1px; background: Theme.separator; }

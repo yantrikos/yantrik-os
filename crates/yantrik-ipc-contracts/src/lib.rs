@@ -22,7 +22,11 @@ pub mod weather;
 pub mod notes;
 pub mod music;
 pub mod system_monitor;
+// The words every surface that reports the machine uses for what its readings add up to.
+pub mod machine_status;
 pub mod network;
+// The kernel's route table, read once for the Network window and network-service alike.
+pub mod route_table;
 pub mod notifications;
 pub mod control_surface;
 pub mod home_paths;

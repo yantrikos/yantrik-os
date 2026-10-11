@@ -1,0 +1,110 @@
+// JumpToPresent — the one way a scrolling transcript follows what is new, and gets you back to it.
+//
+// A long conversation (the Lens), an agent's session, a route that is still running: each grows
+// at the bottom. While the reader is at the bottom it follows the new lines; once they scroll up
+// to read, it stays where they are, and a pill appears — "Jump to present", or "New messages"
+// when something arrived meanwhile — that takes them back in one press.
+//
+// It does not own the scroller, so it works with a ListView, a Flickable or a ScrollView alike.
+// Lay it over the scroller, the same size, and bind three of the scroller's properties:
+//
+//     Rectangle {
+//         list := ListView { … }
+//         JumpToPresent {
+//             viewport-y <=> list.viewport-y;
+//             viewport-height: list.viewport-height;
+//             visible-height: list.visible-height;   // a Flickable: its `height`
+//         }
+//     }
+//
+// Nothing but the pill takes input, so the scroller under it scrolls as it always did.
+
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
+
+export component JumpToPresent inherits Rectangle {
+    // The scroller's own numbers. viewport-y is 0 at the top and negative further down.
+    in-out property <length> viewport-y;
+    in property <length> viewport-height;
+    in property <length> visible-height;
+    // Follow at all: a route that has finished running stops following even at the bottom.
+    in property <bool> live: true;
+    in property <string> label: "Jump to present";
+    in property <string> new-label: "New messages";
+
+    // Whether it is following the newest line: true at the bottom, false once the reader has
+    // scrolled up, true again when they come back down or press the pill.
+    in-out property <bool> following: true;
+    // Something arrived while they were reading further up.
+    out property <bool> missed: false;
+
+    property <length> bottom-y: min(0px, root.visible-height - root.viewport-height);
+    // Within a few pixels counts as the bottom: a fractional line is not "reading back".
+    out property <bool> at-bottom: root.viewport-y <= root.bottom-y + 8px;
+    property <bool> scrollable: root.viewport-height > root.visible-height + 1px;
+
+    public function jump() {
+        root.viewport-y = root.bottom-y;
+        root.following = true;
+        root.missed = false;
+    }
+
+    // The reader moved (or we did): following is exactly "at the bottom".
+    changed viewport-y => {
+        root.following = root.at-bottom;
+        if (root.at-bottom) { root.missed = false; }
+    }
+    // The transcript grew, or the pane changed size.
+    changed viewport-height => { root.settle(); }
+    changed visible-height => { root.settle(); }
+    function settle() {
+        if (root.following && root.live) {
+            root.viewport-y = root.bottom-y;
+        } else if (!root.following) {
+            root.missed = true;
+        }
+    }
+
+    background: transparent;
+
+    if root.scrollable && !root.at-bottom : pill := Rectangle {
+        property <length> w: row.preferred-width + 2 * Theme.sp-3;
+        x: (root.width - self.w) / 2;
+        y: root.height - self.height - Theme.sp-3;
+        width: self.w;
+        height: 30px;
+        border-radius: 15px;
+        background: ta.has-hover ? Theme.bg-selected : Theme.bg-elevated;
+        border-width: 1px;
+        border-color: root.missed ? Theme.accent : Theme.glass-border-strong;
+        drop-shadow-blur: 12px;
+        drop-shadow-color: Theme.overlay-shadow;
+        accessible-role: button;
+        accessible-label: root.missed ? root.new-label : root.label;
+        accessible-action-default => { root.jump(); }
+
+        ta := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.jump(); }
+        }
+        row := HorizontalLayout {
+            x: Theme.sp-3;
+            spacing: Theme.sp-1;
+            VerticalLayout {
+                alignment: center;
+                Icon {
+                    commands: Icons.arrow-down;
+                    size: 13px;
+                    tint: root.missed ? Theme.accent : Theme.text-secondary;
+                }
+            }
+            Text {
+                text: root.missed ? root.new-label : root.label;
+                color: root.missed ? Theme.accent : Theme.text-primary;
+                font-size: Theme.fs-caption;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

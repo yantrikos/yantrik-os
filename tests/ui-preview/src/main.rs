@@ -7,20 +7,53 @@ mod installer_rules;
 mod installer_tests;
 mod files_tests;
 mod settings_tests;
+// The lock screen's blur, the production file: the lock scene blurs the same way the shell does.
+#[path="../../../crates/yantrik-ui/src/lock_wallpaper.rs"]
+#[allow(dead_code)]
+mod lock_wallpaper;
+mod lock_theme_tests;
 mod decision_tests;
+mod free_ai_tests;
 mod agents_tests;
 mod mind_panel_tests;
 mod recipes_tests;
 mod formations_tests;
 mod screen_controls_tests;
 mod apps_button_tests;
+mod launcher_tests;
 mod lens_tests;
-mod route_tests;
+mod chat_tests;
 mod approval_tests;
+mod approval_fit_tests;
+mod approval_pane_tests;
+mod dock_tests;
 mod taskbar_menu_tests;
+mod alt_tab_tests;
+mod cards_waiting_tests;
+mod kit_controls_tests;
+mod colour_system_tests;
+mod bar_overlays_tests;
+mod cheat_sheet_tests;
+mod quick_settings_tests;
+mod osd_tests;
+mod battery_tests;
+mod network_tests;
 mod monitor_tests;
 mod weather_tests;
 mod minds_tests;
+mod jump_tests;
+mod handoff_card_tests;
+mod accounts_page_tests;
+mod ai_map_tests;
+mod provider_panel_tests;
+mod rail_tests;
+mod calendar_tests;
+mod top_bar_tests;
+mod icon_tests;
+mod label_tests;
+mod memory_busy_tests;
+mod review_stills;
+mod icon_stills;
 use slint::{
     platform::{
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
@@ -45,23 +78,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let height: u32 = args.get(3).map(|s| s.parse()).transpose()?.unwrap_or(800);
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
     slint::platform::set_platform(Box::new(Headless(window.clone())))?;
+    if let Some(i) = args.iter().position(|a| a == "review-still") {
+        return review_stills::run(&window, output, args.get(i + 1).map(String::as_str).unwrap_or(""));
+    }
     if args.iter().any(|a| a == "verify-settings") { return settings_tests::run(&window, output, width, height); }
+    if args.iter().any(|a| a == "verify-lock") { return lock_theme_tests::run_lock(&window, output, width, height); }
+    if args.iter().any(|a| a == "verify-themes") { return lock_theme_tests::run_themes(&window, output, width, height); }
+    if args.iter().any(|a| a == "verify-lake-desktop") { return lock_theme_tests::run_desktop(&window, output, width, height); }
     if args.iter().any(|a| a == "verify-decision") { return decision_tests::run(&window, output, width, height); }
+    if args.iter().any(|a| a == "verify-free-ai") { return free_ai_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-files") { return files_tests::run(&window); }
     if args.iter().any(|a| a == "verify-agents") { return agents_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-agents-catalog") { return agents_tests::run_catalog(&window, output); }
     if args.iter().any(|a| a == "verify-mind-panel") { return mind_panel_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-minds") { return minds_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-jump-to-present") { return jump_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-handoff-card") { return handoff_card_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-accounts-page") { return accounts_page_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-ai-map") { return ai_map_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-providers-in-use") { return ai_map_tests::run_providers(&window, output); }
+    if args.iter().any(|a| a == "verify-provider-panel") { return provider_panel_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-context-rail") { return rail_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-calendar") { return calendar_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-recipes") { return recipes_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-memory-busy") { return memory_busy_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-formations") { return formations_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-lens-agents") { return agents_tests::run_lens(&window, output); }
     if args.iter().any(|a| a == "verify-screen-controls") { return screen_controls_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-launcher-scenes") { return launcher_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-apps-button") { return apps_button_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-dock") { return dock_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-alt-tab") { return alt_tab_tests::run(&window, output, width, height); }
     if args.iter().any(|a| a == "verify-taskbar-menu") { return taskbar_menu_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-cards-waiting") { return cards_waiting_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-kit-controls") { return kit_controls_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-icons") { return icon_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-labels") { return label_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-colour-system") { return colour_system_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-top-bar") { return top_bar_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-bar-overlays") { return bar_overlays_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-cheat-sheet") { return cheat_sheet_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-quick-settings") { return quick_settings_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-osd") { return osd_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-battery") { return battery_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-network") { return network_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-lens-answers") { return lens_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-chat") { return chat_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-approval-card") { return approval_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-approval-pointer-only") { return approval_tests::run_pointer_only(&window, output); }
+    if args.iter().any(|a| a == "verify-approval-fit") { return approval_fit_tests::run(&window, output, width, height); }
     if args.iter().any(|a| a == "lens-answer") { return lens_tests::run_lens(&window, output); }
-    if args.iter().any(|a| a == "verify-agents-route") { return route_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-monitor") { return monitor_tests::run(&window); }
     if args.iter().any(|a| a == "verify-weather") { return weather_tests::run(&window); }
     if args.iter().any(|a| a == "verify-weather-snapped") { return weather_tests::snapped(&window, output); }
@@ -248,13 +314,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         ui.set_scene("settings".into());
         redraw();
-        click(&window, 400., 240.);
+        // The Dark/Light cards sit under the themes (Lake, Nightfall) since #601: 196px lower.
+        const BELOW_THEMES: f32 = 196.;
+        click(&window, 400., 240. + BELOW_THEMES);
         assert_eq!(
             ui.get_app_action_count(),
             0,
             "Selecting the active theme does not toggle it"
         );
-        click(&window, 900., 240.);
+        click(&window, 900., 240. + BELOW_THEMES);
         assert_eq!(
             ui.get_app_action(),
             "theme",
@@ -268,7 +336,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             1,
             "Space on the now-active theme is idempotent"
         );
-        click(&window, 490., 510.);
+        // First light is the third tile since Lake became the first preset (#601).
+        click(&window, 680., 510. + BELOW_THEMES);
         assert_eq!(ui.get_app_action(), "wallpaper:first-light");
         key(&window, "\n".into());
         assert_eq!(

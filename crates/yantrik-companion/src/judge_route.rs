@@ -121,7 +121,11 @@ pub fn build_judge(
 /// value, an email body or a web page, and the judge may be a cloud service. Anything shaped like
 /// a credential in what is sent is redacted; picking `vault_store` does not need the token.
 pub fn ask(judge: &dyn Judge, request: &str, earlier: &[ChatMessage], shortlist: &[(f32, String, String)]) -> Result<Routing, String> {
-    let mut options: Vec<(String, String)> = shortlist.iter().map(|(_, name, card)| (name.clone(), card.clone())).collect();
+    // Best first, so a judge that takes fewer options (Ollama's take 26) is offered the likeliest
+    // ones, with room left for "no tool".
+    let room = judge.max_choice_options().map_or(usize::MAX, |cap| cap.saturating_sub(1));
+    let mut options: Vec<(String, String)> =
+        shortlist.iter().take(room).map(|(_, name, card)| (name.clone(), card.clone())).collect();
     options.push((NO_TOOL.into(), "No tool: the request is conversation, or is answered from what is already known".into()));
     let mut earlier: Vec<String> = earlier
         .iter()

@@ -110,6 +110,12 @@ pub trait Judge: Send + Sync {
         }
     }
 
+    /// The most options one choice question may carry, where this judge has a limit (Ollama's
+    /// decision models take 26). A caller offering a ranked list cuts it to fit.
+    fn max_choice_options(&self) -> Option<usize> {
+        None
+    }
+
     /// Ask `questions` (id, question) about `state`; answers are keyed by the same ids.
     fn ask(&self, state: &Value, questions: &[(&str, Question)]) -> Result<HashMap<String, Answer>>;
 

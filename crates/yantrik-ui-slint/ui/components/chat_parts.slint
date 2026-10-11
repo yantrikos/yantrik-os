@@ -1,0 +1,74 @@
+// Small controls the conversation panel is built from: a text pill and a square icon button.
+//
+// Both are pointer controls with an accessible label and no keyboard focus of their own, which is
+// how every other button in the panel works. Neither is used for an approval's answer: those keep
+// their own buttons in `ApprovalCard`, where "no autofocus, no Enter" is the whole mechanism.
+
+import { Theme } from "theme.slint";
+import { Icon } from "icon.slint";
+
+/// A text button: `primary` is a raised fill with a keyline, otherwise a plain outline.
+export component ChatPill inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: false;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 32px;
+    min-width: pill-text.preferred-width + 2 * Theme.sp-4;
+    border-radius: Theme.r-md;
+    background: !root.enabled ? transparent
+        : ta.has-hover ? Theme.hover-fill-strong
+        : root.primary ? Theme.chat-raised : transparent;
+    border-width: 1px;
+    border-color: root.primary && root.enabled ? Theme.chat-text-2 : Theme.chat-border;
+    opacity: root.enabled ? 1.0 : 0.5;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    pill-text := Text {
+        text: root.label;
+        color: Theme.chat-text;
+        font-size: Theme.fs-body-strong;
+        font-weight: 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+/// A 32px square icon button with a hover fill. `label` is what a screen reader says, and the
+/// tooltip text a later pass can show.
+export component ChatIconButton inherits Rectangle {
+    in property <string> label;
+    in property <string> commands;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: 32px;
+    height: 32px;
+    border-radius: Theme.r-md;
+    background: ta.has-hover && root.enabled ? Theme.hover-fill : transparent;
+    opacity: root.enabled ? 1.0 : 0.4;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    Icon {
+        commands: root.commands;
+        size: 16px;
+        tint: ta.has-hover ? Theme.chat-text : Theme.chat-text-2;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+}

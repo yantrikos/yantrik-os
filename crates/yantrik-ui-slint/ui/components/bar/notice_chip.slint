@@ -1,0 +1,51 @@
+// NoticeChip — a red line on the bar that exists only while something is wrong: no model is
+// answering, or a mind cannot reach this machine.
+//
+// Render 01 shows the healthy bar, which has none of these. They are not decoration: a bar that
+// said "Minds" with a calm teal dot over an assistant that cannot answer would be the confident
+// lie this OS exists to avoid, so the condition draws its own chip and goes away when it is fixed.
+// A click goes to where it is fixed (the owner decides).
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "../icon.slint";
+
+export component NoticeChip inherits Rectangle {
+    in property <string> text: "";
+    callback clicked();
+
+    height: Theme.bar-chip-h;
+    width: min(row.preferred-width, 340px);
+    border-radius: Theme.bar-chip-radius;
+    background: Theme.color-danger-dim;
+    border-width: Theme.hairline;
+    border-color: Theme.color-danger;
+    accessible-role: button;
+    accessible-label: root.text;
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    row := HorizontalLayout {
+        padding-left: Theme.sp-3;
+        padding-right: Theme.sp-3;
+        spacing: Theme.sp-2;
+        alignment: center;
+
+        Icon {
+            commands: Icons.warning;
+            size: 14px;
+            tint: Theme.color-danger;
+            y: (parent.height - self.height) / 2;
+        }
+        Text {
+            text: root.text;
+            max-width: 300px;
+            overflow: elide;
+            color: Theme.color-danger;
+            font-size: Theme.fs-caption;
+            font-weight: Theme.fw-body-strong;
+            vertical-alignment: center;
+        }
+    }
+}

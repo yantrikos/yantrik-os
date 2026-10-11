@@ -11,22 +11,32 @@ pub mod event_bus;
 pub mod entity_graph;
 pub mod observer;
 pub mod screenshot;
+/// The machine's volume (PipeWire, through wpctl) and its backlight (sysfs): what the shell's sliders read.
+pub mod audio;
+pub mod backlight;
+pub mod capslock;
+pub mod latest;
 
 mod battery;
+mod battery_sysfs;
+pub mod power_profile;
+/// What logind offers on this machine (Hibernate), for the power menu.
+pub mod login1;
 mod files;
 #[cfg(target_os = "linux")]
 mod idle;
-pub mod keybinds;
 mod mock;
-mod network;
+pub mod network;
+pub mod network_model;
 mod processes;
 
-pub use events::{FileChangeKind, ProcessInfo, SystemEvent, SystemSnapshot};
+pub use events::{BatteryState, FileChangeKind, PowerProfileInfo, ProcessInfo, SystemEvent, SystemSnapshot};
 pub use event_bus::{
     CardAction, CommitmentAlertType, EventBus, EventKind, EventLog, EventLogEntry,
     EventSource, EventStats, ToolOutcome, TraceId, YantrikEvent,
 };
 pub use entity_graph::{EntityGraph, ObjectKind, RelationKind, Relation, UniversalObject};
+pub use network_model::{AccessPoint, ConnectRequest, Connectivity, Mark, NetKind, NetState, NetworkSnapshot, WifiSecret};
 pub use observer::{SystemObserver, SystemObserverConfig};
 
 /// Whether the compositor is telling the desktop when the person leaves the seat (#412). Without

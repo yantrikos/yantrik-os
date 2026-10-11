@@ -1,0 +1,162 @@
+// The four kit controls — YSlider, YPopover, YToggleTile, YIndicator — on one page, for
+// verify-kit-controls (src/kit_controls_tests.rs). Imported through the shell's shims on
+// purpose, so the check also proves the re-exports resolve.
+//
+// Left: a popover opened under a bar, holding sliders and tiles in their states. Right: a bar
+// with indicators and the standalone variants. The test drives pointer and keys through the
+// real window and reads what the controls reported back through the properties below.
+import { Theme, ThemeMode } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
+import { YSlider } from "components/y_slider.slint";
+import { YPopover } from "components/y_popover.slint";
+import { YToggleTile } from "components/y_toggle_tile.slint";
+import { YIndicator } from "components/y_indicator.slint";
+
+export component KitControlsProbe inherits Window {
+    width: 880px;
+    height: 460px;
+    background: Theme.bg-deep;
+    in property <bool> light: false;
+    changed light => { ThemeMode.dark = !root.light; }
+
+    // The popover.
+    in-out property <bool> pop-open: true;
+    in-out property <length> anchor-x: 200px;
+    in-out property <int> close-requests: 0;
+    out property <length> panel-x: pop.panel-x;
+    out property <length> panel-y: pop.panel-y;
+    out property <length> panel-w: pop.panel-w;
+    out property <length> panel-h: pop.panel-h;
+    // The slider under test, and what it reported.
+    in-out property <int> volume: 62;
+    in-out property <int> changes: 0;
+    in-out property <int> last-change: -1;
+    out property <length> slider-x: 436px;
+    out property <length> slider-y: 152px;
+    out property <length> slider-w: vol.width;
+    out property <length> track-x: vol.track-x;
+    out property <length> track-w: vol.track-w;
+    out property <length> thumb-x: vol.thumb-x;
+    // Tiles.
+    in-out property <bool> wifi-on: true;
+    in-out property <bool> bt-on: false;
+    in-out property <int> toggles: 0;
+    in-out property <int> details: 0;
+    out property <length> wifi-x: 436px;
+    out property <length> wifi-y: 296px;
+    out property <length> wifi-w: wifi.width;
+    out property <length> bt-x: 644px;
+    out property <length> bt-y: 296px;
+    // Indicators.
+    in-out property <int> ind-clicks: 0;
+    in-out property <int> ind-middle: 0;
+    in-out property <int> ind-scroll: 0;
+    out property <length> ind-x: ind.anchor-x;
+    out property <length> ind-y: ind.anchor-top;
+    out property <length> ind-bottom: ind.anchor-bottom;
+    in-out property <bool> ind-active: false;
+
+    public function focus-volume() { vol.focus(); }
+    public function focus-wifi() { wifi.focus(); }
+    public function focus-indicator() { ind.focus(); }
+    public function focus-popover-slider() { psl.focus(); }
+    public function focus-popover-tile() { ptile.focus(); }
+
+    // ── Right side: a bar of indicators, and the controls not in the popover ──────
+    Rectangle {
+        x: 420px; y: 24px; width: 436px; height: 412px;
+        border-radius: Theme.r-lg;
+        background: Theme.bg-card;
+        border-width: 1px;
+        border-color: Theme.border-card;
+
+        Text {
+            x: Theme.sp-4; y: Theme.sp-4;
+            text: "Bar indicators";
+            color: Theme.text-dim; font-size: Theme.fs-caption; font-weight: Theme.fw-body-strong;
+        }
+        Rectangle {
+            x: Theme.sp-4; y: 44px; width: parent.width - 2 * Theme.sp-4; height: Theme.taskbar-height;
+            border-radius: Theme.r-md;
+            background: Theme.glass-panel;
+            border-width: 1px;
+            border-color: Theme.glass-border;
+            HorizontalLayout {
+                padding: Theme.sp-1;
+                spacing: Theme.sp-1;
+                alignment: end;
+                YIndicator { icon: Icons.settings; tooltip: "Rest"; }
+                YIndicator { icon: Icons.wifi; tooltip: "Active, popover open"; active: true; }
+                YIndicator { icon: Icons.alerts; tooltip: "Attention"; attention: true; }
+                YIndicator { icon: Icons.power; label: "45%"; tooltip: "Battery 45%"; }
+                YIndicator { icon: Icons.clock; tooltip: "Disabled"; enabled: false; }
+                ind := YIndicator {
+                    icon: Icons.wifi;
+                    label: "Net";
+                    tooltip: "Network";
+                    active: root.ind-active;
+                    clicked => { root.ind-clicks += 1; }
+                    middle-clicked => { root.ind-middle += 1; }
+                    scrolled(steps) => { root.ind-scroll += steps; }
+                }
+            }
+        }
+
+        Text {
+            x: Theme.sp-4; y: 108px;
+            text: "Sliders";
+            color: Theme.text-dim; font-size: Theme.fs-caption; font-weight: Theme.fw-body-strong;
+        }
+        vol := YSlider {
+            x: Theme.sp-4; y: 128px; width: parent.width - 2 * Theme.sp-4;
+            label: "Volume"; icon: Icons.settings; value: root.volume; show-value: true; value-suffix: "%";
+            changed(v) => { root.changes += 1; root.last-change = v; root.volume = v; }
+        }
+        YSlider { x: Theme.sp-4; y: 164px; width: parent.width - 2 * Theme.sp-4; label: "Full"; value: 100; icon: Icons.settings; show-value: true; value-suffix: "%"; }
+        YSlider { x: Theme.sp-4; y: 200px; width: parent.width - 2 * Theme.sp-4; label: "Stepped"; value: 40; max: 100; step: 20; show-value: true; }
+
+        Text {
+            x: Theme.sp-4; y: 252px;
+            text: "Toggle tiles";
+            color: Theme.text-dim; font-size: Theme.fs-caption; font-weight: Theme.fw-body-strong;
+        }
+        // Explicit positions, so the test knows where each tile is without asking a layout.
+        wifi := YToggleTile {
+            x: Theme.sp-4; y: 272px; width: 196px;
+            icon: Icons.wifi; title: "Wi-Fi"; subtitle: root.wifi-on ? "Home" : "Off";
+            on: root.wifi-on; split: true;
+            toggled => { root.toggles += 1; root.wifi-on = !root.wifi-on; }
+            details-requested => { root.details += 1; }
+        }
+        bt := YToggleTile {
+            x: 224px; y: 272px; width: 196px;
+            icon: Icons.alerts; title: "Bluetooth"; subtitle: root.bt-on ? "On" : "Off";
+            on: root.bt-on;
+            toggled => { root.bt-on = !root.bt-on; }
+        }
+        YToggleTile { x: Theme.sp-4; y: 340px; width: 196px; icon: Icons.settings; title: "A very long title that must elide"; subtitle: "and a long subtitle too"; split: true; }
+        YToggleTile { x: 224px; y: 340px; width: 196px; icon: Icons.settings; title: "Disabled"; subtitle: "Unavailable"; enabled: false; }
+    }
+
+    // ── The popover, last so it draws over the page ──────────────────────────
+    pop := YPopover {
+        open: root.pop-open;
+        anchor-x: root.anchor-x;
+        anchor-y: 24px;
+        label: "Sound and display";
+        close-requested => { root.close-requests += 1; }
+
+        Text {
+            text: "Sound and display";
+            color: Theme.text-primary; font-size: Theme.fs-title-2; font-weight: Theme.fw-title-2;
+        }
+        YSlider { label: "Volume"; icon: Icons.settings; value: 62; show-value: true; value-suffix: "%"; }
+        psl := YSlider { label: "Brightness"; icon: Icons.settings; value: 35; show-value: true; value-suffix: "%"; }
+        YSlider { label: "Night light"; icon: Icons.settings; value: 50; enabled: false; show-value: true; value-suffix: "%"; }
+        HorizontalLayout {
+            spacing: Theme.sp-3;
+            ptile := YToggleTile { icon: Icons.wifi; title: "Wi-Fi"; subtitle: "Home"; on: true; split: true; }
+            YToggleTile { icon: Icons.alerts; title: "Bluetooth"; subtitle: "Off"; }
+        }
+    }
+}

@@ -1,5 +1,8 @@
 #[path = "../../crates/yantrik-ui/src/config_store.rs"]
 mod config_store;
+// config_store publishes through the shell's one private-file writer.
+#[path = "../../crates/yantrik-ui/src/private_file.rs"]
+mod private_file;
 
 #[cfg(test)]
 mod tests {
@@ -38,12 +41,19 @@ mod tests {
         let mut s=PreferenceFile::open(p.clone()).unwrap();assert!(s.save(&"x".repeat(256*1024+1)).is_err());assert!(!p.exists());
         let name=std::ffi::CString::new(p.to_str().unwrap()).unwrap();assert_eq!(unsafe{libc::mkfifo(name.as_ptr(),0o600)},0);assert!(PreferenceFile::open(p).is_err());
     }
+    // Files planted at names a temporary file could take — the old `.preferences-<pid>-<n>.tmp`
+    // and private_file's `.<name>-<pid>-<n>.tmp` — are somebody else's. A save creates its own
+    // exclusively and removes only the one it created, so every planted file survives it.
     #[test] fn never_removes_a_preexisting_temporary_file(){
         let f=Fixture::new();
-        let fixtures:Vec<_>=(0..256).map(|i|f.0.join(format!(".preferences-{}-{i}.tmp",std::process::id()))).collect();
+        let pid=std::process::id();
+        let fixtures:Vec<_>=(0..256).flat_map(|i|[f.0.join(format!(".preferences-{pid}-{i}.tmp")),f.0.join(format!(".settings.yaml-{pid}-{i}.tmp"))]).collect();
         for p in &fixtures{fs::write(p,"owned by somebody else").unwrap();}
-        let mut s=PreferenceFile::open(f.file()).unwrap();assert!(s.save("theme: dark\n").is_err());assert!(!f.file().exists());
-        for p in fixtures{assert_eq!(fs::read_to_string(p).unwrap(),"owned by somebody else");}
+        let mut s=PreferenceFile::open(f.file()).unwrap();
+        let saved=s.save("theme: dark\n");
+        for p in &fixtures{assert_eq!(fs::read_to_string(p).unwrap(),"owned by somebody else","{}",p.display());}
+        // Either it found a free name and saved, or every name it tried was taken and it said so.
+        match saved{Ok(())=>assert!(fs::read_to_string(f.file()).unwrap().contains("theme: dark")),Err(_)=>assert!(!f.file().exists())}
     }
     #[test] fn searches_control_keywords_and_handles_empty_or_unknown_queries(){
         assert_eq!(search_categories(" wallpaper "),vec![0]);assert_eq!(search_categories("Wi-Fi"),vec![3]);assert_eq!(search_categories("idle lock"),vec![5]);assert_eq!(search_categories(" API model "),vec![1]);assert_eq!(search_categories(""),(0..9).collect::<Vec<_>>());assert!(search_categories("no-such-control").is_empty());

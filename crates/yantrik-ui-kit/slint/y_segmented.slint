@@ -1,0 +1,81 @@
+// YSegmented — one choice out of a few, side by side: °C / °F, Day / Week.
+//
+//   YSegmented { label: "Temperature unit"; items: ["C", "F"]; selected: 0; chosen(i) => { … } }
+//
+// A single button whose label is the current choice ("C") reads as an action, and filled with
+// the accent it reads as THE action of the screen. A segmented control shows every option at
+// once and marks the one in force: a soft accent tint (the accent marks what is on) plus a
+// heavier weight, so the mark does not rest on colour alone. Never the filled accent, which
+// is reserved for the primary button.
+//
+// `selected` is an input: the control says `chosen(index)` and the owner decides, so a choice
+// that could not be kept is never drawn as kept. Choosing the segment already in force says
+// nothing.
+//
+// Each segment is its own Tab stop; Space or Enter chooses it. Sized for a header or toolbar
+// row (Theme.h-compact).
+import { Theme } from "theme.slint";
+
+export component YSegmented inherits Rectangle {
+    // Read by assistive tech before each option, so "C" is heard as "Temperature unit: C".
+    in property <string> label;
+    in property <[string]> items: [];
+    in property <int> selected: 0;
+    callback chosen(int);
+
+    height: Theme.h-compact;
+    horizontal-stretch: 0;
+    border-radius: Theme.r-md;
+    border-width: 1px;
+    border-color: Theme.outline-border;
+    background: transparent;
+
+    HorizontalLayout {
+        padding: 2px;
+        spacing: 2px;
+
+        for item[i] in root.items : seg := Rectangle {
+            property <bool> in-force: i == root.selected;
+            min-width: 30px;
+            horizontal-stretch: 0;
+            border-radius: Theme.r-sm;
+            background: seg.in-force ? Theme.tint-accent : seg-ta.has-hover ? Theme.hover-fill : transparent;
+            border-width: seg-keys.has-focus ? 2px : 0px;
+            border-color: Theme.focus-ring;
+            animate background { duration: Theme.dur-fast; }
+
+            seg-keys := FocusScope {
+                accessible-role: button;
+                accessible-label: root.label != "" ? root.label + ": " + item : item;
+                accessible-checkable: true;
+                accessible-checked: seg.in-force;
+                accessible-action-default => { if (!seg.in-force) { root.chosen(i); } }
+                key-pressed(event) => {
+                    if ((event.text == " " || event.text == "\n") && !event.repeat) {
+                        if (!seg.in-force) { root.chosen(i); }
+                        return accept;
+                    }
+                    reject
+                }
+            }
+
+            seg-ta := TouchArea {
+                mouse-cursor: seg.in-force ? default : pointer;
+                clicked => { if (!seg.in-force) { root.chosen(i); } }
+            }
+
+            HorizontalLayout {
+                padding-left: Theme.sp-2;
+                padding-right: Theme.sp-2;
+                Text {
+                    text: item;
+                    color: seg.in-force ? Theme.accent : Theme.text-secondary;
+                    font-size: Theme.fs-caption;
+                    font-weight: seg.in-force ? 700 : 400;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

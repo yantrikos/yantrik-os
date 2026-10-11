@@ -10,6 +10,8 @@ import { AppHeader } from "components/app_header.slint";
 import { AgentRail, AgentContextItem, AgentSuggestion } from "components/agent_rail.slint";
 import { AgentProposalCard, AgentProposal } from "components/agent_proposal.slint";
 import { AppColor, AppIdentity } from "components/app_color.slint";
+import { YNoticeBar } from "components/notice_bar.slint";
+import { YStatusPill } from "components/y_status_pill.slint";
 
 export struct DownloadItem {
     id: int,
@@ -58,6 +60,8 @@ export component DownloadManagerScreen inherits Rectangle {
     in property <string> total-speed: "0 B/s";
     in property <int> completed-today: 0;
     in property <string> error-text: "";
+    // True when `error-text` is information (the list came back changed) rather than a failure.
+    in property <bool> error-is-info: false;
 
     in-out property <int> active-filter: 0;  // 0=All, 1=Active, 2=Completed, 3=Failed
 
@@ -176,7 +180,7 @@ export component DownloadManagerScreen inherits Rectangle {
                         Rectangle { horizontal-stretch: 1; }
                         YIconButton {
                             icon-path: Icons.close;
-                            variant: 2;
+                            variant: 1;
                             clicked => {
                                 root.ai-panel-open = false;
                                 root.ai-dismiss();
@@ -262,7 +266,7 @@ export component DownloadManagerScreen inherits Rectangle {
                     // Cancel
                     YIconButton {
                         icon-path: Icons.close;
-                        variant: 2;
+                        variant: 1;
                         clicked => {
                             root.add-url-open = false;
                             root.add-url-text = "";
@@ -381,7 +385,7 @@ export component DownloadManagerScreen inherits Rectangle {
                     background: select-all-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
                     border-radius: 6px;
                     border-width: 1px;
-                    border-color: root.dl-all-selected ? AppIdentity.accent : Theme.border-subtle;
+                    border-color: root.dl-all-selected ? Theme.accent : Theme.border-subtle;
 
                     Rectangle {
                         width: 14px;
@@ -389,7 +393,7 @@ export component DownloadManagerScreen inherits Rectangle {
                         x: 7px;
                         y: 7px;
                         border-radius: 3px;
-                        background: root.dl-all-selected ? AppIdentity.accent : transparent;
+                        background: root.dl-all-selected ? Theme.accent : transparent;
                         border-width: root.dl-all-selected ? 0 : 1px;
                         border-color: Theme.text-dim;
 
@@ -604,8 +608,8 @@ export component DownloadManagerScreen inherits Rectangle {
                                     height: 18px;
                                     border-radius: 4px;
                                     border-width: 1px;
-                                    border-color: dl.is-selected ? AppIdentity.accent : Theme.text-dim;
-                                    background: dl.is-selected ? AppIdentity.accent : transparent;
+                                    border-color: dl.is-selected ? Theme.accent : Theme.text-dim;
+                                    background: dl.is-selected ? Theme.accent : transparent;
                                     y: (parent.height - self.height) / 2;
 
                                     if dl.is-selected : Icon {
@@ -621,19 +625,33 @@ export component DownloadManagerScreen inherits Rectangle {
                                     }
                                 }
 
-                                // Status icon
-                                Rectangle {
-                                    width: 10px;
-                                    height: 10px;
-                                    border-radius: 5px;
+                                // Status mark, in a 16px column so every row's name starts at the
+                                // same x. A row that has stopped moving carries a shape in the dim
+                                // text colour: a file that is gone or a transfer that failed is not
+                                // destructive, so it does not get the destructive red, and the
+                                // status pill says the word.
+                                if dl.status == "completed" || dl.status == "failed" || dl.status == "missing" : Icon {
+                                    commands: dl.status == "missing" ? Icons.file-missing
+                                            : dl.status == "failed" ? Icons.warning
+                                            : Icons.check;
+                                    size: 16px;
+                                    tint: Theme.text-dim;
                                     y: (parent.height - self.height) / 2;
-                                    background:
-                                        dl.status == "downloading" ? AppIdentity.accent
-                                      : dl.status == "paused" ? Theme.amber
-                                      : dl.status == "completed" ? Theme.color-success
-                                      : dl.status == "failed" ? Theme.color-emotional
-                                      : dl.status == "missing" ? Theme.color-emotional
-                                      : Theme.text-dim;  // queued
+                                }
+                                if dl.status != "completed" && dl.status != "failed" && dl.status != "missing" : Rectangle {
+                                    width: 16px;
+
+                                    Rectangle {
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                        width: 10px;
+                                        height: 10px;
+                                        border-radius: 5px;
+                                        background:
+                                            dl.status == "downloading" ? AppIdentity.accent
+                                          : dl.status == "paused" ? Theme.amber
+                                          : Theme.text-dim;  // queued
+                                    }
                                 }
 
                                 // Filename
@@ -729,34 +747,34 @@ export component DownloadManagerScreen inherits Rectangle {
                                     vertical-alignment: center;
                                 }
 
-                                // Status badge
-                                Rectangle {
+                                // Status badge. A row that has come to rest -- finished, failed, gone --
+                                // wears the kit's neutral outline pill: the word carries the state,
+                                // and none of them is a hue's business. A row still moving keeps its
+                                // tinted pill.
+                                if dl.status == "completed" || dl.status == "failed" || dl.status == "missing" : YStatusPill {
+                                    width: 80px;
+                                    text: dl.status == "completed" ? "Completed"
+                                        : dl.status == "failed" ? "Failed"
+                                        : "File gone";
+                                }
+                                if dl.status != "completed" && dl.status != "failed" && dl.status != "missing" : Rectangle {
                                     width: 80px;
                                     height: 22px;
                                     border-radius: 11px;
                                     background:
                                         dl.status == "downloading" ? Theme.accent-glow
                                       : dl.status == "paused" ? Theme.amber-glow
-                                      : dl.status == "completed" ? Theme.color-success-dim
-                                      : dl.status == "failed" ? Theme.color-danger-dim
-                                      : dl.status == "missing" ? Theme.color-danger-dim
                                       : Theme.hover-fill;
 
                                     Text {
                                         text: dl.status == "downloading" ? "Downloading"
                                             : dl.status == "paused" ? "Paused"
-                                            : dl.status == "completed" ? "Completed"
-                                            : dl.status == "failed" ? "Failed"
-                                            : dl.status == "missing" ? "File gone"
                                             : "Queued";
                                         font-size: Theme.fs-micro;
                                         font-weight: 500;
                                         color:
                                             dl.status == "downloading" ? AppIdentity.accent
                                           : dl.status == "paused" ? Theme.amber
-                                          : dl.status == "completed" ? Theme.color-success
-                                          : dl.status == "failed" ? Theme.color-emotional
-                                          : dl.status == "missing" ? Theme.color-emotional
                                           : Theme.text-dim;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -933,19 +951,11 @@ export component DownloadManagerScreen inherits Rectangle {
                                 }
                             }
 
-                            // Completed: full green bar
-                            if dl.status == "completed" : Rectangle {
+                            // A row that has stopped moving draws no bar: a full bar under every
+                            // finished row says nothing the pill does not. The empty 4px keeps its
+                            // text on the same lines as a row that is still running.
+                            if dl.status == "completed" || dl.status == "failed" || dl.status == "missing" : Rectangle {
                                 height: 4px;
-                                border-radius: 2px;
-                                background: Theme.color-success;
-                            }
-
-                            // Failed, or finished and since gone: red bar
-                            if dl.status == "failed" || dl.status == "missing" : Rectangle {
-                                height: 4px;
-                                border-radius: 2px;
-                                background: Theme.color-emotional;
-                                opacity: 0.6;
                             }
 
                             // ── Expanded Details Panel ──
@@ -1101,27 +1111,16 @@ export component DownloadManagerScreen inherits Rectangle {
             }
         }
 
-        // ── Error bar ──
-        if root.error-text != "" : Rectangle {
-            height: 36px;
-            background: Theme.color-danger.with-alpha(0.09);
-            border-width: 1px;
-            border-color: Theme.color-danger.with-alpha(0.25);
-
-            HorizontalLayout {
-                padding-left: 16px;
-                padding-right: 16px;
-                alignment: center;
-
-                Text {
-                    text: root.error-text;
-                    font-size: Theme.fs-caption;
-                    color: Theme.color-danger;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                    overflow: elide;
-                }
-            }
+        // ── Notice bar ──
+        // The kit's neutral notice, not a red one: nothing this line reports destroys anything.
+        // A restored list leads with the info glyph and a failure with the warning glyph, so the
+        // shape tells them apart.
+        if root.error-text != "" : YNoticeBar {
+            text: root.error-text;
+            tone: 0;
+            icon-path: root.error-is-info ? Icons.info : Icons.warning;
+            dismissible: false;
+            max-lines: 2;
         }
 
         // ── Bottom Filter Tabs ──

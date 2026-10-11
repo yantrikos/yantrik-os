@@ -84,9 +84,25 @@ fn folder_is_there(asked: &str, home: &Path) -> Result<(), String> {
     match (&answer["exists"], answer["kind"].as_str()) {
         (Value::Bool(true), Some("directory")) => Ok(()),
         (Value::Bool(true), _) => Err(format!("{folder} is not a folder")),
-        (Value::Bool(false), _) => Err(format!("the folder {folder} does not exist")),
+        (Value::Bool(false), _) => Err(missing_folder(&parent, home)),
         _ => Err(refusal(&folder, &answer)),
     }
+}
+
+/// A new file's folder is not there. The rule stays (an agent's write makes no folders on the
+/// way), but the answer says how to get past it: on VM 520 (4 October) a mind told only "the folder
+/// … does not exist" made the folder, then never sent its `save_as` again, and ended with the page
+/// still unsaved in the editor. Same shape as Files' answer for a folder that is not there (#596).
+fn missing_folder(parent: &Path, home: &Path) -> String {
+    let shown = match parent.strip_prefix(home) {
+        Ok(rest) if !rest.as_os_str().is_empty() => format!("~/{}", rest.to_string_lossy()),
+        _ => parent.to_string_lossy().into_owned(),
+    };
+    // The way past first and the reason last, as every refusal here ends with its reason.
+    format!(
+        "make it with the shell's files_new_folder, name \"{shown}\" (missing parent folders are made          too), then send the same save again; nothing written so far is lost: the folder {} does not exist",
+        parent.to_string_lossy()
+    )
 }
 
 /// The refusal for a path `stat` would not answer for. Ends with the reason alone, so the words

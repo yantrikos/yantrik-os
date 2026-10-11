@@ -56,6 +56,10 @@ const NEVER_FROM_A_PHONE: &[(&str, &str)] = &[
     ("shell", "hand_off"),
     ("shell", "new_agent"),
     ("shell", "send_to_agent"),
+    // A provider's key moved into a harness's settings: never on a code sent back over a
+    // channel the provider itself may be able to read.
+    ("shell", "assign_provider"),
+    ("shell", "revert_provider"),
 ];
 
 fn never_from_a_phone(app: &str, action: &str) -> bool {
@@ -431,12 +435,11 @@ fn card_answer(text: &str, asker: &Asker) -> Option<String> {
     })
 }
 
-/// Six digits from the kernel's randomness, or `None` without it.
+/// Six digits from the operating system's randomness (`yantrik_harness::random_hex`, the one
+/// source of the desktop's secrets), or `None` without it.
 fn fresh_code() -> Option<String> {
-    use std::io::Read;
-    let mut bytes = [0u8; 4];
-    std::fs::File::open("/dev/urandom").ok()?.read_exact(&mut bytes).ok()?;
-    Some(format!("{:06}", u32::from_le_bytes(bytes) % 1_000_000))
+    let hex = yantrik_harness::random_hex(4).ok()?;
+    Some(format!("{:06}", u32::from_str_radix(&hex, 16).ok()? % 1_000_000))
 }
 
 /// The answer as one message, read the way the Lens reads a stream: the built-in companion's

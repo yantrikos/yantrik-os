@@ -143,6 +143,8 @@ pub fn send(agent: &AgentId, text: &str) -> Result<(), String> {
 /// The person's word to an agent, from its pane (#234). A stuck task is interrupted first: the
 /// stuck step's commands are killed and its cards withdrawn, and its turn is cancelled without
 /// ending the agent, so the word reaches the same mind, with its conversation, as its next turn.
+/// A task waiting on the person's answer to its question is not stuck and is never interrupted:
+/// the word is turned away with where to answer, and the question stays open (#25).
 /// Anything else is an ordinary [`send`], which waits for the turn in flight.
 pub fn tell(agent: &AgentId, text: &str) -> Result<(), String> {
     if text.trim().is_empty() {
@@ -150,8 +152,11 @@ pub fn tell(agent: &AgentId, text: &str) -> Result<(), String> {
     }
     let host = host()?;
     let now = super::model::now();
-    let stuck = super::store().read(|s| s.agent(agent).and_then(|a| super::progress::of(a, now)).and_then(|p| p.stuck));
-    let Some(why) = stuck else { return send_on(host, agent, text) };
+    let progress = super::store().read(|s| s.agent(agent).and_then(|a| super::progress::of(a, now)));
+    if progress.as_ref().is_some_and(|p| p.question.is_some()) {
+        return Err("It is waiting for your answer to its question; answer it on its card, then tell it more.".into());
+    }
+    let Some(why) = progress.and_then(|p| p.stuck) else { return send_on(host, agent, text) };
     let killed = crate::control_agent_terminal::jobs().kill_agent(agent);
     let withdrawn = crate::approvals::withdraw_for_agent(&agent.0).len();
     host.interrupt(agent);

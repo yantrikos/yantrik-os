@@ -13,6 +13,11 @@ use std::time::{Duration, Instant};
 /// and has to recognise it to avoid recording the shell as the window to hand the screen back to.
 pub(crate) const SHELL_WINDOW_TITLE: &str = "Yantrik OS";
 
+/// The on-screen display's own window (wire/osd.rs). It is a toplevel to the compositor, so it
+/// shows in `wlrctl toplevel list` while it is up; the taskbar, Alt+Tab and "which window is in
+/// front" must never offer or name it.
+pub(crate) const OSD_WINDOW_TITLE: &str = "Yantrik OSD";
+
 /// A running window on the desktop.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowEntry {
@@ -207,7 +212,7 @@ fn put_front_first(merged: &mut Vec<WindowEntry>, front: Option<&str>) {
 /// declares `google-chrome`. So the two are the same program when they are equal, or when one is
 /// the other up to a `-`. The binary is compared by its file name, because the shell launches
 /// Blender by the full path `find_program` resolved.
-fn same_program(binary: &str, wayland_app_id: &str) -> bool {
+pub(crate) fn same_program(binary: &str, wayland_app_id: &str) -> bool {
     let bin = std::path::Path::new(binary)
         .file_name()
         .map(|n| n.to_string_lossy().to_lowercase())
@@ -522,7 +527,14 @@ pub fn present_app(app_id: &str) -> bool {
 /// under Wayland. Every surface that puts something in front of a person needs this:
 /// `control_approvals` already asks for it when a card goes up, `open_lens` when the ask bar
 /// opens, and `show_screen` because a screen nobody can see has not been shown.
+///
+/// Restored first, as [`present`] does, because a minimised window cannot take focus: a shell
+/// minimised by anything would otherwise stay down with every card in it (second review of the
+/// card fix). Not finding a minimised shell is the usual case and not an error.
 pub fn raise_shell() -> Result<(), String> {
+    if let Err(why) = ask_compositor(vec![restore_args(SHELL_WINDOW_TITLE)]) {
+        tracing::debug!(reason = %why, "nothing to un-minimize before raising the shell");
+    }
     ask_compositor(vec![toplevel_args("focus", SHELL_WINDOW_TITLE)])
 }
 
@@ -682,6 +694,7 @@ fn wlrctl_windows() -> Vec<WindowEntry> {
         // desktop's own "open windows" list both offered to switch you to the desktop you are
         // already looking at.
         .filter(|line| split_toplevel_line(line).0 != SHELL_WINDOW_TITLE)
+        .filter(|line| split_toplevel_line(line).0 != OSD_WINDOW_TITLE)
         .map(toplevel_entry)
         .collect()
 }
@@ -703,6 +716,17 @@ pub(crate) fn front_now() -> Option<String> {
     match activation_now() {
         Activation::Window(title) => Some(title),
         _ => None,
+    }
+}
+
+/// The window that has the keyboard right now, by the title `present` takes: an app window, or
+/// the shell. `None` when the compositor cannot say. The on-screen display asks before it appears
+/// and gives focus back afterwards. Spawns a process: never on the UI thread.
+pub(crate) fn focus_to_restore() -> Option<String> {
+    match activation_now() {
+        Activation::Window(title) => Some(title),
+        Activation::Shell => Some(SHELL_WINDOW_TITLE.to_string()),
+        Activation::Unknown => None,
     }
 }
 
@@ -739,7 +763,7 @@ fn activation(text: &str) -> Activation {
         // The person is looking at the desktop, or one of its screens. No app window is in front.
         return Activation::Shell;
     }
-    if title.is_empty() {
+    if title.is_empty() || title == OSD_WINDOW_TITLE {
         return Activation::Unknown;
     }
     Activation::Window(title)
@@ -800,13 +824,27 @@ fn split_toplevel_line(line: &str) -> (String, String) {
 /// The declared app_id is kept twice: lowercased as the shell's `app_id`, which is what every
 /// table in the shell is keyed by, and verbatim as `wayland_app_id`, which is what the compositor
 /// answers to — `app_id:Blender` finds Blender's window and `app_id:blender` does not.
-fn toplevel_entry(line: &str) -> WindowEntry {
+pub(crate) fn toplevel_entry(line: &str) -> WindowEntry {
     let (declared_id, title) = match line.split_once(':') {
         Some((id, rest)) if !rest.trim().is_empty() => (id.trim(), rest.trim()),
         // A foreign toplevel with no separator at all is all title.
         _ => ("", line.trim()),
     };
     let title = title.to_string();
+    let app_id = shell_app_id(declared_id, &title);
+    WindowEntry {
+        icon_char: icon_for_app(&app_id).to_string(),
+        subtitle: derive_context(&title, &app_id),
+        wayland_app_id: declared_id.to_string(),
+        title,
+        app_id,
+    }
+}
+
+/// The shell's id for a window that declared `declared_id` to the compositor and is titled
+/// `title`: one rule for the window list read from `wlrctl` and the window overview read from
+/// the compositor's stream, so a window is the same app in both.
+pub(crate) fn shell_app_id(declared_id: &str, title: &str) -> String {
     // Prefer what the window calls itself. Our own windows call themselves nothing — Slint gives
     // them no Wayland app_id — so the title is matched against APP_NAMES next, which is a lookup
     // rather than a guess: those strings ARE the window titles our apps declare, and
@@ -817,25 +855,30 @@ fn toplevel_entry(line: &str) -> WindowEntry {
     // `images` — none of which is the id the dock keys its running mark by, so after a shell
     // restart those four tiles stayed dark with the apps plainly open on screen. Guessing is now
     // the last resort, for windows that are neither ours nor self-identifying.
-    let app_id = if crate::mind_view::is_nested_window(declared_id, &title) {
+    if crate::mind_view::is_nested_window(declared_id, title) {
         // The window a nested compositor draws into, which is Mind View. The compositor names
         // it itself ("wlroots - WL-1", or "labwc - WL-1" on labwc 0.8) and the title is kept as
         // it is, because the title is what the taskbar hands `wlrctl` to find it again.
         crate::mind_view::APP_ID.to_string()
     } else if !declared_id.is_empty() {
         declared_id.to_lowercase()
-    } else if let Some(id) = app_id_for_title(&title) {
+    } else if let Some(id) = app_id_for_title(title) {
         id.to_string()
     } else {
-        derive_app_id(&title)
-    };
-    WindowEntry {
-        icon_char: icon_for_app(&app_id).to_string(),
-        subtitle: derive_context(&title, &app_id),
-        wayland_app_id: declared_id.to_string(),
-        title,
-        app_id,
+        derive_app_id(title)
     }
+}
+
+/// [`shell_app_id`] for a window the compositor's stream describes, paired with the launch
+/// registry the way the window list's merge pairs them (`merge_windows`): a program the shell
+/// started keeps the id it was started under. Without this a Chromium the dock opened as `browser`
+/// was the Browser on the dock and "Chromium" in the window overview.
+pub(crate) fn stream_app_id(declared_id: &str, title: &str) -> String {
+    crate::running::running()
+        .into_iter()
+        .find(|app| same_program(&app.binary, declared_id))
+        .map(|app| app.app_id)
+        .unwrap_or_else(|| shell_app_id(declared_id, title))
 }
 
 /// The app id whose window is titled exactly this, if it is one of ours.

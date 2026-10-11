@@ -10,21 +10,27 @@
 //!   weather.suggest   { query }                  → Vec<LocationSuggestion>
 
 mod machine_place;
+mod recent;
 
 use std::sync::{Arc, Mutex};
+use std::time::UNIX_EPOCH;
+
+use recent::Where;
 use yantrik_ipc_contracts::weather::*;
 #[cfg(test)]
 use yantrik_service_sdk::gate::{self, Authority};
 use yantrik_service_sdk::prelude::*;
+use yantrik_service_sdk::recent::Reading;
 use yantrik_service_sdk::{Action, Param, PeerCred, Surface, View};
 
 /// The id this surface publishes, and the app a grant for one of its actions is bound to.
 const APP: &str = "weather";
 
 fn main() {
-    ServiceBuilder::new("weather")
-        .handler(WeatherHandler::default())
-        .run();
+    let handler = WeatherHandler::default();
+    // Fetch the machine's forecast now, behind the start, so the first describe has one.
+    handler.places.warm();
+    ServiceBuilder::new("weather").handler(handler).run();
 }
 
 /// The place a describe should report on, and the unit to report it in.
@@ -40,11 +46,19 @@ struct LastPlace {
     fahrenheit: bool,
 }
 
-/// What the service remembers between calls: the last place it was asked about. Shared between
-/// the data methods, which record it, and the surface, which reports on it and moves it.
-#[derive(Default)]
+/// What the service remembers between calls: the last place it was asked about, and the last
+/// forecast fetched for it. Shared between the data methods, which record both, and the surface,
+/// which reports on them and moves the place.
 struct Places {
     last_place: Mutex<Option<LastPlace>>,
+    /// The last forecast, so describe answers from it instead of fetching one (recent.rs).
+    forecasts: recent::Forecasts,
+}
+
+impl Default for Places {
+    fn default() -> Self {
+        Places::with_fetch(|at: &Where| fetch_current(&at.location(), at.fahrenheit).map_err(|e| e.message))
+    }
 }
 
 struct WeatherHandler {
@@ -62,10 +76,40 @@ impl Default for WeatherHandler {
 }
 
 impl Places {
+    /// Places whose forecasts come from `fetch`: Open-Meteo, or a stand-in in the tests.
+    fn with_fetch(fetch: impl Fn(&Where) -> Result<CurrentWeather, String> + Send + Sync + 'static) -> Self {
+        Places { last_place: Mutex::new(None), forecasts: recent::forecasts(fetch) }
+    }
+
     /// Record the place a data call was about, so a later describe has somewhere to report on.
     fn remember(&self, location: &Location, fahrenheit: bool) {
         if let Ok(mut guard) = self.last_place.lock() {
             *guard = Some(LastPlace { location: location.clone(), fahrenheit });
+        }
+    }
+
+    /// Keep a forecast a data call just fetched, so describe need not fetch it again.
+    fn learned(&self, location: &Location, fahrenheit: bool, weather: &CurrentWeather) {
+        self.forecasts.put(Where::of(location, fahrenheit), weather.clone());
+    }
+
+    /// The place describe would report on and where it came from, if there is one: the last place
+    /// asked about, else where the machine is.
+    fn place(&self) -> Option<(LastPlace, bool)> {
+        let asked = self.last_place.lock().ok().and_then(|g| g.clone());
+        // Nobody has asked about anywhere yet: report on where the machine is, which the desktop
+        // already knows. See `machine_place` for the afternoon a mind asked a person where they
+        // were while the answer sat in a file beside it.
+        let from_machine = asked.is_none();
+        asked
+            .or_else(|| machine_place::read().map(|m| LastPlace { location: m.location, fahrenheit: m.fahrenheit }))
+            .map(|place| (place, from_machine))
+    }
+
+    /// Start fetching the forecast describe would report, behind the caller.
+    fn warm(&self) {
+        if let Some((place, _)) = self.place() {
+            self.forecasts.refresh(&Where::of(&place.location, place.fahrenheit));
         }
     }
 }
@@ -102,6 +146,7 @@ impl ServiceHandler for WeatherHandler {
                 let fahrenheit = params["fahrenheit"].as_bool().unwrap_or(false);
                 self.places.remember(&loc, fahrenheit);
                 let result = fetch_current(&loc, fahrenheit)?;
+                self.places.learned(&loc, fahrenheit, &result);
                 Ok(serde_json::to_value(result).unwrap())
             }
             "weather.hourly" => {
@@ -173,16 +218,12 @@ impl WeatherHandler {
 
 impl Places {
     /// The current weather for the last place asked about, or an honest "nowhere yet".
+    ///
+    /// From the last forecast fetched for the place, with its age: fetching one here made every
+    /// describe an Open-Meteo round trip (recent.rs). Only a place nothing has been fetched for
+    /// waits, and then for at most `recent::POLICY.wait`.
     fn describe_view(&self) -> View {
-        let asked = self.last_place.lock().ok().and_then(|g| g.clone());
-        // Nobody has asked about anywhere yet: report on where the machine is, which the desktop
-        // already knows. See `machine_place` for the afternoon a mind asked a person where they
-        // were while the answer sat in a file beside it.
-        let from_machine = asked.is_none();
-        let place = asked.or_else(|| {
-            machine_place::read().map(|m| LastPlace { location: m.location, fahrenheit: m.fahrenheit })
-        });
-        let Some(place) = place else {
+        let Some((place, from_machine)) = self.place() else {
             // Never queried this session. Say so, and say how to fix it, rather than invent a
             // city — a made-up location is worse than no answer.
             return View::new(
@@ -192,10 +233,20 @@ impl Places {
         };
 
         let unit = if place.fahrenheit { "°F" } else { "°C" };
-        match fetch_current(&place.location, place.fahrenheit) {
-            Ok(w) => {
+        // Which place this is, so that a reader can tell "the weather where this machine is" from
+        // "the weather somewhere somebody looked up".
+        let source = if from_machine { "where this machine is (desktop settings)" } else { "the last place asked about" };
+        match self.forecasts.read(&Where::of(&place.location, place.fahrenheit)) {
+            Reading::Known { value: w, age, fetched_at, last_error } => {
+                let stale = age > recent::STALE_AFTER;
+                // How old this is, and, when it is old, why it was not replaced.
+                let freshness = match (&last_error, stale) {
+                    (Some(e), _) => format!("fetched {}; the last refresh failed: {e}", recent::ago(age)),
+                    (None, true) => format!("fetched {}, stale; a refresh is under way", recent::ago(age)),
+                    (None, false) => format!("fetched {}", recent::ago(age)),
+                };
                 let summary = format!(
-                    "Weather — {}°{} {} in {}, feels {}°, humidity {}%, wind {} {}",
+                    "Weather — {}°{} {} in {}, feels {}°, humidity {}%, wind {} {} ({freshness})",
                     w.temperature.round() as i64,
                     if place.fahrenheit { "F" } else { "C" },
                     w.condition,
@@ -205,14 +256,9 @@ impl Places {
                     w.wind_speed.round() as i64,
                     w.wind_direction,
                 );
-                View::new(summary)
+                let view = View::new(summary)
                     .with("has_location", true)
-                    // Which place this is, so that a reader can tell "the weather where this
-                    // machine is" from "the weather somewhere somebody looked up".
-                    .with(
-                        "location_source",
-                        if from_machine { "where this machine is (desktop settings)" } else { "the last place asked about" },
-                    )
+                    .with("location_source", source)
                     .with("location", place.location.name.clone())
                     .with("lat", place.location.lat)
                     .with("lon", place.location.lon)
@@ -226,17 +272,43 @@ impl Places {
                     .with("uv_index", w.uv_index)
                     .with("pressure_hpa", w.pressure_hpa)
                     .with("visibility_km", w.visibility_km)
+                    // When these readings were fetched. Whole minutes, so the revision a caller
+                    // acts on does not change every time it is read.
+                    .with("fetched", true)
+                    .with("fetched_at", fetched_at.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0))
+                    .with("age_minutes", age.as_secs() / 60)
+                    .with("stale", stale);
+                match last_error {
+                    Some(e) => view.with("refresh_error", e),
+                    None => view,
+                }
             }
-            Err(e) => {
+            Reading::Fetching => {
+                // Nothing fetched for this place yet, and the fetch is slower than a read should
+                // wait. Say that, rather than hold the caller on the network.
+                View::new(format!(
+                    "Weather — fetching the forecast for {} now; nothing has been fetched for it yet, so ask again in a moment",
+                    place.location.name
+                ))
+                .with("has_location", true)
+                .with("location_source", source)
+                .with("location", place.location.name.clone())
+                .with("lat", place.location.lat)
+                .with("lon", place.location.lon)
+                .with("unit", unit)
+                .with("fetched", false)
+            }
+            Reading::Failed { error, .. } => {
                 // The place is known but the fetch failed (offline, upstream down). Report the
                 // place and the failure, not a stale number we do not have.
                 View::new(format!(
-                    "Weather — could not reach the forecast for {} ({})",
-                    place.location.name, e.message
+                    "Weather — could not reach the forecast for {} ({error})",
+                    place.location.name
                 ))
                 .with("has_location", true)
                 .with("location", place.location.name.clone())
-                .with("error", e.message)
+                .with("fetched", false)
+                .with("error", error)
             }
         }
     }
@@ -273,6 +345,8 @@ impl Places {
                 .unwrap_or(false)
         });
         self.remember(&location, unit);
+        // Fetch the new place's forecast now, behind the answer, so the next describe has it.
+        self.forecasts.refresh(&Where::of(&location, unit));
         Ok(serde_json::json!({ "location": location.name, "lat": location.lat, "lon": location.lon }))
     }
 }
@@ -1007,5 +1081,126 @@ mod tests {
     #[test]
     fn the_surface_is_declared_soundly() {
         assert!(WeatherHandler::default().surface.registry().problems().is_empty());
+    }
+
+    // ── describe answers from the last forecast, whatever the network is doing ──
+
+    use std::time::{Duration, Instant};
+
+    /// What `yos check` holds a describe to is 500 ms; one answered from memory takes well under
+    /// this.
+    const QUICK: Duration = Duration::from_millis(50);
+
+    fn dallas() -> Location {
+        Location { name: "Dallas".into(), lat: 32.78, lon: -96.8 }
+    }
+
+    fn sunny() -> CurrentWeather {
+        CurrentWeather {
+            temperature: 71.6,
+            feels_like: 70.2,
+            humidity: 40,
+            wind_speed: 9.4,
+            wind_direction: "SE".into(),
+            wind_degrees: 135.0,
+            condition: "Clear sky".into(),
+            icon: "sun".into(),
+            uv_index: 6.0,
+            visibility_km: 10.0,
+            pressure_hpa: 1012.0,
+            dew_point: 45.0,
+            cloud_cover: 0,
+            is_day: true,
+        }
+    }
+
+    /// Places whose every fetch takes three seconds — Open-Meteo on a bad day — and then fails.
+    fn behind_a_slow_network() -> Places {
+        Places::with_fetch(|_| {
+            std::thread::sleep(Duration::from_secs(3));
+            Err("timed out".to_string())
+        })
+    }
+
+    fn timed(places: &Places) -> (View, Duration) {
+        let started = Instant::now();
+        let view = places.describe_view();
+        (view, started.elapsed())
+    }
+
+    #[test]
+    fn describe_answers_from_the_last_forecast_while_a_slow_fetch_replaces_it() {
+        let places = behind_a_slow_network();
+        places.remember(&dallas(), true);
+        places.forecasts.put_as_of(Where::of(&dallas(), true), sunny(), Duration::from_secs(20 * 60));
+
+        let (view, took) = timed(&places);
+        assert!(took < QUICK, "describe took {took:?}");
+        assert_eq!(
+            view.summary,
+            "Weather — 72°F Clear sky in Dallas, feels 70°, humidity 40%, wind 9 SE (fetched 20 min ago)"
+        );
+        assert_eq!(view.state["temperature"], 71.6);
+        assert_eq!(view.state["age_minutes"], 20);
+        assert_eq!(view.state["stale"], false);
+        assert_eq!(view.state["fetched"], true);
+
+        // The refresh that read started is still on the network; reading again does not wait for it.
+        let (_, took) = timed(&places);
+        assert!(took < QUICK, "the second describe took {took:?}");
+    }
+
+    #[test]
+    fn a_forecast_hours_old_is_served_and_called_stale() {
+        let places = behind_a_slow_network();
+        places.remember(&dallas(), true);
+        places.forecasts.put_as_of(Where::of(&dallas(), true), sunny(), Duration::from_secs(2 * 3_600));
+
+        let (view, took) = timed(&places);
+        assert!(took < QUICK, "describe took {took:?}");
+        assert!(view.summary.ends_with("(fetched 2 h ago, stale; a refresh is under way)"), "{}", view.summary);
+        assert_eq!(view.state["stale"], true);
+    }
+
+    #[test]
+    fn with_nothing_fetched_describe_says_so_within_its_bound() {
+        let places = behind_a_slow_network();
+        places.remember(&dallas(), false);
+
+        let (view, took) = timed(&places);
+        let bound = recent::POLICY.wait + Duration::from_millis(250);
+        assert!(took < bound, "describe took {took:?}, over {bound:?}");
+        assert!(view.summary.starts_with("Weather — fetching the forecast for Dallas now"), "{}", view.summary);
+        assert_eq!(view.state["fetched"], false);
+        assert_eq!(view.state["location"], "Dallas");
+
+        // The fetch it started is still running: the next read does not start a second one, and
+        // waits no longer than the first.
+        let (_, took) = timed(&places);
+        assert!(took < bound, "the second describe took {took:?}");
+    }
+
+    #[test]
+    fn a_forecast_a_data_call_fetched_is_what_describe_reports() {
+        let places = behind_a_slow_network();
+        places.remember(&dallas(), true);
+        places.learned(&dallas(), true, &sunny());
+
+        let (view, took) = timed(&places);
+        assert!(took < QUICK, "describe took {took:?}");
+        assert!(view.summary.ends_with("(fetched just now)"), "{}", view.summary);
+        assert_eq!(view.state["age_minutes"], 0);
+    }
+
+    #[test]
+    fn a_failed_fetch_is_reported_as_one() {
+        let places = Places::with_fetch(|_| Err("Open-Meteo API error: offline".to_string()));
+        places.remember(&dallas(), false);
+        let (view, _) = timed(&places);
+        assert_eq!(view.summary, "Weather — could not reach the forecast for Dallas (Open-Meteo API error: offline)");
+        // Offline, a second read is told the same at once instead of trying the network again.
+        let (view, took) = timed(&places);
+        assert!(took < QUICK, "describe took {took:?}");
+        assert_eq!(view.state["error"], "Open-Meteo API error: offline");
     }
 }

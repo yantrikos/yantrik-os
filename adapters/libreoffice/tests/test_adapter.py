@@ -93,11 +93,25 @@ class TestTheProgram(unittest.TestCase):
         self.machine = support.Machine()
         self.addCleanup(self.machine.cleanup)
 
+    def no_uno(self):
+        """A directory whose `uno` refuses to import, put first on the program's path.
+
+        So "no LibreOffice to reach" is the same on every machine: a runner that has
+        python3-uno installed would otherwise take the other branch, and try a real pipe."""
+        hidden = os.path.join(self.machine.tmp, "no-uno")
+        os.makedirs(hidden, exist_ok=True)
+        with open(os.path.join(hidden, "uno.py"), "w", encoding="utf-8") as f:
+            f.write("raise ImportError('hidden by the test: no python3-uno here')\n")
+        return hidden
+
     def start(self, **env):
+        # PYTHONFAULTHANDLER: a SIGABRT makes the adapter print every thread's stack, so a stop
+        # that hangs (seen once in CI, 5 Oct 2026, never reproduced locally) says where it hung.
+        base = self.machine.env(YANTRIK_LIBREOFFICE_GRACE="0.5", PYTHONFAULTHANDLER="1", **env)
+        base["PYTHONPATH"] = os.pathsep.join((self.no_uno(), base["PYTHONPATH"]))
         program = subprocess.Popen(
             [sys.executable, os.path.join(support.BIN, "yantrik-libreoffice-adapter")],
-            env=self.machine.env(YANTRIK_LIBREOFFICE_GRACE="0.5", **env),
-            stderr=subprocess.PIPE, text=True)
+            env=base, stderr=subprocess.PIPE, text=True)
         self.addCleanup(self.reap, program)
         socket = self.machine.socket(env.get("YANTRIK_SURFACE", APP_ID))
         deadline = time.monotonic() + 20
@@ -118,18 +132,36 @@ class TestTheProgram(unittest.TestCase):
         from yantrik_surface import call_once
         return call_once(socket, "app.describe", {})["result"]
 
+    def stops_cleanly_on_sigterm(self, program, socket):
+        # A return code of -15 here is the adapter killed by Python's default SIGTERM action —
+        # its handler not yet installed — not a timeout: a timeout raises TimeoutExpired.
+        program.send_signal(signal.SIGTERM)
+        try:
+            _, err = program.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            program.send_signal(signal.SIGABRT)
+            _, err = program.communicate(timeout=10)
+            self.fail("the adapter did not stop within 30 s of SIGTERM; its threads were:\n%s"
+                      % err[-6000:])
+        self.assertEqual(program.returncode, 0, err)
+        self.assertIn("libreoffice stopped: asked to stop", err)
+        self.assertFalse(os.path.exists(socket), "the socket outlived the adapter")
+
     def test_it_serves_and_says_libreoffice_cannot_be_reached(self):
         program, socket = self.start(YANTRIK_LIBREOFFICE_PIPE="yantrik-test-no-such-pipe")
         described = self.describe(socket)
         self.assertEqual(described["app"], APP_ID)
         self.assertFalse(described["state"]["connected"])
-        self.assertIn(described["summary"], ("LibreOffice — no python3-uno to reach it with",
-                                             "LibreOffice — not running"))
-        program.send_signal(signal.SIGTERM)
-        _, err = program.communicate(timeout=15)
-        self.assertEqual(program.returncode, 0, err)
-        self.assertIn("libreoffice stopped: asked to stop", err)
-        self.assertFalse(os.path.exists(socket), "the socket outlived the adapter")
+        self.assertEqual(described["summary"], "LibreOffice — no python3-uno to reach it with")
+        self.stops_cleanly_on_sigterm(program, socket)
+
+    def test_a_stop_sent_the_moment_the_socket_appears_is_a_clean_stop(self):
+        # The shell may stop an adapter as soon as it sees it serve. The socket is that sign, so
+        # the stop handler is in place before the socket exists — this is the race the test
+        # above used to lose on a loaded runner, with nothing in between to hide it.
+        for _ in range(3):
+            program, socket = self.start(YANTRIK_LIBREOFFICE_PIPE="yantrik-test-no-such-pipe")
+            self.stops_cleanly_on_sigterm(program, socket)
 
     def test_it_binds_the_id_the_shell_gives_it(self):
         _, socket = self.start(YANTRIK_SURFACE="office-test")

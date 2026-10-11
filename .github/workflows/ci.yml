@@ -37,6 +37,19 @@ jobs:
       # main next door, main moved past Cargo.lock, and every run was red for a reason that had
       # nothing to do with the commit being tested.
 
+      # The same swap the ISO build has (iso.yml, #606): rustc holds ~14 GB compiling the
+      # generated UI crate and a hosted runner has 16 GB. The test job was killed four times on
+      # 4 October (exit 143, "the runner has received a shutdown signal", no test failure) as the
+      # shell's UI grew. Swap on the runner's scratch disk lets the peak spill instead.
+      - name: Swap for the generated UI crate
+        run: |
+          sudo swapoff -a || true
+          sudo fallocate -l 12G /mnt/yantrik-swap
+          sudo chmod 600 /mnt/yantrik-swap
+          sudo mkswap /mnt/yantrik-swap > /dev/null
+          sudo swapon /mnt/yantrik-swap
+          free -h
+
       # The native libraries the workspace links against, found by looking for the -sys crates
       # in Cargo.lock rather than by guessing: alsa-sys, libudev-sys, openssl-sys,
       # speech-dispatcher-sys, wayland-sys. Slint's winit backend adds xkbcommon and fontconfig.
@@ -72,10 +85,77 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      # The kernel's direct set for the mind account is read from the person's policy by the
+      # proxy's own code (`yantrik-egress direct`). The updater's selftest runs it on real policy
+      # files here, where it has just been built.
+      - name: The mind's direct set comes from the person's policy
+        run: YANTRIK_EGRESS_BIN=target/debug/yantrik-egress bash deploy/yantrik-os/yantrik-update selftest
+
+  # The tree has never been linted, so this reports and does not enforce:
+  # continue-on-error means the warnings show up on every pull request without the check
+  # failing every pull request on the day it lands. A lint family that has been fixed can
+  # later be promoted to blocking; that is a later decision, not this job's.
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # The setup below is a copy of the test job's, not a YAML anchor pointing at it. This
+    # file uses no anchors, and an anchor can only sit on a step that already exists —
+    # reusing these steps would mean editing the test job, which this issue asks to leave
+    # unchanged. The apt list is the part that can drift (it is read off the -sys crates in
+    # Cargo.lock); sharing it properly is a decision about the whole file's style, not
+    # about this job.
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same swap the test job has, for the same reason: clippy runs the same rustc
+      # over the generated UI crate, and a runner killed at the peak lists no warnings at
+      # all — which, in a non-blocking job, nobody would notice.
+      - name: Swap for the generated UI crate
+        run: |
+          sudo swapoff -a || true
+          sudo fallocate -l 12G /mnt/yantrik-swap
+          sudo chmod 600 /mnt/yantrik-swap
+          sudo mkswap /mnt/yantrik-swap > /dev/null
+          sudo swapon /mnt/yantrik-swap
+          free -h
+
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libasound2-dev \
+            libudev-dev \
+            libssl-dev \
+            libspeechd-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libinput-dev \
+            libgbm-dev \
+            libegl1-mesa-dev
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-v1
+
+      # --cap-lints warn: clippy's deny-by-default lints (never_loop and the like) would stop
+      # the build at the first crate that has one, and every crate after it would go unlinted.
+      # Capped, they are listed as warnings with the rest, and the whole workspace is read.
+      - name: Clippy
+        continue-on-error: true
+        run: cargo clippy --workspace --locked -- --cap-lints warn
+
   shell-scripts:
     name: shell scripts
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
@@ -151,12 +231,77 @@ jobs:
       - name: yos starts an on-demand service when something asks for it
         run: python3 deploy/yantrik-os/yos-selftest.py
 
+      # Without a name of its own, every Mind on this OS spoke as its engine's stock persona:
+      # "I am JARVIS, an extension of the user" was its first answer on the live instance.
+      - name: The Mind's launcher gives it its name and its person's
+        run: python3 deploy/yantrik-os/yantrik-mind-launch-selftest.py
+
+      # First boot left git with no identity, so `git commit` from a mind, an editor or a
+      # harness died with "Please tell me who you are" (#680). This runs the session's
+      # defaulting block under a temporary HOME with the account faked.
+      - name: The session gives git an identity from the account
+        run: python3 deploy/yantrik-os/yantrik-session-git-identity-selftest.py
+
       # The updater's own offline checks, against a scratch $YANTRIK_PREFIX. Same story as the
       # two above: it has existed for a while and only ever run on somebody's machine. It holds
       # where the update channel comes from, and that `.version` is written from the same string
       # as the BUILD marker — the pair that gave a machine two answers about its own version.
       - name: The updater agrees with itself about channel and version
-        run: bash deploy/yantrik-os/yantrik-update selftest
+        run: YANTRIK_NFT_OUT="$RUNNER_TEMP/mind-egress-nft" bash deploy/yantrik-os/yantrik-update selftest
+
+      # The boot test's check that no real network address ships: config.yaml and update.conf
+      # name no private address, the updater only ranges in CIDR and its marked selftest's made-up
+      # fixtures, and nothing anywhere is on the developer's LAN. Held here against the updater in
+      # this tree, so a fixture from a real network fails a pull request, not a nightly ISO.
+      - name: The updater ships no real network address
+        run: python3 deploy/yantrik-os/private-addresses-selftest.py
+
+      # The tables the updater makes to hold the mind account to its egress proxy (with entries,
+      # in Private mode, and its fail-closed fallback), put to nft itself. `-c` checks the whole
+      # transaction in the kernel and commits nothing; it needs root for the netlink socket.
+      - name: nft accepts the mind's egress tables
+        run: |
+          sudo apt-get update > /dev/null
+          sudo apt-get install -y --no-install-recommends nftables > /dev/null
+          ls "$RUNNER_TEMP"/mind-egress-nft/*.nft > /dev/null
+          for f in "$RUNNER_TEMP"/mind-egress-nft/*.nft; do
+            echo "nft -c -f $(basename "$f")"
+            sudo nft -c -f "$f"
+          done
+
+      # Intel Macs (the Mac mini 2012). A fake sysfs and dry runs: the Broadcom BCM4331 gets wl
+      # when headers exist and b43 when they do not, each blacklisting the other, nothing is
+      # fetched offline, and a USB dongle is not mistaken for the chip. Then mbpfan's settings:
+      # the Mac mini's 1800-5500 rpm, the SMC's own limits elsewhere, a person's edits kept.
+      - name: A Mac's Wi-Fi driver is fetched, not shipped, and never fights the other driver
+        run: bash deploy/yantrik-os/yantrik-broadcom-wifi selftest
+      - name: A Mac's fans get its own limits
+        run: bash deploy/yantrik-os/yantrik-mac-fans selftest
+      - name: The Mac support stages into a rootfs
+        run: |
+          root="$(mktemp -d)"
+          sh deploy/yantrik-os/stage-mac-support.sh "$root"
+          test -x "$root/usr/lib/yantrik/yantrik-broadcom-wifi"
+          link="$root/etc/systemd/system/multi-user.target.wants/yantrik-broadcom-wifi.service"
+          test -L "$link"
+          # The link is absolute: its target must exist inside the rootfs, not on this runner.
+          test -f "$root$(readlink "$link")"
+          test -f "$root/etc/systemd/system/mbpfan.service.d/yantrik-apple.conf"
+
+      # The one-password start (#646): the disk's password typed once, on the pre-boot screen,
+      # signs the person in. Stubs first (keyscript, marker, the root helper's one-shot answer,
+      # enrolment), then a real initramfs built with the hook, in graphical, text-fallback and
+      # untouched shapes. The live system's shutdown leaves an internal installer partition alone.
+      - name: The pre-boot unlock asks, falls back to text, and marks only a typed unlock
+        run: sh deploy/yantrik-os/boot-unlock/selftest
+      - name: The pre-boot unlock builds into a real initramfs with its theme and keymap
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq initramfs-tools cryptsetup-initramfs \
+            plymouth plymouth-label console-setup busybox fonts-dejavu-core kbd xkb-data jq > /dev/null
+          sudo sh deploy/yantrik-os/boot-unlock/initramfs-check.sh --scratch-system
+      - name: The live system's shutdown never ejects an internal disk or waits for ENTER
+        run: sh deploy/yantrik-os/yantrik-live-medium-eject selftest
 
       # The session's shell supervisor (#247): a crash brings the shell back, a crash loop stops,
       # a logout ends it. Fake shells and a fake display socket; no compositor needed.
@@ -180,6 +325,12 @@ jobs:
       # over is closed exactly once, however the mind behind it behaves.
       - name: The attachable harnesses close every turn exactly once
         run: python3 -m unittest discover -s harnesses/tests -v
+
+      # The arena runs on the desktop, but the record of what it added itself does not need one:
+      # the reset deletes through the calendar only those ids, so a gate never shows the person
+      # a refusal card. Stdlib only, with `yos` faked.
+      - name: The arena deletes through the calendar only the events it made
+        run: python3 -m unittest discover -s tests/arena -v
 
       # The Blender control surface's tests: the addon that answers for somebody else's
       # program, driven against a fake `bpy`. Stdlib-only, no Blender and no display needed,

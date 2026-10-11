@@ -57,15 +57,149 @@ fi
 
 ok "User: $USERNAME ($FULLNAME) @ $HOSTNAME, $TIMEZONE"
 
+# ── 2a. Beside what is there, if anything can take it ──
+# Installing into one partition or run of free space changes nothing else on the disk: no new
+# partition table, the EFI partition mounted and never formatted. On a Mac whose APFS container
+# was shrunk in Disk Utility, that is the FAT32 partition named YANTRIK, or the free space. The
+# planner (yantrik-install-target, crates/yantrik-install-target) decides what may be chosen and
+# refuses macOS, Windows, Linux filesystems and the EFI partition; it reads the table again
+# right before writing and refuses if it is not the one shown here.
+#
+# Without the planner there is no installing beside anything, and that is said loudly rather than
+# quietly offering only the erase below: on a Mac kept on macOS with no backup, an installer that
+# silently stopped offering "beside" is a few keystrokes from erasing it. Erasing instead is
+# something the person types, never a fallback.
+MODE=erase
+TARGET_BIN=/opt/yantrik/bin/yantrik-install-target
+
+refuse_beside() {
+    echo
+    echo -e "  ${R}${B}Installing beside macOS or another system is not possible here:${N}"
+    echo -e "  ${R}$1${N}"
+    echo -e "  ${A}Nothing has been changed. The only other way on is to ERASE a whole disk.${N}"
+    echo -n "  Type ERASE to choose a whole disk to erase instead, or press Enter to stop: "
+    local answer
+    read -r answer
+    [ "$answer" = "ERASE" ] || { echo "  Nothing was changed."; exit 1; }
+}
+
+# Any Apple partition type (APFS, HFS+, Apple's others) on disk $1, read by blkid -p.
+apple_types_on() {
+    local p
+    for p in $(lsblk -lnpo NAME,TYPE "$1" 2>/dev/null | awk '$2 == "part" { print $1 }'); do
+        blkid -p -s PART_ENTRY_TYPE -o value "$p" 2>/dev/null | grep -qi -- '-11aa-aa11-00306543ecac$' && return 0
+    done
+    return 1
+}
+
+# A Mac by any one sign, as crates/yantrik-install-target's efi::is_apple_machine: DMI's vendors,
+# the firmware's vendor, or an Apple partition type on disk $1. A machine whose DMI cannot be read
+# is taken for a Mac: that costs a PC its boot entry, never a Mac its startup disk.
+is_apple() {
+    local vendors
+    vendors=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null) || return 0
+    vendors="$vendors $(cat /sys/class/dmi/id/board_vendor /sys/class/dmi/id/bios_vendor /sys/firmware/efi/fw_vendor 2>/dev/null || true)"
+    case "${vendors,,}" in *apple*) return 0 ;; esac
+    apple_types_on "$1"
+}
+
+if [ -d /sys/firmware/efi ]; then
+    SCAN='[]'
+    DISKS=$(lsblk -dn -e 7,11 -o NAME,TYPE | awk '$2 == "disk" { print "/dev/" $1 }')
+    if [ ! -x "$TARGET_BIN" ]; then
+        refuse_beside "$TARGET_BIN is missing from this installer image."
+    elif ! command -v jq >/dev/null 2>&1; then
+        refuse_beside "jq is missing from this installer image."
+    # shellcheck disable=SC2086
+    elif ! SCAN=$("$TARGET_BIN" scan --uefi $DISKS 2>/tmp/yantrik-scan.err); then
+        SCAN='[]'
+        refuse_beside "the disks could not be scanned: $(tail -1 /tmp/yantrik-scan.err)"
+    fi
+    ELIGIBLE=$(echo "$SCAN" | jq -r '.[] | .segments[]? | select(.eligible) | .id')
+    if [ "$SCAN" != '[]' ]; then
+        step "Install beside what is on a disk"
+        echo "$SCAN" | jq -r '.[] | select(.segments | length > 0) | "  \(.disk) \(.model)\(if .problem then " (\(.problem))" else "" end)",
+            (.segments[] | "    \(if .eligible then "*" else " " end) \(.id | .[0:28] | . + (" " * (28 - length)))  \(.size | . + (" " * (9 - length))) \(.title)\(if .kept then " (kept)" elif .eligible then "" else " (\(.reason))" end)")'
+        echo
+    fi
+    if [ "$SCAN" != '[]' ] && [ -z "$ELIGIBLE" ]; then
+        refuse_beside "nothing on these disks can be installed into; why is beside each one above."
+    elif [ -n "$ELIGIBLE" ]; then
+        # shellcheck disable=SC2086
+        PRE=$("$TARGET_BIN" preselect --uefi $DISKS 2>/dev/null | jq -r '.preselect // empty') || PRE=""
+        echo "  * may be installed into. Nothing else on that disk changes."
+        if [ -n "$PRE" ]; then
+            echo -n "  Target to install into [$PRE], or type ERASE to erase a whole disk instead: "
+        else
+            echo -n "  Target to install into (e.g. $(echo "$ELIGIBLE" | head -1)), or type ERASE to erase a whole disk instead: "
+        fi
+        read -r INTO
+        [ -z "$INTO" ] && INTO="$PRE"
+        [ -n "$INTO" ] || { echo "  Nothing was chosen; nothing was changed."; exit 1; }
+        if [ "$INTO" != "ERASE" ]; then
+            INTO="${INTO#/dev/}"
+            echo "$ELIGIBLE" | grep -qxF "$INTO" || { echo -e "${R}$INTO may not be installed into.${N}"; exit 1; }
+            MODE=partition
+            INTO_DISK=$(echo "$SCAN" | jq -r --arg id "$INTO" '.[] | select(any(.segments[]; .id == $id)) | .disk')
+            TABLE_FP=$(echo "$SCAN" | jq -r --arg id "$INTO" '.[] | select(any(.segments[]; .id == $id)) | .fingerprint')
+            SENTENCE=$(echo "$SCAN" | jq -r --arg id "$INTO" '.[] | .segments[] | select(.id == $id) | .sentence')
+            KEEPS_MACOS=$(echo "$SCAN" | jq -r --arg d "$INTO_DISK" '.[] | select(.disk == $d) | any(.segments[]; .kind == "macos")')
+            DISK="$INTO_DISK"
+            EXTERNAL=false
+            [ "$(lsblk -dno TRAN "$DISK" | tr -d ' ')" = "usb" ] && EXTERNAL=true
+            [ "$(cat "/sys/block/$(basename "$DISK")/removable" 2>/dev/null)" = "1" ] && EXTERNAL=true
+            ok "$SENTENCE"
+        fi
+    fi
+fi
+
 # ── 2. Disk selection ──
+# TRAN says which disk is the external USB one: on a Mac kept on macOS, that is usually the one
+# to install to. The stick this installer booted from is not offered at all.
+if [ "$MODE" = erase ]; then
 step "Select installation disk"
+LIVE_DISK=""
+LIVE_SRC=$(findmnt -n -o SOURCE /run/live/medium 2>/dev/null || true)
+[ -n "$LIVE_SRC" ] && LIVE_DISK=$(lsblk -no PKNAME "$LIVE_SRC" 2>/dev/null | head -1)
+[ -n "$LIVE_SRC" ] && [ -z "$LIVE_DISK" ] && LIVE_DISK=$(basename "$LIVE_SRC")
+# A Mac's own system: HFS+ (macOS up to 10.12) or APFS (10.13 on), by what udev told lsblk or by
+# the partition types blkid reads off the disk itself.
+holds_macos() { lsblk -nro FSTYPE "/dev/$1" 2>/dev/null | grep -qxE 'hfsplus|apfs' || apple_types_on "/dev/$1"; }
 echo -e "  ${B}Available disks:${N}"
-lsblk -d -o NAME,SIZE,MODEL | grep -v loop | grep -v sr | sed 's/^/  /'
+printf "  %-10s %-8s %-6s %s\n" NAME SIZE BUS "MODEL / CONTENTS"
+for d in $(lsblk -dn -e 7,11 -o NAME,TYPE | awk '$2 == "disk" { print $1 }'); do
+    [ "$d" = "$LIVE_DISK" ] && continue
+    note=""
+    holds_macos "$d" && note="  <- macOS is on this disk"
+    printf "  %-10s %-8s %-6s %s%s\n" "$d" "$(lsblk -dno SIZE "/dev/$d" | tr -d ' ')" \
+        "$(lsblk -dno TRAN "/dev/$d" | tr -d ' ')" "$(lsblk -dno MODEL "/dev/$d" | sed 's/ *$//')" "$note"
+done
 echo
-echo -n "  Target disk (e.g., sda): "; read -r TARGET_DISK
+echo -n "  Target disk (e.g., sdb): "; read -r TARGET_DISK
 [ -z "$TARGET_DISK" ] && { echo -e "${R}No disk specified.${N}"; exit 1; }
+TARGET_DISK="${TARGET_DISK#/dev/}"
 DISK="/dev/$TARGET_DISK"
 [ -b "$DISK" ] || { echo -e "${R}$DISK is not a block device.${N}"; exit 1; }
+[ "$TARGET_DISK" = "$LIVE_DISK" ] && { echo -e "${R}$DISK is the installer's own stick.${N}"; exit 1; }
+# Erasing macOS is never something a typo does: the disk's name, typed again, is the answer.
+if holds_macos "$TARGET_DISK"; then
+    echo -e "  ${A}$DISK holds macOS. Installing here erases it. To keep macOS, choose another disk${N}"
+    echo -e "  ${A}(an external USB SSD, for instance).${N}"
+    echo -n "  Type the disk's name ($TARGET_DISK) to erase macOS on it: "; read -r MACOS_OK
+    [ "$MACOS_OK" = "$TARGET_DISK" ] || { echo "  Nothing was changed."; exit 1; }
+fi
+# A disk on USB is a disk that may move between ports and machines: it gets no NVRAM boot entry
+# on this machine, and boots through the removable-media path (\EFI\BOOT\BOOTX64.EFI) wherever
+# it is plugged in. On a Mac, hold Option at the chime and pick "EFI Boot".
+EXTERNAL=false
+[ "$(lsblk -dno TRAN "$DISK" | tr -d ' ')" = "usb" ] && EXTERNAL=true
+[ "$(cat "/sys/block/$TARGET_DISK/removable" 2>/dev/null)" = "1" ] && EXTERNAL=true
+fi
+
+# Whether this is a Mac, asked now, while the disk still shows what it held: an erase is about
+# to remove its Apple partition types.
+APPLE=false
+if is_apple "$DISK" || [ "${KEEPS_MACOS:-false}" = true ]; then APPLE=true; fi
 
 # ── 2b. Everything, once, before anything is destroyed ──
 # The disk was the only thing confirmed before this, so a mistyped username was
@@ -77,15 +211,33 @@ printf "  %-12s %s\n" "Full name" "${FULLNAME:-[skipped]}"
 printf "  %-12s %s\n" "Hostname"  "$HOSTNAME"
 printf "  %-12s %s\n" "Timezone"  "$TIMEZONE"
 printf "  %-12s %s\n" "Password"  "$(printf '%*s' "${#PASSWORD}" '' | tr ' ' '*')"
-printf "  %-12s %s\n" "Disk"      "$DISK ($(lsblk -dno SIZE "$DISK" 2>/dev/null | tr -d ' '))"
-echo
-echo -e "  ${A}Everything on $DISK will be erased. There is no recovery.${N}"
+if [ "$MODE" = partition ]; then
+    printf "  %-12s %s\n" "Into" "/dev/$INTO, on $DISK"
+    echo
+    echo -e "  ${A}$SENTENCE${N}"
+else
+    printf "  %-12s %s\n" "Disk"      "$DISK ($(lsblk -dno SIZE "$DISK" 2>/dev/null | tr -d ' '))"
+    echo
+    echo -e "  ${A}Everything on $DISK will be erased. There is no recovery.${N}"
+fi
 echo -n "  Type 'yes' to install: "; read -r CONFIRM
 [ "$CONFIRM" = "yes" ] || { echo "  Nothing was changed."; exit 1; }
 
 # ── 3. Partition ──
-step "Partitioning $DISK (GPT)..."
 IS_EFI=false; [ -d /sys/firmware/efi ] && IS_EFI=true
+if [ "$MODE" = partition ]; then
+    # No new table: the partition is made in the free space (or the placeholder wiped), after
+    # the planner has read the table again and found it as it was shown above.
+    step "Making room in /dev/$INTO (nothing else on $DISK changes)..."
+    PLACED=$("$TARGET_BIN" apply --uefi "$INTO" "$TABLE_FP") \
+        || { echo -e "${R}Refused; nothing was written.${N}"; exit 1; }
+    ROOT_PART=$(echo "$PLACED" | jq -r .root)
+    EFI_PART=$(echo "$PLACED" | jq -r .esp)
+    [ -b "$ROOT_PART" ] && [ -b "$EFI_PART" ] || { echo -e "${R}The planner named no usable root ($ROOT_PART).${N}"; exit 1; }
+    mkfs.ext4 -q -F -L YANTRIK "$ROOT_PART"
+    ok "Installing into $ROOT_PART; the EFI partition $EFI_PART is kept as it is"
+else
+step "Partitioning $DISK (GPT)..."
 parted -s "$DISK" mklabel gpt
 if $IS_EFI; then
     parted -s "$DISK" mkpart EFI fat32 1MiB 513MiB
@@ -106,6 +258,7 @@ else
 fi
 mkfs.ext4 -q -L YANTRIK "$ROOT_PART"
 ok "Partitioned ($( $IS_EFI && echo 'EFI' || echo 'BIOS' ) mode)"
+fi
 
 # ── 4. Mount ──
 M="/mnt/yantrik-install"
@@ -120,9 +273,13 @@ fi
 step "Copying system files (this takes a few minutes)..."
 rsync -aAXH --exclude='/proc/*' --exclude='/sys/*' --exclude='/dev/*' \
     --exclude='/run/*' --exclude='/tmp/*' --exclude='/mnt/*' \
-    --exclude='/live/*' --exclude='/cdrom/*' \
+    --exclude='/live/*' --exclude='/cdrom/*' --exclude='/boot/efi/*' \
     / "$M/" --info=progress2
 ok "System copied"
+# The live image's blanket rule (`yantrik ALL=(ALL) NOPASSWD: ALL`) came over with the copy. It
+# is the live session's alone, so it goes now rather than at the end: an install cut off before
+# step 14b must not leave a disk that boots with it (#397; security review of #616).
+rm -f "$M/etc/sudoers.d/yantrik"
 
 # ── 6. Bind mounts for chroot ──
 mount --bind /dev "$M/dev"
@@ -136,8 +293,19 @@ chroot "$M" apt-get autoremove -y 2>/dev/null || true
 ok "Live-boot removed"
 
 # ── 8. Fstab ──
-echo "LABEL=YANTRIK  /  ext4  defaults,noatime  0  1" > "$M/etc/fstab"
-$IS_EFI && [ -n "$EFI_PART" ] && echo "$EFI_PART  /boot/efi  vfat  defaults  0  2" >> "$M/etc/fstab"
+# By UUID, never /dev/sdX: a USB disk is sdb in one port and sdc in another, and the EFI line used
+# to name the device, so the same disk failed to mount /boot/efi after moving ports. Not by label
+# either: the live stick or a second Yantrik disk can carry the same one.
+ROOT_UUID=$(blkid -s UUID -o value "$ROOT_PART")
+[ -n "$ROOT_UUID" ] || { echo -e "${R}Could not read the UUID of $ROOT_PART.${N}"; exit 1; }
+echo "UUID=$ROOT_UUID  /  ext4  defaults,noatime  0  1" > "$M/etc/fstab"
+if $IS_EFI && [ -n "$EFI_PART" ]; then
+    EFI_UUID=$(blkid -s UUID -o value "$EFI_PART")
+    [ -n "$EFI_UUID" ] || { echo -e "${R}Could not read the UUID of $EFI_PART.${N}"; exit 1; }
+    # Shared with macOS or Windows beside it: never fsck'd at boot (pass 0), it is theirs too.
+    EFI_PASS=2; [ "$MODE" = partition ] && EFI_PASS=0
+    echo "UUID=$EFI_UUID  /boot/efi  vfat  umask=0077  0  $EFI_PASS" >> "$M/etc/fstab"
+fi
 
 # ── 9. Hostname ──
 echo "$HOSTNAME" > "$M/etc/hostname"
@@ -169,8 +337,8 @@ for kind in uid gid; do
 done
 HASH=$(openssl passwd -6 "$PASSWORD")
 chroot "$M" usermod -p "$HASH" "$USERNAME"
-echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" > "$M/etc/sudoers.d/$USERNAME"
-chmod 440 "$M/etc/sudoers.d/$USERNAME"
+# No `NOPASSWD: ALL` for the account (#397). This used to write one, so anything running as the
+# person was root without asking; the narrow rule is put in place at the end, by the updater.
 ok "User $USERNAME created"
 
 # ── 11. Desktop config for new user ──
@@ -253,47 +421,144 @@ VERSION_ID=$(sed -n 's/^version=//p' "$M/opt/yantrik/BUILD" 2>/dev/null | head -
 [ -n "$VERSION_ID" ] || VERSION_ID="unknown"
 printf 'PRETTY_NAME="Yantrik OS"\nNAME="Yantrik OS"\nID=yantrik\nID_LIKE=debian\nVERSION_ID="%s"\nHOME_URL="https://yantrikos.com"\n' "$VERSION_ID" > "$M/etc/os-release"
 
+# ── 14b. Whose files these are (#397) ──
+#
+# /opt/yantrik is root's on an installed machine: the desktop's account keeps logs/, data/ and
+# config.yaml, and may run the updater and a few helpers as root through one narrow rule. The
+# updater's `migrate-ownership` writes that layout and that rule; yantrik-lockdown runs it, checks
+# the result rather than trusting its exit code, and locks the tree down itself when it is not
+# right. --fresh: the live session's logs are not the person's. Before the bootloader, so an
+# install that cannot do this leaves a disk that does not boot rather than one that boots open
+# (security review of #614 and #616, 4 October 2026).
+rm -f "$M/opt/yantrik/.installer-mode"
+step "Making the system's files root's..."
+LOCKDOWN_RC=0
+chroot "$M" /opt/yantrik/bin/yantrik-lockdown secure --fresh "$USERNAME" || LOCKDOWN_RC=$?
+case "$LOCKDOWN_RC" in
+    0) ok "/opt/yantrik is root's; $USERNAME keeps logs/, data/ and config.yaml" ;;
+    3) echo -e "   ${A}Yantrik could not finish securing its system files, so the installer locked them down itself.${N}"
+       echo -e "   ${A}If updates ask for your password, run: sudo yantrik-update migrate-ownership${N}" ;;
+    *) echo -e "   ${R}Could not make /opt/yantrik root's. Stopping before the bootloader: this disk will not boot.${N}" >&2
+       exit 1 ;;
+esac
+
 # ── 15. GRUB ──
 step "Installing bootloader..."
-printf 'GRUB_DEFAULT=0\nGRUB_TIMEOUT=3\nGRUB_DISTRIBUTOR="Yantrik OS"\nGRUB_CMDLINE_LINUX_DEFAULT="quiet splash"\nGRUB_CMDLINE_LINUX=""\n' > "$M/etc/default/grub"
+# This installer never encrypts, so there is nothing to ask for at boot: the desktop installer's
+# unencrypted line (installer_unlock.rs, cmdline_default(false)). plymouth is in the image for the
+# encrypted pre-boot screen and stays off here; `splash` would start it at every boot and shutdown.
+printf 'GRUB_DEFAULT=0\nGRUB_TIMEOUT=3\nGRUB_DISTRIBUTOR="Yantrik OS"\nGRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3 plymouth.enable=0"\nGRUB_CMDLINE_LINUX=""\n' > "$M/etc/default/grub"
 
 if $IS_EFI; then
+    # Two installs, as the desktop installer does (crates/yantrik-ui/src/wire/installer.rs). The
+    # named one, with a firmware boot entry for an internal disk; then \EFI\BOOT\BOOTX64.EFI, the
+    # removable-media path every UEFI tries when it has no entry, and the only one Apple's firmware
+    # needs. This used to run only the first, with --no-nvram, which left a disk no firmware would
+    # boot.
+    #
+    # A Mac's NVRAM is never written (macOS stays what starts; Option picks Yantrik), nor a USB
+    # disk's. Installed beside another system on a PC, the entry is added last, so what started
+    # before still starts (crates/yantrik-install-target/src/efi.rs has the same rules).
+    NVRAM_FLAG=""
+    { $EXTERNAL || $APPLE || [ "$MODE" = partition ]; } && NVRAM_FLAG="--no-nvram"
+    # \EFI\BOOT: a fixed set of files copied from \EFI\yantrik (shim as BOOTX64.EFI, grubx64.efi,
+    # mmx64.efi, grub.cfg; crates/yantrik-install-target/src/efi.rs, SHIM_SET), each recorded by
+    # sha256 in \EFI\BOOT\YANTRIK.OWN, and nothing at all written there while any file of that
+    # set is already there and not listed in YANTRIK.OWN. Asked before any grub-install writes
+    # to the partition, and again as it is written. Never grub-install --removable, which wrote
+    # BOOTX64.CSV beside them and recorded none of it.
+    { [ -x "$TARGET_BIN" ] && command -v jq >/dev/null 2>&1; } \
+        || { echo -e "${R}$TARGET_BIN or jq is missing from this installer image; the EFI fallback cannot be written.${N}" >&2; exit 1; }
+    APPLE_FLAG=""
+    $APPLE && APPLE_FLAG="--apple"
+    FALLBACK=$("$TARGET_BIN" efi-fallback check $APPLE_FLAG "$M/boot/efi") \
+        || { echo -e "${R}Could not check the EFI partition's EFI/BOOT directory.${N}" >&2; exit 1; }
     chroot "$M" grub-install --target=x86_64-efi --efi-directory=/boot/efi \
-        --bootloader-id=yantrik --no-nvram 2>/dev/null || true
+        --bootloader-id=yantrik $NVRAM_FLAG \
+        || chroot "$M" grub-install --target=x86_64-efi --efi-directory=/boot/efi \
+            --bootloader-id=yantrik --no-nvram \
+        || true
+    if [ "$MODE" = partition ] && ! $APPLE && ! $EXTERNAL && command -v efibootmgr >/dev/null 2>&1; then
+        # A failure here costs the entry, not the install: the firmware's menu still finds it.
+        ORDER=$(efibootmgr 2>/dev/null | sed -n 's/^BootOrder: //p') || ORDER=""
+        ESP_NUM=$(cat "/sys/class/block/$(basename "$EFI_PART")/partition" 2>/dev/null) || ESP_NUM=""
+        NEW=""
+        if [ -n "$ESP_NUM" ]; then
+            NEW=$(efibootmgr -C -d "$DISK" -p "$ESP_NUM" -L "Yantrik OS" -l '\EFI\yantrik\grubx64.efi' 2>/dev/null \
+                | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\)\*\{0,1\} Yantrik OS.*/\1/p' | tail -1) || NEW=""
+        fi
+        if [ -n "$NEW" ] && efibootmgr -o "${ORDER:+$ORDER,}$NEW" >/dev/null 2>&1; then
+            ok "Firmware entry Boot$NEW added, last in the boot order"
+        else
+            echo -e "   ${A}No firmware entry was added; choose Yantrik OS from the firmware's boot menu.${N}"
+        fi
+    fi
+    if [ "$(jq -r '.write // false' <<<"$FALLBACK")" = true ]; then
+        FALLBACK=$("$TARGET_BIN" efi-fallback write $APPLE_FLAG "$M/boot/efi") \
+            || { echo -e "${R}The EFI fallback in EFI/BOOT could not be written; this disk would not boot.${N}" >&2; exit 1; }
+    fi
+    if jq -e '.written' <<<"$FALLBACK" >/dev/null; then
+        ok "EFI/BOOT: $(jq -r '[.written[].name] | join(", ")' <<<"$FALLBACK"), each recorded in YANTRIK.OWN"
+        if $APPLE && [ "$MODE" = partition ]; then
+            BOOT_NOTE="macOS still starts by default. Hold Option at the chime and choose EFI Boot to start Yantrik OS."
+        fi
+    else
+        # printf, not echo -e: the note's \EFI would print as an escape.
+        BOOT_NOTE=$(jq -r '.kept' <<<"$FALLBACK")
+        printf '   %b%s%b\n' "$A" "$BOOT_NOTE" "$N"
+    fi
+    # Beside macOS on a Mac, a boot menu entry that gets back to it.
+    if $APPLE && [ "$MODE" = partition ] && [ "${KEEPS_MACOS:-false}" = true ]; then
+        "$TARGET_BIN" grub-macos-entry > "$M/etc/grub.d/35_yantrik_macos" && chmod 0755 "$M/etc/grub.d/35_yantrik_macos"
+    fi
 else
-    chroot "$M" grub-install --target=i386-pc "$DISK" 2>/dev/null || true
+    chroot "$M" grub-install --target=i386-pc "$DISK"
 fi
+# The kernel line must find the root by UUID too, or the disk boots in one USB port and not the
+# next. grub-mkconfig falls back to root=/dev/sdX when udev has not made the by-uuid link yet.
+udevadm settle 2>/dev/null || true
 chroot "$M" update-grub
-ok "GRUB installed"
+if grep -qE 'root=/dev/(sd|nvme|vd|hd|mmcblk)' "$M/boot/grub/grub.cfg"; then
+    echo -e "${R}grub.cfg names the root by device, not UUID; it would not boot from another port.${N}" >&2
+    exit 1
+fi
+ok "GRUB installed$($IS_EFI && echo ' (EFI)')"
 
 # ── 16. Regenerate initramfs (without live-boot hooks) ──
 chroot "$M" update-initramfs -u 2>/dev/null || true
 
 # ── 17. Cleanup ──
-rm -f "$M/opt/yantrik/.installer-mode"
-# The desktop user owns its own logs. `chmod 777` made this world-writable on every installed
-# machine: any process any user runs could rewrite the log that says what the OS did.
-mkdir -p "$M/opt/yantrik/logs"
-chmod 755 "$M/opt/yantrik/logs"
-chown "$UID_NUM:$GID_NUM" "$M/opt/yantrik/logs"
-chown -R "$UID_NUM:$GID_NUM" "$M/opt/yantrik/data" 2>/dev/null || true
-# The installer can rename the desktop user, and a renamed user can land on a different uid
-# than the 1000 the image chowned /opt/yantrik to. update.conf and BUILD are the two files the
-# updater writes as that user — set-channel writes the first, apply writes the second — so they
-# follow the account that actually exists on this machine.
-chown "$UID_NUM:$GID_NUM" "$M/opt/yantrik/update.conf" 2>/dev/null || true
-chown "$UID_NUM:$GID_NUM" "$M/opt/yantrik/BUILD" 2>/dev/null || true
-
 umount "$M/sys" "$M/proc" "$M/dev" 2>/dev/null || true
 $IS_EFI && umount "$M/boot/efi" 2>/dev/null || true
 umount "$M" 2>/dev/null || true
 sync
 
+# What to do with the medium the installer runs from: nothing at all when it is a partition of an
+# internal disk (YKINSTALL on a Mac), the same lines as the desktop installer's Installed screen
+# (crates/yantrik-ui/src/installer_medium.rs).
+MEDIUM_NOTE="If the installer is on a USB drive or a disc, take it out once the screen goes dark."
+if [ -n "$LIVE_DISK" ]; then
+    case "$LIVE_DISK" in
+        sr[0-9]*) MEDIUM_NOTE="The disc comes out as the computer restarts." ;;
+        *)
+            if [ "$(lsblk -dno TRAN "/dev/$LIVE_DISK" 2>/dev/null | tr -d ' ')" = usb ] \
+                || [ "$(lsblk -dno RM "/dev/$LIVE_DISK" 2>/dev/null | tr -d ' ')" != 0 ]; then
+                MEDIUM_NOTE="Remove the USB drive once the screen goes dark, so the computer starts Yantrik OS and not the installer."
+            else
+                MEDIUM_NOTE="The installer stays on its own partition. There is nothing to remove."
+            fi ;;
+    esac
+fi
+
 echo
 echo -e "${G}╔═══════════════════════════════════════════════╗${N}"
 echo -e "${G}║  Installation complete!                       ║${N}"
-echo -e "${G}║  Remove the installation media and reboot.    ║${N}"
 echo -e "${G}╚═══════════════════════════════════════════════╝${N}"
+echo -e "  ${MEDIUM_NOTE}"
 echo
+if [ -n "${BOOT_NOTE:-}" ]; then
+    printf '  %b%s%b\n' "$A" "$BOOT_NOTE" "$N"
+    echo
+fi
 echo -n "Reboot now? [Y/n] "; read -r RB
 [ "$RB" != "n" ] && reboot

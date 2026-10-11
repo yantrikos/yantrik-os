@@ -33,6 +33,15 @@ export struct NotificationData {
     group-name: string,
     group-icon: string,
     group-count: int,
+    // How many of `group-count` are unread, drawn apart from the total: the header's pill was the
+    // total, and "450" on a pill reads as 450 unread.
+    group-unread: int,
+    // A run of one mind's turn notices folded into one row ("Yantrik Mind finished 12 turns"),
+    // opened and closed by `group-key`. `in-group` marks a card shown inside an opened run.
+    is-turn-group: bool,
+    group-key: string,
+    expanded: bool,
+    in-group: bool,
     // The sender's buttons. Empty for a group header.
     actions: [NotifActionData],
     // Where it came in from — "yantrik" or "freedesktop". Shown on the row, because "who told
@@ -43,7 +52,13 @@ export struct NotificationData {
     // itself, and what the kernel-stamped pid on the socket resolved to. A notification that
     // said `Yantrik` and something false had no second voice (#114). Empty when the store
     // recorded nothing — an old record, or one from the freedesktop door — and then not drawn.
+    // Shown behind the card's Details control; `sender-short` is what the card leads with.
     sender-line: string,
+    // The same two facts in a few words, the verified program first: "Source process confirmed:
+    // yantrik-ui" for the installed desktop only, else "Sent by python3 evil.py (verified) · calls
+    // itself “Yantrik”", with the claim cut short so it can only elide itself
+    // (notification_sender.rs).
+    sender-short: string,
 }
 
 export component NotificationCenter inherits Rectangle {
@@ -76,6 +91,12 @@ export component NotificationCenter inherits Rectangle {
     callback notification-dismissed(string);
     callback notification-action(string, string);  // notification id, action id
     callback clear-group(string);
+    callback toggle-turn-group(string);
+
+    // A count as a badge shows it: past 99 the exact figure is noise and widens the pill.
+    pure function badge(n: int) -> string {
+        return n > 99 ? "99+" : "\{n}";
+    }
 
     VerticalLayout {
         spacing: 0px;
@@ -97,7 +118,7 @@ export component NotificationCenter inherits Rectangle {
             icon: Icons.alerts;
             title: "Notifications";
             subtitle: !root.service-up ? "service not running"
-                    : root.unread-count > 0 ? "\{root.unread-count} unread" : "";
+                    : root.unread-count > 0 ? root.badge(root.unread-count) + " unread" : "";
             actions: [
                 { id: "read",  icon: Icons.check, label: "Mark all read", disabled: root.unread-count == 0 },
                 { id: "clear", icon: Icons.trash, label: "Clear all", disabled: root.notifications.length == 0 },
@@ -166,6 +187,8 @@ export component NotificationCenter inherits Rectangle {
 
                 for notif[idx] in root.notifications : VerticalLayout {
                     spacing: 0px;
+                    // A card inside an opened run of turn notices sits indented under its row.
+                    padding-left: notif.in-group ? Theme.sp-5 : 0px;
 
                     // Group header
                     if notif.is-group-header : Rectangle {
@@ -194,12 +217,21 @@ export component NotificationCenter inherits Rectangle {
                                     }
                                 }
 
-                                Text { text: notif.group-name; color: Theme.text-primary; font-size: Theme.fs-body; font-weight: Theme.fw-headline; vertical-alignment: center; horizontal-stretch: 1; }
+                                // The heading (`summary`): the sender's name, or a mind's for a group of nothing
+                                // but its turns. `group-name` is the sender's, and is what Clear matches.
+                                Text { text: notif.summary; color: Theme.text-primary; font-size: Theme.fs-body; font-weight: Theme.fw-headline; vertical-alignment: center; }
 
-                                Rectangle {
-                                    width: max(20px, gct.preferred-width + Theme.sp-2);
-                                    height: 20px; border-radius: self.height / 2; background: Theme.bg-elevated;
-                                    gct := Text { text: notif.group-count; color: Theme.text-dim; font-size: Theme.fs-micro; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                                // The total, as plain words beside the name. It was a pill, and a
+                                // pill reading 450 on a screen where nothing was unread was taken
+                                // for 450 unread with "Mark all read" switched off.
+                                Text { text: notif.group-count == 1 ? "1 notification" : "\{notif.group-count} notifications"; color: Theme.text-dim; font-size: Theme.fs-caption; vertical-alignment: center; horizontal-stretch: 1; }
+
+                                // The unread pill, only when some are, capped like every badge.
+                                if notif.group-unread > 0 : Rectangle {
+                                    width: max(20px, gct.preferred-width + Theme.sp-3);
+                                    height: 20px; y: (parent.height - self.height) / 2;
+                                    border-radius: self.height / 2; background: Theme.tint-accent;
+                                    gct := Text { text: root.badge(notif.group-unread) + " unread"; color: Theme.text-primary; font-size: Theme.fs-micro; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
                                 }
 
                                 TouchArea {
@@ -225,9 +257,63 @@ export component NotificationCenter inherits Rectangle {
                         }
                     }
 
+                    // A run of one mind's turn notices, folded: one row that says how many and
+                    // when the last was, pressed to show or hide the cards inside it.
+                    if notif.is-turn-group : Rectangle {
+                        background: tg.has-hover ? Theme.hover-fill : notif.is-read ? Theme.bg-card : Theme.bg-elevated;
+                        border-radius: Theme.r-lg;
+                        height: tgl.preferred-height;
+                        animate background { duration: Theme.dur-fast; }
+                        accessible-role: button;
+                        accessible-label: notif.summary + (notif.expanded ? ", open" : ", closed");
+                        accessible-action-default => { root.toggle-turn-group(notif.group-key); }
+
+                        tg := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.toggle-turn-group(notif.group-key); }
+                        }
+
+                        tgl := VerticalLayout {
+                            padding: Theme.sp-3;
+                            spacing: Theme.sp-1;
+                            HorizontalLayout {
+                                spacing: Theme.sp-2;
+                                Icon {
+                                    commands: notif.expanded ? Icons.chevron-down : Icons.chevron-right;
+                                    size: 12px;
+                                    tint: Theme.text-secondary;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                                Text {
+                                    text: notif.summary;
+                                    color: notif.is-read ? Theme.text-secondary : Theme.text-primary;
+                                    font-size: Theme.fs-body;
+                                    font-weight: notif.is-read ? Theme.fw-body : Theme.fw-body-strong;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                                if notif.group-unread > 0 : Text {
+                                    text: root.badge(notif.group-unread) + " unread";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.fs-caption;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            if notif.sender-short != "" : Text {
+                                text: notif.sender-short;
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-micro;
+                                overflow: elide;
+                            }
+                        }
+                    }
+
                     // Notification card
-                    if !notif.is-group-header : Rectangle {
+                    if !notif.is-group-header && !notif.is-turn-group : card := Rectangle {
                         property <bool> hovered: cta.has-hover;
+                        // The full sender line, opened from the card's Details control.
+                        in-out property <bool> details-open: false;
                         background: hovered ? Theme.hover-fill : notif.is-read ? Theme.bg-card : Theme.bg-elevated;
                         border-radius: Theme.r-lg;
                         border-width: notif.urgency == 2 ? 1px : 0px;
@@ -290,16 +376,48 @@ export component NotificationCenter inherits Rectangle {
                                 wrap: word-wrap;
                             }
 
-                            // Who sent it — the same "says the caller" / "verified by this
-                            // machine" the approval card draws, because the name on the row
-                            // is only what the sender said. One elided line, at the card's
-                            // size for it, so a long command line cannot push the buttons.
-                            if notif.sender-line != "" : Text {
+                            // Who sent it. The name on the row is only what the sender said;
+                            // this says which program the kernel-stamped pid resolved to, and
+                            // whether the two disagree (#114) -- the defence against a program
+                            // posting as "Yantrik".
+                            //
+                            // VM 520 sweep, 4 October: this was the approval card's full line on
+                            // every card, "“Yantrik” says the caller · verified by this machine:
+                            // yantrik-ui config.yaml (pid 189858)". The card now leads with the
+                            // short form and keeps the full line, pid and all, one press away
+                            // under Details, for whoever wants to check it against ps. The
+                            // verified program leads and the caller's claim (cut short) trails,
+                            // so the elision can only ever eat the claim, never the fact.
+                            if notif.sender-short != "" : HorizontalLayout {
+                                spacing: Theme.sp-2;
+                                Text {
+                                    text: notif.sender-short;
+                                    color: Theme.text-dim;
+                                    font-size: Theme.fs-micro;
+                                    wrap: no-wrap;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+                                if notif.sender-line != "" : TouchArea {
+                                    width: details-label.preferred-width + Theme.sp-2;
+                                    mouse-cursor: pointer;
+                                    accessible-role: button;
+                                    accessible-label: card.details-open ? "Hide sender details" : "Show sender details";
+                                    clicked => { card.details-open = !card.details-open; }
+                                    details-label := Text {
+                                        text: card.details-open ? "Hide details" : "Details";
+                                        color: parent.has-hover ? Theme.text-secondary : Theme.text-dim;
+                                        font-size: Theme.fs-micro;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                            if card.details-open && notif.sender-line != "" : Text {
                                 text: notif.sender-line;
                                 color: Theme.text-dim;
                                 font-size: Theme.fs-micro;
-                                wrap: no-wrap;
-                                overflow: elide;
+                                wrap: word-wrap;
                             }
 
                             // The sender's own buttons. For a freedesktop notification, pressing

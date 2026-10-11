@@ -142,30 +142,15 @@ pub fn add(home: &Path, vendor_id: &str, facts: &super::Facts) -> Result<Opened,
     }
 }
 
-/// `foot --hold -- sh -lc <command>`, with the account's directory in the vendor's variable (or
-/// the variable removed, for the vendor's first account), and the session's display environment.
-/// `command` is always a constant from `VENDORS`; a login shell, because a person's npm puts the
-/// programs in directories only their login `PATH` has.
+/// The vendor's command in a terminal, with the account's directory in the vendor's variable (or
+/// the variable removed, for the vendor's first account). `command` is always a constant from
+/// `VENDORS`.
 fn terminal(title: &str, command: &str, vendor: &Vendor, dir: Option<&Path>) -> Result<(), String> {
-    let mut cmd = Command::new("foot");
-    cmd.args(["--title", title, "--hold", "--", "sh", "-lc", command]);
-    for (k, v) in crate::wire::dock::session_env() {
-        cmd.env(k, v);
-    }
-    if let Some(var) = vendor.home_env {
-        match dir {
-            Some(d) => cmd.env(var, d),
-            None => cmd.env_remove(var),
-        };
-    }
-    let mut child = cmd.spawn().map_err(|e| format!("the terminal could not be opened: {e}"))?;
-    std::thread::Builder::new()
-        .name("accounts-terminal".into())
-        .spawn(move || {
-            let _ = child.wait();
-        })
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    let env: Vec<crate::terminal_window::EnvChange<'_>> = match vendor.home_env {
+        Some(var) => vec![(var, dir.map(Path::as_os_str))],
+        None => Vec::new(),
+    };
+    crate::terminal_window::open(title, command, &env)
 }
 
 #[cfg(test)]

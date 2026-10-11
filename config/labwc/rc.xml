@@ -42,6 +42,14 @@
   </theme>
 
   <!--
+    The Alt+Tab list, drawn by labwc and themed in the themerc (osd.* keys: charcoal card, neutral
+    border, white selection ring). No thumbnails and no outlines: labwc would have to activate or
+    outline each window to draw them, and a plain row of titles costs nothing to show. Every
+    workspace is listed, so a window is never unreachable from the keyboard.
+  -->
+  <windowSwitcher show="yes" preview="no" outlines="no" allWorkspaces="yes" />
+
+  <!--
     Keep the shell's own furniture visible.
 
     The status bar and the dock are drawn by yantrik-ui, which is one ordinary fullscreen window
@@ -51,14 +59,14 @@
 
     labwc documents <margin> for exactly this case ("a workaround for clients such as panels that
     do NOT support the wlr-layer-shell protocol"). New, maximized and tiled windows keep out of
-    these strips. The numbers are the real heights: Theme.status-bar-height is 32px
-    (crates/yantrik-design-tokens/slint/theme.slint) and the taskbar is 40px
-    (crates/yantrik-ui-slint/ui/components/taskbar.slint). If either changes, change these.
+    these strips. The numbers are the real heights: Theme.status-bar-height is 36px
+    (crates/yantrik-design-tokens/slint/theme.slint) and the grounded dock is 48px
+    (crates/yantrik-ui-slint/ui/components/grounded_dock.slint; Theme.taskbar-height). If either changes, change these.
 
     The proper fix is for the panel to speak layer-shell and declare its own exclusive zone; this
     is the honest workaround until it does, and it is the one labwc recommends.
   -->
-  <margin top="32" bottom="40" left="0" right="0" />
+  <margin top="36" bottom="48" left="0" right="0" />
 
   <!-- Focus follows the click, not the pointer: an agent moving the pointer must not change
        which window receives what the person types next. -->
@@ -96,27 +104,58 @@
   -->
   <keyboard>
     <!-- ── Windows ────────────────────────────────────────────────────────────────────── -->
+    <!--
+      Alt+Tab is labwc's own cycling and stays that way: hold Alt, tap Tab, release Alt to switch.
+      labwc does it in the compositor, so it works when the shell is busy, hung, held by an
+      approval card or not running at all. An earlier change handed Alt+Tab to the shell
+      (`yos act shell open_switcher`), which lost release-to-switch and left no key at all
+      whenever the shell could not answer; the shell's card is Super+Tab below, a separate
+      overview that never stands in for this. The list's look is <windowSwitcher> and the
+      themerc's `osd.*` block.
+    -->
+    <!-- @help group="Windows" text="Switch to the next window" -->
     <keybind key="A-Tab">
       <action name="NextWindow" />
     </keybind>
+    <!-- @help group="Windows" text="Switch to the previous window" -->
     <keybind key="A-S-Tab">
       <action name="PreviousWindow" />
     </keybind>
+    <!-- @help group="Windows" text="Open the window overview" -->
+    <keybind key="W-Tab">
+      <action name="Execute"><command>/opt/yantrik/bin/yos act shell open_switcher</command></action>
+    </keybind>
+    <!-- @help group="Windows" text="Open the window overview, oldest first" -->
+    <keybind key="W-S-Tab">
+      <action name="Execute"><command>/opt/yantrik/bin/yos act shell open_switcher direction=back</command></action>
+    </keybind>
+    <!-- @help group="Windows" text="Close the window" -->
     <keybind key="A-F4">
       <action name="Close" />
     </keybind>
+    <!-- @help group="Windows" text="Maximize or restore the window" -->
     <keybind key="W-Up">
       <action name="ToggleMaximize" />
     </keybind>
+    <!-- @help group="Windows" text="Minimize the window" -->
     <keybind key="W-Down">
       <action name="Iconify" />
     </keybind>
+    <!--
+      Super+Left and Super+Right snap to the same left-half and right-half regions as Super+Alt
+      and the window menu's Snap rows (below), so a half is one snapped state whichever way it
+      was made, and the cheat sheet lists each once with both keys (cheat_sheet.rs merges
+      bindings whose actions are the same).
+    -->
+    <!-- @help group="Windows" text="Snap the window to the left half" -->
     <keybind key="W-Left">
-      <action name="SnapToEdge" direction="left" />
+      <action name="SnapToRegion" region="left-half" />
     </keybind>
+    <!-- @help group="Windows" text="Snap the window to the right half" -->
     <keybind key="W-Right">
-      <action name="SnapToEdge" direction="right" />
+      <action name="SnapToRegion" region="right-half" />
     </keybind>
+    <!-- @help group="Windows" text="Full screen on or off" -->
     <keybind key="F11">
       <action name="ToggleFullscreen" />
     </keybind>
@@ -129,74 +168,96 @@
       right, E and T the two-thirds, C the middle. Super+Alt so nothing an app binds is taken.
       The same layouts are on every window's menu (menu.xml, "Snap") and dragging a window with
       Super held shows them all. The regions are named in <regions> at the end of this file.
+      The halves and Maximize run exactly what Super+Left, Super+Right and Super+Up run, so
+      they are described in those keys' words: the cheat sheet shows each once, with both keys.
     -->
+    <!-- @help group="Windows" text="Snap the window to the left half" -->
     <keybind key="W-A-Left">
       <action name="SnapToRegion" region="left-half" />
     </keybind>
+    <!-- @help group="Windows" text="Snap the window to the right half" -->
     <keybind key="W-A-Right">
       <action name="SnapToRegion" region="right-half" />
     </keybind>
+    <!-- @help group="Snap" text="Top half" -->
     <keybind key="W-A-Up">
       <action name="SnapToRegion" region="top-half" />
     </keybind>
+    <!-- @help group="Snap" text="Bottom half" -->
     <keybind key="W-A-Down">
       <action name="SnapToRegion" region="bottom-half" />
     </keybind>
+    <!-- @help group="Snap" text="Top-left corner" -->
     <keybind key="W-A-u">
       <action name="SnapToRegion" region="top-left" />
     </keybind>
+    <!-- @help group="Snap" text="Top-right corner" -->
     <keybind key="W-A-i">
       <action name="SnapToRegion" region="top-right" />
     </keybind>
+    <!-- @help group="Snap" text="Bottom-left corner" -->
     <keybind key="W-A-j">
       <action name="SnapToRegion" region="bottom-left" />
     </keybind>
+    <!-- @help group="Snap" text="Bottom-right corner" -->
     <keybind key="W-A-k">
       <action name="SnapToRegion" region="bottom-right" />
     </keybind>
+    <!-- @help group="Snap" text="Left third" -->
     <keybind key="W-A-d">
       <action name="SnapToRegion" region="left-third" />
     </keybind>
+    <!-- @help group="Snap" text="Middle third" -->
     <keybind key="W-A-f">
       <action name="SnapToRegion" region="center-third" />
     </keybind>
+    <!-- @help group="Snap" text="Right third" -->
     <keybind key="W-A-g">
       <action name="SnapToRegion" region="right-third" />
     </keybind>
+    <!-- @help group="Snap" text="Left two thirds" -->
     <keybind key="W-A-e">
       <action name="SnapToRegion" region="left-two-thirds" />
     </keybind>
+    <!-- @help group="Snap" text="Right two thirds" -->
     <keybind key="W-A-t">
       <action name="SnapToRegion" region="right-two-thirds" />
     </keybind>
+    <!-- @help group="Snap" text="Centre the window" -->
     <keybind key="W-A-c">
       <action name="SnapToRegion" region="center" />
     </keybind>
+    <!-- @help group="Windows" text="Maximize or restore the window" -->
     <keybind key="W-A-Return">
       <action name="ToggleMaximize" />
     </keybind>
 
     <!-- ── The shell, through its own control surface ──────────────────────────────────── -->
+    <!-- @help group="Shell" text="Lock the screen" -->
     <keybind key="W-l">
       <action name="Execute">
         <command>/opt/yantrik/bin/yos act shell lock</command>
       </action>
     </keybind>
+    <!-- @help group="Shell" text="Open Files" -->
     <keybind key="W-e">
       <action name="Execute">
         <command>/opt/yantrik/bin/yos act shell show_screen screen=files</command>
       </action>
     </keybind>
+    <!-- @help group="Shell" text="Open Settings" -->
     <keybind key="W-i">
       <action name="Execute">
         <command>/opt/yantrik/bin/yos act shell show_screen screen=settings</command>
       </action>
     </keybind>
+    <!-- @help group="Shell" text="Show the desktop, then bring the windows back" -->
     <keybind key="W-d">
       <action name="Execute">
         <command>/opt/yantrik/bin/yos act shell show_desktop</command>
       </action>
     </keybind>
+    <!-- @help group="Shell" text="Open a terminal" -->
     <keybind key="C-A-t">
       <action name="Execute">
         <command>/opt/yantrik/bin/yos act shell open_app name=terminal</command>
@@ -219,6 +280,7 @@
       this desktop reserves for itself — the same reason Super+E and Super+L are here — so this
       adds a way in without taking one away.
     -->
+    <!-- @help group="Minds" text="Ask your minds anything" -->
     <keybind key="W-k">
       <action name="Execute">
         <command>/opt/yantrik/bin/yos act shell open_lens</command>
@@ -231,11 +293,13 @@
       region selector; without it the second binding does nothing, so it ships in the package
       set beside grim rather than being assumed.
     -->
+    <!-- @help group="Capture" text="Screenshot of the whole screen" -->
     <keybind key="Print">
       <action name="Execute">
         <command>sh -c 'mkdir -p ~/Pictures &amp;&amp; grim ~/Pictures/Screenshot-$(date +%Y%m%d-%H%M%S).png'</command>
       </action>
     </keybind>
+    <!-- @help group="Capture" text="Screenshot of a region you drag" -->
     <keybind key="W-S-s">
       <action name="Execute">
         <command>sh -c 'mkdir -p ~/Pictures &amp;&amp; grim -g "$(slurp)" ~/Pictures/Screenshot-$(date +%Y%m%d-%H%M%S).png'</command>
@@ -243,34 +307,57 @@
     </keybind>
 
     <!-- ── Media and hardware keys ────────────────────────────────────────────────────── -->
+    <!--
+      Each key asks the shell, which changes the level with its own mixer / backlight module and
+      puts the on-screen display up with the value it read back (story 2.1). The `||` is the
+      same change made directly, with no display: where the shell cannot answer (not yet
+      started, or the screen locked, which refuses every action but one) the key still does what
+      it always did. Steps are 5 percent.
+
+      Caps_Lock is bound on release: pressing it still toggles the lock, because the compositor
+      updates the lock state before it looks for a binding, and by release the keyboard's LED
+      is what the shell reads. There is no direct fallback: with no shell there is nothing to show.
+    -->
+    <!-- @help group="Shell" text="Volume up" -->
     <keybind key="XF86AudioRaiseVolume">
       <action name="Execute">
-        <command>wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+</command>
+        <command>sh -c '/opt/yantrik/bin/yos act shell set_volume step=5 || wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+'</command>
       </action>
     </keybind>
+    <!-- @help group="Shell" text="Volume down" -->
     <keybind key="XF86AudioLowerVolume">
       <action name="Execute">
-        <command>wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-</command>
+        <command>sh -c '/opt/yantrik/bin/yos act shell set_volume step=-5 || wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-'</command>
       </action>
     </keybind>
+    <!-- @help group="Shell" text="Mute or unmute the speakers" -->
     <keybind key="XF86AudioMute">
       <action name="Execute">
-        <command>wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle</command>
+        <command>sh -c '/opt/yantrik/bin/yos act shell set_mute toggle=true || wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle'</command>
       </action>
     </keybind>
+    <!-- @help group="Shell" text="Mute or unmute the microphone" -->
     <keybind key="XF86AudioMicMute">
       <action name="Execute">
-        <command>wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle</command>
+        <command>sh -c 'if wpctl get-volume @DEFAULT_AUDIO_SOURCE@ | grep -q MUTED; then /opt/yantrik/bin/yos act shell set_mic_mute muted=false; else /opt/yantrik/bin/yos act shell mute_mic; fi || wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle'</command>
       </action>
     </keybind>
+    <!-- @help group="Shell" text="Screen brighter" -->
     <keybind key="XF86MonBrightnessUp">
       <action name="Execute">
-        <command>brightnessctl set 5%+</command>
+        <command>sh -c '/opt/yantrik/bin/yos act shell set_brightness step=5 || brightnessctl set 5%+'</command>
       </action>
     </keybind>
+    <!-- @help group="Shell" text="Screen dimmer" -->
     <keybind key="XF86MonBrightnessDown">
       <action name="Execute">
-        <command>brightnessctl set 5%-</command>
+        <command>sh -c '/opt/yantrik/bin/yos act shell set_brightness step=-5 || brightnessctl set 5%-'</command>
+      </action>
+    </keybind>
+    <!-- @help group="Shell" text="Show whether Caps Lock is on" -->
+    <keybind key="Caps_Lock" onRelease="yes">
+      <action name="Execute">
+        <command>/opt/yantrik/bin/yos act shell show_caps_lock</command>
       </action>
     </keybind>
 
@@ -281,33 +368,43 @@
       own window — desktop, taskbar, status bar — is on every one (the windowRule below), so a
       workspace holds apps, never a desktop without its taskbar.
     -->
+    <!-- @help group="Workspaces" text="Go to workspace 1" -->
     <keybind key="W-1">
       <action name="GoToDesktop" to="1" />
     </keybind>
+    <!-- @help group="Workspaces" text="Send the window to workspace 1" -->
     <keybind key="W-S-1">
       <action name="SendToDesktop" to="1" follow="no" />
     </keybind>
+    <!-- @help group="Workspaces" text="Go to workspace 2" -->
     <keybind key="W-2">
       <action name="GoToDesktop" to="2" />
     </keybind>
+    <!-- @help group="Workspaces" text="Send the window to workspace 2" -->
     <keybind key="W-S-2">
       <action name="SendToDesktop" to="2" follow="no" />
     </keybind>
+    <!-- @help group="Workspaces" text="Go to workspace 3" -->
     <keybind key="W-3">
       <action name="GoToDesktop" to="3" />
     </keybind>
+    <!-- @help group="Workspaces" text="Send the window to workspace 3" -->
     <keybind key="W-S-3">
       <action name="SendToDesktop" to="3" follow="no" />
     </keybind>
+    <!-- @help group="Workspaces" text="Go to workspace 4" -->
     <keybind key="W-4">
       <action name="GoToDesktop" to="4" />
     </keybind>
+    <!-- @help group="Workspaces" text="Send the window to workspace 4" -->
     <keybind key="W-S-4">
       <action name="SendToDesktop" to="4" follow="no" />
     </keybind>
+    <!-- @help group="Workspaces" text="Go to the previous workspace" -->
     <keybind key="W-C-Left">
       <action name="GoToDesktop" to="left" wrap="yes" />
     </keybind>
+    <!-- @help group="Workspaces" text="Go to the next workspace" -->
     <keybind key="W-C-Right">
       <action name="GoToDesktop" to="right" wrap="yes" />
     </keybind>
@@ -316,9 +413,77 @@
       The launcher from anywhere (#402). Like Super+K, a compositor binding, so it works with
       another app in front; the shell's own keys only work while its window has the keyboard.
     -->
+    <!-- @help group="Shell" text="Open the app launcher" -->
     <keybind key="W-space">
       <action name="Execute">
         <command>/opt/yantrik/bin/yos act shell show_screen screen=launchpad</command>
+      </action>
+    </keybind>
+
+    <!--
+      ── The shell's panels and Mind View, from anywhere ──────────────────────────────────
+      This file is the ONE source of the desktop's keys. A second generator used to live in
+      yantrik-os (keybinds.rs) and write its own list into ~/.config/labwc/rc.xml, but only
+      when that file did not exist, and the session copies THIS file over it at every login, so
+      Super+V, Super+A and the rest were declared and never bound. It is gone. A key that a
+      screen advertises must be bound here: the `rc_keys` tests in yantrik-ui fail if one is
+      not, and fail if a binding names a `yos` action the shell does not publish.
+
+        Super+V          clipboard history   (open_clipboard)
+        Super+A          Quick Settings      (open_quick_settings)
+        Super+N          Today               (open_today): the clock's panel
+        Super+Escape     power menu          (open_power_menu); it only shows it, choosing is the
+                                              person's
+        Super+Shift+V    Mind View forward   (focus_window)
+
+      Mind View's window is titled "Mind View" (mind_view::TITLE, set through the title library
+      the nested compositor preloads). Labwc splits an Execute command the way a shell does, so
+      the quotes keep the two words one argument. The `rc_keys` test checks every `title=` here
+      against the titles the shell gives a window.
+
+      Super+D stays "show desktop" above, the convention on GNOME and Windows. Do Not Disturb
+      has no key: it is in Quick Settings and the Today popover.
+
+      Super+/ opens the key cheat sheet (open_cheat_sheet). The sheet is generated from this
+      file, never written by hand: the comment just before each keybind says what it does and
+      which section it is drawn in (Windows, Snap, Workspaces, Shell, Minds or Capture), in the
+      form crates/yantrik-ui/src/cheat_sheet.rs documents. A keybind without one fails that
+      file's tests, so a new key says what it does or does not land.
+    -->
+    <!-- @help group="Shell" text="Clipboard history" -->
+    <keybind key="W-v">
+      <action name="Execute">
+        <command>/opt/yantrik/bin/yos act shell open_clipboard</command>
+      </action>
+    </keybind>
+    <!-- @help group="Shell" text="Today: calendar, notifications and Do Not Disturb" -->
+    <keybind key="W-n">
+      <action name="Execute">
+        <command>/opt/yantrik/bin/yos act shell open_today</command>
+      </action>
+    </keybind>
+    <!-- @help group="Shell" text="Quick Settings" -->
+    <keybind key="W-a">
+      <action name="Execute">
+        <command>/opt/yantrik/bin/yos act shell open_quick_settings</command>
+      </action>
+    </keybind>
+    <!-- @help group="Shell" text="Power menu" -->
+    <keybind key="W-Escape">
+      <action name="Execute">
+        <command>/opt/yantrik/bin/yos act shell open_power_menu</command>
+      </action>
+    </keybind>
+    <!-- @help group="Minds" text="Show Mind View, the minds' own desktop" -->
+    <keybind key="W-S-v">
+      <action name="Execute">
+        <command>/opt/yantrik/bin/yos act shell focus_window title="Mind View"</command>
+      </action>
+    </keybind>
+    <!-- @help group="Shell" text="Show this list of keys" -->
+    <keybind key="W-slash">
+      <action name="Execute">
+        <command>/opt/yantrik/bin/yos act shell open_cheat_sheet</command>
       </action>
     </keybind>
   </keyboard>
@@ -370,6 +535,25 @@
   </desktops>
 
   <windowRules>
+    <!--
+      The on-screen display (volume, brightness, mic, Caps Lock) is a window of its own, because
+      drawn in the shell's window it sat behind every app (review of #579). Always on top, no
+      title bar, not in the taskbar or Alt+Tab. It cannot be kept from taking focus when it
+      maps, so the shell hands the keyboard straight back (wire/osd.rs).
+
+      Placed 80px (Theme.osd-gap) above the dock, centred across: on 1280x800 its top is
+      800 - 48 - 80 - 64 = 608. labwc's MoveTo reads x and y with atoi, so the "center" this
+      once said was 0 and put the pill in the top-left corner. Nothing here is a screen size:
+      AutoPlace centres it, MoveToEdge drops its bottom onto the usable area's, which ends at
+      the <margin bottom> above (the dock's height), and MoveRelative lifts it by the gap. The
+      osd.rs tests hold the gap to Theme.osd-gap and the margin to Theme.taskbar-height.
+    -->
+    <windowRule title="Yantrik OSD" serverDecoration="no" skipTaskbar="yes" skipWindowSwitcher="yes">
+      <action name="ToggleAlwaysOnTop" />
+      <action name="AutoPlace" policy="center" />
+      <action name="MoveToEdge" direction="down" snapWindows="no" />
+      <action name="MoveRelative" x="0" y="-80" />
+    </windowRule>
     <!-- The shell is the desktop itself: present on every workspace, never switched away from. -->
     <windowRule title="Yantrik OS">
       <action name="ToggleOmnipresent" />

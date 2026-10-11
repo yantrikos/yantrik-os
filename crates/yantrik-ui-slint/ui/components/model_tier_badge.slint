@@ -1,0 +1,28 @@
+// A model's size tier ("Large", "Medium", "Small") as a quiet pill, wherever a model is named:
+// Settings (the status card and the model list), About and System Monitor.
+//
+// One component because those screens each drew a copy, and each painted the tiers in colours
+// that mean something else: Medium in the minds' teal and Small in the amber of "needs you"
+// (colour system; design/minds-surfaces-spec-2026-10-02.md, "Colour roles"). A tier is a fact
+// about the model, not a state and not a mind, so the pill is neutral and the word carries it.
+import { Theme } from "theme.slint";
+
+export component ModelTierBadge inherits Rectangle {
+    in property <string> tier;
+
+    width: label.preferred-width + 12px;
+    height: 20px;
+    border-radius: 10px;
+    background: Theme.hover-fill;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+
+    label := Text {
+        text: root.tier;
+        color: Theme.text-secondary;
+        font-size: Theme.fs-micro;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}

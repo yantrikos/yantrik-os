@@ -385,11 +385,11 @@ fn file_moved(ui: &DocumentEditorApp, state: &State) {
 
 /// Refresh the agent rail a beat after the document stops changing.
 ///
-/// `refresh_agent_rail` asks the companion whether it is reachable, and that is a round trip on
-/// the bus with the ask timeout behind it. Calling it from `paint` meant one round trip per
-/// keystroke, and — once the control surface existed — one inside an action, which has three
-/// seconds in total (`UI_ROUNDTRIP` in control.rs) and has no business spending them on somebody
-/// else's socket. So the rail lags the document by 400 ms and nothing waits on it.
+/// `refresh_agent_rail` rebuilds the outline and starts a memory search. `companion::reach` no
+/// longer costs a round trip — it reads what a worker last heard — but calling the rest from
+/// `paint` would still mean one outline and one search per keystroke, and work inside an action,
+/// which has three seconds in total (`UI_ROUNDTRIP` in control.rs). So the rail lags the document
+/// by 400 ms and nothing waits on it.
 fn refresh_rail_soon(ui: &DocumentEditorApp, state: &State) {
     let b = state.borrow();
     let text = b.doc.text.clone();

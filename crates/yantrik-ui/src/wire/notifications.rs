@@ -153,16 +153,28 @@ fn wire_centre(ui: &App) {
         invoke_action(&weak, &id.to_string(), &action_id.to_string());
     });
 
+    // Open or close a folded run of a mind's turn notices. Kept on the UI thread, outside the
+    // list, which the poll rebuilds every second.
+    let weak = ui.as_weak();
+    ui.on_notification_toggle_group(move |key| {
+        crate::notification_groups::toggle(&key);
+        if let Some(ui) = weak.upgrade() {
+            resync(&ui);
+        }
+    });
+
     // "Clear all from this app" — one call per notification, because the store is addressed by
     // id and inventing a bulk method for a button nobody holds down is more surface than this
     // needs.
     let weak = ui.as_weak();
-    ui.on_notification_clear_group(move |app_name| {
-        let app = app_name.to_string().to_lowercase();
+    // The group is named by its sender (`notifications::group_of`), not by `app`, so it is matched
+    // the same way it was made.
+    ui.on_notification_clear_group(move |group_name| {
+        let group = group_name.to_string().to_lowercase();
         let ids: Vec<String> = with_mirror(|m| {
             m.showing()
                 .into_iter()
-                .filter(|n| n.app.to_lowercase() == app)
+                .filter(|n| notifications::group_of(n) == group)
                 .map(|n| n.id.clone())
                 .collect()
         })
@@ -184,11 +196,37 @@ fn wire_centre(ui: &App) {
     });
 }
 
-/// Mark everything currently showing as read, and redraw.
+/// The notification centre's screen number.
+const CENTRE: i32 = 9;
+
+thread_local! {
+    /// Whether the person has the notification centre open: set on entering it, and spent on
+    /// the next navigation anywhere else.
+    static CENTRE_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A screen was navigated to. Called by `wire::navigate` for every screen, because it is what
+/// knows a screen changed.
 ///
-/// Called when the notification centre opens. Public because `wire::navigate` is what knows a
-/// screen was entered.
-pub fn mark_showing_read(weak: &slint::Weak<App>) {
+/// What the centre showed is read once the person LEAVES it, not the moment it opens. It used to
+/// be marked read on open, before the screen was drawn: the Today panel said "450 unread", the
+/// centre opened on 450 cards already read, and "Mark all read" — whose rule is "enabled while
+/// anything is unread" — was switched off on every visit, a dead control over a list whose new
+/// cards could no longer be told from the old. Now the new ones read as new while they are on
+/// screen, the button clears them, and leaving clears whatever is left, so the badge still does
+/// not outlive the look (VM 520 sign-off, 4 October).
+pub fn navigated(weak: &slint::Weak<App>, screen: i32) {
+    if screen == CENTRE {
+        CENTRE_OPEN.with(|open| open.set(true));
+        return;
+    }
+    if CENTRE_OPEN.with(|open| open.replace(false)) {
+        mark_showing_read(weak);
+    }
+}
+
+/// Mark everything currently showing as read, and redraw: on leaving the notification centre.
+fn mark_showing_read(weak: &slint::Weak<App>) {
     let unread: Vec<String> = with_mirror(|m| {
         m.showing()
             .into_iter()
@@ -473,16 +511,21 @@ fn maybe_toast(ui: &App, n: &Notification) {
         })
         .collect();
 
+    // The name on a toast is the caller's own, so it is cleaned and cut like a claim, and for any
+    // sender that is not the desktop the verified program goes beside it, briefly ("via D-Bus,
+    // not verified" when there is no record): a toast had no sender line at all, and a name the
+    // caller chose was the only thing on it (security reviews of #614).
+    let app_name = notifications::sender_name(n);
+
     crate::wire::toast::push(
         ui,
         ToastData {
             id: n.id.clone().into(),
-            app_name: n.app.clone().into(),
+            app_name: app_name.into(),
             summary: n.title.clone().into(),
             body: super::toast::brief(&n.body).into(),
             urgency: notifications::urgency_int(n.urgency),
-            icon_char: n
-                .app
+            icon_char: crate::notification_sender::one_line(&n.app)
                 .chars()
                 .next()
                 .unwrap_or('N')
@@ -771,15 +814,31 @@ fn withdraw_answered_questions(ui: &App) {
 ///
 /// `critical`, so it survives Do Not Disturb and stays on screen until it is answered: a
 /// question with a deadline is exactly what that level is for.
-pub fn approval_waiting(requester: &str, app: &str, action: &str) {
+///
+/// `asker` is who the machine VERIFIED is asking (`approvals::Verified::who`: the attached mind,
+/// or the program the kernel named), never the name the request gave itself. This notification
+/// goes out as `Yantrik` and now carries the desktop's own sender line, so a caller-chosen name
+/// in its title would be the desktop vouching for it (security review of #614). Everything that
+/// came with the request is made one plain, capped line on the way in.
+pub fn approval_waiting(asker: &str, app: &str, action: &str) {
     notify::send(
-        notify::Notification::new("Yantrik", format!("{requester}{ASKING}{action}"))
+        notify::Notification::new("Yantrik", approval_waiting_title(asker, action))
             .body(format!(
-                "In {app}. Allow or deny it on the card on this machine's screen — it expires on \
-                 its own if nobody answers."
+                "In {}. Allow or deny it on the card on this machine's screen — it expires on \
+                 its own if nobody answers.",
+                crate::notification_sender::plain(app, NAME_CHARS)
             ))
             .urgency(Urgency::Critical),
     );
+}
+
+/// How much of a name the shell's own approval notification repeats.
+const NAME_CHARS: usize = 40;
+
+/// "<asker> is asking to <action>", each part one plain, capped line.
+fn approval_waiting_title(asker: &str, action: &str) -> String {
+    use crate::notification_sender::plain;
+    format!("{}{ASKING}{}", plain(asker, NAME_CHARS), plain(action, NAME_CHARS))
 }
 
 /// A bypass of either kind ran out on its own.
@@ -827,10 +886,9 @@ pub fn companion_said(ui: &App, title: &str, text: &str) {
     if ui.get_lens_open() {
         return;
     }
-    notify::send(
-        notify::Notification::new("Yantrik", title)
-            .body(text.chars().take(200).collect::<String>()),
-    );
+    // The text is the model's: filed as the companion's, labelled as a model's (security review of
+    // #648, L3). It went out under "Yantrik" with nothing saying a model wrote it.
+    post_companion(CompanionPost::Result, title.to_string(), text.chars().take(200).collect());
 }
 
 /// The built-in companion said something *unprompted* while the Lens was closed, so the person
@@ -1062,10 +1120,8 @@ fn deliver(
                 "the answering mind is not the built-in companion, so its proactive message is \
                  a notification and not part of the conversation"
             );
-            let (title, body) = headline_and_rest(text);
-            notify::send(
-                notify::Notification::new("Yantrik Companion", title).body(body).urgency(Urgency::Low),
-            );
+            let (title, body) = title_and_body(text);
+            post_companion(CompanionPost::Result, title, body);
         }
         ProactiveDelivery::Transcript { notify } => push_to_transcript(notify),
     }
@@ -1137,116 +1193,78 @@ fn notify_companion_thought(text: &str) -> bool {
         );
         return false;
     }
-    let (title, body) = headline_and_rest(&cleaned);
-    notify::send(
-        notify::Notification::new("Yantrik Companion", title)
-            .body(body)
-            .urgency(Urgency::Low),
-    );
+    let (title, body) = title_and_body(&cleaned);
+    post_companion(CompanionPost::Reflection, title, body);
     true
 }
 
-/// How long a headline may be before it is cut at a word.
-const HEADLINE_LEN: usize = 80;
+/// What kind of words a companion notification carries, said on the card before the words
+/// themselves: a model wrote them (review of the UI overhaul by GPT-6 Astra, E). In the body, so
+/// the toast, Today and the centre all carry it and none can drop it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompanionPost {
+    /// An unprompted thought: nobody asked for it.
+    Reflection,
+    /// A background task's result, delivered as a notification because another mind is answering.
+    Result,
+}
 
-/// How long a *complete first sentence* may be and still stand as the headline whole. Cutting
-/// ten characters off the end of a sentence to obey [`HEADLINE_LEN`] reads worse than the
-/// sentence does, and the store keeps a title of 200 (`MAX_TITLE`), so there is room.
-const SENTENCE_LEN: usize = 120;
+impl CompanionPost {
+    fn label(self) -> &'static str {
+        match self {
+            CompanionPost::Reflection => "AI-generated reflection",
+            CompanionPost::Result => "AI-generated result",
+        }
+    }
+}
 
-/// How much of the rest is kept. The store's bound is 2,000 (`MAX_BODY`); an unprompted thought
-/// is a paragraph, and this is room for one without turning a notification into a log dump.
-const BODY_LEN: usize = 600;
+/// The body of a companion notification, led by what kind of words it is.
+fn labelled(kind: CompanionPost, body: &str) -> String {
+    if body.is_empty() {
+        kind.label().to_string()
+    } else {
+        format!("{} \u{b7} {body}", kind.label())
+    }
+}
 
-/// A message written for a conversation, cut to fit a notification: a headline and the rest.
+/// File something the built-in companion said as a notification: the one place one is made, so
+/// every companion post carries its label (security review of #648, L3: the result route filed
+/// unlabelled).
+fn post_companion(kind: CompanionPost, title: String, body: String) {
+    notify::send(
+        notify::Notification::new("Yantrik Companion", title)
+            .body(labelled(kind, &body))
+            .urgency(Urgency::Low),
+    );
+}
+
+/// How much of a thought the body keeps. The store's bound is 2,000 (`MAX_BODY`); an unprompted
+/// thought is a paragraph, and this is room for one, its first sentence included, without turning
+/// a notification into a log dump.
+const BODY_LEN: usize = 700;
+
+/// A message written for a conversation, made a notification: a title, and the whole of it.
 ///
 /// The first 120 characters used to go in as the title, whatever they were. A companion writes
 /// markdown, so a toast read `Ran the check. Here's the read:\n\n**2,114 memories… | Bucket | Count`
-/// — asterisks, a table's pipes and two newlines in a one-line title. The headline is the first
-/// line that says something, with the markup taken off; what follows it is the body, flattened
-/// the same way and cut at a word.
+/// — asterisks, a table's pipes and two newlines in a one-line title. Every line now has the
+/// markup taken off first.
 ///
-/// Then a person found the second half of that fix: a thought the companion wrote as ONE
-/// paragraph has no second line, so everything past the cut went nowhere. Notification 61 on
-/// 22 September was a 293-character sentence stored as an 89-character title ending in "…" and
-/// an empty body; the whole of it survived only in `yantrik-os.log`. The remainder of the first
-/// line is now the start of the body — nothing the companion said is dropped on the way in.
-fn headline_and_rest(text: &str) -> (String, String) {
+/// Notification 61 on 22 September was a 293-character sentence stored as an 89-character title
+/// ending in "…" and an empty body. The fix for that made the body the remainder of the cut, so
+/// the sign-off of 4 October found the other half of the same mistake: a title that was the first
+/// 80 characters of a sentence, over a body that began in its middle. The title is now the first
+/// sentence by the one rule the centre and Today read with (`notification_title::title_of`), and
+/// the body is everything the companion said, from its first word.
+fn title_and_body(text: &str) -> (String, String) {
     let lines: Vec<String> = text.lines().map(plain_line).filter(|l| !l.is_empty()).collect();
-    let Some(first) = lines.first() else {
-        return (String::new(), String::new());
-    };
-    let (title, mut rest) = split_headline(first);
-    for line in lines.iter().skip(1) {
-        if !rest.is_empty() {
-            rest.push(' ');
-        }
-        rest.push_str(line);
+    let title = crate::notification_title::title_of(&lines.join("\n"));
+    let body = crate::notification_title::clip_at_word(&lines.join(" "), BODY_LEN);
+    // A thought that is all title has no body to repeat it in.
+    if body == title {
+        return (title, String::new());
     }
-    (title, clip_at_word(&rest, BODY_LEN))
-}
-
-/// Split one line into the headline and whatever is left of it.
-///
-/// Three rules, in order, and the last two both keep the remainder:
-///
-/// * A line that already fits is the headline. A line break is the writer saying where a thought
-///   stops, so `Ran the check. Here's the unvarnished read:` stays in one piece.
-/// * Otherwise the first sentence, when it is one line's worth of sentence.
-/// * Otherwise as much of it as fits, cut at a word, with an ellipsis to say so.
-fn split_headline(line: &str) -> (String, String) {
-    if line.chars().count() <= HEADLINE_LEN {
-        return (line.to_string(), String::new());
-    }
-    if let Some(end) = first_sentence_end(line) {
-        if line[..end].chars().count() <= SENTENCE_LEN {
-            return (line[..end].trim().to_string(), line[end..].trim().to_string());
-        }
-    }
-    let cut = word_cut(line, HEADLINE_LEN);
-    let head = line[..cut].trim_end_matches([',', ';', ':', '.', ' ']);
-    (format!("{head}…"), line[cut..].trim().to_string())
-}
-
-/// Where the first sentence of a line ends, as a byte index just past its full stop.
-///
-/// A full stop is `.`, `!` or `?` followed by a space or the end of the line, together with
-/// anything that closes with it — `?!`, a quote, a bracket. `3.5` and `v1.2` are not sentence
-/// ends, because what follows them is not a space. That is as much sentence detection as a
-/// notification title has any use for.
-fn first_sentence_end(line: &str) -> Option<usize> {
-    let mut chars = line.char_indices().peekable();
-    while let Some((i, c)) = chars.next() {
-        if !matches!(c, '.' | '!' | '?') {
-            continue;
-        }
-        let mut end = i + c.len_utf8();
-        while let Some(&(j, next)) = chars.peek() {
-            if matches!(next, '.' | '!' | '?' | '"' | '\'' | '\u{2019}' | '\u{201d}' | ')' | ']') {
-                end = j + next.len_utf8();
-                chars.next();
-            } else {
-                break;
-            }
-        }
-        match chars.peek() {
-            None => return Some(end),
-            Some(&(_, next)) if next.is_whitespace() => return Some(end),
-            _ => {}
-        }
-    }
-    None
-}
-
-/// The byte index to cut a line at so the headline is about `max` characters and does not end
-/// half way through a word.
-fn word_cut(line: &str, max: usize) -> usize {
-    let hard = line
-        .char_indices()
-        .nth(max)
-        .map(|(i, _)| i)
-        .unwrap_or(line.len());
-    line[..hard].rfind(' ').unwrap_or(hard)
+    (title, body)
 }
 
 /// One line of markdown as plain words: emphasis, heading and list marks, table pipes and rules
@@ -1265,15 +1283,6 @@ fn plain_line(line: &str) -> String {
         return String::new();
     }
     cleaned
-}
-
-fn clip_at_word(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    let cut: String = text.chars().take(max).collect();
-    let cut = cut.rsplit_once(' ').map(|(head, _)| head).unwrap_or(&cut);
-    format!("{}…", cut.trim_end_matches([',', ';', ':', '.', ' ']))
 }
 
 // ── For `describe shell` ────────────────────────────────────────────────────────────────────
@@ -1301,6 +1310,79 @@ pub fn describe_summary() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    /// A companion notification says what kind of words it is, first, whether or not it has a
+    /// body, and every one is made in one place, so none goes out unlabelled.
+    #[test]
+    fn every_companion_post_says_a_model_wrote_it() {
+        use super::{labelled, CompanionPost};
+        assert_eq!(labelled(CompanionPost::Reflection, "Your 9:30 overlaps the standup."), "AI-generated reflection \u{b7} Your 9:30 overlaps the standup.");
+        assert_eq!(labelled(CompanionPost::Reflection, ""), "AI-generated reflection");
+        assert_eq!(labelled(CompanionPost::Result, "Backups checked."), "AI-generated result \u{b7} Backups checked.");
+        let src = include_str!("notifications.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        let body_of = |name: &str| {
+            let at = &code[code.find(&format!("fn {name}(")).unwrap_or_else(|| panic!("fn {name}"))..];
+            at[..at.find("\n}\n").unwrap()].to_string()
+        };
+        assert!(body_of("notify_companion_thought").contains("post_companion(CompanionPost::Reflection"));
+        assert!(body_of("deliver").contains("post_companion(CompanionPost::Result"));
+        assert!(body_of("companion_said").contains("post_companion(CompanionPost::Result"), "a finished task's text is a model's");
+    }
+
+    /// Security review of #648, L3: model-written text must not reach a notification any way but
+    /// `post_companion`. Every place in the shell that makes a notification is listed here with
+    /// what it says; each says the desktop's own words (a fixed sentence, a version, a mind's
+    /// cleaned name). A new one fails this until it is either routed through `post_companion` or
+    /// added here because its words are the desktop's.
+    #[test]
+    fn model_text_reaches_a_notification_only_through_post_companion() {
+        const DESKTOPS_OWN_WORDS: [(&str, &str); 9] = [
+            ("focus.rs", "start"),                         // "Session complete. Nice work."
+            ("wire/agents.rs", "notification"),            // turn titles, "You asked: …"
+            ("wire/harness.rs", "late_answer_notice"),     // "<mind> answered after you left."
+            ("wire/notifications.rs", "watch_for_updates"), // "Update available — <version>"
+            ("wire/notifications.rs", "approval_waiting"), // "<verified asker> is asking to …"
+            ("wire/notifications.rs", "bypass_ended"),     // "Bypass ended"
+            ("wire/notifications.rs", "private_mode_notice"),
+            ("wire/notifications.rs", "post_companion"),   // the one door for model text
+            ("wire/screenshot.rs", "take_screenshot"),     // "Screenshot saved"
+        ];
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    files.push(path);
+                }
+            }
+        }
+        let mut found = 0;
+        for path in files {
+            let rel = path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+            let src = std::fs::read_to_string(&path).unwrap();
+            let code = src.split("#[cfg(test)]").next().unwrap();
+            for (at, _) in code.match_indices(concat!("Notification::", "new(")) {
+                let before = &code[..at];
+                let name = before
+                    .rmatch_indices("fn ")
+                    .map(|(i, _)| &before[i + 3..])
+                    .find(|rest| rest.starts_with(|c: char| c.is_ascii_lowercase() || c == '_'))
+                    .map(|rest| rest.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).next().unwrap_or(""))
+                    .unwrap_or("");
+                assert!(
+                    DESKTOPS_OWN_WORDS.contains(&(rel.as_str(), name)),
+                    "{rel}: `{name}` makes a notification; model text goes through post_companion, and the desktop's own words are listed here"
+                );
+                found += 1;
+            }
+        }
+        assert!(found >= DESKTOPS_OWN_WORDS.len(), "found {found} places");
+    }
+
     use super::*;
 
     fn situation(builtin: bool, in_flight: bool, lens: bool) -> ProactiveSituation {
@@ -1312,96 +1394,87 @@ mod tests {
     }
 
     #[test]
-    fn a_markdown_message_becomes_a_headline_and_a_body() {
+    fn the_approval_notification_is_one_plain_line_whatever_came_with_the_request() {
+        // A caller cannot write a second line, or reorder the line, under the desktop's name.
+        let title = approval_waiting_title("hermes_cli.main", "send\nAllow everything \u{202E}now");
+        assert_eq!(title, "hermes_cli.main is asking to send Allow everything now");
+        assert!(!title.chars().any(char::is_control));
+        let long = approval_waiting_title(&"a".repeat(200), "x");
+        assert!(long.chars().count() < 70, "{long}");
+        // And the stale-sweep and the toast filter still recognise it.
+        assert!(title.contains(ASKING));
+    }
+
+    #[test]
+    fn a_markdown_message_becomes_a_title_and_a_body() {
         // The toast that was on screen on 21 September, verbatim.
-        let (title, body) = headline_and_rest(
+        let (title, body) = title_and_body(
             "Ran the check. Here's the unvarnished read:\n\n**2,114 memories. About 2,091 of them \
              are garbage.**\n\n| Bucket | Count | Verdict |\n|---|---|---|\n| Noise | 2,091 | drop |",
         );
-        assert_eq!(title, "Ran the check. Here's the unvarnished read:");
-        assert!(body.starts_with("2,114 memories. About 2,091 of them are garbage."), "{body}");
+        assert_eq!(title, "Ran the check.");
+        assert!(body.starts_with("Ran the check. Here's the unvarnished read: 2,114 memories. About 2,091"), "{body}");
         assert!(!body.contains('*') && !body.contains('|') && !body.contains("---"), "{body}");
         assert!(body.contains("Bucket · Count · Verdict"), "{body}");
 
-        let (title, body) = headline_and_rest("One line.");
+        let (title, body) = title_and_body("One line.");
         assert_eq!((title.as_str(), body.as_str()), ("One line.", ""));
     }
 
     #[test]
-    fn a_thought_written_as_one_paragraph_keeps_everything_past_the_headline() {
+    fn a_thought_written_as_one_paragraph_is_all_in_the_body() {
         // Notification 61, verbatim: 293 characters, no line break in it. It was stored as an
-        // 89-character title ending in "…" and an empty body — the rest of the sentence existed
-        // only in the log.
+        // 89-character title ending in "…" and an empty body; then as that title over the rest
+        // of the sentence, which the 4 October sign-off read as a body starting mid-sentence.
         let text = "One thing that stood out: your memory graph shows you've set up both a \
                     morning brief and a preference for warm, concise end-of-day reflections \
                     without exclamation marks — so you're quietly building yourself a daily \
                     bookend ritual, which is a more thoughtful habit than most people admit to \
                     having.";
-        let (title, body) = headline_and_rest(text);
+        let (title, body) = title_and_body(text);
 
-        assert!(title.chars().count() <= 81 && title.ends_with('…'), "{title}");
+        assert!(title.chars().count() <= crate::notification_title::TITLE_CHARS, "{title}");
+        assert!(title.ends_with('…'), "{title}");
         assert!(title.starts_with("One thing that stood out:"), "{title}");
-        assert!(!body.is_empty(), "the rest of the sentence went nowhere");
-        assert!(body.ends_with("most people admit to having."), "{body}");
-        // And between them they hold the whole of it: the body picks up at the word the
-        // headline was cut before, so nothing falls down the seam.
-        assert_eq!(
-            format!("{} {}", title.trim_end_matches('…'), body),
-            text,
-            "the two halves must add back up to what the companion said"
-        );
+        assert_eq!(body, text, "the body is what the companion said, from its first word");
     }
 
     #[test]
-    fn a_first_sentence_that_reads_as_one_line_becomes_the_headline_whole() {
+    fn a_first_sentence_that_fits_is_the_title_whole() {
         // Notification 59 opened with a 264-character sentence — too long for any title — and
         // a second sentence after it.
-        let (title, body) = headline_and_rest(
-            "Fun one: you've got a \"morning_brief\" notification preference on one side and a \
-             \"warm, concise end-of-day reflections, no exclamation marks\" preference on the \
-             other — your whole day is bookended by two short briefings. Pretty deliberate \
-             rhythm for someone who's into tech.",
-        );
+        let fun = "Fun one: you've got a \"morning_brief\" notification preference on one side and a \
+                   \"warm, concise end-of-day reflections, no exclamation marks\" preference on the \
+                   other — your whole day is bookended by two short briefings. Pretty deliberate \
+                   rhythm for someone who's into tech.";
+        let (title, body) = title_and_body(fun);
         assert!(title.ends_with('…'), "{title}");
-        assert!(body.ends_with("someone who's into tech."), "{body}");
+        assert_eq!(body, fun);
 
-        // A sentence a person would read as one line stays in one piece, and what follows it
-        // is the body rather than a casualty.
-        let (title, body) = headline_and_rest(
-            "The backup finished and it took nine minutes, which is about twice as long as \
-             usual. Two of the three disks were busy the whole time.",
-        );
-        assert_eq!(
-            title,
-            "The backup finished and it took nine minutes, which is about twice as long as usual."
-        );
-        assert_eq!(body, "Two of the three disks were busy the whole time.");
+        // A sentence that fits is the title with no ellipsis, and the body still starts with it.
+        let text = "The backup finished in nine minutes, twice as long as usual. Two of the three \
+                    disks were busy the whole time.";
+        let (title, body) = title_and_body(text);
+        assert_eq!(title, "The backup finished in nine minutes, twice as long as usual.");
+        assert_eq!(body, text);
 
         // A version number is not a full stop.
-        let (title, body) = headline_and_rest(
+        let (title, body) = title_and_body(
             "This machine is on 0.1.0-289-gf529880 and the build waiting for it is newer, which \
              is worth a look when there is a moment for it.",
         );
         assert!(title.contains("0.1.0-289-gf529880"), "{title}");
-        assert!(!body.is_empty(), "{body}");
+        assert!(body.starts_with("This machine is on"), "{body}");
     }
 
     #[test]
-    fn a_line_with_no_sentence_in_it_is_cut_at_a_word_and_the_rest_kept() {
+    fn a_line_with_no_sentence_in_it_is_cut_at_a_word_and_kept_whole_in_the_body() {
         // Every word is the same eight letters, so a cut in the middle of one is visible.
         let long = "alphabet ".repeat(40);
-        let (title, body) = headline_and_rest(&long);
-        assert!(title.chars().count() <= 81 && title.ends_with('…'), "{title}");
+        let (title, body) = title_and_body(&long);
+        assert!(title.chars().count() <= crate::notification_title::TITLE_CHARS, "{title}");
         assert!(title.ends_with("alphabet…"), "cut mid-word: {title}");
-        assert!(body.starts_with("alphabet "), "the body starts mid-word: {body}");
-        // 359 characters in, 359 characters out, give or take the ellipsis and the space the
-        // cut fell on.
-        assert!(
-            title.chars().count() + body.chars().count() >= long.trim_end().chars().count() - 1,
-            "title {} + body {} lost text",
-            title.chars().count(),
-            body.chars().count()
-        );
+        assert_eq!(body, long.trim_end(), "359 characters in, 359 characters in the body");
     }
 
     #[test]

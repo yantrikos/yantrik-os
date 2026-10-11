@@ -264,9 +264,136 @@ pub fn layout_label(code: &str) -> String {
         .unwrap_or_else(|| format!("Layout {code}"))
 }
 
+/// A filesystem a Mac's own system lives on: HFS+ (macOS up to 10.12) or APFS (10.13 on), as
+/// lsblk/blkid name them. A disk carrying either is a Mac's system disk until someone says
+/// otherwise.
+pub fn is_macos_fstype(fstype: &str) -> bool {
+    matches!(fstype, "hfsplus" | "apfs")
+}
+
+/// Whether `name` is one of the space-separated disk names in `list` (the shape the screens
+/// hold the macOS disks in, since a Slint property cannot search an array).
+pub fn disk_in_list(name: &str, list: &str) -> bool {
+    !name.is_empty() && list.split_whitespace().any(|d| d == name)
+}
+
+/// What stops an install to `selected`: a disk that holds macOS, unless `confirmed` names that
+/// very disk. Changing the chosen disk withdraws a confirmation by itself, because it named
+/// the other one.
+pub fn disk_problem(selected: &str, macos_disks: &str, confirmed: &str) -> Option<String> {
+    if disk_in_list(selected, macos_disks) && confirmed != selected {
+        return Some(format!(
+            "/dev/{selected} holds macOS. Confirm that it may be erased, or choose another disk"
+        ));
+    }
+    None
+}
+
+/// One disk the installer could erase, as [`default_disk`] weighs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EraseCandidate<'a> {
+    pub name: &'a str,
+    /// An HFS+ or APFS filesystem, or an Apple partition type, is on it: a Mac's system.
+    pub holds_macos: bool,
+    /// On USB, or marked removable: it may be someone's backup stick.
+    pub external: bool,
+    /// The installer is running from it.
+    pub runs_installer: bool,
+}
+
+/// The disk to erase that the installer chooses before anyone does, or `None`, and the person
+/// picks one. Only when exactly one disk is internal (not on USB, not removable), holds no
+/// macOS, and is not the one the installer runs from: then there is nothing to guess.
+///
+/// Never a USB or removable disk. The VM rehearsal of the Mac this is for found the USB decoy,
+/// someone's backup, chosen for erasing the moment the person switched to "Erase a whole disk".
+/// An external USB SSD is still offered, and chosen by the person.
+pub fn default_disk<'a>(disks: &[EraseCandidate<'a>]) -> Option<&'a str> {
+    let mut plain = disks.iter().filter(|d| !d.holds_macos && !d.external && !d.runs_installer);
+    match (plain.next(), plain.next()) {
+        (Some(only), None) => Some(only.name),
+        _ => None,
+    }
+}
+
+/// A kernel line in grub.cfg that finds the root by device name (`root=/dev/sdb2`) rather than
+/// by UUID, if there is one. A disk named that way boots in one USB port and not the next.
+/// `/dev/mapper/...` (an encrypted root, opened by its UUID from crypttab) is fine.
+pub fn root_by_device(grub_cfg: &str) -> Option<String> {
+    const BY_PORT: &[&str] = &["/dev/sd", "/dev/nvme", "/dev/vd", "/dev/hd", "/dev/mmcblk"];
+    grub_cfg
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("linux"))
+        .find(|l| {
+            l.split_whitespace().any(|w| {
+                w.strip_prefix("root=").is_some_and(|dev| BY_PORT.iter().any(|p| dev.starts_with(p)))
+            })
+        })
+        .map(String::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn disk(name: &str) -> EraseCandidate<'_> {
+        EraseCandidate { name, holds_macos: false, external: false, runs_installer: false }
+    }
+
+    #[test]
+    fn only_a_lone_internal_disk_without_macos_is_chosen_for_erasing() {
+        let mac = EraseCandidate { holds_macos: true, ..disk("sda") };
+        let usb = EraseCandidate { external: true, ..disk("sdb") };
+        let own = EraseCandidate { runs_installer: true, ..disk("sdc") };
+        // The VM rehearsal: the Mac's disk (macOS, and the installer runs from YKINSTALL on it)
+        // and a USB backup stick. Neither is chosen for anyone.
+        let mac_running_installer = EraseCandidate { runs_installer: true, ..mac };
+        assert_eq!(default_disk(&[mac_running_installer, usb]), None);
+        assert_eq!(default_disk(&[mac, usb]), None, "a USB disk is never chosen for erasing");
+        assert_eq!(default_disk(&[usb]), None);
+        assert_eq!(default_disk(&[own]), None, "never the disk the installer runs from");
+        // A PC with one internal disk, with or without a USB stick beside it: that disk.
+        assert_eq!(default_disk(&[disk("nvme0n1")]), Some("nvme0n1"));
+        assert_eq!(default_disk(&[usb, disk("nvme0n1"), own]), Some("nvme0n1"));
+        assert_eq!(default_disk(&[mac, disk("sdd")]), Some("sdd"), "a second internal disk beside macOS");
+        // Two internal disks: a guess, so none.
+        assert_eq!(default_disk(&[disk("nvme0n1"), disk("sda")]), None);
+        // Nothing but macOS, or nothing at all: nobody's disk is picked for them.
+        assert_eq!(default_disk(&[mac]), None);
+        assert_eq!(default_disk(&[]), None);
+        assert!(is_macos_fstype("apfs") && is_macos_fstype("hfsplus"));
+        assert!(!is_macos_fstype("vfat") && !is_macos_fstype("ext4") && !is_macos_fstype(""));
+    }
+
+    #[test]
+    fn erasing_macos_takes_a_confirmation_that_names_the_disk() {
+        let macos = "sda";
+        assert!(disk_problem("sda", macos, "").unwrap().contains("/dev/sda holds macOS"));
+        // A confirmation for another disk is no confirmation for this one.
+        assert!(disk_problem("sda", macos, "sdb").is_some());
+        assert_eq!(disk_problem("sda", macos, "sda"), None);
+        // Other disks need none.
+        assert_eq!(disk_problem("sdb", macos, ""), None);
+        assert_eq!(disk_problem("", macos, ""), None);
+        // Whole names only: sda is not sda1, nor in "nvme0n1 sdab".
+        assert!(!disk_in_list("sda", "sdab nvme0n1"));
+        assert!(disk_in_list("sda", " nvme0n1  sda "));
+        assert!(!disk_in_list("", "sda"));
+    }
+
+    #[test]
+    fn the_boot_menu_must_find_the_root_by_uuid() {
+        let by_uuid = "menuentry 'Yantrik OS' {\n\tlinux\t/boot/vmlinuz-6.12 root=UUID=1234-abcd ro quiet\n}\n";
+        assert_eq!(root_by_device(by_uuid), None);
+        let mapper = "\tlinux /vmlinuz root=/dev/mapper/yantrik-root ro\n";
+        assert_eq!(root_by_device(mapper), None);
+        let by_port = "\tlinux\t/boot/vmlinuz-6.12 root=/dev/sdb2 ro quiet\n";
+        assert!(root_by_device(by_port).unwrap().contains("root=/dev/sdb2"));
+        assert!(root_by_device("linux /vmlinuz root=/dev/nvme0n1p2\n").is_some());
+        // Only kernel lines count: a comment or a search line is not the kernel's root.
+        assert_eq!(root_by_device("# root=/dev/sda1\nsearch --fs-uuid x\n"), None);
+    }
 
     #[test]
     fn a_username_comes_from_the_first_name() {

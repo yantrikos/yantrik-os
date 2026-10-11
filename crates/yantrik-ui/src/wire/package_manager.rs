@@ -479,10 +479,13 @@ fn when_done<T: 'static>(
     let timer = Timer::default();
     timer.start(TimerMode::Repeated, Duration::from_millis(50), move || match rx.try_recv() {
         Ok(value) => {
+            // Out of the slot BEFORE `done` runs, and dropped after it: `done` may start the next
+            // piece of work in this same slot (a refresh lists what is installed, then asks the
+            // mirrors), and clearing the slot afterwards would stop that new timer unseen.
+            let _this = handle.borrow_mut().take();
             if let Some(done) = done.take() {
                 done(value);
             }
-            *handle.borrow_mut() = None;
         }
         // The worker died without answering. Nothing will arrive; stop asking.
         Err(mpsc::TryRecvError::Disconnected) => *handle.borrow_mut() = None,
@@ -577,12 +580,36 @@ fn search_sources(query: &str) -> (Vec<PkgEntry>, String) {
 ///
 /// `then` is said in the status bar once the list is back — an action's "Successfully
 /// installed", which the list's own count would otherwise replace before anyone read it.
+///
+/// A refresh that updates the index lists what is installed FIRST, from this machine alone, and
+/// only then asks the mirrors. VM 520 sweep, 4 October: the screen sat blank for as long as
+/// "Updating package database…" took, because the index update (network-bound, often the
+/// slow part) ran before anything was read, though the installed list was there to show the
+/// whole time.
 fn load(
     ui_weak: &slint::Weak<App>,
     state: &Rc<RefCell<State>>,
     timers: &Timers,
     update_index: bool,
     then: Option<String>,
+) {
+    if !update_index {
+        return load_once(ui_weak, state, timers, false, then, None);
+    }
+    let (weak, st, tm) = (ui_weak.clone(), state.clone(), timers.clone());
+    let index_next: Box<dyn FnOnce()> = Box::new(move || load_once(&weak, &st, &tm, true, then, None));
+    load_once(ui_weak, state, timers, false, None, Some(index_next));
+}
+
+/// One pass of `load`: optionally update the index, then list both sources. `after` runs once
+/// the list is on screen (or has failed to be read), whichever it was.
+fn load_once(
+    ui_weak: &slint::Weak<App>,
+    state: &Rc<RefCell<State>>,
+    timers: &Timers,
+    update_index: bool,
+    then: Option<String>,
+    after: Option<Box<dyn FnOnce()>>,
 ) {
     if let Some(ui) = ui_weak.upgrade() {
         ui.set_pkg_is_loading(true);
@@ -654,6 +681,9 @@ fn load(
                 ui.set_pkg_error_text(err.into());
                 ui.set_pkg_status_text("Error loading packages".into());
             }
+        }
+        if let Some(after) = after {
+            after();
         }
     });
 }

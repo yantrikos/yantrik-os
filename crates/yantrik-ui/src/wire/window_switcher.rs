@@ -1,4 +1,5 @@
-//! Window switcher — focus a window by title via wlrctl — and the taskbar entry's own menu.
+//! Window switcher — focus a window by title via wlrctl, or put away the one in front — and the
+//! taskbar entry's own menu.
 
 use slint::{ComponentHandle, ModelRc, VecModel};
 
@@ -19,28 +20,24 @@ use crate::{App, YMenuAction};
 /// The key is now given explicitly. `wlrctl` is also waited on rather than spawned and forgotten,
 /// so a failure can be reported instead of vanishing.
 pub fn wire(ui: &App, ctx: &AppContext) {
+    crate::toplevel_watch::start();
     let shell = ui.as_weak();
-    ui.on_switch_window(move |title| {
-        let title = title.to_string();
-        tracing::info!(title = %title, "Switching to window");
+    ui.on_switch_window(move |title| switch_to(&shell, &title));
 
-        // The entry for one of the shell's own screens (Files, Settings …) is the shell itself:
-        // there is no toplevel by that title to focus, so bring the shell forward instead.
-        if shell.upgrade().is_some_and(|ui| is_screen_entry(&ui, &title)) {
-            if let Err(why) = crate::windows::raise_shell() {
-                tracing::warn!(title = %title, %why, "could not bring the shell forward for its screen's entry");
+    // The taskbar entry: the window in front is put away, as on every other desktop's taskbar,
+    // and clicking it again brings it back. "In front" means when the button went down, which
+    // only the compositor's order of events can say (`toplevel_watch`). Anything else is the
+    // same switch as above.
+    let shell = ui.as_weak();
+    ui.on_taskbar_window_clicked(move |title| {
+        if crate::toplevel_watch::was_in_front(&title) {
+            tracing::info!(title = %title, "Putting away the window in front");
+            if let Err(why) = crate::windows::minimise(&title) {
+                tracing::warn!(title = %title, %why, "could not put away the window in front");
             }
             return;
         }
-
-        // wlrctl exits non-zero when nothing matched, which is the interesting case: the taskbar
-        // is showing a window the compositor does not have under that name.
-        if !crate::windows::present(&title) {
-            tracing::warn!(
-                title = %title,
-                "no window matched that title; the taskbar and the compositor disagree"
-            );
-        }
+        switch_to(&shell, &title);
     });
 
     // The entry's right-click menu (#232). The rows are built here rather than in the .slint
@@ -123,6 +120,29 @@ pub fn wire(ui: &App, ctx: &AppContext) {
 /// Every id is the name of a `shell` control action — `close_window`, `minimise_window`,
 /// `maximise_window`, `pin_app` — so what a pointer can choose and what a mind can ask for are
 /// the same verbs, graded the same way and ending in the same functions.
+/// Bring the window called `title` forward, or the shell for one of its own screens' entries.
+fn switch_to(shell: &slint::Weak<App>, title: &str) {
+    tracing::info!(title = %title, "Switching to window");
+
+    // The entry for one of the shell's own screens (Files, Settings …) is the shell itself:
+    // there is no toplevel by that title to focus, so bring the shell forward instead.
+    if shell.upgrade().is_some_and(|ui| is_screen_entry(&ui, title)) {
+        if let Err(why) = crate::windows::raise_shell() {
+            tracing::warn!(title = %title, %why, "could not bring the shell forward for its screen's entry");
+        }
+        return;
+    }
+
+    // wlrctl exits non-zero when nothing matched, which is the interesting case: the taskbar
+    // is showing a window the compositor does not have under that name.
+    if !crate::windows::present(title) {
+        tracing::warn!(
+            title = %title,
+            "no window matched that title; the taskbar and the compositor disagree"
+        );
+    }
+}
+
 /// Whether the taskbar entry titled `title` is one of the shell's own screens (`control::screen_entry`).
 fn is_screen_entry(ui: &App, title: &str) -> bool {
     use slint::Model;

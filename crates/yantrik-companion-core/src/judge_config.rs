@@ -133,6 +133,11 @@ pub const PRESETS: &[(&str, &str, &str, &str, &str)] = &[
     ("kev", "Kev (on this machine or the home GPU box)", "http://127.0.0.1:8009", "kev-latest", ""),
     ("laya", "Laya (small, runs on this machine's CPU)", "http://127.0.0.1:8000", "laya", ""),
     ("jeff", "Jeff (on this machine)", "http://127.0.0.1:8765", "jeff-latest", ""),
+    // Ollama 0.35+ serves decision models at /v1/systemone: `ollama pull nimble` (9.5 GB) or
+    // `ollama pull tev1` (4.5 GB). The endpoint is wherever that Ollama runs — this machine, or
+    // the Ollama box on the network — and nothing judged leaves it.
+    ("nimble", "Nimble on Ollama (Bespoke Labs; ollama pull nimble)", "http://127.0.0.1:11434", "nimble", ""),
+    ("tev1", "Tev1 on Ollama (Together AI; ollama pull tev1)", "http://127.0.0.1:11434", "tev1", ""),
     ("jev", "Jev (TypeSafe cloud: what is judged leaves this machine)", "https://api.typesafe.ai", "jev-latest", "JEV_API_KEY"),
     ("systemone", "Another System One server", "", "", ""),
     ("chat_model", "The chat model (slower, uncalibrated)", "", "", ""),

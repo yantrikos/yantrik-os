@@ -53,6 +53,36 @@ fn what_is_there_is_described() {
 }
 
 #[test]
+fn where_a_path_really_resolves_is_said_and_whether_a_link_took_it_there() {
+    let (_d, home) = home();
+    let v = stat("~/notes/today.txt", &home);
+    assert_eq!(v["real"], home.join("notes/today.txt").to_str().unwrap());
+    assert_eq!(v["via_link"], false);
+    symlink(home.join("notes/today.txt"), home.join("alias.txt")).unwrap();
+    symlink(home.join("notes"), home.join("shelf")).unwrap();
+    for asked in ["~/alias.txt", "~/shelf/today.txt"] {
+        let v = stat(asked, &home);
+        assert_eq!(v["exists"], true, "{asked}");
+        assert_eq!(v["real"], home.join("notes/today.txt").to_str().unwrap(), "{asked}");
+        assert_eq!(v["via_link"], true, "{asked}");
+    }
+}
+
+#[test]
+fn changed_is_the_ctime_and_a_backdated_mtime_does_not_move_it_back() {
+    let (_d, home) = home();
+    let file = home.join("notes/today.txt");
+    let before = stat("~/notes/today.txt", &home)["changed"].as_i64().unwrap();
+    // `touch -d` moves mtime into the past; ctime goes forward instead.
+    let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+    std::fs::File::options().write(true).open(&file).unwrap().set_modified(old).unwrap();
+    let v = stat("~/notes/today.txt", &home);
+    assert_eq!(v["modified"], 1_000_000_000);
+    assert!(v["changed"].as_i64().unwrap() >= before, "ctime never goes back");
+    assert!(v["changed"].as_i64().unwrap() > 1_000_000_000);
+}
+
+#[test]
 fn missing_is_false_and_says_so() {
     let (_d, home) = home();
     let v = stat("~/notes/tomorrow.txt", &home);
@@ -254,6 +284,41 @@ fn an_agent_writes_into_folders_that_are_there_and_never_through_a_link() {
     ] {
         let err = may_write_file(refused, &home).unwrap_err();
         assert!(err.ends_with(why), "{refused}: {err}");
+    }
+}
+
+/// A missing folder's refusal says how to get past it, in the path a caller can hand straight to
+/// files_new_folder (VM 520, 4 October: a mind made the folder and never saved again).
+#[test]
+fn a_missing_folder_says_how_to_make_it_and_that_nothing_is_lost() {
+    let (_d, home) = home();
+    let err = may_write_file("~/longtask/recipes/index.html", &home).unwrap_err();
+    assert!(err.contains("files_new_folder, name \"~/longtask/recipes\""), "{err}");
+    assert!(err.contains("send the same save again") && err.contains("nothing written so far is lost"), "{err}");
+    assert!(err.ends_with("does not exist"), "the reason still ends it: {err}");
+}
+
+/// Credential stores and the harnesses' key-bearing state are protected, for reading and writing
+/// alike; names that merely start the same are not (security review of #617).
+#[test]
+fn credential_files_are_protected_and_lookalikes_are_not() {
+    for p in [
+        "/home/ann/.aws/credentials",
+        "/home/ann/.git-credentials",
+        "/home/ann/.netrc",
+        "/home/ann/.config/gh/hosts.yml",
+        "/home/ann/.docker/config.json",
+        "/home/ann/.kube/config",
+        "/home/ann/.npmrc",
+        "/home/ann/.cargo/credentials.toml",
+        "/home/ann/.local/share/keyrings/login.keyring",
+        "/home/ann/.claude.json",
+        "/home/ann/.hermes/config.yaml",
+    ] {
+        assert!(is_protected(Path::new(p)), "{p} must be protected");
+    }
+    for p in ["/home/ann/.aws-notes.txt", "/home/ann/.docker/other.json", "/home/ann/notes/.netrc-howto.md", "/home/ann/pictures/.pi-day.png"] {
+        assert!(!is_protected(Path::new(p)), "{p} is not a credential store");
     }
 }
 

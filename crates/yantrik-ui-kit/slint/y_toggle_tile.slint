@@ -1,0 +1,229 @@
+// YToggleTile — a labelled on/off tile: Wi-Fi, Bluetooth, Night light, Do Not Disturb.
+//
+// Usage
+//   YToggleTile {
+//       icon: Icons.wifi;                 // an Icons path (20x20 grid)
+//       title: "Wi-Fi";
+//       subtitle: Network.ssid;           // the true state in words: "Home", "Not connected"
+//       on: Network.wifi-enabled;         // the REAL state; the tile draws it, never guesses
+//       split: Network.has-networks;      // true adds a chevron half that opens the details
+//       toggled => { Network.set-wifi(!Network.wifi-enabled); }
+//       details-requested => { Shell.network-open = true; }
+//   }
+//
+// `on` is an input. Clicking does not flip it: the tile says `toggled` and the owner flips the
+// real thing, so the tile can never show Wi-Fi on while the radio is off. A control for hardware
+// that is not there should be hidden by its owner, not shown with `enabled: false`; `enabled`
+// is for a state that is real but temporarily unavailable (airplane mode, a locked setting).
+//
+// Layout: `Theme.tile-h` (56px) tall, `Theme.r-lg` corners, icon at the left, title over
+// subtitle, both elided to one line. With `split`, the right 44px is a separate button
+// (a divider, then a chevron) that raises `details-requested`; it hovers, focuses and is read
+// by assistive tech on its own.
+//
+// Input
+//   pointer   click the body to toggle; click the chevron half for details.
+//   keyboard  Tab stops on the body, then (when split) on the chevron. Space/Enter activate
+//             whichever has focus. Right arrow on the body opens details, like the chevron
+//             (`right-opens-details: false` leaves the arrow to the owner).
+//             The ring shows for keyboard focus only, not after a click.
+//
+// States: off (the tile fill with its border), off+hover, pressed, on (accent fill, dark text), on+hover, keyboard focus (ring),
+// disabled (dimmed, inert). Accessible role switch with checked state; the chevron is a button.
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
+
+export component YToggleTile inherits Rectangle {
+    in property <string> icon: "";
+    in property <string> title: "";
+    in property <string> subtitle: "";
+    // What the tile does, in a sentence, for a tile whose one-line subtitle cannot hold it. Read
+    // out as the switch's description in place of the subtitle; "" reads the subtitle.
+    in property <string> description: "";
+    in property <bool> on: false;
+    in property <bool> enabled: true;
+    in property <bool> split: false;
+    // Right arrow on the body opens the details, like the chevron. A panel that moves focus with
+    // the arrow keys (Quick Settings) turns it off so Right means "next tile" there too.
+    in property <bool> right-opens-details: true;
+    // Either half has keyboard focus: for an owner that tracks where focus is.
+    out property <bool> focused: body-keys.has-focus || chevron-keys.has-focus;
+    callback toggled();
+    callback details-requested();
+    // Put keyboard focus on the body, for an owner that moves focus itself.
+    public function focus-body() { body-keys.focus(); }
+
+    forward-focus: body-keys;
+    accessible-role: none;
+
+    property <length> split-w: Theme.touch-target;
+    property <bool> pointer-focus: false;
+    property <bool> body-ring: body-keys.has-focus && !root.pointer-focus && root.enabled;
+    property <bool> chevron-ring: chevron-keys.has-focus && !root.pointer-focus && root.enabled;
+    property <bool> body-hover: root.enabled && body-ta.has-hover;
+    property <bool> body-down: root.enabled && body-ta.pressed;
+    property <bool> chevron-hover: root.enabled && chevron-ta.has-hover;
+    property <bool> chevron-down: root.enabled && chevron-ta.pressed;
+    property <color> fg: root.on ? Theme.text-on-accent : Theme.text-primary;
+    property <color> fg-dim: root.on ? Theme.text-on-accent : Theme.text-secondary;
+
+    height: Theme.tile-h;
+    min-width: Theme.tile-h * 2.5;
+    border-radius: Theme.r-lg;
+    opacity: root.enabled ? 1.0 : 0.4;
+    animate opacity { duration: Theme.dur-fast; }
+    clip: true;
+    // The fill belongs to the whole tile so a split tile reads as one object; the halves only
+    // add a wash of their own on hover and press.
+    background: root.on ? Theme.accent : Theme.tile-off;
+    animate background { duration: Theme.dur-fast; }
+    border-width: Theme.hairline;
+    border-color: root.on ? transparent : Theme.tile-border;
+
+    function activate-body() { if (root.enabled) { root.toggled(); } }
+    function activate-chevron() { if (root.enabled && root.split) { root.details-requested(); } }
+
+    // Body half: wash, content, input.
+    Rectangle {
+        x: 0;
+        width: root.split ? parent.width - root.split-w : parent.width;
+        height: parent.height;
+        background: root.body-down ? (root.on ? Theme.text-on-accent.with-alpha(0.2) : Theme.tile-off-pressed)
+                  : root.body-hover ? (root.on ? Theme.text-on-accent.with-alpha(0.1) : Theme.tile-off-hover)
+                  : transparent;
+        animate background { duration: Theme.dur-fast; }
+
+        body-keys := FocusScope {
+            enabled: root.enabled;
+            accessible-role: switch;
+            accessible-label: root.title;
+            accessible-description: root.description != "" ? root.description : root.subtitle;
+            accessible-checkable: true;
+            accessible-checked: root.on;
+            accessible-enabled: root.enabled;
+            accessible-action-default => { root.activate-body(); }
+            key-pressed(event) => {
+                root.pointer-focus = false;
+                if ((event.text == " " || event.text == "\n") && !event.repeat) { root.activate-body(); return accept; }
+                if (event.text == Key.RightArrow && root.split && root.right-opens-details) { root.activate-chevron(); return accept; }
+                reject
+            }
+        }
+        body-ta := TouchArea {
+            enabled: root.enabled;
+            mouse-cursor: root.enabled ? pointer : default;
+            pointer-event(event) => {
+                if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                    root.pointer-focus = true;
+                    body-keys.focus();
+                }
+            }
+            clicked => { root.activate-body(); }
+        }
+
+
+        HorizontalLayout {
+            padding-left: Theme.sp-3;
+            padding-right: Theme.sp-3;
+            spacing: Theme.sp-3;
+
+            if root.icon != "" : Icon {
+                commands: root.icon;
+                size: Theme.sp-5;
+                tint: root.fg;
+                thickness: Theme.icon-stroke-bold;
+                y: (parent.height - self.height) / 2;
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                spacing: Theme.hairline;
+
+                Text {
+                    text: root.title;
+                    color: root.fg;
+                    font-size: Theme.fs-body;
+                    font-weight: Theme.fw-body-strong;
+                    overflow: elide;
+                }
+                if root.subtitle != "" : Text {
+                    text: root.subtitle;
+                    color: root.fg-dim;
+                    font-size: Theme.fs-caption;
+                    overflow: elide;
+                }
+            }
+        }
+
+        // Keyboard focus ring, inset so the tile's clip does not shave it.
+        Rectangle {
+            x: 0; y: 0; width: parent.width; height: parent.height;
+            border-radius: Theme.r-lg;
+            border-width: root.body-ring ? Theme.focus-ring-width : 0px;
+            border-color: Theme.focus-ring;
+        }
+    }
+
+    // Chevron half.
+    Rectangle {
+        visible: root.split;
+        x: parent.width - root.split-w;
+        width: root.split-w;
+        height: parent.height;
+        background: root.chevron-down ? (root.on ? Theme.text-on-accent.with-alpha(0.2) : Theme.tile-off-pressed)
+                  : root.chevron-hover ? (root.on ? Theme.text-on-accent.with-alpha(0.1) : Theme.tile-off-hover)
+                  : transparent;
+        animate background { duration: Theme.dur-fast; }
+        accessible-role: button;
+        accessible-label: root.title + " details";
+        accessible-enabled: root.enabled;
+        accessible-action-default => { root.activate-chevron(); }
+
+        // Divider between the halves.
+        Rectangle {
+            x: 0;
+            y: Theme.sp-3;
+            width: Theme.hairline;
+            height: parent.height - 2 * Theme.sp-3;
+            background: root.on ? Theme.text-on-accent.with-alpha(0.25) : Theme.separator;
+        }
+
+        chevron-keys := FocusScope {
+            enabled: root.enabled;
+            key-pressed(event) => {
+                root.pointer-focus = false;
+                if ((event.text == " " || event.text == "\n") && !event.repeat) { root.activate-chevron(); return accept; }
+                reject
+            }
+        }
+        chevron-ta := TouchArea {
+            enabled: root.enabled;
+            mouse-cursor: root.enabled ? pointer : default;
+            pointer-event(event) => {
+                if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                    root.pointer-focus = true;
+                    chevron-keys.focus();
+                }
+            }
+            clicked => { root.activate-chevron(); }
+        }
+
+
+        Icon {
+            commands: Icons.chevron-right;
+            size: Theme.bar-icon-size;
+            tint: root.fg;
+            thickness: Theme.icon-stroke-bold;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+        }
+
+        Rectangle {
+            x: 0; y: 0; width: parent.width; height: parent.height;
+            border-radius: Theme.r-lg;
+            border-width: root.chevron-ring ? Theme.focus-ring-width : 0px;
+            border-color: Theme.focus-ring;
+        }
+    }
+}

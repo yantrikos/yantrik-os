@@ -153,6 +153,43 @@ the session row answers too, and that the card leads with the description's firs
 cargo run --manifest-path tests/ui-preview/Cargo.toml --profile fast -- target/approval-card.png 1280 800 verify-approval-card
 ```
 
+## Review stills (light theme and Nightfall)
+
+`review-still <name>` renders one still for a design review, in a theme a test VM cannot be
+switched into without a pointer. Each run renders one still because every scene shares the one
+headless window. There are no assertions: these are pictures.
+
+- `appearance`: Settings → Appearance, light, soft-blue accent (also writes `-scrolled`).
+- `quick-settings`: the whole shell with Quick Settings open, light, laptop shape.
+  `quick-settings-dark` is the same in dark, to hold beside it.
+- `lens-composer`, `lens-composer-dark`: the chat panel's composer with the line saying where the
+  words go and the "Mode:" chip, at 1280×800.
+- `app-header`: Calendar at 1280×800 with an ordinary day, light.
+- `approval`: one ApprovalCard at its natural height (440 wide, on the Lens panel's ground), light.
+- `approval-nightfall`: the same card on Nightfall: dark, violet (accent index 2) and its palette
+  overrides from `themes/nightfall.toml`, applied as `wire/theme.rs` applies them.
+- `approval-lens`, `approval-lens-nightfall`: the card in the Lens at 1280×800, where its details are clamped.
+- `icons-desktop`: the whole shell's desktop at 1280×800 — the workspace row's 48px tiles and the
+  dock's 32px ones, including a third-party app with a theme icon and one with neither — dark,
+  then light (`-light`), and the dock alone at 4x, pixel for pixel (`-dock-zoom`).
+- `icons-launcher`: the Apps launcher open over the desktop, every tile at 48px, dark and light.
+
+```sh
+cargo run --manifest-path tests/ui-preview/Cargo.toml --profile fast -- target/light-appearance.png 1280 800 review-still appearance
+```
+
+## App labels
+
+`verify-labels` draws the kit's AppLabel (the name under every app tile: 13px medium, on whole
+pixels) on the lake wallpaper across the sky, the ridge and the reflection, beside the same names
+in the card ink, and on a glass card the way the desktop's workspace draws them. It asserts that
+a label on the wallpaper is white and that its 1px shadow darkens the wallpaper under it, on the
+brightest row.
+
+```sh
+cargo run --manifest-path tests/ui-preview/Cargo.toml --profile fast -- target/labels.png 1280 800 verify-labels
+```
+
 ## Taskbar window menu
 
 `verify-taskbar-menu` draws the whole shell — app.slint's `App` — with two fixture windows on

@@ -131,6 +131,33 @@ pub struct ProviderEntry {
     pub is_fallback: bool,
 }
 
+impl ProviderEntry {
+    /// The key requests to this provider carry: none when the entry asks for no auth, whatever
+    /// key it also holds.
+    pub fn key_to_send(&self) -> Option<&str> {
+        self.api_key.as_deref().filter(|_| !self.auth_type.eq_ignore_ascii_case("none"))
+    }
+}
+
+#[cfg(test)]
+mod provider_entry_tests {
+    use super::ProviderEntry;
+
+    fn entry(auth_type: &str) -> ProviderEntry {
+        serde_yaml::from_str(&format!(
+            "id: o\nname: O\nprovider_type: ollama\nbase_url: http://localhost:11434\napi_key: k\nauth_type: {auth_type}\n"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_entry_that_asks_for_no_auth_sends_no_key() {
+        assert_eq!(entry("none").key_to_send(), None);
+        assert_eq!(entry("None").key_to_send(), None);
+        assert_eq!(entry("bearer").key_to_send(), Some("k"));
+    }
+}
+
 fn default_provider_type() -> String {
     "custom".to_string()
 }

@@ -1,0 +1,171 @@
+// The conversation panel's header and its empty state.
+
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
+import { ChatIconButton } from "chat_parts.slint";
+
+// 64px: the mind's mark, its name and who it is, and the three things a person does with a
+// conversation as a whole. The name opens the Minds panel, where the minds and their real states
+// are listed; switching is done there, never here, so a draft is never quietly re-targeted.
+export component ChatHeader inherits Rectangle {
+    in property <string> mind-name;
+    // "Built-in mind" or "Attached mind": what the shell knows about where the mind runs.
+    in property <string> identity;
+    in property <bool> can-new-chat: false;
+    in property <bool> can-open-in-agents: false;
+    callback mind-clicked();
+    callback new-chat();
+    callback history();
+    callback open-in-agents();
+    callback close();
+
+    height: Theme.chat-header-height;
+    background: Theme.chat-panel;
+
+    HorizontalLayout {
+        padding-left: Theme.sp-4;
+        padding-right: Theme.sp-2;
+        spacing: Theme.sp-3;
+
+        // The mind's mark: a 28px ring in the mind's teal.
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 28px;
+                height: 28px;
+                border-radius: 14px;
+                background: Theme.chat-raised;
+                border-width: 1.5px;
+                border-color: Theme.chat-mind;
+                Icon {
+                    commands: Icons.companion;
+                    size: 16px;
+                    tint: Theme.chat-mind;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+        }
+
+        name-hit := TouchArea {
+            mouse-cursor: pointer;
+            horizontal-stretch: 1;
+            clicked => { root.mind-clicked(); }
+            accessible-role: button;
+            accessible-label: (root.mind-name == "" ? "Conversation" : root.mind-name) + ". Opens the Minds panel.";
+
+            VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+                Text {
+                    text: root.mind-name != "" ? root.mind-name : "Conversation";
+                    color: Theme.chat-text;
+                    font-size: Theme.fs-title-2;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+                if root.identity != "" : Text {
+                    text: root.identity;
+                    color: Theme.chat-text-2;
+                    font-size: Theme.fs-caption;
+                    overflow: elide;
+                }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                spacing: Theme.sp-1;
+                ChatIconButton {
+                    label: "New chat";
+                    commands: Icons.plus;
+                    enabled: root.can-new-chat;
+                    clicked => { root.new-chat(); }
+                }
+                if root.can-open-in-agents : ChatIconButton {
+                    label: "History";
+                    commands: Icons.history;
+                    clicked => { root.history(); }
+                }
+                if root.can-open-in-agents : ChatIconButton {
+                    label: "Open in Agents";
+                    commands: Icons.export;
+                    clicked => { root.open-in-agents(); }
+                }
+                ChatIconButton {
+                    label: "Close";
+                    commands: Icons.close;
+                    clicked => { root.close(); }
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.chat-border;
+    }
+}
+
+// What a conversation with nothing in it says, and three ways to begin. A starter puts its words
+// in the composer and stops: nothing is sent until the person sends it.
+export component ChatEmpty inherits Rectangle {
+    in property <string> mind-name;
+    callback starter(string);
+
+    background: transparent;
+
+    VerticalLayout {
+        alignment: center;
+        padding: Theme.sp-6;
+        spacing: Theme.sp-3;
+
+        Text {
+            text: "Your desk stays yours.";
+            color: Theme.chat-text;
+            font-size: Theme.fs-title-1;
+            font-weight: 600;
+            wrap: word-wrap;
+        }
+        Text {
+            text: (root.mind-name == "" ? "Your mind" : root.mind-name)
+                + " can work in a separate desk. You can watch, review changes, or take over.";
+            color: Theme.chat-text-2;
+            font-size: Theme.fs-title-2;
+            wrap: word-wrap;
+        }
+        VerticalLayout {
+            spacing: Theme.sp-2;
+            padding-top: Theme.sp-2;
+            alignment: start;
+            for prompt[i] in [
+                { label: "Plan something", fill: "Help me plan " },
+                { label: "Work with files", fill: "Help me with the files in " },
+                { label: "Explain what\u{2019}s on screen", fill: "Explain what\u{2019}s on my screen." },
+            ] : Rectangle {
+                height: 40px;
+                border-radius: Theme.r-md;
+                background: starter-ta.has-hover ? Theme.hover-fill : transparent;
+                border-width: 1px;
+                border-color: Theme.chat-border;
+                accessible-role: button;
+                accessible-label: prompt.label;
+                accessible-action-default => { root.starter(prompt.fill); }
+
+                starter-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.starter(prompt.fill); }
+                }
+                Text {
+                    x: Theme.sp-4;
+                    text: prompt.label;
+                    color: Theme.chat-text;
+                    font-size: Theme.fs-body;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

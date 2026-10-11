@@ -8,10 +8,10 @@ Type=simple
 ExecStart=/usr/bin/python3 /opt/yantrik/share/harnesses/pi/yantrik_pi.py
 Restart=on-failure
 RestartSec=5
-# A user service does not inherit a login shell's PATH, and `pi` and `node` are usually
-# installed per-user (~/.npm-global/bin, ~/.local/node/bin). Either set them here:
-#   Environment=PATH=%h/.npm-global/bin:%h/.local/node/bin:/usr/bin:/bin
-# or put the same string in `path` in ~/.config/yantrik/pi.json, which this harness prepends.
+# A user service does not inherit a login shell's PATH, and the Install button puts `pi` and
+# the `node` it runs on in ~/.local/bin (harnesses/lib/install/npm.sh). So that is on PATH here.
+# An install somewhere else goes in `path` in ~/.config/yantrik/pi.json, which is prepended.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # Pi's provider keys are Pi's own business and live in ~/.pi/agent. Nothing in this unit and
 # nothing in the image holds one.
 

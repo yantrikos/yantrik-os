@@ -15,9 +15,10 @@
 //!
 //! # Run as the person, with the person's own environment
 //!
-//! `sh -lc`, a login shell: `npm` and `node` on this kind of machine live in `~/.npm-global/bin`
-//! and `~/.local/node/bin`, and a shell started from a session manager does not have them. A
-//! command that works when the person types it and fails from a button is worse than no button.
+//! `sh -lc`, a login shell, with `~/.local/bin` put first on its PATH: that is where every
+//! installer in harnesses/lib/install puts what it installs (Node included), and a shell started
+//! from a session manager does not have it. A command that works when the person types it and
+//! fails from a button is worse than no button.
 //!
 //! # What is not here
 //!
@@ -31,7 +32,7 @@ use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::harness_catalogue::{Install, JobKind, JobView, Manifest, LOG_LINES};
+use crate::harness_catalogue::{shell_quote, Install, JobKind, JobView, Manifest, JOB_PATH_PRELUDE, LOG_LINES};
 
 struct Job {
     kind: JobKind,
@@ -90,9 +91,37 @@ pub fn install(manifest: &Manifest) -> Result<String, String> {
         .ok_or_else(|| format!("{} has no install command of its own — read its documentation", manifest.id))?;
     let command = install.command_in(&manifest.dir);
     let doing = if install.doing.is_empty() { command.clone() } else { install.doing.clone() };
-    spawn(&manifest.id, JobKind::Install, &doing, command.clone())?;
+    // An install that worked goes straight on to the harness's own setup, where it has one: a
+    // Hermes with no model is a Hermes that attaches and cannot answer, and a row that says "run
+    // hermes model in a terminal" is a step the person has to find for themselves.
+    let then: Option<Then> = manifest.configure.is_some().then(|| {
+        let manifest = manifest.clone();
+        Box::new(move || {
+            if let Err(e) = configure(&manifest) {
+                tracing::warn!(harness = %manifest.id, error = %e, "the setup after an install did not open");
+            }
+        }) as Then
+    });
+    spawn(&manifest.id, JobKind::Install, &doing, command.clone(), then)?;
     Ok(command)
 }
+
+/// Open the harness's own setup in a terminal: its model, its sign-in. The person types into it;
+/// nothing here reads what they type or what the harness writes.
+pub fn configure(manifest: &Manifest) -> Result<String, String> {
+    let configure = manifest
+        .configure
+        .as_ref()
+        .ok_or_else(|| format!("{} has no setup of its own to open", manifest.id))?;
+    let command = configure.command_in(&manifest.dir);
+    let title = if configure.title.is_empty() { configure.label.as_str() } else { configure.title.as_str() };
+    crate::terminal_window::open(title, &format!("{JOB_PATH_PRELUDE}{command}"), &[])?;
+    tracing::info!(harness = %manifest.id, "opened the harness's own setup");
+    Ok(command)
+}
+
+/// What to do once a job has finished well.
+type Then = Box<dyn FnOnce() + Send>;
 
 /// Enable and start a harness's unit.
 ///
@@ -130,7 +159,7 @@ pub fn start(manifest: &Manifest) -> Result<String, String> {
     }
     steps.push(format!("systemctl --user enable --now {}", shell_quote(&manifest.unit)));
     let command = steps.join(" && ");
-    spawn(&manifest.id, JobKind::Start, &format!("starting {}", manifest.unit), command.clone())?;
+    spawn(&manifest.id, JobKind::Start, &format!("starting {}", manifest.unit), command.clone(), None)?;
     Ok(command)
 }
 
@@ -143,12 +172,8 @@ fn unit_known(unit: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Minimal single-quoting, for paths and unit names that go into a shell line.
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
 
-fn spawn(id: &str, kind: JobKind, doing: &str, command: String) -> Result<(), String> {
+fn spawn(id: &str, kind: JobKind, doing: &str, command: String, then: Option<Then>) -> Result<(), String> {
     // One at a time per harness. Two `npm install -g` for the same package at once is a package
     // directory being written by two processes, and the second button press is never what was
     // meant anyway.
@@ -175,7 +200,7 @@ fn spawn(id: &str, kind: JobKind, doing: &str, command: String) -> Result<(), St
 
     let child = Command::new("sh")
         .arg("-lc")
-        .arg(&command)
+        .arg(format!("{JOB_PATH_PRELUDE}{command}"))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -216,7 +241,11 @@ fn spawn(id: &str, kind: JobKind, doing: &str, command: String) -> Result<(), St
                 }),
                 Err(e) => Some(format!("could not wait for it: {e}")),
             };
+            let worked = outcome.is_none();
             finish(&owner, outcome);
+            if let Some(then) = then.filter(|_| worked) {
+                then();
+            }
         })
         .map_err(|e| {
             finish(id, Some(format!("no thread to watch it: {e}")));
@@ -230,6 +259,9 @@ fn spawn(id: &str, kind: JobKind, doing: &str, command: String) -> Result<(), St
 fn pump(id: &str, stream: impl std::io::Read) {
     for line in BufReader::new(stream).lines() {
         let Ok(line) = line else { break };
+        // Installers colour their output whether or not it is a terminal (Hermes's does), and
+        // redraw progress with carriage returns. The row is text, so it gets what was said.
+        let line = crate::agents::model::strip_escapes(&line);
         let line = line.trim_end().to_string();
         if line.is_empty() {
             continue;
@@ -342,6 +374,26 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(settled(id).log.contains("last"));
+    }
+
+    #[test]
+    fn a_coloured_installer_reaches_the_row_as_plain_text() {
+        // Hermes's installer colours every line even into a pipe; the row showed the escapes.
+        let _turn = taking_turns();
+        let id = "job-colour";
+        install(&manifest(id, r"printf '\033[0;32m✓\033[0m uv ready\n'")).unwrap();
+        let view = settled(id);
+        assert_eq!(view.log, "✓ uv ready");
+    }
+
+    #[test]
+    fn a_job_finds_what_an_earlier_job_put_in_the_per_user_bin() {
+        // Pi's install fetches Node into ~/.local/bin and then runs npm from there; a session
+        // PATH that lacks it was "npm: not found" on every fresh machine.
+        let _turn = taking_turns();
+        let id = "job-user-bin";
+        install(&manifest(id, r#"case ":$PATH:" in *":$HOME/.local/bin:"*) echo on-path ;; esac"#)).unwrap();
+        assert!(settled(id).log.contains("on-path"));
     }
 
     #[test]

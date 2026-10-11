@@ -1054,6 +1054,7 @@ mod tests {
             tx_bytes: 20,
             state: "down".into(),
             conn_type: ConnectionType::Ethernet,
+            ..Default::default()
         }]);
         assert!(text.contains("no address"), "{text}");
         assert!(text.contains("eth0 [down]"), "{text}");

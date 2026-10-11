@@ -30,11 +30,11 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     };
     draw();
 
-    // The button is the first thing on the taskbar, at its left end. Found by pressing along the
-    // taskbar from the left until the launcher opens, so a change of padding does not break this.
-    let taskbar_y = height as f32 - 20.0;
+    // The button is the first thing in the dock, at its left end; the dock is centred. Found by pressing
+    // along the dock from the left until the launcher opens, so a change of padding does not break this.
+    let taskbar_y = height as f32 - 24.0;
     let mut button_x = None;
-    for x in (6..160).step_by(6) {
+    for x in (556..720).step_by(4) {
         click(w, x as f32, taskbar_y);
         draw();
         if ui.get_app_grid_open() {
@@ -70,8 +70,8 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         }
     }
 
-    // Chat, from anywhere (#241): the button at the right of the taskbar, found by pressing
-    // leftward from the corner until the Lens opens. From Files and Settings it goes to the
+    // Chat, from anywhere (#241): the mind button at the right end of the dock, found by pressing
+    // leftward across the dock until the Lens opens. From Files and Settings it goes to the
     // desktop, where the Lens is drawn, and puts the launcher away.
     let shown: Rc<std::cell::Cell<u32>> = Rc::default();
     {
@@ -84,7 +84,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     ui.set_current_screen(8);
     draw();
     let mut chat_x = None;
-    for x in (40..400).step_by(6).map(|dx| width as f32 - dx as f32) {
+    for x in (556..720).rev().step_by(4).map(|x| x as f32) {
         click(w, x, taskbar_y);
         draw();
         if ui.get_lens_open() {

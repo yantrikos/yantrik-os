@@ -215,8 +215,10 @@ pub fn urgency_int(urgency: Urgency) -> i32 {
     urgency.hint_byte() as i32
 }
 
-/// The small line under a row that says who sent it — the approval card's two facts, in the
-/// card's words, on one line.
+/// The full line about who sent a notification — the approval card's two facts, in the card's
+/// words, on one line. The card leads with `notification_sender::sender_summary` and shows this
+/// one behind its Details control (VM 520 sweep, 4 October: a pid on every card is a
+/// debugger's line, not a person's).
 ///
 /// Notification 134 on 22 September read `Yantrik` and said something false; the mind that
 /// sent it was in `ps` the whole time, and the row had no way to say so. The row's name is
@@ -232,32 +234,67 @@ pub fn sender_line(n: &Notification) -> String {
         return String::new();
     };
     let claim = match &sender.claimed {
-        Some(name) => format!("\u{201c}{name}\u{201d} says the caller \u{b7} "),
+        // One line whatever the caller sent: the card draws this behind Details with word wrap,
+        // and a newline in the claim would otherwise draw a line of the caller's choosing.
+        Some(name) => format!(
+            "\u{201c}{}\u{201d} says the caller \u{b7} ",
+            crate::notification_sender::one_line(name)
+        ),
         None => String::new(),
     };
+    // The command line in it is the caller's argv. The service cleans it now, but a record
+    // stored before that was not (third-pass security review of #614).
+    let verified = crate::notification_sender::one_line(&sender.verified);
     if sender.pid == 0 {
         // The card's words for the same situation; "verified: could not be identified" would
         // read as if something had been verified.
-        return format!("{claim}{} by this machine", sender.verified);
+        return format!("{claim}{verified} by this machine");
     }
-    format!("{claim}verified by this machine: {}", sender.verified)
+    format!("{claim}verified by this machine: {verified}")
+}
+
+/// The one name a notification's sender goes by, on a toast, in the centre's group header and on
+/// Today's row: `notification_sender::toast_name`, called and not remade.
+///
+/// Sign-off, 4 October: Today printed `n.app` as it was stored, the centre headed its groups with
+/// the same raw field, and only the toast cleaned it and named the verified program beside it.
+/// Now all three call the same function, so a sender is called one thing everywhere and a name
+/// is "Yantrik" alone only when `notification_sender` says the desktop itself sent it.
+pub fn sender_name(n: &Notification) -> String {
+    crate::notification_sender::toast_name(n)
+}
+
+/// What the centre groups a notification under: its sender's name, so a group's header never
+/// names anyone its cards were not sent by. Also what "Clear all from this group" matches.
+pub fn group_of(n: &Notification) -> String {
+    sender_name(n).to_lowercase()
 }
 
 /// Convert one notification to the Slint row.
 pub fn to_slint_data(n: &Notification) -> crate::NotificationData {
+    // The desktop's agent notices say what happened and keep the prompt in the body; anything
+    // else goes through the one title rule (notification_groups.rs, notification_title.rs).
+    let (title, body) = crate::notification_groups::display_copy(n);
+    let name = sender_name(n);
     crate::NotificationData {
         id: n.id.clone().into(),
-        app_name: n.app.clone().into(),
-        summary: n.title.clone().into(),
-        body: n.body.clone().into(),
+        app_name: name.clone().into(),
+        summary: title.into(),
+        body: body.into(),
         urgency: urgency_int(n.urgency),
         time_ago: crate::bridge::format_time_ago(seconds_since(&n.created_at)).into(),
         is_read: n.read,
         sender_line: sender_line(n).into(),
+        sender_short: crate::notification_sender::sender_summary(n).into(),
         is_group_header: false,
-        group_name: n.app.clone().into(),
+        group_name: name.into(),
         group_icon: first_letter(&n.app),
         group_count: 0,
+        group_unread: 0,
+        is_turn_group: false,
+        group_key: slint::SharedString::default(),
+        expanded: false,
+        in_group: false,
         actions: slint::ModelRc::new(slint::VecModel::from(
             n.actions
                 .iter()
@@ -275,6 +312,38 @@ pub fn to_slint_data(n: &Notification) -> crate::NotificationData {
     }
 }
 
+/// The one row a run of a mind's turn notices folds into: "Yantrik Mind finished 12 turns ·
+/// last 2m ago", pressed to show the cards inside it. Read when every card in it is.
+fn turn_group_row(run: &crate::notification_groups::Run, open: bool) -> crate::NotificationData {
+    let newest = run.notes.first().map(|n| seconds_since(&n.created_at)).unwrap_or(0.0);
+    let ago = crate::bridge::format_time_ago(newest);
+    let first = run.notes.first();
+    crate::NotificationData {
+        id: slint::SharedString::default(),
+        app_name: first.map(|n| sender_name(n)).unwrap_or_default().into(),
+        summary: run.label(&ago).into(),
+        body: slint::SharedString::default(),
+        urgency: 1,
+        time_ago: ago.into(),
+        is_read: run.unread() == 0,
+        sender_line: slint::SharedString::default(),
+        // Every card in a run passed the same test (the desktop itself), so the newest one's
+        // line speaks for the run.
+        sender_short: first.map(|n| crate::notification_sender::sender_summary(n)).unwrap_or_default().into(),
+        is_group_header: false,
+        group_name: slint::SharedString::default(),
+        group_icon: slint::SharedString::default(),
+        group_count: run.notes.len() as i32,
+        group_unread: run.unread() as i32,
+        is_turn_group: true,
+        group_key: run.key().into(),
+        expanded: open,
+        in_group: false,
+        actions: slint::ModelRc::default(),
+        source: first.map(|n| n.source.as_str()).unwrap_or_default().into(),
+    }
+}
+
 fn first_letter(app: &str) -> slint::SharedString {
     app.chars()
         .next()
@@ -284,19 +353,22 @@ fn first_letter(app: &str) -> slint::SharedString {
         .into()
 }
 
-/// Put the whole list on screen: grouped by app, newest group first, newest within a group
-/// first, with a synthetic header row before each group.
+/// How many of the newest notifications Today lists (the full history is a click away).
+pub const TODAY_SHOWN: usize = 5;
+
+/// The centre's list: grouped by sender, newest group first, newest within a group first, with a
+/// synthetic header row before each group. Inside a group, a run of one mind's turn notices folds
+/// into one row (`notification_groups::fold`), and its cards follow only when the person has
+/// opened it.
 ///
 /// Groups used to be ordered alphabetically, so a notification that arrived a second ago sat
 /// under "Zoom" at the bottom of the screen if that was where its app's name fell. They are in
-/// the order the apps last said something now, which is the order a person is looking for.
-pub fn sync_to_ui(mirror: &NotificationMirror, ui_weak: &slint::Weak<crate::App>) {
-    let Some(ui) = ui_weak.upgrade() else { return };
-
+/// the order the senders last said something now, which is the order a person is looking for.
+pub fn centre_rows(mirror: &NotificationMirror) -> Vec<crate::NotificationData> {
     let showing = mirror.showing();
     let mut order: Vec<String> = Vec::new();
     for n in &showing {
-        let key = n.app.to_lowercase();
+        let key = group_of(n);
         if !order.contains(&key) {
             order.push(key);
         }
@@ -304,36 +376,72 @@ pub fn sync_to_ui(mirror: &NotificationMirror, ui_weak: &slint::Weak<crate::App>
 
     let mut items: Vec<crate::NotificationData> = Vec::new();
     for key in &order {
-        let group: Vec<&&Notification> = showing
-            .iter()
-            .filter(|n| n.app.to_lowercase() == *key)
-            .collect();
+        let group: Vec<&Notification> = showing.iter().copied().filter(|n| group_of(n) == *key).collect();
         let Some(first) = group.first() else { continue };
+        let name = sender_name(first);
         items.push(crate::NotificationData {
             id: slint::SharedString::default(),
-            app_name: first.app.clone().into(),
-            summary: first.app.clone().into(),
+            app_name: name.clone().into(),
+            // The words on the header: the mind's name for a group of nothing but its turns
+            // (`notification_groups::heading`). `group_name` stays the sender's, because it is
+            // what "Clear all from this group" matches against `group_of`.
+            summary: crate::notification_groups::heading(&name, &group).into(),
             body: slint::SharedString::default(),
             urgency: 0,
             time_ago: slint::SharedString::default(),
             is_read: true,
             sender_line: slint::SharedString::default(),
+            sender_short: slint::SharedString::default(),
             is_group_header: true,
-            group_name: first.app.clone().into(),
+            group_name: name.into(),
             group_icon: first_letter(&first.app),
+            // How many there are, and — apart, so a total is never read as unread — how many
+            // of them are.
             group_count: group.len() as i32,
+            group_unread: group.iter().filter(|n| !n.read).count() as i32,
+            is_turn_group: false,
+            group_key: slint::SharedString::default(),
+            expanded: false,
+            in_group: false,
             actions: slint::ModelRc::default(),
             source: first.source.as_str().into(),
         });
-        for n in group {
-            items.push(to_slint_data(n));
+        for entry in crate::notification_groups::fold(&group) {
+            match entry {
+                crate::notification_groups::Entry::One(n) => items.push(to_slint_data(n)),
+                crate::notification_groups::Entry::Turns(run) => {
+                    let open = run.expanded();
+                    items.push(turn_group_row(&run, open));
+                    if open {
+                        items.extend(run.notes.iter().map(|n| crate::NotificationData {
+                            in_group: true,
+                            ..to_slint_data(n)
+                        }));
+                    }
+                }
+            }
         }
     }
+    items
+}
 
+/// Today's list: the newest few, flat, with their buttons. The same rows the centre draws for
+/// the same notifications, from the same `to_slint_data`, so title, body and sender name agree.
+pub fn today_rows(mirror: &NotificationMirror) -> Vec<crate::NotificationData> {
+    let showing = mirror.showing();
+    showing.iter().take(TODAY_SHOWN).map(|n| to_slint_data(n)).collect()
+}
+
+/// Put the centre's list, Today's list and the badge on screen.
+pub fn sync_to_ui(mirror: &NotificationMirror, ui_weak: &slint::Weak<crate::App>) {
+    use slint::ComponentHandle;
+    let Some(ui) = ui_weak.upgrade() else { return };
+    ui.global::<crate::TodayState>()
+        .set_notifications(slint::ModelRc::new(slint::VecModel::from(today_rows(mirror))));
     ui.set_notification_unread_count(mirror.unread_count() as i32);
     ui.set_notification_service_up(mirror.service_up());
     ui.set_notification_service_notice(mirror.notice().unwrap_or_default().into());
-    ui.set_notification_list(slint::ModelRc::new(slint::VecModel::from(items)));
+    ui.set_notification_list(slint::ModelRc::new(slint::VecModel::from(centre_rows(mirror))));
 }
 
 #[cfg(test)]
@@ -369,6 +477,7 @@ mod tests {
             verified: "python -m hermes_cli.main gateway run --replace (pid 689)".into(),
             pid: 689,
             exe: "/home/yantrik/.hermes/hermes-agent/venv/bin/python".into(),
+            desktop: false,
         });
         let line = sender_line(&n);
         assert!(line.starts_with("\u{201c}Yantrik\u{201d} says the caller"), "{line}");
@@ -382,6 +491,7 @@ mod tests {
             verified: "a program started from a terminal: yantrik-terminal (pid 812)".into(),
             pid: 812,
             exe: "/opt/yantrik/bin/yantrik-terminal".into(),
+            desktop: false,
         });
         assert_eq!(
             sender_line(&n),
@@ -394,6 +504,7 @@ mod tests {
             verified: "could not be identified".into(),
             pid: 0,
             exe: String::new(),
+            desktop: false,
         });
         assert_eq!(
             sender_line(&n),
@@ -529,5 +640,136 @@ mod tests {
     fn an_unparseable_timestamp_reads_as_just_now_not_as_a_wild_number() {
         assert_eq!(seconds_since("not a timestamp"), 0.0);
         assert!(seconds_since("2020-01-01T00:00:00Z") > 0.0);
+    }
+
+    /// Today lists the five newest, in the store's own newest-first order, so a sixth arriving
+    /// pushes the oldest off Today (it stays in the notification centre).
+    #[test]
+    fn today_lists_the_five_newest_in_the_stores_order() {
+        assert_eq!(TODAY_SHOWN, 5);
+        let mut mirror = NotificationMirror::new();
+        mirror.items = (1..=7).map(|i| note(&i.to_string(), "Files", &format!("2026-10-02T09:0{i}:00Z"))).collect();
+        let ids: Vec<&str> = mirror.showing().into_iter().take(TODAY_SHOWN).map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, ["7", "6", "5", "4", "3"]);
+        let source = include_str!("notifications.rs");
+        assert!(source.contains("showing.iter().take(TODAY_SHOWN)"), "sync_to_ui hands Today exactly that slice");
+    }
+
+    fn sent_by(desktop: bool, claimed: Option<&str>, verified: &str, pid: i32, exe: &str) -> Option<Sender> {
+        Some(Sender { claimed: claimed.map(Into::into), verified: verified.into(), pid, exe: exe.into(), desktop })
+    }
+
+    /// One of each sender the sign-off saw, and the ways a program has tried to pass for the
+    /// desktop. Newest last, as the store keeps them.
+    fn senders() -> Vec<Notification> {
+        let shell = "/opt/yantrik/bin/yantrik-ui";
+        let mut out = Vec::new();
+        let mut push = |id: &str, app: &str, sender: Option<Sender>, source: Source| {
+            let mut n = note(id, app, &format!("2026-10-04T09:{:02}:00Z", out.len()));
+            n.sender = sender;
+            n.source = source;
+            out.push(n);
+        };
+        push("1", "Yantrik", sent_by(true, Some("Yantrik"), "yantrik-ui (pid 4)", 4, shell), Source::Yantrik);
+        push("2", "Yantrik Companion", sent_by(true, Some("Yantrik Companion"), "yantrik-ui (pid 4)", 4, shell), Source::Yantrik);
+        // Notification 134: a mind that said "Yantrik", filed before the service refused it.
+        let hermes = "python -m hermes_cli.main gateway run (pid 689)";
+        push("3", "Yantrik", sent_by(false, Some("Yantrik"), hermes, 689, "/venv/bin/python"), Source::Yantrik);
+        // A binary called Yantrik that gave no name, filed under its own.
+        push("4", "Yantrik", sent_by(false, None, "Yantrik (pid 77)", 77, "/tmp/Yantrik"), Source::Yantrik);
+        // A bridge the shell started, and a caller nothing could be established about.
+        push("5", "Yantrik", sent_by(false, Some("Yantrik"), "yantrik-ui (pid 9)", 9, shell), Source::Yantrik);
+        push("6", "Yantrik", sent_by(false, Some("Yantrik"), "could not be identified", 0, ""), Source::Yantrik);
+        // An old record of ours with no sender, and a name over D-Bus.
+        push("7", "Yantrik", None, Source::Yantrik);
+        push("8", "Yantrik", None, Source::Freedesktop);
+        out
+    }
+
+    fn mirror_of(items: Vec<Notification>) -> NotificationMirror {
+        let mut mirror = NotificationMirror::new();
+        mirror.items = items;
+        mirror
+    }
+
+    /// The group header a card in the centre's list sits under.
+    fn header_over(rows: &[crate::NotificationData], id: &str) -> String {
+        let at = rows.iter().position(|r| r.id == id).expect("the card is in the centre");
+        rows[..at].iter().rev().find(|r| r.is_group_header).expect("under a header").group_name.to_string()
+    }
+
+    #[test]
+    fn today_and_the_centre_call_a_sender_the_same_thing() {
+        let notes = senders();
+        let mirror = mirror_of(notes.clone());
+        let centre = centre_rows(&mirror);
+        // Today shows five; look at all of them by showing them five at a time.
+        for chunk in notes.chunks(TODAY_SHOWN) {
+            let today = today_rows(&mirror_of(chunk.to_vec()));
+            for n in chunk {
+                let row = today.iter().find(|r| r.id == n.id.as_str()).expect("on Today");
+                let card = centre.iter().find(|r| r.id == n.id.as_str()).expect("in the centre");
+                assert_eq!(row.app_name.as_str(), sender_name(n), "Today's name is the toast's, for {}", n.id);
+                assert_eq!(card.app_name, row.app_name, "the centre's card agrees, for {}", n.id);
+                assert_eq!(header_over(&centre, &n.id), row.app_name.as_str(), "and its group header, for {}", n.id);
+                assert_eq!((card.summary.as_str(), card.body.as_str()), (row.summary.as_str(), row.body.as_str()));
+            }
+        }
+        // The desktop's two names are its own, as it filed them.
+        assert_eq!(sender_name(&notes[0]), "Yantrik");
+        assert_eq!(sender_name(&notes[1]), "Yantrik Companion");
+    }
+
+    #[test]
+    fn a_sender_that_is_not_the_desktop_is_never_shown_as_yantrik() {
+        let notes = senders();
+        let mirror = mirror_of(notes.clone());
+        let centre = centre_rows(&mirror);
+        for n in &notes[2..] {
+            let name = sender_name(n);
+            assert!(!name.trim().eq_ignore_ascii_case("Yantrik"), "{} is called {name:?}", n.id);
+            assert!(!header_over(&centre, &n.id).trim().eq_ignore_ascii_case("Yantrik"), "{} sits under the desktop's header", n.id);
+        }
+        // Nor does one share the desktop's group: the "Yantrik" header holds the desktop's alone.
+        let desktop_group = centre.iter().find(|r| r.is_group_header && r.group_name.as_str() == "Yantrik").unwrap();
+        assert_eq!(desktop_group.group_count, 1, "only notification 1 is the desktop's \"Yantrik\"");
+        assert_eq!(desktop_group.summary.as_str(), "Yantrik", "and is headed with its name");
+    }
+
+    /// The desktop's group of a mind's turns is headed with the mind's name, the way its fold line
+    /// names it; it is still keyed and cleared as the desktop's.
+    #[test]
+    fn a_group_of_a_minds_turns_is_headed_with_the_minds_name() {
+        let shell = "/opt/yantrik/bin/yantrik-ui";
+        let turns: Vec<Notification> = (1..=3)
+            .map(|i| {
+                let mut n = note(&i.to_string(), "Yantrik", &format!("2026-10-04T09:0{i}:00Z"));
+                n.title = "Yantrik Mind replied".into();
+                n.sender = sent_by(true, Some("Yantrik"), "yantrik-ui (pid 4)", 4, shell);
+                n.actions = vec![yantrik_ipc_contracts::notifications::NotificationAction::new("show_agent", "Open")];
+                n
+            })
+            .collect();
+        let centre = centre_rows(&mirror_of(turns.clone()));
+        let header = centre.iter().find(|r| r.is_group_header).unwrap();
+        assert_eq!(header.summary.as_str(), "Yantrik Mind");
+        assert_eq!(header.group_name.as_str(), "Yantrik", "Clear all still matches the desktop's group");
+        let fold = centre.iter().find(|r| r.is_turn_group).unwrap();
+        assert!(fold.summary.starts_with("Yantrik Mind finished 3 turns"), "{}", fold.summary);
+    }
+
+    #[test]
+    fn a_card_cut_in_two_is_titled_by_its_first_sentence_in_both_places() {
+        // The sign-off's card, as the old poster filed it.
+        let mut n = note("9", "Yantrik Companion", "2026-10-04T08:00:00Z");
+        n.title = "Okay, this one's actually good: your calendar shows WebGL debugging at 9:30 and\u{2026}".into();
+        n.body = "a 'browser/arcade session' at 10:00.".into();
+        let mirror = mirror_of(vec![n]);
+        let today = &today_rows(&mirror)[0];
+        let card = centre_rows(&mirror).into_iter().find(|r| r.id == "9").unwrap();
+        assert!(today.summary.chars().count() <= crate::notification_title::TITLE_CHARS, "{}", today.summary);
+        assert!(today.body.starts_with("Okay, this one's actually good"), "{}", today.body);
+        assert!(today.body.ends_with("'browser/arcade session' at 10:00."), "{}", today.body);
+        assert_eq!((card.summary, card.body), (today.summary.clone(), today.body.clone()));
     }
 }

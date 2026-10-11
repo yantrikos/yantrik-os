@@ -1,0 +1,347 @@
+// The network popover: what the bar's network mark opens.
+//
+//   wired    the connection, its address, and a way into Settings > Network
+//   Wi-Fi    the radio as a tile, then the visible networks, strongest first, the joined one on
+//            top with a Disconnect button. A secured network the machine has no saved profile for
+//            opens a password field in its own row, as Plasma does; that field is the only place
+//            the password is typed.
+//   neither  no Wi-Fi device: no Wi-Fi tile and no list, because there is nothing to switch.
+//
+// Opening it asks the radio to scan, once (`NetworkState.scan-requested`). Nothing here repeats.
+//
+// Disconnect leaves the network and leaves the radio alone. The tile above it is the radio. They
+// used to be one button that did the second under the caption of the first.
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "../icon.slint";
+import { YPopover } from "../y_popover.slint";
+import { YToggleTile } from "../y_toggle_tile.slint";
+import { YButton } from "../y_button.slint";
+import { YInput } from "../y_input.slint";
+import { NetworkState, NetworkRow } from "../bar/network_state.slint";
+
+// One visible network.
+component NetworkRowItem inherits Rectangle {
+    in property <NetworkRow> entry;
+    // Its password field is open.
+    in property <bool> asking: false;
+    in property <bool> joining: false;
+    in property <string> notice: "";
+    // Who asked for this network (a mind), when someone did and the machine would not join it
+    // without a person. Empty for every other row.
+    in property <string> asked-by: "";
+    callback activated();
+    callback submit(string);
+    callback leave();
+
+    property <bool> hovered: ta.has-hover;
+    // The line under the name: the truth about this row, in words.
+    property <string> caption: root.entry.connected ? "Connected"
+        : root.joining ? "Connecting"
+        : root.asked-by != "" ? root.asked-by + " asked to join"
+        : root.entry.enterprise ? "Work or school network"
+        : root.entry.known ? "Saved"
+        : root.entry.secured ? "Password needed" : "Open";
+
+    height: head.height + (root.asking ? Theme.sp-1 + Theme.h-regular : 0px) + (root.notice != "" ? Theme.sp-1 + 34px : 0px);
+
+    head := Rectangle {
+        y: 0;
+        height: 44px;
+        border-radius: Theme.r-md;
+        background: root.hovered || keys.has-focus ? Theme.hover-fill : transparent;
+        animate background { duration: Theme.dur-fast; }
+
+        keys := FocusScope {
+            accessible-role: button;
+            accessible-label: root.entry.ssid + ", " + root.caption;
+            accessible-action-default => { if (!root.entry.connected) { root.activated(); } }
+            key-pressed(event) => {
+                if ((event.text == " " || event.text == "\n") && !event.repeat && !root.entry.connected) {
+                    root.activated();
+                    return accept;
+                }
+                reject
+            }
+        }
+        ta := TouchArea {
+            mouse-cursor: root.entry.connected ? default : pointer;
+            clicked => { if (!root.entry.connected) { root.activated(); } }
+        }
+
+        HorizontalLayout {
+            padding-left: Theme.sp-3;
+            padding-right: Theme.sp-2;
+            spacing: Theme.sp-3;
+
+            // Signal: the unlit bars dim, the lit ones over them.
+            Rectangle {
+                width: Theme.bar-icon-size;
+                Icon {
+                    commands: Icons.signal-bars;
+                    size: Theme.bar-icon-size;
+                    tint: Theme.text-dim.with-alpha(0.45);
+                    thickness: Theme.icon-stroke;
+                    y: (parent.height - self.height) / 2;
+                }
+                Icon {
+                    commands: root.entry.bars >= 4 ? Icons.signal-4 : root.entry.bars == 3 ? Icons.signal-3 : root.entry.bars == 2 ? Icons.signal-2 : Icons.signal-1;
+                    size: Theme.bar-icon-size;
+                    tint: root.entry.connected ? Theme.accent : Theme.text-primary;
+                    thickness: Theme.icon-stroke;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                Text {
+                    text: root.entry.ssid;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-body;
+                    font-weight: root.entry.connected ? Theme.fw-body-strong : Theme.fw-body;
+                    overflow: elide;
+                }
+                Text {
+                    text: root.caption;
+                    color: root.entry.connected ? Theme.accent : root.asked-by != "" ? Theme.color-warning : Theme.text-secondary;
+                    font-size: Theme.fs-caption;
+                    overflow: elide;
+                }
+            }
+
+            // An open network a caller asked for: the person presses Join, or does not.
+            if root.asked-by != "" && !root.entry.secured && !root.entry.connected : YButton {
+                variant: 0;
+                size: 0;
+                label: "Join";
+                y: (parent.height - self.height) / 2;
+                clicked => { root.activated(); }
+            }
+            if root.entry.secured && !root.entry.connected : Icon {
+                commands: Icons.lock;
+                size: Theme.bar-icon-size;
+                tint: Theme.text-dim;
+                thickness: Theme.icon-stroke;
+                y: (parent.height - self.height) / 2;
+            }
+            if root.entry.connected : YButton {
+                variant: 1;
+                size: 0;
+                label: "Disconnect";
+                y: (parent.height - self.height) / 2;
+                clicked => { root.leave(); }
+            }
+        }
+    }
+
+    // The password field, in this row and nowhere else. It exists only while it is asked for, so
+    // what was typed goes away with it; `submit` hands the text over and the field is cleared
+    // before anything else happens.
+    if root.asking : HorizontalLayout {
+        y: head.height + Theme.sp-1;
+        height: Theme.h-regular;
+        padding-left: Theme.sp-3;
+        padding-right: Theme.sp-2;
+        spacing: Theme.sp-2;
+
+        pw := YInput {
+            mode: 2;
+            placeholder: "Password for " + root.entry.ssid;
+            horizontal-stretch: 1;
+            min-width: 0px;
+            accepted(text) => { root.submit(text); self.value = ""; }
+            init => { self.focus(); }
+        }
+        YButton {
+            variant: 0;
+            size: 1;
+            label: "Join";
+            disabled: pw.value == "";
+            clicked => { root.submit(pw.value); pw.value = ""; }
+        }
+    }
+
+    if root.notice != "" : Text {
+        height: 34px;
+        y: head.height + (root.asking ? Theme.sp-1 + Theme.h-regular : 0px) + Theme.sp-1;
+        x: Theme.sp-3;
+        width: parent.width - 2 * Theme.sp-3;
+        text: root.notice;
+        color: Theme.color-danger;
+        font-size: Theme.fs-caption;
+        wrap: word-wrap;
+    }
+}
+
+export component NetworkPopover inherits YPopover {
+    // "Network settings": the owner closes the popover and opens Settings > Network.
+    callback settings-requested();
+
+    label: "Network";
+    content-spacing: Theme.sp-2;
+
+    // Closed by any route (a click on the bar, Esc, the control surface) drops the open password
+    // field with it; opened by any route asks for one scan.
+    changed open => {
+        if (self.open) {
+            NetworkState.scan-requested();
+        } else {
+            NetworkState.asking-ssid = "";
+            NetworkState.requested-ssid = "";
+        }
+    }
+
+    // Wired: the connection and its address.
+    if NetworkState.kind == "wired" : Rectangle {
+        height: 52px;
+        HorizontalLayout {
+            padding-left: Theme.sp-3;
+            padding-right: Theme.sp-3;
+            spacing: Theme.sp-3;
+            Icon {
+                commands: Icons.network;
+                size: Theme.sp-5;
+                tint: Theme.text-primary;
+                thickness: Theme.icon-stroke-bold;
+                y: (parent.height - self.height) / 2;
+            }
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                Text { text: "Wired connection"; color: Theme.text-primary; font-size: Theme.fs-body; font-weight: Theme.fw-body-strong; }
+                Text {
+                    text: NetworkState.ip != "" ? NetworkState.ip : "Connected";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-caption;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+
+    // Nothing is up and there is no radio to offer: say so plainly.
+    if !NetworkState.online && !NetworkState.connecting && !NetworkState.wifi-present : Text {
+        text: "Not connected";
+        color: Theme.text-secondary;
+        font-size: Theme.fs-body;
+        horizontal-alignment: center;
+        height: 40px;
+        vertical-alignment: center;
+    }
+
+    if NetworkState.vpn : Text {
+        text: "A VPN is connected";
+        color: Theme.text-secondary;
+        font-size: Theme.fs-caption;
+    }
+    if NetworkState.portal : Text {
+        text: "Sign in on this network's page to get online";
+        color: Theme.color-warning;
+        font-size: Theme.fs-caption;
+        wrap: word-wrap;
+    }
+    if NetworkState.no-internet : Text {
+        text: "Connected, but the internet is not reachable";
+        color: Theme.color-warning;
+        font-size: Theme.fs-caption;
+        wrap: word-wrap;
+    }
+
+    // Only a machine with a Wi-Fi device gets the radio and the list.
+    if NetworkState.wifi-present : YToggleTile {
+        icon: Icons.wifi;
+        title: "Wi-Fi";
+        subtitle: !NetworkState.radio-on ? "Off"
+            : NetworkState.kind == "wifi" && NetworkState.online ? NetworkState.ssid
+            : NetworkState.connecting ? "Connecting" : "Not connected";
+        on: NetworkState.radio-on;
+        toggled => { NetworkState.set-radio(!NetworkState.radio-on); }
+    }
+
+    if NetworkState.wifi-present && NetworkState.radio-on : Flickable {
+        height: min(list.preferred-height, 8 * 44px);
+        viewport-height: list.preferred-height;
+        viewport-width: self.width;
+        interactive: list.preferred-height > self.height;
+
+        list := VerticalLayout {
+            spacing: 0px;
+            for net[i] in NetworkState.networks : NetworkRowItem {
+                entry: net;
+                asking: NetworkState.asking-ssid == net.ssid;
+                joining: NetworkState.joining-ssid == net.ssid;
+                notice: NetworkState.notice-ssid == net.ssid ? NetworkState.notice : "";
+                asked-by: NetworkState.requested-ssid == net.ssid ? NetworkState.requested-by : "";
+                activated => {
+                    if (net.known || !net.secured) {
+                        NetworkState.asking-ssid = "";
+                        NetworkState.connect(net.ssid, "");
+                    } else if (!net.enterprise) {
+                        NetworkState.asking-ssid = net.ssid;
+                    } else {
+                        NetworkState.settings-requested();
+                    }
+                }
+                submit(secret) => { NetworkState.connect(net.ssid, secret); NetworkState.asking-ssid = ""; }
+                leave => { NetworkState.disconnect(); }
+            }
+            if NetworkState.networks.length == 0 : Text {
+                text: "No networks found";
+                color: Theme.text-secondary;
+                font-size: Theme.fs-caption;
+                height: 36px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    Rectangle { height: Theme.hairline; background: Theme.separator; }
+
+    settings-row := Rectangle {
+        height: 40px;
+        border-radius: Theme.r-md;
+        background: settings-ta.has-hover || settings-keys.has-focus ? Theme.hover-fill : transparent;
+        accessible-role: button;
+        accessible-label: "Network settings";
+        accessible-action-default => { root.settings-requested(); }
+
+        settings-keys := FocusScope {
+            key-pressed(event) => {
+                if ((event.text == " " || event.text == "\n") && !event.repeat) { root.settings-requested(); return accept; }
+                reject
+            }
+        }
+        settings-ta := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.settings-requested(); }
+        }
+        HorizontalLayout {
+            padding-left: Theme.sp-3;
+            padding-right: Theme.sp-3;
+            spacing: Theme.sp-3;
+            Icon {
+                commands: Icons.settings;
+                size: Theme.bar-icon-size;
+                tint: Theme.text-secondary;
+                thickness: Theme.icon-stroke;
+                y: (parent.height - self.height) / 2;
+            }
+            Text {
+                text: "Network settings";
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            Icon {
+                commands: Icons.chevron-right;
+                size: Theme.bar-icon-size;
+                tint: Theme.text-dim;
+                thickness: Theme.icon-stroke;
+                y: (parent.height - self.height) / 2;
+            }
+        }
+    }
+}

@@ -70,6 +70,10 @@ pub use yantrik_surface::{
 };
 pub use yantrik_ipc_transport::server::PeerCred;
 
+/// The last value of something slow to learn, so `describe` answers from it and says how old it
+/// is instead of learning it again inside the caller's wait.
+pub mod recent;
+
 /// A service's raw method that changes something answers only the desktop's own programs (#161):
 /// the check `yantrik_ipc_transport::owner::desktop_programs_only` makes, as the refusal a
 /// service returns. `-32001`, the code #332 gave the same refusal on the calendar and network.

@@ -182,6 +182,14 @@ find "$ROOT/share/browser" -name __pycache__ -type d -prune -exec rm -rf {} +
 [ -f "$ROOT/share/browser/yantrik_browser/page.js" ] || fail "the browser service's page reader (page.js) did not ship"
 echo "   + yantrik-browser (the browser's surface, with yantrik_surface vendored in share/browser)"
 
+# The harnesses, staged by the same script as the image. The updater installs share/ with
+# --delete, and before this the bundle had no share/harnesses: every update removed what the
+# image had put in /opt/yantrik/share/harnesses — the manifests Settings → Harnesses reads, the
+# installers its buttons run, and the scripts each harness unit starts.
+sh "$SCRIPT_DIR/stage-harnesses.sh" "$PROJECT_ROOT" "$ROOT/share/harnesses" >/dev/null \
+  || fail "the harnesses did not stage — an update would remove every harness from the machine"
+echo "   + harnesses (share/harnesses: manifests, harness scripts, installers)"
+
 # The updater ships in the image so a machine can update itself. It is a script, not a
 # compiled binary, so binary discovery does not find it either — and a machine that cannot
 # pull the next build is a machine that gets hand-patched over ssh forever.
@@ -192,6 +200,12 @@ if [ -f "$SCRIPT_DIR/yantrik-update" ]; then
 else
   echo "   (no yantrik-update script found — image will not self-update)"
 fi
+# What the text installer and cloud-init's first boot run around the updater's
+# migrate-ownership, so a machine never comes out with a tree its user can write (#397).
+cp "$SCRIPT_DIR/yantrik-lockdown" "$ROOT/bin/yantrik-lockdown" \
+  || fail "no yantrik-lockdown: an installed machine could keep a tree its user can write"
+chmod +x "$ROOT/bin/yantrik-lockdown"
+echo "   + yantrik-lockdown"
 
 # The session script. It decides what environment every program on this desktop inherits,
 # and it used to live only inside cloud-init's write_files -- written once at provision
@@ -353,12 +367,12 @@ echo "   + $(ls "$ROOT/share/applications" | wc -l) application entries"
 # for the toolkits that will not read one.
 ICONS="$ROOT/share/icons/hicolor"
 mkdir -p "$ICONS/scalable/apps"
-cp "$PROJECT_ROOT/brand/yantrik-mark.svg" "$ICONS/scalable/apps/yantrik.svg" \
-  || fail "brand/yantrik-mark.svg missing — the apps would ship with an Icon= that resolves to nothing"
+cp "$PROJECT_ROOT/brand/yantrik-icon.svg" "$ICONS/scalable/apps/yantrik.svg" \
+  || fail "brand/yantrik-icon.svg missing — the apps would ship with an Icon= that resolves to nothing"
 for px in 48 128 256; do
   mkdir -p "$ICONS/${px}x${px}/apps"
-  cp "$PROJECT_ROOT/brand/yantrik-mark-${px}.png" "$ICONS/${px}x${px}/apps/yantrik.png" \
-    || fail "brand/yantrik-mark-${px}.png missing — run: python3 brand/render.py"
+  cp "$PROJECT_ROOT/brand/yantrik-icon-${px}.png" "$ICONS/${px}x${px}/apps/yantrik.png" \
+    || fail "brand/yantrik-icon-${px}.png missing — run: python3 brand/render.py"
 done
 echo "   + app icon (svg + 48/128/256) as hicolor 'yantrik'"
 

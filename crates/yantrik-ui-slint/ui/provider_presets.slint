@@ -1,0 +1,25 @@
+// AI provider presets, as Settings and onboarding show them.
+//
+// No provider list lives in .slint. Rust builds these from yantrik-ml's provider catalogue
+// (crates/yantrik-ml/src/provider/catalogue.rs) in crates/yantrik-ui/src/wire/provider_catalogue.rs,
+// so the preset grid, first boot and the installer cannot disagree about a provider again.
+
+export struct ProviderPresetData {
+    id: string,             // catalogue id ("openai", "nvidia-nim"); "" is a blank cell that pads a row
+    name: string,           // full display name, what the saved provider is called
+    label: string,          // short button label
+    url: string,            // OpenAI-compatible base URL
+    placeholder: string,    // API key hint ("sk-…"); "" when no key is needed
+    group: string,          // "cloud" | "aggregator" | "local"
+}
+
+// One row of a preset grid: always the grid's full width in cells, blanks included.
+export struct ProviderPresetRow {
+    items: [ProviderPresetData],
+}
+
+// A titled section of the Settings preset grid.
+export struct ProviderPresetGroup {
+    title: string,
+    rows: [ProviderPresetRow],
+}

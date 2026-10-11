@@ -49,7 +49,12 @@ thread_local! {
 
 /// Press it: put the windows away and show the desktop, or bring them back. The answer says which,
 /// and names any window the compositor would not move.
-pub fn press(ui: &App) -> serde_json::Value {
+///
+/// `may_restore` is asked before windows are brought back, and only then: bringing them back can
+/// cover a waiting approval card, putting them away never can (card_watch). Refused, nothing
+/// moves and what the first press put away is still remembered, so the press after the card is
+/// answered brings it back.
+pub fn press(ui: &App, may_restore: impl FnOnce() -> Result<(), String>) -> Result<serde_json::Value, String> {
     let open: Vec<String> = crate::windows::shell_windows()
         .into_iter()
         .map(|w| w.title)
@@ -78,17 +83,18 @@ pub fn press(ui: &App) -> serde_json::Value {
             // stays over it.
             let raised = crate::windows::raise_shell().is_ok();
             LAST.with(|l| *l.borrow_mut() = Some(Shown { minimised: minimised.clone(), open }));
-            serde_json::json!({
+            Ok(serde_json::json!({
                 "did": "show_desktop",
                 "minimised": minimised,
                 "could_not_minimise": refused,
                 "raised": raised,
-            })
+            }))
         }
         Press::Restore(titles) => {
+            may_restore()?;
             let restored: Vec<String> = titles.into_iter().filter(|t| crate::windows::present(t)).collect();
             LAST.with(|l| *l.borrow_mut() = None);
-            serde_json::json!({"did": "restore_windows", "restored": restored})
+            Ok(serde_json::json!({"did": "restore_windows", "restored": restored}))
         }
     }
 }
@@ -97,8 +103,12 @@ pub fn wire(ui: &App) {
     let weak = ui.as_weak();
     ui.on_show_desktop(move || {
         if let Some(ui) = weak.upgrade() {
-            let outcome = press(&ui);
-            tracing::info!(%outcome, "Show desktop pressed");
+            // The taskbar's corner button is the person's own hand on this machine, not a call
+            // on the surface, so nothing holds it.
+            match press(&ui, || Ok(())) {
+                Ok(outcome) => tracing::info!(%outcome, "Show desktop pressed"),
+                Err(why) => tracing::warn!(%why, "Show desktop pressed and refused"),
+            }
         }
     });
 }
@@ -145,6 +155,21 @@ mod tests {
         // A desktop with no windows: the press shows the desktop, and so does the next one.
         let last = Shown { minimised: vec![], open: vec![] };
         assert_eq!(decide(&[], Some(&last)), Press::Show(vec![]));
+    }
+
+    /// Final review of the card fix: the second press brought every window back over a waiting
+    /// card. Only bringing back is asked about, never putting away, and it is asked before
+    /// anything is restored or forgotten.
+    #[test]
+    fn only_bringing_windows_back_asks_first_and_a_refusal_forgets_nothing() {
+        let source = include_str!("show_desktop.rs");
+        let start = source.find(concat!("Press::", "Restore(titles) =>")).expect("the restore branch");
+        let branch = &source[start..];
+        let asked = branch.find(concat!("may_", "restore()?")).expect("the restore branch asks");
+        assert!(asked < branch.find(concat!("windows::", "present(")).unwrap(), "asked before anything moves");
+        assert!(asked < branch.find(concat!("borrow_mut() = ", "None")).unwrap(), "and before the memory goes");
+        let show = source.find(concat!("Press::", "Show(titles) =>")).expect("the show branch");
+        assert!(!source[show..start].contains(concat!("may_", "restore")), "putting away is never held");
     }
 
     /// The desktop is part of the shell's own window, which a Wayland client cannot raise itself.

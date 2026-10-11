@@ -349,6 +349,16 @@ class PiConfigTests(unittest.TestCase):
         config = PiConfig({"path": "/home/me/.npm-global/bin:/home/me/.local/node/bin"})
         self.assertTrue(config.environ()["PATH"].startswith("/home/me/.npm-global/bin"))
 
+    def test_what_the_install_button_put_in_local_bin_is_found_with_no_config_at_all(self):
+        # The button installs pi and node into ~/.local/bin, and a unit written before that — which
+        # an update does not replace — has no PATH for it. The harness adds it itself.
+        user_bin = os.path.expanduser(os.path.join("~", ".local", "bin"))
+        path = PiConfig({}).environ()["PATH"].split(os.pathsep)
+        self.assertIn(user_bin, path)
+        self.assertEqual(path.count(user_bin), 1)
+        configured = PiConfig({"path": "/opt/pi/bin"}).environ()["PATH"].split(os.pathsep)
+        self.assertEqual(configured[0], "/opt/pi/bin", "the person's own path still comes first")
+
     def test_a_missing_config_is_pis_own_defaults_not_a_failure(self):
         config = load_config(os.path.join(tempfile.mkdtemp(), "pi.json"))
         self.assertEqual(config.command, ["pi"])

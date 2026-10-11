@@ -1,5 +1,9 @@
 //! The Agents screen (34), and every agent popped out into a window of its own.
 //!
+//! The screen is a workroom (see `agents_workroom` for what it says and `agents.slint` for how it
+//! is drawn): decisions waiting, desks at work, the minds, and one run's detail when it is opened.
+//! A popped-out window is still one agent's whole session, as it was.
+//!
 //! Both draw from the one store in `crate::agents`, through the `AgentsState` global in
 //! `agents.slint`. The screen's instance of that global lives on the shell's window; each popped-out
 //! `AgentWindow` has its own, filled by the same code from the same store — so the two views of an
@@ -11,7 +15,7 @@
 //! up in it, every tick, so its countdown moves.
 //!
 //! The same tick watches for what the person should hear about an agent they are not looking at —
-//! "pi finished: …", "deepseek needs you" — and says it through the notification service, as the
+//! "pi finished · made 2 calls", "deepseek needs you" — and says it through the notification service, as the
 //! desktop (see [`Watch`]).
 
 use std::cell::{Cell, RefCell};
@@ -22,15 +26,17 @@ use std::time::Duration;
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 
 use crate::agents::model::{
-    bytes, now, Agent, Approval, ApprovalOutcome, CallState, Card, Details, Item, Mark, OutputKind, Provenance, State, Tab, Turn,
+    bytes, now, Agent, Approval, ApprovalOutcome, CallState, Card, Details, Item, Mark, OutputKind, Provenance, State, Turn,
 };
 use crate::agents::{self, feed, launch, AgentId, Store};
 use crate::app_context::AppContext;
+use super::agents_workroom as workroom;
 use crate::{
-    AccentPreset, AgentDetailsData, AgentHeaderData, AgentItemData, AgentMindData, AgentRoleData, AgentRowData,
-    AgentRunData, AgentTabData, AgentWindow, AgentsState, App, ApprovalRequest, RouteStopData, ThemeMode,
-    ThemeOverrides, ToolCallData,
+    AccentPreset, AgentDetailsData, AgentHeaderData, AgentItemData, AgentMindData, AgentRoleData,
+    AgentRunData, AgentWindow, AgentsState, App, ApprovalRequest, ChangeRowData, ChildRunData, DecisionData,
+    DeskCardData, ResultData, RunFactData, ThemeMode, ThemeOverrides, ToolCallData, WorkCardData, WorkNavData,
 };
+use super::lens_work;
 
 /// The screen id `app.slint` draws the Agents screen at.
 pub const SCREEN: i32 = 34;
@@ -63,6 +69,9 @@ struct Surface {
     /// The store revision and local change drawn last.
     drawn: Option<(u64, u64)>,
     local: u64,
+    /// The screen's detail reads as a timeline: runs of calls are folded into one line each, and
+    /// the run's ledger and facts are published. A popped-out window shows every card, as before.
+    grouped: bool,
 }
 
 impl Surface {
@@ -76,6 +85,7 @@ impl Surface {
             keys: Vec::new(),
             drawn: None,
             local: 0,
+            grouped: false,
         }
     }
 
@@ -100,29 +110,28 @@ struct Popped {
 }
 
 struct Screen {
-    tab: Tab,
+    /// The run opened, when the screen shows one.
     selected: Option<AgentId>,
     /// The run picked, when the selected row is one run of a chat (`agent#n`).
     run: Option<u64>,
-    /// The rows as drawn, so they can be held still while the pointer is over them.
-    order: Vec<agents::RowKey>,
     main: Surface,
     windows: BTreeMap<AgentId, Popped>,
     /// When New agent last read the catalog, while it is open.
     roles_read: Option<std::time::Instant>,
+    /// The mind the workroom is narrowed to, by harness id.
+    mind: Option<String>,
 }
 
 type Shared = Rc<RefCell<Screen>>;
 
 pub fn wire(ui: &App, _ctx: &AppContext) {
     let state: Shared = Rc::new(RefCell::new(Screen {
-        tab: Tab::Active,
         selected: None,
         run: None,
-        order: Vec::new(),
-        main: Surface::new(),
+        main: Surface { grouped: true, ..Surface::new() },
         windows: BTreeMap::new(),
         roles_read: None,
+        mind: None,
     }));
     let g = ui.global::<AgentsState>();
     g.set_items(ModelRc::from(state.borrow().main.items.clone()));
@@ -137,40 +146,46 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
         }
     };
 
-    g.on_select_tab(on(|ui, state, key| {
-        {
-            let mut st = state.borrow_mut();
-            st.tab = Tab::from_key(&key);
-            st.order.clear();
-            st.selected = None;
-            st.run = None;
-        }
-        ui.global::<AgentsState>().set_tab(key.into());
-        refresh(ui, state, true);
-    }));
     g.on_select(on(|ui, state, id| {
         let key = agents::RowKey::parse(&id);
         let mut st = state.borrow_mut();
         st.selected = Some(key.agent);
         st.run = key.run;
         drop(st);
+        // Choosing a run, from a desk, a request, History or the navigation, opens it.
+        ui.global::<AgentsState>().set_detail_open(true);
         refresh(ui, state, true);
     }));
+    // ── The workroom: its pages, a mind's narrowing, back from a run, and Chat ──
+    g.on_back({
+        let (weak, state) = (weak.clone(), state.clone());
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                leave_run(&ui, &state);
+            }
+        }
+    });
+    g.on_show_section(on(|ui, state, section| {
+        let g = ui.global::<AgentsState>();
+        state.borrow_mut().mind = None;
+        g.set_mind_filter("".into());
+        g.set_mind_filter_name("".into());
+        g.set_section(section.into());
+        leave_run(ui, state);
+    }));
+    g.on_filter_mind(on(|ui, state, mind| {
+        let g = ui.global::<AgentsState>();
+        state.borrow_mut().mind = Some(mind.clone());
+        g.set_mind_filter(mind.into());
+        g.set_section("workroom".into());
+        leave_run(ui, state);
+    }));
+    g.on_chat_with(on(|ui, _state, id| notice(&ui.global::<AgentsState>(), chat_with(ui, &id))));
     g.on_pop_out(on(|ui, state, id| pop_out(ui, state, agent_of_row(&id))));
     g.on_stop(on(|ui, state, id| {
         notice(&ui.global::<AgentsState>(), launch::stop(&agent_of_row(&id)));
         refresh(ui, state, true);
     }));
-    g.on_close(on(|ui, state, id| close(ui, state, agent_of_row(&id), false)));
-    g.on_close_confirmed(on(|ui, state, id| close(ui, state, agent_of_row(&id), true)));
-    g.on_close_cancelled({
-        let weak = weak.clone();
-        move || {
-            if let Some(ui) = weak.upgrade() {
-                ui.global::<AgentsState>().set_confirm_close("".into());
-            }
-        }
-    });
     g.on_toggle({
         let (weak, state) = (weak.clone(), state.clone());
         move |key, open| {
@@ -251,14 +266,12 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
         let (weak, state) = (weak.clone(), state.clone());
         move || {
             let Some(ui) = weak.upgrade() else { return };
-            {
-                let mut st = state.borrow_mut();
-                st.tab = Tab::All;
-                st.order.clear();
-            }
             let g = ui.global::<AgentsState>();
-            g.set_tab(Tab::All.key().into());
-            g.set_view("list".into());
+            g.set_section("history".into());
+            g.set_mind_filter("".into());
+            g.set_mind_filter_name("".into());
+            g.set_detail_open(false);
+            state.borrow_mut().mind = None;
             ui.set_lens_open(false);
             ui.set_current_screen(SCREEN);
             ui.invoke_navigate(SCREEN);
@@ -272,6 +285,7 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
     let timer = Timer::default();
     {
         let (weak, state) = (weak.clone(), state.clone());
+        let beat = std::cell::Cell::new(0u32);
         timer.start(TimerMode::Repeated, TICK, move || {
             agents::store().save_if_due();
             let seen = Seen::now();
@@ -293,6 +307,13 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
             publish_lens_questions(&ui);
             if ui.get_current_screen() == SCREEN {
                 refresh(&ui, &state, false);
+            } else if beat.replace(beat.get().wrapping_add(1)) % 4 == 3 {
+                // The bar's Minds chip is on every screen and counts the same requests the
+                // workroom does, so they are read here when the workroom is not drawing them:
+                // once a second, not every tick, because a request is not urgent to the
+                // quarter-second and the bar is the one thing drawn all day.
+                let room = agents::store().read(|s| room_now(s, &seen, &waiting_jobs));
+                publish_request_counts(&ui.global::<AgentsState>(), &room);
             }
             refresh_windows(&ui, &state);
             tell_the_person(&ui, &state, &mut watch.borrow_mut(), &waiting_jobs);
@@ -300,6 +321,41 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
     }
     // The timer lives as long as the shell, the idiom every wire module uses.
     std::mem::forget(timer);
+}
+
+/// Back to the page a run was opened from: nothing selected, and nothing half-asked.
+fn leave_run(ui: &App, state: &Shared) {
+    {
+        let mut st = state.borrow_mut();
+        st.selected = None;
+        st.run = None;
+    }
+    let g = ui.global::<AgentsState>();
+    g.set_detail_open(false);
+    g.set_confirm_stop("".into());
+    g.set_menu_key("".into());
+    refresh(ui, state, true);
+}
+
+/// Chat: the person's conversation with a mind, in the Lens. `id` is a harness id (a desk's mind)
+/// or an agent's id (`pi:c-7f3a91`, a run's): either way it is the mind that is chosen, and the
+/// Lens opens on it. The choice is the Lens's own (`harness::choose`), so a mind that cannot
+/// answer says why instead of the Lens opening on another.
+fn chat_with(ui: &App, id: &str) -> Result<(), String> {
+    let harness = id.split_once(':').map_or(id, |(harness, _)| harness);
+    let host = crate::wire::harness::host().ok_or_else(|| "the harness host is not running yet".to_string())?;
+    crate::wire::harness::choose(host, harness)?;
+    // Remembered, as every choice of a mind is (`use_harness`): the host's choice is restored from
+    // the saved one, and one that was never saved is handed back to the old mind a moment later.
+    crate::wire::settings::set_preferred_mind(harness);
+    // The Lens is drawn by the desktop and nowhere else, so Chat goes there, as `open_lens` does.
+    if ui.get_current_screen() != 1 {
+        ui.set_current_screen(1);
+        ui.invoke_navigate(1);
+    }
+    ui.set_lens_open(true);
+    ui.invoke_open_lens();
+    Ok(())
 }
 
 /// Turns a re-attaching harness picked back up after the shell restarted (#246): back in their
@@ -317,7 +373,7 @@ fn pick_up_resumed(ui: &App, streams: &crate::streaming::Streams) {
     }
 }
 
-/// New agent's Start, either way: the new agent selected on Active, or why it did not start.
+/// Start work, either way: the new agent opened, or why it did not start.
 fn started(ui: &App, state: &Shared, outcome: Result<AgentId, String>) {
     let g = ui.global::<AgentsState>();
     match outcome {
@@ -326,14 +382,11 @@ fn started(ui: &App, state: &Shared, outcome: Result<AgentId, String>) {
             g.set_new_error("".into());
             {
                 let mut st = state.borrow_mut();
-                if st.tab != Tab::All {
-                    st.tab = Tab::Active;
-                    g.set_tab(Tab::Active.key().into());
-                }
-                st.order.clear();
                 st.selected = Some(agent);
                 st.run = None;
             }
+            // The desk it was given is the page to watch.
+            g.set_detail_open(true);
             refresh(ui, state, true);
         }
         Err(why) => g.set_new_error(why.into()),
@@ -499,54 +552,21 @@ fn pick_mind(g: &AgentsState, mind: &str) {
     g.set_new_note(note.into());
 }
 
-/// Redraw the screen: tabs, list, and the selected agent's session and details.
+/// Redraw the screen: the workroom, and the opened run's session and details.
 fn refresh(ui: &App, state: &Shared, force: bool) {
     let g = ui.global::<AgentsState>();
     let seen = Seen::now();
-    let hovering = g.get_list_hovered();
+    // Read before the store's lock is taken: the terminal has its own.
+    let jobs = waiting_input_jobs();
     let mut st = state.borrow_mut();
     let st = &mut *st;
     agents::store().read(|s| {
-        let tasks = s.tasks(TASKS_SHOWN);
-        let tabs: Vec<AgentTabData> = Tab::EVERY
-            .iter()
-            .zip(s.counts())
-            .chain(std::iter::once((&Tab::Tasks, tasks.len())))
-            .map(|(tab, count)| AgentTabData { id: tab.key().into(), label: tab.label().into(), count: count as i32 })
-            .collect();
-        if let Some(model) = crate::models::changed(g.get_tabs(), tabs) {
-            g.set_tabs(model);
-        }
-
-        let empty = if st.tab == Tab::Tasks {
-            if tasks.is_empty() { "No tasks yet. Everything asked of a mind, in the Lens or from New agent, is listed here, newest first.".to_string() } else { String::new() }
-        } else {
-            empty_note(st.tab, s.counts())
-        };
-        if g.get_empty_note() != empty.as_str() {
-            g.set_empty_note(empty.into());
-        }
-
-        let (order, rows): (Vec<agents::RowKey>, Vec<AgentRowData>) = if st.tab == Tab::Tasks {
-            // One row per request (#234), keyed `agent#turn`; picking one opens that run.
-            let keys: Vec<agents::RowKey> = tasks.iter().map(|(id, n)| agents::RowKey::run(id, *n)).collect();
-            let rows = keys.iter().filter_map(|k| row_for(s, k)).collect();
-            (keys, rows)
-        } else {
-            let hold = (hovering && !st.order.is_empty()).then_some(st.order.as_slice());
-            let order = s.rows(st.tab, hold);
-            let rows = order.iter().filter_map(|k| row_for(s, k)).collect();
-            (order, rows)
-        };
-        st.order = order;
-        if let Some(model) = crate::models::changed(g.get_rows(), rows) {
-            g.set_rows(model);
-        }
-
-        if st.selected.as_ref().is_none_or(|id| s.agent(id).is_none()) {
-            let first = st.order.first().cloned();
-            st.selected = first.as_ref().map(|k| k.agent.clone());
-            st.run = first.and_then(|k| k.run);
+        // A run opened that the store no longer has (closed from another door) goes back to the
+        // page it came from. Nothing is selected on its own: the workroom opens on the workroom.
+        if st.selected.as_ref().is_some_and(|id| s.agent(id).is_none()) || (st.selected.is_none() && g.get_detail_open()) {
+            st.selected = None;
+            st.run = None;
+            g.set_detail_open(false);
         }
         let selected = st
             .selected
@@ -556,13 +576,17 @@ fn refresh(ui: &App, state: &Shared, force: bool) {
         if g.get_selected() != selected.as_str() {
             g.set_selected(selected.into());
         }
-        let selected = st.selected.clone();
+        let selected = st.selected.clone().filter(|_| g.get_detail_open());
         st.main.run = st.run;
         draw(&g, &mut st.main, s, selected.as_ref(), &seen, force);
 
-        // Published whatever the view, so choosing Overview finds the route already there.
-        publish_route(&g, s, selected.as_ref(), st.run);
+        publish_workroom(&g, &room_now(s, &seen, &jobs), st.mind.as_deref());
+        publish_lens(&g, s);
     });
+    let mode_line = workroom::mode_line(crate::mind_mode::current());
+    if g.get_mode_line() != mode_line.as_str() {
+        g.set_mode_line(mode_line.into());
+    }
 
     if g.get_new_open() {
         let rows: Vec<AgentMindData> = seen
@@ -594,52 +618,251 @@ fn refresh(ui: &App, state: &Shared, force: bool) {
     }
 }
 
-/// The Overview (Pranab, 27 September): the selected run as a route, not every agent at once.
-/// Set only where it changed, so a route in which nothing moves asks for no redraw.
-fn publish_route(g: &AgentsState, s: &Store, agent: Option<&AgentId>, run: Option<u64>) {
-    let a = agent.and_then(|id| s.agent(id));
-    let children: Vec<&Agent> = match a {
-        Some(a) => s.agents().iter().filter(|c| c.meta.parent.as_ref() == Some(&a.meta.id)).collect(),
-        None => Vec::new(),
+/// What the Lens's conversation shows of the runs it started (Chat v2): a card per run, the run the
+/// strip describes, and the counts. The runs are the active mind's own conversation, which is the
+/// one the Lens is. Set only where it changed, so a conversation in which nothing moves asks for no
+/// redraw.
+fn publish_lens(g: &AgentsState, s: &Store) {
+    let host = crate::wire::harness::host();
+    let active = host.map(|h| h.active_id()).unwrap_or_else(|| crate::wire::harness::BUILTIN_ID.to_string());
+    let works = s
+        .agent(&feed::main_agent(&active))
+        .map(|a| lens_work::works_of(a, now()))
+        .unwrap_or_default();
+    let cards: Vec<WorkCardData> = works.iter().map(work_card).collect();
+    if let Some(model) = crate::models::changed(g.get_lens_cards(), cards) {
+        g.set_lens_cards(model);
+    }
+    let strip = lens_work::strip_of(&works).map(work_card).unwrap_or_default();
+    if g.get_lens_strip() != strip {
+        g.set_lens_strip(strip);
+    }
+    let live = works.iter().filter(|w| w.live).count() as i32;
+    let waiting = works.iter().filter(|w| w.state == "needs-you").count() as i32;
+    if g.get_lens_live() != live {
+        g.set_lens_live(live);
+    }
+    if g.get_lens_waiting() != waiting {
+        g.set_lens_waiting(waiting);
+    }
+    let identity = if active == crate::wire::harness::BUILTIN_ID { "Built-in mind" } else { "Attached mind" };
+    if g.get_lens_identity() != identity {
+        g.set_lens_identity(identity.into());
+    }
+}
+
+/// The latest status line of the active mind's open turn, for `describe shell`; empty when it has
+/// no turn running.
+pub fn latest_status() -> String {
+    let active = crate::wire::harness::host()
+        .map(|h| h.active_id())
+        .unwrap_or_else(|| crate::wire::harness::BUILTIN_ID.to_string());
+    crate::agents::store()
+        .read(|s| s.agent(&feed::main_agent(&active)).filter(|a| a.open_turn().is_some()).map(|a| a.status.trim().to_string()))
+        .unwrap_or_default()
+}
+
+/// A mind's status line as `describe shell` carries it: invisible and bidi characters dropped,
+/// whitespace flattened and cut to 120 characters, so the line cannot spoof or bloat the describe.
+pub fn status_for_describe(raw: &str) -> String {
+    let visible: String = raw.chars().filter(|c| !c.is_control() || c.is_whitespace()).filter(|c| !crate::approvals::is_format_char(*c)).collect();
+    crate::agents::progress::brief(&visible, 120)
+}
+
+fn work_card(w: &lens_work::Work) -> WorkCardData {
+    WorkCardData {
+        run: w.run.as_str().into(),
+        title: w.title.as_str().into(),
+        mind: w.mind.as_str().into(),
+        state: w.state.into(),
+        label: w.label.into(),
+        activity: w.activity.as_str().into(),
+        can_view_desk: w.can_view_desk,
+        can_review: w.can_review,
+    }
+}
+
+/// The workroom as it stands: what the screen draws and `describe shell` says, from the one
+/// reading of the stores.
+fn room_now(s: &Store, seen: &Seen, jobs: &[(AgentId, String)]) -> workroom::Workroom {
+    let mut minds: Vec<(String, String)> = seen.minds.iter().map(|(id, name, _)| (id.clone(), name.clone())).collect();
+    minds.sort();
+    let mut attached = seen.attached();
+    attached.push(crate::wire::harness::BUILTIN_ID.to_string());
+    workroom::compose(s, &minds, &attached, &seen.approvals, jobs, now())
+}
+
+/// `describe shell` under `workroom`: which page the screen is on and what it says — the counts,
+/// each mind's state, and, for the person's own reader, the desks and the requests waiting. A mind
+/// reading it is told the counts and the states, never what the person asked of the others or
+/// what is being asked of them (the boundary `agents::PERSONS_FIELDS` holds for `agents`).
+pub fn workroom_for_describe(ui: &App, agent_reading: bool) -> serde_json::Value {
+    // Read before the store's lock is taken: the approvals and the terminal have their own.
+    let seen = Seen::now();
+    let jobs = waiting_input_jobs();
+    let room = agents::store().read(|s| room_now(s, &seen, &jobs));
+    let g = ui.global::<AgentsState>();
+    let opened = g.get_detail_open().then(|| g.get_selected().to_string()).filter(|key| !key.is_empty());
+    let narrowed = Some(g.get_mind_filter().to_string()).filter(|mind| !mind.is_empty());
+    workroom::for_describe(&room, &g.get_section(), opened.as_deref(), narrowed.as_deref(), agent_reading)
+}
+
+/// The minds the workroom can be narrowed to, as `(id, name)`: the navigation's own list.
+pub fn workroom_minds_now() -> Vec<(String, String)> {
+    let seen = Seen::now();
+    let jobs = waiting_input_jobs();
+    let room = agents::store().read(|s| room_now(s, &seen, &jobs));
+    room.nav.into_iter().filter(|n| n.kind == "mind").map(|n| (n.id, n.label)).collect()
+}
+
+/// How many requests wait on the person and how many minds they come from: the workroom's header
+/// and the top bar's Minds chip both read these two numbers, so there is one reading of them. Set
+/// only where they changed.
+fn publish_request_counts(g: &AgentsState, all: &workroom::Workroom) {
+    if g.get_needs_count() != all.requests as i32 {
+        g.set_needs_count(all.requests as i32);
+    }
+    if g.get_request_minds() != all.request_minds as i32 {
+        g.set_request_minds(all.request_minds as i32);
+    }
+}
+
+/// The workroom, into the global: the navigation, the desks, the shelf and the pages behind it.
+/// Every list is set only where it changed, so a workroom in which nothing moves asks for no
+/// redraw. The header's counts and the navigation are the whole desktop's; the pages are the
+/// narrowed mind's when one is chosen.
+fn publish_workroom(g: &AgentsState, all: &workroom::Workroom, mind: Option<&str>) {
+    let view = mind.map_or_else(|| all.clone(), |m| all.narrowed(m));
+    let set = |current: slint::SharedString, text: String, put: &dyn Fn(slint::SharedString)| {
+        if current != text.as_str() {
+            put(text.into());
+        }
     };
-    let route = a.and_then(|a| agents::route::route(a, run, &children, now()));
-    let note = match a {
-        None => "Pick a run in the list to see its route.",
-        Some(_) => "It has not run anything yet.",
-    };
-    let (title, summary, live, stops) = match route {
-        Some(r) => (r.title, r.summary, r.live, r.stops),
-        None => (String::new(), String::new(), false, Vec::new()),
-    };
-    let stops: Vec<RouteStopData> = stops
-        .into_iter()
-        .map(|st| RouteStopData {
-            key: st.key.into(),
-            kind: st.kind.into(),
-            state: st.state.into(),
-            title: st.title.into(),
-            sub: st.sub.into(),
-            track_in: st.track_in.into(),
-            track_out: st.track_out.into(),
-            train_in: st.train_in,
-            train_out: st.train_out,
-            train_span: st.train_span,
+    set(g.get_summary(), all.summary(), &|t| g.set_summary(t));
+    let name = mind
+        .and_then(|m| all.nav.iter().find(|n| n.kind == "mind" && n.id == m))
+        .map(|n| n.label.clone())
+        .unwrap_or_default();
+    set(g.get_mind_filter_name(), name, &|t| g.set_mind_filter_name(t));
+    publish_request_counts(g, all);
+    for (current, now, put) in [
+        (g.get_runs_count(), all.runs as i32, &(|n| g.set_runs_count(n)) as &dyn Fn(i32)),
+        (g.get_shelf_count(), view.requests as i32, &|n| g.set_shelf_count(n)),
+        (g.get_shelf_minds(), view.request_minds as i32, &|n| g.set_shelf_minds(n)),
+        (g.get_view_runs(), view.runs as i32, &|n| g.set_view_runs(n)),
+    ] {
+        if current != now {
+            put(now);
+        }
+    }
+
+    let nav: Vec<WorkNavData> = all
+        .nav
+        .iter()
+        .map(|n| WorkNavData {
+            kind: n.kind.into(),
+            id: n.id.as_str().into(),
+            label: n.label.as_str().into(),
+            sub: n.sub.as_str().into(),
+            needs: n.needs as i32,
+            working: n.working,
+            available: n.available,
         })
         .collect();
-    if let Some(model) = crate::models::changed(g.get_route_stops(), stops) {
-        g.set_route_stops(model);
+    if let Some(model) = crate::models::changed(g.get_nav_minds(), nav) {
+        g.set_nav_minds(model);
     }
-    if g.get_route_title() != title.as_str() {
-        g.set_route_title(title.into());
+    let desks: Vec<DeskCardData> = view
+        .desks
+        .iter()
+        .map(|d| DeskCardData {
+            key: d.key.as_str().into(),
+            mind_id: d.mind_id.as_str().into(),
+            mind: d.mind.as_str().into(),
+            via: d.via.as_str().into(),
+            task: d.task.as_str().into(),
+            state: d.state.into(),
+            label: d.label.as_str().into(),
+            activity: d.activity.as_str().into(),
+            since: d.since.as_str().into(),
+        })
+        .collect();
+    if let Some(model) = crate::models::changed(g.get_desks(), desks) {
+        g.set_desks(model);
     }
-    if g.get_route_summary() != summary.as_str() {
-        g.set_route_summary(summary.into());
+    let decision = |d: &workroom::Decision| DecisionData {
+        key: d.key.as_str().into(),
+        request: d.request.as_str().into(),
+        mind: d.mind.as_str().into(),
+        task: d.task.as_str().into(),
+        text: d.text.as_str().into(),
+        age: workroom::ago(d.age_secs).into(),
+        action: d.action.as_str().into(),
+    };
+    // The Needs you page lists the whole desktop's; the shelf is the narrowed mind's, three of them.
+    let every: Vec<DecisionData> = all.decisions.iter().map(decision).collect();
+    if let Some(model) = crate::models::changed(g.get_decisions(), every) {
+        g.set_decisions(model);
     }
-    if g.get_route_live() != live {
-        g.set_route_live(live);
+    let shelf: Vec<DecisionData> = view.decisions.iter().take(workroom::SHELF_SHOWN).map(decision).collect();
+    if let Some(model) = crate::models::changed(g.get_shelf(), shelf) {
+        g.set_shelf(model);
     }
-    if g.get_route_note() != note {
-        g.set_route_note(note.into());
+    let result = |r: &workroom::Finished| ResultData {
+        key: r.key.as_str().into(),
+        mind: r.mind.as_str().into(),
+        task: r.task.as_str().into(),
+        outcome: r.outcome.into(),
+        label: r.label.into(),
+        when: r.when.as_str().into(),
+    };
+    let recent: Vec<ResultData> = view.history.iter().take(workroom::RECENT_SHOWN).map(result).collect();
+    if let Some(model) = crate::models::changed(g.get_recent(), recent) {
+        g.set_recent(model);
+    }
+    let history: Vec<ResultData> = view.history.iter().map(result).collect();
+    if let Some(model) = crate::models::changed(g.get_history(), history) {
+        g.set_history(model);
+    }
+}
+
+/// The opened run: its state in the screen's words, the changes recorded and the facts behind it.
+/// Worked out when the store changes, with the session, not every tick.
+fn publish_detail(g: &AgentsState, s: &Store, a: &Agent, run: Option<u64>) {
+    let run = workroom::run_to_show(a, run);
+    let (state, label) = workroom::state_of(a, run);
+    if g.get_detail_state() != state {
+        g.set_detail_state(state.into());
+    }
+    if g.get_detail_label() != label {
+        g.set_detail_label(label.into());
+    }
+    let turns: Vec<&Turn> = match run {
+        Some(n) => a.turns.iter().filter(|t| t.n == n).collect(),
+        None => a.turns.iter().collect(),
+    };
+    let changes = workroom::changes_of(&turns);
+    if g.get_changes_recorded() != workroom::recorded(&changes) {
+        g.set_changes_recorded(workroom::recorded(&changes));
+    }
+    let rows: Vec<ChangeRowData> = changes
+        .iter()
+        .map(|c| ChangeRowData { group: c.group.into(), text: c.text.as_str().into(), status: c.status.as_str().into(), tone: c.tone.into() })
+        .collect();
+    if let Some(model) = crate::models::changed(g.get_changes(), rows) {
+        g.set_changes(model);
+    }
+    let facts: Vec<RunFactData> =
+        workroom::run_facts(a, run).into_iter().map(|(label, value)| RunFactData { label: label.into(), value: value.into() }).collect();
+    if let Some(model) = crate::models::changed(g.get_run_facts(), facts) {
+        g.set_run_facts(model);
+    }
+    let children: Vec<ChildRunData> = workroom::child_runs(s, a, run)
+        .into_iter()
+        .map(|c| ChildRunData { key: c.key.into(), title: c.title.into(), label: c.label.into(), state: c.state.into() })
+        .collect();
+    if let Some(model) = crate::models::changed(g.get_child_runs(), children) {
+        g.set_child_runs(model);
     }
 }
 
@@ -683,7 +906,9 @@ fn draw(g: &AgentsState, surface: &mut Surface, s: &Store, agent: Option<&AgentI
     let mut header = header_of(a, seen);
     if let Some(t) = surface.run.and_then(|n| a.turns.iter().find(|t| t.n == n)) {
         // One run of a chat: named by what it was asked.
-        header.title = one_line(&t.prompt, TITLE_CHARS).into();
+        let (title, raw) = super::run_heading::named(&t.prompt, TITLE_CHARS);
+        header.title = title.into();
+        header.raw = raw.into();
     }
     if g.get_header() != header {
         g.set_header(header);
@@ -693,6 +918,13 @@ fn draw(g: &AgentsState, surface: &mut Surface, s: &Store, agent: Option<&AgentI
         g.set_details(details);
     }
 
+    if surface.grouped {
+        // The mode is the desktop's and moves with the person's choice, not with the store.
+        let mode = workroom::mode_label(crate::mind_mode::current());
+        if g.get_detail_mode() != mode {
+            g.set_detail_mode(mode.into());
+        }
+    }
     let fresh = surface.agent.as_ref() != Some(&a.meta.id) || surface.drawn_run != surface.run;
     if fresh {
         surface.agent = Some(a.meta.id.clone());
@@ -707,7 +939,14 @@ fn draw(g: &AgentsState, surface: &mut Surface, s: &Store, agent: Option<&AgentI
         return;
     }
     surface.drawn = Some(stamp);
-    publish_items(g, surface, items_of(a, &surface.expanded, &seen.approvals, surface.run), fresh);
+    let items = items_of(a, &surface.expanded, &seen.approvals, surface.run);
+    let items = if surface.grouped {
+        publish_detail(g, s, a, surface.run);
+        workroom::group_calls(items, &surface.expanded)
+    } else {
+        items
+    };
+    publish_items(g, surface, items, fresh);
 }
 
 /// Put a session's items in the model: in place when only the end changed, so the view keeps its
@@ -735,85 +974,14 @@ fn publish_items(g: &AgentsState, surface: &mut Surface, items: Vec<AgentItemDat
 
 // ── From the store to what the screen draws ────────────────────────
 
-fn row_of(a: &Agent) -> AgentRowData {
-    let (progress, stuck) = row_progress(a, crate::agents::model::now());
-    AgentRowData {
-        id: a.meta.id.0.as_str().into(),
-        mind: a.meta.mind.as_str().into(),
-        title: one_line(latest_request(&a.turns, &a.meta.title), TITLE_CHARS).into(),
-        state: a.state.key().into(),
-        label: a.state.label().into(),
-        since: since(a).into(),
-        parent: a.meta.parent.as_ref().map(|p| p.0.clone()).unwrap_or_default().into(),
-        role: a.meta.role.as_ref().map(|r| r.name.clone()).unwrap_or_default().into(),
-        origin: a.meta.recipe.as_ref().map(|r| r.label()).unwrap_or_default().into(),
-        progress: progress.into(),
-        stuck: stuck.into(),
-    }
-}
-
-/// How many requests the Tasks tab lists, newest first.
-const TASKS_SHOWN: usize = 60;
-
-/// One row of the list: an agent as before, or one run of a chat, marked where it came from.
-fn row_for(s: &Store, key: &agents::RowKey) -> Option<AgentRowData> {
-    let a = s.agent(&key.agent)?;
-    let Some(n) = key.run else { return Some(row_of(a)) };
-    let mut row = task_row(a, n, now())?;
-    let from_chat = a.is_plain_main() && a.turns.iter().find(|t| t.n == n).is_some_and(|t| t.origin != crate::agents::model::TurnOrigin::Agent);
-    if from_chat {
-        row.origin = "Chat".into();
-    }
-    Some(row)
-}
-
-/// The agent a row is about: a Tasks row's id is `agent#turn`.
+/// The agent a run's key is about: a run's key is `agent#turn`.
 fn agent_of_row(id: &str) -> AgentId {
     AgentId(id.split_once('#').map_or(id, |(agent, _)| agent).to_string())
 }
 
-/// One request, as a Tasks row (#234): what was asked, which mind, how it stands, and, while it
-/// runs, the shell's own count of its calls and whether it looks stuck.
-fn task_row(a: &Agent, n: u64, now: u64) -> Option<AgentRowData> {
-    let turn = a.turns.iter().find(|t| t.n == n)?;
-    let mut row = row_of(a);
-    row.id = format!("{}#{}", a.meta.id.0, n).into();
-    row.title = crate::agents::progress::brief(&turn.prompt, 120).into();
-    if turn.open() {
-        row.since = duration(now.saturating_sub(turn.started)).into();
-    } else {
-        // A task the desktop's stopping cut off is lost, not failed: the mind never gave up on it.
-        let (state, label) = if turn.lost {
-            ("lost", "lost when the desktop stopped")
-        } else if turn.ok == Some(false) {
-            ("failed", "could not finish")
-        } else {
-            ("done", "done")
-        };
-        row.state = state.into();
-        row.label = label.into();
-        row.since = clock(turn.ended.unwrap_or(turn.started)).into();
-        row.progress = format!("{} call{}", turn.cards().count(), if turn.cards().count() == 1 { "" } else { "s" }).into();
-        row.stuck = "".into();
-    }
-    Some(row)
-}
-
-/// A working agent's row line from the shell's own record (#234): its calls counted and when it
-/// was last heard from, and why it looks stuck when it does. Empty for an agent at rest.
-fn row_progress(a: &Agent, now: u64) -> (String, String) {
-    let Some(p) = crate::agents::progress::of(a, now) else { return (String::new(), String::new()) };
-    let mut line = format!("{} call{}", p.calls, if p.calls == 1 { "" } else { "s" });
-    if p.failed > 0 {
-        line.push_str(&format!(" · {} failed", p.failed));
-    }
-    line.push_str(&format!(" · heard {} ago", crate::agents::progress::span(p.quiet_secs)));
-    (line, p.stuck.unwrap_or_default())
-}
-
-/// What an agent was last asked, which is what its row is about now.
+/// What an agent was last asked, which is what its title is about now.
 ///
-/// The row used to carry the conversation's first prompt for ever. The Lens's conversation with a
+/// A title used to carry the conversation's first prompt for ever. The Lens's conversation with a
 /// mind is one long-lived agent, so every request a person made there sat under whatever they
 /// asked first, hours before: on VM 520, "Release check: reply with exactly one word, READY."
 /// over a town model, a daily briefing and a game (#234, #246).
@@ -821,7 +989,7 @@ fn row_progress(a: &Agent, now: u64) -> (String, String) {
 /// this only bounds the work of a prompt pasted in whole.
 const TITLE_CHARS: usize = 200;
 
-fn latest_request<'a>(turns: &'a [Turn], first: &'a str) -> &'a str {
+pub(super) fn latest_request<'a>(turns: &'a [Turn], first: &'a str) -> &'a str {
     turns.iter().rev().map(|t| t.prompt.trim()).find(|p| !p.is_empty()).unwrap_or(first)
 }
 
@@ -834,7 +1002,7 @@ fn since(a: &Agent) -> String {
     }
 }
 
-fn duration(secs: u64) -> String {
+pub(super) fn duration(secs: u64) -> String {
     match secs {
         0..=4 => "just now".into(),
         5..=59 => format!("{secs}s"),
@@ -844,7 +1012,7 @@ fn duration(secs: u64) -> String {
 }
 
 /// Local time today, the date before today.
-fn clock(unix: u64) -> String {
+pub(super) fn clock(unix: u64) -> String {
     use chrono::TimeZone;
     let Some(at) = chrono::Local.timestamp_opt(unix as i64, 0).single() else { return String::new() };
     if at.date_naive() == chrono::Local::now().date_naive() {
@@ -884,10 +1052,12 @@ fn header_of(a: &Agent, seen: &Seen) -> AgentHeaderData {
     } else {
         format!("{} holds one conversation at a time — the same one the Lens talks to.", a.meta.mind)
     };
+    let (title, raw) = super::run_heading::named(latest_request(&a.turns, &a.meta.title), TITLE_CHARS);
     AgentHeaderData {
         id: a.meta.id.0.as_str().into(),
         mind: a.meta.mind.as_str().into(),
-        title: one_line(latest_request(&a.turns, &a.meta.title), TITLE_CHARS).into(),
+        title: title.into(),
+        raw: raw.into(),
         state: a.state.key().into(),
         label: a.state.label().into(),
         since: since(a).into(),
@@ -978,8 +1148,13 @@ fn thousands(n: u64) -> String {
     }
 }
 
-fn one_line(text: &str, max: usize) -> String {
-    let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+/// How much of what an agent asks to be allowed its "needs you" notification repeats.
+const NEEDS_YOU_CHARS: usize = 120;
+
+pub(super) fn one_line(text: &str, max: usize) -> String {
+    // Control and bidi characters go too, by the notification card's own rule: this text ends
+    // up in notifications the shell sends as `Yantrik` (security review of #614).
+    let flat = crate::notification_sender::one_line(text);
     if flat.chars().count() <= max {
         return flat;
     }
@@ -1054,7 +1229,10 @@ fn items_of_turns(
                 Item::Note(note) => {
                     out.push(AgentItemData { kind: "note".into(), key: key.into(), text: note.as_str().into(), ..Default::default() })
                 }
-                Item::Card(card) => out.push(card_of(card, key, open)),
+                Item::Card(card) => {
+                    let revealed = expanded.contains(&reveal_key(&key));
+                    out.push(card_of(card, key, open, revealed))
+                }
                 Item::Approval(approval) => out.push(approval_of(a, approval, key, pending)),
                 Item::Question(q) => out.push(question_of(q, key)),
             }
@@ -1107,40 +1285,12 @@ fn prose_of(key: &str, text: &str) -> Vec<AgentItemData> {
 /// What the list says when the tab it is on has no one in it: what is true of the others. "No
 /// agents yet" only when there are none at all — an empty Active tab beside six finished agents
 /// said there were none, with one of them open in the middle column (#190).
-fn empty_note(tab: Tab, counts: [usize; 4]) -> String {
-    let [active, _, complete, all] = counts;
-    if all == 0 {
-        return "No agents yet. New agent starts one; a question in the Lens to an attached mind \
-                shows up here too."
-            .to_string();
-    }
-    // Every agent is either active (working, waiting, or idle between prompts) or complete.
-    let (going, done) = (format!("{active} active"), format!("{complete} complete"));
-    match tab {
-        Tab::Active => format!("Nothing running. {done}."),
-        Tab::NeedsYou if active > 0 => format!("Nothing is waiting on you. {going}."),
-        Tab::NeedsYou => format!("Nothing is waiting on you. {done}."),
-        Tab::Complete => format!("Nothing has finished yet. {going}."),
-        // All holds every agent, so it is empty only when there are none, above.
-        Tab::All => format!("{going}, {done}."),
-        // Tasks says its own sentence in `refresh`: it counts requests, not agents.
-        Tab::Tasks => String::new(),
-    }
-}
 
-/// An approval, as the pane draws it: the shell's own card — the Lens's component, filled from the
-/// shell's approval store under the one request id — while the request waits; the line it left
-/// once it is over.
-///
-/// The buttons are drawn only when all three hold: the session item is one the shell made
-/// (`approval_asked`, never an event or the agent's text), the shell's store says the request is
-/// still waiting, and that request was asked for THIS agent — its token's, not its words'. Anything
-/// else draws a line with no buttons.
-/// The most answers a question card offers as buttons, and the longest a button's label or the
-/// question itself is drawn: the agent chooses them, and must not be able to push the pane apart.
 const QUESTION_OPTIONS: usize = 6;
 const QUESTION_OPTION_CHARS: usize = 40;
-const QUESTION_CHARS: usize = 2000;
+/// The run store reads the same limit as what the person was shown of a question, when it checks
+/// that a `redact`'s words were quoted in it.
+const QUESTION_CHARS: usize = yantrik_harness::redact::QUESTION_CHARS;
 
 /// The questions the Lens's mind is waiting on, for the Lens to draw where approvals sit. Only
 /// the active mind's own conversation: another agent's question is answered in Agents.
@@ -1149,14 +1299,7 @@ fn publish_lens_questions(ui: &App) {
     let agent = feed::main_agent(&host.active_id());
     let questions: Vec<crate::QuestionRequest> = agents::store().read(|s| {
         let Some(a) = s.agent(&agent) else { return Vec::new() };
-        a.turns
-            .iter()
-            .flat_map(|t| t.items.iter())
-            .filter_map(|i| match i {
-                Item::Question(q) if q.waiting() => Some(lens_question(&a.meta.id.0, &a.meta.mind, q)),
-                _ => None,
-            })
-            .collect()
+        a.waiting_questions().map(|q| lens_question(&a.meta.id.0, &a.meta.mind, q)).collect()
     });
     if let Some(model) = crate::models::changed(ui.get_lens_questions(), questions) {
         ui.set_lens_questions(model);
@@ -1172,16 +1315,15 @@ pub fn questions_for_describe() -> serde_json::Value {
         s.agents()
             .iter()
             .flat_map(|a| {
-                a.turns.iter().flat_map(|t| t.items.iter()).filter_map(move |i| match i {
-                    Item::Question(q) if q.waiting() => Some(serde_json::json!({
+                a.waiting_questions().map(move |q| {
+                    serde_json::json!({
                         "agent": a.meta.id.0,
                         "mind": a.meta.mind,
                         "request": q.request,
                         "prompt": clip(&q.prompt, QUESTION_CHARS),
                         "options": q.options.iter().take(QUESTION_OPTIONS)
                             .map(|o| clip(o, QUESTION_OPTION_CHARS)).collect::<Vec<_>>(),
-                    })),
-                    _ => None,
+                    })
                 })
             })
             .collect()
@@ -1203,7 +1345,34 @@ fn lens_question(agent: &str, mind: &str, q: &crate::agents::model::Question) ->
                 .map(|o| slint::SharedString::from(clip(o, QUESTION_OPTION_CHARS)))
                 .collect::<Vec<_>>(),
         )),
+        asked: clock(q.asked).into(),
+        removes: erase_removes(q).into(),
     }
+}
+
+/// For a Keep/Erase question (one of its answers is exactly "Erase"): what pressing Erase lets a
+/// `redact` remove, as the shell parses the prompt the person sees — **every** one of its quoted
+/// spans of at least the needle minimum (each could be erased, so each is named; the prompt's
+/// 2000-character limit keeps the list short), each escaped so a control or bidi character cannot
+/// hide in it, one per line. Drawn on the card under the agent's words, so the person sees exactly
+/// what goes, whatever the quote marks look like; a list taller than the card allows scrolls, and
+/// Erase stays disabled until it has been scrolled to its end (`QuestionCard`). "" for any other
+/// question.
+fn erase_removes(q: &crate::agents::model::Question) -> String {
+    use yantrik_harness::redact::{canonical, quoted_texts, MIN_NEEDLE_CHARS};
+    if !q.options.iter().any(|o| o == "Erase") {
+        return String::new();
+    }
+    let spans: Vec<&str> =
+        quoted_texts(&q.prompt).into_iter().filter(|s| canonical(s).chars().count() >= MIN_NEEDLE_CHARS).collect();
+    if spans.is_empty() {
+        return "Erase removes nothing from this conversation".to_string();
+    }
+    let mut out = String::from("Erase removes:");
+    for span in &spans {
+        out.push_str(&format!("\n\u{201c}{}\u{201d}", crate::approval_wording::visible(span)));
+    }
+    out
 }
 
 /// `s` drawn in at most `n` characters.
@@ -1230,15 +1399,20 @@ fn question_of(q: &crate::agents::model::Question, key: String) -> AgentItemData
         )),
         answer: q.answer.as_str().into(),
         explain: q.closed.as_str().into(),
+        asked: clock(q.asked).into(),
+        removes: erase_removes(q).into(),
         ..Default::default()
     }
 }
 
 /// The person answered the agent's question through its card. The host takes it first — it
 /// alone knows the run and refuses a second answer — and only then does the card settle; if the
-/// host could not deliver it, the card closes with why instead of claiming an answer that never
-/// arrived.
-pub fn answer_question(agent: &str, request: &str, answer: &str) {
+/// host could not deliver it, the card closes instead of claiming an answer that never arrived.
+/// Every refusal means the run is no longer asking, so the card says the one sentence a turn
+/// that ended unanswered says; the host's own words go to the log. `pressed`: the person pressed
+/// one of the offered answers rather than typing one — kept with the answer, because only a pressed
+/// *Erase* lets a mind's `redact` act.
+pub fn answer_question(agent: &str, request: &str, answer: &str, pressed: bool) {
     let answer = answer.trim();
     if answer.is_empty() {
         return;
@@ -1253,13 +1427,18 @@ pub fn answer_question(agent: &str, request: &str, answer: &str) {
             _ => None,
         })
     });
+    // Pressed, and one of the offered answers: a typed answer is never counted as pressed.
+    let by_option = pressed && full.is_some();
     let answer = full.as_deref().unwrap_or(answer);
     let Some(host) = super::harness::host() else { return };
-    match host.answer_for(&id, request, &serde_json::Value::String(answer.to_string())) {
+    match host.answer_for(&id, request, &serde_json::Value::String(answer.to_string()), by_option) {
         Ok(()) => {
             agents::store().question_answered(&id, request, answer);
         }
-        Err(why) => agents::store().question_closed(&id, request, &why),
+        Err(why) => {
+            tracing::info!(agent = %id.0, request, why = %why, "a question's answer was refused; its card closes");
+            agents::store().question_closed(&id, request, crate::agents::model::Question::STOPPED_ASKING);
+        }
     }
 }
 
@@ -1276,12 +1455,13 @@ fn approval_of(a: &Agent, approval: &Approval, key: String, pending: &[crate::ap
     let card = match live {
         Some(card) => crate::ApprovalRequest { on_behalf: a.meta.on_behalf().into(), ..crate::control_approvals::row_for(card.clone()) },
         None => {
-            let (app, action) = approval.what.split_once('.').unwrap_or((approval.what.as_str(), ""));
+            let what = approval.what.as_str();
+            let (app, action) = what.split_once('.').unwrap_or((what, ""));
             let (decision, record) = match approval.outcome {
                 // Answered or taken back a moment ago, and not yet settled here: the approval
                 // store redraws on its own tick and this follows.
-                ApprovalOutcome::Pending => ("asked", format!("Asked you: {}", approval.what)),
-                outcome => (outcome.key(), approval.record.clone()),
+                ApprovalOutcome::Pending => ("asked", format!("Asked you: {what}")),
+                outcome => (outcome.key(), approval.record.as_str().to_string()),
             };
             ApprovalRequest {
                 id: approval.request.as_str().into(),
@@ -1303,8 +1483,20 @@ fn approval_of(a: &Agent, approval: &Approval, key: String, pending: &[crate::ap
     }
 }
 
+/// The key the pane's toggle uses to show a masked card as it was: the card's own key, marked.
+/// Only the person's pane holds these (they live with the cards the person opened); nothing a
+/// mind can read — `describe`, `read_agent`, the transcript — ever draws a card unmasked.
+fn reveal_key(key: &str) -> String {
+    format!("reveal:{key}")
+}
+
 /// One call, as the card draws it.
-fn card_of(c: &Card, key: String, open: bool) -> AgentItemData {
+fn card_of(c: &Card, key: String, open: bool, revealed: bool) -> AgentItemData {
+    // Drawn as shown: a call holding words the person had erased keeps them, and shows the marker,
+    // unless the person asked, in this pane, to see what was erased here.
+    let masked = c.mask.is_some();
+    let shown = if revealed { crate::agents::model::Shown::Plain(c) } else { c.shown() };
+    let c: &Card = &shown;
     let call = c.as_call();
     let has_output = !c.output.bytes.is_empty();
     let live = c.running() && has_output;
@@ -1413,41 +1605,16 @@ fn card_of(c: &Card, key: String, open: bool) -> AgentItemData {
         request: Default::default(),
         options: Default::default(),
         answer: Default::default(),
+        asked: Default::default(),
         block: Default::default(),
         styled: Default::default(),
+        masked,
+        revealed: masked && revealed,
+        removes: Default::default(),
     }
 }
 
 // ── Acts ──────────────────────────────────────────────────────────
-
-/// Close an agent: asked first when it is still working; then stopped, its window closed, and
-/// taken off the list with its saved session.
-fn close(ui: &App, state: &Shared, agent: AgentId, confirmed: bool) {
-    let g = ui.global::<AgentsState>();
-    let busy = agents::store().read(|s| s.agent(&agent).is_some_and(Agent::busy));
-    if busy && !confirmed {
-        g.set_confirm_close(agent.0.as_str().into());
-        return;
-    }
-    g.set_confirm_close("".into());
-    if busy {
-        if let Err(why) = launch::stop(&agent) {
-            tracing::info!(agent = %agent, %why, "closing an agent that could not be stopped");
-        }
-    }
-    agents::store().remove_agent(&agent);
-    {
-        let mut st = state.borrow_mut();
-        if let Some(popped) = st.windows.remove(&agent) {
-            let _ = popped.window.hide();
-        }
-        if st.selected.as_ref() == Some(&agent) {
-            st.selected = None;
-            st.run = None;
-        }
-    }
-    refresh(ui, state, true);
-}
 
 /// The title an agent's window carries. labwc and the taskbar know a window by it.
 fn window_title(mind: &str, title: &str) -> String {
@@ -1600,30 +1767,26 @@ fn forward_approvals(g: &AgentsState, shell: &slint::Weak<App>) {
     });
     // Only the person's click on a question card comes here; no control-surface action and no
     // harness call answers a run's question (#25).
-    g.on_answer_question(|agent, request, answer| answer_question(&agent, &request, &answer));
+    g.on_answer_question(|agent, request, answer, pressed| answer_question(&agent, &request, &answer, pressed));
 }
 
 /// Put one agent on the Agents screen: selected, under a tab that lists it, the screen shown.
 /// The Lens's "open in Agents", a notification's Open, and `show_agent` all come here.
 fn show_agent(ui: &App, state: &Shared, agent: AgentId) {
-    let known = agents::store().read(|s| s.agent(&agent).map(|a| a.state));
+    // `show_agent` may name one run of a chat (`agent#n`): the chat's link to it opens that run.
+    let key = agents::RowKey::parse(&agent.0);
+    let known = agents::store().read(|s| s.agent(&key.agent).is_some());
     let g = ui.global::<AgentsState>();
-    let Some(agent_state) = known else {
+    if !known {
         notice(&g, Err(format!("`{agent}` is no longer in the list.")));
         return;
-    };
+    }
     {
         let mut st = state.borrow_mut();
-        if !st.tab.holds(agent_state) {
-            st.tab = Tab::All;
-            g.set_tab(Tab::All.key().into());
-        }
-        st.order.clear();
-        // `show_agent` may name one run of a chat (`agent#n`): the chat's link to it opens that run.
-        let key = agents::RowKey::parse(&agent.0);
         st.selected = Some(key.agent);
         st.run = key.run;
     }
+    g.set_detail_open(true);
     ui.set_current_screen(SCREEN);
     ui.invoke_navigate(SCREEN);
     refresh(ui, state, true);
@@ -1634,8 +1797,8 @@ fn show_agent(ui: &App, state: &Shared, agent: AgentId) {
 /// Something the person should hear about an agent they are not looking at.
 #[derive(Clone, Debug, PartialEq)]
 enum Notice {
-    /// Its turn ended — finished, or not.
-    Finished { agent: AgentId, mind: String, title: String, ok: bool },
+    /// Its turn ended — finished, or not — after `calls` calls the shell drew as cards.
+    Finished { agent: AgentId, mind: String, title: String, ok: bool, calls: usize },
     /// A card of its waits on the person: an approval, or a command at a prompt.
     NeedsYou { agent: AgentId, mind: String, what: String },
     /// Its turn is going round, or has gone quiet (#234): the shell's own reading, once a turn.
@@ -1649,24 +1812,27 @@ impl Notice {
         }
     }
 
-    /// Said as the desktop, in the desktop's words. The title quotes the task, and nothing the
-    /// agent wrote goes in: a notification from `Yantrik` must not carry a mind's sentences as
-    /// though the desktop had said them (#139).
+    /// Said as the desktop, in the desktop's words, and nothing the agent wrote goes in: a
+    /// notification from `Yantrik` must not carry a mind's sentences as though the desktop had
+    /// said them (#139). The title is what the shell saw happen; the task is the person's own
+    /// words, so it goes in the body, labelled as theirs. It was the title, and two cards in the
+    /// centre were titled "yes" (sign-off, 4 October).
     fn notification(&self) -> yantrik_app_runtime::notify::Notification {
+        use crate::notification_groups::{mind_name, turn_title, you_asked};
         use yantrik_app_runtime::notify::{Level, Notification};
         let (title, body) = match self {
-            Notice::Finished { mind, title, ok: true, .. } => (
-                format!("{mind} finished: \u{201c}{}\u{201d}", one_line(title, 60)),
-                "Its turn is done. Open it to read what it said and what it ran.".to_string(),
+            Notice::Finished { mind, title, ok: true, calls, .. } => (
+                turn_title(mind, true, *calls),
+                format!("{} Open it to read what it said and what it ran.", you_asked(title)),
             ),
-            Notice::Finished { mind, title, ok: false, .. } => (
-                format!("{mind} could not finish: \u{201c}{}\u{201d}", one_line(title, 60)),
-                "Its turn ended without finishing. Open it to see where it stopped.".to_string(),
+            Notice::Finished { mind, title, ok: false, calls, .. } => (
+                turn_title(mind, false, *calls),
+                format!("{} Its turn ended without finishing. Open it to see where it stopped.", you_asked(title)),
             ),
-            Notice::NeedsYou { mind, what, .. } => (format!("{mind} needs you"), what.clone()),
+            Notice::NeedsYou { mind, what, .. } => (format!("{} needs you", mind_name(mind)), what.clone()),
             Notice::Stuck { mind, title, why, .. } => (
-                format!("{mind} looks stuck: \u{201c}{}\u{201d}", one_line(title, 60)),
-                format!("{} Open it to see where, give it a hint, or stop it.", why.plain()),
+                format!("{} looks stuck", mind_name(mind)),
+                format!("{} {} Open it to see where, give it a hint, or stop it.", you_asked(title), why.plain()),
             ),
         };
         let n = Notification::new("Yantrik", title)
@@ -1728,6 +1894,7 @@ impl Watch {
                             // exactly one word…”" was the toast for a Blender scene (VM 520).
                             title: turn.prompt.clone(),
                             ok: turn.ok != Some(false),
+                            calls: turn.cards().count(),
                         });
                     }
                 }
@@ -1743,12 +1910,17 @@ impl Watch {
             if self.primed && !fresh.is_empty() {
                 let asked = fresh.iter().find_map(|request| {
                     a.turns.iter().rev().flat_map(|t| t.items.iter()).find_map(|item| match item {
-                        Item::Approval(ap) if &&ap.request == request => Some(ap.what.clone()),
+                        Item::Approval(ap) if &&ap.request == request => Some(ap.what.as_str().to_string()),
                         _ => None,
                     })
                 });
+                // `what` is the agent's own words, repeated under the desktop's name: one plain,
+                // capped line, so it cannot add a line of its own (security review of #614).
                 let what = match asked {
-                    Some(what) => format!("It is asking to be allowed {what}. Allow or Deny on its card."),
+                    Some(what) => format!(
+                        "It is asking to be allowed {}. Allow or Deny on its card.",
+                        one_line(&what, NEEDS_YOU_CHARS)
+                    ),
                     None => "One of its commands is waiting for input; answer in its card.".to_string(),
                 };
                 out.push(Notice::NeedsYou { agent: id.clone(), mind: a.meta.mind.clone(), what });
@@ -1798,10 +1970,15 @@ fn tell_the_person(ui: &App, state: &Shared, watch: &mut Watch, waiting_jobs: &[
     if notices.is_empty() {
         return;
     }
+    let test_run = crate::never_ask::refusal().is_some();
     let lens_open = ui.get_lens_open();
     let lens_agent = crate::wire::harness::host().map(|h| feed::main_agent(&h.active_id()));
     let st = state.borrow();
     for notice in notices {
+        if held_for_test(&notice, test_run) {
+            tracing::debug!(agent = %notice.agent().0, "turn notice held back: a test run has approvals off");
+            continue;
+        }
         let agent = notice.agent();
         let on_screen = ui.get_current_screen() == SCREEN && st.selected.as_ref() == Some(agent);
         let in_window = st.windows.get(agent).is_some_and(|p| !p.closed.get());
@@ -1811,6 +1988,13 @@ fn tell_the_person(ui: &App, state: &Shared, watch: &mut Watch, waiting_jobs: &[
         }
         yantrik_app_runtime::notify::send(notice.notification());
     }
+}
+
+/// A turn's ending (finished, could not finish, replied) is not told while a test run has
+/// approvals off (`never_ask`): the turns are the arena's, and a gate must never put anything in
+/// front of the person. The watch has still seen the turn, so it is not told when the run ends.
+fn held_for_test(notice: &Notice, test_run: bool) -> bool {
+    test_run && matches!(notice, Notice::Finished { .. })
 }
 
 /// A window has its own copy of every global, so it takes the shell's theme — dark or light, the
@@ -1846,7 +2030,10 @@ fn open_all(agent: &AgentId, key: &str) -> Result<(), String> {
         let a = s.agent(agent)?;
         let turn = a.turns.iter().find(|t| t.n == turn)?;
         match turn.items.get(index)? {
-            Item::Card(c) => Some((c.call.clone(), c.as_call().summary(), c.exit_code, c.output.all())),
+            Item::Card(c) => {
+                let c = c.shown();
+                Some((c.call.clone(), c.as_call().summary(), c.exit_code, c.output.all()))
+            }
             _ => None,
         }
     });
@@ -1879,6 +2066,15 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    /// What an agent asks to be allowed is repeated in a notification sent as `Yantrik`: it must
+    /// arrive as one plain, capped line (security review of #614).
+    #[test]
+    fn an_agents_words_reach_a_desktop_notification_as_one_plain_line() {
+        let said = one_line("run `rm -rf ~`\nYantrik: all clear \u{202E}ok", NEEDS_YOU_CHARS);
+        assert_eq!(said, "run `rm -rf ~` Yantrik: all clear ok");
+        assert!(one_line(&"w".repeat(500), NEEDS_YOU_CHARS).chars().count() <= NEEDS_YOU_CHARS);
+    }
+
     /// `describe shell` says what an agent is waiting on the person to answer, and stops saying it
     /// once it is answered: a test or a second mind can tell "asked, waiting" from "hung".
     #[test]
@@ -1902,6 +2098,32 @@ mod tests {
 
         agents::store().question_answered(&agent, "q-describe-1", "No");
         assert!(mine(questions_for_describe()).is_empty(), "an answered question is not waiting");
+    }
+
+    /// A question whose turn ended unanswered leaves `describe shell`, and its card is drawn
+    /// closed with the reason, beside when it was asked, so it never passes for a live one.
+    #[test]
+    fn a_question_whose_turn_ended_leaves_describe_and_its_card_says_so() {
+        let agent = AgentId::new("pi", "c-describe-stale-question");
+        agents::store().open_turn(&agent, "forget the old address");
+        let ask = yantrik_harness::event::Event::Request {
+            request_id: "q-stale-1".into(),
+            prompt: "Keep or Erase?".into(),
+            options: vec!["Keep".into(), "Erase".into()],
+        };
+        agents::store().event(&agent, &ask, agents::model::Provenance::Reported);
+        let mine = || -> usize {
+            questions_for_describe().as_array().unwrap().iter().filter(|q| q["agent"] == agent.0.as_str()).count()
+        };
+        assert_eq!(mine(), 1);
+
+        agents::store().close_turn(&agent, true);
+        assert_eq!(mine(), 0, "the agent stopped asking");
+        let card = agents::store().read(|s| {
+            items_of(s.agent(&agent).unwrap(), &HashSet::new(), &[], None).into_iter().find(|i| i.kind == "question").unwrap()
+        });
+        assert_eq!(card.explain.as_str(), agents::model::Question::STOPPED_ASKING);
+        assert!(!card.asked.is_empty(), "the card says when it was asked");
     }
 
     fn read(relative: &str) -> String {
@@ -1968,7 +2190,7 @@ mod tests {
             card.output.push(Stream::Stdout, format!("line {n}\n").as_bytes());
         }
         // Running: the line, and the live tail under it.
-        let running = card_of(&card, "t1.0".into(), false);
+        let running = card_of(&card, "t1.0".into(), false, false);
         assert_eq!(running.call.status, "running");
         assert!(running.live);
         assert_eq!(running.output.lines().count(), LIVE_LINES);
@@ -1977,14 +2199,52 @@ mod tests {
         card.state = CallState::Ok;
         card.exit_code = Some(0);
         card.ended = Some(1);
-        let folded = card_of(&card, "t1.0".into(), false);
+        let folded = card_of(&card, "t1.0".into(), false, false);
         assert!(!folded.live);
         assert_eq!(folded.badge, "verified · exit 0");
         assert_eq!(folded.call.summary, r#"agent_run command="fdupes -r ~/Pictures""#);
         assert_eq!(folded.output, "");
-        let open = card_of(&card, "t1.0".into(), true);
+        let open = card_of(&card, "t1.0".into(), true, false);
         assert!(open.call.output.contains("line 0\n") && open.call.output.contains("line 19"));
         assert!(open.call.arguments.contains("fdupes"), "the arguments in full");
+    }
+
+    /// A card whose free text holds erased words is drawn with the marker, and says so; the person
+    /// can show it as it was, in the pane, with the card's own toggle — the reveal key lives with
+    /// the cards they opened, never in anything a mind reads.
+    #[test]
+    fn a_masked_card_is_drawn_masked_until_the_person_shows_it_as_it_was() {
+        use yantrik_harness::host::ShellErasure;
+        use yantrik_harness::redact::{Needle, MARKER};
+        let mut s = Store::new();
+        let pi = AgentId("pi:c-mask".into());
+        s.open_turn(&pi, "note it");
+        s.event(
+            &pi,
+            &crate::agents::Event::ToolStart {
+                call: "t1".into(),
+                name: "notes.write".into(),
+                target: "notes/sister.md".into(),
+                args: serde_json::json!({"text": "my sister is Priya"}),
+            },
+            Provenance::Reported,
+        );
+        let needles = [Needle::of("priya")];
+        s.redact(&pi, &ShellErasure { request_id: "forget", needles: &needles, places_in_runs: 0 });
+        let card = s.agent(&pi).unwrap().cards().next().unwrap().clone();
+
+        let masked = card_of(&card, "t1.0".into(), true, false);
+        assert!(masked.masked && !masked.revealed);
+        assert!(masked.call.arguments.contains(MARKER) && !masked.call.arguments.contains("Priya"), "{}", masked.call.arguments);
+        assert_eq!(masked.call.target, "notes/sister.md", "what was done is never hidden");
+        let shown = card_of(&card, "t1.0".into(), true, true);
+        assert!(shown.masked && shown.revealed);
+        assert!(shown.call.arguments.contains("Priya"));
+        assert_eq!(reveal_key("t1.0"), "reveal:t1.0");
+        // A card with nothing masked has nothing to show.
+        let plain = Card::new("j1", "agent_run", "", serde_json::json!({}), Provenance::Verified, 0);
+        let plain = card_of(&plain, "t1.1".into(), false, true);
+        assert!(!plain.masked && !plain.revealed);
     }
 
     fn pending_card(id: &str, agent: &str) -> crate::approvals::Card {
@@ -2011,6 +2271,8 @@ mod tests {
             can_session: true,
             status: crate::approvals::Status::Pending,
             record: String::new(),
+            decided_at: String::new(),
+            session: false,
             age_secs: 4,
         }
     }
@@ -2088,11 +2350,29 @@ mod tests {
         assert!(!this.contains("approvals::grant") && !this.contains("approvals::deny("), "and grants nothing itself");
     }
 
+    /// A pane's card is limited by the pane's own visible height, so the read gate holds there as
+    /// in the Lens: every host of an item passes the limit, and the card reads it.
+    #[test]
+    fn a_panes_card_is_limited_by_the_panes_visible_height() {
+        let slint = read("../yantrik-ui-slint/ui/agents.slint");
+        let card = &slint[slint.find("if root.item.kind == \"approval\" : ApprovalCard {").unwrap()..];
+        let card = &card[..card.find('}').unwrap()];
+        assert!(card.contains("height-limit: root.card-limit;"), "the pane's card takes the pane's limit");
+        let hosts = slint.matches(": ItemView {").count();
+        assert!(hosts >= 2, "the session and the run's detail both host items");
+        assert_eq!(slint.matches("card-limit: flick.height").count(), hosts, "every host passes its scroller's height");
+    }
+
     /// The Lens's "open in Agents" is wired from its header to the shell, through every layer.
     #[test]
     fn the_lens_offers_open_in_agents_and_the_shell_answers_it() {
+        // The header button (Chat v2: ChatHeader) is offered only for an agent's conversation, and
+        // the Lens forwards its press.
+        let header = read("../yantrik-ui-slint/ui/components/chat_chrome.slint");
+        assert!(header.contains("if root.can-open-in-agents : ChatIconButton {\n                    label: \"Open in Agents\";"));
+        assert!(header.contains("clicked => { root.open-in-agents(); }"));
         let lens = read("../yantrik-ui-slint/ui/components/intent_lens.slint");
-        assert!(lens.contains("if root.can-open-in-agents : agents-hit := TouchArea") && lens.contains("clicked => { root.open-in-agents(); }"));
+        assert!(lens.contains("open-in-agents => { root.open-in-agents(); }"));
         let desktop = read("../yantrik-ui-slint/ui/desktop.slint");
         assert!(desktop.contains("open-in-agents => { root.lens-open-in-agents(); }"));
         assert!(desktop.contains("can-open-in-agents: root.lens-can-open-in-agents;"));
@@ -2115,6 +2395,35 @@ mod tests {
             row.lines().take(45).any(|l| l.contains("covers every mind and caller, until restart or the mode is lowered")),
             "the session row says whose sessions the rule covers, and until when, inside the row that mints it"
         );
+    }
+
+    /// A question to the person is never put in a notification, so the notification history —
+    /// kept by another process, where an erasure cannot follow — never holds its words.
+    #[test]
+    fn no_notification_carries_a_questions_words() {
+        let mut s = Store::new();
+        let mut watch = Watch::default();
+        assert!(watch.changes(&s, &[], 0).is_empty());
+        let pi = AgentId("pi:c-q1".into());
+        s.open_turn(&pi, "check my accounts");
+        s.event(
+            &pi,
+            &crate::agents::Event::Request {
+                request_id: "forget".into(),
+                prompt: "Forget the code Zanzibar-7741?".into(),
+                options: vec!["Keep".into(), "Erase".into()],
+            },
+            crate::agents::Provenance::Reported,
+        );
+        let mut told = watch.changes(&s, &[], 0);
+        s.question_answered(&pi, "forget", "Erase");
+        s.close_turn(&pi, true);
+        told.extend(watch.changes(&s, &[], 0));
+        assert!(!told.is_empty(), "the turn ending is told");
+        for notice in &told {
+            let n = format!("{:?}", notice.notification());
+            assert!(!n.contains("Zanzibar"), "{n}");
+        }
     }
 
     #[test]
@@ -2141,7 +2450,7 @@ mod tests {
         s.approval_answered(&pi, "appr-3", true);
         s.close_turn(&pi, true);
         let told = watch.changes(&s, &waiting, 0);
-        assert_eq!(told, vec![Notice::Finished { agent: pi.clone(), mind: "pi".into(), title: "tidy the photos folder".into(), ok: true }]);
+        assert_eq!(told, vec![Notice::Finished { agent: pi.clone(), mind: "pi".into(), title: "tidy the photos folder".into(), ok: true, calls: 0 }]);
 
         // A later turn in the same conversation is told by its own prompt, not the first one's.
         s.open_turn(&pi, "now rename them by date");
@@ -2157,6 +2466,49 @@ mod tests {
         s.note(&pi, "Stop asked.");
         s.close_turn(&pi, false);
         assert!(watch.changes(&s, &waiting, 0).is_empty());
+    }
+
+    /// While a test run has approvals off, a turn ending is not told to the person; with it off,
+    /// or once it has run out, it is told as before.
+    #[test]
+    fn a_test_run_tells_the_person_of_no_turn_ending() {
+        use crate::never_ask::NeverAsk;
+        use std::time::{Duration, Instant};
+        let mut s = Store::new();
+        let mind = AgentId("yantrik:main".into());
+        let mut watch = Watch::default();
+        assert!(watch.changes(&s, &[], 0).is_empty());
+        let mut turn = |prompt: &str, ok: bool| {
+            s.open_turn(&mind, prompt);
+            s.close_turn(&mind, ok);
+            watch.changes(&s, &[], 0)
+        };
+        let told = |notices: Vec<Notice>, test_run: bool| -> Vec<Notice> {
+            notices.into_iter().filter(|n| !held_for_test(n, test_run)).collect()
+        };
+        let start = Instant::now();
+        let mut switch = NeverAsk::default();
+
+        // Off: replied and could not finish are each told.
+        let off = switch.active(start);
+        assert_eq!(told(turn("reply with one word", true), off).len(), 1, "replied");
+        assert_eq!(told(turn("tidy the photos", false), off).len(), 1, "could not finish");
+
+        // On: neither is.
+        switch.engage(start, 5);
+        let on = switch.active(start);
+        assert!(told(turn("release check: reply yes", true), on).is_empty(), "replied");
+        assert!(told(turn("release check: open blender", false), on).is_empty(), "could not finish");
+
+        // Run out: told again, and a turn held during the run is not told late.
+        let later = switch.active(start + Duration::from_secs(300));
+        assert!(!later, "the switch ends by itself");
+        let back = told(turn("now rename them", true), later);
+        assert!(matches!(&back[..], [Notice::Finished { title, .. }] if title == "now rename them"), "{back:?}");
+
+        // Only a turn's ending is held: a card waiting on the person is not a turn notice.
+        let needs = Notice::NeedsYou { agent: mind.clone(), mind: "yantrik".into(), what: "x".into() };
+        assert!(!held_for_test(&needs, true));
     }
 
     /// A task that goes quiet is said once a turn, in the desktop's words: not every tick, and
@@ -2183,7 +2535,7 @@ mod tests {
         let actions = format!("{words:?}");
         assert!(actions.contains("show_agent") && actions.contains("Tell it"), "{actions}");
         assert!(actions.contains("stop_agent") && actions.contains("Stop"), "{actions}");
-        let finished = Notice::Finished { agent: hermes.clone(), mind: "hermes".into(), title: "x".into(), ok: true };
+        let finished = Notice::Finished { agent: hermes.clone(), mind: "hermes".into(), title: "x".into(), ok: true, calls: 0 };
         let plain = format!("{:?}", finished.notification());
         assert!(plain.contains("Open") && !plain.contains("stop_agent"), "only a stuck task offers Stop: {plain}");
         assert!(watch.changes(&s, &[], later + 60).is_empty(), "once a turn, not once a tick");
@@ -2220,9 +2572,19 @@ mod tests {
             mind: "pi".into(),
             title: "tidy the photos folder".into(),
             ok: true,
+            calls: 2,
         };
         let sent = format!("{:?}", finished.notification());
-        for said in ["\"Yantrik\"", "pi finished: \u{201c}tidy the photos folder\u{201d}", "Normal", "show_agent", "Open", "pi:c-7f3a91"] {
+        // The title is what happened; the task is in the body, as the person's (sign-off, 4 Oct).
+        for said in [
+            "\"Yantrik\"",
+            "\"pi finished \u{b7} made 2 calls\"",
+            "You asked: \u{201c}tidy the photos folder\u{201d}.",
+            "Normal",
+            "show_agent",
+            "Open",
+            "pi:c-7f3a91",
+        ] {
             assert!(sent.contains(said), "{said:?} missing: {sent}");
         }
         let needs = Notice::NeedsYou { agent: AgentId("deepseek:main".into()), mind: "deepseek".into(), what: "x".into() };
@@ -2232,28 +2594,36 @@ mod tests {
         assert!(actions.contains("\"show_agent\""));
     }
 
-    /// #368: a role agent's first prompt is its whole brief, many lines long. A row and the pane's
-    /// header are one line each, and an embedded newline breaks a Text however it elides, so the
-    /// brief drew over the rows below it.
+    /// #368: a role agent's first prompt is its whole brief, many lines long. A desk's task and the
+    /// pane's header are one line each, and an embedded newline breaks a Text however it elides, so
+    /// the brief drew over what was below it.
     #[test]
-    fn a_multi_line_request_is_one_line_in_its_row_and_its_header() {
+    fn a_multi_line_request_is_one_line_in_its_desk_and_its_header() {
         let mut s = Store::new();
         let id = AgentId("deepseek:c-brief1".into());
         s.open_turn(&id, "You are the Researcher on this desktop.\n\nFind out what is true\nand say how you know.");
         let a = s.agent(&id).unwrap();
-        let row = row_of(a);
-        assert_eq!(row.title.as_str(), "You are the Researcher on this desktop. Find out what is true and say how you know.");
         let seen = Seen { minds: Vec::new(), agents: Vec::new(), approvals: Vec::new() };
-        assert!(!header_of(a, &seen).title.contains('\n'));
+        let header = header_of(a, &seen);
+        // The heading is the brief's first sentence; the brief itself, on one line, goes under it.
+        assert_eq!(header.title.as_str(), "You are the Researcher on this desktop.");
+        assert_eq!(header.raw.as_str(), "You are the Researcher on this desktop. Find out what is true and say how you know.");
+        let desk = |s: &Store| {
+            let room = workroom::compose(s, &[], &[], &[], &[], now());
+            room.desks.into_iter().next().expect("the open turn is a desk").task
+        };
+        assert!(!desk(&s).contains('\n'));
         s.open_turn(&id, &format!("{}\nend", "x".repeat(500)));
-        let long = row_of(s.agent(&id).unwrap());
-        assert!(!long.title.contains('\n') && long.title.chars().count() <= TITLE_CHARS);
+        let long = header_of(s.agent(&id).unwrap(), &seen);
+        assert!(!long.title.contains('\n') && long.title.chars().count() <= super::super::run_heading::HEADING_CHARS);
+        assert!(!long.raw.contains('\n') && long.raw.chars().count() <= TITLE_CHARS);
+        assert!(!desk(&s).contains('\n'));
     }
 
-    /// Agents catalog: a role's agent is named by its role in the list, and its details say what
+    /// Agents catalog: a role's agent is named by its role on its desk, and its details say what
     /// the role may touch; an agent started on a mind alone says neither.
     #[test]
-    fn a_roles_row_names_the_role_and_its_details_say_its_reach() {
+    fn a_roles_desk_names_the_role_and_its_details_say_its_reach() {
         let mut s = Store::new();
         let reviewer = AgentId("deepseek:c-role01".into());
         let mut meta = agents::AgentMeta::new(reviewer.clone(), "deepseek");
@@ -2263,8 +2633,7 @@ mod tests {
         s.upsert_agent(meta);
         s.upsert_agent(agents::AgentMeta::new(AgentId("pi:c-plain1".into()), "pi"));
         let a = s.agent(&reviewer).unwrap();
-        let row = row_of(a);
-        assert_eq!((row.role.as_str(), row.mind.as_str()), ("Reviewer", "deepseek"));
+        assert_eq!((workroom::via_of(a).as_str(), a.meta.mind.as_str()), ("Reviewer", "deepseek"));
         let details = details_of(a, s.details(&reviewer).unwrap_or_default());
         // #212: the reach reads as a sentence a person reads; the patterns the doors enforce are
         // one click away, never the first thing shown.
@@ -2274,7 +2643,7 @@ mod tests {
         );
         assert_eq!(details.reach_patterns.as_str(), "editor, documents and notes · at most safe");
         let plain = s.agent(&AgentId("pi:c-plain1".into())).unwrap();
-        assert_eq!((row_of(plain).role.as_str(), details_of(plain, Details::default()).reach.as_str()), ("", ""));
+        assert_eq!((workroom::via_of(plain).as_str(), details_of(plain, Details::default()).reach.as_str()), ("", ""));
 
         // A session saved before the words were kept falls back to its patterns, and then has no
         // second copy of them to open.
@@ -2292,19 +2661,20 @@ mod tests {
         assert_eq!(old.reach, "editor, documents and notes · at most safe");
         assert_eq!(old.reach_patterns, "");
 
-        // The screen offers the catalog in New agent and draws both, with the patterns behind a
-        // click in the details column.
+        // Start work offers the catalog and the screen hands the picked role its task; a run's
+        // details say the role and its reach, with the patterns behind a click.
         let slint = read("../yantrik-ui-slint/ui/agents.slint");
         for drawn in [
-            "From the catalog",
             "AgentsState.start-role(AgentsState.new-role",
-            "AgentsState.pick-role(role.id)",
+            "AgentsState.pick-role(id)",
             "label: \"Role\"",
             "AgentsState.details.reach",
             "AgentsState.details.reach-patterns",
         ] {
             assert!(slint.contains(drawn), "{drawn:?} is not in agents.slint");
         }
+        let sheet = read("../yantrik-ui-slint/ui/agents_start.slint");
+        assert!(sheet.contains("Role (optional)") && sheet.contains("root.pick-role(r.id)"), "the sheet offers the catalog");
     }
 
     /// #190: a catalog role's answer — a heading, bold labels, italics, backticks, a list, a fence —
@@ -2364,56 +2734,12 @@ mod tests {
         assert_eq!(next.last().unwrap().block, "bullet");
     }
 
-    /// #190: an empty tab says what is true of the others. "No agents yet" only when there are none.
+    /// A run's key is `agent#turn`, and what acts on a run acts on its agent.
     #[test]
-    fn an_empty_tab_says_what_the_other_tabs_hold() {
-        // [active, needs you, complete, all]
-        assert_eq!(empty_note(Tab::Active, [0, 0, 6, 6]), "Nothing running. 6 complete.");
-        assert_eq!(empty_note(Tab::NeedsYou, [2, 0, 4, 6]), "Nothing is waiting on you. 2 active.");
-        assert_eq!(empty_note(Tab::NeedsYou, [0, 0, 6, 6]), "Nothing is waiting on you. 6 complete.");
-        assert_eq!(empty_note(Tab::Complete, [3, 1, 0, 3]), "Nothing has finished yet. 3 active.");
-        for tab in Tab::EVERY {
-            assert!(empty_note(tab, [0, 0, 0, 0]).starts_with("No agents yet."), "{tab:?}");
-        }
-        assert!(!empty_note(Tab::Active, [0, 0, 6, 6]).contains("No agents"));
-
-        // And the list draws it — the sentence is the shell's, not a guess in the view.
-        let slint = read("../yantrik-ui-slint/ui/agents.slint");
-        assert!(slint.contains("text: AgentsState.empty-note;"), "agents.slint draws the shell's sentence");
-        assert!(!slint.contains("No agents yet"), "and has no sentence of its own that could disagree");
-    }
-
-    /// #234: "I am not able to see the task list in the Agents section." Every request is its own
-    /// row, newest first, whichever conversation it was in, and says how it stood when it ended.
-    /// A row's buttons act on its agent.
-    #[test]
-    fn every_request_is_a_task_row_newest_first() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        use std::sync::Arc;
-        let clock = Arc::new(AtomicU64::new(1_000));
-        let at = clock.clone();
-        let mut s = Store::with_clock(Box::new(move || at.load(Ordering::SeqCst)));
+    fn a_runs_key_names_its_agent() {
         let hermes = AgentId("hermes:main".into());
-        s.open_turn(&hermes, "a note for the market meeting");
-        s.close_turn(&hermes, true);
-        clock.store(2_000, Ordering::SeqCst);
-        s.open_turn(&hermes, "build a small game");
-        s.close_turn(&hermes, false);
-        clock.store(3_000, Ordering::SeqCst);
-        s.open_turn(&hermes, "build the town model");
-
-        let tasks = s.tasks(10);
-        let titles: Vec<String> = tasks
-            .iter()
-            .map(|(id, n)| task_row(s.agent(id).unwrap(), *n, 3_100).unwrap().title.to_string())
-            .collect();
-        assert_eq!(titles, ["build the town model", "build a small game", "a note for the market meeting"]);
-        let game = task_row(s.agent(&hermes).unwrap(), tasks[1].1, 3_100).unwrap();
-        assert_eq!((game.state.as_str(), game.label.as_str()), ("failed", "could not finish"));
-        let town = task_row(s.agent(&hermes).unwrap(), tasks[0].1, 3_100).unwrap();
-        assert_eq!(town.since.as_str(), "1m", "the working one says how long it has run");
-        assert_eq!(agent_of_row(&town.id), hermes, "its buttons act on its agent");
-        assert_eq!(agent_of_row("hermes:main"), hermes, "an agent row's id is the agent");
+        assert_eq!(agent_of_row("hermes:main#4"), hermes, "Stop on a run acts on its agent");
+        assert_eq!(agent_of_row("hermes:main"), hermes, "an agent's key is the agent");
     }
 
     #[test]
@@ -2496,15 +2822,15 @@ mod rough_edges_tests {
             assert!(offered.iter().any(|o| o == id), "the dialog does not offer `{id}`: {offered:?}");
         }
 
-        // The fold is the screen's: the cue is drawn while the window is not at the bottom, from
+        // The fold is the sheet's: the cue is drawn while the window is not at the bottom, from
         // the list's own height against the window's — never a hard-coded count of roles.
-        let slint = read("../yantrik-ui-slint/ui/agents.slint");
+        let slint = read("../yantrik-ui-slint/ui/agents_start.slint");
         for drawn in [
             "more roles below",
             "roles-box.more-below",
-            "-roles-flick.viewport-y < roles-col.preferred-height - roles-box.shown-h - 2px",
+            "-roles-flick.viewport-y < roles-col.preferred-height - roles-box.shown-h - Theme.sp-half",
         ] {
-            assert!(slint.contains(drawn), "{drawn:?} is not in agents.slint");
+            assert!(slint.contains(drawn), "{drawn:?} is not in agents_start.slint");
         }
     }
 
@@ -2539,7 +2865,7 @@ mod rough_edges_tests {
     }
 
     /// The reach a person read was the doors' own patterns ("shell.agent_* and editor · at most
-    /// sensitive"). The dialog's note now says it in words, and the patterns — what the doors
+    /// sensitive"). The sheet's note now says it in words, and the patterns — what the doors
     /// actually enforce — are one click away under them, never gone.
     #[test]
     fn the_dialogs_reach_reads_as_words_with_the_patterns_one_click_away() {
@@ -2549,14 +2875,16 @@ mod rough_edges_tests {
         assert!(src.contains("g.set_new_note_reach(patterns.into());"), "and the patterns go to the dialog with it");
 
         let slint = read("../yantrik-ui-slint/ui/agents.slint");
-        for drawn in ["AgentsState.new-note-reach", "the exact patterns", "AgentsState.details.reach-patterns"] {
+        let sheet = read("../yantrik-ui-slint/ui/agents_start.slint");
+        for drawn in ["AgentsState.new-note-reach", "AgentsState.details.reach-patterns"] {
             assert!(slint.contains(drawn), "{drawn:?} is not in agents.slint");
         }
-        // Both chip handlers clear the patterns with the note, so a role's reach cannot linger
-        // under a mind that has none.
+        assert!(sheet.contains("the exact patterns"), "the sheet offers the patterns behind the words");
+        // Both ways of switching between a mind and the catalog clear the patterns with the note,
+        // so a role's reach cannot linger under a mind that has none.
         assert!(
             slint.matches("AgentsState.new-note-reach = \"\";").count() >= 2,
-            "the chips clear the patterns with the note"
+            "switching between a mind and the catalog clears the patterns with the note"
         );
     }
 }
@@ -2610,6 +2938,42 @@ mod first_prompt_attribution_tests {
         assert!(!slint.contains("text: \"you\";"), "and no longer hardcodes it for every prompt");
     }
 
+    /// A Keep/Erase card says, in the shell's words, exactly what Erase removes: the spans the
+    /// shell parsed, whatever the quote marks look like — the same on the pane's card and the Lens's.
+    #[test]
+    fn a_keep_erase_card_shows_what_erase_removes_as_the_shell_parsed_it() {
+        let ask = |prompt: &str, options: &[&str]| crate::agents::model::Question {
+            request: "forget".into(),
+            prompt: prompt.into(),
+            options: options.iter().map(|o| o.to_string()).collect(),
+            answer: String::new(),
+            closed: String::new(),
+            asked: 0,
+        };
+        let keep_erase = ["Keep", "Erase"];
+        let removes = |prompt: &str| erase_removes(&ask(prompt, &keep_erase));
+        assert_eq!(removes("Forget \"Priya\" and \u{201c}12 Elm Street\u{201d}?"), "Erase removes:\n\u{201c}Priya\u{201d}\n\u{201c}12 Elm Street\u{201d}");
+        // The reviewer's probes: only what visibly reads as quoted, or nothing.
+        assert_eq!(removes("Forget 27\" don't touch ~/Photos \"Priya\"?"), "Erase removes:\n\u{201c}Priya\u{201d}");
+        assert_eq!(removes("Forget \u{201d}Priya\u{201c} and \u{201d}x\u{201c}"), "Erase removes nothing from this conversation");
+        assert_eq!(removes("Forget \"\"Priya\" do not delete \"Elm\""), "Erase removes nothing from this conversation", "\"Elm\" is under four");
+        // Every span is named, however many: each one could be erased. A control or bidi
+        // character is drawn as an escape.
+        let many = removes("\"aaaa\" \"bbbb\" \"cccc\" \"dddd\" \"eeee\" \"ffff\"");
+        assert_eq!(many, "Erase removes:\n“aaaa”\n“bbbb”\n“cccc”\n“dddd”\n“eeee”\n“ffff”");
+        assert!(!many.contains("more"));
+        let spans: Vec<String> = (0..60).map(|i| format!("\"span {i:02}\"")).collect();
+        let all = removes(&spans.join(" "));
+        assert_eq!(all.lines().count(), 61, "the heading and all sixty");
+        assert!(all.ends_with("“span 59”"));
+        assert_eq!(removes("Forget \"Pri\u{202e}ya\"?"), "Erase removes:\n\u{201c}Pri<U+202E>ya\u{201d}");
+        // Not a Keep/Erase question: nothing to say.
+        assert_eq!(erase_removes(&ask("Forget \"Priya\"?", &["Yes", "No"])), "");
+        // The pane's card and the Lens's card carry the same line.
+        let q = ask("Forget \"Priya\"?", &keep_erase);
+        assert_eq!(question_of(&q, "t1.0".into()).removes, lens_question("hermes:main", "Hermes", &q).removes);
+    }
+
     #[test]
     fn the_lens_draws_its_minds_questions_held_to_the_same_limits_and_answers_them_the_one_way() {
         let q = crate::agents::model::Question {
@@ -2624,11 +2988,14 @@ mod first_prompt_attribution_tests {
         assert_eq!((card.agent.as_str(), card.mind.as_str(), card.request.as_str()), ("hermes:main", "Hermes", "r1"));
         assert_eq!(card.options.row_count(), QUESTION_OPTIONS);
         assert_eq!(card.prompt.chars().count(), QUESTION_CHARS);
+        // What the card shows before its ellipsis is exactly what a `redact` may quote from.
+        let shown = yantrik_harness::redact::question_shown(&q.prompt);
+        assert_eq!(card.prompt.as_str(), format!("{shown}…"));
 
         // The Lens's card answers through the Agents view's own callback, the one path to
         // `answer_for`; it has no answering of its own.
         let app = read("../yantrik-ui-slint/ui/app.slint");
-        assert!(app.contains("question-answer(agent, request, answer) => { AgentsState.answer-question(agent, request, answer); }"));
+        assert!(app.contains("question-answer(agent, request, answer, pressed) => { AgentsState.answer-question(agent, request, answer, pressed); }"));
         let desktop = read("../yantrik-ui-slint/ui/desktop.slint");
         assert!(desktop.contains("questions: root.questions;"), "the desktop screen hands the Lens its questions");
         let lens = read("../yantrik-ui-slint/ui/components/intent_lens.slint");
@@ -2665,14 +3032,50 @@ mod first_prompt_attribution_tests {
     /// harness protocol reaches it, so an agent cannot answer its own question.
     #[test]
     fn nothing_a_mind_can_call_answers_a_question() {
-        for file in ["src/control_agents.rs", "src/control.rs", "src/control_agent_terminal.rs", "src/control_approvals.rs"] {
-            let text = read(file);
+        // Every source file of the shell, not a list of the likely ones.
+        fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    sources(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        sources(&root.join("src"), &mut files);
+        assert!(files.len() > 50, "the walk found the sources");
+        let wire = root.join("src/wire/agents.rs");
+        for file in files {
+            let text = std::fs::read_to_string(&file).unwrap();
             let code = text.split("#[cfg(test)]").next().unwrap();
-            assert!(!code.contains(".answer_for(") && !code.contains("answer_question("), "{file} can answer a run's question");
+            for call in ["invoke_answer_question", "invoke_question_answer"] {
+                assert!(!code.contains(call), "{} answers a question for the person: {call}", file.display());
+            }
+            if file != wire {
+                assert!(!code.contains("answer_for(") && !code.contains("answer_question("), "{} can answer a run's question", file.display());
+            }
         }
         let wiring = read("src/wire/agents.rs");
         let wiring = wiring.split("#[cfg(test)]").next().unwrap();
         assert_eq!(wiring.matches("answer_for(").count(), 1, "one caller: the card's answer");
+        // Defined once, wired once (`g.on_answer_question(`), called once, from that callback.
+        assert_eq!(wiring.matches("answer_question(").count(), 3);
         assert!(wiring.contains("g.on_answer_question("));
+    }
+}
+
+#[cfg(test)]
+mod status_for_describe_tests {
+    use super::status_for_describe;
+
+    #[test]
+    fn a_status_in_describe_is_flat_visible_and_clipped() {
+        let said = status_for_describe(&format!("Thinking\u{202e}\u{7}\n\n {}", "word ".repeat(100)));
+        assert!(!said.contains('\u{202e}') && !said.contains('\u{7}') && !said.contains('\n'), "{said:?}");
+        assert!(said.chars().count() <= 121, "{said:?}");
+        assert!(said.starts_with("Thinking word"), "{said:?}");
     }
 }

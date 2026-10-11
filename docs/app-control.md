@@ -222,6 +222,11 @@ a name and forward a pid it chose — the same-user limit #154 describes. Python
 (Blender, LibreOffice) do not forward the token and are unbound, as are spends that carry no
 token at all.
 
+The Agents workroom's pages are `show_workroom` (safe), read back under `workroom` in `describe
+shell`: the counts and each mind's state for any reader, the desks and the requests waiting for the
+person's own — `control_workroom.rs`. The answer says what the screen shows after the call and adds
+a `note` when that is not what was asked.
+
 `shell.run_recipe {recipe, inputs?}` starts a recipe — a formation among them, whose Agent steps
 hand work to catalog roles through `hand_off` (see [harness.md](harness.md), Formations). It is
 **sensitive**: it starts agents. Its run is given the leave for its agents that the companion's own
@@ -281,34 +286,45 @@ content, and a content action a paired action takes back stays `standard` (`add_
 
 | Surface | Action | Grade | Why |
 | --- | --- | --- | --- |
-| shell | `read_message`, `open_lens`, `show_desktop` | safe | reads and showings; nothing written |
+| shell | `read_message`, `open_lens`, `close_lens`, `show_desktop` | safe | reads and showings; nothing written. `close_lens` puts the Lens and its chat panel away as Escape does, keeping the conversation and any draft; `describe shell` › `lens.close_with` names it while the Lens is open |
 | shell | `open_app`, `start_service`, `refresh_apps`, `send_message` | standard | launch, start, rescan, say a line to the desktop — undone by closing or stopping, nothing stored |
 | shell | `show_screen`, `show_app`, `focus_window`, `close_window`, `minimise_window`, `maximise_window` | standard | moving and placing windows; the state they change dies with the session |
 | shell | `pin_app` | sensitive | **regraded (#48)**: writes the START pin list into the shell's settings, and it is still pinned after a restart |
 | shell | `use_harness` | sensitive | **regraded (#48)**: writes the preferred mind into the shell's settings — a choice about who answers from now on, across restarts |
 | shell | `set_do_not_disturb` | sensitive | **regraded (#48)**: writes `dnd_mode` into the shell's settings; left on, it swallows every notification that follows, quietly, until somebody notices |
+| shell | `set_volume`, `set_mute`, `set_brightness` | standard | the machine's own output level and backlight, which the keys move too and the same slider takes back; nothing is written to the shell's settings. They answer with the level read back from PipeWire / the panel, and `set_brightness` refuses on a machine with no backlight |
+| shell | `set_theme` | sensitive | chooses the desktop's theme (lake, nightfall): the colours, accent, wallpaper and dark flag together, saved in the shell's settings, and it rewrites files outside the shell (labwc's themerc, foot's colours, GTK's scheme) on a worker. `describe shell` lists the themes under `theme`; the answer is the theme the shell reports back |
+| shell | `set_dark_style` | sensitive | switches between the dark and light appearance through the Quick Settings tile's own callback, which saves `dark_mode` into the shell's settings: still in force after a restart, the #48 rule `set_theme` and `set_do_not_disturb` are graded by. Nothing outside the shell is written. `describe shell` › `settings.dark` is the mode in use |
 | shell | `report_problem` | sensitive | sends what it carries out of the machine |
 | shell | `install_harness`, `start_harness` | sensitive | fetches software onto the machine; decides what it runs on every login |
 | shell | `set_mind_panel` | safe | showing: how much of one panel is drawn, remembered in the panel's own file; nothing sent, run or granted |
 | shell | `lock` | safe | only takes access away — Super+L must lock, not ask about locking (#215) |
-| shell | `files_go`, `files_enter`, `files_open`, `files_up`, `files_new_folder`, `files_new_file`, `files_select`, `files_view`, `files_rename`, `files_copy`, `files_cut`, `files_paste`, `files_trash_selected`, `files_undo_trash`, `files_toggle_trash`, `files_refresh`, `files_cancel`, `files_terminal` | standard | driving the Files screen; what they change is content, taken back by the paired verb or recovered from Trash |
+| shell | `files_go`, `files_enter`, `files_open`, `files_up`, `files_new_folder`, `files_new_file`, `files_select`, `files_view`, `files_rename`, `files_copy`, `files_cut`, `files_paste`, `files_trash_selected`, `files_undo_trash`, `files_toggle_trash`, `files_refresh`, `files_cancel`, `files_terminal` | standard | driving the Files screen; what they change is content, taken back by the paired verb or recovered from Trash; `files_new_folder` and `files_new_file` answer the disk's own fact, **settled**, from the create call itself (`EEXIST`), not a stat beside it: `{"created": "<absolute path>", "kind": "directory"\; `files_go` answers, **settled**, what the folder holds (`{"path", "exists": true, "entries", "first": [up to 12 names, folders end in `/`], "more"}`), and a missing folder is refused with the `files_new_folder` call that makes it; `files_new_folder` takes a nested path (`a/b`, `~/a/b`), makes the missing parents (each level judged as a single make is, `..` refused) and lists them in `made_parents` |
 | shell | `files_delete` | dangerous | destroys without a trash |
 | shell | `check_update` | safe | reads |
 | shell | `set_update_channel` | sensitive | stored configuration: decides where every later update comes from |
 | shell | `apply_update` | dangerous | replaces the system |
-| shell | `installer_set`, `installer_go_to` | standard | driving the installer's own screens |
-| shell | `installer_install`, `installer_reboot` | dangerous | writes the disk; ends the session |
+| shell | `installer_set`, `installer_go_to` | standard | driving the installer's own screens; confirming that macOS may be erased is not a field of `installer_set` |
+| shell | `installer_choose_target`, `installer_erase_macos` | sensitive | decide which partition the install writes, or switch it to erasing a disk; confirm that a disk holding macOS may be erased (its name typed again). Both explain one call: the card names the device |
+| shell | `installer_install`, `installer_reboot` | dangerous | writes the disk; ends the session. `installer_install` explains one call: "Install into /dev/sda4 (199 GB, YANTRIK, FAT32); nothing else changes", or "ERASE /dev/sda, which holds macOS" |
 | shell | `run_recipe` | sensitive | starts agents |
 | shell | `answer_recipe`, `pause_recipe`, `resume_recipe`, `cancel_recipe` | standard | steering a run already started |
 | shell | `new_agent`, `hand_off` | sensitive | starts an agent, with what that costs and whatever reach the role carries |
 | shell | `send_to_agent`, `stop_agent` | standard | talking to, or stopping, an agent the person started |
-| shell | `read_agent`, `show_agent` | safe | reads and showings |
+| shell | `read_agent`, `show_agent`, `show_workroom` | safe | reads and showings; `show_workroom` changes the Agents page and nothing about any agent, and is held while an approval card waits |
 | shell | `agent_run`, `agent_input` | sensitive | arbitrary commands; typing into a live shell |
 | shell | `agent_job`, `agent_kill` | standard | reading a job's state; ending a job the caller's token owns |
 | shell | `request_approval`, `approval_status`, `consume_approval`, `set_mind_mode`, `record_unasked_action`, `show_mind_audit`, `close_mind_menu` | safe | the approval machinery itself, which must never act; `set_mind_mode` refuses every loosening, so it can only tighten |
+| shell | `open_switcher`, `switcher_move`, `switcher_cancel` | safe | drawing the window overview (Super+Tab; Alt+Tab is labwc's own cycling and not this), moving its selection, putting it away; nothing is switched. Cancel gives the previous window back only when no card waits |
+| shell | `switcher_commit` | standard | brings the selected window in front of the shell, as `focus_window` does; a window that has closed is taken off the card and the answer says so |
+| shell | `open_today`, `close_today`, `open_quick_settings`, `close_quick_settings`, `open_power_menu`, `close_power_menu`, `open_clipboard`, `close_clipboard`, `open_cheat_sheet`, `close_cheat_sheet` | safe | showing or putting away the bar's panels (Today, Quick Settings, the power menu, the clipboard) and the keyboard cheat sheet; opening the power menu powers nothing off, choosing an entry is the person's |
+| shell | `power_sleep` | sensitive, deferred | suspend, or hibernate where logind offers it (`describe shell` › `power.hibernate_offered`); the session is kept, the machine stops answering. Answers when logind has accepted the request |
+| shell | `power_off` | dangerous, deferred | log out, restart or shut down: ends every program and every mind at work. Refused while minds are working unless `even_if_minds_working` is true; the refusal says how many. Answers when logind has accepted the request, before anything has stopped |
 | arcade | `new_character`, `new_game`, `update_game`, `update_character`, `build`, `play`, `verify`, `screenshot` | standard | editing and building library content, editable again |
 | arcade | `delete` | sensitive | destroys the one named game |
+| calendar | `events_between` | safe | a read: events from `from` to `to` (ISO dates, inclusive, at most 62 days) straight from the store, with date, start, end, title, location; no view changes |
 | calendar | `select_day`, `show_month`, `go_to_today`, `set_view` | standard | moving around the calendar |
+
 | calendar | `add_event`, `update_own_event`, `delete_own_event` | standard | content, paired: what `add_event` writes, `update_own_event` moves and `delete_own_event` takes back — the caller's own events, by the #201 record |
 | calendar | `update_event`, `delete_event` | sensitive | reach any stored event — the person's own, a Google-synced one, another caller's — so the person sees a card (#332); a delete has no trash, and its description says the event is not recoverable |
 | containers | `refresh`, `start`, `show_logs` | standard | reads, and starting what is stopped |
@@ -325,6 +341,7 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | network | `wifi_connect`, `wifi_forget` | sensitive | changes what the machine joins; forgetting deletes a stored credential |
 | network | `wifi_disconnect`, `wifi_radio` | dangerous | on a machine reached over Wi-Fi, takes away the channel the undo would travel on |
 | notes | `new_note`, `open_note`, `set_title`, `append`, `search`, `set_folder`, `notebook`, `tags`, `save`, `restore`, `copy`, `reload`, `preview`, `focus`, `undo`, `redo` | standard | library content, with `undo` beside it |
+| notes | `read_notes` | safe | a read: the text of the notes matching `query` (or all, never the Trash), newest first, one page under 3,400 characters with each text cut at 700; `skip` takes the next page, which the answer names. Being `safe`, a phone turn or a read-only role reads the library unasked; anything that sends it on is still sensitive and asks |
 | notes | `set_content`, `trash`, `import`, `export` | sensitive | replaces a note's whole body; moves things in and out of the library and the filesystem |
 | presentation | `open`, `show`, `save`, `save_as`, `new_deck`, `add_slide`, `set_slide`, `move_slide`, `go_to`, `next`, `previous`, `present`, `export_markdown` | standard | deck content, editable again |
 | presentation | `delete_slide` | sensitive | takes the slide and its contents off the deck |
@@ -338,7 +355,8 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | system-monitor | `sort_processes`, `filter_processes` | standard | view state |
 | system-monitor | `kill_process` | dangerous | ends what somebody else is running |
 | terminal | `run`, `send_input`, `new_tab`, `open_directory` | sensitive | arbitrary commands in the window the person is looking at |
-| editor | `new`, `open`, `save`, `save_as`, `show`, `close`, `cancel`, `find`, `find-next`, `find-prev`, `replace_text`, `replace`, `replace-all`, `append`, `undo`, `redo`, `select_tab` | standard | buffer and file content, `undo` beside it; `close` refuses unsaved changes rather than deciding about them |
+| editor | `new`, `open`, `save`, `save_as`, `show`, `close`, `cancel`, `find`, `find-next`, `find-prev`, `replace_text`, `replace`, `replace-all`, `append`, `undo`, `redo`, `select_tab` | standard | buffer and file content, `undo` beside it; `close` refuses unsaved changes rather than deciding about them. Each `describe.tabs[i]` carries `opened_by` (`"person"`, or `"agent"` for a call with an agent token; the runtime gives a handler no agent name) and `opened_by_you` (`true`/`false` against the caller of that describe or act, compared by a digest of its token; `null` for a mind-account `describe`, which carries no token). Tabs open, and every edit (`append`, `set_content`, `replace`, `undo`, typing) is allowed, only while the open tabs hold at most 64 MiB of text between them, each tab counted at the larger of its text and its saved copy (at most 128 tabs; it was a fixed eight); an edit past it is refused with the tab unchanged. A tab restored from drafts is the person's; who opened a tab is never written to the drafts file. The refusal to open names the caller's oldest saved tab as `select_tab index=N` then `close`, never a modified one, or says none were opened by the caller and names the oldest saved tab the person could close. An agent's `close` of a tab the person opened with unsaved changes, or with changes `undo` set aside in `redo`, is refused. `close` and `discard` name a hidden tab `(hidden)` in their answers. Added after a mind on VM 520 closed the person's saved tab to make room (4 October) |
+| editor | `read` | safe | a read of tabs already open: the tab in front or another by number (`tab`), one page under 3,400 characters from `from_line`; the answer names the next call. It takes no `path`: a safe read runs unasked in plan mode, phone turns and read-only roles, and a path would reach every text file in the home, so a file not yet open goes through `open` (standard) first. `describe.content` stops at 4,000 characters and now says so (`content_cut`, `read_with`), as does `open`'s answer. Added after a mind on VM 520 could not read a 9.5 KB spec (4 October) |
 | editor | `discard`, `set_content` | sensitive | throws work away; replaces the buffer wholesale |
 | weather | `refresh` | standard | fetches again, stores nothing |
 | weather | `show_location` | standard | a showing: moves an already-saved place onto the screen — the prefs line it touches is which place was being shown, not what is saved |
@@ -632,3 +650,31 @@ runtime's dispatch.
 Windows from other applications are not in this list unless their `.desktop` file declares a
 surface (above) — an adapter is how one gets there. The rest publish through AT-SPI, and
 `a11y-service` reads whatever the toolkit chose to expose.
+
+## Where a mind's windows go (Mind View)
+
+While the setting `minds open apps in Mind View` is on (the default; only the person can change it),
+every window a mind opens is drawn in Mind View and never on the person's desktop:
+
+- Every launch for a mind clears `DISPLAY`, `WAYLAND_DISPLAY`, `WAYLAND_SOCKET` and `XAUTHORITY`
+  and then sets Mind View's own display (`mind_view::Seat::display`; the companion's browser tools
+  use the same list, `PERSON_SESSION_VARS`). Mind View without an Xwayland gets Wayland-only
+  toolkit settings, so a dead socket fails the app instead of falling back to the person's X display.
+- Mind View down is a refusal that says so (`failed_launches`), never a fall back to the desktop.
+  A failed start is tried again after 30 s.
+- `open_app` for an app already open on the person's desktop starts nothing: the answer says it was
+  not launched again and not raised, and the mind drives the open window through its surface.
+- `open_app` and, for a mind, `files_open` answer after the window is seen: `window: appeared`
+  with `where`, or an error that says only what was observed (a refusal; an exit; "no window listed
+  within 8 s", which does not say where a slow start may still land). The answer is settled, and
+  `open_app`'s also carries `app`: the opened app's own summary (`state`) and its actions with the
+  arguments each takes (`actions`, e.g. `new {text?}`, `save_as {path}`), so the next call can act.
+- `open_url` and `launch_browser` open the companion's own browser in Mind View, or are refused.
+  A browser on the default debugging port that is not the companion's (the person's own) is not
+  attached to.
+- `agent_run` mirrors the command and its output into a terminal in Mind View. The view is text
+  and colours only (no screen clears, no carriage returns, no titles), capped per command; the
+  answer and the Agents screen keep the full output.
+- Not changed by design: `open_app files|settings|launchpad` switches the person's own screen;
+  `focus_window`/`close_window` act on the person's windows; a mind typing into the Terminal app
+  drives whichever Terminal window is open, including the person's if that is the one open.

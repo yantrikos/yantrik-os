@@ -73,6 +73,54 @@ pub fn is_own_binary(exe: &str) -> bool {
     name.starts_with("yantrik-") || name.ends_with("-service")
 }
 
+/// The desktop itself: the shell, and the notifications service. The only programs the name
+/// `Yantrik` belongs to on a notification (#114).
+pub const DESKTOP_BINARIES: &[&str] = &[SHELL_BINARY, "notifications-service"];
+
+/// Where an installed desktop keeps its programs.
+pub const INSTALL_DIR: &str = "/opt/yantrik/bin";
+
+/// Whether `exe` is one of [`DESKTOP_BINARIES`] sitting directly in `dir` — live, or replaced
+/// underfoot by an update.
+///
+/// A directory and a name, never a name alone. The name is the caller's to choose: a copy at
+/// `/tmp/yantrik-ui` is called `yantrik-ui` too, and the name `Yantrik` on a toast, a row and a
+/// card is exactly what #114 is about. Writing into the desktop's own directory is not.
+pub fn is_desktop_binary_in(exe: &str, dir: &Path) -> bool {
+    let exe = Path::new(exe.strip_suffix(DELETED).unwrap_or(exe));
+    exe.is_absolute()
+        && exe.parent() == Some(dir)
+        && exe
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|name| DESKTOP_BINARIES.contains(&name))
+}
+
+/// Whether `exe` is the desktop itself as installed: one of [`DESKTOP_BINARIES`] in
+/// [`INSTALL_DIR`].
+pub fn is_installed_desktop_binary(exe: &str) -> bool {
+    is_desktop_binary_in(exe, Path::new(INSTALL_DIR))
+}
+
+/// This process's effective uid. `u32::MAX` off unix, which no peer's uid equals.
+#[cfg(unix)]
+pub fn own_euid() -> u32 {
+    // SAFETY: geteuid cannot fail and touches no memory.
+    unsafe { libc::geteuid() }
+}
+
+#[cfg(not(unix))]
+pub fn own_euid() -> u32 {
+    u32::MAX
+}
+
+/// Whether the kernel says the peer runs as this process's own user. `false` when it would not
+/// say. A mind that runs under an account of its own (#411) is never the same user as the
+/// desktop, whatever binary it manages to have on the socket.
+pub fn same_user(peer: Option<PeerCred>) -> bool {
+    peer.is_some_and(|p| p.uid == own_euid())
+}
+
 /// The program behind a pid, as `/proc` says it, or `None` when it cannot be read.
 #[cfg(target_os = "linux")]
 pub fn exe_of(pid: i32) -> Option<String> {
@@ -338,6 +386,38 @@ mod tests {
                 });
             }
         });
+    }
+
+    #[test]
+    fn the_desktop_is_its_two_binaries_in_its_own_directory_never_a_name_alone() {
+        for exe in [
+            "/opt/yantrik/bin/yantrik-ui",
+            "/opt/yantrik/bin/notifications-service",
+            "/opt/yantrik/bin/yantrik-ui (deleted)",
+        ] {
+            assert!(is_installed_desktop_binary(exe), "{exe}");
+        }
+        // A copy, a developer's build, a lookalike, a nested path, another app, an interpreter.
+        for exe in [
+            "/tmp/yantrik-ui",
+            "/home/yantrik/targets/sdk-spec/release/yantrik-ui",
+            "/opt/yantrik/bin/yantrik-uix",
+            "/opt/yantrik/bin/sub/yantrik-ui",
+            "/opt/yantrik/binyantrik-ui",
+            "/opt/yantrik/bin/../bin2/yantrik-ui",
+            "/opt/yantrik/bin/yantrik-terminal",
+            "/usr/bin/python3",
+            "yantrik-ui",
+            "",
+        ] {
+            assert!(!is_installed_desktop_binary(exe), "{exe}");
+        }
+        // A developer's build counts in its own build directory -- the service's, when it was
+        // built beside the shell -- and nowhere else.
+        let build = Path::new("/home/yantrik/targets/dev/release");
+        assert!(is_desktop_binary_in("/home/yantrik/targets/dev/release/yantrik-ui", build));
+        assert!(!is_desktop_binary_in("/tmp/yantrik-ui", build));
+        assert!(!is_desktop_binary_in("/home/yantrik/targets/dev/release/evil", build));
     }
 
     #[test]

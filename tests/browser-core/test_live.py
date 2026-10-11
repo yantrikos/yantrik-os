@@ -42,6 +42,40 @@ def chrome():
     return None
 
 
+def log_tail(path, lines=20, limit=2048):
+    """The last few lines of a file, for a failure message."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - limit))
+            text = f.read().decode("utf-8", "replace").strip()
+    except OSError:
+        return "(no output)"
+    return "\n".join(text.splitlines()[-lines:]) or "(no output)"
+
+
+def wait_ready(browser, proc, log_path, timeout=30, interval=0.1):
+    """Wait until the driver can really use the browser: connect() answers and one page target
+    exists. `/json/version` answering on its own is not enough — the tests need the websocket
+    and the about:blank tab. Fails at once if Chrome exits, quoting its own output."""
+    deadline = time.monotonic() + timeout
+    while True:
+        if proc.poll() is not None:
+            browser.close()
+            raise RuntimeError("browser exited with code %s before it was ready: %s"
+                               % (proc.returncode, log_tail(log_path)))
+        try:
+            browser.connect()
+            if browser.pages():
+                return
+        except (cdp.BrowserClosed, cdp.CdpError):
+            pass
+        if time.monotonic() > deadline:
+            browser.close()
+            raise RuntimeError("browser did not start in %d s: %s" % (timeout, log_tail(log_path)))
+        time.sleep(interval)
+
+
 class Bench:
     """One browser and one site for the whole run."""
 
@@ -55,20 +89,26 @@ class Bench:
         cls.site = "http://127.0.0.1:%d" % cls.http.server_address[1]
         port = free_port()
         cls.cdp = "http://127.0.0.1:%d" % port
+        cls.log = open(os.path.join(cls.tmp, "chrome.log"), "wb")
         cls.proc = subprocess.Popen([
             chrome(), "--headless=new", "--no-first-run", "--no-default-browser-check",
             "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=%d" % port,
             "--remote-allow-origins=%s" % cls.cdp, "--user-data-dir=%s" % cls.tmp,
             "--window-size=1280,800", "about:blank"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        deadline = time.time() + 20
-        while time.time() < deadline:
-            try:
-                cdp.Browser(cls.cdp)._version()
-                break
-            except cdp.BrowserClosed:
-                time.sleep(0.2)
-        cls.d = drv.Driver(cdp.Browser(cls.cdp), judge=False)
+            stdout=cls.log, stderr=cls.log)
+        browser = cdp.Browser(cls.cdp)
+        try:
+            wait_ready(browser, cls.proc, cls.log.name)
+        except Exception:
+            # setUpModule raising skips tearDownModule: tear down what start made here, or the
+            # Chrome process and the server leak.
+            cls.proc.kill()
+            cls.proc.wait()
+            cls.http.shutdown()
+            cls.log.close()
+            shutil.rmtree(cls.tmp, ignore_errors=True)
+            raise
+        cls.d = drv.Driver(browser, judge=False)
 
     @classmethod
     def stop(cls):
@@ -76,6 +116,7 @@ class Bench:
         cls.proc.kill()
         cls.proc.wait()
         cls.http.shutdown()
+        cls.log.close()
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
 
@@ -508,8 +549,78 @@ class Words(unittest.TestCase):
             self.assertIsNone(commit.reads_as_commitment(label), label)
 
 
+class FakeBrowser:
+    """A cdp.Browser that becomes ready on schedule: connect() is refused `fails` times then
+    works; pages() is empty `empty_pages` times before the tab shows up."""
+
+    def __init__(self, fails=0, empty_pages=0):
+        self.fails = fails
+        self.empty_pages = empty_pages
+        self.connects = 0
+        self.closed = 0
+
+    def connect(self):
+        self.connects += 1
+        if self.connects <= self.fails:
+            raise cdp.BrowserClosed()
+
+    def pages(self):
+        if self.empty_pages > 0:
+            self.empty_pages -= 1
+            return []
+        return [object()]
+
+    def close(self):
+        self.closed += 1
+
+
+class FakeProc:
+    def __init__(self, exit_code=None):
+        self.exit_code = exit_code
+        self.returncode = exit_code  # a real Popen fills this as poll() sees the exit
+
+    def poll(self):
+        return self.exit_code
+
+
+class ReadyWait(unittest.TestCase):
+    """wait_ready against fakes: no Chrome, no waiting longer than the poll interval."""
+
+    def log(self, text):
+        f = tempfile.NamedTemporaryFile("w", suffix=".log", delete=False)
+        f.write(text)
+        f.close()
+        self.addCleanup(os.unlink, f.name)
+        return f.name
+
+    def test_returns_once_connect_and_a_page_both_work(self):
+        b = FakeBrowser(fails=2, empty_pages=1)
+        wait_ready(b, FakeProc(), self.log("ready\n"), timeout=5, interval=0.01)
+        self.assertEqual(b.connects, 4)  # refused twice, then a tab-less pass, then ready
+        self.assertEqual(b.closed, 0)
+
+    def test_early_exit_names_the_code_and_quotes_the_log(self):
+        b = FakeBrowser()
+        with self.assertRaises(RuntimeError) as got:
+            wait_ready(b, FakeProc(exit_code=1), self.log("DevToolsActivePort file doesn't exist\n"),
+                       timeout=5, interval=0.01)
+        self.assertIn("exited with code 1", str(got.exception))
+        self.assertIn("DevToolsActivePort", str(got.exception))
+        self.assertEqual(b.closed, 1)
+
+    def test_timeout_quotes_the_log(self):
+        b = FakeBrowser(fails=10 ** 6)
+        started = time.monotonic()
+        with self.assertRaises(RuntimeError) as got:
+            wait_ready(b, FakeProc(), self.log("still trying\n"), timeout=0.5, interval=0.01)
+        self.assertIn("did not start in", str(got.exception))
+        self.assertIn("still trying", str(got.exception))
+        self.assertEqual(b.closed, 1)
+        self.assertLess(time.monotonic() - started, 5)
+
+
 if __name__ == "__main__":
     if not chrome():
         print("no google-chrome or chromium on PATH: the live browser tests are skipped")
-        unittest.main(argv=[sys.argv[0], "Words"])
+        unittest.main(argv=[sys.argv[0], "Words", "ReadyWait"])  # neither needs Chrome
     unittest.main()

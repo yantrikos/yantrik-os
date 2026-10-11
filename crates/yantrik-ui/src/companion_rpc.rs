@@ -137,6 +137,9 @@ impl ServiceHandler for CompanionRpc {
                     .handle
                     .recall(query, Duration::from_secs(20))
                     .map_err(failed)?;
+                // The companion's record of what its tools did is its own, not a program's on the
+                // socket: it holds the arguments and results of every call.
+                results.retain(|m| !m.domain.starts_with("audit"));
                 results.truncate(limit);
 
                 let results: Vec<serde_json::Value> = results
@@ -248,7 +251,7 @@ impl ServiceHandler for CompanionRpc {
                 // away. The board's own ceiling bounds the rest.
                 let wait =
                     Duration::from_millis(params.get("wait_ms").and_then(|v| v.as_u64()).unwrap_or(0));
-                self.handle.board().wait(&ticket, wait).ok_or_else(|| {
+                self.handle.board().wait_outside(&ticket, wait).ok_or_else(|| {
                     failed(format!(
                         "no job called `{ticket}`; it either never existed or finished long enough                          ago to have been forgotten"
                     ))
@@ -256,14 +259,14 @@ impl ServiceHandler for CompanionRpc {
             }
 
             // The whole board. Answers "is it worth asking right now" without submitting anything.
-            "companion.jobs" => Ok(self.handle.board().overview()),
+            "companion.jobs" => Ok(self.handle.board().overview_for_outside()),
 
             "companion.cancel" => {
                 let ticket = params.get("ticket").and_then(|v| v.as_str()).unwrap_or("").trim();
                 if ticket.is_empty() {
                     return Err(bad_request("cancel needs a `ticket`"));
                 }
-                match self.handle.board().cancel(ticket) {
+                match self.handle.board().cancel_outside(ticket) {
                     Some(was) => Ok(serde_json::json!({
                         "cancelled": ticket,
                         "was": was,

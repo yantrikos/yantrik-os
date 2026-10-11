@@ -46,6 +46,9 @@
 //! - **`complete` and `fail` are the end.** Events after them are dropped and counted, and a call
 //!   the harness left open is settled for the reader as *interrupted*, so no card is left
 //!   spinning. The same happens when a harness detaches, restarts, goes quiet or is stopped.
+//! - **A `redact` erases only what the person said to erase**: words from a question this run
+//!   asked and the person answered *Erase*, from the session holding the run, within five minutes
+//!   of its end, once — and never the record of what happened. See `host::erase`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{self, Sender};
@@ -56,6 +59,9 @@ use crate::event::{AgentId, Event};
 use crate::protocol::{self, Assignment, Attach};
 use crate::run_store::{RunError, RunState, RunStore};
 use crate::{Answer, Capabilities, Chunk, Harness, Health, Turn};
+
+mod erase;
+pub use erase::{Redactor, ShellErased, ShellErasure, ShellPlan, ShellRedactor};
 
 /// The summary a call gets when its turn ended before it did.
 pub const INTERRUPTED: &str = "interrupted";
@@ -99,12 +105,71 @@ struct Flight {
     tx: Option<Sender<Chunk>>,
     /// When the desktop stopped waiting.
     abandoned: Option<Instant>,
+    /// Why the desktop stopped waiting, for the one log line a drop gets.
+    gone: Gone,
+    /// Whether that line has been written for this turn.
+    drop_logged: bool,
+    /// What the harness said after nobody was listening, kept (capped) so the answer is not lost
+    /// silently: see [`Host::with_late_answer`]. Never logged.
+    late: String,
     calls: HashMap<String, Call>,
 }
 
+/// Why a turn's chunks have nowhere to go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Gone {
+    /// The person stopped the agent.
+    Stopped,
+    /// The person said something to it, which ended the turn.
+    Interrupted,
+    /// The panel stopped listening: New chat, a mind switch, or the window closed.
+    NoListener,
+}
+
+impl Gone {
+    fn words(self) -> &'static str {
+        match self {
+            Gone::Stopped => "stopped",
+            Gone::Interrupted => "interrupted to say something",
+            Gone::NoListener => "no listener (new chat, mind switch or panel closed)",
+        }
+    }
+}
+
+/// How much of a late answer is kept for the person to find.
+const MAX_LATE_BYTES: usize = 16 * 1024;
+
+/// An answer that arrived after the person had left the chat it was for.
+#[derive(Clone, Debug)]
+pub struct LateAnswer {
+    pub harness: String,
+    pub turn_id: u64,
+    pub conversation: String,
+    /// What the harness said, in full up to a cap.
+    pub text: String,
+}
+
 impl Flight {
+    /// Keeps `delta` for a late answer, up to [`MAX_LATE_BYTES`] in all, cut on a char boundary.
+    fn keep_late(&mut self, delta: &str) {
+        if self.late.len() >= MAX_LATE_BYTES {
+            return;
+        }
+        let room = MAX_LATE_BYTES - self.late.len();
+        let cut = (0..=delta.len().min(room)).rev().find(|i| delta.is_char_boundary(*i)).unwrap_or(0);
+        self.late.push_str(&delta[..cut]);
+    }
+
     fn new(conversation: String, tx: Sender<Chunk>) -> Flight {
-        Flight { conversation, tx: Some(tx), abandoned: None, calls: HashMap::new() }
+        Flight {
+            conversation,
+            tx: Some(tx),
+            abandoned: None,
+            gone: Gone::NoListener,
+            drop_logged: false,
+            late: String::new(),
+            calls: HashMap::new(),
+        }
     }
 
     /// Whether the next turn in this conversation still has to wait for this one.
@@ -149,6 +214,16 @@ impl Flight {
                 }
             },
             Event::Thinking { .. } | Event::Status { .. } | Event::Usage { .. } | Event::Request { .. } => Ok(()),
+            // Taken before a turn's stream is looked at (`Host::redact`); never one of its events.
+            Event::Redact { .. } => Err("a `redact` is not part of a turn's stream".to_string()),
+        }
+    }
+
+    /// Say once per turn that what the harness sends is being dropped, and why. The log carries
+    /// the harness, the turn and the reason, never what was said.
+    fn log_drop(&mut self, harness: &str, turn_id: u64) {
+        if !std::mem::replace(&mut self.drop_logged, true) {
+            tracing::info!(harness, turn = turn_id, why = self.gone.words(), "the desktop is not waiting for this turn; what it sends is dropped");
         }
     }
 
@@ -179,6 +254,11 @@ impl Flight {
     /// Stop waiting for this turn: it is settled for the reader now and stays here, holding its
     /// conversation, until the harness closes it or [`STOP_GRACE`] passes.
     fn abandon(&mut self, failure: Option<String>) {
+        self.gone = match failure.as_deref() {
+            Some(STOPPED) => Gone::Stopped,
+            Some(INTERRUPTED_TO_TELL) => Gone::Interrupted,
+            _ => Gone::NoListener,
+        };
         self.settle(failure);
         if self.abandoned.is_none() {
             self.abandoned = Some(Instant::now());
@@ -519,6 +599,10 @@ pub struct EventCounts {
     pub oversized: u64,
     /// A kind this build does not know. Ignored, not an error.
     pub unknown: u64,
+    /// `redact` events the acceptance rule held for, and that erased.
+    pub redacted: u64,
+    /// `redact` events refused, with nothing changed.
+    pub redact_refused: u64,
 }
 
 struct State {
@@ -563,6 +647,11 @@ pub struct Host {
     /// Why no turn goes to any mind right now, when something paused them all: the person's
     /// Private mode. See [`Host::pause`].
     paused: Arc<std::sync::RwLock<Option<String>>>,
+    /// Told when an answer finishes for a chat the person had left. See [`Host::with_late_answer`].
+    late_answer: Option<Arc<dyn Fn(LateAnswer) + Send + Sync>>,
+    /// Erases the shell's own copy of a conversation (the agent's pane transcript) once a `redact`
+    /// is accepted, when the shell said how: see [`Host::with_redactor`].
+    redactor: Option<Redactor>,
 }
 
 /// How the host decides who carries a memory credential, and how it digests one. The decision
@@ -599,7 +688,18 @@ impl Host {
             runs: None,
             memory: None,
             paused: Arc::new(std::sync::RwLock::new(None)),
+            late_answer: None,
+            redactor: None,
         }
+    }
+
+    /// The same host, telling `hook` once when a turn ends well after the person had left its chat
+    /// (New chat, a mind switch, a closed panel), with what it said. The shell raises a
+    /// notification, so an answer is never lost without a word. A turn the person stopped is not
+    /// reported: they asked for it to end.
+    pub fn with_late_answer(mut self, hook: impl Fn(LateAnswer) + Send + Sync + 'static) -> Host {
+        self.late_answer = Some(Arc::new(hook));
+        self
     }
 
     /// Stop every turn to every mind, built-in included, saying `why` to whoever asks (`Some`), or
@@ -689,8 +789,9 @@ impl Host {
     /// The person's answer to a question run `run_id` asked. It is consumed in the run store
     /// first, so it counts exactly once, and only then queued for the one harness answering that
     /// run, which gets it on its next poll. A connection that was replaced holds no runs, so it
-    /// can never receive it. Errors say why nothing was delivered.
-    pub fn answer(&self, run_id: u64, request_id: &str, answer: &serde_json::Value) -> Result<(), String> {
+    /// can never receive it. Errors say why nothing was delivered. `by_option`: the person pressed
+    /// one of the question's offered answers, rather than typing one (the run store keeps which).
+    pub fn answer(&self, run_id: u64, request_id: &str, answer: &serde_json::Value, by_option: bool) -> Result<(), String> {
         let store = self.runs.as_ref().ok_or("this desktop keeps no runs")?;
         let mut state = self.lock();
         self.reap(&mut state);
@@ -701,7 +802,7 @@ impl Host {
                 _ => format!("run {run_id} does not exist"),
             });
         };
-        store.answer(run_id, request_id, answer).map_err(|e| e.to_string())?;
+        store.answer(run_id, request_id, answer, by_option).map_err(|e| e.to_string())?;
         harness.answers.push(serde_json::json!({ "turn_id": run_id, "request_id": request_id, "answer": answer }));
         Ok(())
     }
@@ -709,7 +810,7 @@ impl Host {
     /// [`Host::answer`] for a question `agent` asked, found by the agent and the request id,
     /// which is what the shell's agent view knows: the run is the one in flight for that agent
     /// that is still waiting on `request_id`.
-    pub fn answer_for(&self, agent: &AgentId, request_id: &str, answer: &serde_json::Value) -> Result<(), String> {
+    pub fn answer_for(&self, agent: &AgentId, request_id: &str, answer: &serde_json::Value, by_option: bool) -> Result<(), String> {
         let store = self.runs.as_ref().ok_or("this desktop keeps no runs")?;
         let runs: Vec<u64> = {
             let mut state = self.lock();
@@ -730,7 +831,7 @@ impl Host {
             .into_iter()
             .find(|&run| store.pending_requests(run).is_ok_and(|p| p.iter().any(|(r, _)| r == request_id)))
             .ok_or_else(|| format!("`{agent}` is no longer waiting on that question"))?;
-        self.answer(run, request_id, answer)
+        self.answer(run, request_id, answer, by_option)
     }
 
     /// Cancel a run: the harness is told on its next poll, the person's listener is settled, and
@@ -1707,6 +1808,11 @@ impl Host {
         let Some(tx) = &flight.tx else {
             // Stopped, or nobody is listening: the harness should stop working on it. Its next
             // call on this turn — this one — is where it learns that.
+            flight.log_drop(&harness.announced.id, turn_id);
+            // An answer for a chat the person left is kept to be told of at the end, not lost.
+            if flight.gone == Gone::NoListener {
+                flight.keep_late(&delta);
+            }
             return Ok(serde_json::json!({ "dropped": true }));
         };
         // An empty delta is a heartbeat: the call has already refreshed this session's presence,
@@ -1715,9 +1821,12 @@ impl Host {
             return Ok(serde_json::json!({}));
         }
         self.record("text", turn_id, |s| s.append(turn_id, "text", &serde_json::json!({ "delta": delta })));
-        if tx.send(Chunk::Text(delta)).is_err() {
-            // The panel stopped listening — the person closed it or asked something else.
+        if tx.send(Chunk::Text(delta.clone())).is_err() {
+            // The panel stopped listening — the person closed it or asked something else. This
+            // chunk is the first thing it missed.
             flight.abandon(None);
+            flight.log_drop(&harness.announced.id, turn_id);
+            flight.keep_late(&delta);
             return Ok(serde_json::json!({ "dropped": true }));
         }
         Ok(serde_json::json!({}))
@@ -1732,8 +1841,15 @@ impl Host {
         let mut state = self.lock();
         let st = &mut *state;
         let harness = Self::touch(&mut st.attached, params, peer, &*self.descends)?;
-        let counts = &mut st.events;
         let who = harness.announced.id.clone();
+        if raw.get("kind").and_then(|k| k.as_str()) == Some("redact") {
+            // Not part of the turn's stream: it may come after the turn closed, and it is never
+            // passed on to a reader. Its own rule, off the host's lock (`host::erase`).
+            let session = harness.session.clone();
+            drop(state);
+            return Ok(self.redact(turn_id, &who, &session, raw));
+        }
+        let counts = &mut st.events;
 
         let Some(flight) = harness.in_flight.get_mut(&turn_id) else {
             if harness.finished.contains(&turn_id) {
@@ -1747,6 +1863,7 @@ impl Host {
         };
         if flight.tx.is_none() {
             counts.late += 1;
+            flight.log_drop(&who, turn_id);
             return Ok(serde_json::json!({ "dropped": true }));
         }
 
@@ -1808,6 +1925,7 @@ impl Host {
         let tx = flight.tx.as_ref().expect("checked above");
         if tx.send(Chunk::Event(event)).is_err() {
             flight.abandon(None);
+            flight.log_drop(&who, turn_id);
             return Ok(serde_json::json!({ "dropped": true }));
         }
         counts.accepted += 1;
@@ -1828,6 +1946,19 @@ impl Host {
         };
         harness.remember_finished(turn_id);
         let abandoned = flight.tx.is_none();
+        let harness_id = harness.announced.id.clone();
+        if abandoned {
+            // A harness that closes a turn nobody waited for is a drop even if it never sent text.
+            flight.log_drop(&harness_id, turn_id);
+        }
+        // What it said to nobody, when the person simply left (not stopped it) and it ended well.
+        let late = (abandoned && failure.is_none() && flight.gone == Gone::NoListener && !flight.late.trim().is_empty())
+            .then(|| LateAnswer {
+                harness: harness_id,
+                turn_id,
+                conversation: flight.conversation.clone(),
+                text: std::mem::take(&mut flight.late),
+            });
         if !abandoned {
             if let Some(agent) = harness.agents.get_mut(&flight.conversation) {
                 agent.last = Some(match &failure {
@@ -1852,6 +1983,10 @@ impl Host {
             }
         }
         flight.settle(failure);
+        drop(state);
+        if let (Some(late), Some(hook)) = (late, &self.late_answer) {
+            hook(late);
+        }
         Ok(if abandoned { serde_json::json!({ "dropped": true }) } else { serde_json::json!({}) })
     }
 
@@ -1994,8 +2129,9 @@ fn issue_conversation(issued: &mut HashSet<String>) -> Result<String, String> {
 }
 
 /// Bytes from the operating system's random source, as hex. Never a clock, a counter or a
-/// seeded generator: a token that could be guessed would name somebody else's agent.
-fn random_hex(bytes: usize) -> Result<String, String> {
+/// seeded generator: a token that could be guessed would name somebody else's agent. The one
+/// source of secrets the desktop issues (agent tokens, job tickets, pairing codes).
+pub fn random_hex(bytes: usize) -> Result<String, String> {
     let mut buf = vec![0u8; bytes];
     getrandom::getrandom(&mut buf)
         .map_err(|e| format!("this machine would not give the desktop random bytes: {e}"))?;
@@ -3279,6 +3415,97 @@ mod tests {
         assert!(err.contains("no agent") && err.contains(&agent.to_string()), "{err}");
     }
 
+    /// Counts the info lines of the drop and records their fields, never the text.
+    struct DropLog(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+    impl tracing::Subscriber for DropLog {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            struct V(String);
+            impl tracing::field::Visit for V {
+                fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
+                    self.0.push_str(&format!("{}={v:?} ", f.name()));
+                }
+            }
+            let mut v = V(String::new());
+            event.record(&mut v);
+            if *event.metadata().level() == tracing::Level::INFO && v.0.contains("not waiting") {
+                self.0.lock().unwrap().push(v.0);
+            }
+        }
+    }
+
+    #[test]
+    fn a_turn_the_desktop_stopped_waiting_for_logs_its_drop_once_with_why_and_never_the_text() {
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let host = host_with_nothing();
+        let (session, agent, turn_id, _answer) = turn_in_flight(&host);
+        assert!(host.stop_agent(&agent));
+        tracing::subscriber::with_default(DropLog(lines.clone()), || {
+            for text in ["secret one", "secret two"] {
+                let r = host
+                    .handle(protocol::CHUNK, &json!({ "session": session, "turn_id": turn_id, "delta": text }))
+                    .unwrap();
+                assert_eq!(r, json!({ "dropped": true }));
+            }
+            assert_eq!(complete(&host, &session, turn_id), json!({ "dropped": true }));
+        });
+        let lines = lines.lock().unwrap();
+        assert_eq!(lines.len(), 1, "one line per turn: {lines:?}");
+        assert!(lines[0].contains("pi") && lines[0].contains(&format!("turn={turn_id}")), "{}", lines[0]);
+        assert!(lines[0].contains("stopped"), "{}", lines[0]);
+        assert!(!lines[0].contains("secret"), "the text is never logged: {}", lines[0]);
+    }
+
+    #[test]
+    fn an_answer_that_arrives_after_the_chat_was_left_is_handed_on_not_lost() {
+        let told = std::sync::Arc::new(Mutex::new(Vec::<LateAnswer>::new()));
+        let sink = told.clone();
+        let host = host_with_nothing().with_late_answer(move |late| sink.lock().unwrap().push(late));
+        let (session, _agent, turn_id, answer) = turn_in_flight(&host);
+        // New chat: the desktop drops its listener, and the harness keeps working.
+        drop(answer);
+        for part in ["It took ", "a while."] {
+            host.handle(protocol::CHUNK, &json!({ "session": session, "turn_id": turn_id, "delta": part })).unwrap();
+        }
+        assert!(told.lock().unwrap().is_empty(), "nothing is said before the turn ends");
+        complete(&host, &session, turn_id);
+        let told = told.lock().unwrap();
+        assert_eq!(told.len(), 1);
+        assert_eq!((told[0].harness.as_str(), told[0].turn_id), ("pi", turn_id));
+        assert!(told[0].text.ends_with("a while."), "{:?}", told[0].text);
+    }
+
+    #[test]
+    fn the_late_buffer_is_capped_on_a_char_boundary_whichever_path_fills_it() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut flight = Flight::new("main".into(), tx);
+        flight.keep_late(&"é".repeat(MAX_LATE_BYTES));
+        assert!(flight.late.len() <= MAX_LATE_BYTES && flight.late.len() >= MAX_LATE_BYTES - 1);
+        flight.keep_late("more");
+        assert!(flight.late.len() <= MAX_LATE_BYTES);
+    }
+
+    #[test]
+    fn a_turn_the_person_stopped_is_not_announced_as_a_late_answer() {
+        let told = std::sync::Arc::new(Mutex::new(Vec::<LateAnswer>::new()));
+        let sink = told.clone();
+        let host = host_with_nothing().with_late_answer(move |late| sink.lock().unwrap().push(late));
+        let (session, agent, turn_id, _answer) = turn_in_flight(&host);
+        assert!(host.stop_agent(&agent));
+        host.handle(protocol::CHUNK, &json!({ "session": session, "turn_id": turn_id, "delta": "too late" })).unwrap();
+        complete(&host, &session, turn_id);
+        assert!(told.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn stopping_an_agent_fails_what_waits_settles_what_runs_and_tells_the_harness() {
         let host = host_with_nothing();
@@ -3633,8 +3860,8 @@ mod tests {
         assert_eq!(ask(&host, &s2, r2, "a"), json!({}), "request ids are per run");
         assert_eq!(store.run(r1).unwrap().unwrap().state, RunState::WaitingOnPerson);
 
-        host.answer(r1, "a", &json!("Allow")).unwrap();
-        let again = host.answer(r1, "a", &json!("Allow")).unwrap_err();
+        host.answer(r1, "a", &json!("Allow"), true).unwrap();
+        let again = host.answer(r1, "a", &json!("Allow"), true).unwrap_err();
         assert!(again.contains("already answered"), "{again}");
 
         let delivered = poll(&host, &s1);
@@ -3648,7 +3875,7 @@ mod tests {
     fn a_question_never_asked_a_repeated_one_and_one_without_an_id_are_refused() {
         let (host, _) = host_with_runs();
         let (session, _, run, _answer) = turn_in_flight(&host);
-        assert!(host.answer(run, "never", &json!(1)).unwrap_err().contains("never asked"));
+        assert!(host.answer(run, "never", &json!(1), true).unwrap_err().contains("never asked"));
         ask(&host, &session, run, "a");
         assert!(ask(&host, &session, run, "a")["refused"].as_str().unwrap().contains("already asked"));
         let blank = event(&host, &session, run, json!({ "kind": "request", "request_id": " ", "prompt": "?" })).unwrap();
@@ -3661,13 +3888,13 @@ mod tests {
         let (session, _, run, _answer) = turn_in_flight(&host);
         ask(&host, &session, run, "a");
         complete(&host, &session, run);
-        assert!(host.answer(run, "a", &json!("Allow")).unwrap_err().contains("ended (done)"));
+        assert!(host.answer(run, "a", &json!("Allow"), true).unwrap_err().contains("ended (done)"));
 
         let (session, _, run, _answer) = turn_in_flight(&host);
         ask(&host, &session, run, "b");
         host.handle(protocol::DETACH, &json!({ "session": session })).unwrap();
-        assert!(host.answer(run, "b", &json!("Allow")).unwrap_err().contains("ended (orphaned)"));
-        assert!(host.answer(777, "b", &json!("Allow")).unwrap_err().contains("does not exist"));
+        assert!(host.answer(run, "b", &json!("Allow"), true).unwrap_err().contains("ended (orphaned)"));
+        assert!(host.answer(777, "b", &json!("Allow"), true).unwrap_err().contains("does not exist"));
     }
 
     #[test]
@@ -3681,7 +3908,7 @@ mod tests {
                 { "conversation": agent.conversation(), "agent_token": token, "turn_id": run } ]}))
             .unwrap();
         let new = reply["session"].as_str().unwrap().to_string();
-        host.answer(run, "a", &json!("Allow")).unwrap();
+        host.answer(run, "a", &json!("Allow"), true).unwrap();
         assert!(host.handle(protocol::POLL, &json!({ "session": old })).is_err(), "the old connection is gone");
         assert_eq!(poll(&host, &new)["answers"][0]["request_id"], "a", "the one answering the run gets it");
     }
@@ -3691,7 +3918,7 @@ mod tests {
         let host = host();
         let (session, _, run, _answer) = turn_in_flight(&host);
         assert!(ask(&host, &session, run, "a")["refused"].as_str().unwrap().contains("keeps no runs"));
-        assert!(host.answer(run, "a", &json!(1)).is_err());
+        assert!(host.answer(run, "a", &json!(1), true).is_err());
     }
 
     #[test]
@@ -3699,14 +3926,14 @@ mod tests {
         let (host, store) = host_with_runs();
         let (session, agent, run, _answer) = turn_in_flight(&host);
         ask(&host, &session, run, "r1");
-        assert!(host.answer_for(&agent, "r9", &json!("Yes")).unwrap_err().contains("no longer waiting"));
-        host.answer_for(&agent, "r1", &json!("Yes")).unwrap();
+        assert!(host.answer_for(&agent, "r9", &json!("Yes"), true).unwrap_err().contains("no longer waiting"));
+        host.answer_for(&agent, "r1", &json!("Yes"), true).unwrap();
         assert_eq!(poll(&host, &session)["answers"][0], json!({ "turn_id": run, "request_id": "r1", "answer": "Yes" }));
-        assert!(host.answer_for(&agent, "r1", &json!("Yes")).unwrap_err().contains("no longer waiting"), "once");
+        assert!(host.answer_for(&agent, "r1", &json!("Yes"), true).unwrap_err().contains("no longer waiting"), "once");
         assert_eq!(store.run(run).unwrap().unwrap().state, RunState::Running);
         let stranger = AgentId::new("pi", "c-someone-else");
         ask(&host, &session, run, "r2");
-        assert!(host.answer_for(&stranger, "r2", &json!("Yes")).is_err(), "only the agent that asked");
+        assert!(host.answer_for(&stranger, "r2", &json!("Yes"), true).is_err(), "only the agent that asked");
     }
 
     #[test]

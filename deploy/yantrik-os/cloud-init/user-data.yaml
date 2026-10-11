@@ -25,7 +25,12 @@ users:
     gecos: Yantrik OS
     groups: [sudo, video, render, input, audio, seat]
     shell: /bin/bash
-    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    # No `sudo:` line. It was `ALL=(ALL) NOPASSWD:ALL`, so anything running as the person (an
+    # agent harness, a mind with a terminal) was root without asking (#397; security review of
+    # #614, 4 October 2026). The account's sudo is the narrow rule yantrik-firstboot has
+    # `yantrik-update migrate-ownership` put in place: the updater and a few helpers, nothing
+    # else. Root for an operator is the guest agent (`qm guest exec`), or give this account a
+    # password here (`passwd:`) and sudo asks for it.
     # Key auth only. A password hash invented for an example is worse than none: the
     # machine boots, looks correct, and nobody can log in to find out why.
     lock_passwd: true
@@ -112,6 +117,12 @@ packages:
   - udisks2
   # Screen brightness, bound to the brightness keys in rc.xml.
   - brightnessctl
+  # The battery and the power profile. The shell reads UPower over D-Bus (crates/yantrik-os/
+  # src/battery.rs) and sets profiles through power-profiles-daemon; neither was on the image,
+  # so a laptop could show no battery and no profile choice. power-profiles-daemon conflicts
+  # with tlp on Debian, and nothing here installs tlp.
+  - upower
+  - power-profiles-daemon
   # Bluetooth, and the mixer fallback for when wpctl is not the right answer.
   - bluez
   - alsa-utils
@@ -133,10 +144,12 @@ packages:
   # other direction (#210).
   - iproute2
   - iputils-ping
-  # A person's first hour: an editor for the terminal (yantrik-session exports EDITOR=nano)
-  # and a process view beside the System Monitor app. The image shipped neither (#210).
+  # A person's first hour: an editor for the terminal (yantrik-session exports EDITOR=nano),
+  # a process view beside the System Monitor app, and vi for the hands and scripts that call
+  # it (vim-tiny, #678). The image shipped none of these (#210).
   - nano
   - htop
+  - vim-tiny
   # A developer's baseline (#401): git, completion in the terminal, and rootless podman for the
   # Container Manager app, with what rootless needs beside it (uidmap, passt, fuse-overlayfs).
   # yantrik-update reconciles the same list on every machine.
@@ -328,6 +341,22 @@ write_files:
         else
           log "onboarding left interactive"
         fi
+
+        # ── Whose files these are (#397) ─────────────────────────────────────────────────
+        # The tree was the person's above (chown -R), as an ISO install's is when copied from
+        # the live system. It is made root's here, last, after update.conf is written, the way
+        # the text installer does it: yantrik-lockdown runs the updater's migrate-ownership
+        # (the layout and the narrow sudo rule), checks the result, and locks the tree down
+        # itself when the updater did not. The desktop's account keeps logs/, data/ and
+        # config.yaml. If even that fails, first boot stops here, and the account has no sudo
+        # rule at all: closed, not open (security review of #614 and #616, 4 October 2026).
+        LOCKDOWN_RC=0
+        /opt/yantrik/bin/yantrik-lockdown secure yantrik || LOCKDOWN_RC=$?
+        case "$LOCKDOWN_RC" in
+          0) log "/opt/yantrik is root's; yantrik keeps logs/, data/ and config.yaml" ;;
+          3) log "WARNING: /opt/yantrik locked down without the updater; run 'sudo yantrik-update migrate-ownership' once" ;;
+          *) log "ERROR: could not make /opt/yantrik root's; stopping"; exit 1 ;;
+        esac
       else
         log "no YANTRIK_RELEASE_URL set — desktop will start with nothing to run"
       fi

@@ -1,4 +1,5 @@
 //! Bounded UTF-8 documents, conflict-aware atomic saves and private recovery.
+use crate::owner::Opener;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -8,7 +9,29 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 pub const MAX_BYTES: usize = 1024 * 1024;
-pub const MAX_TABS: usize = 8;
+/// How much text all open tabs may hold between them.
+///
+/// There used to be a fixed eight tabs, with no reason written down for eight ("But why
+/// limit?", Pranab, 4 October 2026). What a tab costs is the text it holds, at most `MAX_BYTES`
+/// each, so the rule is now about bytes: a tab is opened, created or edited only while the open
+/// tabs together hold no more than this. A tab is counted at the larger of its text and its
+/// baseline, the saved copy it keeps beside the text (see `weight`).
+pub const MAX_OPEN_BYTES: usize = 64 * MAX_BYTES;
+/// The most tabs open at once, however small, so the tab strip and the recovery file stay
+/// bounded. Above the 64 a full budget of 1 MiB files fills, so the budget is what bites first.
+pub const MAX_TABS: usize = 128;
+/// The most the recovery file is read. The file is untrusted input, so the read stays bounded,
+/// and the bound is what `checkpoint` can legitimately write, so a real checkpoint is never
+/// refused on the next launch (security review of #620). It holds only dirty tabs, each with its
+/// text and its baseline. Each tab's text plus baseline is at most twice its `weight`, and the
+/// weights are at most `MAX_OPEN_BYTES` between them because every open and edit is held to the
+/// budget; JSON escaping at worst doubles that again (`validate` allows no control character but
+/// newline, return and tab, each escaped to two bytes, as are quotes and backslashes; serde_json
+/// writes the rest as it is). Per tab, a path of at most 4096 bytes, doubled, plus field names,
+/// fit inside `RECOVERY_PER_TAB`. About 258 MiB.
+pub const RECOVERY_LIMIT: usize = 4 * MAX_OPEN_BYTES + MAX_TABS * RECOVERY_PER_TAB + 65536;
+/// What one recovered tab may take in the file besides its text and baseline.
+pub const RECOVERY_PER_TAB: usize = 16 * 1024;
 static SERIAL: AtomicU64 = AtomicU64::new(0);
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Document {
@@ -16,6 +39,13 @@ pub struct Document {
     pub text: String,
     pub baseline: String,
     pub recovered: bool,
+    /// Who opened this tab (VM 520, 4 October: a mind closed the person's tab to make room).
+    /// It belongs to the tab, not the file, so it survives `save` and `save_as`. It is never
+    /// written to or read from the recovery file: a recovered tab belongs to no running agent,
+    /// and an `opened_by` read back from that file could be forged to `agent` to take the close
+    /// protection off a person's draft (security review of #620). Recovered, it is the person's.
+    #[serde(skip)]
+    pub opened_by: Opener,
     #[serde(skip)]
     pub undo: Vec<String>,
     #[serde(skip)]
@@ -28,6 +58,7 @@ impl Document {
             text: String::new(),
             baseline: String::new(),
             recovered: false,
+            opened_by: Opener::Person,
             undo: vec![],
             redo: vec![],
         }
@@ -38,6 +69,7 @@ impl Document {
             text: self.text.clone(),
             baseline: self.baseline.clone(),
             recovered: self.recovered,
+            opened_by: self.opened_by.clone(),
             undo: vec![],
             redo: vec![],
         }
@@ -82,6 +114,7 @@ impl Document {
             baseline: text.clone(),
             text,
             recovered: false,
+            opened_by: Opener::Person,
             undo: vec![],
             redo: vec![],
         })
@@ -145,6 +178,7 @@ impl Document {
             text: self.text.clone(),
             baseline: self.text.clone(),
             recovered: false,
+            opened_by: self.opened_by.clone(),
             undo: vec![],
             redo: vec![],
         })
@@ -277,7 +311,38 @@ pub fn recovery_path() -> PathBuf {
         })
         .join("yantrik/editor/drafts.json")
 }
+/// What one tab counts against the budget: the larger of its text and its baseline.
+///
+/// Counting the text alone let a tab cost nothing while holding a 1 MiB baseline: open a 1 MiB
+/// file, empty it, and repeat, and 128 tabs held 128 MiB of baselines, and their undo, outside a
+/// 64 MiB budget (confirm pass on #620). The larger of the two, not their sum, because in the
+/// ordinary case they are the same text: a tab just opened or saved costs its file once.
+pub fn weight(d: &Document) -> usize {
+    d.text.len().max(d.baseline.len())
+}
+/// What all of `docs` count against `MAX_OPEN_BYTES` between them.
+pub fn open_bytes(docs: &[Document]) -> usize {
+    docs.iter().map(weight).sum()
+}
+/// Whether one more tab weighing `adding` bytes fits beside `docs`. A tab opened from a file has
+/// the same text and baseline, so its weight is the file's length.
+pub fn room_for(docs: &[Document], adding: usize) -> bool {
+    docs.len() < MAX_TABS && open_bytes(docs).saturating_add(adding) <= MAX_OPEN_BYTES
+}
+/// Whether tab `at` may come to hold `len` bytes: within the budget beside the other tabs, or no
+/// bigger than it is now. Opening was not enough to hold to (security review of #620): an empty
+/// tab always fits, so 128 of them, each then filled with 1 MiB by `append`, held twice the budget
+/// and more with baselines and undo, and wrote a recovery file the next launch would refuse.
+pub fn fits(docs: &[Document], at: usize, len: usize) -> bool {
+    let now = weight(&docs[at]);
+    let then = len.max(docs[at].baseline.len());
+    then <= now || open_bytes(docs) - now + then <= MAX_OPEN_BYTES
+}
 pub fn recover(path: &Path) -> Result<Vec<Document>, String> {
+    recover_within(path, RECOVERY_LIMIT)
+}
+/// `recover`, reading at most `limit` bytes; the tests use a small one.
+pub fn recover_within(path: &Path, limit: usize) -> Result<Vec<Document>, String> {
     if !path.exists() {
         return Ok(vec![]);
     }
@@ -287,13 +352,24 @@ pub fn recover(path: &Path) -> Result<Vec<Document>, String> {
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
         .map_err(|e| e.to_string())?
-        .take((MAX_BYTES * MAX_TABS * 4 + 65536) as u64)
+        .take(limit as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
-    let mut docs: Vec<Document> = serde_json::from_slice(&bytes)
+    if bytes.len() > limit {
+        return Err("Recovery file is larger than the editor ever writes; it was not read.".into());
+    }
+    let docs: Vec<Document> = serde_json::from_slice(&bytes)
         .map_err(|e| format!("Recovery file could not be read: {e}"))?;
+    admit(docs)
+}
+/// What the recovery file's drafts must be to be opened again: no more of them than the strip
+/// holds, within the budget, and each valid text.
+pub fn admit(mut docs: Vec<Document>) -> Result<Vec<Document>, String> {
     if docs.len() > MAX_TABS {
         return Err("Recovery contains too many documents.".into());
+    }
+    if open_bytes(&docs) > MAX_OPEN_BYTES {
+        return Err("Recovery holds more text than the editor keeps open at once.".into());
     }
     for d in &mut docs {
         validate(&d.text)?;

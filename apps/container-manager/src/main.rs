@@ -654,8 +654,12 @@ fn wire(app: &ContainerManagerApp, health: &Health) {
         let weak = app.as_weak();
         let health = health.clone();
         app.on_ct_run(move |image| {
+            // The button is disabled on an empty field; spaces alone still name no image, and
+            // the runtime would only answer with an error about an empty reference.
+            let image = image.trim();
+            if image.is_empty() { return; }
             let Some(ui) = weak.upgrade() else { return };
-            let _ = command(&ui, &health, &["run", "-d", "--", image.as_str()]);
+            let _ = command(&ui, &health, &["run", "-d", "--", image]);
         });
     }
     {

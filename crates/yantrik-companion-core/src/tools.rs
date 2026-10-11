@@ -89,7 +89,9 @@ impl ToolRegistry {
                         ctx.max_permission
                     );
                     tracing::warn!("{}", msg);
+                    if !ctx.incognito {
                     audit_log(ctx.db, name, tool.category(), args, &msg);
+                }
                     return msg;
                 }
 
@@ -98,7 +100,9 @@ impl ToolRegistry {
                 // has already entered the conversation. See `crate::taint`.
                 if let Err(refusal) = crate::taint::check_call(name, tool.category(), args) {
                     tracing::warn!("{}", refusal);
+                    if !ctx.incognito {
                     audit_log(ctx.db, name, tool.category(), args, &refusal);
+                }
                     return refusal;
                 }
 
@@ -106,7 +110,9 @@ impl ToolRegistry {
                 // Recorded after the fact, because what a tool returns is what taints the turn —
                 // and a tool that failed returned nothing to be tainted by.
                 crate::taint::note_call(name, tool.category(), args);
-                audit_log(ctx.db, name, tool.category(), args, &result);
+                if !ctx.incognito {
+                    audit_log(ctx.db, name, tool.category(), args, &result);
+                }
                 return result;
             }
         }
@@ -193,8 +199,10 @@ fn audit_log(
     // an ordinary memory — durable, embedded and searchable — so recording the first two hundred
     // characters of `vault_get` would file the user's passwords under "audit/tools" and hand them
     // to the next recall that happens to match.
-    let result_preview = if crate::taint::returns_secret(tool_name, category) {
-        "<withheld: this tool returns credentials>"
+    // Every tool that touches a secret, not only those that return one: `vault_generate_password`
+    // returns the password it made, and was filed here in full (security review, 1 Oct 2026).
+    let result_preview = if crate::taint::touches_secrets(tool_name, category) {
+        "<withheld: this tool touches credentials>"
     } else {
         &result[..result.floor_char_boundary(200.min(result.len()))]
     };
@@ -384,10 +392,10 @@ pub fn expand_home(path: &str) -> String {
 
 /// Paths the AI must never touch, matched anywhere in the path as text.
 ///
-/// The first part is every place in `yantrik_ipc_contracts::home_paths::PROTECTED`, written out
-/// again because a const cannot be built from another's entries; a test holds the two together.
-/// `validate_path` also asks the shared list itself, a whole component at a time, after links
-/// are followed. What follows is this list's own: places outside the home, and the work
+/// The first part repeats the oldest places in `yantrik_ipc_contracts::home_paths::PROTECTED`.
+/// The shared list itself is enforced by `validate_path` through `resolves_within`, a whole
+/// component at a time after links are followed, and a test holds that for every entry; newer
+/// shared entries are not copied here, because this list matches by substring. What follows is this list's own: places outside the home, and the work
 /// directory.
 pub const BLOCKED_SEGMENTS: &[&str] = &[
     ".ssh", ".gnupg", ".config/labwc", ".config/yantrik",
@@ -940,11 +948,18 @@ mod path_root_tests {
         }
     }
 
+    /// Every place the shared list protects is refused here: by `resolves_within`'s whole-component
+    /// `is_protected` check, after links are followed. Asserted on behaviour rather than on string
+    /// membership of BLOCKED_SEGMENTS, whose matching is by substring: copying a short name like
+    /// `.pi` into it would refuse `photo.pic` and `server.pid` too.
     #[test]
     fn every_place_every_side_protects_is_blocked_here_too() {
         for place in yantrik_ipc_contracts::home_paths::PROTECTED {
-            assert!(super::BLOCKED_SEGMENTS.contains(place), "BLOCKED_SEGMENTS is missing {place}");
+            let inside = format!("~/{place}/x");
+            assert!(super::validate_path(&inside).is_err(), "{inside} must be refused");
         }
+        assert!(super::validate_path("~/Pictures/photo.pic").is_ok() || super::validate_path("~/Pictures/photo.pic").unwrap_err().contains("home"),
+            "a name that merely contains a protected one is not refused for it");
     }
 
     #[test]

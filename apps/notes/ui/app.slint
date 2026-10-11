@@ -13,7 +13,8 @@ export struct PreviewBlock { text:string, kind:int }
 export component NotesApp inherits AppWindow {
  title:"Notes";preferred-width:1120px;preferred-height:760px;min-width:680px;min-height:460px;
  init=>{AppIdentity.id="notes";}
- app-id:"notes";header-icon:Icons.notes;header-subtitle:root.status;
+ // No header subtitle: the save state is said once, in the footer beside the word count.
+ app-id:"notes";header-icon:Icons.notes;
  header-leading-actions:[{id:"focus",icon:Icons.list,label:root.focus-mode?"Library":"Focus",active:root.focus-mode}];
  header-actions:[{id:"reload",icon:Icons.refresh,label:"Refresh"},{id:"import",icon:Icons.import,label:"Import"},{id:"new",icon:Icons.plus,label:"New note",emphasis:2}];
  header-action(id)=>{root.action(id);}

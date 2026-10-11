@@ -28,6 +28,7 @@
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icon.slint";
 import { AppIdentity } from "app_color.slint";
+import { ScrollView } from "std-widgets.slint";
 
 export struct AgentContextItem {
     id: string,
@@ -218,13 +219,29 @@ export component AgentRail inherits Rectangle {
             Rectangle { height: Theme.sp-4; }
         }
 
+        // Scrolls, and is never taller than what it holds. Without a scroller the list's full
+        // height was the rail's minimum, and a layout passes its minimum up: a calendar day
+        // with 41 events asked for two thousand pixels, the window laid out that tall, and
+        // the month grid stretched two weeks across the screen with the rest off the bottom.
+        // `max-height` keeps a short list at its own size, so NEXT still sits right under it.
         if root.context-items.length > 0 : VerticalLayout {
-            vertical-stretch: 0;
+            vertical-stretch: 1;
+            max-height: self.preferred-height;
             spacing: Theme.sp-2;
             SectionLabel { text: "CONTEXT"; }
-            for c in root.context-items : ContextRow {
-                item: c;
-                clicked => { root.context-activated(c.id); }
+            ScrollView {
+                preferred-height: context-list.preferred-height;
+                vertical-stretch: 1;
+                min-height: 0;
+                max-height: context-list.preferred-height;
+                context-list := VerticalLayout {
+                    alignment: start;
+                    spacing: Theme.sp-2;
+                    for c in root.context-items : ContextRow {
+                        item: c;
+                        clicked => { root.context-activated(c.id); }
+                    }
+                }
             }
             Rectangle { height: Theme.sp-4; }
         }

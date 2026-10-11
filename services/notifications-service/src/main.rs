@@ -51,12 +51,16 @@
 //! shell draws them in the card's words. Nothing in the request can set any of it.
 
 mod freedesktop;
+mod names;
 mod reminders;
 mod store;
 
+use std::path::Path;
 use std::sync::Arc;
 
 use yantrik_ipc_contracts::notifications::*;
+use names::borrows_the_desktops_name;
+use yantrik_ipc_transport::owner;
 use yantrik_ipc_transport::peer_identity::{self, Program};
 use yantrik_ipc_transport::PeerCred;
 #[cfg(test)]
@@ -173,7 +177,7 @@ impl NotificationsHandler {
             ADD => {
                 let request = parse_add(&params)?;
                 let who = who_is_calling(peer);
-                let (app, sender) = attribute(&request.app, &who);
+                let (app, sender) = attribute(&request.app, &who, owner::same_user(peer));
                 let stored = self.store.add_from(AddRequest { app, ..request }, Some(sender));
                 tracing::info!(
                     id = %stored.id,
@@ -360,8 +364,9 @@ fn notifications_surface(store: Arc<store::Store>, link: Arc<freedesktop::Link>)
 /// caller to this handler (`caller()`) for exactly this call — and never what the call says.
 fn notify(store: &store::Store, args: &serde_json::Value) -> Result<serde_json::Value, String> {
     let title = required_str(args, "title").map_err(|e| e.message)?;
-    let who = who_is_calling(caller().map(PeerCred::from));
-    let (app, sender) = attribute(args["app"].as_str().unwrap_or_default(), &who);
+    let peer = caller().map(PeerCred::from);
+    let who = who_is_calling(peer);
+    let (app, sender) = attribute(args["app"].as_str().unwrap_or_default(), &who, owner::same_user(peer));
     let stored = store.add_from(
         AddRequest {
             app,
@@ -475,9 +480,6 @@ fn notification_actions() -> Vec<Action> {
 /// claims it is filed under its own program, and the claim is kept beside it.
 const OS_NAME: &str = "Yantrik";
 
-/// The desktop itself: the shell, and this service. The only callers `Yantrik` belongs to.
-const DESKTOP_BINARIES: &[&str] = &["yantrik-ui", "notifications-service"];
-
 /// The store's last resort for a row with no name, as it always was.
 const NAMELESS: &str = "unknown";
 
@@ -488,10 +490,67 @@ const NAMELESS: &str = "unknown";
 /// bridge the shell spawned has `yantrik-ui` above it but `yos` on the socket, and it is the
 /// mind, not the shell — the card's walk names the shell for it, which is right for a card and
 /// wrong for handing out the shell's name.
+///
+/// And judged by where that binary IS, not what it is called (security re-review of #611): one
+/// of the desktop's binaries (`owner::DESKTOP_BINARIES`) in the install directory, or in the
+/// directory this service itself was started from when that directory can be trusted (see
+/// [`own_dir_counts`]). A copy at `/tmp/yantrik-ui` has the right name and gets nothing for it:
+/// the name `Yantrik` on the toast and the row is what #114 is about.
+///
+/// And only from the service's own user (`attribute`'s `same_user`, from `SO_PEERCRED`): a mind
+/// running under an account of its own (#411) is not the desktop, whatever it has on the socket.
+///
+/// # What this does NOT establish
+///
+/// `/proc/<pid>/exe` is read when the request is handled, not when the socket was connected, so
+/// a process running as the SAME user can connect, write its request, and then exec
+/// `/opt/yantrik/bin/yantrik-ui`; or start the real binary with `LD_PRELOAD` and its own code
+/// inside. "Verified desktop" holds against minds under their own accounts and against anything
+/// that is merely named like the desktop. It does not hold against code already running as the
+/// person's own user (the same limit #154 records for the shell's socket); see
+/// docs/notifications-provenance.md.
+///
+/// TODO(notification provenance): the real fix is a socket, or an inherited fd, that this
+/// service hands the shell when the shell is spawned, so being the desktop is a capability the
+/// shell holds rather than a fact read from `/proc` after the fact.
 fn is_the_desktop(who: &Program) -> bool {
-    who.direct
-        .as_ref()
-        .is_some_and(|f| DESKTOP_BINARIES.contains(&peer_identity::basename(&f.exe)))
+    let own_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+        .filter(|d| own_dir_counts(d));
+    who.direct.as_ref().is_some_and(|f| desktop_exe(&f.exe, own_dir.as_deref()))
+}
+
+/// The rule behind `is_the_desktop`, with the service's own directory passed in so it can be
+/// tested without being installed.
+fn desktop_exe(exe: &str, own_dir: Option<&Path>) -> bool {
+    owner::is_installed_desktop_binary(exe) || own_dir.is_some_and(|d| owner::is_desktop_binary_in(exe, d))
+}
+
+/// Whether the directory this service runs from may vouch for a binary beside it.
+///
+/// A developer's cargo target directory is writable by that developer, so a file dropped there
+/// named `yantrik-ui` would otherwise become the desktop (security review of #614). A debug
+/// build is a developer's machine by definition; a release build counts its own directory only
+/// when root owns it and neither group nor others can write to it.
+fn own_dir_counts(dir: &Path) -> bool {
+    #[cfg(unix)]
+    let (uid, mode) = {
+        use std::os::unix::fs::MetadataExt;
+        match std::fs::metadata(dir) {
+            Ok(m) => (m.uid(), m.mode()),
+            Err(_) => return cfg!(debug_assertions),
+        }
+    };
+    #[cfg(not(unix))]
+    let (uid, mode) = (u32::MAX, 0o777);
+    dir_vouches(cfg!(debug_assertions), uid, mode)
+}
+
+/// [`own_dir_counts`]'s judgement, from the facts, so the release rule can be tested from a
+/// debug build.
+fn dir_vouches(debug: bool, uid: u32, mode: u32) -> bool {
+    debug || (uid == 0 && mode & 0o022 == 0)
 }
 
 /// What this machine can establish about whoever is on the socket, read now.
@@ -517,12 +576,15 @@ fn who_is_calling(peer: Option<PeerCred>) -> Program {
 /// A caller nothing could be established about — no credentials, an unreadable `/proc` — is
 /// not the desktop. That is the direction to fail in: the name is worth taking only if the
 /// machine can say who did not get it.
-fn attribute(app_given: &str, who: &Program) -> (String, Sender) {
+///
+/// `same_user` is whether `SO_PEERCRED` put the caller under this service's own uid; only then
+/// can it be the desktop at all.
+fn attribute(app_given: &str, who: &Program, same_user: bool) -> (String, Sender) {
     let claimed = app_given.trim();
     let claimed = (!claimed.is_empty()).then(|| claimed.to_string());
-    let desktop = is_the_desktop(who);
+    let desktop = same_user && is_the_desktop(who);
     let app = match claimed.as_deref() {
-        Some(name) if name.eq_ignore_ascii_case(OS_NAME) && !desktop => who.name(),
+        Some(name) if !desktop && borrows_the_desktops_name(name) => who.name(),
         Some(name) => name.to_string(),
         None if desktop => OS_NAME.to_string(),
         None => who.name(),
@@ -533,6 +595,9 @@ fn attribute(app_given: &str, who: &Program) -> (String, Sender) {
         verified: who.line(),
         pid: who.pid(),
         exe: who.exe(),
+        // The socket's own process, not `exe`'s recognisable ancestor: the card's plain
+        // "Sent by yantrik-ui · verified" is drawn from this alone.
+        desktop,
     };
     (app, sender)
 }
@@ -809,7 +874,7 @@ mod tests {
     fn an_app_given_by_a_caller_that_is_not_the_desktop_is_recorded_as_a_claim() {
         // Notification 134: the name was taken at its word and nothing else was kept. Now the
         // name is the claim, and what the kernel established sits beside it.
-        let (app, sender) = attribute("Studio", &hermes());
+        let (app, sender) = attribute("Studio", &hermes(), true);
         assert_eq!(app, "Studio", "a name that is not the desktop's is the caller's to use");
         assert_eq!(sender.claimed.as_deref(), Some("Studio"));
         assert!(sender.verified.contains("hermes_cli.main"), "{}", sender.verified);
@@ -821,12 +886,12 @@ mod tests {
     #[test]
     fn no_app_given_files_it_under_the_program_that_called() {
         // This used to say `Yantrik` for every nameless call, from anything on the machine.
-        let (app, sender) = attribute("", &hermes());
+        let (app, sender) = attribute("", &hermes(), true);
         assert_eq!(app, "hermes_cli.main");
         assert_eq!(sender.claimed, None, "the machine chose the name; nobody claimed it");
         assert!(sender.verified.contains("pid 689"), "{}", sender.verified);
 
-        let (app, sender) = attribute("   ", &terminal());
+        let (app, sender) = attribute("   ", &terminal(), true);
         assert_eq!(app, "yantrik-terminal");
         assert!(
             sender.verified.starts_with("a program started from a terminal: "),
@@ -835,7 +900,7 @@ mod tests {
         );
 
         // Nothing established: the store's old last resort, and the card's words for it.
-        let (app, sender) = attribute("", &Program::unknown());
+        let (app, sender) = attribute("", &Program::unknown(), true);
         assert_eq!(app, NAMELESS);
         assert_eq!(sender.verified, peer_identity::UNIDENTIFIED);
         assert_eq!(sender.pid, 0);
@@ -845,25 +910,25 @@ mod tests {
     #[test]
     fn the_desktops_own_name_is_kept_for_the_desktop_alone() {
         // The shell's own sends — an update waiting, a mind asking — come from its own process.
-        let (app, sender) = attribute("Yantrik", &shell());
+        let (app, sender) = attribute("Yantrik", &shell(), true);
         assert_eq!(app, "Yantrik");
         assert_eq!(sender.claimed.as_deref(), Some("Yantrik"));
         assert!(sender.verified.contains("yantrik-ui"), "{}", sender.verified);
-        assert_eq!(attribute("", &shell()).0, "Yantrik", "the desktop's default is its own name");
+        assert_eq!(attribute("", &shell(), true).0, "Yantrik", "the desktop's default is its own name");
         let this_service = peer_identity::choose(vec![facts(
             7469,
             "/opt/yantrik/bin/notifications-service",
             "notifications-service",
         )]);
-        assert_eq!(attribute("", &this_service).0, "Yantrik");
+        assert_eq!(attribute("", &this_service, true).0, "Yantrik");
 
         // A mind that says `Yantrik` is filed under itself, and the claim is kept beside it —
         // the row will say what it claimed and what was verified, and the two will differ.
-        let (app, sender) = attribute("Yantrik", &hermes());
+        let (app, sender) = attribute("Yantrik", &hermes(), true);
         assert_eq!(app, "hermes_cli.main");
         assert_eq!(sender.claimed.as_deref(), Some("Yantrik"));
-        assert_eq!(attribute("yantrik", &hermes()).0, "hermes_cli.main", "case is not a loophole");
-        assert_eq!(attribute(" Yantrik ", &hermes()).0, "hermes_cli.main", "nor is whitespace");
+        assert_eq!(attribute("yantrik", &hermes(), true).0, "hermes_cli.main", "case is not a loophole");
+        assert_eq!(attribute(" Yantrik ", &hermes(), true).0, "hermes_cli.main", "nor is whitespace");
 
         // A bridge the shell itself spawned still has `yos` on the socket: it is a mind, and
         // the card's walk naming the shell above it does not make it the shell.
@@ -873,16 +938,77 @@ mod tests {
             facts(7456, "/opt/yantrik/bin/yantrik-ui", "yantrik-ui config.yaml"),
         ]);
         assert!(!is_the_desktop(&via_bridge));
-        assert_ne!(attribute("Yantrik", &via_bridge).0, "Yantrik");
+        assert_ne!(attribute("Yantrik", &via_bridge, true).0, "Yantrik");
+        // And its record says so, though `exe` names the shell above it: `exe` is the first
+        // recognisable process, `desktop` is the one on the socket.
+        let (_, sender) = attribute("Yantrik", &via_bridge, true);
+        assert!(!sender.desktop);
+        assert_eq!(sender.exe, "/opt/yantrik/bin/yantrik-ui", "the walk still names the shell");
+        assert!(attribute("Yantrik", &shell(), true).1.desktop);
 
         // A caller nothing could be established about does not get it either.
-        let (app, sender) = attribute("Yantrik", &Program::unknown());
+        let (app, sender) = attribute("Yantrik", &Program::unknown(), true);
         assert_eq!(app, NAMELESS);
         assert_eq!(sender.claimed.as_deref(), Some("Yantrik"));
 
-        // Only the bare name is the desktop's. "Yantrik Companion" is a name like any other,
-        // and the row beside it says who really sent it.
-        assert_eq!(attribute("Yantrik Companion", &hermes()).0, "Yantrik Companion");
+        // Not only the bare name: anything that starts with it is the desktop's too (security
+        // review of #614). A name that merely mentions it after its own is the caller's.
+        assert_eq!(attribute("Yantrik Companion", &hermes(), true).0, "hermes_cli.main");
+        assert_eq!(attribute("Notes for Yantrik", &hermes(), true).0, "Notes for Yantrik");
+    }
+
+    #[test]
+    fn another_user_on_the_socket_is_never_the_desktop() {
+        // The installed shell's binary, but the kernel put the caller under another uid: a mind
+        // running under its own account (#411).
+        let (app, sender) = attribute("Yantrik", &shell(), false);
+        assert_eq!(app, "yantrik-ui");
+        assert!(!sender.desktop);
+        assert_eq!(attribute("", &shell(), false).0, "yantrik-ui");
+        // And the helper the handlers use refuses a missing credential.
+        assert!(!owner::same_user(None));
+    }
+
+    #[test]
+    fn a_name_that_borrows_the_desktops_is_refused_and_filed_under_the_program() {
+        // The rule itself, and its lookalike cases, are names.rs's; this is where it is applied.
+        for claim in ["Yantrik Security", "Y\u{0430}ntrik", "\u{FF39}\u{FF41}\u{FF4E}\u{FF54}\u{FF52}\u{FF49}\u{FF4B}"] {
+            let (app, sender) = attribute(claim, &hermes(), true);
+            assert_eq!(app, "hermes_cli.main", "{claim:?}");
+            assert_eq!(sender.claimed.as_deref(), Some(claim), "the claim is still kept");
+        }
+        assert_eq!(attribute("Notes for Yantrik", &hermes(), true).0, "Notes for Yantrik");
+        // The desktop itself may still use any of them.
+        assert_eq!(attribute("Yantrik Security", &shell(), true).0, "Yantrik Security");
+    }
+
+    #[test]
+    fn a_release_build_trusts_its_own_directory_only_when_root_holds_it() {
+        assert!(dir_vouches(true, 1000, 0o755), "a debug build is a developer's machine");
+        assert!(dir_vouches(false, 0, 0o755), "root-owned, written by nobody else");
+        assert!(!dir_vouches(false, 1000, 0o755), "the developer's own target directory");
+        assert!(!dir_vouches(false, 0, 0o775), "group-writable");
+        assert!(!dir_vouches(false, 0, 0o757), "world-writable");
+    }
+
+    #[test]
+    fn the_desktops_name_goes_by_where_the_binary_is_not_what_it_is_called() {
+        // A copy of the shell outside the install directory, on the socket itself.
+        let copy = peer_identity::choose(vec![facts(31, "/tmp/yantrik-ui", "yantrik-ui")]);
+        assert!(!is_the_desktop(&copy));
+        assert_eq!(attribute("", &copy, true).0, "yantrik-ui", "filed under its own name, not Yantrik");
+        assert_ne!(attribute("Yantrik", &copy, true).0, "Yantrik");
+        assert!(!attribute("Yantrik", &copy, true).1.desktop);
+        // A script titled `yantrik-ui` is its interpreter.
+        let script = peer_identity::choose(vec![facts(32, "/usr/bin/python3.11", "yantrik-ui")]);
+        assert!(!is_the_desktop(&script));
+
+        // A developer's build counts beside this service's own build, and nowhere else.
+        let build = Path::new("/home/yantrik/targets/dev/release");
+        assert!(desktop_exe("/home/yantrik/targets/dev/release/yantrik-ui", Some(build)));
+        assert!(!desktop_exe("/tmp/yantrik-ui", Some(build)));
+        assert!(!desktop_exe("/home/yantrik/targets/dev/release/yantrik-ui", None));
+        assert!(desktop_exe("/opt/yantrik/bin/yantrik-ui (deleted)", None), "replaced by an update");
     }
 
     #[test]

@@ -75,9 +75,11 @@ fn refused(what: &str, why: &str) -> String {
 /// "Firewall: Off", and it reached a security audit of this OS as a finding.
 fn format_status(state: &FirewallState) -> String {
     let mut out = match (state.state, state.kind.as_deref()) {
+        // Only the tools were looked for: the kernel's own rules were not read, so nothing is
+        // said about them (security review of #648, L2; the Network app says the same).
         (FirewallStatus::Absent, _) => {
-            "No firewall tool is installed on this machine, so there is no packet filter to report \
-             on. This is not the same as a firewall that is switched off."
+            "No supported firewall manager detected (looked for nft, ufw and firewall-cmd). Active \
+             filtering rules: not checked. This is not the same as a firewall that is switched off."
                 .to_string()
         }
         (FirewallStatus::Active, Some(kind)) => format!("Firewall: {kind}, active."),
@@ -227,7 +229,8 @@ mod tests {
             rules: Vec::new(),
             reason: Some("looked for nft, ufw and firewall-cmd; none is installed".into()),
         });
-        assert!(text.contains("No firewall tool is installed"), "{text}");
+        assert!(text.contains("No supported firewall manager detected"), "{text}");
+        assert!(text.contains("Active filtering rules: not checked"), "{text}");
         assert!(text.contains("not the same as a firewall that is switched off"), "{text}");
         assert!(!text.contains("0 rules"), "{text}");
     }
@@ -286,6 +289,6 @@ mod tests {
         };
         let text = status_answer(&net);
         assert!(text.starts_with("Could not read"), "{text}");
-        assert!(!text.contains("No firewall tool is installed"), "{text}");
+        assert!(!text.contains("No supported firewall manager detected"), "{text}");
     }
 }

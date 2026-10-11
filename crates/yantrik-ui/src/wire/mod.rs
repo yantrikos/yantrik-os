@@ -7,20 +7,45 @@
 //! main.rs stays untouched.
 
 mod about;
+/// The volume slider and the machine's real volume (PipeWire).
+pub mod audio;
+/// The brightness slider and the machine's real backlight.
+pub mod backlight;
+/// The volume / brightness / mic / Caps Lock display: what it says (the pill is the kit's YOsd).
+pub mod osd;
 // The Agents screen and every agent popped out into its own window.
 pub mod agents;
+#[cfg(test)]
+mod lens_card_layout;
+pub mod lens_work;
+pub mod agents_workroom;
+mod run_heading;
+pub mod runs_on_card;
 // The Recipes screen: every recipe as its stages, live.
 pub mod recipes;
 mod app_grid;
+/// The launcher's search and its Running section.
+pub mod launcher;
 pub mod dep_check;
 mod callbacks;
+/// How long the Memory screen waits before it says the memories are busy.
+mod memory_wait;
 pub(crate) mod files;
+/// Where Files lands, and what it says, when a folder cannot be opened.
+mod files_gone;
 /// Launching the app the one MIME rule picked: double-click, "Open with" and `files_open`
 /// all run their decision through here (#233).
 pub mod open_with;
 pub(crate) mod chat;
 mod clipboard;
+mod shell_overlays;
+mod cheat_sheet;
+pub mod network;
 pub mod dock;
+/// A launch by name for an app already open on the desktop raises its window instead.
+pub(crate) mod already_open;
+/// The grounded dock's buttons and window list, published from the window list.
+pub mod dock_bar;
 pub mod harness;
 pub mod i18n;
 mod lens;
@@ -29,8 +54,12 @@ pub mod notifications;
 mod power;
 pub mod screenshot;
 pub mod settings;
+pub mod theme;
+pub mod theme_files;
 mod system_poll;
+mod system_status;
 mod timers;
+mod today;
 pub mod toast;
 mod voice_mode;
 pub mod apt;
@@ -44,6 +73,11 @@ pub mod version;
 pub mod ai_assist;
 pub mod ai_onboarding;
 pub mod ai_provider;
+pub mod ai_status;
+pub mod harness_provider;
+pub mod provider_catalogue;
+pub mod provider_models;
+pub mod provider_panel;
 pub mod decision_model;
 pub mod boot;
 pub mod location;
@@ -58,15 +92,23 @@ pub mod cross_app;
 pub mod universal_actions;
 pub mod command_palette;
 pub mod installer;
+pub mod installer_boot;
 pub mod installer_disk;
+pub mod installer_partition;
+pub mod installer_probe;
 pub mod installer_locale;
+pub mod installer_ownership;
+pub mod installer_unlock;
+pub mod wifi_driver;
 pub mod login;
 pub mod minds_panel;
 pub mod services;
 pub mod vault;
+pub mod free_ai;
 
 use crate::app_context::AppContext;
 use crate::App;
+use slint::ComponentHandle;
 
 /// Wire all Slint callbacks. Called once from main().
 pub fn wire_all(ui: &App, ctx: &AppContext) {
@@ -76,12 +118,22 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     chat::wire(ui, ctx);
     harness::wire(ui, ctx);
     clipboard::wire(ui, ctx);
+    shell_overlays::wire(ui, ctx);
+    cheat_sheet::wire(ui);
+    crate::power_status::wire(ui);
+    // The network mark and its popover, and the one reading every surface shows of the network.
+    network::wire(ui);
     lens::wire(ui, ctx);
     navigate::wire(ui, ctx);
+    // The letter on the tile of an app there is no art and no theme icon for (AppTile).
+    ui.global::<crate::AppInitial>().on_of(|id| yantrik_ui_kit::app_tile::initial(&id).into());
     dock::wire(ui, ctx);
     power::wire(ui, ctx);
+    audio::wire(ui, ctx);
+    backlight::wire(ui, ctx);
     app_grid::wire(ui, ctx);
     window_switcher::wire(ui, ctx);
+    crate::control_switcher::wire(ui);
     show_desktop::wire(ui);
     voice_mode::wire(ui, ctx);
     settings::wire(ui, ctx);
@@ -109,7 +161,10 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     ai_onboarding::wire(ui, ctx);
     ai_provider::wire(ui, ctx);
     decision_model::wire(ui, ctx);
+    free_ai::wire(ui, ctx);
     installer::wire(ui, ctx);
+    // The Mac BCM4331's driver, fetched once online: what the first-run screens say meanwhile.
+    wifi_driver::wire(ui, ctx);
     login::wire(ui, ctx);
     // After `login`, which is the other place a secret reaches the vault, and before `callbacks`,
     // which owns the lock screen that closes it.

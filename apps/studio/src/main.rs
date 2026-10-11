@@ -316,6 +316,7 @@ fn paint(ui: &StudioApp, engine: &Engine, chosen: &Chosen) {
     };
 
     ui.set_backend_line(headline(&snapshot).into());
+    ui.set_generate_label(generate_label(&snapshot).into());
     ui.set_facts(facts_block(&snapshot).into());
     ui.set_output_folder(engine::display(&snapshot.places.gallery).into());
     ui.set_notice(snapshot.notice.clone().into());
@@ -343,11 +344,28 @@ fn paint(ui: &StudioApp, engine: &Engine, chosen: &Chosen) {
     ui.set_jobs(ModelRc::new(VecModel::from(jobs)));
 }
 
+/// What a person reads for the `fake` backend. `fake` stays the word in the config file and in
+/// `set_backend`, because agents and configs use it; on screen it is developer vocabulary, and
+/// what the backend makes is a placeholder.
+const PLACEHOLDER: &str = "placeholder";
+
+/// The backend's name as a person reads it.
+fn backend_name(kind: &str) -> &str {
+    if kind == "fake" { PLACEHOLDER } else { kind }
+}
+
+/// The primary button's words. "Generate" on the placeholder backend promises a picture of the
+/// sentence; what arrives is a pattern drawn from its hash.
+fn generate_label(snapshot: &Snapshot) -> &'static str {
+    if snapshot.facts.kind == "fake" { "Make placeholder" } else { "Generate" }
+}
+
 /// The line under the app's own name: which backend, and whether the prompt leaves.
 fn headline(snapshot: &Snapshot) -> String {
     let facts = &snapshot.facts;
-    if !facts.configured {
-        return "No backend configured — drawing placeholders from your prompt's hash".to_string();
+    // Unconfigured and chosen alike: either way no model draws, and the line says so.
+    if facts.kind == "fake" {
+        return "Placeholder images · no image model configured".to_string();
     }
     let mut line = format!("{} · {}", facts.kind, facts.place);
     if facts.prompt_leaves {
@@ -360,7 +378,7 @@ fn headline(snapshot: &Snapshot) -> String {
 fn facts_block(snapshot: &Snapshot) -> String {
     let facts = &snapshot.facts;
     let mut lines = vec![
-        format!("Backend: {}", facts.kind),
+        format!("Backend: {}", backend_name(facts.kind)),
         format!("Where: {}", facts.place),
     ];
     if !facts.model.is_empty() && facts.kind != "fake" {
@@ -443,8 +461,11 @@ fn meta_line(record: &Record) -> String {
         // account for, and saying so is the difference between a gallery and a pile of files.
         return format!("{size} · no record beside it, so nothing is known about how it was made");
     }
-    let mut parts = vec![record.backend.clone()];
-    if !record.model.is_empty() {
+    // The placeholder backend records itself as both backend and model, which read
+    // "fake · fake"; it has no model, so it is named once.
+    let placeholder = record.backend == "fake";
+    let mut parts = vec![backend_name(&record.backend).to_string()];
+    if !record.model.is_empty() && !placeholder {
         parts.push(record.model.clone());
     }
     parts.push(format!("seed {}", record.seed));
@@ -489,8 +510,8 @@ fn detail_for(engine: &Engine, named: &str) -> String {
             sidecar.cfg.map(|cfg| format!(", guidance {cfg}")).unwrap_or_default()
         ));
     }
-    lines.push(format!("Made by: {}", sidecar.backend));
-    if !sidecar.model.is_empty() {
+    lines.push(format!("Made by: {}", backend_name(&sidecar.backend)));
+    if !sidecar.model.is_empty() && sidecar.backend != "fake" {
         lines.push(format!("Model: {}", sidecar.model));
     }
     lines.push(format!("Took: {:.1} seconds", sidecar.seconds));
@@ -572,7 +593,7 @@ fn surface(engine: Engine) -> Vec<(Action, Handler)> {
              pictures land in `gallery.newest`. Graded `sensitive` while a hosted backend is \
              configured, because the sentence is sent to a machine you do not own and the service \
              may charge for each picture; graded `standard` on a ComfyUI server on your own network \
-             and on the fake backend, where the prompt never leaves the building.",
+             and on `fake`, the placeholder backend, where the prompt never leaves the building.",
         )
         .defers()
         .arg(arg(

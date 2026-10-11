@@ -1,276 +1,100 @@
-// Lock Screen — atmospheric lock with premium typography, clock, date, and the unlock field.
-// Shown on idle timeout or manual lock (Super+L). It asks for what lock.rs checks — the login
-// password, or the PIN on an account without one (#414) — and says so in `prompt-text`, set by
-// the shell: a label fixed in markup once asked for one secret while another was checked (#215).
+// Lock Screen — the shell's own lock screen: the wallpaper, a large clock, who is locked in,
+// the field, and a quiet status line. Shown on idle timeout or manual lock (Super+L) where the
+// compositor has no session lock; with one, `yantrik-lock` draws the same picture on the
+// compositor's surfaces (#313) and this is the fallback. The picture is `YLockView` in the kit;
+// this file owns only how keys reach it.
+//
+// It asks for what lock.rs checks — the login password, or the PIN on an account without one
+// (#414) — and says so in `prompt-text`, set by the shell: a label fixed in markup once asked for
+// one secret while another was checked (#215).
+//
+// Nothing here moves. The breathing glows this screen used to draw are gone with the photograph:
+// the lock screen is what is on the glass whenever the machine is idle, and a window that draws
+// nothing between clock ticks asks for no frames at all.
 
 import { Theme } from "theme.slint";
+import { YLockView } from "components/lock_view.slint";
 
 export component LockScreen inherits Rectangle {
-    background: Theme.bg-deep;
+    background: Theme.lock-ground;
 
     in property <string> clock-text: "00:00";
     in property <string> date-text: "";
-    in property <string> greeting-text: "";
+    in property <string> user-name: "";
+    in property <string> initial: "";
     in property <string> error-text: "";
     in property <string> prompt-text: "";
-
-    // Internal state
-    property <bool> show-password: false;
-    property <float> bg-phase: 0;
-
-    /// What the shell may spend on decoration, in milliseconds a frame — 0 when it may spend
-    /// nothing. The same budget the desktop hands its orb and particle field; `render_backend.rs`
-    /// works it out from the renderer, and it is 0 on the software rasteriser, where one
-    /// full-screen frame costs about 96 ms.
-    in property <int> ambient-interval-ms: 0;
-    property <float> tick-scale: max(100, ambient-interval-ms) / 16.0;
+    in property <image> wallpaper;
+    in property <bool> has-wallpaper: false;
+    in property <string> network-text: "";
+    in property <int> battery-percent: -1;
+    in property <bool> battery-charging: false;
+    in property <int> notification-count: 0;
+    in property <bool> can-restart: true;
 
     callback try-unlock(string);
+    callback suspend();
+    callback restart();
+    callback shutdown();
 
-    // The two glows behind the clock, breathing.
-    //
-    // This was `interval: 16ms; running: true;` — sixty full-screen repaints a second, for as
-    // long as the machine was locked, to drift two radial gradients through a 27-second cycle
-    // that moves imperceptibly between one frame and the next. The lock screen is what is on
-    // screen whenever the machine is idle, so this WAS the idle cost of the desktop (#53's
-    // 52.7 %, and the shape #68 found again in the Lens).
-    //
-    // Now it spends the renderer's budget instead of the display's: nothing at all where a frame
-    // is expensive, and a step every 100 ms where it is not — 270 steps through the cycle, which
-    // is more than a 27-second breath can show. `tick-scale` keeps that cycle the same length
-    // whatever the budget turns out to be.
-    Timer {
-        interval: max(100, root.ambient-interval-ms) * 1ms;
-        running: root.ambient-interval-ms > 0;
-        triggered => {
-            bg-phase = mod(bg-phase + 0.0006 * root.tick-scale, 1.0);
-        }
-    }
-
-    // ── Animated gradient background ──
-    Rectangle {
-        width: 100%;
-        height: 100%;
-        background: Theme.bg-deep;
-
-        // Top gradient
-        Rectangle {
-            width: 100%;
-            height: 45%;
-            y: 0;
-            background: @linear-gradient(180deg, Theme.bg-deep 0%, Theme.bg-deep.transparentize(100%) 100%);
-        }
-
-        // Bottom gradient
-        Rectangle {
-            width: 100%;
-            height: 45%;
-            y: parent.height - self.height;
-            background: @linear-gradient(0deg, Theme.bg-deep 0%, Theme.bg-deep.transparentize(100%) 100%);
-        }
-
-        // Animated amber glow (breathing)
-        Rectangle {
-            width: 500px;
-            height: 500px;
-            x: (parent.width - self.width) / 2;
-            y: parent.height * 0.08;
-            border-radius: 250px;
-            background: @radial-gradient(circle, Theme.amber.transparentize(94%) 0%, Theme.amber.transparentize(100%) 70%);
-            opacity: 0.7 + 0.3 * sin(bg-phase * 6.2832 * 1rad);
-        }
-
-        // Animated cyan glow
-        Rectangle {
-            width: 350px;
-            height: 350px;
-            x: (parent.width - self.width) / 2 + 80px;
-            y: parent.height * 0.60;
-            border-radius: 175px;
-            background: @radial-gradient(circle, Theme.cyan.transparentize(95%) 0%, Theme.cyan.transparentize(100%) 70%);
-            opacity: 0.6 + 0.3 * sin(bg-phase * 4.712 * 1rad);
-        }
-    }
-
-    // ── Center content ──
-    VerticalLayout {
-        alignment: center;
-        spacing: 0;
-        padding-left: 40px;
-        padding-right: 40px;
-
-        // Push content slightly above center
-        Rectangle { height: 20px; }
-
-        // Clock — large, thin, elegant
-        Text {
-            text: root.clock-text;
-            color: Theme.text-primary;
-            font-size: 96px;
-            font-weight: 200;
-            horizontal-alignment: center;
-            letter-spacing: 6px;
-        }
-
-        // Date — refined typography
-        if root.date-text != "" : Text {
-            text: root.date-text;
-            color: Theme.text-secondary;
-            font-size: Theme.fs-title-2;
-            font-weight: Theme.fw-body;
-            horizontal-alignment: center;
-            letter-spacing: 1px;
-        }
-
-        Rectangle { height: Theme.sp-6; }
-
-        // Orb (breathing glow)
-        HorizontalLayout {
-            alignment: center;
-            Rectangle {
-                width: 64px;
-                height: 64px;
-
-                Rectangle {
-                    width: 48px;
-                    height: 48px;
-                    border-radius: 24px;
-                    background: Theme.amber-glow;
-                    x: (parent.width - self.width) / 2;
-                    y: (parent.height - self.height) / 2;
-                    opacity: 0.8 + 0.2 * sin(bg-phase * 6.2832 * 1rad);
-
-                    Rectangle {
-                        width: 24px;
-                        height: 24px;
-                        border-radius: 12px;
-                        background: Theme.amber-dim;
-                        x: (parent.width - self.width) / 2;
-                        y: (parent.height - self.height) / 2;
-                    }
-                }
-            }
-        }
-
-        Rectangle { height: Theme.sp-2; }
-
-        // Greeting from companion
-        if root.greeting-text != "" : Text {
-            text: root.greeting-text;
-            color: Theme.text-secondary;
-            font-size: Theme.fs-body;
-            font-weight: Theme.fw-body;
-            horizontal-alignment: center;
-            font-italic: true;
-            opacity: 0.8;
-        }
-
-        Rectangle { height: Theme.sp-6; }
-
-        // "Enter PIN" label
-        Text {
-            text: root.prompt-text;
-            color: Theme.text-dim;
-            font-size: Theme.fs-caption;
-            horizontal-alignment: center;
-            letter-spacing: 0.5px;
-        }
-
-        Rectangle { height: Theme.sp-2; }
-
-        // PIN input — glass pill
-        HorizontalLayout {
-            alignment: center;
-
-            Rectangle {
-                width: 320px;
-                height: 48px;
-                border-radius: Theme.r-xl;
-                background: Theme.bg-input;
-                border-width: 1px;
-                border-color: root.error-text != "" ? Theme.color-danger
-                            : pin-input.has-focus ? Theme.accent-dim
-                            : Theme.text-dim;
-                clip: true;
-
-                animate border-color { duration: Theme.dur-normal; easing: ease-out; }
-
-                // Focus glow
-                drop-shadow-blur: pin-input.has-focus ? 12px : 0;
-                drop-shadow-color: root.error-text != "" ? Theme.color-danger-dim : Theme.accent-glow;
-                animate drop-shadow-blur { duration: Theme.dur-normal; }
-
-                pin-input := TextInput {
-                    x: Theme.sp-4;
-                    y: 0;
-                    width: parent.width - 60px;
-                    height: parent.height;
-                    color: Theme.text-primary;
-                    font-size: Theme.fs-title-2;
-                    horizontal-alignment: left;
-                    input-type: root.show-password ? InputType.text : InputType.password;
-
-                    accepted => {
-                        root.try-unlock(self.text);
-                        self.text = "";
-                    }
-                }
-
-                // Show/hide toggle
-                Rectangle {
-                    x: parent.width - 44px;
-                    y: (parent.height - self.height) / 2;
-                    width: 36px;
-                    height: 36px;
-                    border-radius: 18px;
-                    background: toggle-touch.has-hover ? Theme.hover-fill : transparent;
-                    animate background { duration: Theme.dur-fast; }
-
-                    Text {
-                        text: root.show-password ? "◉" : "○";
-                        color: Theme.text-dim;
-                        font-size: Theme.fs-headline;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                        width: 100%;
-                        height: 100%;
-                    }
-
-                    toggle-touch := TouchArea {
-                        clicked => { root.show-password = !root.show-password; }
-                    }
-                }
-            }
-        }
-
-        // Error text
-        if root.error-text != "" : Text {
-            text: root.error-text;
-            color: Theme.color-danger;
-            font-size: Theme.fs-caption;
-            horizontal-alignment: center;
-            animate opacity { duration: Theme.dur-normal; easing: ease-out; }
-        }
-
-        Rectangle { height: Theme.sp-2; }
-
-        // Hint
-        Text {
-            text: "Press Enter to unlock";
-            color: Theme.text-dim;
-            font-size: Theme.fs-caption;
-            horizontal-alignment: center;
-            opacity: 0.5;
-        }
-
-        Rectangle { height: 40px; }
-    }
-
-    // Focus the PIN input when shown
+    // Beneath the picture, so a click on the picture's buttons reaches them: a FocusScope laid
+    // over it took the click for itself, and the eye, the arrow and the power buttons never
+    // heard it. Any key press hands the keyboard to the input below. (That first key is spent
+    // on the handing over, as it always was; the input is not focused from the start because a
+    // focused text input blinks its cursor, and this screen is what is up while nobody is here.)
     FocusScope {
+        init => { self.focus(); }
         key-pressed(event) => {
             pin-input.focus();
             accept
+        }
+    }
+
+    YLockView {
+        width: 100%;
+        height: 100%;
+        wallpaper: root.wallpaper;
+        has-wallpaper: root.has-wallpaper;
+        clock-text: root.clock-text;
+        date-text: root.date-text;
+        user-name: root.user-name;
+        initial: root.initial;
+        prompt-text: root.prompt-text;
+        error-text: root.error-text;
+        // The field the view draws is a picture of this one: dots for what was typed, the text
+        // itself only while the eye is open.
+        digits: pin-input.text.character-count;
+        revealed-text: pin-input.text;
+        network-text: root.network-text;
+        battery-percent: root.battery-percent;
+        battery-charging: root.battery-charging;
+        notification-count: root.notification-count;
+        can-restart: root.can-restart;
+        submit => {
+            root.try-unlock(pin-input.text);
+            pin-input.text = "";
+        }
+        suspend => { root.suspend(); }
+        restart => { root.restart(); }
+        shutdown => { root.shutdown(); }
+    }
+
+    // The real input. It takes the keys and holds the text; the view above only draws it, so it
+    // is made not to show: no colour (a text cursor takes its colour from the text's) and a
+    // 1px face, so what is left of a cursor is a transparent dot. Merely clipping it or fading it
+    // was not enough: the software renderer still painted its cursor, a white line, at the top
+    // left of the screen, and `visible: false` stops it taking keys at all.
+    pin-input := TextInput {
+        x: 0;
+        y: 0;
+        width: 1px;
+        height: 2px;
+        color: transparent;
+        font-size: 1px;
+        input-type: InputType.password;
+        accepted => {
+            root.try-unlock(self.text);
+            self.text = "";
         }
     }
 }

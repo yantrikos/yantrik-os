@@ -8,19 +8,31 @@
 // The AI IS the shell — Intent Lens is the primary interaction.
 
 import { Theme, ThemeMode, ThemeOverrides, AccentPreset } from "theme.slint";
-import { Taskbar } from "components/taskbar.slint";
+// A window frame's glyph wears its app's colour from the one table, not the minds' teal.
+import { AppColor } from "components/app_color.slint";
+// The letter on an unknown app's tile, answered from Rust (wire/mod.rs).
+export { AppInitial } from "app_tile.slint";
+import { GroundedDock, DockButton, DockWindow } from "components/grounded_dock.slint";
 import { StatusBar } from "components/status_bar.slint";
+import { ShellOverlays } from "components/shell_overlays.slint";
+import { NetworkState, NetworkRow } from "components/bar/network_state.slint";
+export { NetworkState, NetworkRow }
+import { TodayState, TodayEvent } from "components/bar/today_state.slint";
+import { CalendarDay } from "components/month_grid.slint";
+export { TodayState, TodayEvent, CalendarDay }
 import { BootScreen, BootStage } from "boot.slint";
 import { OnboardingScreen } from "onboarding.slint";
-import { InstallerScreen, InstallerDisk, KeyboardChoice } from "installer.slint";
-export { InstallerDisk, KeyboardChoice }
-export { DecisionPreset, DecisionUse } from "settings.slint";
+import { InstallerScreen, InstallerDisk, InstallerSegment, InstallerTargetDisk, KeyboardChoice } from "installer.slint";
+export { InstallerDisk, InstallerSegment, InstallerTargetDisk, KeyboardChoice }
+export { DecisionPreset, DecisionUse, ThemeCardData } from "settings.slint";
+export { ProviderPresetData, ProviderPresetRow, ProviderPresetGroup } from "provider_presets.slint";
+import { ProviderPresetData, ProviderPresetGroup } from "provider_presets.slint";
 import { DesktopScreen } from "desktop.slint";
 import { BondScreen, BondData } from "bond.slint";
 import { PersonalityScreen, OpinionData, SharedRefData } from "personality.slint";
 import { LockScreen } from "lock.slint";
 import { LoginScreen } from "login.slint";
-import { SettingsScreen, SettingsCategoryItem, AIProviderData, AIModelData, AIStatusData, HarnessData, HarnessRowData, DecisionPreset, DecisionUse } from "settings.slint";
+import { SettingsScreen, SettingsCategoryItem, AIProviderData, AIModelData, AIStatusData, HarnessData, HarnessRowData, DecisionPreset, DecisionUse, RunsOnRow, InUseRow, ThemeCardData } from "settings.slint";
 import { SkillData } from "skill_store.slint";
 import { MemoryBrowser, MemoryItem } from "memory_browser.slint";
 import { FileBrowser, FileEntry, BreadcrumbSegment, FileDetailData, FileTabData, FileOpItem, FilePlaceData, FileRecentData, OpenWithItem } from "file_browser.slint";
@@ -32,12 +44,13 @@ import { PackageManager, PackageData, PendingAction } from "package_manager.slin
 import { DeviceDashboardScreen, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData } from "device_dashboard.slint";
 import { PermissionDashboardScreen, UserData, GroupData, PermFileData } from "permission_dashboard.slint";
 import { ToastBanner, ToastData, ToastActionData } from "components/toast_banner.slint";
+export { OsdWindow } from "osd_window.slint";
 import { ProblemReportScreen, ProblemRow } from "problem_report.slint";
+import { WorkCardData } from "components/work_card.slint";
 // Agents (screen 34), and the window one agent pops out into. The window and the global it reads
 // are exported so the shell can create a window per agent and fill each one.
 import { AgentsScreen, AgentsState } from "agents.slint";
-export { AgentWindow, AgentsState, AgentTabData, AgentRowData, AgentRunData, AgentItemData, AgentHeaderData, AgentDetailsData, AgentMindData, AgentRoleData } from "agents.slint";
-export { RouteStopData } from "agents_route.slint";
+export { AgentWindow, AgentsState, AgentRunData, AgentItemData, AgentHeaderData, AgentDetailsData, AgentMindData, AgentRoleData, WorkNavData, DeskCardData, DecisionData, ResultData, ChangeRowData, ChildRunData, RunFactData } from "agents.slint";
 // Recipes (screen 35): every recipe as its stages. The global is exported so the shell can fill it.
 import { RecipesScreen, RecipesState } from "recipes.slint";
 export { RecipesState, RecipeTabData, RecipeRowData, RecipeStageData, RecipeStepData } from "recipes.slint";
@@ -53,13 +66,16 @@ export { ProviderGroup, AccountRow, AccountMeter, AddChoice }
 import { WhisperCardItem } from "components/whisper_card.slint";
 import { BriefSection } from "components/morning_brief.slint";
 import { ClipboardEntryData } from "components/clipboard_panel.slint";
+import { CheatRowData } from "components/cheat_sheet.slint";
 import { AppGridItem } from "components/app_grid.slint";
-import { WindowItem } from "components/window_switcher.slint";
+import { WindowItem } from "components/window_item.slint";
+import { AltTab, SwitcherCell } from "components/alt_tab.slint";
 import { DockItem } from "components/app_dock.slint";
-import { CategoryItem } from "components/app_grid.slint";
 // The mind panel: shell furniture at the right edge, instantiated below beside the taskbar.
 import { ServiceItem, MindPanel, MindPanelState, MindPanelNow, MindPanelAgent, MindPanelRecipe, MindPanelAct } from "components/mind_panel.slint";
 export { MindPanelState, MindPanelNow, MindPanelAgent, MindPanelRecipe, MindPanelAct }
+import { FreeAiState, FreeAiRow, FreeAiValue } from "components/free_ai_card.slint";
+export { FreeAiState, FreeAiRow, FreeAiValue }
 import { WindowFrame } from "components/window_frame.slint";
 import { YSidebarItem, YSidebarSection } from "components/y_sidebar.slint";
 import { YTabItem } from "components/y_tabs.slint";
@@ -67,7 +83,7 @@ import { YMenuAction, YContextMenu } from "components/y_context_menu.slint";
 import { Icons } from "components/icon.slint";
 import { Tr } from "translations.slint";
 
-export { HarnessData, HarnessRowData, Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, ToolCallData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, ApprovalRequest, QuestionRequest, MindRule, MindAuditEntry, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, NotifActionData, ProcessData, ClipboardEntryData, AppGridItem, CategoryItem, ServiceItem, WindowItem, DockItem, ToastData, ToastActionData, PackageData, PendingAction, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction, ProblemRow }
+export { HarnessData, HarnessRowData, Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, ToolCallData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, ApprovalRequest, QuestionRequest, MindRule, MindAuditEntry, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, NotifActionData, ProcessData, ClipboardEntryData, CheatRowData, AppGridItem, ServiceItem, WindowItem, SwitcherCell, DockItem, DockButton, DockWindow, ToastData, ToastActionData, PackageData, PendingAction, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction, ProblemRow, WorkCardData }
 
 export component App inherits Window {
     default-font-family: Theme.font-ui;
@@ -152,6 +168,25 @@ export component App inherits Window {
     /// time because Slint has no way to skip a row inside a `for`, and a stack of zero-height
     /// rows would leave the card floating below a gap the size of the session's history.
     in property <[ApprovalRequest]> pending-approvals: [];
+    /// Whether that card is one the Lens's own mind raised, matched on its verified agent: only
+    /// then does an open Lens draw it in place of the corner card (sign-off, 4 October, item 6).
+    in property <bool> approval-in-lens: false;
+    /// Whether the top-right approval card is drawn (the overlay near the foot of this file), and
+    /// how tall it is: the vault prompt is placed under it by that height, never by a guess.
+    property <bool> approval-corner-shown: root.pending-approvals.length > 0
+        && !(root.lens-open && root.lens-chat-mode && root.current-screen == 1 && root.approval-in-lens)
+        && root.current-screen != 0 && root.current-screen != 2
+        && root.current-screen != 3 && root.current-screen != 32;
+    property <length> approval-corner-height: 0px;
+    /// Where that card's left edge is: one sp-4 in from the right edge, and clear of the mind panel
+    /// when the panel is drawn there, by the panel's width and the same sp-4 between them. The card
+    /// sat over the panel's avatar at the top right (sign-off, 5 October). The card is 404px wide;
+    /// the vault prompt lines up on this edge too. Out, so the preview can find the card.
+    out property <length> approval-corner-x: root.width - 404px - Theme.sp-4
+        - (root.mind-panel-shown && !root.mind-panel-covered ? root.mind-panel-width + Theme.sp-4 : 0px);
+    // How many cards wait in all, the Agents pane's included (pending-approvals holds only the one
+    // on screen). The taskbar's Chat button says it (card_watch.rs).
+    in property <int> cards-pending: 0;
     /// Questions the Lens's mind is waiting on (#25): `wire::agents` fills it every tick.
     in property <[QuestionRequest]> lens-questions: [];
     /// How many further requests are queued behind it. See `approvals-waiting` in intent_lens.
@@ -211,7 +246,17 @@ export component App inherits Window {
     in-out property <bool> minds-panel-open: false;
     in-out property <bool> minds-panel-adding: false;
     in property <[ProviderGroup]> minds-groups: [];
-    in property <[AddChoice]> minds-choices: [];
+    in property <[AddChoice]> minds-choices: [];            // the page's: every program choice
+    in property <[ProviderGroup]> minds-panel-groups: [];   // the panel's: the first four vendors
+    in property <int> minds-panel-more: 0;                  // vendors past those four
+    in property <[AddChoice]> minds-panel-choices: [];      // the panel's "+": sign in, add account
+    in property <[AddChoice]> minds-key-choices: [];        // coding plans by key, for the page
+    in property <string> minds-keys-line: "";
+    // What runs on what (crates/yantrik-ui/src/wire/runs_on_card.rs): one resolver, three places.
+    in property <[RunsOnRow]> runs-on-rows: [];
+    in property <string> runs-on-summary: "";
+    in property <string> runs-on-answering: "";
+    in property <[InUseRow]> in-use-providers: [];
     in property <string> minds-today: "";
     in property <string> minds-status: "";
     callback minds-panel-opened();
@@ -271,15 +316,20 @@ export component App inherits Window {
     // Below this width the open card floats over the screen instead of taking its room, so a
     // compact display keeps its working area and can still open the panel to look.
     property <bool> mind-panel-docks: root.width >= 1100px;
+    // How wide the panel is drawn: the open card, or the strip. Shared with the approval card's
+    // corner, which keeps clear of it.
+    out property <length> mind-panel-width: root.mind-panel-open ? 334px : 44px;
     // 302 for the card and 16 either side of it; 44 for the strip.
     property <length> mind-panel-reserve: !root.mind-panel-shown ? 0px
         : root.mind-panel-open && root.mind-panel-docks ? 334px : 44px;
     // The desktop's own overlays use the right edge too — the Lens docks there — so the panel
     // steps out of the way while one is up rather than drawing over it. Its room is kept, so
     // nothing underneath moves.
-    property <bool> mind-panel-covered: root.current-screen == 1
-        && (root.lens-open || root.app-grid-open || root.quick-settings-open || root.power-menu-open
-            || root.window-switcher-open || root.command-palette-open || root.clip-panel-open);
+    // The bar's three panels are the shell's and open over any screen, so they cover it on any
+    // screen; the rest are the desktop's.
+    property <bool> mind-panel-covered: root.today-open || root.quick-settings-open || root.power-menu-open || root.clip-panel-open || root.cheat-sheet-open || root.battery-popover-open || root.network-open || root.alt-tab-open
+        || (root.current-screen == 1
+            && (root.lens-open || root.app-grid-open || root.command-palette-open));
 
     // Desktop state
     in property <[UrgeCardData]> urges: [];
@@ -288,6 +338,25 @@ export component App inherits Window {
     in property <bool> battery-available: false;
     in property <int> battery-level: 100;
     in property <bool> battery-charging: false;
+    // What the battery is doing: charging | discharging | full | plugged-not-charging | unknown.
+    // `battery-charging` is true only for "charging", so a battery held at a charge limit is not
+    // reported as charging anywhere.
+    in property <string> battery-state: "unknown";
+    // The state and the time in words, composed in Rust where they are tested; "" when unknown.
+    in property <string> battery-status-text: "";
+    in property <string> battery-time-text: "";
+    // The estimates themselves, in minutes, for the control surface; -1 when nobody measured one.
+    in property <int> battery-time-to-empty-mins: -1;
+    in property <int> battery-time-to-full-mins: -1;
+    // power-profiles-daemon: the profile in effect, or "" when there is no daemon (the choice is
+    // then not drawn). Performance is offered only on hardware that has it.
+    in property <string> power-profile: "";
+    in property <bool> power-performance-offered: false;
+    callback set-power-profile(string);
+    // The battery popover under the bar. `battery-anchor-x` is where the indicator was when it
+    // was pressed.
+    in-out property <bool> battery-popover-open: false;
+    in-out property <length> battery-anchor-x: 0;
     /// Wireless specifically — the Quick Settings tile, which is a radio.
     /// It is false on a wired machine, which is why nothing that means "am I
     /// online" may be drawn from it. See the four below.
@@ -315,6 +384,9 @@ export component App inherits Window {
     in-out property <string> lens-input-text: "";
     in property <[LensResult]> lens-results: [];
     in property <bool> lens-chat-mode: false;
+    // Where words typed in the chat go, under the composer: "Yantrik Mind · deepseek-v4.1-flash ·
+    // online, via Ollama Cloud". From runs_on (wire/runs_on_card.rs); "" when it is not known.
+    in property <string> lens-destination: "";
     in property <[LensResult]> lens-suggestions: [];
     in property <[LensResult]> lens-recents: [];
 
@@ -342,6 +414,10 @@ export component App inherits Window {
     // Memory browser state
     in property <[MemoryItem]> memory-results: [];
     in property <bool> is-searching-memories: false;
+    // The Memory screen's rows are the newest memories, not search results (wire/callbacks.rs).
+    in property <bool> memory-showing-recent: false;
+    // No answer came in time: the Memory screen says so and offers Retry (wire/memory_wait.rs).
+    in property <bool> memory-busy: false;
 
     // Voice state
     in-out property <bool> voice-active: false;
@@ -360,16 +436,69 @@ export component App inherits Window {
     callback morning-brief-dismissed();
     callback morning-brief-section-action(string);
 
+    // Fired when one of the bar's panels opens: "quick-settings", "power-menu", "clipboard" or
+    // "cheat-sheet".
+    // The panels are part of the shell's own window, which sits behind an app window that is in
+    // front of it, so an open from the bar, a keybind or the control surface has to bring the
+    // shell forward or the panel opens where nobody can see it (see `app-grid-opened`). The
+    // clipboard also refreshes its entries here, once, instead of a timer watching the flag.
+    callback shell-overlay-opened(string);
+    // Today hangs from the clock like the network and battery popovers: opening it puts the
+    // others away, and the shell comes forward so it is not drawn behind an app (Rust fills the
+    // month and the day's events in the same hook).
+    changed today-open => {
+        if (self.today-open) {
+            self.network-open = false;
+            self.battery-popover-open = false;
+            self.quick-settings-open = false;
+            self.power-menu-open = false;
+            self.shell-overlay-opened("today");
+        }
+    }
+    changed network-open => {
+        if (self.network-open) { self.shell-overlay-opened("network"); }
+    }
+    changed quick-settings-open => {
+        if (self.quick-settings-open) { self.shell-overlay-opened("quick-settings"); }
+    }
+    changed battery-popover-open => {
+        if (self.battery-popover-open) { self.shell-overlay-opened("battery"); }
+    }
+    changed power-menu-open => {
+        if (self.power-menu-open) { self.shell-overlay-opened("power-menu"); }
+    }
+    changed clip-panel-open => {
+        if (self.clip-panel-open) { self.shell-overlay-opened("clipboard"); }
+    }
+    changed cheat-sheet-open => {
+        if (self.cheat-sheet-open) { self.shell-overlay-opened("cheat-sheet"); }
+    }
+
+    // Keyboard cheat sheet (Super+/): rows generated from rc.xml, filtered by the search box.
+    in-out property <bool> cheat-sheet-open: false;
+    in property <[CheatRowData]> cheat-sheet-rows: [];
+    in-out property <string> cheat-sheet-query: "";
+    callback cheat-sheet-search(string);
+
     // Clipboard panel state
     in-out property <bool> clip-panel-open: false;
     in property <[ClipboardEntryData]> clip-panel-entries: [];
     in-out property <string> clip-search-query: "";
     callback clipboard-paste(int);
     callback clipboard-search(string);
+    callback clipboard-clear();
 
-    // Power menu state
+    // Power popover state. It hangs from the right edge, under Quick Settings' mark (the bar has
+    // no power mark of its own since the top bar followed render 01); Rust sets the other two when
+    // the popover opens (`power-refresh`): whether logind would hibernate, and how many minds are
+    // working, from the Agents store.
     in-out property <bool> power-menu-open: false;
+    in property <bool> power-can-hibernate: false;
+    in property <int> power-minds-working: 0;
+    callback power-refresh();
     callback power-action(string);
+    // Quick Settings' Screenshot: the whole screen, like the Print key.
+    callback take-screenshot();
 
     // App grid state
     in-out property <bool> app-grid-open: false;
@@ -381,20 +510,47 @@ export component App inherits Window {
         if (self.app-grid-open) { self.app-grid-opened(); }
     }
     in property <[AppGridItem]> grid-apps: [];
+    // The launcher's Running section: the dock's rows for apps that have a window, filtered by
+    // what is typed. `grid-query` is that text, set by Rust so `describe shell` can read it.
+    in property <[DockButton]> grid-running: [];
+    in property <string> grid-query: "";
     callback grid-launch-app(string);
     callback grid-toggle-pin(string);
     callback grid-search-apps(string);
 
-    // Window switcher state
-    in-out property <bool> window-switcher-open: false;
+    // Window overview (Super+Tab; Alt+Tab is labwc's own): Rust owns the order, the selection and the paging (alt_tab.rs) and hands
+    // over the page being shown.
+    in-out property <bool> alt-tab-open: false;
+    in property <[SwitcherCell]> alt-tab-cells: [];
+    in property <int> alt-tab-selected: -1;
+    in property <string> alt-tab-status: "";
+    in property <int> alt-tab-page: 0;
+    in property <int> alt-tab-pages: 1;
+    callback alt-tab-navigate(string, int);
+    callback alt-tab-hover(int);
+    callback alt-tab-activate(int);
+    callback alt-tab-cancel();
+
     in property <[WindowItem]> window-list: [];
     callback switch-window(string);
+    // A taskbar entry pressed. Not `switch-window`: the entry of the window in front puts it
+    // away, and nothing else that shows a window (the switcher, `yos act shell focus_window`)
+    // may ever hide one instead.
+    callback taskbar-window-clicked(string);
+
+    // The grounded dock's model (dock_model.rs): this page's worth of buttons is the dock's own
+    // business, so Rust hands over ALL of them and the windows of every app in them.
+    in property <[DockButton]> dock-buttons: [];
+    in property <[DockWindow]> dock-windows: [];
+    in property <int> dock-reveal-index: -1;
 
     // The taskbar entry's own right-click menu (#232). Rust builds the rows — which ones there
     // are depends on whether the window's app is pinned — and every row's id is the name of the
     // `shell` control action that runs it, so the menu is a second VIEW of one surface and not
     // a second path. Drawn at the end of this file, over everything, like the desktop's own
     // menu is over its screen.
+    in-out property <int> dock-first: 0;
+    in-out property <int> dock-capacity: 0;
     in-out property <bool> taskbar-menu-open: false;
     in-out property <[YMenuAction]> taskbar-menu-actions: [];
     in-out property <string> taskbar-menu-title: "";
@@ -435,17 +591,25 @@ export component App inherits Window {
     in property <string> bar-disk-text: "";
     in property <[ServiceItem]> services: [];
     // Launcher categories
-    in property <[CategoryItem]> grid-categories: [];
-    in-out property <string> grid-active-category: "all";
-    callback grid-category-selected(string);
 
     // Quick Settings state
     in-out property <bool> quick-settings-open: false;
-    in-out property <int> brightness-level: 80;
-    in-out property <int> volume-level: 50;
-    callback toggle-wifi();
+    // Real readings, published by wire/audio.rs and wire/backlight.rs. Nothing invented here.
+    in-out property <bool> brightness-available: false;
+    in-out property <int> brightness-level: 0;
+    in-out property <bool> volume-available: false;
+    in-out property <bool> volume-muted: false;
+    in-out property <int> volume-level: 0;
+    // The default output's name as the audio server gives it, "" when it gives none.
+    in-out property <string> volume-device: "";
+    // The network popover under the bar's network mark, and where that mark is.
+    in-out property <bool> network-open: false;
+    // The clock's popover: the month, today's events, the newest notifications, Do Not Disturb.
+    in-out property <bool> today-open: false;
+    in-out property <length> network-anchor-x: 0;
     callback brightness-changed(int);
     callback volume-changed(int);
+    callback volume-mute-toggled();
 
     // Command Palette state (Ctrl+Shift+P)
     in-out property <bool> command-palette-open: false;
@@ -512,6 +676,14 @@ export component App inherits Window {
     in property <string> lock-error: "";
     in property <string> lock-date-text: "";
     in property <string> lock-greeting: "";
+    // Who is locked in (the settings name, else the login), and the lock screen's pre-blurred
+    // wallpaper (lock_wallpaper.rs): none means the solid charcoal.
+    in property <string> lock-user-name: "";
+    in property <string> lock-initial: "";
+    in property <image> lock-wallpaper;
+    in property <bool> lock-has-wallpaper: false;
+    // False on a machine declared open at boot, where Restart would come back unlocked.
+    in property <bool> lock-can-restart: true;
     // What the lock asks for: the login password, or the PIN on an account without one (#414).
     in property <string> lock-prompt: "Enter your password to unlock";
     callback try-unlock(string);
@@ -542,12 +714,16 @@ export component App inherits Window {
     in-out property <bool> settings-dark-mode: true;
     in-out property <bool> settings-incognito-mode: false;
     in-out property <string> settings-accent-color: "cyan";
+    // The theme in use (an id from crates/yantrik-design-tokens/themes), and the cards to show.
+    in-out property <string> settings-theme: "lake";
+    in property <[ThemeCardData]> theme-cards;
+    callback choose-theme(string);
 
     // AI Provider management
     in property <AIStatusData> settings-ai-status;
     in property <[AIProviderData]> settings-ai-providers: [];
     in property <[AIModelData]> settings-available-models: [];
-    in property <string> settings-provider-test-result: "";
+    in-out property <string> settings-provider-test-result: "";
     // Decision model
     in property <[DecisionPreset]> settings-decision-presets: [];
     in property <string> settings-decision-provider: "";
@@ -586,6 +762,16 @@ export component App inherits Window {
     // Both change the machine, so both are jobs whose output lands back on the row.
     callback install-harness(string);
     callback start-harness(string);
+    // The harness's own setup in a terminal; opens a window, changes nothing itself.
+    callback configure-harness(string);
+    in-out property <string> settings-assigning-harness: "";
+    in-out property <bool> settings-handoff-card-open: false;
+    in property <string> settings-handoff-card-title: "";
+    in property <string> settings-handoff-card-body: "";
+    callback plan-provider(string, string);
+    callback apply-provider();
+    callback cancel-provider();
+    callback revert-provider(string);
     callback settings-search(string);
     in-out property <string> settings-query;
     in-out property <string> settings-save-status:"Preferences are saved automatically";
@@ -594,14 +780,25 @@ export component App inherits Window {
     callback retry-settings-save();
     callback choose-accent(string);
     callback add-provider();
-    callback save-provider(string, string, string, string, string);
+    callback save-provider(string, string, string, string, string, string);
     callback delete-provider(string);
     callback test-provider(string);
-    callback test-new-provider(string, string, string);
+    callback connect-provider(string, string, string);
+    callback provider-url-changed(string);
+    in property <bool> settings-provider-form-host-changed: false;
+    callback provider-model-search(string);
+    callback edit-provider(string);
+    in property <[string]> settings-provider-form-models: [];
+    in property <int> settings-provider-form-model-total: 0;
+    in-out property <string> settings-provider-form-model: "";
+    in-out property <bool> settings-provider-form-connected: false;
+    in-out property <bool> settings-provider-panel-open: false;
+    in-out property <string> settings-editing-provider-id: "";
     callback provider-preset-selected(string);
     in-out property <string> settings-provider-form-name: "";
     in-out property <string> settings-provider-form-url: "";
     in-out property <string> settings-selected-preset: "";
+    in property <[ProviderPresetGroup]> settings-provider-presets: [];
     callback set-primary-provider(string);
     callback set-fallback-provider(string);
     callback select-model(string);
@@ -773,12 +970,19 @@ export component App inherits Window {
     callback notification-dismissed(string);
     callback notification-action(string, string);
     callback notification-clear-group(string);
+    // Open or close a folded run of one mind's turn notices, by its key.
+    callback notification-toggle-group(string);
 
     // System Dashboard state (screen 10)
     in property <float> sys-cpu-usage: 0.0;
     in property <float> sys-memory-usage: 0.0;
     in property <string> sys-memory-text: "0 / 0 MB";
-    in property <string> sys-uptime-text: "";
+    // The STATUS row (wire/system_status.rs): uptime, load, and the limits the readings were
+    // checked against, in System Monitor's words.
+    in property <string> sys-status-lead: "";
+    in property <string> sys-status-rest: "";
+    in property <string> sys-status-thresholds: "";
+    in property <bool> sys-status-needs-you: false;
     /// The SSID, when there is one. Empty on anything not wireless: this
     /// carried NetworkManager's primary connection name, so Settings > Network
     /// headed "Wired connection 1" with "Wi-Fi".
@@ -1084,6 +1288,24 @@ export component App inherits Window {
     in property <[InstallerDisk]> onboard-disks: [];
     in property <bool> onboard-disks-scanned: false;
     in-out property <string> onboard-selected-disk: "";
+    // The listed disks that hold macOS, space-separated (installer_rules::disk_in_list), and the
+    // one the person confirmed may be erased anyway. Never preselected (installer_rules.rs).
+    in property <string> onboard-macos-disks: "";
+    in-out property <string> onboard-erase-macos-disk: "";
+    // Installing beside what is on a disk (wire/installer_partition.rs): every GPT disk's
+    // partitions and free space, the ids that may be chosen (space-separated), each disk's table
+    // fingerprint (`sda=<fp> ...`, checked again before anything is written), and the choice.
+    in property <[InstallerTargetDisk]> onboard-target-disks: [];
+    in property <[InstallerSegment]> onboard-segments: [];
+    in property <bool> onboard-partitions-scanned: false;
+    in-out property <string> onboard-eligible-targets: "";
+    in property <string> onboard-table-fingerprints: "";
+    in-out property <bool> onboard-into-partition: false;
+    in-out property <string> onboard-install-target: "";
+    in property <bool> onboard-boot-first-offered: false;
+    in-out property <bool> onboard-boot-first: false;
+    // A Wi-Fi chip still waiting for its driver (wifi_note.rs); "" when there is nothing to say.
+    in property <string> onboard-hw-note: "";
     in property <[KeyboardChoice]> onboard-keyboards: [];
     in-out property <string> onboard-keyboard: "us";
     in-out property <string> onboard-timezone: "";
@@ -1099,6 +1321,8 @@ export component App inherits Window {
     pure callback installer-check-hostname(string) -> string;
     pure callback installer-check-password(string, string) -> string;
     pure callback installer-check-timezone(string) -> string;
+    pure callback installer-is-macos-disk(string, string) -> bool;
+    pure callback installer-target-listed(string, string) -> bool;
 
     // The onboarding form, mirrored up to the window so the control surface can read and fill
     // it. `OnboardingScreen` lives inside a conditional element, so Rust cannot reach into it;
@@ -1113,6 +1337,9 @@ export component App inherits Window {
     in-out property <string> onboard-input-password-confirm: "";
     in-out property <string> onboard-input-hostname: "yantrik";
     in-out property <string> onboard-install-error: "";
+    // Set by a finished install the person must read before the restart (wire/installer.rs).
+    in-out property <string> onboard-install-note: "";
+    in property <string> onboard-install-media-hint: "If the installer is on a USB drive or a disc, take it out once the screen goes dark.";
     in-out property <bool> onboard-installing: false;
 
     callback onboard-install-to-disk(/* username */ string, /* password */ string,
@@ -1140,6 +1367,7 @@ export component App inherits Window {
     in property <int> onboard-ai-test-latency-ms: 0;
     in property <string> onboard-ai-test-privacy: "local";
     callback onboard-ai-mode-selected(string);
+    in property <[ProviderPresetData]> onboard-ai-cloud-presets: [];
     callback onboard-ai-provider-selected(string);
     callback onboard-ai-api-key-submitted(string, string);
     callback onboard-ai-test-connection();
@@ -1287,6 +1515,7 @@ export component App inherits Window {
             ambient-interval-ms: root.ambient-interval-ms;
             companion-name: root.settings-companion-name;
             after-install: root.onboard-after-install;
+            hw-note: root.onboard-hw-note;
             // AI hardware scan properties
             ai-hw-cpu-ok: root.onboard-ai-hw-cpu-ok;
             ai-hw-ram-ok: root.onboard-ai-hw-ram-ok;
@@ -1303,6 +1532,7 @@ export component App inherits Window {
             ai-test-model: root.onboard-ai-test-model;
             ai-test-latency-ms: root.onboard-ai-test-latency-ms;
             ai-test-privacy: root.onboard-ai-test-privacy;
+            ai-cloud-presets: root.onboard-ai-cloud-presets;
             set-names(user-name, comp-name) => {
                 if user-name != "" {
                     root.rename-user(user-name);
@@ -1360,12 +1590,24 @@ export component App inherits Window {
             disks: root.onboard-disks;
             disks-scanned: root.onboard-disks-scanned;
             selected-disk <=> root.onboard-selected-disk;
+            macos-disks: root.onboard-macos-disks;
+            erase-macos-disk <=> root.onboard-erase-macos-disk;
+            target-disks: root.onboard-target-disks;
+            segments: root.onboard-segments;
+            eligible-targets: root.onboard-eligible-targets;
+            into-partition <=> root.onboard-into-partition;
+            install-target <=> root.onboard-install-target;
+            boot-first-offered: root.onboard-boot-first-offered;
+            boot-first <=> root.onboard-boot-first;
+            hw-note: root.onboard-hw-note;
             encrypt <=> root.onboard-encrypt;
             timezone <=> root.onboard-timezone;
             installing <=> root.onboard-installing;
             install-progress <=> root.onboard-install-progress;
             install-status <=> root.onboard-install-status;
             install-error <=> root.onboard-install-error;
+            install-note <=> root.onboard-install-note;
+            media-hint: root.onboard-install-media-hint;
             install-to-disk(username, password, full-name, hostname, keyboard, timezone, disk, encrypt) => {
                 root.onboard-install-to-disk(username, password, full-name, hostname, keyboard, timezone, disk, encrypt);
             }
@@ -1377,21 +1619,37 @@ export component App inherits Window {
             check-hostname(hostname) => { return root.installer-check-hostname(hostname); }
             check-password(password, confirm) => { return root.installer-check-password(password, confirm); }
             check-timezone(timezone) => { return root.installer-check-timezone(timezone); }
+            is-macos-disk(disk, list) => { return root.installer-is-macos-disk(disk, list); }
+            target-listed(target, list) => { return root.installer-target-listed(target, list); }
         }
 
         // Lock screen
         if current-screen == 3 : LockScreen {
             width: 100%; height: 100%;
-            // The breathing background is decoration, and it is drawn on the screen that is up
-            // whenever nobody is at the machine — so it gets the renderer's budget, like the
-            // desktop's ambient layers, rather than the display's frame rate.
-            ambient-interval-ms: root.ambient-interval-ms;
             clock-text: root.clock-text;
             date-text: root.lock-date-text;
-            greeting-text: root.lock-greeting;
+            user-name: root.lock-user-name;
+            initial: root.lock-initial;
             error-text: root.lock-error;
             prompt-text: root.lock-prompt;
+            wallpaper: root.lock-wallpaper;
+            has-wallpaper: root.lock-has-wallpaper;
+            // The corner says only how the machine is connected, and never the network's name: a
+            // lock screen is read by whoever stands at it, and a Wi-Fi name says where this is.
+            // The same words as `network_kind` (wire/callbacks.rs) gives the session lock; nothing
+            // before the first reading (`network-detail` is empty until then).
+            network-text: root.network-detail == "" ? ""
+                : !root.network-online ? "Offline"
+                : root.network-medium == "wifi" ? "Wi-Fi"
+                : root.network-medium == "ethernet" ? "Wired" : "Online";
+            can-restart: root.lock-can-restart;
+            battery-percent: root.battery-available ? root.battery-level : -1;
+            battery-charging: root.battery-charging;
+            notification-count: root.notification-unread-count;
             try-unlock(pin) => { root.try-unlock(pin); }
+            suspend => { root.power-action("suspend"); }
+            restart => { root.power-action("restart"); }
+            shutdown => { root.power-action("shutdown"); }
         }
 
         // Login screen (installed system boot)
@@ -1413,18 +1671,10 @@ export component App inherits Window {
             // The room the mind panel takes at the right edge (see `mind-panel-reserve`).
             right-inset: root.mind-panel-reserve;
             date-text: root.date-text;
-            grid-categories: root.grid-categories;
-            grid-active-category: root.grid-active-category;
-            grid-category-selected(id) => { root.grid-category-selected(id); }
             // Status bar
             clock-text: root.clock-text;
             companion-status: root.companion-status;
             companion-online: root.companion-online;
-            battery-available: root.battery-available;
-            battery-level: root.battery-level;
-            battery-charging: root.battery-charging;
-            wifi-connected: root.wifi-connected;
-            wifi-ssid: root.sys-wifi-ssid;
             pending-count: root.pending-count;
             settings-incognito-mode: root.settings-incognito-mode;
             dnd-mode: root.dnd-mode;
@@ -1462,6 +1712,7 @@ export component App inherits Window {
             lens-input-text <=> root.lens-input-text;
             lens-results: root.lens-results;
             lens-chat-mode: root.lens-chat-mode;
+            lens-destination: root.lens-destination;
             lens-suggestions: root.lens-suggestions;
             lens-recents: root.lens-recents;
             // Chat
@@ -1475,7 +1726,7 @@ export component App inherits Window {
             approval-deny(id) => { root.approval-deny(id); }
             // The mind's own questions (#25), answered through the same one path as in Agents.
             questions: root.lens-questions;
-            question-answer(agent, request, answer) => { AgentsState.answer-question(agent, request, answer); }
+            question-answer(agent, request, answer, pressed) => { AgentsState.answer-question(agent, request, answer, pressed); }
             // A chat reply's link to its run: the Agents pane of that one run. Or the desktop's
             // offer, while private, to leave Private mode (`private_mode::LEAVE_LINK`).
             open-run(run) => {
@@ -1486,6 +1737,23 @@ export component App inherits Window {
                 }
             }
             lens-can-open-in-agents: root.lens-can-open-in-agents;
+            // Chat v2: the run cards, the strip and the header's words.
+            lens-work-cards: AgentsState.lens-cards;
+            lens-strip: AgentsState.lens-strip;
+            lens-live-runs: AgentsState.lens-live;
+            lens-waiting-runs: AgentsState.lens-waiting;
+            lens-mode-label: root.mind-mode-label;
+            lens-identity: AgentsState.lens-identity;
+            // The same choice the status bar chip opens; it changes nothing by itself.
+            lens-mode-clicked => {
+                root.mind-menu-open = !root.mind-menu-open;
+                root.minds-panel-open = false;
+                root.mind-menu-confirming = false;
+                root.mind-menu-audit-open = false;
+            }
+            // Mind View is an ordinary window on the person's desktop, titled "Mind View"; the
+            // taskbar's own switch brings it in front.
+            lens-view-desk(run) => { root.switch-window("Mind View"); }
             lens-open-in-agents => { root.lens-open-in-agents(); }
             lens-open-history => { root.lens-open-history(); }
             lens-new-chat => { root.lens-new-chat(); }
@@ -1502,25 +1770,15 @@ export component App inherits Window {
             morning-brief-sections: root.morning-brief-sections;
             morning-brief-dismissed => { root.morning-brief-dismissed(); }
             morning-brief-section-action(id) => { root.morning-brief-section-action(id); }
-            // Clipboard panel
-            clip-panel-open <=> root.clip-panel-open;
-            clip-panel-entries: root.clip-panel-entries;
-            clip-search-query <=> root.clip-search-query;
-            clipboard-paste(idx) => { root.clipboard-paste(idx); }
-            clipboard-search(query) => { root.clipboard-search(query); }
-            // Power menu
-            power-menu-open <=> root.power-menu-open;
             power-action(action) => { root.power-action(action); }
             // App grid
             app-grid-open <=> root.app-grid-open;
             grid-apps: root.grid-apps;
+            grid-running: root.grid-running;
             grid-launch-app(app-id) => { root.grid-launch-app(app-id); }
             grid-toggle-pin(app-id) => { root.grid-toggle-pin(app-id); }
             grid-search-apps(query) => { root.grid-search-apps(query); }
-            // Window switcher
-            window-switcher-open <=> root.window-switcher-open;
             window-list: root.window-list;
-            switch-window(title) => { root.switch-window(title); }
             // Command Palette
             command-palette-open <=> root.command-palette-open;
             command-palette-filtered: root.command-palette-filtered;
@@ -1528,13 +1786,6 @@ export component App inherits Window {
             command-palette-selected(action-id) => { root.command-palette-selected(action-id); }
             // Dock items
             dock-items: root.dock-items;
-            // Quick Settings
-            quick-settings-open <=> root.quick-settings-open;
-            brightness-level <=> root.brightness-level;
-            volume-level <=> root.volume-level;
-            toggle-wifi => { root.toggle-wifi(); }
-            brightness-changed(val) => { root.brightness-changed(val); }
-            volume-changed(val) => { root.volume-changed(val); }
             // Focus mode
             focus-mode <=> root.focus-mode;
             focus-remaining: root.focus-remaining;
@@ -1584,7 +1835,7 @@ export component App inherits Window {
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
 
             BondScreen {
-                show-window-controls: root.window-maximized;
+                show-window-controls: true;
                 maximized: root.window-maximized;
                 minimize => {
                     root.minimized-screen = 4;
@@ -1634,7 +1885,7 @@ export component App inherits Window {
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
 
             PersonalityScreen {
-                show-window-controls: root.window-maximized;
+                show-window-controls: true;
                 maximized: root.window-maximized;
                 minimize => {
                     root.minimized-screen = 5;
@@ -1689,7 +1940,7 @@ export component App inherits Window {
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
 
             MemoryBrowser {
-                show-window-controls: root.window-maximized;
+                show-window-controls: true;
                 maximized: root.window-maximized;
                 minimize => {
                     root.minimized-screen = 6;
@@ -1705,6 +1956,8 @@ export component App inherits Window {
                 width: 100%; height: 100%;
                 results: root.memory-results;
                 is-searching: root.is-searching-memories;
+                showing-recent: root.memory-showing-recent;
+                busy: root.memory-busy;
                 total-memories: root.memory-count;
                 search(query) => { root.search-memories(query); }
                 back-pressed => {
@@ -1716,6 +1969,7 @@ export component App inherits Window {
 
         // Settings screen
         if current-screen == 7 : WindowFrame {
+            content-has-controls: true;
             x: root.window-maximized ? 0px : root.window-x;
             y: root.window-maximized ? Theme.status-bar-height : root.window-y;
             width: root.window-maximized ? parent.width - root.mind-panel-reserve : root.window-w;
@@ -1741,6 +1995,19 @@ export component App inherits Window {
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
 
             SettingsScreen {
+                show-window-controls: true;
+                maximized: root.window-maximized;
+                minimize => {
+                    root.minimized-screen = 7;
+                    root.minimized-title = Tr.title-settings;
+                    root.minimized-app-id = "settings";
+                    root.current-screen = 1; root.navigate(1);
+                }
+                toggle-maximize => { root.window-maximized = !root.window-maximized; }
+                close-window => {
+                    if (root.minimized-screen == 7) { root.minimized-screen = 0; }
+                    root.current-screen = 1; root.navigate(1);
+                }
                 width: 100%; height: 100%;
                 user-name <=> root.settings-user-name;
                 companion-name <=> root.settings-companion-name;
@@ -1767,6 +2034,9 @@ export component App inherits Window {
                 incognito-mode <=> root.settings-incognito-mode;
                 dnd-mode <=> root.dnd-mode;
                 accent-color <=> root.settings-accent-color;
+                theme-id <=> root.settings-theme;
+                themes: root.theme-cards;
+                choose-theme(id) => { root.choose-theme(id); }
                 toggle-dark-mode => { root.toggle-dark-mode(); }
                 agent-mode: root.agent-mode;
                 set-agent-mode(value) => { root.set-agent-mode(value); }
@@ -1802,7 +2072,7 @@ export component App inherits Window {
                 ai-status: root.settings-ai-status;
                 ai-providers: root.settings-ai-providers;
                 available-models: root.settings-available-models;
-                provider-test-result: root.settings-provider-test-result;
+                provider-test-result <=> root.settings-provider-test-result;
                 decision-presets: root.settings-decision-presets;
                 decision-provider: root.settings-decision-provider;
                 decision-endpoint: root.settings-decision-endpoint;
@@ -1824,6 +2094,18 @@ export component App inherits Window {
                 retry-save=>{root.retry-settings-save();}
                 open-network=>{root.launch-app("network");}
                 choose-accent(name)=>{root.choose-accent(name);}
+                runs-on-rows: root.runs-on-rows;
+                runs-on-summary: root.runs-on-summary;
+                in-use-providers: root.in-use-providers;
+                account-groups: root.minds-groups;
+                account-choices: root.minds-choices;
+                account-key-choices: root.minds-key-choices;
+                account-keys-line: root.minds-keys-line;
+                account-status: root.minds-status;
+                accounts-shown => { root.minds-panel-opened(); }
+                account-use(id) => { root.minds-use-account(id); }
+                account-sign-in(id) => { root.minds-sign-in(id); }
+                account-add(v) => { root.minds-add(v); }
                 harnesses: root.harnesses;
                 harness-rows: root.harness-rows;
                 harness-busy: root.harness-busy;
@@ -1831,16 +2113,36 @@ export component App inherits Window {
                 use-harness(id) => { root.use-harness(id); }
                 install-harness(id) => { root.install-harness(id); }
                 start-harness(id) => { root.start-harness(id); }
+                configure-harness(id) => { root.configure-harness(id); }
+                assigning-harness <=> root.settings-assigning-harness;
+                handoff-card-open <=> root.settings-handoff-card-open;
+                handoff-card-title: root.settings-handoff-card-title;
+                handoff-card-body: root.settings-handoff-card-body;
+                plan-provider(h, p) => { root.plan-provider(h, p); }
+                apply-provider => { root.apply-provider(); }
+                cancel-provider => { root.cancel-provider(); }
+                revert-provider(h) => { root.revert-provider(h); }
                 settings-search(query) => { root.settings-search(query); }
                 add-provider => { root.add-provider(); }
-                save-provider(name, ptype, url, key, auth) => { root.save-provider(name, ptype, url, key, auth); }
+                save-provider(name, ptype, url, key, auth, model) => { root.save-provider(name, ptype, url, key, auth, model); }
                 delete-provider(id) => { root.delete-provider(id); }
                 test-provider(id) => { root.test-provider(id); }
-                test-new-provider(url, key, auth) => { root.test-new-provider(url, key, auth); }
+                connect-provider(preset, url, key) => { root.connect-provider(preset, url, key); }
+                provider-url-changed(url) => { root.provider-url-changed(url); }
+                provider-form-host-changed: root.settings-provider-form-host-changed;
+                provider-model-search(q) => { root.provider-model-search(q); }
+                edit-provider(id) => { root.edit-provider(id); }
+                provider-form-models: root.settings-provider-form-models;
+                provider-form-model-total: root.settings-provider-form-model-total;
+                provider-form-model <=> root.settings-provider-form-model;
+                provider-form-connected <=> root.settings-provider-form-connected;
+                provider-panel-open <=> root.settings-provider-panel-open;
+                editing-provider-id <=> root.settings-editing-provider-id;
                 provider-preset-selected(preset) => { root.provider-preset-selected(preset); }
                 provider-form-name <=> root.settings-provider-form-name;
                 provider-form-url <=> root.settings-provider-form-url;
                 selected-preset <=> root.settings-selected-preset;
+                provider-presets: root.settings-provider-presets;
                 set-primary-provider(id) => { root.set-primary-provider(id); }
                 set-fallback-provider(id) => { root.set-fallback-provider(id); }
                 select-model(id) => { root.select-model(id); }
@@ -1894,6 +2196,7 @@ export component App inherits Window {
 
         // File browser
         if current-screen == 8 : WindowFrame {
+            content-has-controls: true;
             x: root.window-maximized ? 0px : root.window-x;
             y: root.window-maximized ? Theme.status-bar-height : root.window-y;
             width: root.window-maximized ? parent.width - root.mind-panel-reserve : root.window-w;
@@ -1904,7 +2207,7 @@ export component App inherits Window {
             win-w <=> root.window-w;
             win-h <=> root.window-h;
             icon-path: Icons.files;
-            icon-color: Theme.cyan;
+            icon-color: AppColor.for-app("files");
             title: Tr.title-files;
             close => {
                 if (root.minimized-screen == 8) { root.minimized-screen = 0; }
@@ -1919,6 +2222,19 @@ export component App inherits Window {
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
 
             FileBrowser {
+                show-window-controls: true;
+                maximized: root.window-maximized;
+                minimize => {
+                    root.minimized-screen = 8;
+                    root.minimized-title = Tr.title-files;
+                    root.minimized-app-id = "files";
+                    root.current-screen = 1; root.navigate(1);
+                }
+                toggle-maximize => { root.window-maximized = !root.window-maximized; }
+                close-window => {
+                    if (root.minimized-screen == 8) { root.minimized-screen = 0; }
+                    root.current-screen = 1; root.navigate(1);
+                }
                 width: 100%; height: 100%;
                 notice: root.file-notice;
                 notice-created: root.file-notice-created;
@@ -2036,7 +2352,7 @@ export component App inherits Window {
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
 
             NotificationCenter {
-                show-window-controls: root.window-maximized;
+                show-window-controls: true;
                 maximized: root.window-maximized;
                 minimize => {
                     root.minimized-screen = 9;
@@ -2064,6 +2380,7 @@ export component App inherits Window {
                 notification-dismissed(id) => { root.notification-dismissed(id); }
                 notification-action(id, action) => { root.notification-action(id, action); }
                 clear-group(name) => { root.notification-clear-group(name); }
+                toggle-turn-group(key) => { root.notification-toggle-group(key); }
             }
         }
 
@@ -2095,7 +2412,7 @@ export component App inherits Window {
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
 
             SystemDashboard {
-                show-window-controls: root.window-maximized;
+                show-window-controls: true;
                 maximized: root.window-maximized;
                 minimize => {
                     root.minimized-screen = 10;
@@ -2118,7 +2435,10 @@ export component App inherits Window {
                 network-online: root.network-online;
                 network-label: root.network-label;
                 network-detail: root.network-detail;
-                uptime-text: root.sys-uptime-text;
+                status-lead: root.sys-status-lead;
+                status-rest: root.sys-status-rest;
+                status-thresholds: root.sys-status-thresholds;
+                status-needs-you: root.sys-status-needs-you;
                 top-processes: root.sys-top-processes;
                 cpu-history: root.sys-cpu-history;
                 memory-history: root.sys-memory-history;
@@ -2150,7 +2470,7 @@ export component App inherits Window {
             win-w <=> root.window-w;
             win-h <=> root.window-h;
             icon-path: Icons.doc;
-            icon-color: Theme.cyan;
+            icon-color: AppColor.for-app("about");
             title: Tr.title-about;
             close => {
                 if (root.minimized-screen == 16) { root.minimized-screen = 0; }
@@ -2165,7 +2485,7 @@ export component App inherits Window {
             animate x, y, width, height { duration: 200ms; easing: ease-out; }
 
             AboutScreen {
-                show-window-controls: root.window-maximized;
+                show-window-controls: true;
                 maximized: root.window-maximized;
                 minimize => {
                     root.minimized-screen = 16;
@@ -2217,6 +2537,7 @@ export component App inherits Window {
         // Calendar
         // Package Manager
         if current-screen == 21 : WindowFrame {
+            content-has-controls: true;
             x: root.window-maximized ? 0px : root.window-x;
             y: root.window-maximized ? Theme.status-bar-height : root.window-y;
             width: root.window-maximized ? parent.width - root.mind-panel-reserve : root.window-w;
@@ -2227,7 +2548,7 @@ export component App inherits Window {
             win-w <=> root.window-w;
             win-h <=> root.window-h;
             icon-path: Icons.packages;
-            icon-color: Theme.cyan;
+            icon-color: AppColor.for-app("packages");
             title: Tr.title-packages;
             close => {
                 if (root.minimized-screen == 21) { root.minimized-screen = 0; }
@@ -2243,6 +2564,19 @@ export component App inherits Window {
 
             PackageManager {
                 width: 100%; height: 100%;
+                show-window-controls: true;
+                maximized: root.window-maximized;
+                minimize => {
+                    root.minimized-screen = 21;
+                    root.minimized-title = Tr.title-packages;
+                    root.minimized-app-id = "packages";
+                    root.current-screen = 1; root.navigate(1);
+                }
+                toggle-maximize => { root.window-maximized = !root.window-maximized; }
+                close-window => {
+                    if (root.minimized-screen == 21) { root.minimized-screen = 0; }
+                    root.current-screen = 1; root.navigate(1);
+                }
                 packages: root.pkg-packages;
                 is-loading: root.pkg-is-loading;
                 status-text: root.pkg-status-text;
@@ -2281,6 +2615,10 @@ export component App inherits Window {
                 ai-explain-pressed => { root.pkg-ai-explain(); }
                 ai-intent(query) => { root.pkg-ai-intent(query); }
                 ai-dismiss => { root.pkg-ai-dismiss(); }
+                back-pressed => {
+                    root.current-screen = 1;
+                    root.navigate(1);
+                }
             }
         }
 
@@ -2293,6 +2631,7 @@ export component App inherits Window {
         // Container Manager
         // Device Dashboard
         if current-screen == 27 : WindowFrame {
+            content-has-controls: true;
             x: root.window-maximized ? 0px : root.window-x;
             y: root.window-maximized ? Theme.status-bar-height : root.window-y;
             width: root.window-maximized ? parent.width - root.mind-panel-reserve : root.window-w;
@@ -2303,7 +2642,7 @@ export component App inherits Window {
             win-w <=> root.window-w;
             win-h <=> root.window-h;
             icon-path: Icons.hybrid;
-            icon-color: Theme.cyan;
+            icon-color: AppColor.for-app("devices");
             title: Tr.title-devices;
             close => {
                 if (root.minimized-screen == 27) { root.minimized-screen = 0; }
@@ -2319,6 +2658,19 @@ export component App inherits Window {
 
             DeviceDashboardScreen {
                 width: 100%; height: 100%;
+                show-window-controls: true;
+                maximized: root.window-maximized;
+                minimize => {
+                    root.minimized-screen = 27;
+                    root.minimized-title = Tr.title-devices;
+                    root.minimized-app-id = "devices";
+                    root.current-screen = 1; root.navigate(1);
+                }
+                toggle-maximize => { root.window-maximized = !root.window-maximized; }
+                close-window => {
+                    if (root.minimized-screen == 27) { root.minimized-screen = 0; }
+                    root.current-screen = 1; root.navigate(1);
+                }
                 active-tab <=> root.dev-active-tab;
                 usb-devices: root.dev-usb-devices;
                 usb-selected-index <=> root.dev-usb-selected-index;
@@ -2350,11 +2702,16 @@ export component App inherits Window {
                 ai-panel-open <=> root.dev-ai-panel-open;
                 ai-explain-pressed => { root.dev-ai-explain(); }
                 ai-dismiss => { root.dev-ai-dismiss(); }
+                back-pressed => {
+                    root.current-screen = 1;
+                    root.navigate(1);
+                }
             }
         }
 
         // Permission Dashboard
         if current-screen == 28 : WindowFrame {
+            content-has-controls: true;
             x: root.window-maximized ? 0px : root.window-x;
             y: root.window-maximized ? Theme.status-bar-height : root.window-y;
             width: root.window-maximized ? parent.width - root.mind-panel-reserve : root.window-w;
@@ -2381,6 +2738,19 @@ export component App inherits Window {
 
             PermissionDashboardScreen {
                 width: 100%; height: 100%;
+                show-window-controls: true;
+                maximized: root.window-maximized;
+                minimize => {
+                    root.minimized-screen = 28;
+                    root.minimized-title = Tr.title-permissions;
+                    root.minimized-app-id = "permissions";
+                    root.current-screen = 1; root.navigate(1);
+                }
+                toggle-maximize => { root.window-maximized = !root.window-maximized; }
+                close-window => {
+                    if (root.minimized-screen == 28) { root.minimized-screen = 0; }
+                    root.current-screen = 1; root.navigate(1);
+                }
                 active-tab <=> root.perm-active-tab;
                 perm-users: root.perm-users;
                 perm-groups: root.perm-groups;
@@ -2416,6 +2786,10 @@ export component App inherits Window {
                 ai-panel-open <=> root.perm-ai-panel-open;
                 ai-explain-pressed => { root.perm-ai-explain(); }
                 ai-dismiss => { root.perm-ai-dismiss(); }
+                back-pressed => {
+                    root.current-screen = 1;
+                    root.navigate(1);
+                }
             }
         }
 
@@ -2495,6 +2869,9 @@ export component App inherits Window {
         // Recipes — every recipe the companion holds, drawn as its stages. Everything on it reads
         // the RecipesState global; see recipes.slint and crates/yantrik-ui/src/wire/recipes.rs.
         if current-screen == 35 : WindowFrame {
+            // The screen's own AppHeader is the window's bar (VM 520 sweep, 4 October), so the
+            // frame draws none: one bar, as on Files and Settings (#560).
+            content-has-controls: true;
             x: root.window-maximized ? 0px : root.window-x;
             y: root.window-maximized ? Theme.status-bar-height : root.window-y;
             width: root.window-maximized ? parent.width - root.mind-panel-reserve : root.window-w;
@@ -2521,6 +2898,23 @@ export component App inherits Window {
 
             RecipesScreen {
                 width: 100%; height: 100%;
+                show-window-controls: true;
+                maximized: root.window-maximized;
+                minimize => {
+                    root.minimized-screen = 35;
+                    root.minimized-title = Tr.title-recipes;
+                    root.minimized-app-id = "recipes";
+                    root.current-screen = 1; root.navigate(1);
+                }
+                toggle-maximize => { root.window-maximized = !root.window-maximized; }
+                close-window => {
+                    if (root.minimized-screen == 35) { root.minimized-screen = 0; }
+                    root.current-screen = 1; root.navigate(1);
+                }
+                back-pressed => {
+                    root.current-screen = 1;
+                    root.navigate(1);
+                }
             }
         }
 
@@ -2544,36 +2938,141 @@ export component App inherits Window {
         //
         // Boot, onboarding, lock and login deliberately do not: those are states where the
         // machine is not yet yours to read.
+        // ── The bar's panels: Quick Settings, the power menu, the clipboard ──
+        //
+        // After the screens, so they draw over any of them -- they were inside the desktop, and
+        // from every other screen the bar's buttons set a flag that drew nothing. Before the bar
+        // and the taskbar, as they were on the desktop: the bars stay clickable above the dim.
+        // Not on boot, onboarding, lock or login, where the bar is not drawn either.
+        if current-screen != 0 && current-screen != 2 && current-screen != 3 && current-screen != 32 : ShellOverlays {
+            width: 100%;
+            height: parent.height;
+            y: 0;
+            quick-settings-open <=> root.quick-settings-open;
+            network-open <=> root.network-open;
+            network-anchor-x: root.network-anchor-x;
+            today-open <=> root.today-open;
+            dnd-mode: root.dnd-mode;
+            notification-unread: root.notification-unread-count;
+            toggle-dnd-mode => { root.toggle-dnd-mode(); }
+            // "All notifications" is the notification centre, the full history.
+            all-notifications => { root.current-screen = 9; root.navigate(9); }
+            notification-tapped(id) => { root.notification-tapped(id); }
+            notification-action(id, action) => { root.notification-action(id, action); }
+            // Settings > Network is category 3 of the settings sidebar.
+            network-settings => {
+                root.settings-category = 3;
+                root.current-screen = 7;
+                root.navigate(7);
+            }
+            battery-available: root.battery-available;
+            battery-level: root.battery-level;
+            battery-charging: root.battery-charging;
+            battery-popover-open <=> root.battery-popover-open;
+            battery-anchor-x: root.battery-anchor-x;
+            battery-status-text: root.battery-status-text;
+            battery-time-text: root.battery-time-text;
+            power-profile: root.power-profile;
+            power-performance-offered: root.power-performance-offered;
+            set-power-profile(p) => { root.set-power-profile(p); }
+            brightness-available: root.brightness-available;
+            brightness-level <=> root.brightness-level;
+            volume-available: root.volume-available;
+            volume-muted: root.volume-muted;
+            volume-device: root.volume-device;
+            volume-level <=> root.volume-level;
+            brightness-changed(val) => { root.brightness-changed(val); }
+            volume-changed(val) => { root.volume-changed(val); }
+            volume-mute-toggled => { root.volume-mute-toggled(); }
+            power-menu-open <=> root.power-menu-open;
+            power-can-hibernate: root.power-can-hibernate;
+            power-minds-working: root.power-minds-working;
+            power-refresh => { root.power-refresh(); }
+            power-action(action) => { root.power-action(action); }
+            mind-mode: root.mind-mode;
+            mind-mode-label: root.mind-mode-label;
+            private-mode: root.private-mode;
+            mind-view-on: root.mind-view-on;
+            mind-mode-chosen(m) => { root.mind-mode-chosen(m); }
+            // The chevron on the Mind mode tile opens the same menu the bar's chip does.
+            mind-mode-details => {
+                root.mind-menu-open = true;
+                root.minds-panel-open = false;
+                root.mind-menu-confirming = false;
+                root.mind-menu-audit-open = false;
+            }
+            mind-private-chosen(on) => { root.mind-private-chosen(on); }
+            mind-view-chosen(on) => { root.mind-view-chosen(on); }
+            dark-on: root.settings-dark-mode;
+            toggle-dark => { root.toggle-dark-mode(); }
+            take-screenshot => { root.take-screenshot(); }
+            open-settings => { root.current-screen = 7; root.navigate(7); }
+            lock-screen => { root.lock-screen(); }
+            clip-panel-open <=> root.clip-panel-open;
+            clip-panel-entries: root.clip-panel-entries;
+            clip-search-query <=> root.clip-search-query;
+            clipboard-paste(idx) => { root.clipboard-paste(idx); }
+            clipboard-search(query) => { root.clipboard-search(query); }
+            clipboard-clear => { root.clipboard-clear(); }
+            cheat-sheet-open <=> root.cheat-sheet-open;
+            cheat-sheet-rows: root.cheat-sheet-rows;
+            cheat-sheet-query <=> root.cheat-sheet-query;
+            cheat-sheet-search(query) => { root.cheat-sheet-search(query); }
+        }
+
         if current-screen != 0 && current-screen != 2 && current-screen != 3 && current-screen != 32 : StatusBar {
             x: 0;
             y: 0;
             width: 100%;
             clock-text: root.clock-text;
-            notification-unread: root.notification-unread-count;
-            notifications-clicked => { root.current-screen = 9; root.navigate(9); }
-            companion-status: root.companion-status;
-            companion-online: root.companion-online;
+            date-text: root.date-text;
+            today-open: root.today-open;
+            // One panel at a time: the others hang from the same bar.
+            clock-clicked => {
+                root.network-open = false;
+                root.battery-popover-open = false;
+                root.quick-settings-open = false;
+                root.power-menu-open = false;
+                root.today-open = !root.today-open;
+            }
+            // The minds: one chip, from the approvals and requests the Agents workroom counts. A
+            // click opens Agents, on Needs you when something does.
+            minds-needing: AgentsState.request-minds;
+            minds-requests: AgentsState.needs-count;
+            // Every approval card waiting, the corner card's for a caller that is no agent
+            // included (control_approvals::publish): the chip reads "1 approval" in amber.
+            minds-approvals: root.cards-pending;
+            minds-clicked => {
+                root.today-open = false;
+                AgentsState.show-section(AgentsState.needs-count > 0 ? "needs_you" : "workroom");
+                root.current-screen = 34;
+                root.navigate(34);
+            }
             assistant-offline-notice: root.assistant-offline-notice;
             minds-notice: root.minds-notice;
             battery-available: root.battery-available;
             battery-level: root.battery-level;
-            battery-charging: root.battery-charging;
+            battery-state: root.battery-state;
+            battery-status-text: root.battery-status-text;
+            battery-time-text: root.battery-time-text;
+            battery-popover-open: root.battery-popover-open;
+            battery-clicked(x) => {
+                root.battery-anchor-x = x;
+                root.network-open = false;
+                root.quick-settings-open = false;
+                root.power-menu-open = false;
+                root.today-open = false;
+                root.battery-popover-open = !root.battery-popover-open;
+            }
             network-online: root.network-online;
             network-medium: root.network-medium;
-            pending-count: root.pending-count;
-            whisper-hint-count: root.whisper-hint-count;
-            incognito-enabled: root.settings-incognito-mode;
+            volume-available: root.volume-available;
+            volume-muted: root.volume-muted;
+            volume-level: root.volume-level;
+            volume-changed(val) => { root.volume-changed(val); }
+            volume-mute-toggled => { root.volume-mute-toggled(); }
             dnd-enabled: root.dnd-mode;
-            active-project: root.active-project;
-            ai-privacy-mode: root.ai-privacy-mode;
-            ai-provider-label: root.ai-active-provider-label;
-            ai-fallback-banner: root.ai-fallback-banner;
-            cpu-percent: root.bar-cpu-percent;
-            mem-text: root.bar-mem-text;
-            date-text: root.date-text;
-            active-harness-id: root.active-harness-id;
-            active-harness-name: root.active-harness-name;
-            harness-driving: root.harness-driving;
+            dnd-clicked => { root.toggle-dnd-mode(); }
             mind-mode: root.mind-mode;
             mind-mode-label: root.mind-mode-label;
             private-mode: root.private-mode;
@@ -2585,22 +3084,26 @@ export component App inherits Window {
                 root.mind-menu-confirming = false;
                 root.mind-menu-audit-open = false;
             }
+            // The mark opens the Lens, where the companion's dot beside it used to.
             anchor-clicked => { root.lens-open = !root.lens-open; root.open-lens(); }
-            queue-clicked => { root.lens-open = true; root.open-lens(); }
-            whisper-hint-clicked => { root.whisper-hint-clicked(); }
-            settings-tapped => { root.quick-settings-open = !root.quick-settings-open; }
-            power-pressed => { root.power-menu-open = !root.power-menu-open; }
-            // Handled here, the same way the desktop's own instance handles them. They are not
-            // callbacks on this component -- `ai-privacy-clicked` and `active-mind-clicked` are
-            // declared on DesktopScreen, and forwarding to a root callback of the same name was
-            // inventing two that do not exist.
-            ai-privacy-clicked => { root.ai-quick-switcher-open = !root.ai-quick-switcher-open; }
-            // The Minds panel, under the chip; Settings → Minds is its gear.
-            active-mind-clicked => {
-                root.minds-panel-open = !root.minds-panel-open;
-                root.minds-panel-adding = false;
-                root.mind-menu-open = false;
-                if root.minds-panel-open { root.minds-panel-opened(); }
+            // The network mark opens its own popover and puts the other panels away, so one
+            // bar panel is up at a time; the battery's and Quick Settings' doors do the same the
+            // other way.
+            network-tapped => {
+                root.network-open = !root.network-open;
+                root.battery-popover-open = false;
+                root.quick-settings-open = false;
+                root.power-menu-open = false;
+                root.clip-panel-open = false;
+                root.today-open = false;
+            }
+            network-anchor-x <=> root.network-anchor-x;
+            settings-tapped => {
+                root.network-open = false;
+                root.battery-popover-open = false;
+                root.today-open = false;
+                root.power-menu-open = false;
+                root.quick-settings-open = !root.quick-settings-open;
             }
             // The "minds can't reach" notice goes to Minds, which lists what is attached (#367).
             minds-notice-clicked => {
@@ -2628,20 +3131,25 @@ export component App inherits Window {
             // bottom edge that slid up a row of square tiles bearing LETTERS — ">_", "W", "F",
             // "@", "N" — from a hardcoded list that had drifted out of step with the real pinned
             // apps. It was the old design, and it was at the APP level, so it appeared on every
-            // screen. The real Taskbar lived inside DesktopScreen, so it appeared on exactly one.
+            // screen. The old taskbar lived inside DesktopScreen, so it appeared on exactly one.
             //
             // The result is what you saw: on the desktop, the designed taskbar; the moment you
             // opened anything, that taskbar went away with the desktop and brushing the bottom of
             // the screen produced a different dock, in a different visual language, listing
             // different apps.
             //
-            // One Taskbar, here, above every screen. Same component, same icons, same window
+            // One dock, here, above every screen. Same component, same icons, same window
             // entries, always in the same place — which is the whole of what "consistent" means
             // for the one strip a person's eye returns to all day.
-            Taskbar {
-                y: parent.height - self.height;
+            GroundedDock {
+                y: 0;
                 width: 100%;
-                windows: root.window-list;
+                height: parent.height;
+                buttons: root.dock-buttons;
+                windows: root.dock-windows;
+                reveal-index: root.dock-reveal-index;
+                first <=> root.dock-first;
+                capacity-changed(n) => { root.dock-capacity = n; }
                 minimized-screen: root.minimized-screen;
                 minimized-title: root.minimized-title;
                 minimized-app-id: root.minimized-app-id;
@@ -2651,9 +3159,8 @@ export component App inherits Window {
                     root.minimized-screen = 0;
                 }
                 launcher-label: Tr.dock-apps;
-                companion-count: root.whisper-hint-count;
                 companion-online: root.companion-online;
-                companion-status: root.companion-status;
+                launch-app(app-id) => { root.launch-app(app-id); }
                 // The launcher is drawn on the desktop screen and nowhere else, so from Files,
                 // Recipes or any other screen this button flipped a property nothing drew (#219).
                 // Opening it goes to the desktop first, as open_lens does, and puts the Lens
@@ -2669,7 +3176,7 @@ export component App inherits Window {
                     }
                     root.app-grid-open = !root.app-grid-open;
                 }
-                activate-window(title) => { root.switch-window(title); }
+                activate-window(title) => { root.taskbar-window-clicked(title); }
                 // The entry's right-click menu (#232). Straight to Rust, which knows whether
                 // the window's app is pinned and answers with the rows; the menu itself is
                 // drawn at the end of this file, over everything.
@@ -2678,7 +3185,7 @@ export component App inherits Window {
                 // other screen this used to open nothing a person could see; it goes to the
                 // desktop first, as Apps does (#219, #241). The shell's handler for the Lens
                 // opening brings the window forward over whatever app is in front.
-                chat-with: root.active-harness-name;
+                cards-waiting: root.cards-pending;
                 open-companion => {
                     if (!root.lens-open) {
                         if (root.current-screen != 1) {
@@ -2707,7 +3214,7 @@ export component App inherits Window {
         // over it. Between the two bars: the compositor's own margins (config/labwc/rc.xml, top 32
         // and bottom 40) are the bars', and this stays inside them.
         if root.mind-panel-shown : MindPanel {
-            width: root.mind-panel-open ? 334px : 44px;
+            width: root.mind-panel-width;
             x: parent.width - self.width;
             y: Theme.status-bar-height;
             height: parent.height - Theme.status-bar-height - Theme.taskbar-height;
@@ -2729,11 +3236,10 @@ export component App inherits Window {
             toggle(open) => {
                 MindPanelState.set-expanded(root.current-screen == 1 ? "desktop" : "elsewhere", open);
             }
-            // Into the Agents screen with that agent selected, on the Active tab it is listed in.
+            // Into the Agents screen with that agent's run opened.
             open-agent(id) => {
                 root.current-screen = 34;
                 root.navigate(34);
-                AgentsState.select-tab("active");
                 AgentsState.select(id);
             }
             open-agents => {
@@ -2949,11 +3455,10 @@ export component App inherits Window {
         // Not on the lock, login, boot or onboarding screens. A card that can be allowed from a
         // locked screen is a way to act on a machine without unlocking it; the request stays
         // pending underneath and expires if nobody comes back, which is the honest outcome.
-        if root.pending-approvals.length > 0
-            && !(root.lens-open && root.lens-chat-mode && root.current-screen == 1)
-            && root.current-screen != 0 && root.current-screen != 2
-            && root.current-screen != 3 && root.current-screen != 32
-            : Rectangle {
+        //
+        // An open Lens stands in only for a card its own mind raised (`approval-in-lens`); it
+        // hosts no other (control_approvals::in_the_lens), so every other card stays here, over it.
+        if root.approval-corner-shown : Rectangle {
             width: 100%;
             height: 100%;
             background: transparent;
@@ -2972,11 +3477,15 @@ export component App inherits Window {
             // sit under the taskbar. `min-height` is deliberately not set beside `height`: Slint
             // refuses both on one element, and `height` is the one that has to be the layout's.
             Rectangle {
-                x: parent.width - 420px;
+                x: root.approval-corner-x;
                 y: Theme.status-bar-height + Theme.sp-4;
                 width: 404px;
                 height: approval-stack.preferred-height;
                 background: transparent;
+                // Told to the root, so the vault prompt below is placed under the card as tall as
+                // it really is (third review of #639: it assumed 300px and drew over taller cards).
+                init => { root.approval-corner-height = self.height; }
+                changed height => { root.approval-corner-height = self.height; }
 
                 approval-stack := VerticalLayout {
                     spacing: Theme.sp-1;
@@ -3027,12 +3536,20 @@ export component App inherits Window {
             background: transparent;
 
             Rectangle {
-                x: parent.width - 420px;
-                // Below the approval stack when there is one, so neither covers the other. The
-                // 300px is the approval card's bounded worst case — every text on it is clipped
-                // in approvals.rs, so it has one.
-                y: Theme.status-bar-height + Theme.sp-4
-                    + (root.pending-approvals.length > 0 ? 300px : 0px);
+                // Below the approval stack when it is drawn, by the stack's real height, so neither
+                // covers the other — and beside it, to its left, when the space below would put the
+                // prompt under the dock. It used to assume 300px, the card's worst case before the
+                // card pinned every argument; a taller card was drawn under this prompt.
+                property <length> below: Theme.status-bar-height + Theme.sp-4
+                    + (root.approval-corner-shown ? root.approval-corner-height + Theme.sp-2 : 0px);
+                property <bool> fits-below: self.below + vault-stack.preferred-height
+                    <= root.height - Theme.taskbar-height;
+                // Beside only when there is a whole column for it left of the card: on a narrow
+                // screen (800px wide puts "beside" at -40px, and clamping it would lay it over the
+                // card) it stays below, where nothing covers the card's buttons.
+                property <bool> beside: !self.fits-below && root.approval-corner-x - 420px >= Theme.sp-4;
+                x: self.beside ? root.approval-corner-x - 420px : root.approval-corner-x;
+                y: self.beside ? Theme.status-bar-height + Theme.sp-4 : self.below;
                 width: 404px;
                 // Same lesson as the approval overlay: take the height from the layout inside,
                 // never from the card, or the box is sized to nothing and the card draws off it.
@@ -3122,8 +3639,11 @@ export component App inherits Window {
             MindsPanel {
                 x: parent.width - 372px;
                 y: Theme.status-bar-height + Theme.sp-1;
-                groups: root.minds-groups;
-                choices: root.minds-choices;
+                groups: root.minds-panel-groups;
+                more: root.minds-panel-more;
+                answering: root.active-harness-name;
+                answering-runs-on: root.runs-on-answering;
+                choices: root.minds-panel-choices;
                 today: root.minds-today;
                 status: root.minds-status;
                 adding <=> root.minds-panel-adding;
@@ -3133,7 +3653,7 @@ export component App inherits Window {
                 make(kind) => { root.minds-make(kind); root.minds-panel-open = false; }
                 manage => {
                     root.minds-panel-open = false;
-                    root.settings-category = 8;
+                    root.settings-category = 4;
                     root.current-screen = 7;
                     root.navigate(7);
                 }
@@ -3156,6 +3676,21 @@ export component App inherits Window {
             close-menu => { root.taskbar-menu-open = false; }
         }
 
+        // The window overview, over every screen: a switcher that only drew on the desktop would be
+        // unreachable from Files or Settings, where the shell is in front too.
+        AltTab {
+            is-open: root.alt-tab-open;
+            cells: root.alt-tab-cells;
+            selected: root.alt-tab-selected;
+            status: root.alt-tab-status;
+            page: root.alt-tab-page;
+            pages: root.alt-tab-pages;
+            navigate(direction, columns) => { root.alt-tab-navigate(direction, columns); }
+            hover(i) => { root.alt-tab-hover(i); }
+            activate(i) => { root.alt-tab-activate(i); }
+            cancel => { root.alt-tab-cancel(); }
+        }
+
             // Debug: navigate to screen from Rust
             // Set debug-target-screen from Rust, then call debug-navigate()
             // to switch to that screen (useful for automated screenshots).
@@ -3173,6 +3708,11 @@ export component App inherits Window {
     /// five places, one of which is Rust setting the property directly.
     changed lens-open => {
         if (!root.lens-open) { global-keys.focus(); }
+    }
+
+    /// Same for the switcher: its own scope held the keys and goes away with it.
+    changed alt-tab-open => {
+        if (!root.alt-tab-open) { global-keys.focus(); }
     }
 
     /// Give the shell's shortcut scope the keyboard, so there is a focus chain to deliver to.

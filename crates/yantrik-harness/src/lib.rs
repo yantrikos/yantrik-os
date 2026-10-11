@@ -48,10 +48,11 @@
 pub mod event;
 pub mod host;
 pub mod protocol;
+pub mod redact;
 pub mod run_store;
 
 pub use event::{AgentId, Event};
-pub use host::{AgentEntry, AgentState, Entry, EventCounts, Host, Resumed, TurnEnd};
+pub use host::{random_hex, AgentEntry, AgentState, Entry, EventCounts, Host, LateAnswer, Resumed, TurnEnd};
 
 use std::sync::mpsc::Receiver;
 

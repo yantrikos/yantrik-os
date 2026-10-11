@@ -24,6 +24,7 @@ pub fn run(window: &MinimalSoftwareWindow) -> Result<(), Box<dyn std::error::Err
             used_bytes: "186 GB".into(),
             total_bytes: "300 GB".into(),
             usage_percent: 0.0,
+            needs_you: false,
         },
         DiskData {
             mount_point: "/home".into(),
@@ -31,6 +32,7 @@ pub fn run(window: &MinimalSoftwareWindow) -> Result<(), Box<dyn std::error::Err
             used_bytes: "41 GB".into(),
             total_bytes: "100 GB".into(),
             usage_percent: 0.0,
+            needs_you: false,
         },
     ])));
     ui.set_procs(slint::ModelRc::new(slint::VecModel::from(vec![
@@ -82,9 +84,6 @@ pub fn run(window: &MinimalSoftwareWindow) -> Result<(), Box<dyn std::error::Err
     }
     if ui.get_disk_fill_width() <= 0.0 {
         problems.push("the fixture never reached the disk bars: their fill has zero width".into());
-    }
-    if ui.get_health_fill_x() != 0.0 {
-        problems.push(format!("health bar fill starts {}px inside its track instead of at the left edge", ui.get_health_fill_x()));
     }
     if ui.get_swap_fill_x() != 0.0 {
         problems.push(format!("swap bar fill starts {}px inside its track instead of at the left edge", ui.get_swap_fill_x()));

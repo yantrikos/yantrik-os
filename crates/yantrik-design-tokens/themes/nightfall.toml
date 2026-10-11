@@ -1,0 +1,21 @@
+# Nightfall: the same shell after dark. Deeper blue-black grounds, a violet accent, and the
+# nightfall wallpaper.
+id = "nightfall"
+name = "Nightfall"
+description = "Deep blue-black with a violet accent, for the evening."
+dark = true
+accent = "purple"
+wallpaper = "nightfall"
+overrides = true
+
+[palette]
+bg_deep = "#0a0d17"
+bg_surface = "#111627"
+bg_card = "#1a2038"
+bg_elevated = "#252c4a"
+amber = "#d4a574"   # needs-you: the same on every theme (colour system)
+cyan = "#38d8cd"    # the minds' teal: the same on every theme (colour system)
+text_primary = "#f2f4fb"
+text_secondary = "#bcc4e0"
+text_dim = "#8f98bd"
+accent = "#b98aef"

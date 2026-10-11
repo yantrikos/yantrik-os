@@ -582,15 +582,23 @@ fn state_label(state: &str, kind: &str) -> String {
     .to_string()
 }
 
+/// The row's line for inputs nothing sets: what the recipe needs, said as a precondition.
+///
+/// It read "{{person}}, {{date}} have no value", drawn like an error. Nothing stops a recipe
+/// with an unset input from running — the placeholder reaches the tool as the literal
+/// `{{name}}` (#88) — so the line says that too, rather than promising a run is held back.
 fn unbound_note(names: &[String]) -> String {
-    let shown: Vec<String> = names.iter().take(3).map(|n| format!("{{{{{n}}}}}")).collect();
+    let mut shown: Vec<String> = names.iter().take(3).map(|n| format!("{{{{{n}}}}}")).collect();
     let more = names.len().saturating_sub(3);
-    let list = if more > 0 { format!("{} and {more} more", shown.join(", ")) } else { shown.join(", ") };
-    match names.len() {
-        0 => String::new(),
-        1 => format!("{list} has no value"),
-        _ => format!("{list} have no value"),
+    if more > 0 {
+        shown.push(format!("{more} more"));
     }
+    let list = match shown.split_last() {
+        None => return String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+    };
+    format!("Needs {list} \u{2014} sent as written until set")
 }
 
 fn count(n: usize, what: &str) -> String {
@@ -657,6 +665,19 @@ mod tests {
         recipe_view::view(&recipe, &stored, &Default::default())
     }
 
+    /// Unset inputs read as what the recipe needs, never as a failure, and never as a promise
+    /// that it will not run: it does run, with the placeholder as written (#88).
+    #[test]
+    fn unset_inputs_read_as_a_precondition() {
+        let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(unbound_note(&[]), "");
+        assert_eq!(unbound_note(&names(&["person", "date"])), "Needs {{person}} and {{date}} — sent as written until set");
+        assert_eq!(
+            unbound_note(&names(&["a", "b", "c", "d", "e"])),
+            "Needs {{a}}, {{b}}, {{c}} and 2 more — sent as written until set"
+        );
+    }
+
     /// A recipe waiting on the person: its question and choices in the row, its stages ticked,
     /// waited on and to come, and the placeholder nothing set called out.
     #[test]
@@ -675,7 +696,7 @@ mod tests {
         assert_eq!(row.question, "Move them where?");
         assert_eq!(row.choices.iter().map(|c| c.to_string()).collect::<Vec<_>>(), ["Archive", "Trash"]);
         assert_eq!(row.waiting_for, "Waiting for your answer");
-        assert_eq!(row.unbound, "{{subfolder}} has no value");
+        assert_eq!(row.unbound, "Needs {{subfolder}} — sent as written until set");
         assert!(row.when.starts_with("updated "), "{}", row.when);
 
         let step = step_of(&v.steps[0]);

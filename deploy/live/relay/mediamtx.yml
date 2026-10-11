@@ -1,0 +1,68 @@
+# Yantrik Live relay: MediaMTX on the public VPS (yantrikos.com). See design/live-instance-2026-09-29.md.
+#
+# One way in and one way out, and nothing else listening:
+#   in   SRT on :8890/udp. Only the live instance publishes, only to `live`: the publisher's
+#        password and the path's SRT passphrase are both needed, and the stream is encrypted.
+#   out  HLS on 127.0.0.1:8888, reached only through nginx at https://yantrikos.com/live/hls/.
+#
+# The secrets are not in this file. systemd passes them in from /etc/mediamtx/secrets.env
+# (root, 600) as MediaMTX's own overrides:
+#   MTX_AUTHINTERNALUSERS_0_PASS          the publisher's password
+#   MTX_PATHS_LIVE_SRTPUBLISHPASSPHRASE   the SRT passphrase (10 to 79 characters)
+# The unit refuses to start without both. An empty password would let anyone publish.
+
+logLevel: info
+logDestinations: [stdout]
+readTimeout: 10s
+writeTimeout: 10s
+
+authMethod: internal
+authInternalUsers:
+  # 0: the instance. It publishes the one path and does nothing else.
+  - user: yantrik-live
+    pass: ""
+    ips: []
+    permissions:
+      - action: publish
+        path: live
+  # 1: the page's viewers, who arrive only through nginx on this host. MediaMTX sees nginx's
+  # loopback address (hlsTrustedProxies is left empty on purpose), so nothing else may read.
+  - user: any
+    pass:
+    ips: ["127.0.0.1", "::1"]
+    permissions:
+      - action: read
+        path: live
+
+# Everything else MediaMTX can serve is off. A release can add a protocol that is on by default
+# (1.21 added MoQ, public on :8892 and :8893), so setup-relay.sh also checks what is listening.
+api: false
+metrics: false
+pprof: false
+playback: false
+rtsp: false
+rtmp: false
+webrtc: false
+moq: false
+
+hls: true
+hlsAddress: 127.0.0.1:8888
+hlsEncryption: false
+hlsAllowOrigins: ["https://yantrikos.com", "https://www.yantrikos.com"]
+hlsTrustedProxies: []
+# A playlist is ready the moment someone opens the page, not a few seconds after.
+hlsAlwaysRemux: true
+# A calm desktop at a few frames a second: plain MPEG-TS segments, no low-latency parts.
+hlsVariant: mpegts
+hlsSegmentCount: 7
+hlsSegmentDuration: 2s
+
+srt: true
+srtAddress: :8890
+
+paths:
+  live:
+    source: publisher
+    # A publisher that reconnects after a network drop takes over from its own stale session.
+    overridePublisher: true
+    srtPublishPassphrase: ""

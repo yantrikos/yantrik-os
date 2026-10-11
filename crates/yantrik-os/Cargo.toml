@@ -16,6 +16,9 @@ sysinfo = { workspace = true }
 # D-Bus (pure Rust, musl-compatible). Uses async-io internally for blocking wrappers.
 zbus = "5"
 
+# Overwrites a Wi-Fi password when its last holder lets go. Already in the tree (vault, TLS).
+zeroize = "1"
+
 # File system monitoring (inotify on Linux)
 notify = "7"
 

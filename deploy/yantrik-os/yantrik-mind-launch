@@ -14,6 +14,13 @@ comments and blank lines skipped. A key the unit already sets is the unit's: HOM
 (YM_DB, YM_ENV_PATH, YM_MCP_CONFIG, YM_CODER_DIR, YM_STATE_DIR), YM_MEMORY_SERVER, YM_WEB and
 YANTRIK_MIND_RUN come from the unit, so a settings file written when the Mind lived in the
 person's home cannot point it back there, where it can no longer look.
+
+Two settings have a default when the file leaves them out, because without them the Mind speaks as
+its engine's stock persona ("JARVIS, an extension of the user"): YM_MIND_NAME, the name the
+desktop's mind picker shows, and YM_OPERATOR, its person's full name as the desktop greets them.
+The person is the machine's one account in the human uid range with a login shell, read from
+/etc/passwd, which every account can read. With none, or more than one, the Mind is told no name
+rather than a guess. A value in the settings file always wins over either default.
 """
 import os
 import re
@@ -21,6 +28,10 @@ import sys
 
 MIND = "/opt/yantrik-mind/bin/yantrik-mind"
 KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+# The name the desktop's mind picker gives this Mind.
+MIND_NAME = "Yantrik Mind"
+# Accounts people log in as; system accounts (the mind's own included) sit below, nobody above.
+PERSON_UIDS = range(1000, 60000)
 
 
 def parse(text):
@@ -43,6 +54,35 @@ def parse(text):
     return settings
 
 
+def person_name(passwd="/etc/passwd"):
+    """The full name of the machine's one person, or None when there is not exactly one."""
+    try:
+        with open(passwd, encoding="utf-8", errors="replace") as f:
+            text = f.read(1 << 20)
+    except OSError:
+        return None
+    people = []
+    for line in text.splitlines():
+        fields = line.split(":")
+        if len(fields) < 7 or not fields[2].isdigit() or int(fields[2]) not in PERSON_UIDS:
+            continue
+        if fields[6].rstrip().endswith(("/nologin", "/false")):
+            continue
+        # The GECOS full name is its first comma field; an account without one is its login.
+        name = "".join(c for c in fields[4].split(",")[0] if c.isprintable()).strip()[:64]
+        people.append(name or fields[0])
+    return people[0] if len(people) == 1 else None
+
+
+def fill_defaults(env, passwd="/etc/passwd"):
+    """Give the Mind its name and its person's, where its settings named neither."""
+    env.setdefault("YM_MIND_NAME", MIND_NAME)
+    if "YM_OPERATOR" not in env:
+        name = person_name(passwd)
+        if name:
+            env["YM_OPERATOR"] = name
+
+
 def main():
     if os.getuid() == 0:
         sys.exit("yantrik-mind-launch runs as the mind's own account, never as root")
@@ -58,6 +98,7 @@ def main():
             with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as f:
                 for key, value in parse(f.read(1 << 20)).items():
                     os.environ.setdefault(key, value)
+    fill_defaults(os.environ)
     os.execv(MIND, [MIND] + sys.argv[1:])
 
 

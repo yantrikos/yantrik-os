@@ -3,7 +3,7 @@ import { Theme, ThemeMode } from "theme.slint";
 import { DesktopHome } from "components/desktop_home.slint";
 import { DesktopScreen } from "desktop.slint";
 import { AppGrid, AppGridItem } from "components/app_grid.slint";
-import { Taskbar } from "components/taskbar.slint";
+import { GroundedDock } from "components/grounded_dock.slint";
 import { StatusBar } from "components/status_bar.slint";
 import { AppHeader } from "app_header.slint";
 import { YButton } from "y_button.slint";
@@ -56,7 +56,7 @@ export component Preview inherits Window {
             { title: "Project overview.md", subtitle: "Documents", action-id: "file:1" },
         ];
     }
-    if root.scene == "" : StatusBar { y: 0px; clock-text: "10:24"; date-text: "Sat, Sep 19"; mem-text: "4.2 GB"; cpu-percent: 8; network-online: true; active-harness-id: "mind"; active-harness-name: "Yantrik Mind"; harness-driving: true; }
+    if root.scene == "" : StatusBar { y: 0px; clock-text: "10:24"; date-text: "Sat 19 Sep"; network-online: true; }
     if root.scene == "" && !root.app-view && !root.actual-desktop : DesktopHome {
         width: min(760px, parent.width - 48px); x: (parent.width - self.width) / 2;
         y: 76px; height: parent.height - 136px;
@@ -107,8 +107,8 @@ export component Preview inherits Window {
                         padding: 16px; spacing: 12px; alignment: start;
                         Text { text: "WORKSPACE"; color: Theme.text-dim; font-size: Theme.fs-micro; letter-spacing: 1px; }
                         YButton { label: "All notes"; icon-path: Icons.notes; variant: 1; }
-                        YButton { label: "Favourites"; icon-path: Icons.pushpin; variant: 2; }
-                        YButton { label: "Archive"; icon-path: Icons.file; variant: 2; }
+                        YButton { label: "Favourites"; icon-path: Icons.pushpin; variant: 1; }
+                        YButton { label: "Archive"; icon-path: Icons.file; variant: 1; }
                     }
                 }
                 VerticalLayout {
@@ -126,15 +126,16 @@ export component Preview inherits Window {
             }
         }
     }
-    if root.scene == "" : Taskbar {
-        y: parent.height - self.height;
-        windows: [ { title: "Ideas for a quieter workspace", app-id: "notes" }, { title: "Terminal", app-id: "terminal" } ];
+    if root.scene == "" : GroundedDock {
+        height: parent.height;
+        buttons: [
+            { app-id: "notes", label: "Notes", icon-id: "notes", pinned: true, running: true, focused: true, windows: 1, title: "Ideas for a quieter workspace" },
+            { app-id: "terminal", label: "Terminal", icon-id: "terminal", pinned: true, running: true, windows: 1, title: "Terminal" }
+        ];
         open-launcher => { root.launcher-open = true; }
     }
     AppGrid {
         is-open <=> root.launcher-open;
-        categories: [{id: "all", name: "All apps", count: 12}, {id: "office", name: "Productivity", count: 4}, {id: "system", name: "System", count: 3}];
-        active-category: "all";
         apps: root.empty-launcher ? [] : self.sample-apps;
         property <[AppGridItem]> sample-apps: [
             {app-id: "files", icon-id: "files", name: "Files", pinned: true, pinnable: true},
@@ -176,6 +177,8 @@ export component ControlsProbe inherits Window {
         disabled: root.disabled;
     }
 }
+
+export { KitControlsProbe } from "kit_controls_probe.slint";
 
 export component HeaderProbe inherits Window {
     width: 800px; height: 600px;
@@ -258,7 +261,12 @@ export component FilesProbe inherits Window {
     }
 }
 
-import { SettingsScreen, SettingsCategoryItem } from "settings.slint";
+import { SettingsScreen, SettingsCategoryItem, RunsOnRow, InUseRow, ThemeCardData } from "settings.slint";
+import { FreeAiCard } from "components/free_ai_card.slint";
+export { FreeAiState, FreeAiRow, FreeAiValue } from "components/free_ai_card.slint";
+export { RunsOnRow, InUseRow, ThemeCardData }
+// The compositor's lock screen (crates/yantrik-lock), the real component, beside the shell's own.
+export { LockView } from "../../crates/yantrik-lock/ui/lock.slint";
 export component SettingsProbe inherits Window {
     in property <length> canvas-width:800px;in property <length> canvas-height:600px;
     width:root.canvas-width;height:root.canvas-height;background:Theme.bg-deep;
@@ -267,8 +275,11 @@ export component SettingsProbe inherits Window {
     in property <[SettingsCategoryItem]> categories;
     in-out property <string> action;
     in-out property <string> accent:"cyan";
+    in property <[ThemeCardData]> themes;
+    in-out property <string> theme:"lake";
     in-out property <bool> save-error;
     in-out property <bool> dark:true;
+    in property <string> wallpaper:"serenity";
     callback search(string);
     public function focus-search(){screen.focus-search();}
     changed dark=>{ThemeMode.dark=root.dark;}
@@ -277,9 +288,10 @@ export component SettingsProbe inherits Window {
         active-category<=>root.category;search-query<=>root.query;
         categories:root.categories;settings-search(q)=>{root.search(q);}
         accent-color:root.accent;dark-mode:root.dark;
+        themes:root.themes;theme-id<=>root.theme;choose-theme(id)=>{root.action="theme:"+id;}
         choose-accent(a)=>{root.accent=a;root.action="accent:"+a;}
         toggle-dark-mode=>{root.dark=!root.dark;}
-        wallpaper-path:"serenity";wallpaper-changed(id)=>{root.action="wallpaper:"+id;}
+        wallpaper-path:root.wallpaper;wallpaper-changed(id)=>{root.action="wallpaper:"+id;}
         open-network=>{root.action="network";}
         navigate-to(id)=>{root.action="screen:"+id;}
         save-error:root.save-error;
@@ -291,9 +303,8 @@ export component SettingsProbe inherits Window {
 // The Agents screen (screen 34) and one agent's own window, filled with fixture data by
 // src/agents_tests.rs. Callbacks are recorded there, never acted on.
 import { AgentsScreen } from "agents.slint";
-export { AgentsState, AgentWindow, AgentTabData, AgentRowData, AgentRunData, AgentItemData, AgentHeaderData, AgentDetailsData, AgentMindData, AgentRoleData } from "agents.slint";
+export { AgentsState, AgentWindow, AgentRunData, AgentItemData, AgentHeaderData, AgentDetailsData, AgentMindData, AgentRoleData, WorkNavData, DeskCardData, DecisionData, ResultData, ChangeRowData, RunFactData } from "agents.slint";
 export { ToolCallData } from "components/tool_call.slint";
-export { RouteStopData } from "agents_route.slint";
 export { ApprovalRequest } from "components/intent_lens.slint";
 import { IntentLens, ApprovalRequest } from "components/intent_lens.slint";
 
@@ -364,8 +375,9 @@ export component LensAnswerProbe inherits Window {
 // fixture data by src/approval_tests.rs, which presses the buttons by scanning for them the
 // way a person would and asserts where they answered.
 export component ApprovalLensProbe inherits Window {
-    width: 1280px;
-    height: 800px;
+    // Preferred, not fixed: the approval fit scene draws it at 800×600 and 1280×720 as well.
+    preferred-width: 1280px;
+    preferred-height: 800px;
     default-font-family: Theme.font-ui;
     background: Theme.bg-deep;
     in property <[MessageData]> messages;
@@ -389,6 +401,64 @@ export component ApprovalLensProbe inherits Window {
     }
 }
 
+// Chat v2 (the conversation panel): the whole Lens in chat mode with the run cards, the strip, the
+// composer and the panel's own width, filled with fixture data by src/chat_tests.rs. What the person
+// sends is recorded there and never acted on.
+export { WorkCardData } from "components/work_card.slint";
+import { WorkCardData } from "components/work_card.slint";
+import { QuestionRequest } from "components/question_card.slint";
+export { QuestionRequest }
+export component ChatProbe inherits Window {
+    width: 1280px;
+    height: 800px;
+    default-font-family: Theme.font-ui;
+    background: Theme.bg-deep;
+    in property <[MessageData]> messages;
+    in property <[ApprovalRequest]> approvals;
+    in property <[QuestionRequest]> questions;
+    in property <[WorkCardData]> work-cards;
+    in property <WorkCardData> strip;
+    in property <int> live-runs: 0;
+    in property <int> waiting-runs: 0;
+    in property <string> mind-name: "Yantrik Mind";
+    // The composer's "where the words go" line; "" (no line) unless a scene sets it.
+    in property <string> destination: "";
+    in-out property <string> sent;
+    in-out property <int> sends: 0;
+    in-out property <int> mode-clicks: 0;
+    in-out property <string> opened-run;
+    in-out property <int> desks: 0;
+    in-out property <int> allowed: 0;
+    in-out property <int> denied: 0;
+    in-out property <length> panel-width <=> lens.panel-width;
+    out property <bool> following: lens.transcript-following;
+    out property <bool> missed: lens.transcript-missed;
+    out property <length> scroll-y: lens.transcript-y;
+    lens := IntentLens {
+        width: 100%;
+        height: 100%;
+        is-open: true;
+        chat-mode: true;
+        mind-name: root.mind-name;
+        identity: "Attached mind";
+        destination: root.destination;
+        can-open-in-agents: true;
+        messages: root.messages;
+        approvals: root.approvals;
+        questions: root.questions;
+        work-cards: root.work-cards;
+        strip: root.strip;
+        live-runs: root.live-runs;
+        waiting-runs: root.waiting-runs;
+        send-message(text) => { root.sent = text; root.sends += 1; }
+        mode-clicked => { root.mode-clicks += 1; }
+        open-run(run) => { root.opened-run = run; }
+        view-desk(run) => { root.desks += 1; }
+        approval-allow(id) => { root.allowed += 1; }
+        approval-deny(id) => { root.denied += 1; }
+    }
+}
+
 export component AgentsProbe inherits Window {
     in property <length> canvas-width: 1280px;
     in property <length> canvas-height: 800px;
@@ -408,6 +478,12 @@ export component AgentsProbe inherits Window {
 // so this is app.slint's App — every screen, the status bar, the taskbar and the panel — filled
 // with fixture data by src/mind_panel_tests.rs. Callbacks are recorded there, never acted on.
 export { App } from "app.slint";
+// Answered by icon_stills.rs with the shell's own rule, so an unknown app's tile has its letter.
+export { AppInitial } from "app_tile.slint";
+export { NetworkState, NetworkRow } from "components/bar/network_state.slint";
+export { OsdWindow } from "osd_window.slint";
+export { TodayState, TodayEvent } from "components/bar/today_state.slint";
+export { NotificationData, NotifActionData } from "notification_center.slint";
 export { MindPanelState, MindPanelNow, MindPanelAgent, MindPanelRecipe, MindPanelAct } from "components/mind_panel.slint";
 export { ThemeMode }
 
@@ -450,7 +526,6 @@ export component SystemMonitorProbe inherits Window {
     in-out property <int> selected-pid: -1;
     in-out property <string> ai-model-name;
     // Mirrored out of the screen so the test can see the geometry the person sees.
-    out property <length> health-fill-x: monitor.health-fill-x;
     out property <length> swap-fill-x: monitor.swap-fill-x;
     out property <length> swap-fill-width: monitor.swap-fill-width;
     out property <length> core-fill-x: monitor.core-fill-x;
@@ -466,6 +541,7 @@ export component SystemMonitorProbe inherits Window {
         height: 100%;
         show-back: false;
         cpu-usage: 62.0;
+        cpu-measured: true;
         cpu-model: "Fixture CPU @ 3.6 GHz";
         cpu-cores: root.cores;
         memory-usage: 55.0;
@@ -480,9 +556,10 @@ export component SystemMonitorProbe inherits Window {
         process-search <=> root.search;
         selected-process-pid <=> root.selected-pid;
         ai-model-name: root.ai-model-name;
-        health-score: 60.0;
-        health-status: "Degraded";
-        health-summary: "High CPU usage";
+        status-lead: "Disk nearly full · 1.7 GB free (95%)";
+        status-rest: "CPU 62% · Memory 55% · Swap 42%";
+        status-thresholds: "Limits: any disk at 90% full, memory at 90% used, 1-minute load above 4 (the core count)";
+        status-needs-you: true;
         uptime-text: "3 h 12 m";
         kill-process(pid) => { root.selected-pid = pid; }
         force-kill-process(pid) => { root.selected-pid = pid; }
@@ -556,7 +633,7 @@ export component EditorProbe inherits TextEditorApp {
 
 // ── Installer (#400) ────────────────────────────────────────────────────────
 
-import { InstallerScreen, InstallerDisk, KeyboardChoice } from "installer.slint";
+import { InstallerScreen, InstallerDisk, InstallerSegment, InstallerTargetDisk, KeyboardChoice } from "installer.slint";
 
 // The production installer screens with fixture disks and layouts. The rules behind every
 // field are the production ones: the runner wires these callbacks to installer_rules.rs,
@@ -582,6 +659,16 @@ export component InstallerProbe inherits Window {
     in property <[InstallerDisk]> disks;
     in property <bool> disks-scanned: true;
     in-out property <string> selected-disk;
+    in property <string> macos-disks;
+    in-out property <string> erase-macos-disk;
+    in property <[InstallerTargetDisk]> target-disks;
+    in property <[InstallerSegment]> segments;
+    in property <string> eligible-targets;
+    in-out property <bool> into-partition;
+    in-out property <string> install-target;
+    in property <bool> boot-first-offered;
+    in-out property <bool> boot-first;
+    out property <bool> disk-ok: screen.disk-ok;
     in-out property <string> timezone;
     in-out property <bool> installing;
     in-out property <int> install-progress;
@@ -603,6 +690,8 @@ export component InstallerProbe inherits Window {
     pure callback check-hostname(string) -> string;
     pure callback check-password(string, string) -> string;
     pure callback check-timezone(string) -> string;
+    pure callback is-macos-disk(string, string) -> bool;
+    pure callback target-listed(string, string) -> bool;
 
     screen := InstallerScreen {
         width: 100%; height: 100%;
@@ -622,6 +711,15 @@ export component InstallerProbe inherits Window {
         disks: root.disks;
         disks-scanned: root.disks-scanned;
         selected-disk <=> root.selected-disk;
+        macos-disks: root.macos-disks;
+        erase-macos-disk <=> root.erase-macos-disk;
+        target-disks: root.target-disks;
+        segments: root.segments;
+        eligible-targets: root.eligible-targets;
+        into-partition <=> root.into-partition;
+        install-target <=> root.install-target;
+        boot-first-offered: root.boot-first-offered;
+        boot-first <=> root.boot-first;
         timezone <=> root.timezone;
         installing <=> root.installing;
         install-progress <=> root.install-progress;
@@ -638,6 +736,8 @@ export component InstallerProbe inherits Window {
         check-hostname(h) => { return root.check-hostname(h); }
         check-password(p, c) => { return root.check-password(p, c); }
         check-timezone(t) => { return root.check-timezone(t); }
+        is-macos-disk(d, l) => { return root.is-macos-disk(d, l); }
+        target-listed(t, l) => { return root.target-listed(t, l); }
     }
 }
 
@@ -682,6 +782,8 @@ export component MindsProbe inherits Window {
     in property <[ProviderGroup]> groups;
     in property <[AddChoice]> choices;
     in property <string> today;
+    in property <string> answering;
+    in property <int> more;
     in-out property <bool> adding;
     in-out property <string> action;
     out property <length> panel-height: panel.height;
@@ -689,6 +791,7 @@ export component MindsProbe inherits Window {
         x: parent.width - 372px;
         y: 44px;
         groups: root.groups; choices: root.choices; today: root.today; status: "";
+        answering: root.answering; more: root.more;
         adding <=> root.adding;
         use-account(id) => { root.action = "use:" + id; }
         sign-in(id) => { root.action = "signin:" + id; }
@@ -696,4 +799,192 @@ export component MindsProbe inherits Window {
         make(k) => { root.action = "make:" + k; }
         manage => { root.action = "manage"; }
     }
+}
+
+import { JumpToPresent } from "jump_to_present.slint";
+import { ListView } from "std-widgets.slint";
+// A transcript under JumpToPresent, for verify-jump-to-present.
+export component JumpProbe inherits Window {
+    width: 480px; height: 400px; background: Theme.bg-deep;
+    in property <int> rows: 5;
+    in-out property <length> list-y <=> list.viewport-y;
+    out property <length> list-h: list.viewport-height;
+    out property <bool> following: follow.following;
+    out property <bool> missed: follow.missed;
+    out property <bool> at-bottom: follow.at-bottom;
+    list := ListView {
+        width: 100%;
+        height: 100%;
+        for i in root.rows : Rectangle {
+            height: 40px;
+            Text { text: "line " + i; color: Theme.text-primary; x: 12px; vertical-alignment: center; }
+        }
+    }
+    follow := JumpToPresent {
+        width: 100%;
+        height: 100%;
+        viewport-y <=> list.viewport-y;
+        viewport-height: list.viewport-height;
+        visible-height: list.visible-height;
+    }
+}
+
+// The context rail beside an app body, the way every app lays it out: a long context list must
+// scroll inside the rail, never make the window lay out taller than it is.
+import { AgentRail } from "components/agent_rail.slint";
+export component RailProbe inherits Window {
+    width: 900px; height: 500px; background: Theme.bg-deep;
+    in property <[AgentContextItem]> context: [];
+    in property <[AgentSuggestion]> next: [];
+    out property <length> body-h: body.height;
+    out property <length> rail-h: rail.height;
+    VerticalLayout {
+        Rectangle { height: 40px; background: Theme.bg-surface; }
+        HorizontalLayout {
+            body := Rectangle { horizontal-stretch: 1; background: Theme.bg-card; }
+            rail := AgentRail { context-items: root.context; suggestions: root.next; }
+        }
+    }
+}
+
+// The Calendar screen at its real size with a full day: the month grid must keep six even rows
+// however many events the day holds or the rail lists.
+import { CalendarScreen, CalendarEvent, CalendarDay } from "calendar.slint";
+export { CalendarEvent, CalendarDay } from "calendar.slint";
+export component CalendarProbe inherits Window {
+    width: 1100px; height: 720px; background: Theme.bg-deep;
+    in property <[CalendarDay]> days;
+    in property <[CalendarEvent]> events;
+    in property <[AgentContextItem]> context;
+    in property <string> notice;
+    in property <string> notice-event;
+    out property <length> screen-h: cal.height;
+    cal := CalendarScreen {
+        width: 100%;
+        height: 100%;
+        month-title: "September 2026";
+        days: root.days;
+        events-today: root.events;
+        selected-day: 30;
+        agent-context: root.context;
+        notice: root.notice;
+        notice-event: root.notice-event;
+    }
+}
+
+// Settings → AI with the Add Provider panel open over the catalogue's full preset grid.
+import { ProviderPresetGroup, ProviderPresetRow, ProviderPresetData } from "provider_presets.slint";
+export { ProviderPresetGroup, ProviderPresetRow, ProviderPresetData } from "provider_presets.slint";
+export component ProviderPanelProbe inherits Window {
+    width: 1280px; height: 800px; background: Theme.bg-deep;
+    in property <[ProviderPresetGroup]> presets;
+    in-out property <string> preset;
+    in-out property <string> name;
+    SettingsScreen {
+        width: 100%; height: 100%;
+        active-category: 1;
+        provider-panel-open: true;
+        provider-presets: root.presets;
+        selected-preset <=> root.preset;
+        provider-form-name <=> root.name;
+    }
+}
+
+// Settings → Harnesses with the provider card open: the card must be drawn on the page it is
+// opened from. It was placed inside the AI page and never appeared on Harnesses (VM 520).
+// Settings → AI & Intelligence with its "What runs on what" map, for verify-ai-map.
+export component AiMapProbe inherits Window {
+    in property <length> tall: 800px;
+    width: 1280px; height: root.tall; background: Theme.bg-deep;
+    in property <[RunsOnRow]> rows;
+    in property <string> summary;
+    in property <[InUseRow]> in-use;
+    in-out property <length> scroll;
+    SettingsScreen {
+        width: 100%; height: 100%;
+        active-category: 1;
+        runs-on-rows: root.rows;
+        runs-on-summary: root.summary;
+        in-use-providers: root.in-use;
+    }
+}
+
+// Settings → Accounts, drawing the Minds panel's own AccountList, for verify-accounts-page.
+export component AccountsPageProbe inherits Window {
+    width: 1280px; height: 800px; background: Theme.bg-deep;
+    in property <[ProviderGroup]> groups;
+    in-out property <bool> shown: false;
+    in-out property <string> action;
+    SettingsScreen {
+        width: 100%; height: 100%;
+        active-category: 4;
+        account-groups: root.groups;
+        accounts-shown => { root.shown = true; }
+        account-use(id) => { root.action = "use:" + id; }
+        account-sign-in(id) => { root.action = "signin:" + id; }
+        account-add(v) => { root.action = "add:" + v; }
+    }
+}
+
+export component HandoffCardProbe inherits Window {
+    width: 1280px; height: 800px; background: Theme.bg-deep;
+    in property <bool> open;
+    SettingsScreen {
+        width: 100%; height: 100%;
+        active-category: 8;
+        handoff-card-open: root.open;
+        handoff-card-title: "Give DeepSeek Ollama?";
+        handoff-card-body: "DeepSeek will use Ollama at 192.168.4.35:11434 with qwen3.5:9b.";
+    }
+}
+
+// Settings → AI → Free AI accounts, the card alone at its widest, for verify-free-ai. The rows
+// come from the test through FreeAiState, as they come from wire/free_ai in the shell.
+export component FreeAiProbe inherits Window {
+    in property <length> tall: 1800px;
+    width: 600px; height: root.tall; background: Theme.bg-deep;
+    out property <length> card-height: card.height;
+    out property <length> card-width: card.width;
+    VerticalLayout {
+        alignment: start;
+        card := FreeAiCard { }
+    }
+}
+
+export { ColourSystemProbe } from "colour_system_probe.slint";
+
+// The on-screen display (src/osd_tests.rs drives it in its own window). It was missing here, which
+// stopped the whole preview crate from compiling on main.
+export { OsdWindow } from "osd_window.slint";
+export { IconProbe } from "icon_probe.slint";
+export { LabelProbe } from "label_probe.slint";
+
+// Review stills (src/review_stills.rs): the theme globals a scene sets from Rust (the accent
+// preset and a theme's palette overrides), and Calendar at 1280x800 with an ordinary day.
+export { AccentPreset, ThemeOverrides } from "theme.slint";
+export component CalendarStillProbe inherits Window {
+    width: 1280px; height: 800px; background: Theme.bg-deep;
+    default-font-family: Theme.font-ui;
+    in property <[CalendarDay]> days;
+    in property <[CalendarEvent]> events;
+    CalendarScreen {
+        width: 100%;
+        height: 100%;
+        month-title: "October 2026";
+        days: root.days;
+        events-today: root.events;
+        selected-day: 4;
+    }
+}
+
+// One approval card at its natural height, on the Lens panel's ground at the panel's width.
+import { ApprovalCard } from "components/intent_lens.slint";
+export component ApprovalCardProbe inherits Window {
+    width: Theme.chat-panel-width;
+    height: card.preferred-height + 16px;
+    background: Theme.chat-panel;
+    default-font-family: Theme.font-ui;
+    in property <ApprovalRequest> data;
+    out property <length> card-h: card.preferred-height + 16px;
+    card := ApprovalCard { x: 8px; y: 8px; width: parent.width - 16px; data: root.data; }
 }

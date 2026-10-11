@@ -2,8 +2,11 @@
 // Triggered by Super+V or dock button. Click entry to paste.
 // Follows QuickSettings overlay pattern (backdrop + floating panel).
 // Search input filters entries Rust-side via search-changed callback.
+// The footer says where the history is (in the shell's memory on this machine, never written to
+// disk or sent anywhere: clipboard.rs) and clears it.
 
 import { Theme } from "theme.slint";
+import { YButton } from "y_button.slint";
 
 export struct ClipboardEntryData {
     index: int,
@@ -19,6 +22,7 @@ export component ClipboardPanel inherits Rectangle {
     callback paste-entry(int);
     callback close();
     callback search-changed(string);
+    callback clear-history();
 
     width: 100%;
     height: 100%;
@@ -80,7 +84,7 @@ export component ClipboardPanel inherits Rectangle {
                     background: Theme.tint-accent;
 
                     pill-text := Text {
-                        text: root.entries.length + " items";
+                        text: root.entries.length == 1 ? "1 item" : root.entries.length + " items";
                         color: Theme.accent;
                         font-size: Theme.fs-micro;
                         font-weight: 500;
@@ -208,28 +212,33 @@ export component ClipboardPanel inherits Rectangle {
                 }
             }
 
-            // Keyboard shortcut hint (bottom of panel)
-            Rectangle {
-                height: 24px;
+            // Footer: where the history is kept, and the way to empty it. Clearing leaves the
+            // panel open, so the person sees it is gone.
+            Rectangle { height: 1px; background: Theme.separator; }
+            HorizontalLayout {
+                height: 28px;
+                alignment: center;
+                spacing: Theme.sp-2;
 
-                HorizontalLayout {
-                    alignment: center;
-                    spacing: 4px;
-
-                    Text {
-                        text: "Super+V";
-                        color: Theme.text-dim;
-                        font-size: Theme.fs-micro;
-                        vertical-alignment: center;
-                    }
-
-                    Text {
-                        text: "to toggle";
-                        color: Theme.text-dim;
-                        font-size: Theme.fs-micro;
-                        vertical-alignment: center;
-                        opacity: 0.6;
-                    }
+                Text {
+                    text: "History stored on this device";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-micro;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "·";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-micro;
+                    vertical-alignment: center;
+                }
+                YButton {
+                    variant: 1;
+                    size: 0;
+                    label: "Clear history";
+                    // Nothing to clear. A search that matched nothing still has a history behind it.
+                    disabled: root.entries.length == 0 && root.search-query == "";
+                    clicked => { root.clear-history(); }
                 }
             }
         }

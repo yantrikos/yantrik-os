@@ -29,7 +29,9 @@ export struct AccountRow {
     id: string,         // "claude:account-2", for the callbacks
     label: string,      // "Main", "Account 2"
     plan: string,       // "Max 20x", "Pro"; empty when the vendor does not say
-    state: string,      // "active" | "ready" | "signin" | "missing"
+    state: string,      // "active" (chosen) | "ready" | "signin" | "missing"; drawn as Chosen / Choose / Sign in / Install
+    program: string,    // "Claude Code": the vendor's program, which a sign-in is for
+    used-by: string,    // "Used by Claude Code in a terminal. No mind here runs on it."
     note: string,       // one line under it when there is something to say
     meters: [AccountMeter],
 }
@@ -118,10 +120,12 @@ component MeterRow inherits Rectangle {
 
 component AccountBlock inherits Rectangle {
     in property <AccountRow> account;
+    in property <bool> detailed: false;     // the Accounts page: "Signed in", whose it is, what uses it
     callback use-account(string);
     callback sign-in(string);
 
-    height: 24px + root.account.meters.length * 22px + (root.account.note != "" ? 18px : 0px);
+    height: 24px + root.account.meters.length * 22px + (root.account.note != "" ? 18px : 0px)
+        + (root.detailed && root.account.used-by != "" ? 18px : 0px);
     VerticalLayout {
         spacing: 2px;
         HorizontalLayout {
@@ -135,7 +139,8 @@ component AccountBlock inherits Rectangle {
                 vertical-alignment: center;
             }
             Text {
-                text: root.account.plan != "" ? "· " + root.account.plan : "";
+                text: (root.account.plan != "" ? "· " + root.account.plan : "")
+                    + (root.detailed && (root.account.state == "active" || root.account.state == "ready") ? " · Signed in" : "");
                 color: Theme.text-dim;
                 font-size: Theme.fs-caption;
                 vertical-alignment: center;
@@ -160,19 +165,29 @@ component AccountBlock inherits Rectangle {
                 action-text := Text {
                     x: 6px;
                     height: parent.height;
-                    text: root.account.state == "active" ? "ACTIVE"
+                    // "Chosen": the account its program starts with. Never "active": that read as
+                    // "the desktop runs on this", which a sign-in for a vendor's program is not.
+                    text: root.account.state == "active" ? (root.detailed && root.account.program != "" ? "Chosen for " + root.account.program : "Chosen")
                         : root.account.state == "signin" ? "Sign in"
-                        : root.account.state == "missing" ? "Install" : "Use";
+                        : root.account.state == "missing" ? "Install" : "Choose";
                     color: root.account.state == "active" ? Theme.accent
                         : root.account.state == "signin" ? Theme.color-danger
                         : Theme.text-secondary;
                     font-size: Theme.fs-caption;
-                    font-weight: root.account.state == "active" ? 700 : 500;
+                    font-weight: root.account.state == "active" ? 600 : 500;
                     vertical-alignment: center;
                 }
             }
         }
         for m in root.account.meters : MeterRow { meter: m; }
+        if root.detailed && root.account.used-by != "" : Text {
+            height: 16px;
+            text: root.account.used-by;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            vertical-alignment: center;
+            overflow: elide;
+        }
         if root.account.note != "" : Text {
             height: 16px;
             text: root.account.note;
@@ -205,17 +220,119 @@ component HeadButton inherits Rectangle {
     }
 }
 
+// The accounts themselves, with what the "+" can bring: one list, drawn by the Minds panel and by
+// Settings → Accounts, so the two can never disagree about what is signed in.
+export component AccountList inherits VerticalLayout {
+    in property <[ProviderGroup]> groups;
+    in property <[AddChoice]> choices;
+    in property <string> status;
+    in property <bool> adding: false;       // the "+" choices are showing
+    in property <bool> divided: true;       // a rule between the header above and the accounts
+    in property <bool> say-empty: true;     // say so when there are no accounts
+    in property <bool> detailed: false;     // the Accounts page's rows, with what uses each account
+    callback use-account(string);           // an account id
+    callback sign-in(string);               // an account id: signs in, or installs its program
+    callback add(string);                   // a vendor id, from the choices
+
+    spacing: Theme.sp-2;
+
+    // ── What the "+" can bring here ──
+    if root.adding : VerticalLayout {
+        spacing: 2px;
+        for c in root.choices : Rectangle {
+            height: 30px;
+            border-radius: Theme.r-sm;
+            background: choice-ta.has-hover ? Theme.hover-fill : transparent;
+            choice-ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.add(c.vendor); }
+            }
+            HorizontalLayout {
+                padding-left: Theme.sp-1;
+                padding-right: Theme.sp-2;
+                spacing: Theme.sp-2;
+                VerticalLayout { alignment: center; VendorGlyph { vendor: c.vendor; } }
+                Text {
+                    text: c.name;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-body;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: c.what;
+                    color: Theme.accent;
+                    font-size: Theme.fs-caption;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        if root.choices.length == 0 : Text {
+            height: 24px;
+            text: "Every vendor this desktop knows is here.";
+            color: Theme.text-dim;
+            font-size: Theme.fs-caption;
+            vertical-alignment: center;
+        }
+    }
+    if root.divided : Rectangle { height: 1px; background: Theme.border-subtle; }
+
+    // ── The vendors and their accounts ──
+    for g in root.groups : VerticalLayout {
+        spacing: 2px;
+        HorizontalLayout {
+            height: 26px;
+            spacing: Theme.sp-2;
+            VerticalLayout { alignment: center; VendorGlyph { vendor: g.id; } }
+            Text {
+                text: g.name;
+                color: Theme.text-primary;
+                font-size: Theme.fs-body-strong;
+                font-weight: 600;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+        }
+        for a in g.accounts : AccountBlock {
+            account: a;
+            detailed: root.detailed;
+            use-account(id) => { root.use-account(id); }
+            sign-in(id) => { root.sign-in(id); }
+        }
+        Rectangle { height: 6px; }
+    }
+    if root.say-empty && root.groups.length == 0 : Text {
+        height: 36px;
+        text: "No accounts yet. Press + to sign in to Claude, Codex or Gemini.";
+        color: Theme.text-secondary;
+        font-size: Theme.fs-caption;
+        wrap: word-wrap;
+    }
+    if root.status != "" : Text {
+        height: 18px;
+        text: root.status;
+        color: Theme.text-secondary;
+        font-size: Theme.fs-micro;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
 export component MindsPanel inherits Rectangle {
     in property <[ProviderGroup]> groups;
     in property <[AddChoice]> choices;
     in property <string> today;             // "2.4M tokens today", or "" when nothing is counted
     in property <string> status;            // one line after an action: "Opened a terminal to sign in"
+    in property <string> answering;         // the mind that answers in the chat: "Yantrik Mind"
+    in property <string> answering-runs-on; // what it runs on: "Ollama Cloud · deepseek-v4.1-flash · as it reported"
+    in property <int> more;                 // accounts' vendors past the ones shown, on the page
     in-out property <bool> adding: false;   // the "+" list is showing
     callback use-account(string);           // an account id
     callback sign-in(string);               // an account id: signs in, or installs its program
     callback add(string);                   // a vendor id, from the "+" list
     callback make(string);                  // "app" | "theme" | "recipe"
-    callback manage();                      // Settings → Minds
+    callback manage();                      // Settings → Accounts, where these accounts are managed
 
     width: 360px;
     height: body.preferred-height;
@@ -235,7 +352,7 @@ export component MindsPanel inherits Rectangle {
 
         // ── Header ──
         HorizontalLayout {
-            height: 40px;
+            height: 40px + (root.answering != "" && root.today != "" ? 8px : 0px) + (root.answering-runs-on != "" ? 14px : 0px);
             spacing: Theme.sp-2;
             VerticalLayout {
                 alignment: center;
@@ -250,8 +367,25 @@ export component MindsPanel inherits Rectangle {
                     font-size: Theme.fs-headline;
                     font-weight: 600;
                 }
+                // Which mind answers, so a chosen account below is never read as "the one
+                // talking"; and today's tokens.
+                if root.answering != "" : Text {
+                    text: "Answering: " + root.answering;
+                    overflow: elide;
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-micro;
+                    letter-spacing: 0.5px;
+                }
+                if root.answering-runs-on != "" : Text {
+                    text: root.answering-runs-on;
+                    overflow: elide;
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-micro;
+                    letter-spacing: 0.5px;
+                }
                 if root.today != "" : Text {
                     text: root.today;
+                    overflow: elide;
                     color: Theme.text-dim;
                     font-size: Theme.fs-micro;
                     letter-spacing: 0.5px;
@@ -271,85 +405,26 @@ export component MindsPanel inherits Rectangle {
             }
         }
 
-        // ── What the "+" can bring here ──
-        if root.adding : VerticalLayout {
-            spacing: 2px;
-            for c in root.choices : Rectangle {
-                height: 30px;
-                border-radius: Theme.r-sm;
-                background: choice-ta.has-hover ? Theme.hover-fill : transparent;
-                choice-ta := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => { root.add(c.vendor); root.adding = false; }
-                }
-                HorizontalLayout {
-                    padding-left: Theme.sp-1;
-                    padding-right: Theme.sp-2;
-                    spacing: Theme.sp-2;
-                    VerticalLayout { alignment: center; VendorGlyph { vendor: c.vendor; } }
-                    Text {
-                        text: c.name;
-                        color: Theme.text-primary;
-                        font-size: Theme.fs-body;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                    }
-                    Text {
-                        text: c.what;
-                        color: Theme.accent;
-                        font-size: Theme.fs-caption;
-                        font-weight: 600;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-            if root.choices.length == 0 : Text {
-                height: 24px;
-                text: "Every vendor this desktop knows is here.";
-                color: Theme.text-dim;
+        list := AccountList {
+            groups: root.groups;
+            choices: root.choices;
+            status: root.status;
+            adding: root.adding;
+            use-account(id) => { root.use-account(id); }
+            sign-in(id) => { root.sign-in(id); }
+            add(v) => { root.add(v); root.adding = false; }
+        }
+        // The panel is a glance: past four vendors, the rest are on the Accounts page.
+        if root.more > 0 : Rectangle {
+            height: 22px;
+            more-ta := TouchArea { mouse-cursor: pointer; clicked => { root.manage(); } }
+            Text {
+                x: 0;
+                text: root.more + " more on the Accounts page →";
+                color: more-ta.has-hover ? Theme.text-primary : Theme.accent;
                 font-size: Theme.fs-caption;
                 vertical-alignment: center;
             }
-        }
-        Rectangle { height: 1px; background: Theme.border-subtle; }
-
-        // ── The vendors and their accounts ──
-        for g in root.groups : VerticalLayout {
-            spacing: 2px;
-            HorizontalLayout {
-                height: 26px;
-                spacing: Theme.sp-2;
-                VerticalLayout { alignment: center; VendorGlyph { vendor: g.id; } }
-                Text {
-                    text: g.name;
-                    color: Theme.text-primary;
-                    font-size: Theme.fs-body-strong;
-                    font-weight: 600;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                }
-            }
-            for a in g.accounts : AccountBlock {
-                account: a;
-                use-account(id) => { root.use-account(id); }
-                sign-in(id) => { root.sign-in(id); }
-            }
-            Rectangle { height: 6px; }
-        }
-        if root.groups.length == 0 : Text {
-            height: 36px;
-            text: "No accounts yet. Press + to sign in to Claude, Codex or Gemini, or to add a Qwen or xAI key.";
-            color: Theme.text-secondary;
-            font-size: Theme.fs-caption;
-            wrap: word-wrap;
-        }
-        if root.status != "" : Text {
-            height: 18px;
-            text: root.status;
-            color: Theme.text-secondary;
-            font-size: Theme.fs-micro;
-            vertical-alignment: center;
-            overflow: elide;
         }
 
         // ── Make something ──

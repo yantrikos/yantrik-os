@@ -46,10 +46,10 @@ impl Tool for OpenUrlTool {
         if !url.starts_with("http://") && !url.starts_with("https://") {
             return "Error: URL must start with http:// or https://".to_string();
         }
-        match std::process::Command::new("xdg-open").arg(url).spawn() {
-            Ok(_) => format!("Opened: {url}"),
-            Err(e) => format!("Failed to open URL: {e}"),
-        }
+        // Not `xdg-open`: that opens the person's default browser on the person's desktop. A
+        // mind's page opens in the companion's own browser, on the display the shell says minds'
+        // windows go to (Mind View), or is refused (PR #582 review, B3).
+        super::browser::open_url_for_mind(url)
     }
 }
 
@@ -77,24 +77,16 @@ impl Tool for ReadClipboardTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> String {
-        match std::process::Command::new("wl-paste")
-            .arg("--no-newline")
-            .output()
-        {
-            Ok(output) if output.status.success() => {
-                let text = String::from_utf8_lossy(&output.stdout);
-                if text.is_empty() {
-                    "Clipboard is empty.".to_string()
-                } else {
-                    let truncated = if text.len() > 1000 { &text[..text.floor_char_boundary(1000)] } else { &text };
-                    format!("Clipboard contents:\n{truncated}")
-                }
-            }
-            Ok(output) => {
-                let err = String::from_utf8_lossy(&output.stderr);
-                format!("Clipboard read failed: {err}")
-            }
-            Err(e) => format!("Failed to read clipboard (wl-paste not available?): {e}"),
+        if let Some(refused) = crate::provider_keys::clipboard_refusal() {
+            return refused;
+        }
+        // The one bounded reader, which never hands back a provider's key.
+        let text = crate::clipboard::read_clipboard_text();
+        if text.is_empty() {
+            "Clipboard is empty.".to_string()
+        } else {
+            let truncated = if text.len() > 1000 { &text[..text.floor_char_boundary(1000)] } else { &text };
+            format!("Clipboard contents:\n{truncated}")
         }
     }
 }
@@ -126,6 +118,10 @@ impl Tool for WriteClipboardTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        // Not while a key is on its way: a model's text there could be pasted as a key.
+        if let Some(refused) = crate::provider_keys::clipboard_refusal() {
+            return refused;
+        }
         let text = args.get("text").and_then(|v| v.as_str()).unwrap_or_default();
         if text.is_empty() {
             return "Error: text is required".to_string();
@@ -304,14 +300,6 @@ impl Tool for ReadFileTool {
 
 pub struct RunCommandTool;
 
-/// Safe command allowlist — only read-only, harmless commands.
-const SAFE_COMMANDS: &[&str] = &[
-    "ls", "cat", "head", "tail", "date", "uptime", "df", "free",
-    "whoami", "pwd", "echo", "wc", "file", "stat", "uname",
-    "hostname", "id", "which", "env", "printenv",
-    "sha256sum", "md5sum", "du", "sort", "grep", "find", "diff", "bc", "cal",
-];
-
 impl Tool for RunCommandTool {
     fn name(&self) -> &'static str { "run_command" }
     fn permission(&self) -> PermissionLevel { PermissionLevel::Safe }
@@ -340,36 +328,22 @@ impl Tool for RunCommandTool {
             return "Error: command is required".to_string();
         }
 
-        let base_cmd = command.split_whitespace().next().unwrap_or("");
-        if !SAFE_COMMANDS.contains(&base_cmd) {
-            return format!(
-                "Error: '{}' is not in the safe command list. Allowed: {}",
-                base_cmd,
-                SAFE_COMMANDS.join(", ")
-            );
+        // Read-only programs, started directly with their words: no shell (crate::safe_command).
+        let argv = match crate::safe_command::words(command) {
+            Ok(w) => w,
+            Err(e) => return format!("Error: {e}"),
+        };
+        let home = std::env::var("HOME").unwrap_or_default();
+        let argv = crate::safe_command::expand(&argv, &home);
+        if let Err(e) = crate::safe_command::check(&argv, &home) {
+            return format!("Error: {e}");
         }
-
-        // Block shell metacharacters
-        if command.contains('|') || command.contains(';') || command.contains('&')
-            || command.contains('`') || command.contains('$') || command.contains('>')
-            || command.contains('<')
-        {
-            return "Error: shell metacharacters (|;&`$><) are not allowed".to_string();
-        }
-
-        // Block harmful commands (defense-in-depth even with allowlist)
+        // Defense in depth, as before.
         if let Some(reason) = crate::sanitize::detect_harmful_command(command) {
             return format!("Error: blocked — {reason}");
         }
-
-        match std::process::Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .output()
-        {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
+        match crate::safe_command::run(&argv) {
+            Ok((stdout, stderr)) => {
                 let mut result = String::new();
                 if !stdout.is_empty() {
                     let truncated = if stdout.len() > 2000 { &stdout[..stdout.floor_char_boundary(2000)] } else { &stdout };
@@ -377,7 +351,8 @@ impl Tool for RunCommandTool {
                 }
                 if !stderr.is_empty() {
                     let end = stderr.floor_char_boundary(stderr.len().min(500));
-                    result.push_str(&format!("\nStderr: {}", &stderr[..end]));
+                    result.push_str(&format!("
+Stderr: {}", &stderr[..end]));
                 }
                 if result.is_empty() {
                     "(no output)".to_string()
@@ -385,7 +360,7 @@ impl Tool for RunCommandTool {
                     result
                 }
             }
-            Err(e) => format!("Failed to run command: {e}"),
+            Err(e) => format!("Error: {e}"),
         }
     }
 }

@@ -514,36 +514,8 @@ pub fn templates() -> Vec<RecipeTemplate> {
             },
             trigger: None,
         },
-        // 40. Password Audit
-        RecipeTemplate {
-            id: "builtin_password_audit",
-            name: "Password Audit",
-            description: "Review vault entries for weak or duplicate passwords",
-            category: "system",
-            keywords: &[
-                "password", "vault", "passwords", "weak password",
-                "password audit", "credential", "security check passwords",
-            ],
-            required_vars: &[],
-            steps: || {
-                vec![
-                    tool("vault_list", serde_json::json!({}), "vault_entries"),
-                    think(
-                        "Audit password vault entries: {{vault_entries}}\n\n\
-                         Check for:\n\
-                         - Entries with weak or short passwords\n\
-                         - Duplicate passwords across services\n\
-                         - Old entries that may need rotation\n\
-                         - Missing entries for common services\n\
-                         Do NOT display actual passwords. Only report metadata \
-                         and security observations.",
-                        "audit",
-                    ),
-                    notify("Password Audit:\n\n{{audit}}"),
-                ]
-            },
-            trigger: None,
-        },
+        // 40. (Password Audit, retired: a recipe step may not read the vault, and its prompt never
+        //     saw a password, so it could not tell a weak one from a strong one.)
         // 41. Service Status Check
         RecipeTemplate {
             id: "builtin_service_status",

@@ -5,11 +5,26 @@ use crate::email::ServiceError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CpuInfo {
+    /// Busy share of the interval `window_ms`, and meaningless without one.
     pub overall_percent: f64,
+    /// One per core — the count holds with or without an interval, and the load limit is
+    /// checked against it — with each share over the same interval as `overall_percent`.
     pub cores: Vec<CpuCore>,
     pub load_avg_1: f64,
     pub load_avg_5: f64,
     pub load_avg_15: f64,
+    /// The interval the percentages cover, in milliseconds. `None` when there is no interval
+    /// yet — one read of /proc/stat is a total since boot, not a share — and from a service
+    /// built before this field, whose percentages were exactly that. A reader shows no figure.
+    #[serde(default)]
+    pub window_ms: Option<u64>,
+}
+
+impl CpuInfo {
+    /// The overall share, when there is an interval it is a share of.
+    pub fn measured_percent(&self) -> Option<f64> {
+        self.window_ms.map(|_| self.overall_percent)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

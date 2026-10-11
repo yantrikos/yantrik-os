@@ -40,6 +40,7 @@
 //! `Debug` so that a `{:?}` cannot leak it either.
 
 mod firewall;
+mod link;
 mod nmcli;
 
 use std::sync::{Arc, Mutex};
@@ -50,6 +51,7 @@ use yantrik_ipc_contracts::network::{
     NetworkInterfaceInfo, NetworkStatus, RadioState, ScannedNetwork, WifiConnectParams,
     WifiForgetParams, WifiForgetResult, WifiRadioParams, WifiScanParams, WifiState,
 };
+use yantrik_ipc_contracts::route_table;
 #[cfg(test)]
 use yantrik_service_sdk::gate::{self, Authority};
 use yantrik_service_sdk::prelude::*;
@@ -822,7 +824,7 @@ fn dns_set(params: &DnsSetParams) -> Result<DnsSetResult, ServiceError> {
     );
     nmcli::outcome(&exit).map_err(|t| service_error(&t))?;
 
-    let resolv_conf = read_dns()?;
+    let resolv_conf = read_resolv_conf();
     let applied = device_dns(&target.device);
 
     // Every server asked for has to turn up in one of the two readings, or this failed. A
@@ -996,6 +998,10 @@ fn describe_view() -> Result<View, ServiceError> {
                 "state": i.state,
                 "ip": i.ip_address,
                 "mac": i.mac_address,
+                // null when the link does not report it, as the window's "not reported".
+                "speed_mbps": i.speed_mbps,
+                "subnet": i.subnet,
+                "gateway": i.gateway,
             })
         })
         .collect();
@@ -1031,6 +1037,9 @@ mod platform {
             message: format!("Cannot read /proc/net/dev: {e}"),
         })?;
 
+        // Read once for every interface: each one's gateway is its default route's router.
+        let routes = std::fs::read_to_string(route_table::ROUTE_TABLE).unwrap_or_default();
+
         let mut interfaces = Vec::new();
 
         for line in content.lines().skip(2) {
@@ -1065,6 +1074,9 @@ mod platform {
 
             let conn_type = detect_interface_type(name);
             let ip_address = read_interface_ip(name);
+            // The mask of the same address SIOCGIFADDR gave, so the two cannot be of different
+            // addresses; none without an address.
+            let subnet = ip_address.as_ref().and_then(|_| ipv4_ioctl(name, libc::SIOCGIFNETMASK as _));
 
             interfaces.push(NetworkInterfaceInfo {
                 name: name.to_string(),
@@ -1074,6 +1086,9 @@ mod platform {
                 tx_bytes,
                 state,
                 conn_type,
+                speed_mbps: link::parse_speed(&read_sys_attr(name, "speed")),
+                subnet,
+                gateway: route_table::gateway_for(&routes, name),
             });
         }
 
@@ -1108,37 +1123,6 @@ mod platform {
             conn_type: "none".to_string(),
             ssid: None,
             ip_address: None,
-        })
-    }
-
-    /// Read DNS configuration from /etc/resolv.conf.
-    pub fn read_dns() -> Result<DnsConfig, ServiceError> {
-        let content = std::fs::read_to_string("/etc/resolv.conf").unwrap_or_default();
-
-        let mut nameservers = Vec::new();
-        let mut search_domains = Vec::new();
-
-        for line in content.lines() {
-            let line = line.trim();
-            if line.starts_with('#') || line.is_empty() {
-                continue;
-            }
-
-            if let Some(rest) = line.strip_prefix("nameserver") {
-                let ns = rest.trim();
-                if !ns.is_empty() {
-                    nameservers.push(ns.to_string());
-                }
-            } else if let Some(rest) = line.strip_prefix("search") {
-                for domain in rest.split_whitespace() {
-                    search_domains.push(domain.to_string());
-                }
-            }
-        }
-
-        Ok(DnsConfig {
-            nameservers,
-            search_domains,
         })
     }
 
@@ -1184,11 +1168,12 @@ mod platform {
 
     /// The interface's IPv4 address, via `SIOCGIFADDR`, without shelling out.
     fn read_interface_ip(name: &str) -> Option<String> {
-        get_ipv4_addr(name)
+        ipv4_ioctl(name, libc::SIOCGIFADDR as _)
     }
 
-    /// Get IPv4 address for an interface using libc ioctl.
-    fn get_ipv4_addr(iface_name: &str) -> Option<String> {
+    /// One IPv4 address of an interface through libc ioctl: `SIOCGIFADDR` for its address,
+    /// `SIOCGIFNETMASK` for that address's mask. The kernel answers both in a `sockaddr_in`.
+    fn ipv4_ioctl(iface_name: &str, request: libc::c_ulong) -> Option<String> {
         use std::mem;
         use std::os::unix::io::RawFd;
 
@@ -1208,7 +1193,7 @@ mod platform {
             );
         }
 
-        let result = unsafe { libc::ioctl(sock, libc::SIOCGIFADDR as _, &mut ifr) };
+        let result = unsafe { libc::ioctl(sock, request as _, &mut ifr) };
         unsafe {
             libc::close(sock);
         }
@@ -1244,10 +1229,6 @@ mod platform {
     pub fn read_status() -> Result<NetworkStatus, ServiceError> {
         Ok(NetworkStatus::default())
     }
-
-    pub fn read_dns() -> Result<DnsConfig, ServiceError> {
-        Ok(DnsConfig::default())
-    }
 }
 
 fn read_interfaces() -> Result<Vec<NetworkInterfaceInfo>, ServiceError> {
@@ -1258,8 +1239,19 @@ fn read_status() -> Result<NetworkStatus, ServiceError> {
     platform::read_status()
 }
 
+/// The machine's resolvers, looking past a systemd-resolved stub to the servers behind it
+/// (`link::resolvers`): "127.0.0.53" is where lookups go first, not where they are answered.
+/// Plain file reads on every platform; a machine with neither file has no resolvers to report.
 fn read_dns() -> Result<DnsConfig, ServiceError> {
-    platform::read_dns()
+    let local = std::fs::read_to_string(link::RESOLV_CONF).unwrap_or_default();
+    let upstream = std::fs::read_to_string(link::RESOLVED_UPSTREAM).ok();
+    Ok(link::resolvers(&local, upstream.as_deref()))
+}
+
+/// `/etc/resolv.conf` exactly as it stands, stub or not — what `DnsSetResult::resolv_conf`
+/// promises. `dns_set` already checks NetworkManager's own reading beside it for the stub case.
+fn read_resolv_conf() -> DnsConfig {
+    link::parse_resolv_conf(&std::fs::read_to_string(link::RESOLV_CONF).unwrap_or_default())
 }
 
 // The service only answers Wi-Fi on Linux (`platform` says so on Windows), so the surface tests

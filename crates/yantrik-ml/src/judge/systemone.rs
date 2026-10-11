@@ -9,6 +9,9 @@
 //!   probabilities (Unsloth's own migration note says to recalibrate on `probabilities`).
 //! - **Jeff** serves one request at a time and answers 529 while busy, so a busy reply is waited
 //!   out briefly instead of failing the decision.
+//! - **Ollama** (0.35 and later) serves decision models — Nimble, Tev1 — at the same path, and takes
+//!   at most 26 options in one choice question ("criteria must contain 2–26 candidates"). A
+//!   question with more is refused here, before it is sent, in a sentence saying so.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -25,6 +28,8 @@ pub enum Dialect {
     Kev,
     Laya,
     Jeff,
+    /// Ollama's `/v1/systemone`: Nimble, Tev1, whatever else it serves as a decision model.
+    Ollama,
     /// Any other `/v1/systemone` server: taken at its word.
     Generic,
 }
@@ -36,6 +41,7 @@ impl Dialect {
             "kev" => Dialect::Kev,
             "laya" => Dialect::Laya,
             "jeff" => Dialect::Jeff,
+            "ollama" | "nimble" | "tev1" => Dialect::Ollama,
             _ => Dialect::Generic,
         }
     }
@@ -43,7 +49,7 @@ impl Dialect {
     /// Guessed from the model name when the configuration does not say.
     pub fn of_model(model: &str) -> Dialect {
         let m = model.to_ascii_lowercase();
-        ["jev", "kev", "laya", "jeff"].iter().find(|d| m.starts_with(*d)).map_or(Dialect::Generic, |d| Dialect::named(d))
+        ["jev", "kev", "laya", "jeff", "nimble", "tev1"].iter().find(|d| m.starts_with(*d)).map_or(Dialect::Generic, |d| Dialect::named(d))
     }
 
     pub fn as_str(self) -> &'static str {
@@ -52,7 +58,16 @@ impl Dialect {
             Dialect::Kev => "kev",
             Dialect::Laya => "laya",
             Dialect::Jeff => "jeff",
+            Dialect::Ollama => "ollama",
             Dialect::Generic => "systemone",
+        }
+    }
+
+    /// The most options one choice question may carry, where the server has a limit.
+    pub fn max_choice_options(self) -> Option<usize> {
+        match self {
+            Dialect::Ollama => Some(26),
+            _ => None,
         }
     }
 }
@@ -130,7 +145,24 @@ impl Judge for SystemOneJudge {
         }
     }
 
+    fn max_choice_options(&self) -> Option<usize> {
+        self.dialect.max_choice_options()
+    }
+
     fn ask(&self, state: &Value, questions: &[(&str, Question)]) -> Result<HashMap<String, Answer>> {
+        if let Some(cap) = self.dialect.max_choice_options() {
+            for (id, q) in questions {
+                if let Question::Choice { options, .. } = q {
+                    if options.len() > cap {
+                        bail!(
+                            "judge {} takes at most {cap} options in one choice, and `{id}` had {}",
+                            self.model,
+                            options.len()
+                        );
+                    }
+                }
+            }
+        }
         let agent = ureq::Agent::new_with_config(
             ureq::config::Config::builder()
                 .timeout_global(Some(self.timeout))
@@ -236,6 +268,21 @@ mod tests {
         let d = Duration::from_secs(1);
         assert_eq!(SystemOneJudge::new("http://127.0.0.1:8009/", "kev-latest", None, d).endpoint, "http://127.0.0.1:8009/v1/systemone");
         assert_eq!(SystemOneJudge::new("https://api.typesafe.ai/v1/systemone", "jev-latest", None, d).endpoint, "https://api.typesafe.ai/v1/systemone");
+    }
+
+    #[test]
+    fn ollamas_decision_models_are_known_and_capped_before_anything_is_sent() {
+        assert_eq!(Dialect::of_model("nimble"), Dialect::Ollama);
+        assert_eq!(Dialect::of_model("tev1:latest"), Dialect::Ollama);
+        assert_eq!(Dialect::named("nimble"), Dialect::Ollama);
+        assert_eq!(Dialect::Ollama.max_choice_options(), Some(26));
+        assert_eq!(Dialect::Jev.max_choice_options(), None);
+        // Nothing listens on port 9: a question over the cap must fail before any connection.
+        let j = SystemOneJudge::new("http://127.0.0.1:9", "nimble", None, Duration::from_millis(50));
+        let options: Vec<(String, String)> = (0..27).map(|i| (format!("t{i}"), "x".to_string())).collect();
+        let q = [("tool", Question::Choice { instructions: "Which?".into(), options })];
+        let err = j.ask(&json!({}), &q).unwrap_err().to_string();
+        assert!(err.contains("at most 26 options") && err.contains("had 27"), "{err}");
     }
 
     #[test]

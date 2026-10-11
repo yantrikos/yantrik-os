@@ -1,10 +1,13 @@
 //! Yantrik System Monitor — standalone app binary.
 //!
-//! Polls `system-monitor` service via JSON-RPC IPC every 2 seconds.
-//! Falls back to the local `sysinfo` crate if the service is unavailable, and says so — on
-//! screen and in `describe` — because a reading taken by the fallback is not the same reading.
+//! Polls `system-monitor` service via JSON-RPC IPC every 2 seconds, on a thread of its own
+//! (sample.rs). Falls back to the local `sysinfo` crate if the service is unavailable, and says
+//! so — on screen and in `describe` — because a reading taken by the fallback is not the same
+//! reading.
 
 mod outcome;
+mod report;
+mod sample;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -12,9 +15,8 @@ use std::rc::Rc;
 use outcome::{Liveness, Observed, Provenance, Signal, Source};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use yantrik_app_runtime::prelude::*;
-use yantrik_ipc_contracts::system_monitor::{
-    CpuInfo, DiskInfo, MemoryInfo, NetworkInterface, ProcessInfo, SystemSnapshot,
-};
+use yantrik_ipc_contracts::machine_status::MachineStatus;
+use yantrik_ipc_contracts::system_monitor::{ProcessInfo, SystemSnapshot};
 use yantrik_ipc_transport::SyncRpcClient;
 
 slint::include_modules!();
@@ -31,6 +33,10 @@ struct Status {
     reading: Option<Provenance>,
     /// Why the last thing someone asked for could not be done. Cleared by the next one that can.
     failure: Option<String>,
+    /// What the last reading adds up to: the status row, kept whole for `describe`.
+    machine: MachineStatus,
+    /// The interval the CPU figures on screen cover; `None` while there is none.
+    cpu_window_ms: Option<u64>,
 }
 
 /// Put the two kinds of bad news on screen, and nothing when there is none.
@@ -49,7 +55,12 @@ fn refresh_agent_rail(ui: &SystemMonitorApp) {
     let context = vec![
         AgentContextItem {
             id: "cpu".into(),
-            label: format!("CPU {:.0}%", ui.get_cpu_usage()).into(),
+            // No figure before the first interval: one read is the average since boot.
+            label: if ui.get_cpu_measured() {
+                format!("CPU {:.0}%", ui.get_cpu_usage()).into()
+            } else {
+                "CPU —".into()
+            },
             detail: "processor".into(),
             source: "file".into(),
         },
@@ -162,25 +173,6 @@ fn main() {
 
 // ── Service wrappers ─────────────────────────────────────────────────
 
-fn snapshot_via_service() -> Result<SystemSnapshot, String> {
-    let client = SyncRpcClient::for_service("system-monitor");
-    let result = client
-        .call("sysmon.snapshot", serde_json::json!({}))
-        .map_err(|e| e.message)?;
-    serde_json::from_value(result).map_err(|e| e.to_string())
-}
-
-fn processes_via_service(sort_by: &str, limit: u32) -> Result<Vec<ProcessInfo>, String> {
-    let client = SyncRpcClient::for_service("system-monitor");
-    let result = client
-        .call(
-            "sysmon.processes",
-            serde_json::json!({ "sort_by": sort_by, "limit": limit }),
-        )
-        .map_err(|e| e.message)?;
-    serde_json::from_value(result).map_err(|e| e.to_string())
-}
-
 fn kill_process_via_service(pid: u32) -> Result<(), String> {
     let client = SyncRpcClient::for_service("system-monitor");
     client
@@ -189,153 +181,7 @@ fn kill_process_via_service(pid: u32) -> Result<(), String> {
     Ok(())
 }
 
-// ── Local sysinfo fallback ───────────────────────────────────────────
-
-fn snapshot_local() -> SystemSnapshot {
-    use sysinfo::System;
-
-    let mut sys = System::new_all();
-    sys.refresh_all();
-
-    let cores: Vec<_> = sys
-        .cpus()
-        .iter()
-        .enumerate()
-        .map(|(i, cpu)| yantrik_ipc_contracts::system_monitor::CpuCore {
-            id: i as u32,
-            usage_percent: cpu.cpu_usage() as f64,
-        })
-        .collect();
-
-    let overall = if cores.is_empty() {
-        0.0
-    } else {
-        cores.iter().map(|c| c.usage_percent).sum::<f64>() / cores.len() as f64
-    };
-
-    // Was hardcoded to zero, so the card always read "Load: 0.00 0.00 0.00".
-    let load = sysinfo::System::load_average();
-
-    let cpu = CpuInfo {
-        overall_percent: overall,
-        cores,
-        load_avg_1: load.one,
-        load_avg_5: load.five,
-        load_avg_15: load.fifteen,
-    };
-
-    let (cached, buffers) = cached_and_buffers();
-
-    let memory = MemoryInfo {
-        total_bytes: sys.total_memory(),
-        used_bytes: sys.used_memory(),
-        usage_percent: if sys.total_memory() > 0 {
-            (sys.used_memory() as f64 / sys.total_memory() as f64) * 100.0
-        } else {
-            0.0
-        },
-        swap_total_bytes: sys.total_swap(),
-        swap_used_bytes: sys.used_swap(),
-        available_bytes: sys.available_memory(),
-        cached_bytes: cached,
-        buffers_bytes: buffers,
-    };
-
-    let disks: Vec<DiskInfo> = sysinfo::Disks::new_with_refreshed_list()
-        .iter()
-        .map(|d| DiskInfo {
-            mount_point: d.mount_point().to_string_lossy().to_string(),
-            device: d.name().to_string_lossy().to_string(),
-            filesystem: d.file_system().to_string_lossy().to_string(),
-            total_bytes: d.total_space(),
-            used_bytes: d.total_space() - d.available_space(),
-            usage_percent: if d.total_space() > 0 {
-                ((d.total_space() - d.available_space()) as f64 / d.total_space() as f64) * 100.0
-            } else {
-                0.0
-            },
-        })
-        .collect();
-
-    let networks: Vec<NetworkInterface> = sysinfo::Networks::new_with_refreshed_list()
-        .iter()
-        .map(|(name, data)| NetworkInterface {
-            name: name.clone(),
-            rx_bytes: data.total_received(),
-            tx_bytes: data.total_transmitted(),
-            rx_rate_bps: data.received(),
-            tx_rate_bps: data.transmitted(),
-        })
-        .collect();
-
-    SystemSnapshot {
-        cpu,
-        memory,
-        disks,
-        networks,
-        uptime_secs: System::uptime(),
-    }
-}
-
-fn processes_local(sort_by: &str, limit: u32) -> Vec<ProcessInfo> {
-    use sysinfo::System;
-
-    let mut sys = System::new_all();
-    sys.refresh_all();
-
-    let mut procs: Vec<ProcessInfo> = sys
-        .processes()
-        .values()
-        .map(|p| ProcessInfo {
-            pid: p.pid().as_u32(),
-            name: p.name().to_string_lossy().to_string(),
-            cpu_percent: p.cpu_usage() as f64,
-            mem_percent: if sys.total_memory() > 0 {
-                (p.memory() as f64 / sys.total_memory() as f64) * 100.0
-            } else {
-                0.0
-            },
-            mem_bytes: p.memory(),
-            state: format!("{:?}", p.status()),
-            user: String::new(),
-        })
-        .collect();
-
-    match sort_by {
-        "mem" => procs.sort_by(|a, b| b.mem_percent.partial_cmp(&a.mem_percent).unwrap_or(std::cmp::Ordering::Equal)),
-        _ => procs.sort_by(|a, b| b.cpu_percent.partial_cmp(&a.cpu_percent).unwrap_or(std::cmp::Ordering::Equal)),
-    }
-
-    procs.truncate(limit as usize);
-    procs
-}
-
 // ── Formatting helpers ───────────────────────────────────────────────
-
-/// Page cache and buffer sizes are not exposed by `sysinfo`; on Linux they come
-/// straight out of /proc/meminfo, whose values are in kB.
-#[cfg(target_os = "linux")]
-fn cached_and_buffers() -> (u64, u64) {
-    let (mut cached, mut buffers) = (0u64, 0u64);
-    if let Ok(text) = std::fs::read_to_string("/proc/meminfo") {
-        for line in text.lines() {
-            let mut parts = line.split_whitespace();
-            let key = parts.next().unwrap_or("");
-            let kb: u64 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-            match key {
-                "Cached:" => cached = kb * 1024,
-                "Buffers:" => buffers = kb * 1024,
-                _ => {}
-            }
-        }
-    }
-    (cached, buffers)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn cached_and_buffers() -> (u64, u64) {
-    (0, 0)
-}
 
 fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
@@ -377,9 +223,14 @@ fn format_uptime(secs: u64) -> String {
 
 // ── Apply snapshot to UI ─────────────────────────────────────────────
 
-fn apply_snapshot(ui: &SystemMonitorApp, snap: &SystemSnapshot) {
-    // CPU
-    ui.set_cpu_usage(snap.cpu.overall_percent as f32);
+fn apply_snapshot(ui: &SystemMonitorApp, status: &Rc<RefCell<Status>>, snap: &SystemSnapshot) {
+    // CPU — a share over the interval since the last reading, and no figure until there is
+    // one: a single read of the counters is the average since boot, which reads 8% through a
+    // minute at 100%. The per-core bars wait for the same interval.
+    let measured = snap.cpu.measured_percent();
+    ui.set_cpu_measured(measured.is_some());
+    ui.set_cpu_usage(measured.unwrap_or(0.0) as f32);
+    status.borrow_mut().cpu_window_ms = snap.cpu.window_ms;
     ui.set_load_avg_1(format!("{:.2}", snap.cpu.load_avg_1).into());
     ui.set_load_avg_5(format!("{:.2}", snap.cpu.load_avg_5).into());
     ui.set_load_avg_15(format!("{:.2}", snap.cpu.load_avg_15).into());
@@ -388,6 +239,7 @@ fn apply_snapshot(ui: &SystemMonitorApp, snap: &SystemSnapshot) {
         .cpu
         .cores
         .iter()
+        .filter(|_| measured.is_some())
         .map(|c| CpuCoreData {
             core_id: c.id as i32,
             usage: c.usage_percent as f32,
@@ -421,6 +273,7 @@ fn apply_snapshot(ui: &SystemMonitorApp, snap: &SystemSnapshot) {
             used_bytes: format_bytes(d.used_bytes).into(),
             total_bytes: format_bytes(d.total_bytes).into(),
             usage_percent: d.usage_percent as f32,
+            needs_you: report::disk_bar_needs_you(d),
         })
         .collect();
     ui.set_disks(ModelRc::new(VecModel::from(disks)));
@@ -443,23 +296,13 @@ fn apply_snapshot(ui: &SystemMonitorApp, snap: &SystemSnapshot) {
     // Uptime
     ui.set_uptime_text(format_uptime(snap.uptime_secs).into());
 
-    // Health (simple heuristic)
-    let cpu_ok = snap.cpu.overall_percent < 90.0;
-    let mem_ok = snap.memory.usage_percent < 90.0;
-    if cpu_ok && mem_ok {
-        ui.set_health_status("Healthy".into());
-        ui.set_health_score(100.0);
-        ui.set_health_summary("All systems nominal".into());
-    } else if !cpu_ok && !mem_ok {
-        ui.set_health_status("Critical".into());
-        ui.set_health_score(20.0);
-        ui.set_health_summary("High CPU and memory usage".into());
-    } else {
-        ui.set_health_status("Degraded".into());
-        ui.set_health_score(60.0);
-        let msg = if !cpu_ok { "High CPU usage" } else { "High memory usage" };
-        ui.set_health_summary(msg.into());
-    }
+    // What it adds up to: the status row, and the same account kept for `describe`.
+    let machine = report::assess(snap);
+    ui.set_status_lead(machine.lead.clone().into());
+    ui.set_status_rest(machine.rest.clone().into());
+    ui.set_status_thresholds(machine.thresholds.clone().into());
+    ui.set_status_needs_you(machine.needs_you());
+    status.borrow_mut().machine = machine;
 }
 
 fn apply_processes(ui: &SystemMonitorApp, procs: &[ProcessInfo]) {
@@ -641,7 +484,8 @@ fn publish_control(app: &SystemMonitorApp, status: Rc<RefCell<Status>>) {
 
             let cpu = ui.get_cpu_usage();
             let mem = ui.get_memory_usage();
-            let health = ui.get_health_status().to_string();
+            let machine = status.borrow().machine.clone();
+            let cpu_window_ms = status.borrow().cpu_window_ms;
 
             let procs = ui.get_processes();
             // The busiest handful. The window shows hundreds; a caller asking "what is eating the
@@ -688,14 +532,16 @@ fn publish_control(app: &SystemMonitorApp, status: Rc<RefCell<Status>>) {
 
             let reading = status.borrow().reading.clone().unwrap_or_else(Provenance::service);
 
-            let summary = format!(
-                "System — {health}, CPU {cpu:.0}%, memory {mem:.0}% ({} of {}), up {}",
-                ui.get_memory_used_text(),
-                ui.get_memory_total_text(),
-                ui.get_uptime_text()
+            // The row's own words first — the same sentence the person is reading at the top
+            // of the window — then what the row leaves to the cards.
+            let summary = report::summary(
+                &machine,
+                &ui.get_memory_used_text(),
+                &ui.get_memory_total_text(),
+                &ui.get_uptime_text(),
             );
 
-            View::new(summary)
+            report::with_status(View::new(summary), &machine)
                 // Where every number above came from. A caller acting on these readings is
                 // entitled to know that the service answered them, because when it did not, the
                 // fallback's blind spots (the CPU model, the interface addresses) used to arrive
@@ -712,10 +558,9 @@ fn publish_control(app: &SystemMonitorApp, status: Rc<RefCell<Status>>) {
                 )
                 // Said twice: this is the same text the person is looking at on the strip.
                 .with("notice", ui.get_notice().to_string())
-                .with("health", health)
-                .with("health_score", ui.get_health_score() as f64)
-                .with("health_summary", ui.get_health_summary().to_string())
-                .with("cpu_percent", (cpu * 10.0).round() as f64 / 10.0)
+                // Null, with `cpu_window_ms`, until there is an interval to measure over.
+                .with("cpu_percent", report::cpu_percent(cpu, cpu_window_ms))
+                .with("cpu_window_ms", cpu_window_ms)
                 // Also null when nothing has measured it, which today is always: the snapshot
                 // contract has no model string in it, so neither path can fill this in. It was
                 // reported as `""`, and an audit read that as a CPU whose model is empty.
@@ -793,18 +638,12 @@ fn publish_control(app: &SystemMonitorApp, status: Rc<RefCell<Status>>) {
         .serve();
 }
 
-/// One round of readings, and a note of where they came from.
-///
-/// The fallback used to be written `snapshot_via_service().unwrap_or_else(|_| snapshot_local())`,
-/// which threw away both the reason and the fact that it had happened. It is worth keeping — a
-/// monitor that goes blank because a service died is worse than one reading its own `sysinfo` —
-/// but only as long as it is visible, so the value and the provenance now arrive together.
-fn poll(ui: &SystemMonitorApp, status: &Rc<RefCell<Status>>, sort: &str, limit: u32) {
-    let (snap, from_snapshot) = outcome::reading(snapshot_via_service(), snapshot_local);
-    apply_snapshot(ui, &snap);
+/// Draw one reading the sampler took, with a note of where it came from.
+fn show_reading(ui: &SystemMonitorApp, status: &Rc<RefCell<Status>>, reading: sample::Reading) {
+    apply_snapshot(ui, status, &reading.snap);
 
-    let (mut procs, from_processes) =
-        outcome::reading(processes_via_service(sort, limit), || processes_local(sort, limit));
+    // Filtered here, as it is drawn, so a word typed while the reading was being taken applies.
+    let mut procs = reading.procs;
     let filter = ui.get_process_search().to_string();
     if !filter.is_empty() {
         let lower = filter.to_lowercase();
@@ -812,28 +651,54 @@ fn poll(ui: &SystemMonitorApp, status: &Rc<RefCell<Status>>, sort: &str, limit: 
     }
     apply_processes(ui, &procs);
 
-    status.borrow_mut().reading = Some(outcome::worse(from_snapshot, from_processes));
+    status.borrow_mut().reading = Some(reading.provenance);
     show_status(ui, status);
+    // The rail's context is the readings themselves, so it moves with them.
+    refresh_agent_rail(ui);
+}
+
+/// The busiest hundred; the list shows them all and `describe` names the top ten.
+const PROCESS_LIMIT: u32 = 100;
+
+fn sort_key(ui: &SystemMonitorApp) -> &'static str {
+    if ui.get_sort_column() == 1 { "mem" } else { "cpu" }
 }
 
 fn wire(app: &SystemMonitorApp) -> Timer {
     let status = Rc::new(RefCell::new(Status::default()));
 
-    // Initial readings, before the surface is published.
-    poll(app, &status, "cpu", 50);
+    // Readings are taken on the sampler's thread and drawn here when it wakes the window. The
+    // UI thread never waits on the service, so neither the window nor `describe` stalls behind
+    // the service's half-second CPU sample.
+    let sampler = Rc::new(sample::Sampler::start({
+        let weak = app.as_weak();
+        move || {
+            let _ = weak.upgrade_in_event_loop(|ui| ui.invoke_readings_arrived());
+        }
+    }));
+    {
+        let weak = app.as_weak();
+        let status = status.clone();
+        let sampler = sampler.clone();
+        app.on_readings_arrived(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            if let Some(reading) = sampler.latest() {
+                show_reading(&ui, &status, reading);
+            }
+        });
+    }
+    sampler.ask(sort_key(app), PROCESS_LIMIT);
 
-    // Polling timer — every 2 seconds
-    // Published before the poll starts; the first `app.describe` may catch a fresh window, and
-    // reporting zeroes honestly is better than delaying the surface for two seconds.
+    // Published before the first reading lands; a `describe` that catches a fresh window says
+    // "no reading yet", which is true, rather than holding the surface back until there is one.
     publish_control(app, status.clone());
 
+    // Polling timer — every 2 seconds.
     let timer = Timer::default();
     let weak = app.as_weak();
-    let poll_status = status.clone();
     timer.start(TimerMode::Repeated, std::time::Duration::from_secs(2), move || {
         let Some(ui) = weak.upgrade() else { return };
-        let sort = if ui.get_sort_column() == 1 { "mem" } else { "cpu" };
-        poll(&ui, &poll_status, sort, 100);
+        sampler.ask(sort_key(&ui), PROCESS_LIMIT);
     });
 
     // Sort column changed
@@ -927,13 +792,18 @@ fn wire(app: &SystemMonitorApp) -> Timer {
 /// Handed over as readings. Describing them in prose first and asking the model to re-derive
 /// them is how a monitor starts reporting numbers nobody measured.
 fn machine_question(ui: &SystemMonitorApp) -> String {
+    // The status row as the person reads it, and the limits it was checked against.
+    let row = [ui.get_status_lead(), ui.get_status_rest()]
+        .iter()
+        .filter(|part| !part.is_empty())
+        .map(|part| part.to_string())
+        .collect::<Vec<_>>()
+        .join(" · ");
     let facts = format!(
-        "CPU {:.0}%, memory {} of {}, health {} ({})",
-        ui.get_cpu_usage(),
+        "{row}; memory {} of {}; {}",
         ui.get_memory_used_text(),
         ui.get_memory_total_text(),
-        ui.get_health_status(),
-        ui.get_health_summary()
+        ui.get_status_thresholds()
     );
     format!(
         "Here are my machine's readings: {facts}. In at most three short lines say whether \
@@ -975,7 +845,7 @@ mod tests {
 
     #[test]
     fn a_selection_a_filter_hides_is_dropped() {
-        // poll() filters before it applies, so a row the search stopped showing is gone
+        // show_reading() filters before it applies, so a row the search stopped showing is gone
         // from the list the buttons belong to.
         let matching = vec![running(9, "chromium")];
         assert_eq!(selection_after_refresh(7, &matching), -1);

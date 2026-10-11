@@ -84,6 +84,8 @@ struct Job {
     result: Option<String>,
     error: Option<String>,
     cancel: Arc<AtomicBool>,
+    /// Submitted by a program on the companion's socket (`submit_outside`).
+    outside: bool,
 }
 
 impl Job {
@@ -182,8 +184,20 @@ impl Board {
         Self { inner: Arc::new((Mutex::new(Inner::default()), Condvar::new())) }
     }
 
-    /// Accept a request. Returns immediately; nothing has been done yet.
+    /// Accept a request from the shell itself (a chat turn, a tool the worker runs). Returns
+    /// immediately; nothing has been done yet. No program on the socket can wait on, cancel or
+    /// read it: `wait_outside`, `cancel_outside` and `overview_for_outside` skip it.
     pub fn submit(&self, lane: &str, kind: &str) -> Receipt {
+        self.add(lane, kind, false)
+    }
+
+    /// Accept a request from a program on the companion's socket: the only jobs such a program
+    /// may then await or cancel.
+    pub fn submit_outside(&self, lane: &str, kind: &str) -> Receipt {
+        self.add(lane, kind, true)
+    }
+
+    fn add(&self, lane: &str, kind: &str, outside: bool) -> Receipt {
         let (lock, cv) = &*self.inner;
         let mut inner = match lock.lock() {
             Ok(g) => g,
@@ -191,7 +205,16 @@ impl Board {
         };
 
         inner.next_id += 1;
-        let id = format!("j{}", inner.next_id);
+        // A secret: the ticket is the only thing between one program's job and another's (and,
+        // before, the person's turns). 128 bits from the operating system; without them the
+        // ticket has no secret part, and no program on the socket can wait on or cancel it.
+        let id = match yantrik_harness::random_hex(16) {
+            Ok(secret) => format!("j{}-{secret}", inner.next_id),
+            Err(why) => {
+                tracing::error!(%why, "no random bytes for a job ticket: it is not reachable from the socket");
+                format!("j{}", inner.next_id)
+            }
+        };
         let cancel = Arc::new(AtomicBool::new(false));
 
         let ahead = inner.queued.get(lane).map(|q| q.len()).unwrap_or(0);
@@ -212,6 +235,7 @@ impl Board {
                 result: None,
                 error: None,
                 cancel: cancel.clone(),
+                outside,
             },
         );
         inner.queued.entry(lane.to_string()).or_default().push_back(id.clone());
@@ -321,6 +345,29 @@ impl Board {
         was
     }
 
+    /// `wait`, for a program on the socket: only a job it submitted.
+    pub fn wait_outside(&self, id: &str, wait: Duration) -> Option<serde_json::Value> {
+        if !self.is_outside(id) {
+            return None;
+        }
+        self.wait(id, wait)
+    }
+
+    /// `cancel`, for a program on the socket: only a job it submitted.
+    pub fn cancel_outside(&self, id: &str) -> Option<State> {
+        if !self.is_outside(id) {
+            return None;
+        }
+        self.cancel(id)
+    }
+
+    fn is_outside(&self, id: &str) -> bool {
+        let (lock, _) = &*self.inner;
+        let inner = lock.lock().unwrap_or_else(|e| e.into_inner());
+        // A ticket without its secret part is never a program's to reach.
+        id.contains('-') && inner.jobs.get(id).is_some_and(|j| j.outside)
+    }
+
     /// Where a job stands, waiting up to `wait` for it to change.
     ///
     /// Woken by any board change rather than by this job specifically: a job moving from third in
@@ -356,8 +403,19 @@ impl Board {
         Some(job.report(ahead, eta, &basis))
     }
 
+    /// The overview a program on the socket sees: how busy each lane is, with no tickets. A ticket
+    /// is its holder's alone (it is how a job's text is read), and every program on the socket
+    /// sees this same overview.
+    pub fn overview_for_outside(&self) -> serde_json::Value {
+        self.overview_as(true)
+    }
+
     /// Everything at once: how each lane is doing, and what has been happening.
     pub fn overview(&self) -> serde_json::Value {
+        self.overview_as(false)
+    }
+
+    fn overview_as(&self, outside_view: bool) -> serde_json::Value {
         let (lock, _) = &*self.inner;
         let inner = match lock.lock() {
             Ok(g) => g,
@@ -380,7 +438,7 @@ impl Board {
                 "queued": queued,
                 "active": running.len(),
                 "working_on": running.iter().map(|j| serde_json::json!({
-                    "ticket": j.id,
+                    "ticket": if outside_view { serde_json::Value::Null } else { serde_json::json!(j.id) },
                     "kind": j.kind,
                     "ran_for_seconds": j.started_at.map(|s| now() - s),
                 })).collect::<Vec<_>>(),
@@ -488,6 +546,37 @@ fn now() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The person's own turns stream their text onto the board; a program on the socket counted
+    /// its way to their tickets and read them (security review, 30 Sep 2026). It now sees, waits
+    /// on and cancels only what it submitted, and cannot guess the rest.
+    #[test]
+    fn a_program_on_the_socket_reaches_only_its_own_jobs() {
+        let board = Board::new();
+        let persons = board.submit("model", "ask");
+        let theirs = board.submit_outside("model", "ask");
+        assert!(board.wait_outside(&persons.ticket, Duration::ZERO).is_none(), "read the person's turn");
+        assert!(board.cancel_outside(&persons.ticket).is_none(), "cancelled the person's turn");
+        assert!(board.wait_outside(&theirs.ticket, Duration::ZERO).is_some());
+        assert!(board.wait(&persons.ticket, Duration::ZERO).is_some(), "the shell still sees its own");
+
+        board.start(&persons.ticket);
+        board.start(&theirs.ticket);
+        let seen = board.overview_for_outside().to_string();
+        assert!(!seen.contains(&persons.ticket), "the overview named the person's ticket: {seen}");
+        assert!(!seen.contains(&theirs.ticket), "the overview named another program's ticket: {seen}");
+        assert!(board.overview().to_string().contains(&persons.ticket));
+
+        // Not the next number: a ticket carries 64 unpredictable bits.
+        let next = board.submit("model", "ask").ticket;
+        let secret = next.split_once('-').map(|(_, s)| s).unwrap_or("");
+        assert_eq!(secret.len(), 32, "128 bits, as hex: {next}");
+        assert!(secret.bytes().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(next.split('-').nth(1), theirs.ticket.split('-').nth(1));
+        // Without its secret part a ticket is no program's, whatever job it names.
+        let bare = theirs.ticket.split('-').next().unwrap().to_string();
+        assert!(board.wait_outside(&bare, Duration::ZERO).is_none());
+    }
 
     #[test]
     fn a_submission_is_answered_immediately_and_says_where_it_stands() {

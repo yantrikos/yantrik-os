@@ -223,6 +223,11 @@ fn dispatch(
         // Whether the mind answered, as opposed to giving up. A turn that ended in an error is
         // not a conversation: the person spoke and was not talked to.
         let mut answered = true;
+        // Whether the reply has been told which run it started. The work card is drawn under the
+        // reply that started the run, so the link goes on as soon as the first call is on record,
+        // not when the answer ends: a card that appeared only afterwards would arrive after the
+        // work it describes.
+        let mut marked = false;
         // A closed channel is the end of the turn — that is the protocol, and it is why this
         // loop ends on recv() failing rather than on a sentinel.
         while let Ok(chunk) = answer.recv() {
@@ -238,16 +243,29 @@ fn dispatch(
                 // What the agent is doing — a tool call's card, its output, its thinking. The
                 // chat panel draws text; the calls still show here as the trail line the harness
                 // writes beside each event, and the Agents view is where the cards are drawn.
-                yantrik_harness::Chunk::Event(_) => Ok(()),
+                yantrik_harness::Chunk::Event(_) => {
+                    // `lens_turn` copies each chunk into the store before it forwards it, so a
+                    // call that has just arrived here is already on record.
+                    if !marked {
+                        if let Some(run) = crate::agents::feed::chat_run(&run_of) {
+                            marked = true;
+                            let _ = tx.send(format!("{}{run}", crate::streaming::RUN_MARK));
+                        }
+                    }
+                    Ok(())
+                }
             };
             if sent.is_err() {
                 return;
             }
         }
-        // A reply that did work links to its run in Agents (the chat is the conversation; the
-        // run is agent work). Named before the end so the pump puts it on this reply.
-        if let Some(run) = crate::agents::feed::chat_run(&run_of) {
-            let _ = tx.send(format!("{}{run}", crate::streaming::RUN_MARK));
+        // A reply that did work is told which run it was (the chat is the conversation; the run is
+        // agent work), if the first call did not already say so. Named before the end so the pump
+        // puts it on this reply.
+        if !marked {
+            if let Some(run) = crate::agents::feed::chat_run(&run_of) {
+                let _ = tx.send(format!("{}{run}", crate::streaming::RUN_MARK));
+            }
         }
         let _ = tx.send("__DONE__".to_string());
         // The bond is the person's relationship with the desktop, whichever mind answers — the
@@ -354,7 +372,9 @@ fn wire_new_chat(ui: &App, ctx: &AppContext) {
         if let Some(model) = messages.as_any().downcast_ref::<slint::VecModel<crate::MessageData>>() {
             model.set_vec(Vec::new());
         }
-        ui.set_lens_chat_mode(false);
+        // Stay in the conversation: an empty one says what a desk is and offers three ways to
+        // begin, which the search row it used to fall back to did not.
+        ui.set_lens_chat_mode(true);
         let active = super::harness::host().map(|h| h.active_id());
         match active.as_deref() {
             None | Some(super::harness::BUILTIN_ID) => {

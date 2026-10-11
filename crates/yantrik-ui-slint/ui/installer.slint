@@ -11,6 +11,9 @@
 // Steps, as `step` holds them and as the control surface names them (control_installer.rs):
 //   0 welcome · 1 you · 2 disk · 3 review · 4 installing · 5 installed
 //
+// Colour: steps, selections, focus and progress are the accent. They were teal, and teal is the
+// minds' colour and nothing else's (colour system; design/minds-surfaces-spec-2026-10-02.md).
+//
 // Every rule a field is held to comes from Rust (installer_rules.rs) through the pure callbacks
 // below, so the message under a field, the Next button that stays disabled, and the refusal an
 // agent gets from `installer_install` are one rule, not three copies of it.
@@ -25,6 +28,28 @@ export struct InstallerDisk {
     model: string,
     contents: string,   // what is on it now, in words: "Empty", "3 partitions (ext4, ntfs)"
     has-data: bool,     // anything at all is on it, so erasing it loses something
+    holds-macos: bool,  // an HFS+ or APFS volume: a Mac's system, erased only on confirmation
+}
+
+// A disk that has a GPT, drawn as a bar of its partitions on the Disk screen.
+export struct InstallerTargetDisk {
+    name: string,       // "sda"
+    title: string,      // "APPLE HDD · 931.5G (/dev/sda)"
+}
+
+// One stretch of such a disk: a partition or a run of free space (crates/yantrik-install-target).
+export struct InstallerSegment {
+    id: string,         // "sda3", or "sda@START-END" for free space: what the installer is handed
+    disk: string,
+    kind: string,       // esp, macos, windows, linux, placeholder, unformatted, medium, other, free
+    title: string,      // "macOS (APFS)", "YANTRIK (FAT32)", "Free space"
+    size: string,       // "790 GB", as macOS's Disk Utility says it
+    share: float,       // its share of the disk, 0 to 1: its width in the bar
+    kept: bool,         // never installed over: macOS, Windows, the EFI partition, data
+    eligible: bool,     // may be chosen
+    reason: string,     // why it may not, in words
+    sentence: string,   // "Yantrik OS will be installed into /dev/sda3 (200 GB). Nothing else on this disk changes."
+    card: string,       // what an approval card says: "Install into /dev/sda4 (199 GB, YANTRIK, FAT32); nothing else changes"
 }
 
 export struct KeyboardChoice {
@@ -48,19 +73,19 @@ component StepMark inherits HorizontalLayout {
             height: 22px;
             border-radius: 11px;
             border-width: 1px;
-            border-color: root.current >= root.number ? Theme.cyan : Theme.border-strong;
-            background: root.current > root.number ? Theme.cyan-glow : transparent;
+            border-color: root.current >= root.number ? Theme.accent : Theme.border-strong;
+            background: root.current > root.number ? Theme.accent-glow : transparent;
 
             if root.current > root.number : Icon {
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
                 commands: Icons.check;
                 size: 12px;
-                tint: Theme.cyan;
+                tint: Theme.accent;
             }
             if root.current <= root.number : Text {
                 text: root.number + 1;
-                color: root.current == root.number ? Theme.cyan : Theme.text-dim;
+                color: root.current == root.number ? Theme.accent : Theme.text-dim;
                 font-size: Theme.fs-micro;
                 font-weight: 600;
                 horizontal-alignment: center;
@@ -132,7 +157,7 @@ component LinkText inherits Rectangle {
     height: label.preferred-height;
     label := Text {
         text: root.text;
-        color: root.strong || root.active || touch.has-hover ? Theme.cyan : Theme.text-secondary;
+        color: root.strong || root.active || touch.has-hover ? Theme.accent : Theme.text-secondary;
         font-size: Theme.fs-caption;
     }
     touch := TouchArea {
@@ -156,7 +181,7 @@ component StageRow inherits HorizontalLayout {
         Icon {
             commands: root.done ? Icons.check : Icons.clock;
             size: 14px;
-            tint: root.done ? Theme.color-success : root.active ? Theme.cyan : Theme.text-dim;
+            tint: root.done ? Theme.color-success : root.active ? Theme.accent : Theme.text-dim;
         }
     }
     Text {
@@ -168,6 +193,72 @@ component StageRow inherits HorizontalLayout {
 }
 
 // ── The screen ────────────────────────────────────────────────────
+
+// One of the Disk screen's two ways to install: beside what is there, or erasing a disk.
+component ModeChip inherits Rectangle {
+    in property <string> label;
+    in property <bool> on;
+    callback clicked();
+    height: 34px;
+    // The same preferred width for both, so the stretch makes them equal.
+    preferred-width: 120px;
+    horizontal-stretch: 1;
+    border-radius: Theme.r-md;
+    border-width: root.on ? 2px : 1px;
+    border-color: root.on ? Theme.accent : Theme.border-default;
+    background: root.on ? Theme.accent-glow : chip-touch.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+    chip-touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    Text {
+        text: root.label;
+        color: root.on ? Theme.text-primary : Theme.text-secondary;
+        font-size: Theme.fs-body;
+        font-weight: root.on ? 600 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// A stretch of a disk in its bar. Kept partitions are grey and say so, free space is green, a
+// partition that may be chosen is a pale accent, and the chosen one is the accent itself.
+component SegmentBlock inherits Rectangle {
+    in property <InstallerSegment> seg;
+    in property <bool> chosen;
+    callback choose();
+    property <color> fill: root.chosen ? Theme.accent
+        : root.seg.kind == "free" ? (root.seg.eligible ? Theme.color-success-dim : Theme.color-success-dim.transparentize(60%))
+        : root.seg.eligible ? Theme.accent-dim.transparentize(40%)
+        : root.seg.kept ? Theme.tile-off
+        : Theme.hover-fill-strong;
+    Rectangle {
+        x: 1px;
+        width: parent.width - 2px;
+        height: parent.height;
+        border-radius: 4px;
+        background: root.fill;
+        border-width: root.chosen ? 2px : 0px;
+        border-color: Theme.accent-light;
+        if parent.width > 44px : Text {
+            x: 6px;
+            width: parent.width - 12px;
+            height: parent.height;
+            text: root.seg.kept && root.seg.kind != "esp" ? root.seg.title + " · kept" : root.seg.title;
+            color: root.chosen ? Theme.text-on-accent : root.seg.kept ? Theme.text-dim : Theme.text-primary;
+            font-size: Theme.fs-caption;
+            font-weight: root.chosen ? 600 : 400;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    TouchArea {
+        enabled: root.seg.eligible;
+        mouse-cursor: root.seg.eligible ? pointer : default;
+        clicked => { root.choose(); }
+    }
+}
 
 export component InstallerScreen inherits Rectangle {
     // See the header for what each number is. `in-out` because the shell publishes the
@@ -184,6 +275,8 @@ export component InstallerScreen inherits Rectangle {
     in-out property <bool> keyboard-open: false;
     // Leave the installer for the live desktop.
     callback try-first();
+    // A Wi-Fi chip still waiting for its driver (wifi_note.rs); "" when there is nothing to say.
+    in property <string> hw-note;
 
     // ── You ──
     in-out property <string> full-name;
@@ -203,6 +296,28 @@ export component InstallerScreen inherits Rectangle {
     // False until the disk scan has answered, so "no disks" is not said while still looking.
     in property <bool> disks-scanned: false;
     in-out property <string> selected-disk;
+    // The listed disks holding macOS, space-separated, and the one the person confirmed may be
+    // erased anyway. The confirmation names a disk, so choosing another withdraws it.
+    in property <string> macos-disks;
+    in-out property <string> erase-macos-disk;
+    pure callback is-macos-disk(/* disk */ string, /* macos-disks */ string) -> bool;
+    property <bool> selected-holds-macos: root.is-macos-disk(root.selected-disk, root.macos-disks);
+    property <bool> macos-confirmed: root.selected-disk != "" && root.erase-macos-disk == root.selected-disk;
+    property <bool> erase-ok: root.selected-disk != "" && (!root.selected-holds-macos || root.macos-confirmed);
+    // Installing beside what is on a disk (crates/yantrik-install-target): each GPT disk's
+    // partitions and free space, the ones that may be chosen (space-separated ids), and the one
+    // chosen. Erasing a whole disk stays the other choice, with its own confirmation for macOS.
+    in property <[InstallerTargetDisk]> target-disks;
+    in property <[InstallerSegment]> segments;
+    in property <string> eligible-targets;
+    in-out property <bool> into-partition: false;
+    in-out property <string> install-target;
+    // Not on a Mac, whose NVRAM is never written: start Yantrik first instead of last.
+    in property <bool> boot-first-offered: false;
+    in-out property <bool> boot-first: false;
+    pure callback target-listed(/* target */ string, /* eligible */ string) -> bool;
+    property <bool> target-ok: root.install-target != "" && root.target-listed(root.install-target, root.eligible-targets);
+    out property <bool> disk-ok: root.into-partition ? root.target-ok : root.erase-ok;
     // LUKS2 on the root with the password as its passphrase (#400 step b). On unless unticked.
     in-out property <bool> encrypt: true;
 
@@ -216,6 +331,13 @@ export component InstallerScreen inherits Rectangle {
     in-out property <int> install-progress: 0;
     in-out property <string> install-status;
     in-out property <string> install-error;
+    // What a finished install needs the person to read (wire/installer_ownership.rs). While it is
+    // set the Installed screen does not restart by itself: the countdown would take the message
+    // away before anyone read it.
+    in-out property <string> install-note;
+    // What the Installed screen says about the medium the installer runs from: nothing to remove
+    // for an internal partition (YKINSTALL on a Mac), the USB drive, the disc (installer_medium.rs).
+    in property <string> media-hint: "If the installer is on a USB drive or a disc, take it out once the screen goes dark.";
     callback install-to-disk(/* username */ string, /* password */ string,
                              /* full_name */ string, /* hostname */ string,
                              /* keyboard */ string, /* timezone */ string,
@@ -239,7 +361,7 @@ export component InstallerScreen inherits Rectangle {
     // Published (`out`) so the headless UI checks can assert on the same verdicts the buttons use.
     out property <bool> you-ok: root.full-name-error == "" && root.username-error == ""
         && root.hostname-error == "" && root.password-error == "";
-    out property <bool> can-install: root.you-ok && root.selected-disk != ""
+    out property <bool> can-install: root.you-ok && root.disk-ok
         && root.timezone-error == "" && !root.installing;
 
     // Seconds since Install was pressed, and until the automatic restart.
@@ -271,7 +393,8 @@ export component InstallerScreen inherits Rectangle {
     // on machines that were, as often as not, rendering in software.
     Timer {
         interval: 1s;
-        running: root.step == 4 || (root.step == 5 && !root.restart-held && root.restart-in > 0);
+        running: root.step == 4
+            || (root.step == 5 && !root.restart-held && root.install-note == "" && root.restart-in > 0);
         triggered => {
             if root.step == 4 {
                 root.elapsed-s += 1;
@@ -292,7 +415,7 @@ export component InstallerScreen inherits Rectangle {
     Rectangle {
         width: 100%;
         height: 100%;
-        background: @radial-gradient(circle, Theme.cyan.transparentize(93%) 0%, Theme.bg-deep.transparentize(100%) 55%);
+        background: @radial-gradient(circle, Theme.accent.transparentize(93%) 0%, Theme.bg-deep.transparentize(100%) 55%);
     }
 
     flick := Flickable {
@@ -324,7 +447,7 @@ export component InstallerScreen inherits Rectangle {
                     : root.step == 3 ? "Ready to install"
                     : root.step == 4 ? "Installing Yantrik OS"
                     : "Yantrik OS is installed";
-                color: Theme.cyan;
+                color: Theme.accent;
                 font-size: root.step == 0 ? 32px : 24px;
                 font-weight: 300;
                 letter-spacing: 2px;
@@ -362,7 +485,7 @@ export component InstallerScreen inherits Rectangle {
                         border-radius: Theme.r-xl;
                         background: Theme.bg-input;
                         border-width: 1px;
-                        border-color: root.keyboard-open || kb-touch.has-hover ? Theme.cyan : Theme.border-default;
+                        border-color: root.keyboard-open || kb-touch.has-hover ? Theme.accent : Theme.border-default;
 
                         kb-touch := TouchArea {
                             mouse-cursor: pointer;
@@ -403,7 +526,7 @@ export component InstallerScreen inherits Rectangle {
                                 for choice in root.keyboards : Rectangle {
                                     height: 38px;
                                     border-radius: Theme.r-md;
-                                    background: choice.code == root.keyboard ? Theme.cyan-glow
+                                    background: choice.code == root.keyboard ? Theme.accent-glow
                                         : row-touch.has-hover ? Theme.hover-fill : transparent;
                                     row-touch := TouchArea {
                                         mouse-cursor: pointer;
@@ -420,7 +543,7 @@ export component InstallerScreen inherits Rectangle {
                                         Text {
                                             text: choice.label;
                                             horizontal-stretch: 1;
-                                            color: choice.code == root.keyboard ? Theme.cyan : Theme.text-primary;
+                                            color: choice.code == root.keyboard ? Theme.accent : Theme.text-primary;
                                             font-size: Theme.fs-body;
                                             vertical-alignment: center;
                                             overflow: elide;
@@ -442,6 +565,16 @@ export component InstallerScreen inherits Rectangle {
                     OnboardField {
                         width: 420px;
                         placeholder: "Type here to try the layout";
+                    }
+
+                    // E.g. a Mac's Broadcom Wi-Fi, whose driver arrives over Ethernet.
+                    if root.hw-note != "" : Text {
+                        width: 420px;
+                        text: root.hw-note;
+                        color: Theme.amber;
+                        font-size: Theme.fs-caption;
+                        wrap: word-wrap;
+                        horizontal-alignment: center;
                     }
 
                     Rectangle { height: Theme.sp-2; }
@@ -521,7 +654,7 @@ export component InstallerScreen inherits Rectangle {
                             spacing: 6px;
                             VerticalLayout {
                                 alignment: center;
-                                Icon { commands: Icons.eye; size: 14px; tint: root.show-password ? Theme.cyan : Theme.text-dim; }
+                                Icon { commands: Icons.eye; size: 14px; tint: root.show-password ? Theme.accent : Theme.text-dim; }
                             }
                             VerticalLayout {
                                 alignment: center;
@@ -584,8 +717,181 @@ export component InstallerScreen inherits Rectangle {
             // ── 2 · Disk ─────────────────────────────────────────
             if root.step == 2 : HorizontalLayout {
                 alignment: center;
-                VerticalLayout {
+                disk-column := VerticalLayout {
                     width: 460px;
+                    spacing: Theme.sp-3;
+
+                    // Two ways, once there is a disk with a GPT to install beside: into one of its
+                    // partitions or free space, or erasing a whole disk as before.
+                    if root.target-disks.length > 0 : HorizontalLayout {
+                        spacing: Theme.sp-2;
+                        ModeChip {
+                            label: "Beside what is there";
+                            on: root.into-partition;
+                            clicked => { root.into-partition = true; }
+                        }
+                        ModeChip {
+                            label: "Erase a whole disk";
+                            on: !root.into-partition;
+                            clicked => { root.into-partition = false; }
+                        }
+                    }
+
+                    if root.into-partition : VerticalLayout {
+                        spacing: Theme.sp-3;
+
+                        for d in root.target-disks : VerticalLayout {
+                            spacing: 6px;
+                            Text {
+                                text: d.title;
+                                color: Theme.text-secondary;
+                                font-size: Theme.fs-caption;
+                                overflow: elide;
+                            }
+                            // The disk as a bar, each partition as wide as its share of the disk
+                            // (and never too narrow to see). Segments of other disks take no room.
+                            Rectangle {
+                                height: 36px;
+                                border-radius: Theme.r-md;
+                                background: Theme.hover-fill;
+                                clip: true;
+                                HorizontalLayout {
+                                    padding: 2px;
+                                    spacing: 0px;
+                                    for s in root.segments : SegmentBlock {
+                                        property <bool> mine: s.disk == d.name;
+                                        seg: s;
+                                        chosen: root.install-target == s.id;
+                                        horizontal-stretch: self.mine ? s.share : 0;
+                                        min-width: self.mine ? 8px : 0px;
+                                        max-width: self.mine ? 100000px : 0px;
+                                        choose => { root.install-target = s.id; }
+                                    }
+                                }
+                            }
+                        }
+
+                        // What may be chosen, as rows: the bar's narrow segments are hard to hit.
+                        VerticalLayout {
+                            spacing: 0px;
+                            for s in root.segments : Rectangle {
+                                property <bool> chosen: root.install-target == s.id;
+                                height: s.eligible ? 50px : 0px;
+                                visible: s.eligible;
+                                Rectangle {
+                                    y: 0px;
+                                    height: 44px;
+                                    border-radius: Theme.r-lg;
+                                    background: parent.chosen ? Theme.accent-glow : target-row-touch.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                                    border-width: parent.chosen ? 2px : 1px;
+                                    border-color: parent.chosen ? Theme.accent : Theme.border-default;
+                                    target-row-touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.install-target = s.id; }
+                                    }
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 12px;
+                                        spacing: 12px;
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Rectangle {
+                                                width: 18px; height: 18px; border-radius: 9px;
+                                                border-width: 2px;
+                                                border-color: root.install-target == s.id ? Theme.accent : Theme.border-strong;
+                                                Rectangle {
+                                                    x: 4px; y: 4px; width: 10px; height: 10px;
+                                                    border-radius: 5px;
+                                                    background: root.install-target == s.id ? Theme.accent : transparent;
+                                                }
+                                            }
+                                        }
+                                        Text {
+                                            horizontal-stretch: 1;
+                                            text: s.kind == "free"
+                                                ? "Free space on /dev/" + s.disk + " · " + s.size
+                                                : s.title + " · " + s.size + " (/dev/" + s.id + ")";
+                                            color: Theme.text-primary;
+                                            font-size: Theme.fs-body;
+                                            font-weight: 500;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // What will happen, in one plain sentence, once something is chosen. The
+                        // sentences are laid over each other and only the chosen one draws.
+                        if root.target-ok : Rectangle {
+                            height: 54px;
+                            border-radius: Theme.r-md;
+                            background: Theme.accent-glow;
+                            border-width: 1px;
+                            border-color: Theme.accent.transparentize(50%);
+                            for s in root.segments : Rectangle {
+                                if s.id == root.install-target : Text {
+                                    x: Theme.sp-3;
+                                    width: parent.width - 2 * Theme.sp-3;
+                                    height: parent.height;
+                                    text: s.sentence;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-body;
+                                    wrap: word-wrap;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        if !root.target-ok : Text {
+                            text: root.eligible-targets == ""
+                                ? "Nothing here can be installed into yet. In macOS, shrink the APFS container in Disk Utility and add a FAT32 partition named YANTRIK of at least 20 GB, or leave at least 20 GB free. Or erase a whole disk."
+                                : "Choose a partition or free space to install into.";
+                            color: root.eligible-targets == "" ? Theme.amber : Theme.text-dim;
+                            font-size: Theme.fs-caption;
+                            wrap: word-wrap;
+                        }
+
+                        // Why everything else is kept, in the planner's own words (the same the
+                        // control surface gives). A list, not labels on the bar: a segment like
+                        // the installer's own 8 GB partition is too thin to carry one.
+                        // No spacing between the entries themselves: the empty slot an eligible
+                        // segment leaves would add a gap. Each refused entry pads its own top.
+                        if root.segments.length > 0 : VerticalLayout {
+                            spacing: 0px;
+                            Text {
+                                text: "Kept, and why";
+                                color: Theme.text-secondary;
+                                font-size: Theme.fs-caption;
+                                font-weight: 600;
+                            }
+                            for s in root.segments : VerticalLayout {
+                                if !s.eligible : VerticalLayout {
+                                    padding-top: 6px;
+                                    spacing: 1px;
+                                    Text {
+                                        text: (s.kind == "free" ? "Free space on /dev/" + s.disk : s.title + " (/dev/" + s.id + ")") + " · " + s.size;
+                                        color: Theme.text-primary;
+                                        font-size: Theme.fs-caption;
+                                        font-weight: 500;
+                                        overflow: elide;
+                                    }
+                                    // The column's width, said outright: a wrapped text nested in
+                                    // a repeated layout is otherwise measured as one line, and the
+                                    // next entry is drawn over its second.
+                                    Text {
+                                        width: disk-column.width;
+                                        text: s.reason;
+                                        color: Theme.text-dim;
+                                        font-size: Theme.fs-caption;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if !root.into-partition : VerticalLayout {
                     spacing: Theme.sp-3;
 
                     if !root.disks-scanned : Text {
@@ -606,9 +912,9 @@ export component InstallerScreen inherits Rectangle {
                         property <bool> chosen: root.selected-disk == disk.name;
                         height: 68px;
                         border-radius: Theme.r-lg;
-                        background: self.chosen ? Theme.cyan-glow : disk-touch.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+                        background: self.chosen ? Theme.accent-glow : disk-touch.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
                         border-width: self.chosen ? 2px : 1px;
-                        border-color: self.chosen ? Theme.cyan : Theme.border-default;
+                        border-color: self.chosen ? Theme.accent : Theme.border-default;
                         animate background, border-color { duration: Theme.dur-normal; }
 
                         disk-touch := TouchArea {
@@ -625,11 +931,11 @@ export component InstallerScreen inherits Rectangle {
                                 Rectangle {
                                     width: 18px; height: 18px; border-radius: 9px;
                                     border-width: 2px;
-                                    border-color: root.selected-disk == disk.name ? Theme.cyan : Theme.border-strong;
+                                    border-color: root.selected-disk == disk.name ? Theme.accent : Theme.border-strong;
                                     Rectangle {
                                         x: 4px; y: 4px; width: 10px; height: 10px;
                                         border-radius: 5px;
-                                        background: root.selected-disk == disk.name ? Theme.cyan : transparent;
+                                        background: root.selected-disk == disk.name ? Theme.accent : transparent;
                                     }
                                 }
                             }
@@ -658,6 +964,59 @@ export component InstallerScreen inherits Rectangle {
                         }
                     }
 
+                    // A Mac's own system disk is never chosen for anyone (installer_rules.rs). When
+                    // the person chooses it, erasing macOS is its own tick, naming the disk.
+                    if root.selected-holds-macos : Rectangle {
+                        height: macos-layout.preferred-height;
+                        border-radius: Theme.r-md;
+                        background: Theme.amber.transparentize(92%);
+                        border-width: 1px;
+                        border-color: root.macos-confirmed ? Theme.amber : Theme.amber.transparentize(70%);
+                        macos-layout := HorizontalLayout {
+                            padding: Theme.sp-3;
+                            spacing: Theme.sp-3;
+                            VerticalLayout {
+                                alignment: start;
+                                padding-top: 2px;
+                                Rectangle {
+                                    width: 16px; height: 16px;
+                                    border-radius: 4px;
+                                    border-width: 1.5px;
+                                    border-color: root.macos-confirmed ? Theme.amber : Theme.border-strong;
+                                    background: root.macos-confirmed ? Theme.amber.transparentize(80%) : transparent;
+                                    if root.macos-confirmed : Icon {
+                                        commands: Icons.check;
+                                        size: 12px;
+                                        tint: Theme.amber;
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 2px;
+                                Text {
+                                    text: "Erase macOS on /dev/" + root.selected-disk;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-body;
+                                    font-weight: 500;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: "This disk holds a Mac's system (HFS+ or APFS). To keep macOS, choose another disk, such as an external USB drive.";
+                                    color: Theme.amber;
+                                    font-size: Theme.fs-caption;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.erase-macos-disk = root.macos-confirmed ? "" : root.selected-disk;
+                            }
+                        }
+                    }
+
                     // What Install will do to it, said before anyone is asked to agree to it.
                     Rectangle {
                         height: warn-row.preferred-height;
@@ -682,6 +1041,7 @@ export component InstallerScreen inherits Rectangle {
                             }
                         }
                     }
+                    }
 
                     // On by default (#400 step b): the root is LUKS2 with the password as its
                     // passphrase, asked for at every start. Off, a stolen disk is readable.
@@ -696,12 +1056,12 @@ export component InstallerScreen inherits Rectangle {
                                     width: 16px; height: 16px;
                                     border-radius: 4px;
                                     border-width: 1.5px;
-                                    border-color: root.encrypt ? Theme.cyan : Theme.border-strong;
-                                    background: root.encrypt ? Theme.cyan.transparentize(80%) : transparent;
+                                    border-color: root.encrypt ? Theme.accent : Theme.border-strong;
+                                    background: root.encrypt ? Theme.accent.transparentize(80%) : transparent;
                                     if root.encrypt : Icon {
                                         commands: Icons.check;
                                         size: 12px;
-                                        tint: Theme.cyan;
+                                        tint: Theme.accent;
                                     }
                                 }
                             }
@@ -711,7 +1071,7 @@ export component InstallerScreen inherits Rectangle {
                                 Icon {
                                     commands: Icons.lock;
                                     size: 14px;
-                                    tint: root.encrypt ? Theme.cyan : Theme.text-dim;
+                                    tint: root.encrypt ? Theme.accent : Theme.text-dim;
                                 }
                             }
                             VerticalLayout {
@@ -725,7 +1085,7 @@ export component InstallerScreen inherits Rectangle {
                                 }
                                 Text {
                                     text: root.encrypt
-                                        ? "Asked for each time the computer starts. Without it, nobody can read the disk."
+                                        ? "Asked for each time the computer starts, on a screen that shows your name and keyboard layout before the disk is unlocked. Without the password, nobody can read the disk."
                                         : "Anyone who takes the disk out can read everything on it.";
                                     color: root.encrypt ? Theme.text-dim : Theme.amber;
                                     font-size: Theme.fs-caption;
@@ -736,6 +1096,42 @@ export component InstallerScreen inherits Rectangle {
                         TouchArea {
                             mouse-cursor: pointer;
                             clicked => { root.encrypt = !root.encrypt; }
+                        }
+                    }
+
+                    // Beside another system on a PC, Yantrik's firmware entry goes last, so what
+                    // started before still starts; first only when asked. Never offered on a Mac.
+                    if root.into-partition && root.boot-first-offered : Rectangle {
+                        height: boot-first-layout.preferred-height;
+                        boot-first-layout := HorizontalLayout {
+                            spacing: Theme.sp-3;
+                            VerticalLayout {
+                                alignment: start;
+                                padding-top: 2px;
+                                Rectangle {
+                                    width: 16px; height: 16px;
+                                    border-radius: 4px;
+                                    border-width: 1.5px;
+                                    border-color: root.boot-first ? Theme.accent : Theme.border-strong;
+                                    background: root.boot-first ? Theme.accent.transparentize(80%) : transparent;
+                                    if root.boot-first : Icon {
+                                        commands: Icons.check;
+                                        size: 12px;
+                                        tint: Theme.accent;
+                                    }
+                                }
+                            }
+                            Text {
+                                horizontal-stretch: 1;
+                                text: "Start Yantrik OS by default";
+                                color: Theme.text-primary;
+                                font-size: Theme.fs-body;
+                                wrap: word-wrap;
+                            }
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.boot-first = !root.boot-first; }
                         }
                     }
 
@@ -751,7 +1147,7 @@ export component InstallerScreen inherits Rectangle {
                         }
                         PillButton {
                             label: "Next";
-                            enabled: root.selected-disk != "";
+                            enabled: root.disk-ok;
                             clicked => { root.step = 3; }
                         }
                     }
@@ -836,8 +1232,39 @@ export component InstallerScreen inherits Rectangle {
 
                             Rectangle { height: 1px; background: Theme.separator; }
 
+                            // Installing beside what is there: the target, and that it is all.
+                            if root.into-partition : Rectangle {
+                                min-height: 22px;
+                                for s in root.segments : Rectangle {
+                                    if s.id == root.install-target : HorizontalLayout {
+                                        width: 100%;
+                                        height: 100%;
+                                        spacing: Theme.sp-3;
+                                        Text {
+                                            text: "Installs into";
+                                            width: 130px;
+                                            color: Theme.text-dim;
+                                            font-size: Theme.fs-body;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: s.kind == "free"
+                                                ? "New partition, free space on /dev/" + s.disk + " · " + s.size
+                                                : "/dev/" + s.id + " · " + s.size + " · nothing else changes";
+                                            horizontal-stretch: 1;
+                                            color: Theme.text-primary;
+                                            font-size: Theme.fs-body;
+                                            font-weight: 600;
+                                            horizontal-alignment: right;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+                                    }
+                                }
+                            }
+
                             // Every disk is laid over the others and only the chosen one draws.
-                            Rectangle {
+                            if !root.into-partition : Rectangle {
                                 min-height: 22px;
                                 for disk in root.disks : Rectangle {
                                     if disk.name == root.selected-disk : HorizontalLayout {
@@ -886,7 +1313,8 @@ export component InstallerScreen inherits Rectangle {
                             clicked => { root.step = 2; }
                         }
                         PillButton {
-                            label: "Erase disk and install";
+                            label: root.into-partition ? "Install into partition" :"Erase disk and install";
+                            destructive: !root.into-partition;
                             width: 220px;
                             enabled: root.can-install;
                             clicked => {
@@ -921,7 +1349,7 @@ export component InstallerScreen inherits Rectangle {
                             width: parent.width * clamp(root.install-progress, 0, 100) / 100;
                             height: parent.height;
                             border-radius: 3px;
-                            background: Theme.cyan;
+                            background: Theme.accent;
                             animate width { duration: 300ms; }
                         }
                     }
@@ -929,7 +1357,7 @@ export component InstallerScreen inherits Rectangle {
                     HorizontalLayout {
                         Text {
                             text: root.install-progress + "%";
-                            color: Theme.cyan;
+                            color: Theme.accent;
                             font-size: Theme.fs-headline;
                             font-weight: 600;
                         }
@@ -962,7 +1390,9 @@ export component InstallerScreen inherits Rectangle {
                     }
 
                     Text {
-                        text: "You can leave this running. The computer restarts by itself when it is done.";
+                        // Not "restarts by itself": the Installed screen waits for Restart now
+                        // whenever it has something to say.
+                        text: "You can leave this running. When it is done, this screen says what happens next.";
                         color: Theme.text-dim;
                         font-size: Theme.fs-caption;
                         wrap: word-wrap;
@@ -983,13 +1413,21 @@ export component InstallerScreen inherits Rectangle {
                     }
 
                     Text {
-                        text: "Remove the installation media.";
+                        text: root.media-hint;
+                        wrap: word-wrap;
                         color: Theme.text-secondary;
                         font-size: Theme.fs-body;
                         horizontal-alignment: center;
                     }
+                    if root.install-note != "" : Text {
+                        text: root.install-note;
+                        color: Theme.amber;
+                        font-size: Theme.fs-caption;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
                     Text {
-                        text: root.restart-held ? "Restart when you are ready."
+                        text: root.restart-held || root.install-note != "" ? "Restart when you are ready."
                             : "Restarting in " + root.restart-in + " s…";
                         color: Theme.text-primary;
                         font-size: Theme.fs-body;
@@ -1000,7 +1438,7 @@ export component InstallerScreen inherits Rectangle {
                     HorizontalLayout {
                         alignment: center;
                         spacing: Theme.sp-3;
-                        if !root.restart-held : PillButton {
+                        if !root.restart-held && root.install-note == "" : PillButton {
                             label: "Wait";
                             quiet: true;
                             clicked => { root.restart-held = true; }

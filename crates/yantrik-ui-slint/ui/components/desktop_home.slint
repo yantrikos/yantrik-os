@@ -1,18 +1,32 @@
-// The everyday desktop: a quiet place to start, with real pins and recent items.
+// The desktop's home: a quiet place to start, with real pins and recent items.
+//
+// There is one. It had a twin for agent mode, drawn inside desktop.slint with its own search
+// field, its own pin tiles and its own spacing; `agent-mode` now only decides which sections this
+// shows. Agent mode adds what the mind is proposing and, on a machine nobody has used, a card that
+// says what to do first; it leaves out the recent files and the mind's status line, which the
+// work rail and the mind panel already say beside it.
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icon.slint";
 import { AppTile } from "app_tile.slint";
+import { AppLabel } from "app_label.slint";
 import { DockItem } from "app_dock.slint";
 import { LensResult } from "intent_lens.slint";
 import { YButton } from "y_button.slint";
+import { UrgeCardData, GlanceCard } from "glance_card.slint";
 
 export component DesktopHome inherits Rectangle {
+    // The machine's desk rather than a person's: adds suggestions, drops recents and the mind line.
+    in property <bool> agent-mode: false;
     in property <string> greeting;
     in property <string> date;
     in property <string> mind-name;
     in property <bool> online;
     in property <[DockItem]> pins;
     in property <[LensResult]> recents;
+    in property <[UrgeCardData]> urges: [];
+    // Any window is open (agent mode's day-one card goes once there is something to see).
+    in property <bool> has-windows: false;
+    callback send-message(string);
     callback search();
     callback all-apps();
     callback launch(string);
@@ -20,6 +34,11 @@ export component DesktopHome inherits Rectangle {
     callback configure-mind();
 
     property <int> columns: max(2, min(6, floor((self.width - 48px) / 104px)));
+    // The box says where its words go: it opens the chat with the mind that answers, and that
+    // mind may be an online model. The answering mind by name; the Mind's until the harness host
+    // has said who is answering.
+    property <string> ask-words: "Message "
+        + (root.mind-name == "" || root.mind-name == "no mind" ? "Yantrik Mind" : root.mind-name);
 
     Flickable {
         width: 100%; height: 100%;
@@ -49,7 +68,7 @@ export component DesktopHome inherits Rectangle {
                     color: Theme.text-primary;
                     overflow: elide;
                 }
-                Text {
+                if !root.agent-mode : Text {
                     text: "A little clarity. Room for everything you do.";
                     font-size: Theme.fs-body;
                     color: Theme.text-secondary;
@@ -65,7 +84,7 @@ export component DesktopHome inherits Rectangle {
                 border-color: search-touch.has-hover || search-focus.has-focus ? Theme.accent : Theme.glass-border-strong;
                 animate border-color { duration: Theme.dur-fast; }
                 accessible-role: button;
-                accessible-label: "Ask, search, or open anything";
+                accessible-label: root.ask-words;
                 accessible-action-default => { root.search(); }
                 search-focus := FocusScope {
                     key-pressed(e) => {
@@ -78,7 +97,7 @@ export component DesktopHome inherits Rectangle {
                     padding: 18px;
                     spacing: 14px;
                     Icon { commands: Icons.search; size: 21px; tint: Theme.accent; y: (parent.height - self.height) / 2; }
-                    Text { text: "Ask, search, or open anything"; color: Theme.text-primary; font-size: Theme.fs-title-2; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                    Text { text: root.ask-words; color: Theme.text-primary; font-size: Theme.fs-title-2; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
                     // The compositor's Super+K (config/labwc/rc.xml) — the key that works from
                     // inside any app; the ask bar chip in desktop.slint says why.
                     if root.width > 440px : Rectangle {
@@ -89,6 +108,23 @@ export component DesktopHome inherits Rectangle {
                         border-width: 1px; border-color: Theme.border-strong;
                         Text { text: "Super K"; font-size: Theme.fs-caption; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
                     }
+                }
+            }
+
+            // What the mind is proposing. Tapping one sends it to the mind: the suggestion IS a
+            // message the mind proposed saying to itself, so the honest action is to say it.
+            if root.agent-mode && root.urges.length > 0 : VerticalLayout {
+                spacing: 8px;
+                Text {
+                    text: "SUGGESTIONS";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-micro;
+                    font-weight: Theme.fw-micro;
+                    letter-spacing: 1px;
+                }
+                for u in root.urges : GlanceCard {
+                    data: u;
+                    tapped(msg) => { root.send-message(msg); }
                 }
             }
 
@@ -103,7 +139,7 @@ export component DesktopHome inherits Rectangle {
                     spacing: 16px;
                     HorizontalLayout {
                         Text { text: "Your workspace"; font-size: Theme.fs-headline; font-weight: 600; color: Theme.text-primary; vertical-alignment: center; horizontal-stretch: 1; }
-                        YButton { label: "All apps"; icon-path: Icons.chevron-right; icon-trailing: true; variant: 2; clicked => { root.all-apps(); } }
+                        YButton { label: "All apps"; icon-path: Icons.chevron-right; icon-trailing: true; variant: 1; clicked => { root.all-apps(); } }
                     }
                     if root.pins.length == 0 : Text {
                         text: "Make this space yours. Open All apps and pin your favourites.";
@@ -111,10 +147,12 @@ export component DesktopHome inherits Rectangle {
                     }
                     if root.pins.length > 0 : Rectangle {
                         height: ceil(root.pins.length / root.columns) * 98px;
+                        // Each column starts on a whole pixel: the card's width rarely divides by the
+                        // column count, and a name centred in a column at a fraction is drawn there.
                         for item[i] in root.pins : Rectangle {
-                            x: mod(i, root.columns) * (parent.width / root.columns);
+                            x: Math.round(mod(i, root.columns) * parent.width / root.columns / 1px) * 1px;
                             y: floor(i / root.columns) * 98px;
-                            width: parent.width / root.columns;
+                            width: Math.floor(parent.width / root.columns / 1px) * 1px;
                             height: 94px;
                             border-radius: Theme.r-lg;
                             background: pin-touch.has-hover ? Theme.hover-fill-strong : transparent;
@@ -138,7 +176,7 @@ export component DesktopHome inherits Rectangle {
                                 HorizontalLayout {
                                     alignment: center;
                                     AppTile {
-                                        size: 46px;
+                                        size: 48px;
                                         app-id: item.icon-id;
                                         glyph: Icons.app-or-window(item.icon-id);
                                         has-icon: item.has-icon;
@@ -146,7 +184,7 @@ export component DesktopHome inherits Rectangle {
                                         hovered: pin-touch.has-hover;
                                     }
                                 }
-                                Text { text: item.label; color: Theme.text-primary; font-size: Theme.fs-caption; horizontal-alignment: center; overflow: elide; }
+                                AppLabel { text: item.label; }
                                 Rectangle { width: 12px; height: 3px; x: (parent.width - self.width) / 2; border-radius: 1.5px; background: item.is-running ? Theme.accent : transparent; }
                             }
                         }
@@ -154,7 +192,7 @@ export component DesktopHome inherits Rectangle {
                 }
             }
 
-            if root.recents.length > 0 : Rectangle {
+            if !root.agent-mode && root.recents.length > 0 : Rectangle {
                 height: recent-body.preferred-height;
                 background: Theme.glass-panel;
                 border-radius: Theme.r-xl;
@@ -189,14 +227,34 @@ export component DesktopHome inherits Rectangle {
                 }
             }
 
-            HorizontalLayout {
+            // Nothing to show on a machine that has never been used, so say what to do first:
+            // true on day one and gone by day two.
+            if root.agent-mode && root.urges.length == 0 && !root.has-windows : Rectangle {
+                height: day-one.preferred-height;
+                background: Theme.glass-panel;
+                border-radius: Theme.r-xl;
+                border-width: 1px;
+                border-color: Theme.glass-border;
+                day-one := VerticalLayout {
+                    padding: 20px;
+                    spacing: 8px;
+                    alignment: start;
+                    Text { text: "Ready when you are"; color: Theme.text-primary; font-size: Theme.fs-headline; font-weight: 600; }
+                    Text {
+                        text: "Open a pinned app to get started, or press Super K to ask a question, find a file, or run a command.";
+                        color: Theme.text-secondary; font-size: Theme.fs-body; wrap: word-wrap;
+                    }
+                }
+            }
+
+            if !root.agent-mode : HorizontalLayout {
                 spacing: 10px;
                 Rectangle { width: 6px; height: 6px; border-radius: 3px; y: (parent.height - self.height) / 2; background: root.online ? Theme.accent : Theme.text-dim; }
                 Text {
                     text: root.online ? (root.mind-name != "" ? root.mind-name + " is within reach" : "Your companion is within reach") : "Your workspace is ready. Connect a mind when you need one.";
                     color: Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1;
                 }
-                YButton { label: root.online ? "Open companion" : "Connect a mind"; variant: 2; size: 0; clicked => { root.configure-mind(); } }
+                YButton { label: root.online ? "Open companion" : "Connect a mind"; variant: 1; size: 0; clicked => { root.configure-mind(); } }
             }
         }
     }

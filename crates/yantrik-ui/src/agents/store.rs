@@ -30,6 +30,9 @@ use serde::{Deserialize, Serialize};
 use super::model::*;
 use crate::trail::ToolCall;
 
+mod erase;
+pub use erase::ErasurePlan;
+
 /// How many turns an agent keeps in memory. The oldest go first.
 pub const TURNS_KEPT: usize = 200;
 
@@ -60,6 +63,8 @@ pub struct Store {
     revision: u64,
     dirty: BTreeSet<AgentId>,
     removed: BTreeSet<AgentId>,
+    /// Files a stale save would have deleted, to delete on the next one (`mark_all_dirty`).
+    pending_deletes: Vec<PathBuf>,
     clock: Box<dyn Fn() -> u64 + Send>,
     /// How many agents it keeps before letting the oldest idle ones go: [`KEEP_AGENTS`].
     keep: usize,
@@ -84,6 +89,7 @@ impl Store {
             revision: 0,
             dirty: BTreeSet::new(),
             removed: BTreeSet::new(),
+            pending_deletes: Vec::new(),
             clock,
             keep: KEEP_AGENTS,
         }
@@ -170,6 +176,8 @@ impl Store {
                     usage: Usage::default(),
                     refused: 0,
                     refusals: Vec::new(),
+                    refusals_shown: None,
+                    erasures: Vec::new(),
                     approvals_asked: 0,
                     approvals_answered: 0,
                     pending_approvals: Vec::new(),
@@ -422,7 +430,7 @@ impl Store {
         let agent = &mut self.agents[i];
         let bytes = &bytes[..bytes.len().min(EVENT_CAP)];
         match find_card(agent, job, Provenance::Verified) {
-            Some(card) if card.running() => card.output.push(Stream::Terminal, bytes),
+            Some(card) if card.running() => card.push_output(Stream::Terminal, bytes),
             Some(_) => refuse(agent, format!("terminal bytes for `{job}` — the command had already ended")),
             None => {
                 let mut card = Card::new(job, "agent_run", "", serde_json::json!({}), Provenance::Verified, now);
@@ -650,10 +658,8 @@ impl RowKey {
 
 /// Whether the person still owes this agent an answer: an approval, a job at its prompt (#182),
 /// or a question it asked.
-fn waits_on_person(agent: &Agent) -> bool {
-    !agent.pending_approvals.is_empty()
-        || agent.job_waits
-        || agent.turns.iter().flat_map(|t| t.items.iter()).any(|i| matches!(i, Item::Question(q) if q.waiting()))
+pub(super) fn waits_on_person(agent: &Agent) -> bool {
+    !agent.pending_approvals.is_empty() || agent.job_waits || agent.waiting_questions().next().is_some()
 }
 
 /// Back to work once nothing holds the row on the person.
@@ -800,10 +806,12 @@ impl Store {
             approvals_answered: agent.approvals_answered,
             usage: agent.usage.clone(),
             refused: agent.refused,
-            refusals: agent.refusals.clone(),
+            // As shown: a line holding words the person had erased is drawn masked.
+            refusals: agent.shown_refusals().to_vec(),
             ..Details::default()
         };
         for card in agent.cards() {
+            let card = card.shown();
             details.calls += 1;
             if card.state == CallState::Failed {
                 details.failed_calls += 1;
@@ -884,10 +892,11 @@ impl Store {
                         (answer, _) => format!("[asked the person] {} — answered: {answer}", q.prompt),
                     }),
                     Item::Approval(a) => out.push(match a.outcome {
-                        ApprovalOutcome::Pending => format!("[asked the person] {} — waiting for an answer", a.what),
-                        _ => format!("[asked the person] {} — {}", a.what, a.record),
+                        ApprovalOutcome::Pending => format!("[asked the person] {} — waiting for an answer", a.what.as_str()),
+                        _ => format!("[asked the person] {} — {}", a.what.as_str(), a.record.as_str()),
                     }),
                     Item::Card(card) => {
+                        let card = card.shown();
                         let how = match (card.state, card.exit_code) {
                             (CallState::Running, _) => "running".to_string(),
                             (_, Some(code)) => format!("{} · exit {code}", card.state.key()),
@@ -934,8 +943,25 @@ impl Store {
             .filter_map(|id| self.agent(id))
             .map(|agent| (file_for(dir, &agent.meta.id), serialize(agent)))
             .collect();
-        let deletes = removed.iter().map(|id| file_for(dir, id)).collect();
+        let mut deletes: Vec<PathBuf> = std::mem::take(&mut self.pending_deletes);
+        deletes.extend(removed.iter().map(|id| file_for(dir, id)));
+        // A file an agent is held under again is written, not deleted.
+        deletes.retain(|path| !self.agents.iter().any(|a| file_for(dir, &a.meta.id) == *path));
         (writes, deletes)
+    }
+
+    /// One agent's file and what it should hold now, for a write that cannot wait for the timer.
+    pub fn file_of(&self, dir: &Path, id: &AgentId) -> Option<(PathBuf, String)> {
+        self.agent(id).map(|agent| (file_for(dir, id), serialize(agent)))
+    }
+
+    /// Every agent is written again on the next save: what an older save had taken is stale.
+    /// `removed` are the files that save would have deleted; each is deleted on the next save
+    /// instead, unless an agent of that id is held again by then.
+    pub fn mark_all_dirty(&mut self, removed: &[PathBuf], dir: &Path) {
+        let ids: Vec<AgentId> = self.agents.iter().map(|a| a.meta.id.clone()).collect();
+        self.dirty.extend(ids);
+        self.pending_deletes.extend(removed.iter().filter(|path| !self.agents.iter().any(|a| file_for(dir, &a.meta.id) == **path)).cloned());
     }
 
     /// Write every change now. For tests and for shutdown; the shell's timer uses `take_dirty`.
@@ -1040,6 +1066,15 @@ fn clip_text(text: &str, max: usize) -> String {
     format!("{}…", &flat[..end])
 }
 
+/// At most the last `max` bytes of `text`, cut on a character.
+fn tail_of(text: &str, max: usize) -> String {
+    let mut from = text.len().saturating_sub(max);
+    while !text.is_char_boundary(from) {
+        from += 1;
+    }
+    text[from..].to_string()
+}
+
 /// One event's text, cut at [`EVENT_CAP`] on a character.
 fn cap(text: &str) -> &str {
     if text.len() <= EVENT_CAP {
@@ -1069,6 +1104,9 @@ fn append(items: &mut Vec<Item>, delta: &str, thinking: bool) {
 }
 
 /// End the open turn: reported calls still open are interrupted; the shell's own keep running.
+/// Its questions still waiting are closed: the host expires a run's requests when it ends, so an
+/// answer has nowhere to go. Left open, the card kept its buttons and a click was refused (VM 520,
+/// 4 October: two identical Erase cards, one of them dead, and no telling which).
 fn settle_turn(agent: &mut Agent, ok: bool, now: u64, note: Option<&str>) {
     let Some(turn) = agent.turns.last_mut().filter(|t| t.open()) else { return };
     for card in turn.cards_mut() {
@@ -1078,6 +1116,13 @@ fn settle_turn(agent: &mut Agent, ok: bool, now: u64, note: Option<&str>) {
             card.output.settle();
         }
     }
+    for item in &mut turn.items {
+        if let Item::Question(q) = item {
+            if q.waiting() {
+                q.closed = Question::STOPPED_ASKING.to_string();
+            }
+        }
+    }
     if let Some(note) = note {
         turn.items.push(Item::Note(note.to_string()));
     }
@@ -1085,10 +1130,15 @@ fn settle_turn(agent: &mut Agent, ok: bool, now: u64, note: Option<&str>) {
     turn.ok = Some(ok);
 }
 
-/// Where a verified event, or a note, goes: the open turn; else the last one; else a turn of its
-/// own with no prompt, already ended — the shell can have something to say outside any turn.
+/// Where a verified event, or a note, goes: the open turn; else a turn of its own with no prompt,
+/// already ended — the shell can have something to say outside any turn. Not the last closed turn:
+/// filed there, an approval or a command that came after a run had ended was listed among that
+/// run's changes (VM 520, 4 October: the notes task showed arena saves and old approval cards).
+/// One such turn is kept at the end and reused, so a quiet stretch does not grow the history.
 fn turn_for_verified(agent: &mut Agent, now: u64) -> &mut Turn {
-    if agent.turns.is_empty() {
+    let outside = |t: &Turn| !t.open() && t.prompt.is_empty();
+    let fits = agent.turns.last().is_some_and(|t| t.open() || outside(t));
+    if !fits {
         let n = agent.next_turn;
         agent.next_turn += 1;
         agent.turns.push(Turn {
@@ -1135,6 +1185,12 @@ fn find_card<'a>(agent: &'a mut Agent, call: &str, provenance: Provenance) -> Op
 /// can open into.
 fn refuse(agent: &mut Agent, line: String) {
     agent.refused += 1;
+    if let Some(shown) = agent.refusals_shown.as_mut() {
+        shown.push(line.clone());
+        if shown.len() > REFUSED_LINES {
+            shown.remove(0);
+        }
+    }
     agent.refusals.push(line);
     if agent.refusals.len() > REFUSED_LINES {
         agent.refusals.remove(0);
@@ -1151,6 +1207,7 @@ fn what_event(event: &Event) -> String {
         Event::Status { text } => format!("a status line ({})", clip_text(text, 40)),
         Event::Usage { .. } => "a usage report".to_string(),
         Event::Request { prompt, .. } => format!("a question ({})", clip_text(prompt, 40)),
+        Event::Redact { .. } => "a redaction".to_string(),
     }
 }
 
@@ -1182,6 +1239,11 @@ fn apply(agent: &mut Agent, event: &Event, provenance: Provenance, now: u64) -> 
                 }
             }
             turn.items.push(Item::Card(card));
+            // A status line is what the mind says between calls; the call now running says more.
+            // A question it asked keeps its line, because that is what the person must answer.
+            if agent.state != State::WaitingForYou {
+                agent.status.clear();
+            }
             if !matches!(agent.state, State::WaitingForYou | State::HarnessGone) {
                 set_state(agent, State::RunningTool, now);
             }
@@ -1189,7 +1251,7 @@ fn apply(agent: &mut Agent, event: &Event, provenance: Provenance, now: u64) -> 
         Event::ToolOutput { call, stream, delta } => {
             let delta = cap(delta);
             match find_card(agent, call, provenance) {
-                Some(card) if card.running() => card.output.push(*stream, delta.as_bytes()),
+                Some(card) if card.running() => card.push_output(*stream, delta.as_bytes()),
                 Some(_) => return Err(format!("output for `{call}` — its call had already ended")),
                 None => {
                     let mut card = Card::new(call, "(unknown call)", call, serde_json::Value::Null, provenance, now);
@@ -1252,6 +1314,9 @@ fn apply(agent: &mut Agent, event: &Event, provenance: Provenance, now: u64) -> 
             agent.status = cap(&format!("asks: {prompt}")).to_string();
             set_state(agent, State::WaitingForYou, now);
         }
+        // The host applies an erasure itself, through `Agents::redact`, and only once its rule
+        // held; one arriving here, from any feeder, is not one.
+        Event::Redact { .. } => return Err("a redaction — only the host applies one".to_string()),
         Event::Usage { model, input_tokens, output_tokens, cost_usd } => {
             let usage = &mut agent.usage;
             usage.reported = true;
@@ -1331,6 +1396,21 @@ pub fn write_all(dir: &Path, writes: &[(PathBuf, String)], deletes: &[PathBuf]) 
     Ok(())
 }
 
+/// Rewrite one session so that, once this returns, the disk holds the new contents and not the
+/// old: written beside, flushed, renamed over, and the directory flushed so the rename is kept.
+pub fn write_durably(dir: &Path, path: &Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::create_dir_all(dir)?;
+    let partial = path.with_extension("jsonl.partial");
+    {
+        let mut file = std::fs::File::create(&partial)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&partial, path)?;
+    std::fs::File::open(dir)?.sync_all()
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Line {
@@ -1365,6 +1445,10 @@ struct AgentRecord {
     refused: u32,
     #[serde(default)]
     refusals: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    refusals_shown: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    erasures: Vec<Erasure>,
     #[serde(default)]
     approvals_asked: u32,
     #[serde(default)]
@@ -1439,6 +1523,21 @@ struct ApprovalRecord {
 }
 
 #[derive(Serialize, Deserialize)]
+struct CardMaskRecord {
+    request: String,
+    #[serde(default)]
+    target: String,
+    #[serde(default)]
+    args: serde_json::Value,
+    #[serde(default)]
+    preview: String,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    output: String,
+}
+
+#[derive(Serialize, Deserialize)]
 struct CardRecord {
     call: String,
     name: String,
@@ -1466,6 +1565,8 @@ struct CardRecord {
     output_lines: u64,
     started: u64,
     ended: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mask: Option<CardMaskRecord>,
 }
 
 fn serialize(agent: &Agent) -> String {
@@ -1492,6 +1593,8 @@ fn serialize(agent: &Agent) -> String {
         },
         refused: agent.refused,
         refusals: agent.refusals.clone(),
+        refusals_shown: agent.refusals_shown.clone(),
+        erasures: agent.erasures.clone(),
         approvals_asked: agent.approvals_asked,
         approvals_answered: agent.approvals_answered,
         touched: agent.touched,
@@ -1541,6 +1644,14 @@ fn serialize(agent: &Agent) -> String {
                     output_lines: c.output.lines(),
                     started: c.started,
                     ended: c.ended,
+                    mask: c.mask.as_ref().map(|m| CardMaskRecord {
+                        request: m.request.clone(),
+                        target: m.target.clone(),
+                        args: m.args.clone(),
+                        preview: m.preview.clone(),
+                        summary: m.summary.clone(),
+                        output: tail_of(&m.output, PERSIST_BYTES),
+                    }),
                 }),
             })
             .collect();
@@ -1590,7 +1701,10 @@ fn parse(text: &str, now: u64) -> Option<Agent> {
             reported: record.usage.reported,
         },
         refused: record.refused,
+        // Only a list that still pairs with the lines it masks.
+        refusals_shown: record.refusals_shown.filter(|shown| shown.len() == record.refusals.len()),
         refusals: record.refusals,
+        erasures: record.erasures,
         approvals_asked: record.approvals_asked,
         approvals_answered: record.approvals_answered,
         pending_approvals: Vec::new(),
@@ -1614,7 +1728,7 @@ fn parse(text: &str, now: u64) -> Option<Agent> {
                 // Its run was orphaned when the desktop stopped, so nobody can answer it now.
                 ItemRecord::Question(q) => Item::Question(Question {
                     closed: if q.answer.is_empty() && q.closed.is_empty() {
-                        "the desktop restarted while it waited".to_string()
+                        Question::RESTARTED.to_string()
                     } else {
                         q.closed
                     },
@@ -1654,6 +1768,16 @@ fn parse(text: &str, now: u64) -> Option<Agent> {
                     output: Output::restore(c.output_kind, &c.output, c.output_total, c.output_lines),
                     started: c.started,
                     ended: c.ended,
+                    mask: c.mask.map(|m| {
+                        Box::new(CardMask {
+                            request: m.request,
+                            target: m.target,
+                            args: m.args,
+                            preview: m.preview,
+                            summary: m.summary,
+                            output: m.output,
+                        })
+                    }),
                 }),
             })
             .collect();
@@ -1761,6 +1885,21 @@ mod tests {
         assert_eq!(agent.state, State::WaitingForYou);
         assert_eq!(agent.status, "asks: Delete 3 old installers?");
         assert!(agent.pending_approvals.is_empty(), "a question is not an OS approval and never goes to the gate");
+    }
+
+    #[test]
+    fn a_status_replaces_the_last_one_and_a_tool_start_overrides_it() {
+        let (mut s, _) = store();
+        let pi = id("pi:main");
+        s.open_turn(&pi, "look into it");
+        let status = |t: &str| Event::Status { text: t.into() };
+        s.event(&pi, &status("Grounding from memory…"), Provenance::Reported);
+        assert_eq!(s.agent(&pi).unwrap().status, "Grounding from memory…");
+        s.event(&pi, &status("Thinking… (30 s)"), Provenance::Reported);
+        assert_eq!(s.agent(&pi).unwrap().status, "Thinking… (30 s)", "replaced, never appended");
+        let start = Event::ToolStart { call: "c1".into(), name: "os_act".into(), target: String::new(), args: serde_json::Value::Null };
+        s.event(&pi, &start, Provenance::Reported);
+        assert_eq!(s.agent(&pi).unwrap().status, "", "a call in progress is the activity now");
     }
 
     #[test]
@@ -1959,6 +2098,33 @@ mod tests {
         assert_eq!(s.agent(&ds).unwrap().state, State::Thinking);
     }
 
+    /// An approval asked after a run ended is not that run's: it goes in a turn of its own, outside
+    /// any run, and a second one shares it. On VM 520 the notes task listed arena saves and old
+    /// approval cards among its changes, because late events were filed in the last closed turn.
+    #[test]
+    fn what_comes_after_a_run_ended_is_not_filed_in_that_run() {
+        let (mut s, _) = store();
+        let ds = id("deepseek:main");
+        s.open_turn(&ds, "write the week plan");
+        s.close_turn(&ds, true);
+        s.approval_asked(&ds, "late-1", "files.move");
+        s.approval_asked(&ds, "late-2", "files.copy");
+        let a = s.agent(&ds).unwrap();
+        let run = a.turns.iter().find(|t| t.prompt == "write the week plan").unwrap();
+        assert!(!run.items.iter().any(|i| matches!(i, Item::Approval(_))), "the closed run keeps only its own");
+        assert_eq!(a.turns.len(), 2, "one turn outside any run, shared by both late approvals");
+        let outside = a.turns.last().unwrap();
+        assert!(outside.prompt.is_empty() && !outside.open());
+        assert_eq!(outside.items.iter().filter(|i| matches!(i, Item::Approval(_))).count(), 2);
+        // The next run starts clean, and an approval during it is its own.
+        s.open_turn(&ds, "tidy notes");
+        s.approval_asked(&ds, "in-run", "notes.trash");
+        let a = s.agent(&ds).unwrap();
+        let open = a.turns.last().unwrap();
+        assert_eq!(open.prompt, "tidy notes");
+        assert_eq!(open.items.iter().filter(|i| matches!(i, Item::Approval(_))).count(), 1);
+    }
+
     #[test]
     fn a_trail_call_claims_no_outcome_and_is_not_told_twice() {
         let (mut s, _) = store();
@@ -2119,6 +2285,26 @@ mod tests {
         assert!(s.transcript(&pi, 5).unwrap().contains("[asked the person] Delete 3 installers? — answered: Yes"));
     }
 
+    /// A question past the quiet limit is still the person's to answer: it needs them as waiting,
+    /// never as stuck. Answered and then quiet, it is stuck as any other task.
+    #[test]
+    fn a_question_long_unanswered_needs_you_as_waiting_not_stuck() {
+        let (mut s, clock) = store();
+        let mind = id("yantrik:c-erase");
+        s.open_turn(&mind, "forget the old address");
+        s.event(&mind, &asks("r1", "Keep or Erase?"), Provenance::Reported);
+        clock.fetch_add(120, Ordering::SeqCst);
+
+        let a = s.agent(&mind).unwrap();
+        assert_eq!(a.state, State::WaitingForYou);
+        assert!(!s.stuck(a), "waiting on the person is not stuck");
+        assert_eq!(s.list(Tab::NeedsYou, None), vec![mind.clone()], "it needs the person");
+
+        assert!(s.question_answered(&mind, "r1", "Keep"));
+        clock.fetch_add(120, Ordering::SeqCst);
+        assert!(s.stuck(s.agent(&mind).unwrap()), "answered, then silent: stuck as before");
+    }
+
     #[test]
     fn a_question_whose_answer_could_not_be_delivered_closes_with_why() {
         let (mut s, _) = store();
@@ -2147,6 +2333,83 @@ mod tests {
         assert_eq!(kept.len(), 2);
         assert_eq!(kept[0].closed, "the desktop restarted while it waited", "never drawn with buttons again");
         assert_eq!((kept[1].answer.as_str(), kept[1].closed.as_str()), ("No", ""), "an answered one stays answered");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every way a turn ends in the store closes the questions it asked and nobody answered: the
+    /// host has expired them, so a card left with buttons is one a click is refused on (VM 520,
+    /// 4 October: two identical Erase cards, one dead). Closed, it leaves `waiting_questions`, the
+    /// Needs-you tab and the transcript's "waiting" line.
+    #[test]
+    fn a_question_closes_when_the_turn_that_asked_ends_unanswered() {
+        let ends: [(&str, fn(&mut Store, &AgentId)); 5] = [
+            ("completed", |s, a| s.close_turn(a, true)),
+            ("failed", |s, a| s.close_turn(a, false)),
+            ("cancelled", |s, a| {
+                s.note(a, "Stopped.");
+                s.close_turn(a, false)
+            }),
+            ("orphaned", |s, a| s.set_state(a, State::HarnessGone)),
+            ("interrupted", |s, a| s.open_turn(a, "something else")),
+        ];
+        for (how, end) in ends {
+            let (mut s, _) = store();
+            let mind = id("yantrik:c-erase");
+            s.open_turn(&mind, "forget the old address");
+            s.event(&mind, &asks("r1", "Keep or Erase?"), Provenance::Reported);
+            assert_eq!(s.list(Tab::NeedsYou, None), vec![mind.clone()], "{how}: it waits on the person");
+            end(&mut s, &mind);
+
+            let q = &questions(&s, &mind)[0];
+            assert_eq!((q.answer.as_str(), q.closed.as_str()), ("", Question::STOPPED_ASKING), "{how}");
+            assert_eq!(s.agent(&mind).unwrap().waiting_questions().count(), 0, "{how}: nothing still asked");
+            assert!(s.list(Tab::NeedsYou, None).is_empty(), "{how}: it no longer needs the person");
+            let said = s.transcript(&mind, 5).unwrap();
+            assert!(said.contains("Keep or Erase? — not answered: the agent stopped asking"), "{how}: {said}");
+        }
+    }
+
+    /// Closing is for what still waits: an answer the person gave stands when the turn ends, and a
+    /// question the next turn asks is open while the one before it is closed.
+    #[test]
+    fn an_ended_turn_closes_only_its_own_unanswered_questions() {
+        let (mut s, _) = store();
+        let mind = id("yantrik:c-erase2");
+        s.open_turn(&mind, "forget the old address");
+        s.event(&mind, &asks("r1", "Keep or Erase?"), Provenance::Reported);
+        s.event(&mind, &asks("r2", "And the old phone number?"), Provenance::Reported);
+        assert!(s.question_answered(&mind, "r2", "Keep"));
+        s.close_turn(&mind, true);
+        s.open_turn(&mind, "try again");
+        s.event(&mind, &asks("r3", "Keep or Erase?"), Provenance::Reported);
+
+        let q = questions(&s, &mind);
+        assert_eq!(q[0].closed, Question::STOPPED_ASKING, "turn 1's unanswered question is closed");
+        assert_eq!((q[1].answer.as_str(), q[1].closed.as_str()), ("Keep", ""), "an answered one is untouched");
+        assert!(q[2].waiting(), "turn 2's question is open");
+        let waiting: Vec<_> = s.agent(&mind).unwrap().waiting_questions().map(|q| q.request.clone()).collect();
+        assert_eq!(waiting, vec!["r3".to_string()], "only the live one is waiting");
+        assert_eq!(s.list(Tab::NeedsYou, None), vec![mind.clone()]);
+    }
+
+    /// A restart still closes what was waiting as before, and a question already closed when the
+    /// agent stopped asking keeps that reason through the save.
+    #[test]
+    fn a_restart_keeps_a_closed_questions_reason_and_closes_the_rest_as_before() {
+        let dir = scratch_dir("questions-closed");
+        let (mut s, _) = store();
+        let mind = id("yantrik:c-erase3");
+        s.open_turn(&mind, "forget the old address");
+        s.event(&mind, &asks("r1", "Keep or Erase?"), Provenance::Reported);
+        s.close_turn(&mind, true);
+        s.open_turn(&mind, "try again");
+        s.event(&mind, &asks("r2", "Keep or Erase?"), Provenance::Reported);
+        s.save(&dir).unwrap();
+        let back = Store::load(&dir, Box::new(|| 1_800_000_000));
+        let kept = questions(&back, &mind);
+        assert_eq!(kept[0].closed, Question::STOPPED_ASKING);
+        assert_eq!(kept[1].closed, Question::RESTARTED);
+        assert_eq!(back.agent(&mind).unwrap().waiting_questions().count(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

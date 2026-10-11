@@ -61,6 +61,24 @@ impl ProviderPresets {
     }
 }
 
+/// What a provider's last answer was: its status, and only the headers that say how much is
+/// left (`x-ratelimit-*`, `ratelimit-*`, `retry-after`). Never an authorization header.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ResponseMeta {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+}
+
+impl ResponseMeta {
+    /// A header by name, case-insensitively.
+    pub fn header(&self, name: &str) -> Option<String> {
+        self.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone())
+    }
+}
+
+/// Where a backend leaves each answer's `ResponseMeta`, for the caller to read after the call.
+pub type MetaSink = std::sync::Arc<std::sync::Mutex<Option<ResponseMeta>>>;
+
 /// A generic OpenAI-compatible LLM backend.
 ///
 /// Supports both standard OpenAI `/v1/chat/completions` and Ollama native
@@ -72,14 +90,50 @@ pub struct GenericOpenAIBackend {
     api_key: Option<String>,
     /// Model name (e.g. "gpt-4o", "qwen3.5:27b-nothink").
     model: String,
-    /// Auth header style: "bearer" sends `Authorization: Bearer <key>`,
-    /// "none" sends no auth header.
+    /// Auth header style: "bearer" sends `Authorization: Bearer <key>` when a key is set,
+    /// "none" never sends one.
     auth_style: String,
     /// Provider-specific behavior presets.
     presets: ProviderPresets,
+    /// When set, each OpenAI-style answer's status and rate-limit headers are left here.
+    meta: Option<MetaSink>,
+    /// HTTPS only, and no redirect followed (`strict_transport`).
+    strict: bool,
+}
+
+/// The host an error names: never a path (Cloudflare's carries the account id), a query (a key, at
+/// some providers) or `user:pass@`.
+fn error_host(url: &str) -> String {
+    let authority = url.split("://").nth(1).and_then(|r| r.split(['/', '?', '#']).next()).unwrap_or("");
+    let host = authority.rsplit('@').next().unwrap_or("");
+    if host.is_empty() { "the provider".to_string() } else { host.to_string() }
+}
+
+/// A provider's error body, short enough to say what went wrong: the key masked first, then cut,
+/// so a key echoed across the cut cannot leave its head behind.
+fn error_excerpt(body: &str, key: Option<&str>) -> String {
+    let masked = match key.filter(|k| k.len() >= 8) {
+        Some(k) => body.replace(k, "<key>"),
+        None => body.to_string(),
+    };
+    masked.chars().take(200).collect()
 }
 
 impl GenericOpenAIBackend {
+    /// Leave each answer's status and rate-limit headers in `sink` (the free pool reads them).
+    pub fn with_meta_sink(mut self, sink: MetaSink) -> Self {
+        self.meta = Some(sink);
+        self
+    }
+
+    /// HTTPS only, and no redirect followed: the answer comes from the address the key was sent
+    /// to or not at all. For a provider reached with a key over the internet (the free pool). A
+    /// local server on plain http (Ollama) is not built this way.
+    pub fn strict_transport(mut self) -> Self {
+        self.strict = true;
+        self
+    }
+
     /// Create a new GenericOpenAIBackend.
     ///
     /// # Arguments
@@ -111,6 +165,8 @@ impl GenericOpenAIBackend {
             model: model.into(),
             auth_style: auth_style.into(),
             presets,
+            meta: None,
+            strict: false,
         }
     }
 
@@ -126,11 +182,10 @@ impl GenericOpenAIBackend {
             "openrouter" => ProviderPresets::openrouter(),
             _ => ProviderPresets::default(),
         };
-        let auth_style = match provider_type {
-            "ollama" => "none",
-            _ => "bearer",
-        };
-        Self::new(base_url, api_key, model, auth_style, presets)
+        // Every provider sends the key it was given for this address, and none without one. Ollama
+        // itself takes no key, but one behind an authenticating proxy (a gateway, a sealed gate)
+        // needs it, and a key is only ever set for the address it belongs to.
+        Self::new(base_url, api_key, model, "bearer", presets)
     }
 
     /// Serialize a ChatMessage to JSON.
@@ -205,7 +260,7 @@ impl GenericOpenAIBackend {
     /// Build auth and extra headers as a vec of (key, value) pairs.
     fn auth_headers(&self) -> Vec<(String, String)> {
         let mut headers = Vec::new();
-        if let Some(ref key) = self.api_key {
+        if let Some(key) = self.api_key.as_deref().filter(|k| !k.trim().is_empty()) {
             if self.auth_style != "none" {
                 headers.push(("Authorization".to_string(), format!("Bearer {key}")));
             }
@@ -442,15 +497,45 @@ impl GenericOpenAIBackend {
         let url = self.openai_endpoint_url();
         let body_str = serde_json::to_string(body)?;
 
-        let agent = self.build_agent();
+        // A refusal is read, not thrown: its status and rate-limit headers are what tells the
+        // caller how long to wait, and ureq's error-on-status would drop them.
+        let mut config = ureq::config::Config::builder()
+            .timeout_global(Some(std::time::Duration::from_secs(300)))
+            .http_status_as_error(false);
+        if self.strict {
+            config = config.https_only(true).max_redirects(0);
+        }
+        let agent = ureq::Agent::new_with_config(config.build());
         let mut req = agent.post(&url).header("Content-Type", "application/json");
         for (k, v) in self.auth_headers() {
             req = req.header(&k, &v);
         }
 
+        // Errors name the host, not the address: a path can carry an account id, a query a key.
+        let host = error_host(&url);
         let resp = req
             .send(body_str.as_bytes())
-            .context("OpenAI-compatible API request failed")?;
+            .with_context(|| format!("OpenAI-compatible API request to {host} failed"))?;
+        let status = resp.status().as_u16();
+        if let Some(sink) = &self.meta {
+            let headers = resp
+                .headers()
+                .iter()
+                .filter(|(k, _)| {
+                    let k = k.as_str();
+                    k.starts_with("x-ratelimit") || k.starts_with("ratelimit") || k == "retry-after"
+                })
+                .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_string(), v.to_string())))
+                .collect();
+            *sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(ResponseMeta { status, headers });
+        }
+        if !(200..300).contains(&status) {
+            let mut body = resp.into_body();
+            let text = body.read_to_string().unwrap_or_default();
+            // A provider's error can echo what it was sent: the key is masked, and the rest is cut
+            // short enough to say what went wrong without carrying the conversation into a log.
+            anyhow::bail!("HTTP {status} from {host}: {}", error_excerpt(&text, self.api_key.as_deref()));
+        }
 
         Ok(resp.into_body())
     }
@@ -645,5 +730,132 @@ impl LLMBackend for GenericOpenAIBackend {
 
     fn model_id(&self) -> &str {
         &self.model
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GenericOpenAIBackend;
+
+    fn authorization(b: &GenericOpenAIBackend) -> Option<String> {
+        b.auth_headers().into_iter().find(|(k, _)| k == "Authorization").map(|(_, v)| v)
+    }
+
+    #[test]
+    fn an_ollama_behind_a_gate_is_sent_the_key_it_was_given() {
+        let gated = GenericOpenAIBackend::for_provider("ollama", "http://10.99.0.1:8443", Some("k".into()), "m");
+        assert_eq!(authorization(&gated).as_deref(), Some("Bearer k"));
+    }
+
+    #[test]
+    fn no_key_or_a_blank_one_sends_no_header() {
+        for key in [None, Some(String::new()), Some("  ".to_string())] {
+            for provider in ["ollama", "openai", "nvidia-nim"] {
+                let b = GenericOpenAIBackend::for_provider(provider, "http://localhost:11434/v1", key.clone(), "m");
+                assert_eq!(authorization(&b), None, "{provider} {key:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn auth_style_none_never_sends_a_key() {
+        let b = GenericOpenAIBackend::new("http://x/v1", Some("k".into()), "m", "none", Default::default());
+        assert_eq!(authorization(&b), None);
+    }
+
+    /// The request head an Ollama backend with `key` actually puts on the wire, read by a
+    /// listener standing in for the server.
+    fn request_head_sent(key: Option<&str>) -> String {
+        use crate::traits::LLMBackend;
+        use crate::types::{ChatMessage, GenerationConfig};
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            // A deadline on every wait, so a client that never connects or stalls fails the test
+            // instead of hanging it.
+            let limit = std::time::Duration::from_secs(10);
+            let deadline = std::time::Instant::now() + limit;
+            listener.set_nonblocking(true).unwrap();
+            let mut conn = loop {
+                match listener.accept() {
+                    Ok((conn, _)) => break conn,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(10))
+                    }
+                    Err(e) => panic!("no request reached the listener within {limit:?}: {e}"),
+                }
+            };
+            conn.set_nonblocking(false).unwrap();
+            conn.set_read_timeout(Some(limit)).unwrap();
+            let mut got = Vec::new();
+            let mut buf = [0u8; 4096];
+            let head_end = loop {
+                let n = conn.read(&mut buf).unwrap();
+                assert!(n > 0, "the client hung up before sending a request");
+                got.extend_from_slice(&buf[..n]);
+                if let Some(i) = got.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break i;
+                }
+            };
+            let head = String::from_utf8_lossy(&got[..head_end]).to_string();
+            let body_len = head
+                .lines()
+                .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
+                .unwrap_or(0);
+            while got.len() < head_end + 4 + body_len {
+                let n = conn.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                got.extend_from_slice(&buf[..n]);
+            }
+            let reply = r#"{"model":"m","message":{"role":"assistant","content":"ok"},"done":true,"done_reason":"stop","prompt_eval_count":1,"eval_count":1}"#;
+            write!(
+                conn,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                reply.len()
+            )
+            .unwrap();
+            head
+        });
+        let be = GenericOpenAIBackend::for_provider("ollama", format!("http://127.0.0.1:{port}"), key.map(String::from), "m");
+        // Only the request matters here; the reply is whatever the server stand-in could say.
+        let _ = be.chat(&[ChatMessage::user("hi")], &GenerationConfig::default(), None);
+        server.join().unwrap()
+    }
+
+    #[test]
+    fn on_the_wire_a_plain_ollama_sees_no_authorization_and_a_gated_one_sees_its_key() {
+        for key in [None, Some(""), Some("  ")] {
+            let head = request_head_sent(key).to_ascii_lowercase();
+            assert!(head.starts_with("post /api/chat "), "{head}");
+            assert!(!head.contains("\nauthorization:"), "{key:?} sent an Authorization header:\n{head}");
+        }
+        let head = request_head_sent(Some("gate-key"));
+        assert!(
+            head.lines().any(|l| l.eq_ignore_ascii_case("authorization: Bearer gate-key")),
+            "the gated request carries its key:\n{head}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod error_text_tests {
+    use super::{error_excerpt, error_host};
+
+    #[test]
+    fn an_error_names_the_host_and_never_the_key() {
+        assert_eq!(error_host("https://api.cloudflare.com/client/v4/accounts/0123abcd/ai/v1/chat/completions"), "api.cloudflare.com");
+        assert_eq!(error_host("https://user:secret@llm.example.com:8443/v1/chat?key=abc"), "llm.example.com:8443");
+        assert_eq!(error_host("not a url"), "the provider");
+        let key = "gsk_0123456789abcdefghijklmnopqrstuvwxyz";
+        // Echoed so that it straddles the 200th character: masked before the cut, none of it stays.
+        let body = format!("{}{key}{}", "x".repeat(190), "y".repeat(50));
+        let excerpt = error_excerpt(&body, Some(key));
+        assert!(!excerpt.contains("gsk_0123"), "{excerpt}");
+        assert!(excerpt.contains("<key>"));
+        assert!(excerpt.chars().count() <= 200);
     }
 }

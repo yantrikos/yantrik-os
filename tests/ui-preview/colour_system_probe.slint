@@ -1,0 +1,39 @@
+// The shell's colour roles on one panel, for verify-colour-system (src/colour_system_tests.rs):
+// the three button kinds, the pointer-only approval pair, on/off toggle tiles and a slider.
+// Imported through the shell's shims, like the other kit probes.
+import { Theme } from "theme.slint";
+import { Icons } from "components/icon.slint";
+import { YButton } from "components/y_button.slint";
+import { YToggleTile } from "components/y_toggle_tile.slint";
+import { YSlider } from "components/y_slider.slint";
+
+export component ColourSystemProbe inherits Window {
+    width: 720px;
+    height: 360px;
+    background: Theme.bg-deep;
+    in-out property <int> primary-clicks: 0;
+    in-out property <int> secondary-clicks: 0;
+    in-out property <int> destructive-clicks: 0;
+    in-out property <int> pointer-only-clicks: 0;
+    in-out property <bool> wifi: true;
+
+    Rectangle {
+        x: 20px; y: 20px; width: 680px; height: 320px;
+        background: Theme.bg-card;
+        border-radius: Theme.r-lg;
+
+        YButton { x: 20px; y: 20px; width: 150px; label: "Save"; variant: 0; clicked => { root.primary-clicks += 1; } }
+        YButton { x: 190px; y: 20px; width: 150px; label: "Cancel"; variant: 1; clicked => { root.secondary-clicks += 1; } }
+        YButton { x: 360px; y: 20px; width: 150px; label: "Delete"; variant: 3; clicked => { root.destructive-clicks += 1; } }
+
+        // The approval card's pair: the same two kinds, but never focusable.
+        YButton { x: 20px; y: 76px; width: 150px; label: "Deny"; variant: 1; pointer-only: true; clicked => { root.secondary-clicks += 1; } }
+        YButton { x: 190px; y: 76px; width: 150px; label: "Allow once"; variant: 0; pointer-only: true; clicked => { root.pointer-only-clicks += 1; } }
+
+        // Off, then on.
+        YToggleTile { x: 20px; y: 140px; width: 200px; icon: Icons.settings; title: "Bluetooth"; subtitle: "Off"; on: false; }
+        YToggleTile { x: 240px; y: 140px; width: 200px; icon: Icons.settings; title: "Wi-Fi"; subtitle: "Home"; on: root.wifi; toggled => { root.wifi = !root.wifi; } }
+
+        YSlider { x: 20px; y: 220px; width: 420px; label: "Volume"; value: 60; show-value: true; value-suffix: "%"; }
+    }
+}

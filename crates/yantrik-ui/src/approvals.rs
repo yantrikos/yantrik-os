@@ -104,14 +104,14 @@ const RECORD_TAIL: usize = 4;
 // screen without deciding for the person which part of the sentence they may read.
 
 /// How much of one argument value the card shows before cutting it.
-const ARG_VALUE_CHARS: usize = 60;
+pub(crate) const ARG_VALUE_CHARS: usize = 60;
 
 /// How many arguments the card lists before summarising the rest.
 ///
 /// Eight covers every action on this desktop (the widest is `add_event` at six). A ninth would
 /// be summarised rather than dropped, and the whole set is in `describe shell` regardless — and,
 /// more to the point, in the grant, which is bound to all of them whatever the card had room for.
-const ARG_ROWS: usize = 8;
+pub(crate) const ARG_ROWS: usize = 8;
 
 /// How much of the "what the ids name" line the card shows before it stops.
 ///
@@ -246,6 +246,10 @@ pub struct Verified {
     pub pid: i32,
     /// The attached mind the caller's ancestry belongs to, if one matched.
     pub attached_mind: String,
+    /// Whether that match was by the kernel's pid (`CallerIdentity::attached_by_pid`). A match by
+    /// the program's own name is only a name that matches: the card says "name matches X · not
+    /// verified" and nothing calls the caller the mind (security review of #648, M2).
+    pub mind_by_pid: bool,
     /// What does not add up about this request, one bounded sentence each.
     ///
     /// Two can arrive today: the claimed name names an attached mind that the ancestry
@@ -261,9 +265,44 @@ pub struct Verified {
     /// the request says. It decides which agent's pane draws the card (design decision 4), and the
     /// card names it. The token itself is never kept here, or anywhere a card or a log can show it.
     pub agent: String,
+    /// A bare shell stood between the socket and the program `line` names, and the program is no
+    /// attached mind: the walk's own finding (`CallerIdentity::via_shell`), by the same rule that
+    /// prefixes `line` with "a program started from a terminal". Carried as a flag so the card's
+    /// words come from the walk, not from re-reading a line whose label is the caller's argv
+    /// (security review of #639, N2). Display only.
+    pub from_terminal: bool,
+    /// The shell raised this card itself — its recipe executor, for a step that started with
+    /// nobody at the desk — so there is no caller on a socket to verify, and nothing to doubt: the
+    /// desktop is asking. Set only where the shell builds the card (`control_agents`), never from
+    /// a request. Display only (fourth review of #639).
+    pub raised_by_desktop: bool,
 }
 
 impl Verified {
+    /// Who is asking, as the machine established it, in a few words: the attached mind its
+    /// ancestry belongs to by the kernel's pid (a name match is not enough), else the verified
+    /// program's executable (the kernel's word, not its command line, which the caller writes),
+    /// else "an unidentified program". Never the name the
+    /// request gave itself. For the shell's own "… is asking to …" notification, which goes out
+    /// as `Yantrik` (security review of #614).
+    pub fn who(&self) -> String {
+        if self.raised_by_desktop {
+            return "this desktop".to_string();
+        }
+        if self.mind_by_pid && !self.attached_mind.trim().is_empty() {
+            return self.attached_mind.trim().to_string();
+        }
+        let exe = self.exe.strip_suffix(" (deleted)").unwrap_or(&self.exe);
+        // The first recognisable process up the chain was the installed shell, so the caller is
+        // something it started -- a bridge, a mind -- and not the shell, which raises no cards of
+        // its own. Said the way the notification card says it (third-pass review of #614).
+        if yantrik_ipc_transport::owner::is_installed_desktop_binary(exe) {
+            return crate::notification_sender::bridged_by(exe);
+        }
+        let name = crate::notification_sender::one_line(yantrik_ipc_transport::peer_identity::basename(exe));
+        if name.is_empty() { "an unidentified program".to_string() } else { name }
+    }
+
     /// What `describe shell` publishes beside `requester`. Facts and no prose: a caller reading
     /// this has to be able to compare it with `ps`, not to be reassured by it.
     pub fn to_json(&self) -> serde_json::Value {
@@ -272,6 +311,7 @@ impl Verified {
             "exe": self.exe,
             "pid": self.pid,
             "attached_mind": self.attached_mind,
+            "mind_by_pid": self.mind_by_pid,
             "discrepancies": self.discrepancies,
             "agent": self.agent,
         })
@@ -440,12 +480,21 @@ const IMITATED: [&str; 7] = [
 /// reordering of what is around them. The ranges the card can meet in text: soft hyphen, the
 /// Arabic letter mark, the Mongolian vowel separator, zero-width space to right-to-left mark,
 /// the embeddings and overrides, word joiner to the invisible operators and the isolates, the
-/// byte-order mark, the interlinear annotation marks, and the tag characters.
-fn is_format_char(c: char) -> bool {
+/// byte-order mark, the interlinear annotation marks, and the tag characters — and the rest of
+/// category Cf: the Arabic number and end-of-ayah signs, the Syriac abbreviation mark, the Kaithi
+/// number signs, the Egyptian hieroglyph format controls, the shorthand format controls and the
+/// musical symbol beams. The one list on this desktop: the per-call sentence's sanitiser
+/// (`control_approvals::sanitised_explanation`) and the card's escapes read it too (review of #639).
+pub(crate) fn is_format_char(c: char) -> bool {
     matches!(
         c as u32,
         0x00AD
+            | 0x0600..=0x0605
             | 0x061C
+            | 0x06DD
+            | 0x070F
+            | 0x0890..=0x0891
+            | 0x08E2
             | 0x180E
             | 0x200B..=0x200F
             | 0x202A..=0x202E
@@ -453,6 +502,11 @@ fn is_format_char(c: char) -> bool {
             | 0x2066..=0x206F
             | 0xFEFF
             | 0xFFF9..=0xFFFB
+            | 0x110BD
+            | 0x110CD
+            | 0x13430..=0x1343F
+            | 0x1BCA0..=0x1BCA3
+            | 0x1D173..=0x1D17A
             | 0xE0001
             | 0xE0020..=0xE007F
     )
@@ -593,6 +647,12 @@ pub struct Card {
     pub status: Status,
     /// The one-line transcript record, once this has been decided. Empty while pending.
     pub record: String,
+    /// Wall-clock `HH:MM` it was decided at, for the resolved line's "Approved by you · 10:42".
+    /// Empty while pending, and for one that was never answered.
+    pub decided_at: String,
+    /// Allowed with "Allow for this session" rather than once. Display only: the resolved
+    /// line says which promise was made. Nothing reads it to decide anything.
+    pub session: bool,
     pub age_secs: u64,
 }
 
@@ -631,12 +691,31 @@ pub fn canonical(value: &serde_json::Value) -> String {
 /// known height. Neither bound hides anything in silence: a cut value names its true length and
 /// a cut list names how many are left.
 pub fn args_rows(value: &serde_json::Value) -> Vec<String> {
+    args_rows_with(value, ARG_VALUE_CHARS)
+}
+
+/// How much of one value a card that must show its arguments whole carries (see [`shown_whole`]).
+/// A request with a longer value for such a card is refused before it is asked
+/// (`approval_bounds::refusal`), so on a card that was asked nothing is cut at this bound.
+pub(crate) const WHOLE_VALUE_CHARS: usize = 240;
+
+/// Whether a card shows its arguments whole or not at all: graded `dangerous`, or the app's
+/// sentence (or the caller's, which can only add caution) says it cannot be undone or runs
+/// whatever it is given. The red button's reading, and the open-ended one beside it — a command
+/// cut at sixty characters is where `&& rm -rf ~/x` goes (fourth review of #639). Display only.
+pub fn shown_whole(grade: &str, said: &str) -> bool {
+    grade == "dangerous" || unrecoverable(said) || open_ended(said)
+}
+
+/// [`args_rows`] with the value bound named: [`ARG_VALUE_CHARS`] for an ordinary card,
+/// [`WHOLE_VALUE_CHARS`] for one that shows its arguments whole.
+pub fn args_rows_with(value: &serde_json::Value, value_chars: usize) -> Vec<String> {
     let Some(map) = value.as_object() else {
         // Not an object. Show it rather than hiding it: a caller that sent something odd should
         // not get a card that looks empty.
         return match value {
             serde_json::Value::Null => vec!["(no arguments)".to_string()],
-            other => vec![clip(&other.to_string(), ARG_VALUE_CHARS)],
+            other => vec![clip(&other.to_string(), value_chars)],
         };
     };
     if map.is_empty() {
@@ -656,7 +735,7 @@ pub fn args_rows(value: &serde_json::Value) -> Vec<String> {
                 serde_json::Value::String(s) => s.clone(),
                 other => other.to_string(),
             };
-            format!("{key}: {}", clip(&shown, ARG_VALUE_CHARS))
+            format!("{key}: {}", clip(&shown, value_chars))
         })
         .collect();
     if keys.len() > ARG_ROWS {
@@ -1104,7 +1183,16 @@ impl Store {
                 purpose: clip_at_word(&record.published, PURPOSE_CHARS),
                 caller_says: record.caller_says(),
                 summary: summary_of(&record.published),
-                args: args_rows(&record.args),
+                // Whole, wrapped, on a card whose action cannot be undone or runs whatever it is
+                // given; cut with its length named on any other.
+                // And on a card the desktop raised itself — the recipe executor's hand_off, whose
+                // task (up to 200 characters) is what a person is being asked to start — which
+                // never passes `request_approval`'s refusal and was cut at sixty (fifth review).
+                args: if shown_whole(&record.grade, &record.said()) || record.verified.raised_by_desktop {
+                    args_rows_with(&record.args, WHOLE_VALUE_CHARS)
+                } else {
+                    args_rows(&record.args)
+                },
                 // At a word, not at the bound: a cut in the middle of the name is the
                 // `PURPOSE_CHARS` mistake rebuilt — "13:0" and "13:00… " are not the same
                 // sentence about when the appointment is.
@@ -1123,6 +1211,12 @@ impl Store {
                 said: record.said(),
                 status,
                 record: record_line(record, status),
+                decided_at: if status == Status::Pending || (status == Status::Expired && record.state != Status::Granted) {
+                    String::new()
+                } else {
+                    record.decided_at.clone()
+                },
+                session: record.session,
                 age_secs: now.duration_since(record.created).as_secs(),
             };
             if status == Status::Pending {
@@ -1211,7 +1305,27 @@ pub fn request(
     asked: Asked<'_>,
     args: serde_json::Value,
 ) -> Result<Requested, String> {
-    locked().raise(requester, verified, asked, args, Instant::now(), &hhmm())
+    request_in(&mut locked(), crate::never_ask::refusal(), requester, verified, asked, args, Instant::now(), &hhmm())
+}
+
+/// [`request`] on a given store, with the test-run refusal passed in. The refusal comes first,
+/// before anything is stored or drawn: every card on this machine is made by this one door, so
+/// "approvals are off during a test run" cannot be missed by a new caller (`never_ask`).
+#[allow(clippy::too_many_arguments)]
+fn request_in(
+    store: &mut Store,
+    off_for_test: Option<String>,
+    requester: &str,
+    verified: Verified,
+    asked: Asked<'_>,
+    args: serde_json::Value,
+    now: Instant,
+    at: &str,
+) -> Result<Requested, String> {
+    if let Some(why) = off_for_test {
+        return Err(why);
+    }
+    store.raise(requester, verified, asked, args, now, at)
 }
 
 pub fn status(id: &str) -> Option<Status> {
@@ -1322,9 +1436,35 @@ mod approvals_tests {
             exe: "/home/pranab/hermes-agent/venv/bin/python".into(),
             pid: 696,
             attached_mind: "Hermes Agent".into(),
+            mind_by_pid: true,
             discrepancies: Vec::new(),
             agent: String::new(),
+            from_terminal: false,
+            raised_by_desktop: false,
         }
+    }
+
+    #[test]
+    fn who_is_asking_is_what_the_machine_verified_never_the_claim() {
+        // The attached mind the kernel's ancestry matched.
+        assert_eq!(verified().who(), "Hermes Agent");
+        // No mind matched: the executable, not the command line it wrote for itself.
+        let program = Verified {
+            attached_mind: String::new(),
+            line: "Yantrik Security Update (pid 5)".into(),
+            exe: "/usr/bin/python3.11".into(),
+            ..verified()
+        };
+        assert_eq!(program.who(), "python3.11");
+        // A call through the shell's bridge with no attached mind: the walk names the shell, but
+        // the shell is not what is asking.
+        let bridged = Verified { exe: "/opt/yantrik/bin/yantrik-ui".into(), ..program.clone() };
+        assert_eq!(bridged.who(), "a program yantrik-ui started");
+        // A file name is cleaned like any other text the caller chose.
+        let odd = Verified { exe: "/tmp/ev\nil".into(), ..program.clone() };
+        assert_eq!(odd.who(), "ev il");
+        // Nothing established.
+        assert_eq!(Verified::default().who(), "an unidentified program");
     }
 
     fn ask(store: &mut Store, now: Instant) -> String {
@@ -1344,6 +1484,32 @@ mod approvals_tests {
             )
             .expect("a first request is accepted")
             .id
+    }
+
+    /// The gate's test run: a request that would have raised a card is refused at once, and the
+    /// store holds no card for it afterwards. The same request without the flag raises one.
+    #[test]
+    fn approvals_off_for_a_test_run_refuses_and_raises_no_card() {
+        let now = Instant::now();
+        let asked = || Asked {
+            app: "shell",
+            action: "agent_run",
+            grade: "sensitive",
+            purpose: "Run an agent.",
+            published: "Run an agent.",
+            target: "",
+            explained: "",
+        };
+        let mut store = Store::new();
+        let off = Some(crate::never_ask::REFUSED.to_string());
+        let err = request_in(&mut store, off, "pi 0.9", Verified::default(), asked(), serde_json::json!({}), now, "12:03")
+            .expect_err("refused");
+        assert!(err.contains("approvals are off during a test run"), "{err}");
+        assert!(store.pending(now).is_empty(), "no card was created");
+
+        let raised = request_in(&mut store, None, "pi 0.9", Verified::default(), asked(), serde_json::json!({}), now, "12:03")
+            .expect("without the flag the behaviour is unchanged");
+        assert_eq!(store.pending(now).len(), 1, "{:?}", raised.id);
     }
 
     #[test]
@@ -2170,6 +2336,13 @@ mod approvals_tests {
 
         let card = store.cards(now).into_iter().find(|c| c.id == id).unwrap();
         assert_eq!(card.record, "Allowed for this session: calendar.delete_event — 12:03");
+        // The card carries which it was, for the resolved line's "(this session)" (review of
+        // #580), and a one-off does not.
+        assert!(card.session, "a session grant is marked as one");
+        let mut once = Store::new();
+        let once_id = ask(&mut once, now);
+        once.grant(&once_id, now, "12:03").unwrap();
+        assert!(!once.cards(now).into_iter().find(|c| c.id == once_id).unwrap().session);
 
         // And it is still one grant, for these arguments, once — the standing part lives in
         // `mind_mode`, not in the store.

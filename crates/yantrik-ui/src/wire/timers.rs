@@ -24,22 +24,33 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     wire_hourly_snapshot(ctx);
 }
 
-/// Clock timer — updates time and personalized greeting every 30 seconds.
+/// How long until the next minute begins, given the time since the epoch.
+///
+/// The clock reads "Fri 2 Oct · 14:32" and has no seconds, so the only moment it can be wrong is
+/// the instant the minute changes. A repeating 30-second timer was wrong for up to 29 of every
+/// 30 seconds around that instant and woke the shell twice a minute to say nothing; this asks to be
+/// woken once, on the minute. A few milliseconds past the boundary, so the time is read inside the
+/// new minute and never the old one.
+pub(crate) fn until_next_minute(since_epoch: Duration) -> Duration {
+    let into_minute = since_epoch.as_millis() % 60_000;
+    Duration::from_millis((60_000 - into_minute) as u64 + 20)
+}
+
+/// The clock and the personalised greeting: set now, then again at the top of every minute.
+///
+/// One single-shot timer that arms the next one, not a repeating one: between minutes nothing here
+/// is scheduled to run (the idle rule: no repeating Slint timers for state).
 fn wire_clock(ui: &App, user_name: &str) {
-    let ui_weak = ui.as_weak();
-    let name = user_name.to_string();
-    let timer = Timer::default();
-    timer.start(TimerMode::Repeated, Duration::from_secs(30), move || {
-        if let Some(ui) = ui_weak.upgrade() {
-            ui.set_clock_text(app_context::current_time_hhmm().into());
-            ui.set_date_text(app_context::current_date_short().into());
-            ui.set_greeting_text(
-                format!("{}, {}", app_context::time_of_day_greeting(), name).into(),
-            );
-        }
-    });
-    // Keep timer alive
-    std::mem::forget(timer);
+    tick_clock(ui.as_weak(), user_name.to_string());
+}
+
+fn tick_clock(ui_weak: slint::Weak<App>, name: String) {
+    let Some(ui) = ui_weak.upgrade() else { return };
+    ui.set_clock_text(app_context::current_time_hhmm().into());
+    ui.set_date_text(app_context::current_date_short().into());
+    ui.set_greeting_text(format!("{}, {}", app_context::time_of_day_greeting(), name).into());
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    Timer::single_shot(until_next_minute(now), move || tick_clock(ui_weak, name));
 }
 
 /// Background cognition — think cycle every 60 seconds.
@@ -109,4 +120,30 @@ fn wire_hourly_snapshot(ctx: &AppContext) {
         }
     });
     std::mem::forget(timer);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The wake-up lands just after the minute turns, wherever in the minute it is asked.
+    #[test]
+    fn the_clock_wakes_once_just_after_the_minute_turns() {
+        let after = |secs: f64| until_next_minute(Duration::from_secs_f64(secs));
+        // Half a second into a minute: 59.5 s to go, and the 20 ms of slack.
+        assert_eq!(after(60.0 * 7.0 + 0.5), Duration::from_millis(59_520));
+        // Exactly on the minute: a whole minute, never zero (which would spin).
+        assert_eq!(after(60.0 * 9.0), Duration::from_millis(60_020));
+        // One millisecond before the turn: just the slack and the millisecond.
+        assert_eq!(after(60.0 * 3.0 - 0.001), Duration::from_millis(21));
+    }
+
+    /// The idle rule, read from the source: no repeating timer drives the clock.
+    #[test]
+    fn the_clock_has_no_repeating_timer() {
+        let src = include_str!("timers.rs");
+        let clock = &src[src.find("fn tick_clock(").unwrap()..src.find("/// Background cognition").unwrap()];
+        assert!(clock.contains("Timer::single_shot("), "the clock re-arms itself once per minute");
+        assert!(!clock.contains("TimerMode::Repeated"), "and never repeats on an interval");
+    }
 }

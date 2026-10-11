@@ -54,6 +54,57 @@ fn where_now(ui: &App) -> serde_json::Value {
     })
 }
 
+/// `files_new_folder` / `files_new_file`: the checks on the UI thread, the disk on the socket's
+/// side of `answer_later`, so a slow or hung mount cannot freeze the desktop. The answer is the
+/// file-system fact (`created` / `existed`) and is settled; only the listing catches up after, by
+/// a refresh queued onto the UI thread once the disk has changed.
+fn make_here(
+    weak: &slint::Weak<App>,
+    args: &serde_json::Value,
+    folder: bool,
+) -> Result<serde_json::Value, String> {
+    let ui = weak.upgrade().ok_or_else(|| "the shell is gone".to_string())?;
+    let name = args["name"].as_str().unwrap_or_default().to_string();
+    if name.is_empty() {
+        return Err("`name` is empty".into());
+    }
+    let nested = crate::control_files_create::is_nested(&name);
+    if nested && !folder {
+        return Err(format!(
+            "`{name}` has folders in it; make the folder first with files_new_folder, then create the file there"
+        ));
+    }
+    // A `~/…` path does not depend on the folder on screen; anything else is made inside it, which
+    // a mind must be allowed to see. A nested path's levels are each judged on the worker, where
+    // they exist one after another (`make_nested_checked`).
+    if !name.starts_with("~/") {
+        mind::here(&ui.get_file_browser_path())?;
+    }
+    ensure_files_screen(&ui);
+    if !nested {
+        mind::may_make(&ui.get_file_browser_path(), &name)?;
+    }
+    let dir = crate::filebrowser::expand_home(&ui.get_file_browser_path());
+    let weak = ui.as_weak();
+    // Who is asking is known here; the worker may not be able to tell, so it is carried in.
+    let mind = mind::a_mind_is_calling();
+    let work = move || {
+        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+        let answer = if nested {
+            crate::control_files_create::make_nested_checked(&dir, &name, mind, &home)?
+        } else {
+            crate::control_files_create::make_checked(&dir, &name, folder, mind, &home)?
+        };
+        if answer.get("created").is_some() {
+            let _ = weak.upgrade_in_event_loop(|ui| ui.invoke_file_refresh());
+        }
+        Ok(answer)
+    };
+    yantrik_app_runtime::control::answer_later(work)
+        .map(|()| serde_json::json!({ "answering": "off the UI thread" }))
+        .or_else(|work| work())
+}
+
 /// Whether the current listing has an entry by this name, so an action can refuse a name that is
 /// not there and say so, rather than invoke a callback that quietly does nothing.
 fn has_entry(ui: &App, name: &str) -> bool {
@@ -92,8 +143,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
 
     let surface = surface
         .action(
-            Action::new("files_go", "Open the Files screen at an absolute path").defers()
-                .arg(Param::text("path").describe("An absolute directory path, e.g. /home/user or /tmp")),
+            Action::new("files_go", "Open Files at a folder; answers what is in it")
+                .arg(Param::text("path").describe("An absolute directory path, e.g. /home/user or ~/Documents")),
             move |args| {
                 let ui = up(&for_go)?;
                 let path = args["path"].as_str().unwrap_or_default().to_string();
@@ -101,9 +152,35 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     return Err("`path` is empty".into());
                 }
                 mind::may_open(&path)?;
-                ensure_files_screen(&ui);
-                ui.invoke_file_navigate_to_path(path.clone().into());
-                Ok(serde_json::json!({ "requested_path": path, "now": where_now(&ui) }))
+                // The folder is read on the worker and the answer is what it holds, settled. Before,
+                // the answer was "requested" and unsettled, with nothing about the folder; on VM 520 a
+                // mind, unsure it had arrived, went to the same folder five more times and made nothing.
+                let weak = ui.as_weak();
+                // Who is asking is known here; the worker may not be able to tell, so it is carried in.
+                let for_mind = mind::a_mind_is_calling();
+                let work = move || {
+                    // Checked again on what the path is now, links resolved: the listing names what is
+                    // inside, and a folder swapped for a link since the check above would otherwise be
+                    // read wherever it now leads.
+                    if for_mind {
+                        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+                        let home = std::fs::canonicalize(&home).unwrap_or(home);
+                        let full = crate::filebrowser::expand_home(&path);
+                        if let Ok(resolved) = std::fs::canonicalize(&full) {
+                            mind::open_verdict(&resolved.to_string_lossy(), &home)?;
+                        }
+                    }
+                    let listing = crate::control_files_create::listing(&path)?;
+                    let go = path.clone();
+                    let _ = weak.upgrade_in_event_loop(move |ui| {
+                        ensure_files_screen(&ui);
+                        ui.invoke_file_navigate_to_path(go.into());
+                    });
+                    Ok(listing)
+                };
+                yantrik_app_runtime::control::answer_later(work)
+                    .map(|()| serde_json::json!({ "answering": "off the UI thread" }))
+                    .or_else(|work| work())
             },
         )
         .action(
@@ -131,9 +208,14 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             // is not the file browser. A web page, an SVG or a PDF leaves it for the browser
             // window instead (#233), so the description names that too.
             Action::new("files_open", "Open a file in the current directory (image, text, audio; a web page, SVG or PDF in the browser)")
-                .arg(Param::text("name").describe("A file name shown in the current listing")),
+                .arg(Param::text("name").describe("A file name shown in the current listing"))
+                .defers(),
             move |args| {
                 let ui = up(&for_open)?;
+                // The file opens in a window of its own (editor, viewer, mpv, the browser), which
+                // comes up over a waiting card (card_watch). First, so a refusal leaves even the
+                // screen where it was.
+                crate::card_watch::hold_windows("files_open")?;
                 let name = args["name"].as_str().unwrap_or_default().to_string();
                 ensure_files_screen(&ui);
                 mind::here(&ui.get_file_browser_path())?;
@@ -148,8 +230,29 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // The entry too, links followed: opening puts its contents in a window the mind
                 // can read back, and a link in the home may lead anywhere.
                 mind::may_open_entry(&ui.get_file_browser_path(), &name)?;
+                // Asked on this thread, where the caller is in scope: a mind's app opens in Mind
+                // View on a worker, which can be refused, and the person's desktop is not the
+                // fallback. The answer then waits for the window like `open_app`'s, instead of
+                // saying `opened` for a launch that was refused (PR #582 review, S5).
+                let for_mind = matches!(crate::mind_view::requester_now(), crate::mind_view::Requester::Mind(_));
+                crate::running::clear_launch_failure(&app);
                 ui.invoke_file_open(name.clone().into());
-                Ok(serde_json::json!({ "opened": name, "app": app, "screen": crate::control::screen_name(ui.get_current_screen()) }))
+                let answer = serde_json::json!({ "opened": name, "app": app, "screen": crate::control::screen_name(ui.get_current_screen()) });
+                if !for_mind {
+                    return Ok(answer);
+                }
+                let wait = move || {
+                    let mut probe = crate::mind_landing::probe_for(app.clone());
+                    let seen = crate::mind_landing::wait_for_window(
+                        &mut probe,
+                        crate::mind_landing::BUDGET,
+                        crate::mind_landing::STEP,
+                    );
+                    crate::mind_landing::answer(answer, &app, seen)
+                };
+                yantrik_app_runtime::control::answer_later(wait)
+                    .map(|()| serde_json::json!({ "answering": "off the UI thread" }))
+                    .or_else(|wait| wait())
             },
         )
         .action(
@@ -165,20 +268,13 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             },
         )
         .action(
-            Action::new("files_new_folder", "Create a folder in the current directory").defers()
-                .arg(Param::text("name").describe("The new folder's name")),
-            move |args| {
-                let ui = up(&for_folder)?;
-                mind::here(&ui.get_file_browser_path())?;
-                let name = args["name"].as_str().unwrap_or_default().to_string();
-                if name.is_empty() {
-                    return Err("`name` is empty".into());
-                }
-                ensure_files_screen(&ui);
-                mind::may_make(&ui.get_file_browser_path(), &name)?;
-                ui.invoke_file_create_folder(name.clone().into());
-                Ok(serde_json::json!({ "requested_folder": name, "now": where_now(&ui) }))
-            },
+            Action::new(
+                "files_new_folder",
+                "Create a folder here, or a nested path (a/b, ~/a/b) making missing parents; answers \
+                 `created` or `existed`, plus `made_parents`",
+            )
+            .arg(Param::text("name").describe("A name, or a/b, or ~/a/b")),
+            move |args| make_here(&for_folder, args, true),
         )
         .action(
             // The shell's own editor_* actions were the way to put text in a file until #253
@@ -187,23 +283,12 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             // text goes.
             Action::new(
                 "files_new_file",
-                "Create an empty file in the current directory. To write text into a file, use the \
-                 `editor` app: `new` with `text`, then `save_as` the path",
+                "Create an empty file in the current directory. Answers `created` or `existed` \
+                 (already there, left untouched), with the absolute path and its `kind`. To write \
+                 text into a file, use the `editor` app: `new` with `text`, then `save_as` the path",
             )
-            .defers()
             .arg(Param::text("name").describe("The new file's name")),
-            move |args| {
-                let ui = up(&for_file)?;
-                mind::here(&ui.get_file_browser_path())?;
-                let name = args["name"].as_str().unwrap_or_default().to_string();
-                if name.is_empty() {
-                    return Err("`name` is empty".into());
-                }
-                ensure_files_screen(&ui);
-                mind::may_make(&ui.get_file_browser_path(), &name)?;
-                ui.invoke_file_create_file(name.clone().into());
-                Ok(serde_json::json!({ "requested_file": name, "now": where_now(&ui) }))
-            },
+            move |args| make_here(&for_file, args, false),
         )
         .action(
             // Preserve the existing permission classification for automation callers.
@@ -259,7 +344,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             "files_stat",
             "Whether a path in the person's home exists: `exists` true, false, or \"unknown\" with \
              a `reason` (not_found, not_allowed, outside, protected, broken_link, not_a_path); \
-             kind, size and modified (unix seconds) when it does. `~` is the person's home",
+             kind, size, modified and `changed` (unix seconds; changed is ctime, which cannot be set back), `real` (where it resolves) and `via_link` \
+             (whether a link took it there) when it does. `~` is the person's home",
         )
         .risk("safe")
         .arg(Param::text("path").describe("An absolute path or ~/…, e.g. ~/notes/today.txt")),

@@ -8,12 +8,17 @@
 // (#400). What installing used to ask on the way (interests, how to be reached, the AI) is
 // asked here instead, on the installed machine's first boot, as optional setup that opens on
 // a welcome with a Skip (`after-install`).
+//
+// Colour: headings, chips, choices, focus and progress are the accent. They were teal, and teal
+// is the minds' colour and nothing else's (colour system; design/minds-surfaces-spec-
+// 2026-10-02.md, "Colour roles"). The orb, which is the mind arriving, keeps its own teal.
 
 import { Theme } from "theme.slint";
 import { Orb } from "components/orb.slint";
 import { ParticleField } from "components/particle_field.slint";
 import { Icon, Icons } from "components/icon.slint";
 import { PillButton, OnboardField } from "components/onboard_kit.slint";
+import { ProviderPresetData } from "provider_presets.slint";
 
 // ── Interest chip (toggleable) ────────────────────────────────────
 
@@ -26,14 +31,14 @@ component InterestChip inherits Rectangle {
     height: 34px;
     border-radius: 17px;
     border-width: 1px;
-    border-color: selected ? Theme.cyan : Theme.border-default;
-    background: selected ? Theme.cyan-glow : Theme.hover-fill;
+    border-color: selected ? Theme.accent : Theme.border-default;
+    background: selected ? Theme.accent-glow : Theme.hover-fill;
     animate background { duration: Theme.dur-normal; }
     animate border-color { duration: Theme.dur-normal; }
 
     chip-text := Text {
         text: label;
-        color: selected ? Theme.cyan-light : Theme.text-secondary;
+        color: selected ? Theme.accent-light : Theme.text-secondary;
         font-size: Theme.font-label;
         font-weight: selected ? 600 : 400;
         horizontal-alignment: center;
@@ -60,8 +65,8 @@ component NotifOption inherits Rectangle {
     height: 52px;
     border-radius: Theme.r-md;
     border-width: 1px;
-    border-color: active ? Theme.cyan : Theme.border-default;
-    background: active ? Theme.cyan-glow : Theme.border-subtle;
+    border-color: active ? Theme.accent : Theme.border-default;
+    background: active ? Theme.accent-glow : Theme.border-subtle;
     animate background { duration: Theme.dur-normal; }
     animate border-color { duration: Theme.dur-normal; }
 
@@ -79,14 +84,14 @@ component NotifOption inherits Rectangle {
                 height: 16px;
                 border-radius: 8px;
                 border-width: 1.5px;
-                border-color: active ? Theme.cyan : Theme.border-strong;
+                border-color: active ? Theme.accent : Theme.border-strong;
                 Rectangle {
                     x: 4px;
                     y: 4px;
                     width: 8px;
                     height: 8px;
                     border-radius: 4px;
-                    background: active ? Theme.cyan : transparent;
+                    background: active ? Theme.accent : transparent;
                     animate background { duration: Theme.dur-normal; }
                 }
             }
@@ -123,7 +128,7 @@ export component OnboardingScreen inherits Rectangle {
 
     // AI setup callbacks
     callback ai-mode-selected(string);       // "local", "cloud", "later"
-    callback ai-provider-selected(string);   // provider type: "ollama", "openai", "anthropic", "google", "deepseek", "openrouter"
+    callback ai-provider-selected(string);   // a provider catalogue id: "ollama", "openai", "gemini", …
     callback ai-api-key-submitted(string, string);  // (provider_type, api_key)
     callback ai-test-connection();
     callback ai-skip-setup();
@@ -140,6 +145,9 @@ export component OnboardingScreen inherits Rectangle {
     in property <bool> ai-hw-disk-ok: false;
     in property <bool> ai-hw-network-ok: false;
     in property <bool> ai-hw-runtime-ok: false;
+    // A Wi-Fi chip still waiting for its driver (wifi_note.rs), e.g. a Mac's BCM4331 before the
+    // machine has been on Ethernet. "" when there is nothing to say.
+    in property <string> hw-note: "";
     in property <string> ai-hw-cpu-label: "";
     in property <string> ai-hw-ram-label: "";
     in property <string> ai-hw-gpu-label: "";
@@ -209,7 +217,10 @@ export component OnboardingScreen inherits Rectangle {
 
     // AI setup state
     property <string> ai-mode: "";               // "local", "cloud", "later"
-    property <string> ai-selected-provider: "";   // "ollama", "openai", "anthropic", "google", "deepseek", "openrouter"
+    property <string> ai-selected-provider: "";   // a provider catalogue id, as ai-provider-selected
+    property <string> ai-key-placeholder: "";     // the selected provider's key hint ("sk-…")
+    // The cloud cards: the catalogue's first-boot clouds, pushed from Rust (wire/provider_catalogue.rs).
+    in property <[ProviderPresetData]> ai-cloud-presets: [];
     property <string> ai-api-key-input: "";
     property <float> hw-scan-progress: 0;
     property <int> hw-scan-step: 0;
@@ -297,7 +308,7 @@ export component OnboardingScreen inherits Rectangle {
                     : phase == 8 ? "Set up your AI provider."
                     : phase == 9 ? "Testing your AI..."
                     : "You're all set.";
-                color: Theme.cyan;
+                color: Theme.accent;
                 font-size: phase < 4 ? 28px : 22px;
                 font-weight: 300;
                 letter-spacing: 2px;
@@ -435,7 +446,7 @@ export component OnboardingScreen inherits Rectangle {
 
                 Text {
                     text: interest-count + " selected";
-                    color: interest-count >= 3 ? Theme.cyan : Theme.text-dim;
+                    color: interest-count >= 3 ? Theme.accent : Theme.text-dim;
                     font-size: Theme.fs-caption;
                     horizontal-alignment: center;
                 }
@@ -596,9 +607,9 @@ export component OnboardingScreen inherits Rectangle {
                             width: parent.width * root.hw-scan-progress;
                             height: 4px;
                             border-radius: 2px;
-                            background: Theme.cyan;
+                            background: Theme.accent;
                             drop-shadow-blur: 6px;
-                            drop-shadow-color: Theme.cyan-glow;
+                            drop-shadow-color: Theme.accent-glow;
                             animate width { duration: Theme.dur-normal; }
                         }
                     }
@@ -665,7 +676,7 @@ export component OnboardingScreen inherits Rectangle {
                         HorizontalLayout {
                             spacing: Theme.sp-3;
                             Icon {
-                                commands: root.hw-scan-step >= 3 ? Icons.check : Icons.clock;
+                                commands: root.hw-scan-step < 3 ? Icons.clock : root.ai-hw-gpu-ok ? Icons.check : Icons.warning;
                                 size: 14px;
                                 tint: root.hw-scan-step >= 3 ? (root.ai-hw-gpu-ok ? Theme.color-success : Theme.amber) : Theme.text-dim;
                                 y: (parent.height - self.height) / 2;
@@ -690,7 +701,7 @@ export component OnboardingScreen inherits Rectangle {
                         HorizontalLayout {
                             spacing: Theme.sp-3;
                             Icon {
-                                commands: root.hw-scan-step >= 4 ? Icons.check : Icons.clock;
+                                commands: root.hw-scan-step < 4 ? Icons.clock : root.ai-hw-disk-ok ? Icons.check : Icons.warning;
                                 size: 14px;
                                 tint: root.hw-scan-step >= 4 ? (root.ai-hw-disk-ok ? Theme.color-success : Theme.amber) : Theme.text-dim;
                                 y: (parent.height - self.height) / 2;
@@ -727,6 +738,12 @@ export component OnboardingScreen inherits Rectangle {
                                 horizontal-stretch: 1;
                                 vertical-alignment: center;
                             }
+                        }
+                        if root.hw-note != "" : Text {
+                            text: root.hw-note;
+                            color: Theme.amber;
+                            font-size: Theme.fs-caption;
+                            wrap: word-wrap;
                         }
 
                         // Local Runtimes
@@ -766,7 +783,7 @@ export component OnboardingScreen inherits Rectangle {
                         border-radius: Theme.r-lg;
                         background: Theme.hover-fill;
                         border-width: 1px;
-                        border-color: Theme.cyan-glow;
+                        border-color: Theme.accent-glow;
 
                         summary-col := VerticalLayout {
                             padding: Theme.sp-4;
@@ -774,7 +791,7 @@ export component OnboardingScreen inherits Rectangle {
                             Text {
                                 text: root.ai-hw-gpu-ok ? "GPU available — local inference recommended"
                                     : "No GPU — cloud provider recommended";
-                                color: Theme.cyan;
+                                color: Theme.accent;
                                 font-size: Theme.fs-body;
                                 font-weight: 500;
                                 horizontal-alignment: center;
@@ -826,9 +843,9 @@ export component OnboardingScreen inherits Rectangle {
                         }
                         Rectangle {
                             border-radius: Theme.r-lg;
-                            background: root.ai-mode == "local" ? Theme.cyan-glow : Theme.hover-fill;
+                            background: root.ai-mode == "local" ? Theme.accent-glow : Theme.hover-fill;
                             border-width: 1px;
-                            border-color: root.ai-hw-recommend == "local" ? Theme.cyan : Theme.border-strong;
+                            border-color: root.ai-hw-recommend == "local" ? Theme.accent : Theme.border-strong;
                             animate background { duration: Theme.dur-normal; }
 
                             VerticalLayout {
@@ -843,12 +860,12 @@ export component OnboardingScreen inherits Rectangle {
                                         width: rec-local-txt.preferred-width + 16px;
                                         height: 20px;
                                         border-radius: 10px;
-                                        background: Theme.tint-cyan;
+                                        background: Theme.tint-accent;
                                         border-width: 1px;
-                                        border-color: Theme.cyan-dim;
+                                        border-color: Theme.accent-dim;
                                         rec-local-txt := Text {
                                             text: "Recommended";
-                                            color: Theme.cyan;
+                                            color: Theme.accent;
                                             font-size: Theme.fs-micro;
                                             font-weight: 600;
                                             horizontal-alignment: center;
@@ -892,9 +909,9 @@ export component OnboardingScreen inherits Rectangle {
                         }
                         Rectangle {
                             border-radius: Theme.r-lg;
-                            background: root.ai-mode == "cloud" ? Theme.cyan-glow : Theme.hover-fill;
+                            background: root.ai-mode == "cloud" ? Theme.accent-glow : Theme.hover-fill;
                             border-width: 1px;
-                            border-color: root.ai-hw-recommend == "cloud" ? Theme.cyan : Theme.border-strong;
+                            border-color: root.ai-hw-recommend == "cloud" ? Theme.accent : Theme.border-strong;
                             animate background { duration: Theme.dur-normal; }
 
                             VerticalLayout {
@@ -908,12 +925,12 @@ export component OnboardingScreen inherits Rectangle {
                                         width: rec-cloud-txt.preferred-width + 16px;
                                         height: 20px;
                                         border-radius: 10px;
-                                        background: Theme.tint-cyan;
+                                        background: Theme.tint-accent;
                                         border-width: 1px;
-                                        border-color: Theme.cyan-dim;
+                                        border-color: Theme.accent-dim;
                                         rec-cloud-txt := Text {
                                             text: "Recommended";
-                                            color: Theme.cyan;
+                                            color: Theme.accent;
                                             font-size: Theme.fs-micro;
                                             font-weight: 600;
                                             horizontal-alignment: center;
@@ -1087,31 +1104,26 @@ export component OnboardingScreen inherits Rectangle {
                         alignment: center;
                         spacing: Theme.sp-2;
 
-                        for prov-item in [
-                            { label: "OpenAI", value: "openai" },
-                            { label: "Anthropic", value: "anthropic" },
-                            { label: "Google", value: "google" },
-                            { label: "DeepSeek", value: "deepseek" },
-                            { label: "OpenRouter", value: "openrouter" }
-                        ] : TouchArea {
+                        for prov-item in root.ai-cloud-presets : TouchArea {
                             width: 100px;
                             height: 56px;
                             clicked => {
-                                root.ai-selected-provider = prov-item.value;
+                                root.ai-selected-provider = prov-item.id;
+                                root.ai-key-placeholder = prov-item.placeholder;
                             }
                             Rectangle {
                                 border-radius: Theme.r-md;
-                                background: root.ai-selected-provider == prov-item.value ? Theme.cyan-glow : Theme.hover-fill;
+                                background: root.ai-selected-provider == prov-item.id ? Theme.accent-glow : Theme.hover-fill;
                                 border-width: 1px;
-                                border-color: root.ai-selected-provider == prov-item.value ? Theme.cyan : Theme.border-strong;
+                                border-color: root.ai-selected-provider == prov-item.id ? Theme.accent : Theme.border-strong;
                                 animate background { duration: Theme.dur-fast; }
                                 animate border-color { duration: Theme.dur-fast; }
 
                                 Text {
                                     text: prov-item.label;
-                                    color: root.ai-selected-provider == prov-item.value ? Theme.cyan : Theme.text-secondary;
+                                    color: root.ai-selected-provider == prov-item.id ? Theme.accent : Theme.text-secondary;
                                     font-size: Theme.fs-body;
-                                    font-weight: root.ai-selected-provider == prov-item.value ? 600 : 400;
+                                    font-weight: root.ai-selected-provider == prov-item.id ? 600 : 400;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
                                 }
@@ -1161,7 +1173,7 @@ export component OnboardingScreen inherits Rectangle {
 
                                     if onboard-key-input.text == "" : Text {
                                         x: Theme.sp-3;
-                                        text: "sk-... or your API key";
+                                        text: root.ai-key-placeholder;
                                         color: Theme.text-dim;
                                         font-size: Theme.fs-body;
                                         vertical-alignment: center;
@@ -1273,7 +1285,8 @@ export component OnboardingScreen inherits Rectangle {
                                             horizontal-stretch: 1;
                                         }
                                         Text {
-                                            text: root.ai-test-latency-ms + "ms";
+                                            // The judgement in words too, not in the colour alone.
+                                            text: root.ai-test-latency-ms + "ms · " + (root.ai-test-latency-ms < 300 ? "fast" : "slow");
                                             color: root.ai-test-latency-ms < 300 ? Theme.color-success : Theme.amber;
                                             font-size: Theme.fs-caption;
                                             font-weight: 500;

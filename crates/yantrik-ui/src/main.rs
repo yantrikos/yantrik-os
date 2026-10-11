@@ -38,6 +38,8 @@ mod agents;
 mod ambient;
 mod app_context;
 mod approvals;
+mod approval_wording;
+mod approval_bounds;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
 #[allow(dead_code)]
 mod apps;
@@ -47,8 +49,24 @@ mod caller_identity;
 mod companion_rpc;
 mod control;
 mod control_approvals;
+mod control_overlays;
+mod control_switcher;
+mod alt_tab;
+mod window_name;
+mod power_status;
+mod control_network;
+mod control_power;
 mod control_installer;
+mod control_installer_consent;
+mod control_installer_target;
+mod control_levels;
+mod control_levels_actions;
+mod control_theme;
+mod boot_unlock;
+mod installer_medium;
 mod installer_rules;
+/// What the first-run screens say about a Wi-Fi chip still waiting for its driver (Mac BCM4331).
+mod wifi_note;
 mod control_update;
 mod control_files;
 mod control_screen;
@@ -61,6 +79,7 @@ mod channels;
 /// What Private mode stops outright: the agents that run as the person, frozen.
 mod private_freeze;
 /// Where a mind may take the Files screen, and what it may do with the folder there (#443).
+mod control_files_create;
 mod control_files_mind;
 /// Whether a mind may paste the Files clipboard into the folder on screen (#443).
 mod control_files_paste;
@@ -70,10 +89,12 @@ mod control_agent_terminal;
 mod control_recipes;
 /// Agents on the shell's surface: new_agent / send_to_agent / stop_agent / read_agent / show_agent.
 mod control_agents;
+mod control_workroom;
 // The chat in one read, for the Yantrik terminal (`chat_view`).
 mod control_chat;
 mod jobs;
 mod cards;
+mod card_watch;
 mod clipboard;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
 // Remove once rustc is updated past the fix.
@@ -95,18 +116,41 @@ mod lens;
 /// The Lens's conversation put back from the saved session when it opens empty (#246).
 mod lens_history;
 mod lock;
+mod lock_wallpaper;
 mod memory_grants;
 mod markdown;
 /// What the mind may do without being asked: plan / ask / auto / bypass / bypass_all. See its module doc.
 mod mind_mode;
+mod never_ask;
 /// The right edge of every screen: the answering mind, what is at work, what it did.
 mod mind_panel;
 /// A desktop of the mind's own, inside one window: where the apps a mind opens are drawn (#239).
 mod mind_view;
+/// Whether the window a launch promised appeared, and where: `open_app`'s answer reads it back.
+mod mind_landing;
+mod app_glance;
+/// The agent terminal's visible half: a terminal in Mind View showing a mind's commands.
+mod mind_agent_terminal;
+mod open_url;
 mod session_lock;
 // The snap layouts: rc.xml's regions and keys, and the window menu, kept in step (tests only).
 mod snap_layouts;
+// The keyboard cheat sheet (Super+/), generated from rc.xml.
+mod cheat_sheet;
+// Every key the screens advertise is bound in rc.xml, and every binding names a real action (tests only).
+#[cfg(test)]
+mod rc_keys;
 mod notifications;
+// The short "Sent by … · verified" line on a notification card.
+mod notification_sender;
+// A mind's turn notices: their words, and the run of them that folds into one group.
+mod notification_groups;
+// A notification's title and body: the first sentence over the whole text, never a cut in two.
+mod notification_title;
+// The Memory screen's newest memories, by recall's own domain rule.
+mod recent_memories;
+// The newest memories read from the store directly, never queued behind the companion.
+mod memory_reader;
 mod onboarding;
 mod perception;
 mod icons;
@@ -120,11 +164,20 @@ mod surfaces;
 mod system_context;
 mod telegram;
 mod terminal;
+mod terminal_window;
+mod toplevel_watch;
+mod provider_handoff;
+mod private_file;
+mod programs;
+mod runs_on;
 mod trail;
 // What protects the credential vault on this machine, and the honest answer when nothing does.
 mod vault_unlock;
 mod voice;
+mod dock_model;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
+// It guards `windows`, the next line, and only it: a `mod` added between this comment and
+// `mod windows;` would take the attribute and leave `windows` bare (#585 B1).
 #[allow(dead_code)]
 mod windows;
 mod wire;
@@ -358,6 +411,11 @@ fn start_services() -> yantrik_shell_core::service_manager::ServiceManager {
     // `yos perception`, and so os_perception, asks for it on the first request. Without that the
     // machine rail's "on demand" was a caption on a process nothing anywhere ever ran.
     mgr.register("perception", "perception-service", false);
+    // The journal behind it (#705): perception's ring is memory, and an outage upstream of
+    // memory was silent because nothing drained it. Autostarted, unlike perception itself — it
+    // needs no privilege, and while perception is not running it costs one failed connect per
+    // 15 s. It must be up before perception is, or the ring overwrites before anything reads it.
+    mgr.register("perception-journal", "perception-journal", true);
 
     // Start autostart services (best-effort — binary may not exist in dev)
     mgr.start_autostart();

@@ -104,14 +104,13 @@ impl AppContext {
         // draws need something with depth behind them, and a smooth gradient gives them
         // nothing to be in front of.
         if user_settings.wallpaper.is_empty() {
-            ui.set_wallpaper_path("serenity".into());
+            ui.set_wallpaper_path(crate::wire::settings::DEFAULT_WALLPAPER.into());
         }
         if !user_settings.wallpaper.is_empty() {
             let wp = &user_settings.wallpaper;
             ui.set_wallpaper_path(wp.as_str().into());
             // For custom file paths (not presets), load the image
-            let presets = ["serenity", "first-light", "nightfall", "aurora", "sunset", "ocean", "nebula"];
-            if !presets.contains(&wp.as_str()) {
+            if !crate::wire::settings::WALLPAPER_PRESETS.contains(&wp.as_str()) {
                 let path = std::path::Path::new(wp.as_str());
                 if path.exists() && path.is_file() {
                     match slint::Image::load_from_path(path) {
@@ -133,7 +132,11 @@ impl AppContext {
             }
         }
 
-        // Community theme overrides
+        // The saved theme's palette and its files on the machine (wire/theme.rs), then the
+        // community override file on top: a person's own file is the last word.
+        crate::wire::theme::restore(ui);
+        // The lock screen's blurred wallpaper, made if it is missing or is for another wallpaper.
+        crate::lock_wallpaper::refresh_if_stale(&ui.get_wallpaper_path());
         load_theme_overrides(ui);
 
         // Boot status + greeting (personalized with user name)
@@ -185,6 +188,15 @@ impl AppContext {
         if let Some(ref model) = config.llm.api_model {
             ui.set_settings_llm_api_model(model.clone().into());
         }
+        // So Settings → AI can ask the companion's endpoint the way the companion does.
+        crate::wire::ai_status::set_config_key(config.llm.api_key.clone());
+        // And so the composer's destination line knows how the companion reaches its model and
+        // where it falls back to (security review of #648, H1).
+        crate::wire::ai_status::set_config_llm(crate::wire::ai_status::ConfigLlm {
+            backend: crate::runs_on::Backend::of(&config.llm),
+            fallback: config.llm.fallback.as_ref().map(|f| crate::runs_on::fallback_label(&f.backend, f.api_base_url.as_deref())),
+            kind: config.llm.backend.clone(),
+        });
 
         // ── What is answering, in the status bar ──
         //
@@ -252,9 +264,6 @@ impl AppContext {
                 }
             }
         }
-
-        // Generate labwc keybind config
-        yantrik_os::keybinds::ensure_labwc_config();
 
         // Scan installed apps
         let installed_apps = crate::apps::Catalogue::shared();

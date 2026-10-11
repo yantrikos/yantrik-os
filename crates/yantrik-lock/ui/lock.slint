@@ -1,80 +1,61 @@
 // The lock screen, drawn by yantrik-lock on the compositor's session-lock surfaces (#313).
-// The same content as the shell's own lock screen; only the compositor shows it now, and nothing
-// else on the desktop is shown or reachable until the shell says the secret is right: the login
-// password, or the PIN on an account without one (#414).
+// The same picture as the shell's own lock screen (both are `YLockView` in the kit); only the
+// compositor shows it now, and nothing else on the desktop is shown or reachable until the shell
+// says the secret is right: the login password, or the PIN on an account without one (#414).
+//
+// This file holds no secret: `digits` is how many characters are in the field, and
+// `revealed-text` is filled in by main.rs only while the person has the eye open.
 import { Theme } from "theme.slint";
+import { YLockView } from "lock_view.slint";
 
 export component LockView inherits Window {
     in property <string> time: "00:00";
     in property <string> date;
-    in property <string> greeting;
+    in property <string> user-name;
+    in property <string> initial;
     in property <int> digits: 0;
+    in property <string> revealed-text;
+    in-out property <bool> revealed: false;
     in property <string> error;
     in property <string> prompt;
+    in property <image> wallpaper;
+    in property <bool> has-wallpaper: false;
+    in property <string> network;
+    in property <int> battery-percent: -1;
+    in property <bool> battery-charging: false;
+    in property <int> notifications: 0;
+    in property <bool> can-restart: true;
+
+    callback submit();
+    callback suspend();
+    callback restart();
+    callback shutdown();
 
     default-font-family: Theme.font-ui;
-    background: Theme.bg-deep;
+    background: Theme.lock-ground;
 
-    VerticalLayout {
-        alignment: center;
-        spacing: 10px;
-
-        Text {
-            text: root.time;
-            font-size: 96px;
-            font-weight: 300;
-            color: Theme.text-primary;
-            horizontal-alignment: center;
-        }
-        Text {
-            text: root.date;
-            font-size: 18px;
-            color: Theme.text-secondary;
-            horizontal-alignment: center;
-        }
-        Rectangle { height: 28px; }
-        Text {
-            text: root.greeting;
-            font-size: 15px;
-            color: Theme.text-secondary;
-            horizontal-alignment: center;
-        }
-        Text {
-            text: root.prompt;
-            font-size: 13px;
-            color: Theme.text-dim;
-            horizontal-alignment: center;
-        }
-        HorizontalLayout {
-            alignment: center;
-            Rectangle {
-                width: 320px;
-                height: 48px;
-                border-radius: 24px;
-                border-width: 1px;
-                border-color: root.error != "" ? Theme.color-danger : Theme.border-default;
-                background: Theme.bg-input;
-                HorizontalLayout {
-                    padding-left: 22px;
-                    spacing: 10px;
-                    alignment: start;
-                    for i in min(root.digits, 20): VerticalLayout {
-                        alignment: center;
-                        Rectangle {
-                            width: 10px;
-                            height: 10px;
-                            border-radius: 5px;
-                            background: Theme.text-primary;
-                        }
-                    }
-                }
-            }
-        }
-        Text {
-            text: root.error != "" ? root.error : "Press Enter to unlock";
-            font-size: 12px;
-            color: root.error != "" ? Theme.color-danger : Theme.text-dim;
-            horizontal-alignment: center;
-        }
+    YLockView {
+        width: 100%;
+        height: 100%;
+        wallpaper: root.wallpaper;
+        has-wallpaper: root.has-wallpaper;
+        clock-text: root.time;
+        date-text: root.date;
+        user-name: root.user-name;
+        initial: root.initial;
+        prompt-text: root.prompt;
+        error-text: root.error;
+        digits: root.digits;
+        revealed-text: root.revealed-text;
+        revealed <=> root.revealed;
+        network-text: root.network;
+        battery-percent: root.battery-percent;
+        battery-charging: root.battery-charging;
+        notification-count: root.notifications;
+        can-restart: root.can-restart;
+        submit => { root.submit(); }
+        suspend => { root.suspend(); }
+        restart => { root.restart(); }
+        shutdown => { root.shutdown(); }
     }
 }

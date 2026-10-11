@@ -1,0 +1,10 @@
+#!/bin/sh
+# NetworkManager dispatcher: when a connection comes up and this machine's Broadcom Wi-Fi is
+# still waiting for its driver (yantrik-broadcom-wifi said "needs-network"), fetch it now rather
+# than at the next boot. Plugging in an Ethernet cable is the whole instruction the person gets.
+case "$2" in
+    up|connectivity-change) ;;
+    *) exit 0 ;;
+esac
+grep -qx 'state=needs-network' /run/yantrik/wifi-driver.status 2>/dev/null || exit 0
+exec systemctl start --no-block yantrik-broadcom-wifi.service

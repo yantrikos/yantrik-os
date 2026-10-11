@@ -53,6 +53,8 @@ export component WeatherApp inherits AppWindow {
     in property <[WeatherDaily]> daily <=> dash.daily;
     // Whose local time the hourly strip reads in (#220).
     in property <string> hourly-tz-label <=> dash.hourly-tz-label;
+    // Which provider the hourly strip is from (Open-Meteo), and for where.
+    in property <string> hourly-source <=> dash.hourly-source;
 
     // ── AI ──
     in property <bool> ai-is-working <=> dash.ai-is-working;

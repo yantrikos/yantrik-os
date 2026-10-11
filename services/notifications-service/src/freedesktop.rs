@@ -91,12 +91,20 @@ pub fn replaces_target(replaces_id: u32) -> Option<String> {
 /// sends `notify-send` unless told otherwise, and a shell script sends nothing at all. The
 /// `desktop-entry` hint is the sender's `.desktop` id and is the better name when there is one;
 /// "unknown" is the last resort, and it is a word a person can act on.
+///
+/// Never the desktop's own name. This door has not asked the bus who is behind a call, so there
+/// is no sender record and no program to file it under instead: `notify-send -a Yantrik …` from
+/// any program of the person's own stored a row and a toast reading "Yantrik" with nothing
+/// beside it (third-pass security review of #614). A name that borrows the desktop's
+/// (`names::borrows_the_desktops_name`) is refused here as on the socket, and the next name in
+/// line is used; the shell says "via D-Bus, not verified" beside whatever is kept.
 pub fn sender_label(app_name: &str, desktop_entry: Option<&str>) -> String {
+    let allowed = |s: &&str| !s.is_empty() && !crate::names::borrows_the_desktops_name(s);
     let from_name = app_name.trim();
-    if !from_name.is_empty() {
+    if allowed(&from_name) {
         return from_name.to_string();
     }
-    match desktop_entry.map(str::trim).filter(|s| !s.is_empty()) {
+    match desktop_entry.map(str::trim).filter(allowed) {
         Some(entry) => entry.to_string(),
         None => "unknown".to_string(),
     }
@@ -478,6 +486,20 @@ mod tests {
         assert_eq!(sender_label("", None), "unknown");
         // A desktop-entry hint does not override a name the sender actually gave.
         assert_eq!(sender_label("Thunderbird", Some("org.mozilla.Thunderbird")), "Thunderbird");
+    }
+
+    #[test]
+    fn the_desktops_name_is_refused_at_the_dbus_door_too() {
+        // `notify-send -a Yantrik …`: any program of the person's own could file a row and a
+        // toast as the desktop, with no sender record to say otherwise.
+        assert_eq!(sender_label("Yantrik", None), "unknown");
+        assert_eq!(sender_label("Yantrik Security", Some("org.example.App")), "org.example.App");
+        assert_eq!(sender_label("Y\u{0430}ntrik", None), "unknown", "a lookalike is the same claim");
+        assert_eq!(sender_label("", Some("yantrik")), "unknown", "nor through the desktop-entry hint");
+        assert_eq!(sender_label("Notes for Yantrik", None), "Notes for Yantrik");
+        let request = notify_to_request("Yantrik", 0, "Update ready", "", &[], &HashMap::new());
+        assert_eq!(request.app, "unknown");
+        assert_eq!(request.source, Source::Freedesktop);
     }
 
     #[test]

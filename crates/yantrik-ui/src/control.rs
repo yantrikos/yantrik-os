@@ -81,7 +81,10 @@ fn check_launchable(name: &str, installed: &[crate::apps::DesktopEntry]) -> Resu
 /// Both doors end here — `open_app name=launchpad`, because that is what the listing says opens
 /// it, and `show_screen screen=launchpad`, because a listing that called it a screen taught
 /// every caller to try that next.
-fn open_launcher(ui: &crate::App) -> serde_json::Value {
+fn open_launcher(ui: &crate::App) -> Result<serde_json::Value, String> {
+    // The launcher is drawn over whatever is on the screen, so it waits for a decision card like
+    // every other thing that comes over the shell (card_watch).
+    crate::card_watch::hold_windows("open_launcher")?;
     // Through the dock's own arm, so there is one account of how the launcher opens.
     ui.invoke_launch_app("launchpad".into());
     let mut answer = serde_json::json!({
@@ -101,7 +104,7 @@ fn open_launcher(ui: &crate::App) -> serde_json::Value {
             .into();
         }
     }
-    answer
+    Ok(answer)
 }
 
 /// Name to `current-screen` id, and the ids are the ones `app.slint` actually renders.
@@ -243,7 +246,7 @@ fn shell_screen_answer(
 /// reach this process and the desktop (#203). Locked is therefore a STATE of the shell, read
 /// off the screen it is showing — nothing persists it, so a restart during the login screen
 /// comes back locked — and every door has to hold to it: the socket's dispatch (the state rule
-/// `publish` installs), the keybinds any process can trigger over D-Bus, the toasts that draw
+/// `publish` installs), the toasts that draw
 /// over every screen, the command palette and the morning brief's boot timer.
 pub(crate) fn locked_screen(screen: i32) -> bool {
     screen == 3 || screen == 32
@@ -725,6 +728,14 @@ pub fn publish(
             View::new(summary)
                 .with("screen", screen_name(screen))
                 .with("conversation", serde_json::Value::Array(conversation))
+                // What the answering mind says it is doing now ("Thinking… (60 s)"), while its
+                // turn runs; empty otherwise. The chat's work card shows the same line.
+                // Withheld from an agent caller with the conversation: the status line is the
+                // person's chat in miniature. Flattened and clipped so it cannot bloat `describe`.
+                .with(
+                    "conversation_status",
+                    if agent_reading { String::new() } else { crate::wire::agents::status_for_describe(&crate::wire::agents::latest_status()) },
+                )
                 // True when the conversation above was withheld: the chat is the person's, and an
                 // agent reads its own session with `read_agent`.
                 .with("conversation_private", agent_reading)
@@ -735,6 +746,10 @@ pub fn publish(
                 // it reads everything else off, rather than knowing which file to trust.
                 .with("version", yantrik_version::version())
                 .with("windows", serde_json::Value::Array(open))
+                // The grounded dock as drawn: its buttons in order (app, running, windows,
+                // focused), which page of them is showing, and whether a mind is waiting on the
+                // person (the amber dot). What a pointer reads off the bar, a mind reads here.
+                .with("dock", crate::wire::dock_bar::for_describe(&ui))
                 // Which of them the person is looking at. The list's order is not that answer —
                 // the registry's launches come first. `desktop_in_front` is true for the desktop
                 // itself (or one of its screens), false for an app window, null when the
@@ -764,6 +779,10 @@ pub fn publish(
                     "agents",
                     if agent_reading { crate::agents::for_describe_by_an_agent() } else { crate::agents::for_describe() },
                 )
+                // The Agents workroom as the screen says it: the page, the counts, each mind's
+                // state — and, for the person's reader, the desks and the requests waiting.
+                // `show_workroom` changes the page.
+                .with("workroom", crate::wire::agents::workroom_for_describe(&ui, agent_reading))
                 // The agent catalog: the roles `hand_off` can start, what each may touch, and
                 // whether a mind it runs on is attached now. See `agents::catalog`.
                 .with("catalog", crate::agents::catalog::for_describe())
@@ -780,6 +799,9 @@ pub fn publish(
                 // and makes the run/ask/refuse decision from it, so one `describe shell` answers
                 // every question an `os_act` has to ask before it runs.
                 .with("mind_mode", crate::control_approvals::mind_mode_for_describe())
+                // Whether a test run has approvals off: every request that would raise a card is
+                // refused and nothing is shown. Ends by itself; see `never_ask`.
+                .with("approvals_off_for_test", crate::never_ask::snapshot())
                 // And what it has already done unasked. A mode that stops the asking has to
                 // replace the cards with something, or `auto` is only a quieter way of not
                 // knowing. See `mind_mode`'s audit section.
@@ -880,31 +902,63 @@ pub fn publish(
                 .with("memory_percent", ui.get_bar_mem_percent())
                 .with("disk", ui.get_bar_disk_text().to_string())
                 .with("disk_percent", ui.get_bar_disk_percent())
+                // `wifi` is the older field and stays for one release: the minds' tools and older
+                // yos-mcp read it. It is true only for a Wi-Fi connection, so on a wired machine
+                // it is false while the machine is online; `network` says the rest.
                 .with("wifi", ui.get_wifi_connected())
-                // `wifi` alone was the whole of what the desktop said about
-                // its network, and on the wired test machine it is false —
-                // so a mind reading this concluded there was no network on a
-                // machine that was online the entire time. What is up, and
-                // over what, is the network service's answer, as the status
-                // bar and the System screen show it.
+                // The machine's own levels, as Quick Settings shows them. `null` / `available:
+                // false` rather than a number when the machine has no audio server or no
+                // backlight (a VM has neither a panel nor, sometimes, a mixer).
                 .with(
-                    "network",
-                    serde_json::json!({
-                        "online": ui.get_network_online(),
-                        "type": ui.get_network_medium().to_string(),
-                        "connection": ui.get_network_detail().to_string(),
-                    }),
+                    "audio",
+                    crate::control_levels::audio_for_describe(
+                        ui.get_volume_available(),
+                        ui.get_volume_level(),
+                        ui.get_volume_muted(),
+                    ),
                 )
                 .with(
+                    "brightness",
+                    crate::control_levels::brightness_for_describe(
+                        ui.get_brightness_available(),
+                        ui.get_brightness_level(),
+                    ),
+                )
+                // What the bar's network mark shows, from the one NetworkManager reading: kind
+                // (wired | wifi | none), state, ssid, strength, ip, vpn, connectivity. `online`,
+                // `type` and `connection` are the keys it had before, kept for one release.
+                // See `control_network`.
+                .with(
+                    "network",
+                    crate::control_network::network_for_describe(yantrik_os::network::latest().as_ref(), &ui),
+                )
+                // The visible networks, only where there is a Wi-Fi device (null otherwise, like
+                // `battery`). `connect_wifi` joins one that is open or saved.
+                .with(
+                    "wifi_networks",
+                    crate::control_network::wifi_networks_for_describe(yantrik_os::network::latest().as_ref()),
+                )
+                // `null` with no battery. State, the times and the profile come from
+                // `power_status`, which also composes the bar's words, so the two cannot drift.
+                .with(
                     "battery",
-                    if ui.get_battery_available() {
-                        serde_json::json!({
-                            "percent": ui.get_battery_level(),
-                            "charging": ui.get_battery_charging(),
-                        })
-                    } else {
-                        serde_json::Value::Null
-                    },
+                    crate::power_status::battery_for_describe(
+                        ui.get_battery_available(),
+                        ui.get_battery_level(),
+                        crate::power_status::state_from_key(ui.get_battery_state().as_str()),
+                        ui.get_battery_time_to_empty_mins(),
+                        ui.get_battery_time_to_full_mins(),
+                        ui.get_power_profile().as_str(),
+                    ),
+                )
+                // Desktops have profiles too, so this stands whether or not there is a battery.
+                // `null` when there is no power-profiles-daemon.
+                .with(
+                    "power_profile",
+                    crate::power_status::profile_for_describe(
+                        ui.get_power_profile().as_str(),
+                        ui.get_power_performance_offered(),
+                    ),
                 )
                 .with("do_not_disturb", ui.get_dnd_mode())
                 // What the machine is trying to tell the person, so that "is anything waiting
@@ -912,7 +966,7 @@ pub fn publish(
                 // service — and so a mind can see what it has already said.
                 .with("notifications", crate::wire::notifications::describe_summary())
                 // The ask bar, so "is the Lens up, and what is in it" is a read rather than a
-                // screenshot. `open_lens` answers from these same two properties.
+                // screenshot. `open_lens` and `close_lens` answer from these same properties.
                 .with(
                     "lens",
                     serde_json::json!({
@@ -920,12 +974,36 @@ pub fn publish(
                         // What the person is typing, before they have sent it: theirs alone.
                         "text": if agent_reading { String::new() } else { ui.get_lens_input_text().to_string() },
                         "chat": ui.get_lens_chat_mode(),
+                        // Where words typed there go, as the composer's line says it; "" when
+                        // the shell does not know.
+                        "destination": ui.get_lens_destination().to_string(),
+                        // The action that puts it away, as every other overlay says; "" when
+                        // there is nothing up to put away.
+                        "close_with": if ui.get_lens_open() { "close_lens" } else { "" },
                     }),
                 )
                 // The launcher, for the same reason. `open_app name=launchpad` opened it under
                 // whatever window was in front, and nothing a caller could read said it was
                 // open at all: `failed_launches` was empty because nothing had failed.
-                .with("launcher", serde_json::json!({ "open": ui.get_app_grid_open() }))
+                .with("launcher", crate::wire::launcher::for_describe(&ui))
+                // The bar's three panels, which open over any screen: whether each is on the
+                // screen, and the action that puts it away. See `control_overlays`.
+                .with("today", crate::control_overlays::panel_for_describe(ui.get_today_open(), screen, "close_today"))
+                // The bar's Minds chip: what it says and where a click goes, read from the same two
+                // numbers it draws, so "does anything need me" does not need a screenshot.
+                .with("bar_minds", crate::control_overlays::bar_minds_for_describe(
+                    ui.global::<crate::AgentsState>().get_request_minds(),
+                    ui.global::<crate::AgentsState>().get_needs_count(),
+                ))
+                .with("quick_settings", crate::control_overlays::panel_for_describe(ui.get_quick_settings_open(), screen, "close_quick_settings"))
+                .with("power_menu", crate::control_overlays::panel_for_describe(ui.get_power_menu_open(), screen, "close_power_menu"))
+                // What the power popover offers right now: Hibernate only where logind does, and
+                // how many minds a restart would stop.
+                .with("power", crate::control_power::for_describe(&ui))
+                .with("clipboard_panel", crate::control_overlays::panel_for_describe(ui.get_clip_panel_open(), screen, "close_clipboard"))
+                .with("cheat_sheet", crate::control_overlays::panel_for_describe(ui.get_cheat_sheet_open(), screen, "close_cheat_sheet"))
+                // The window overview (Super+Tab): whether it is up and what it has selected.
+                .with("window_switcher", crate::control_switcher::for_describe(screen))
                 // The mode menu over the status bar's chip, for the same reason again:
                 // `show_mind_audit` opens it, and a caller that opened it has to be able to see
                 // that it is still there and put it away (`close_mind_menu`) (#184).
@@ -942,6 +1020,8 @@ pub fn publish(
                 // Private mode: only the person ever reads this as true. While it is on, an agent
                 // is refused before describe runs (`yantrik_ipc_transport::privacy`).
                 .with("private", crate::private_mode::is_on())
+                // The theme in use and the ones to choose from (`set_theme`).
+                .with("theme", crate::wire::theme::for_describe(ui.get_settings_theme().as_str()))
                 .with("settings", serde_json::json!({"category":ui.get_settings_category(),"query":ui.get_settings_query().to_string(),"dark":ui.get_settings_dark_mode(),"accent":ui.get_settings_accent_color().to_string(),"wallpaper":ui.get_wallpaper_path().to_string(),"save_error":ui.get_settings_save_error(),"save_status":ui.get_settings_save_status().to_string(),"auto_lock_secs":ui.get_settings_auto_lock_secs(),"auto_lock_available":ui.get_settings_auto_lock_available()}))
         }
     };
@@ -954,14 +1034,17 @@ pub fn publish(
     let screen_ui = ui_for.clone();
     let focus_ui = ui_for.clone();
     let dnd_ui = ui_for.clone();
+    let profile_ui = ui_for.clone();
     let ask_ui = ui_for.clone();
     let lens_ui = ui_for.clone();
+    let lens_close_ui = ui_for.clone();
     let pin_ui = ui_for.clone();
     let pin_catalogue = ctx.installed_apps.clone();
     let read_ui = ui_for.clone();
     let panel_ui = ui_for.clone();
     let desk_ui = ui_for.clone();
     let rule_ui = ui_for.clone();
+    let auto_lock_ui = ui_for.clone();
     let lock_ui = ui_for;
 
     let surface = ControlSurface::new("shell")
@@ -989,7 +1072,7 @@ pub fn publish(
                  down, listed under `problems` in describe - to the project's report intake, with a \
                  note. Graded sensitive because the record leaves the machine. It carries no name, \
                  hostname or address; the bytes sent are exactly the record as the file holds it, \
-                 which is what the Report a problem screen shows. The answer says where it landed. \
+                 which is what the Problems screen shows. The answer says where it landed. \
                  Once sent it cannot be undone.",
             )
             .risk("sensitive")
@@ -1010,7 +1093,7 @@ pub fn publish(
                 Ok(serde_json::json!({
                     "record": name,
                     "sending": true,
-                    "read_back": "the outcome lands on the Report a problem screen's status line; \
+                    "read_back": "the outcome lands on the Problems screen's status line; \
                                   describe shell again for `problems`",
                 }))
             },
@@ -1025,9 +1108,14 @@ pub fn publish(
             // failed spawn is logged, not returned). The branches that only switch one of the
             // desktop's own screens settle on return, and now say which happened — the caller was
             // told `launching` either way, and waited for a window that was never coming (#45).
-            Action::new("open_app", "Launch an app, or focus it if it is already running")
-                .arg(Param::text("name").describe("App id, e.g. notes, email, terminal, files"))
-                .defers(),
+            // Settled on return: the answer waits for the window (and a miss is a refusal), so what
+            // comes back is the outcome, not a promise — `defers` told every caller `settled: false`
+            // about a window it had already seen (VM 520, 3 October), as files_go did (#596).
+            Action::new(
+                "open_app",
+                "Launch an app, or focus it if it is already running; the answer says where its window                  is, what the app shows, and the actions to drive it",
+            )
+            .arg(Param::text("name").describe("App id, e.g. notes, email, terminal, files")),
             move |args| {
                 let ui = open_ui()?;
                 let name = args["name"].as_str().unwrap_or_default().trim().to_string();
@@ -1046,12 +1134,21 @@ pub fn publish(
                     crate::wire::dock::route(&name),
                     Some(crate::wire::dock::Launch::Launchpad)
                 ) {
-                    let mut answer = open_launcher(&ui);
+                    let mut answer = open_launcher(&ui)?;
                     answer["launching"] = name.into();
                     return Ok(answer);
                 }
+                // An app's window would come up over a waiting card (card_watch).
+                crate::card_watch::hold_windows("open_app")?;
+                // The id the window will be known by, and a past failure of it cleared, so what
+                // the wait below reads back is this launch's and not an earlier one's.
+                let window_id = crate::wire::dock::launcher_id_in(&name, &catalogue);
+                crate::running::clear_launch_failure(&window_id);
                 // The launcher's own path: it resolves the binary, enforces one window per app,
                 // and focuses the running one instead of starting a second.
+                // Asked here too, where the caller is in scope, so the answer can say when the
+                // dock will not start a second copy for a mind (`mind_view::route`, B2).
+                let already_open_for_mind = !crate::mind_view::route_now(&window_id).spawn;
                 ui.invoke_launch_app(name.clone().into());
                 // Which of the two that did. A program opens a window; a name that is part of the
                 // desktop switches one of its screens, and no window exists or ever will. The
@@ -1070,6 +1167,38 @@ pub fn publish(
                 // was opened by (`sysmonitor` opens what answers as `system-monitor`).
                 if let Some(surface) = crate::wire::dock::surface_for(&name, &catalogue) {
                     answer["describe_as"] = surface.into();
+                }
+                if already_open_for_mind {
+                    answer["note"] = "already open on the person's desktop: not launched again, and not \
+                                      raised over their work. Drive it through its surface."
+                        .into();
+                }
+                // A program is not a window until one is seen. The dock spawns it on a worker and
+                // `launching` told a mind "done" for a terminal that never drew anywhere (2 Oct
+                // 2026), so the answer waits, off the UI thread, for the window to be listed —
+                // in Mind View's compositor for a mind's launch, on the desktop for a person's —
+                // and says where it is, or that it is not.
+                if answer.get("launching").is_some() {
+                    let wait = move || {
+                        let mut probe = crate::mind_landing::probe_for(window_id);
+                        let seen = crate::mind_landing::wait_for_window(
+                            &mut probe,
+                            crate::mind_landing::BUDGET,
+                            crate::mind_landing::STEP,
+                        );
+                        let mut landed = crate::mind_landing::answer(answer, &name, seen)?;
+                        // What is in the window now and how to drive it (app_glance), so the next
+                        // call can be the right one rather than another look.
+                        if let Some(surface) = landed["describe_as"].as_str().map(str::to_string) {
+                            if let Some(glance) = crate::app_glance::glance(&surface) {
+                                landed["app"] = glance;
+                            }
+                        }
+                        Ok(landed)
+                    };
+                    return yantrik_app_runtime::control::answer_later(wait)
+                        .map(|()| serde_json::json!({ "answering": "off the UI thread" }))
+                        .or_else(|wait| wait());
                 }
                 Ok(answer)
             },
@@ -1331,6 +1460,31 @@ pub fn publish(
             },
         )
         .action(
+            // Putting the Lens away, chat panel and all: Escape and the panel's close button, for a
+            // caller that is not at the keyboard. `open_lens` had no way back, so a mind that
+            // opened the Lens left it standing over the desktop until a person closed it.
+            //
+            // `safe`: it hides a panel. The conversation is kept, a draft in the field is kept,
+            // nothing is sent. The answer is the state read back after the calls.
+            Action::new(
+                "close_lens",
+                "Put away the ask bar (the Lens) and its chat panel, as Escape does. The conversation and anything typed are kept; nothing is sent",
+            )
+            .risk("safe"),
+            move |_args| {
+                let ui = lens_close_ui()?;
+                let was = ui.get_lens_open();
+                // The pair desktop.slint's own close runs: the flag, then the shell's callback,
+                // which clears the results and leaves chat mode.
+                ui.set_lens_open(false);
+                ui.invoke_close_lens();
+                Ok(serde_json::json!({
+                    "lens_open": ui.get_lens_open(),
+                    "closed": was,
+                }))
+            },
+        )
+        .action(
             // Parity, deliberately: anything a person can do on the Harnesses screen, an agent
             // can do here. A control surface that could not change which mind is answering would
             // be the one decision on this desktop reserved for the mouse. `sensitive` because the
@@ -1444,6 +1598,81 @@ pub fn publish(
             },
         )
         .action(
+            // Sensitive: it writes a provider's key into a harness's own settings file and restarts
+            // the harness, so the person answers the approval card first. The answer is the same
+            // text the Settings card shows — which files, which provider and model, never the key.
+            Action::new(
+                "assign_provider",
+                "Give a harness one of the person's saved providers, written into the harness's own settings",
+            )
+            .risk("sensitive")
+            // The card names where the key goes — provider, address, model, file — which the
+            // bare arguments (an id like `custom-3fa1b2`) do not. A per-call sentence also means
+            // "allow for this session" is never offered: each key moved is its own question.
+            .explain(|args| {
+                crate::wire::harness_provider::explain_assign(
+                    args["harness"].as_str().unwrap_or_default().trim(),
+                    args["provider"].as_str().unwrap_or_default().trim(),
+                )
+            })
+            .arg(Param::text("harness").describe("Harness id, as `describe shell` lists under `harnesses`, with can_assign_provider"))
+            .arg(Param::text("provider").describe("A saved provider's id or name, as Settings → AI lists it")),
+            move |args| {
+                let harness = args["harness"].as_str().unwrap_or_default().trim().to_string();
+                let provider = args["provider"].as_str().unwrap_or_default().trim().to_string();
+                if harness.is_empty() || provider.is_empty() {
+                    return Err("`harness` and `provider` are both needed".into());
+                }
+                let card = crate::wire::harness_provider::assign(&harness, &provider)?;
+                Ok(serde_json::json!({ "assigned": harness, "provider": provider, "did": card }))
+            },
+        )
+        .action(
+            // Sensitive for the same reason: it rewrites a harness's settings file (back to the
+            // person's own) and restarts it.
+            Action::new(
+                "revert_provider",
+                "Put back a harness's own settings, undoing assign_provider",
+            )
+            .risk("sensitive")
+            .explain(|args| crate::wire::harness_provider::explain_revert(args["harness"].as_str().unwrap_or_default().trim()))
+            .arg(Param::text("harness").describe("Harness id with can_revert_provider")),
+            move |args| {
+                let harness = args["harness"].as_str().unwrap_or_default().trim().to_string();
+                crate::wire::harness_provider::revert(&harness)?;
+                Ok(serde_json::json!({ "reverted": harness }))
+            },
+        )
+        .action(
+            // Standard: it opens a window and nothing else. The harness's own setup runs in a
+            // terminal the person types into, and nothing changes on this machine unless they
+            // answer it — the agent cannot type there, and nothing here reads the window.
+            Action::new(
+                "configure_harness",
+                "Open a harness's own setup (choosing its model, signing in) in a terminal for the person",
+            )
+            .risk("standard")
+            .arg(
+                Param::text("id")
+                    .describe("Harness id, as `describe shell` lists under `harnesses`, with `configure` set"),
+            ),
+            move |args| {
+                let id = args["id"].as_str().unwrap_or_default().trim().to_string();
+                if id.is_empty() {
+                    return Err("`id` is empty".into());
+                }
+                // The terminal comes up over a waiting card (card_watch). The person's own button
+                // on the Harnesses page calls `configure` directly and is not held.
+                crate::card_watch::hold_windows("configure_harness")?;
+                let command = crate::wire::harness::configure(&id)?;
+                Ok(serde_json::json!({
+                    "opened": id,
+                    "command": command,
+                    "watch": "the person answers it in the terminal; describe the shell afterwards and read harnesses[] for what the row says now",
+                }))
+            },
+        )
+        .action(
             // Also sensitive: enabling a user unit is a decision about what this machine runs on
             // every login, not just now.
             Action::new(
@@ -1482,7 +1711,11 @@ pub fn publish(
             .risk("safe"),
             move |_args| {
                 let ui = desk_ui()?;
-                Ok(crate::wire::show_desktop::press(&ui))
+                // Putting everything away uncovers a card, so it is never held. The second press
+                // brings every window back over the shell, and with it over a waiting card
+                // (final review of the card fix), so that press waits for the card. Super+D
+                // comes through here too, by `yos`, and waits with it.
+                crate::wire::show_desktop::press(&ui, || crate::card_watch::hold_windows("show_desktop"))
             },
         )
         .action(
@@ -1504,7 +1737,7 @@ pub fn publish(
                 // desktop, so this is where a caller who read that arrives — and was refused
                 // with a list the name is not on. Taken here, the same way `open_app` takes it.
                 if want == "launchpad" {
-                    let mut answer = open_launcher(&ui);
+                    let mut answer = open_launcher(&ui)?;
                     answer["showing"] = "launchpad".into();
                     return Ok(answer);
                 }
@@ -1601,6 +1834,7 @@ pub fn publish(
                 if name.is_empty() {
                     return Err("`name` is empty".into());
                 }
+                crate::card_watch::hold_windows("show_app")?;
                 let id = crate::wire::dock::launcher_id(&name);
                 let _ = std::thread::Builder::new().name("yos-show-app".into()).spawn({
                     let id = id.clone();
@@ -1635,6 +1869,10 @@ pub fn publish(
                 // plainly running is what that cost.
                 let open = crate::windows::addressable_titles();
                 let title = crate::windows::window_named(want, &open)?;
+                // Bringing the desktop itself forward never covers a card; anything else would.
+                if title != crate::windows::SHELL_WINDOW_TITLE {
+                    crate::card_watch::hold_windows("focus_window")?;
+                }
                 ui.invoke_switch_window(title.clone().into());
                 Ok(serde_json::json!({ "focused": title }))
             },
@@ -1704,6 +1942,17 @@ pub fn publish(
                 let want = args["title"].as_str().unwrap_or_default();
                 let open = crate::windows::addressable_titles();
                 let title = crate::windows::window_named(want, &open)?;
+                // The shell minimised takes every card, the taskbar's count of them and the way
+                // back with it, and focusing it does not bring a minimised window back (second
+                // review of the card fix). The person minimises nothing of the desktop by a click
+                // either: it has no minimise button.
+                if title == crate::windows::SHELL_WINDOW_TITLE {
+                    return Err(format!(
+                        "`{title}` is the desktop itself, with the status bar, the taskbar and any \
+                         card waiting for the person; it is not minimised"
+                    ));
+                }
+                crate::card_watch::hold_windows("minimise_window")?;
                 crate::windows::minimise(&title)?;
                 Ok(serde_json::json!({
                     "minimised": title,
@@ -1737,6 +1986,7 @@ pub fn publish(
                 let want = args["title"].as_str().unwrap_or_default();
                 let open = crate::windows::addressable_titles();
                 let title = crate::windows::window_named(want, &open)?;
+                crate::card_watch::hold_windows("maximise_window")?;
                 crate::windows::maximise(&title)?;
                 Ok(serde_json::json!({
                     "maximised": title,
@@ -1781,6 +2031,76 @@ pub fn publish(
                 Ok(serde_json::json!({
                     "do_not_disturb": crate::wire::settings::dnd_mode(),
                 }))
+            },
+        )
+        .action(
+            // The idle lock, for a caller — the setting the issue could only reach by clicking
+            // the Settings row twice. Same contract as `set_do_not_disturb` above: the file
+            // first, the error propagated, the screen after, because `settled` is a promise
+            // about the settings file and the idle watcher reads the timeout off the window
+            // every poll, so the window has to follow the file.
+            //
+            // `sensitive` because turning the lock off is a security decision: the machine
+            // stands open until somebody moves a mouse, and the change stands after a restart.
+            // Only the timeouts Settings offers are taken — the idle watch was measured against
+            // those, and the Settings row would have to show something for a timeout nobody
+            // offered.
+            Action::new("set_auto_lock", "Set when an idle machine locks itself: 30, 60, 120, 300, 600 seconds, or 0 for never. Stays after a restart")
+                .risk("sensitive")
+                .arg(Param::number("secs").describe("Seconds of idle before the shell locks; one of 30, 60, 120, 300, 600, 0 (never)")),
+            move |args| {
+                let ui = auto_lock_ui()?;
+                let secs = args["secs"]
+                    .as_i64()
+                    // A whole number sent as a float (30.0) is taken; 30.7 is not a timeout.
+                    .or_else(|| args["secs"].as_f64().filter(|f| f.fract() == 0.0).map(|f| f as i64))
+                    .ok_or("`secs` must be a whole number of seconds")?;
+                // A number that does not fit an i32 is not an offered timeout either;
+                // `i32::MIN` lets the settings module refuse it in the same words as the rest.
+                let secs = i32::try_from(secs).unwrap_or(i32::MIN);
+                crate::wire::settings::set_auto_lock_secs(secs)?;
+                ui.set_settings_auto_lock_secs(secs);
+                tracing::info!(secs, "Idle lock set, and written to the settings file");
+                Ok(serde_json::json!({
+                    "auto_lock_secs": ui.get_settings_auto_lock_secs(),
+                }))
+            },
+        )
+        .action(
+            // The battery popover's profile choice, for a caller. `standard`: it changes how
+            // the machine trades speed for battery, which the person can undo with the same
+            // choice and which the daemon itself resets (it drops to power-saver on its own
+            // when the battery runs low). Nothing is written to a file here; the daemon holds
+            // it. The answer is read back from the daemon, so a profile it did not take is
+            // not reported as taken, and one it does not offer is refused before it is asked.
+            Action::new(
+                "set_power_profile",
+                "Set the power profile: power-saver, balanced or performance. Performance is only on hardware that has it; `describe shell` lists what is offered under `power_profile`. Answers with the profile in effect afterwards.",
+            )
+            .risk("standard")
+            .arg(Param::text("profile").describe("power-saver, balanced or performance")),
+            move |args| {
+                let weak = profile_ui()?.as_weak();
+                let profile = args["profile"]
+                    .as_str()
+                    .ok_or("`profile` must be power-saver, balanced or performance")?
+                    .to_string();
+                // The bus calls are off the UI thread: a power-profiles-daemon that hangs, or a
+                // polkit prompt nobody answers, must not freeze the shell. The answer is what
+                // the daemon reports afterwards, finished on the socket's side; each call has a
+                // 2 s timeout, so a stuck daemon is an error here and not a wait.
+                let work = move || {
+                    let now = yantrik_os::power_profile::set(&profile)?;
+                    crate::power_status::apply_profile_later(weak, Some(now.clone()));
+                    tracing::info!(profile = %now.active, "Power profile set");
+                    Ok(serde_json::json!({
+                        "power_profile": now.active,
+                        "offered": now.offered,
+                    }))
+                };
+                yantrik_app_runtime::control::answer_later(work)
+                    .map(|()| serde_json::json!({ "answering": "off the UI thread" }))
+                    .or_else(|work| work())
             },
         )
         .action(
@@ -1847,6 +2167,19 @@ pub fn publish(
     // decision is a button in the Lens. See `control_approvals` for why that split is the
     // whole point.
     let surface = crate::control_approvals::actions(surface, ui);
+    // The bar's panels: open_quick_settings, open_power_menu, open_clipboard, open_cheat_sheet and their closes.
+    let surface = crate::control_overlays::actions(surface, ui);
+    // The media keys' actions: set_volume, set_mute, set_brightness, set_mic_mute, mute_mic, show_caps_lock.
+    let surface = crate::control_levels_actions::actions(surface, ui);
+    // The desktop's theme: set_theme. See `control_theme`.
+    let surface = crate::control_theme::actions(surface, ui);
+    // The network mark's popover as data: set_wifi, disconnect_network, connect_wifi. See
+    // `control_network`, which also says why no action there takes a password.
+    let surface = crate::control_network::actions(surface, ui);
+    // Suspend, hibernate, log out, restart and shut down: the power popover's acts, graded.
+    let surface = crate::control_power::actions(surface, ui);
+    // The window overview (Super+Tab): open_switcher, switcher_move, switcher_commit, switcher_cancel.
+    let surface = crate::control_switcher::actions(surface, ui);
     // An agent's commands, each in a terminal of its own in its pane — agent_run, agent_job,
     // agent_input, agent_kill. The agent comes from its token, never an argument. See
     // `control_agent_terminal` and design/agents-workspace-2026-09-23.md, decision 3.
@@ -1864,6 +2197,8 @@ pub fn publish(
     // The chat in one read, for a client that is not the Lens: the Yantrik terminal. See
     // `control_chat`.
     let surface = crate::control_chat::actions(surface, ui);
+    // The workroom's own navigation: show_workroom. See `control_workroom`.
+    let surface = crate::control_workroom::actions(surface, ui);
     crate::control_agents::actions(surface, ui).serve();
 }
 
@@ -2223,6 +2558,43 @@ mod window_action_tests {
         );
     }
 
+    /// What a pointer can do, a mind can ask for: Escape puts the Lens away, so `close_lens` does,
+    /// by the same pair desktop.slint runs, and describe names it the way it names every
+    /// overlay's close.
+    #[test]
+    fn the_lens_has_a_close_beside_its_open() {
+        let src = source();
+        let from = src.find("Action::new(\n                \"close_lens\"").expect("the shell publishes `close_lens`");
+        let rest = &src[from..];
+        let close = &rest[..rest.find(".action(").unwrap()];
+        assert!(close.contains(".risk(\"safe\")"), "putting a panel away is safe:\n{close}");
+        assert!(
+            close.contains("ui.set_lens_open(false);") && close.contains("ui.invoke_close_lens();"),
+            "the flag and the shell's own close callback, as Escape runs them:\n{close}"
+        );
+        assert!(
+            src.contains("\"close_with\": if ui.get_lens_open() { \"close_lens\" } else { \"\" }"),
+            "describe's lens entry names its close, like the other overlays"
+        );
+    }
+
+    /// S10: `open_app` and `files_open` wait for the window off the UI thread, and no process
+    /// call or wait sits in the handler body. Source scans, like the neighbours.
+    #[test]
+    fn open_app_and_files_open_wait_for_the_window_off_the_ui_thread() {
+        let open_app = action("open_app");
+        let later = open_app.find("answer_later(").expect("open_app answers off the UI thread");
+        let wait = open_app.find("wait_for_window(").expect("open_app waits for the window");
+        assert!(wait < later, "the wait must be inside the closure handed to answer_later:\n{open_app}");
+        assert!(open_app.contains("route_now("), "open_app must say when nothing is launched again");
+        assert!(!open_app.contains("Command::new"), "no process call in the handler");
+        let files = include_str!("control_files.rs");
+        let files_open = &files[files.find("\"files_open\"").unwrap()..];
+        let files_open = &files_open[..files_open.find("\"files_up\"").unwrap()];
+        assert!(files_open.contains("answer_later(") && files_open.contains("wait_for_window("), "{files_open}");
+        assert!(files_open.contains(".defers()"));
+    }
+
     /// The launcher opened every time, and nobody could see it.
     ///
     /// `open_app name=launchpad` answered "launching"; the log showed the grid opening — the
@@ -2247,6 +2619,8 @@ mod window_action_tests {
         let from = src.find("fn open_launcher(").expect("the shell no longer has `open_launcher`");
         let body = &src[from..];
         let body = &body[..body.find("\n}\n").unwrap_or(body.len())];
+        let held = body.find("card_watch::hold_windows(\"open_launcher\")").expect("`open_launcher` asks hold_windows first");
+        assert!(held < body.find("invoke_launch_app(").unwrap(), "hold_windows comes before the grid opens");
         assert!(
             body.contains("invoke_launch_app("),
             "`open_launcher` must open the grid through the dock's own arm, so there is one \
@@ -2779,7 +3153,7 @@ mod open_app_answer_tests {
 }
 
 #[cfg(test)]
-mod locked_state_tests {
+pub(crate) mod locked_state_tests {
     //! The installed machine autologins on tty1, so the login screen is the only thing between
     //! anybody who can reach this process and the desktop — and `yos act shell open_lens` walked
     //! straight past it: `accepted: True, settled: True`, Lens open, conversation on screen (#203).
@@ -2806,7 +3180,7 @@ mod locked_state_tests {
     /// Every action name the shell's control modules publish, read off their declarations
     /// rather than a list kept beside them — the scan `control_approvals` uses, minus its test
     /// halves so a test's own quoting of `Action::new` cannot feed it.
-    fn published_actions() -> Vec<String> {
+    pub(crate) fn published_actions() -> Vec<String> {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut files: Vec<_> = std::fs::read_dir(&dir)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
@@ -3008,8 +3382,7 @@ mod locked_state_tests {
         );
     }
 
-    /// The socket's dispatch is the main door, but not the only one: keybinds any process can
-    /// trigger over D-Bus, toasts that draw over every screen, the palette, the morning brief's
+    /// The socket's dispatch is the main door, but not the only one: toasts that draw over every screen, the palette, the morning brief's
     /// boot timer and Ctrl+K in the markup all move the shell on their own, and #203 names
     /// them. Each holds to the state through the same pure predicate; these handlers need a
     /// live window to run, so the placement is pinned against the source.
@@ -3024,7 +3397,6 @@ mod locked_state_tests {
         // (file, how many of its own doors the predicate must hold) — notifications has two:
         // the toast body and a toast button's action, which reaches an app's own surface.
         for (file, doors) in [
-            ("src/wire/system_poll.rs", 1),
             ("src/wire/command_palette.rs", 1),
             ("src/wire/notifications.rs", 2),
             ("src/wire/morning_brief.rs", 1),
@@ -3133,5 +3505,149 @@ mod lasting_settings_grade_tests {
                  Declaration as written:\n{declaration}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod power_profile_tests {
+    //! `set_power_profile` and the battery's `describe` fields (story 1.4). The handler needs a
+    //! live shell and a system bus to run, so these pin its shape against the source, as
+    //! `lock_grade_tests` does for `lock`; what the answers contain is tested on the pure
+    //! functions in `power_status`.
+    use std::path::Path;
+
+    fn source() -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/control.rs");
+        let whole = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        whole.split("#[cfg(test)]").next().unwrap_or_default().to_string()
+    }
+
+    fn declaration() -> String {
+        let src = source();
+        let from = src.find("\"set_power_profile\"").expect("the shell publishes set_power_profile");
+        let rest = &src[from..];
+        rest[..rest.find(".action(").unwrap_or(rest.len())].to_string()
+    }
+
+    /// It changes how the machine trades speed for battery, nothing is written, and the person
+    /// can undo it with the same choice: `standard`, not `safe` and not `sensitive`.
+    #[test]
+    fn setting_a_profile_is_standard() {
+        let d = declaration();
+        assert!(d.contains(".risk(\"standard\")"), "set_power_profile is graded standard. As written:\n{d}");
+    }
+
+    /// The answer is what the daemon reports afterwards, and a profile it does not offer is
+    /// refused: both come from `power_profile::set`, so the handler must go through it and hand
+    /// its error on with `?`, not report the profile it was given.
+    #[test]
+    fn the_answer_is_read_back_and_a_profile_not_offered_is_refused() {
+        let d = declaration();
+        assert!(d.contains("yantrik_os::power_profile::set(&profile)?"), "the handler calls the daemon and propagates a refusal. As written:\n{d}");
+        assert!(d.contains("now.active"), "the answer is the daemon's read-back. As written:\n{d}");
+        assert!(!d.contains("\"power_profile\": profile"), "never echo the request as the answer. As written:\n{d}");
+    }
+
+    /// A hung daemon froze the shell when the call was made in the handler itself, which runs on
+    /// the UI thread. The call belongs inside the closure handed to `answer_later`, which runs
+    /// on the socket's side.
+    #[test]
+    fn the_daemon_is_not_called_on_the_ui_thread() {
+        let d = declaration();
+        let later = d.find("answer_later(").expect("the answer is finished off the UI thread");
+        let work = d.find("let work = move ||").expect("the bus work is a closure");
+        let call = d.find("power_profile::set(").expect("the handler sets the profile");
+        assert!(work < call && call < later, "`power_profile::set` must be inside the `answer_later` closure, not in the handler body. As written:
+{d}");
+        assert!(!d[..work].contains("power_profile::set("), "no bus call before the closure. As written:
+{d}");
+    }
+
+    /// `describe shell` carries the battery's state and times, and the profile at the top level
+    /// so a machine without a battery still reports it.
+    #[test]
+    fn describe_reports_the_battery_object_and_the_profile() {
+        let src = source();
+        assert!(src.contains("crate::power_status::battery_for_describe("), "describe's `battery` comes from power_status");
+        assert!(src.contains("\"power_profile\","), "describe has a top-level `power_profile`, battery or not");
+    }
+}
+
+#[cfg(test)]
+mod status_gate_tests {
+    /// The mind's status line is the person's chat in miniature: `describe shell` withholds it
+    /// from an agent caller exactly as it withholds the conversation (#587 review).
+    #[test]
+    fn the_conversation_status_is_withheld_from_an_agent_caller() {
+        let src = include_str!("control.rs");
+        let at = src.find(".with(\n                    \"conversation_status\"").expect("conversation_status field");
+        let field = &src[at..at + 260];
+        assert!(field.contains("if agent_reading { String::new() }"), "{field}");
+        assert!(field.contains("status_for_describe"), "{field}");
+    }
+}
+
+#[cfg(test)]
+mod auto_lock_action_tests {
+    use std::path::Path;
+
+    /// The whole file above the tests — the shell as it is published.
+    fn source() -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/control.rs");
+        let whole = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        whole
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// `set_auto_lock`'s handler as it is written, taken from the code above the tests: a check
+    /// that names what it forbids is worth nothing if it can match itself.
+    fn handler() -> String {
+        let src = source();
+        let from = src
+            .find("\"set_auto_lock\"")
+            .expect("the shell still publishes set_auto_lock");
+        let rest = &src[from..];
+        let end = rest.find(".action(").unwrap_or(rest.len());
+        rest[..end].to_string()
+    }
+
+    /// Turning the idle lock off is a security decision, so the action runs under a card, and
+    /// the write is the action: `settled` is a promise about the settings file, so a failed
+    /// save has to come back as an error, the same contract `set_do_not_disturb` keeps.
+    #[test]
+    fn set_auto_lock_is_sensitive_and_writes_the_file_before_answering() {
+        let handler = handler();
+        assert!(
+            handler.contains(".risk(\"sensitive\")"),
+            "`set_auto_lock` must be graded `sensitive` — turning the idle lock off leaves \
+             the machine standing open, and the change stands after a restart. Handler as \
+             written:\n{handler}"
+        );
+        assert!(
+            handler.contains("settings::set_auto_lock_secs(secs)?"),
+            "`set_auto_lock` must write through `wire::settings::set_auto_lock_secs` — the \
+             same persist path the Settings row's cycle uses — and hand its failure on with \
+             `?`, because returning Ok answers `settled: true`. Handler as written:\n{handler}"
+        );
+    }
+
+    /// A caller that cannot see the timeout cannot tell "never" from "five minutes" without
+    /// the button, which is the blind half of the issue.
+    #[test]
+    fn describe_reports_the_idle_lock_timeout() {
+        let src = source();
+        let at = src
+            .find(".with(\"settings\",")
+            .expect("describe shell has a `settings` section");
+        let settings = &src[at..at + 900];
+        assert!(
+            settings.contains("\"auto_lock_secs\":ui.get_settings_auto_lock_secs()"),
+            "describe's `settings` must carry `auto_lock_secs` read off the window, the same \
+             property the idle watcher polls. Section as written:\n{settings}"
+        );
     }
 }

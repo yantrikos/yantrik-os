@@ -2073,16 +2073,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dirs-next"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b98cf8ebf19c3d1b223e151f99a4f9f0690dca41414773390fc824184ac833e1"
-dependencies = [
- "cfg-if",
- "dirs-sys-next",
-]
-
-[[package]]
 name = "dirs-sys"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2090,19 +2080,8 @@ checksum = "e01a3366d27ee9890022452ee61b2b63a67e6f13f58900b651ff5665f0bb1fab"
 dependencies = [
  "libc",
  "option-ext",
- "redox_users 0.5.2",
+ "redox_users",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "dirs-sys-next"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ebda144c4fe02d1f7ea1a7d9641b6fc6b580adcfa024ae48797ecdeb6825b4d"
-dependencies = [
- "libc",
- "redox_users 0.4.6",
- "winapi",
 ]
 
 [[package]]
@@ -4613,16 +4592,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "keyring"
-version = "3.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eebcc3aff044e5944a8fbaf69eb277d11986064cba30c468730e8b9909fb551c"
-dependencies = [
- "log",
- "zeroize",
-]
-
-[[package]]
 name = "khronos_api"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5460,6 +5429,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "unicode-normalization",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
  "yantrik-service-sdk",
@@ -7247,17 +7217,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce70a74e890531977d37e532c34d45e9055d2409ed08ddba14529471ed0be16"
 dependencies = [
  "bitflags 2.13.2",
-]
-
-[[package]]
-name = "redox_users"
-version = "0.4.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba009ff324d1fc1b900bd1fdb31564febe58a8ccc8a6fdbb93b543d33b13ca43"
-dependencies = [
- "getrandom 0.2.17",
- "libredox",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -9505,6 +9464,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3b09c83c3c29d37506a3e260c08c03743a6bb66a9cd432c6934ab501a190571f"
 
 [[package]]
+name = "unicode-normalization"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
+dependencies = [
+ "tinyvec",
+]
+
+[[package]]
 name = "unicode-normalization-alignments"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9868,12 +9836,6 @@ checksum = "5428f8bf88ea5ddc08faddef2ac4a67e390b88186c703ce6dbd955e1c145aca5"
 dependencies = [
  "wit-bindgen",
 ]
-
-[[package]]
-name = "wasite"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8dad83b4f25e74f184f64c43b150b91efe7647395b42289f38e50566d82855b"
 
 [[package]]
 name = "wasm-bindgen"
@@ -10267,17 +10229,6 @@ dependencies = [
  "lazy_static",
  "serde",
  "wezterm-dynamic",
-]
-
-[[package]]
-name = "whoami"
-version = "1.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d4a4db5077702ca3015d3d02d74974948aba2ad9e12ab7df718ee64ccd7e97d"
-dependencies = [
- "libredox",
- "wasite",
- "web-sys",
 ]
 
 [[package]]
@@ -11394,6 +11345,7 @@ name = "yantrik-download-manager"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "libc",
  "serde",
  "serde_json",
  "sha2",
@@ -11416,6 +11368,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -11488,8 +11441,10 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tracing",
+ "unicode-normalization",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
 ]
@@ -11527,6 +11482,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "yantrik-install-target"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "yantrik-ipc-contracts"
 version = "0.1.0"
 dependencies = [
@@ -11554,11 +11517,13 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "libc",
+ "png",
  "slint",
  "slint-build",
  "smithay-client-toolkit 0.20.0",
  "wayland-client",
  "yantrik-design-tokens",
+ "yantrik-ui-kit",
 ]
 
 [[package]]
@@ -11581,16 +11546,12 @@ dependencies = [
 name = "yantrik-ml"
 version = "0.1.0"
 dependencies = [
- "aes-gcm",
  "anyhow",
  "candle-core",
  "candle-nn",
  "candle-transformers",
  "chrono",
- "dirs-next",
  "hf-hub 0.5.0",
- "hostname",
- "keyring",
  "libc",
  "llama-cpp-2",
  "ndarray 0.16.1",
@@ -11605,7 +11566,6 @@ dependencies = [
  "tracing",
  "tts",
  "ureq 3.2.0",
- "whoami",
 ]
 
 [[package]]
@@ -11694,6 +11654,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "zbus",
+ "zeroize",
 ]
 
 [[package]]
@@ -11929,6 +11890,7 @@ dependencies = [
  "libc",
  "mailparse",
  "native-tls",
+ "png",
  "pty-process",
  "rubato",
  "rusqlite",
@@ -11943,16 +11905,20 @@ dependencies = [
  "tracing-subscriber",
  "ureq 2.12.1",
  "vt100",
+ "wayland-client",
+ "wayland-protocols-wlr",
  "yantrik-agent-terminal",
  "yantrik-app-runtime",
  "yantrik-chat",
  "yantrik-companion",
  "yantrik-harness",
+ "yantrik-install-target",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
  "yantrik-ml",
  "yantrik-os",
  "yantrik-shell-core",
+ "yantrik-ui-kit",
  "yantrik-ui-slint",
  "yantrik-version",
  "yantrikdb",

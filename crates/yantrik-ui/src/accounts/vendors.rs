@@ -27,6 +27,8 @@ pub struct Vendor {
     pub glyph: &'static str,
     /// The program, looked for on `PATH`. Empty for a key-only vendor.
     pub binary: &'static str,
+    /// What the program is called, for "Chosen for Claude Code". Empty for a key-only vendor.
+    pub program: &'static str,
     /// Its directory under the home directory, for the first account.
     pub home: &'static str,
     /// The environment variable that points the program at another directory, which is how a
@@ -55,6 +57,7 @@ pub const VENDORS: [Vendor; 5] = [
         name: "Claude",
         glyph: "claude",
         binary: "claude",
+        program: "Claude Code",
         home: ".claude",
         home_env: Some("CLAUDE_CONFIG_DIR"),
         marker: ".credentials.json",
@@ -66,6 +69,7 @@ pub const VENDORS: [Vendor; 5] = [
         name: "Codex",
         glyph: "codex",
         binary: "codex",
+        program: "Codex",
         home: ".codex",
         home_env: Some("CODEX_HOME"),
         marker: "auth.json",
@@ -79,6 +83,7 @@ pub const VENDORS: [Vendor; 5] = [
         name: "Qwen",
         glyph: "qwen",
         binary: "",
+        program: "",
         home: "",
         home_env: None,
         marker: "",
@@ -90,6 +95,7 @@ pub const VENDORS: [Vendor; 5] = [
         name: "Gemini",
         glyph: "gemini",
         binary: "gemini",
+        program: "Gemini CLI",
         home: ".gemini",
         home_env: None,
         marker: "oauth_creds.json",
@@ -101,6 +107,7 @@ pub const VENDORS: [Vendor; 5] = [
         name: "xAI",
         glyph: "xai",
         binary: "",
+        program: "",
         home: "",
         home_env: None,
         marker: "",

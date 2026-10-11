@@ -94,7 +94,7 @@ _LIB = Path(__file__).resolve().parent.parent / "lib"
 if _LIB.is_dir() and str(_LIB) not in sys.path:
     sys.path.insert(0, str(_LIB))
 
-from yantrik_harness import Handler, Harness, Turn, mind_directory  # noqa: E402
+from yantrik_harness import Handler, Harness, Turn, mind_directory, program_path  # noqa: E402
 
 VERSION = "1.1"
 
@@ -262,8 +262,7 @@ class OpenClawConfig:
     def environ(self) -> Dict[str, str]:
         env = dict(os.environ)
         env.update(self.env)
-        if self.path:
-            env["PATH"] = self.path + os.pathsep + env.get("PATH", "")
+        env["PATH"] = program_path(self.path, env.get("PATH", ""))
         return env
 
     def cli_argv(self, text: str, session: str) -> List[str]:

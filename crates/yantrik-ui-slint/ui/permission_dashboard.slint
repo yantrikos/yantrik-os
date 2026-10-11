@@ -3,6 +3,8 @@
 import { Theme } from "theme.slint";
 import { AppIdentity } from "components/app_color.slint";
 import { Icon, Icons } from "components/icon.slint";
+import { AppHeader } from "components/app_header.slint";
+import { YButton } from "components/y_button.slint";
 
 // ── Data structs ──
 
@@ -121,89 +123,55 @@ component RiskBadge inherits Rectangle {
 }
 
 // ── Risk summary card ──
-
+//
+// A neutral tile with the count said in words: "18 high-risk files". The tiles used to be filled
+// with a hue each -- high risk on a teal-green, medium on violet, low on blue -- so the colours
+// contradicted the words beside them. High risk with files in it is the one that needs the
+// person, so it alone carries the amber, as a warning glyph beside the words; the others are text.
 component RiskSummaryCard inherits Rectangle {
-    in property <string> label;
+    // "high", "medium" or "low", as the sentence says it.
+    in property <string> level;
     in property <int> count;
-    in property <color> badge-color;
-    in property <color> badge-bg;
-    width: 140px;
-    height: 64px;
+    // Draw the amber warning glyph: these files need the person's attention.
+    in property <bool> needs-you: false;
+    height: 40px;
+    min-width: 140px;
+    preferred-width: row.preferred-width;
+    horizontal-stretch: 0;
     border-radius: Theme.r-lg;
-    background: Theme.bg-elevated;
+    background: Theme.tile-off;
     border-width: 1px;
-    border-color: Theme.border-subtle;
+    border-color: Theme.tile-border;
 
-    HorizontalLayout {
-        padding: Theme.sp-3;
-        spacing: 10px;
+    row := HorizontalLayout {
+        padding-left: Theme.sp-3;
+        padding-right: Theme.sp-3;
+        spacing: Theme.sp-2;
         alignment: start;
 
-        Rectangle {
-            width: 38px;
-            height: 38px;
-            border-radius: Theme.r-md;
-            background: badge-bg;
-            vertical-stretch: 0;
-
-            Text {
-                text: count;
-                color: badge-color;
-                font-size: Theme.fs-title-1;  // No exact token — intentionally larger than fs-headline
-                font-weight: 700;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+        if root.needs-you : VerticalLayout {
+            alignment: center;
+            Icon {
+                commands: Icons.warning;
+                size: 16px;
+                tint: Theme.amber;
             }
         }
 
-        VerticalLayout {
-            alignment: center;
-            spacing: 2px;
-
-            Text {
-                text: label;
-                color: Theme.text-secondary;
-                font-size: Theme.font-small;
-                font-weight: 600;
-            }
-            Text {
-                text: count == 1 ? "file" : "files";
-                color: Theme.text-dim;
-                font-size: Theme.fs-micro;
-            }
+        Text {
+            text: root.count + " " + root.level + "-risk " + (root.count == 1 ? "file" : "files");
+            color: root.needs-you ? Theme.text-primary : Theme.text-secondary;
+            font-size: Theme.font-small;
+            font-weight: 600;
+            vertical-alignment: center;
         }
     }
 }
 
-// ── Action button component ──
-
-component PermActionButton inherits TouchArea {
-    in property <string> label;
-    in property <bool> primary: false;
-    height: 32px;
-
-    Rectangle {
-        border-radius: Theme.r-md;
-        background: primary ? AppIdentity.accent
-                  : (parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated);
-        border-width: 1px;
-        border-color: primary ? Theme.accent-dim : Theme.border-subtle;
-
-        HorizontalLayout {
-            padding-left: Theme.sp-3;
-            padding-right: Theme.sp-3;
-            alignment: center;
-
-            Text {
-                text: label;
-                color: primary ? Theme.bg-deep : Theme.text-primary;
-                font-size: Theme.font-small;
-                font-weight: 600;
-                vertical-alignment: center;
-            }
-        }
-    }
-}
+// Buttons are the kit's YButton. This screen drew its own, and its primary wore the app's
+// identity colour, which for Permissions is red: "Scanning..." looked like the destructive
+// button. A primary is the accent in every app (colour system); the red is for what cannot
+// be undone, and nothing here is that.
 
 // ── Detail panel for selected file ──
 
@@ -528,10 +496,9 @@ component FileDetailPanel inherits Rectangle {
                 }
             }
 
-            PermActionButton {
+            YButton {
                 label: "Apply Fix";
-                primary: true;
-                width: 100px;
+                variant: 0;
                 clicked => { root.fix-clicked(); }
             }
         }
@@ -541,9 +508,15 @@ component FileDetailPanel inherits Rectangle {
 // ── Main component ──
 
 export component PermissionDashboardScreen inherits Rectangle {
-    // This screen draws its own header rather than AppHeader, so it has to say what
-    // it is: AppIdentity is otherwise left holding whichever app was opened before it.
-    init => { AppIdentity.id = "permissions"; }
+    // The window's own buttons, carried in this screen's AppHeader now that its WindowFrame no
+    // longer draws a bar above it (content-has-controls). Without them this screen, hosted
+    // restored or maximised, would have no minimise, restore or close at all.
+    in property <bool> show-window-controls: false;
+    in property <bool> maximized: true;
+    callback minimize();
+    callback toggle-maximize();
+    callback close-window();
+    callback back-pressed();
 
     background: Theme.bg-deep;
 
@@ -619,6 +592,27 @@ export component PermissionDashboardScreen inherits Rectangle {
     VerticalLayout {
         spacing: 0px;
 
+        // ── Header ──
+        //
+        // VM 520 sweep, 4 October: this screen's top was a 36px row holding the word
+        // "Permissions" in body text and the window's buttons -- no back arrow, no glyph, nothing
+        // like the header Settings, Bond or Memory wear. It is the shared AppHeader now, so the
+        // screen says what it is the way every other one does; the scan controls stay in the
+        // row under it. AppHeader also sets AppIdentity, which this screen used to do by hand.
+        AppHeader {
+            show-window-controls: root.show-window-controls;
+            maximized: root.maximized;
+            minimize => { root.minimize(); }
+            toggle-maximize => { root.toggle-maximize(); }
+            close-window => { root.close-window(); }
+            app-id: "permissions";
+            show-back: true;
+            icon: Icons.lock;
+            title: "Permissions";
+            subtitle: "Who can open what on this machine";
+            back => { root.back-pressed(); }
+        }
+
         // ── Risk summary cards + scan controls ──
         Rectangle {
             height: 90px;
@@ -632,22 +626,17 @@ export component PermissionDashboardScreen inherits Rectangle {
 
                 // Risk summary cards
                 RiskSummaryCard {
-                    label: "High Risk";
+                    level: "high";
                     count: root.perm-high-risk-count;
-                    badge-color: Theme.color-danger;
-                    badge-bg: Theme.color-danger-dim;
+                    needs-you: root.perm-high-risk-count > 0;
                 }
                 RiskSummaryCard {
-                    label: "Medium Risk";
+                    level: "medium";
                     count: root.perm-medium-risk-count;
-                    badge-color: Theme.color-warning;
-                    badge-bg: Theme.color-warning-dim;
                 }
                 RiskSummaryCard {
-                    label: "Low Risk";
+                    level: "low";
                     count: root.perm-low-risk-count;
-                    badge-color: Theme.color-success;
-                    badge-bg: Theme.color-success-dim;
                 }
 
                 // Spacer
@@ -661,9 +650,10 @@ export component PermissionDashboardScreen inherits Rectangle {
                     HorizontalLayout {
                         spacing: Theme.sp-2;
 
-                        // Scan path input
+                        // Scan path input. Labelled inside the field: it and the search field
+                        // below were two look-alike boxes, and this one held only "/".
                         Rectangle {
-                            width: 220px;
+                            width: 280px;
                             height: 30px;
                             border-radius: Theme.r-md;
                             background: Theme.bg-card;
@@ -674,13 +664,23 @@ export component PermissionDashboardScreen inherits Rectangle {
                             HorizontalLayout {
                                 padding-left: 10px;
                                 padding-right: 10px;
-                                alignment: center;
+                                spacing: Theme.sp-2;
+
+                                Text {
+                                    text: "Scan path";
+                                    color: Theme.text-dim;
+                                    font-size: Theme.font-small;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 0;
+                                }
 
                                 scan-path-input := TextInput {
                                     horizontal-stretch: 1;
                                     text <=> root.perm-scan-path;
+                                    accessible-label: "Scan path";
                                     font-size: Theme.font-small;
                                     color: Theme.text-primary;
+                                    vertical-alignment: center;
                                     accepted => {
                                         root.perm-scan-dir(root.perm-scan-path);
                                     }
@@ -689,30 +689,30 @@ export component PermissionDashboardScreen inherits Rectangle {
                         }
 
                         // Scan button
-                        PermActionButton {
+                        YButton {
                             label: root.perm-scanning ? "Scanning..." : "Scan";
-                            primary: true;
-                            width: 80px;
+                            variant: 0;
+                            // Busy, not dangerous: the accent with a spinner, and no second scan.
+                            loading: root.perm-scanning;
                             clicked => {
                                 root.perm-scan-dir(root.perm-scan-path);
                             }
                         }
 
                         // Export button
-                        PermActionButton {
+                        YButton {
                             label: "Export";
-                            primary: false;
-                            width: 70px;
+                            variant: 1;
                             clicked => {
                                 root.perm-export-report();
                             }
                         }
 
                         // ACL panel toggle
-                        PermActionButton {
+                        YButton {
                             label: root.perm-acl-panel-open ? "Close ACL" : "ACL";
-                            primary: root.perm-acl-panel-open;
-                            width: 80px;
+                            // On while the panel is open: ON is the accent.
+                            variant: root.perm-acl-panel-open ? 0 : 1;
                             clicked => {
                                 root.perm-acl-panel-open = !root.perm-acl-panel-open;
                                 // Auto-populate path from selected file if available
@@ -840,7 +840,8 @@ export component PermissionDashboardScreen inherits Rectangle {
                     ai-perm-btn := Rectangle {
                         height: 32px;
                         border-radius: Theme.radius-pill;
-                        background: root.ai-is-working ? AppIdentity.accent
+                        // Working is the accent; the app's red identity made "Analyzing..." look destructive.
+                        background: root.ai-is-working ? Theme.accent
                             : (parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated);
                         border-width: 1px;
                         border-color: Theme.border-subtle;
@@ -852,7 +853,7 @@ export component PermissionDashboardScreen inherits Rectangle {
                             Icon {
                                 commands: root.ai-is-working ? Icons.spark : Icons.spark;
                                 size: 12px;
-                                tint: Theme.text-secondary;
+                                tint: root.ai-is-working ? Theme.text-on-accent : Theme.text-secondary;
                                 y: (parent.height - self.height) / 2;
                             }
                             Text {
@@ -867,10 +868,10 @@ export component PermissionDashboardScreen inherits Rectangle {
                 }
 
                 // Refresh button
-                PermActionButton {
+                YButton {
                     label: root.perm-scanning ? "Scanning..." : "Refresh";
-                    primary: false;
-                    width: 100px;
+                    variant: 1;
+                    loading: root.perm-scanning;
                     clicked => { root.perm-refresh(); }
                 }
 
@@ -1568,9 +1569,10 @@ export component PermissionDashboardScreen inherits Rectangle {
                                         }
 
                                         // Fix button
-                                        PermActionButton {
+                                        YButton {
                                             label: "Fix";
-                                            primary: true;
+                                            variant: 0;
+                                            size: 0;
                                             horizontal-stretch: 1;
                                             clicked => { root.perm-fix(file.path); }
                                         }
@@ -1679,26 +1681,14 @@ export component PermissionDashboardScreen inherits Rectangle {
                     }
                 }
 
-                // View ACL button
-                Rectangle {
-                    height: 34px;
-                    background: acl-view-ta.has-hover ? AppIdentity.accent : Theme.accent-dim;
-                    border-radius: Theme.radius-pill;
-
-                    Text {
-                        text: "View ACL";
-                        font-size: Theme.font-body;
-                        color: Theme.text-on-accent;
-                        font-weight: 600;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-
-                    acl-view-ta := TouchArea {
-                        clicked => {
-                            if root.perm-acl-target-path != "" {
-                                root.perm-view-acl(root.perm-acl-target-path);
-                            }
+                // View ACL button: the primary, so the accent (its hover was the app's red).
+                YButton {
+                    label: "View ACL";
+                    variant: 0;
+                    size: 2;
+                    clicked => {
+                        if root.perm-acl-target-path != "" {
+                            root.perm-view-acl(root.perm-acl-target-path);
                         }
                     }
                 }

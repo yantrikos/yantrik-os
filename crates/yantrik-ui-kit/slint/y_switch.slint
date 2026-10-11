@@ -1,0 +1,91 @@
+// YSwitch — a labelled on/off switch for a toolbar row.
+//
+//   YSwitch { label: "Syntax colour"; on: root.syntax; toggled => { root.syntax = !root.syntax; } }
+//
+// A button whose label flips between "Color on" and "Color off" says the state only once you
+// already know which word is the state and which is the verb. A switch says it twice without
+// words: the knob sits right and the track is the accent when on, left and hollow when off. The
+// knob's side is the signal that is not colour.
+//
+// `on` is an input, as on YToggleTile: the switch says `toggled` and the owner flips the real
+// thing, so it can never draw a state the owner does not hold.
+//
+// Sized for a header or toolbar row (Theme.h-compact). Space or Enter toggles it with focus;
+// the focus ring is the same 2px ring YButton draws. Accessible role switch, with checked state.
+import { Theme } from "theme.slint";
+
+export component YSwitch inherits Rectangle {
+    in property <string> label;
+    in property <bool> on: false;
+    in property <bool> enabled: true;
+    callback toggled();
+
+    property <bool> hovered: ta.has-hover && root.enabled;
+
+    height: Theme.h-compact;
+    horizontal-stretch: 0;
+    border-radius: Theme.r-md;
+    background: root.hovered ? Theme.hover-fill : transparent;
+    border-width: keys.has-focus ? 2px : 0px;
+    border-color: Theme.focus-ring;
+    opacity: root.enabled ? 1.0 : 0.4;
+
+    function flip() { if (root.enabled) { root.toggled(); } }
+
+    keys := FocusScope {
+        enabled: root.enabled;
+        accessible-role: switch;
+        accessible-label: root.label;
+        accessible-checkable: true;
+        accessible-checked: root.on;
+        accessible-enabled: root.enabled;
+        accessible-action-default => { root.flip(); }
+        key-pressed(event) => {
+            if ((event.text == " " || event.text == "\n") && !event.repeat) { root.flip(); return accept; }
+            reject
+        }
+    }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.flip(); }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.sp-2;
+        padding-right: Theme.sp-2;
+        spacing: Theme.sp-2;
+        alignment: center;
+
+        Text {
+            text: root.label;
+            color: Theme.text-primary;
+            font-size: Theme.fs-caption;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+
+        // The track. Hollow when off, so off is not a dimmer "on".
+        Rectangle {
+            width: 30px;
+            height: 18px;
+            y: (parent.height - self.height) / 2;
+            border-radius: self.height / 2;
+            background: root.on ? Theme.accent : transparent;
+            border-width: root.on ? 0px : 1px;
+            border-color: Theme.outline-border;
+            animate background { duration: Theme.dur-fast; }
+
+            Rectangle {
+                width: 12px;
+                height: 12px;
+                x: root.on ? parent.width - self.width - 3px : 3px;
+                y: (parent.height - self.height) / 2;
+                border-radius: self.height / 2;
+                background: root.on ? Theme.text-on-accent : Theme.text-secondary;
+                animate x { duration: Theme.dur-fast; easing: ease-in-out; }
+            }
+        }
+    }
+}

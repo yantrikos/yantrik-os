@@ -47,6 +47,9 @@ members = [
     # The folder watch and the move decisions shared by yDoc and the Text Editor, so a file
     # moved in Files does not strand the editor holding it open (#75, #86).
     "crates/yantrik-file-follow",
+    # Installing into a partition beside macOS or Windows without rewriting the table: what
+    # can be chosen, the plan, and the re-check before anything is written.
+    "crates/yantrik-install-target",
     "apps/notes",
     "apps/arcade",
     "apps/container-manager",
@@ -125,6 +128,9 @@ uuid7 = "1"
 
 # Text / parsing
 regex = "1"
+# NFKD and combining marks, for telling a lookalike of the desktop's name from a name of its own
+# (notifications-service, #614).
+unicode-normalization = "0.1"
 html2text = "0.12"
 mailparse = "0.15"
 base64 = "0.22"
@@ -174,6 +180,7 @@ yantrik-service-sdk = { path = "crates/yantrik-service-sdk" }
 yantrik-surface = { path = "crates/yantrik-surface" }
 yantrik-app-runtime = { path = "crates/yantrik-app-runtime" }
 yantrik-file-follow = { path = "crates/yantrik-file-follow" }
+yantrik-install-target = { path = "crates/yantrik-install-target" }
 yantrik-manifest = { path = "crates/yantrik-manifest" }
 yantrik-version = { path = "crates/yantrik-version" }
 yantrik-chat = { path = "crates/yantrik-chat" }

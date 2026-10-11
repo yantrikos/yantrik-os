@@ -229,10 +229,21 @@ apt-get install -y -qq \
     pciutils usbutils || true
 
 # ── Firmware (non-free, for real hardware) ──
+# firmware-misc-nonfree also carries tigon/tg357766.bin, the firmware of the Mac mini 2012's
+# Broadcom BCM57766 Ethernet, which is how that Mac first gets online.
+# firmware-brcm80211: the Broadcom chips the free brcmfmac drives (BCM43602 and BCM4350 in the
+# Macs of 2015 on, and many PC cards). Redistributable, unlike the BCM4331's, which
+# yantrik-broadcom-wifi fetches on the machine instead (stage-mac-support.sh below).
 for pkg in firmware-linux-free firmware-misc-nonfree firmware-realtek \
-           firmware-iwlwifi firmware-amd-graphics; do
+           firmware-iwlwifi firmware-amd-graphics firmware-brcm80211; do
     apt-get install -y -qq "$pkg" 2>/dev/null || true
 done
+
+# ── Intel Macs: fan control ──
+# mbpfan drives the fans through applesmc from coretemp's readings; without it nothing on Linux
+# asks the SMC for more air. stage-mac-support.sh makes it run only on Apple hardware. No
+# `|| true`: a Mac whose fan is never raised is the failure this is here to prevent.
+apt-get install -y -qq mbpfan
 
 # ── VirtualBox guest support ──
 apt-get install -y -qq virtualbox-guest-utils 2>/dev/null || true
@@ -250,7 +261,7 @@ apt-get install -y -qq \
 # build, and the parity check after this step names anything user-data.yaml gains later.
 # mpv: Files opens sound and video in mpv's own window (#255); the image shipped no player.
 # flatpak: the Package Manager installs Flathub apps with it, per-user and without root (#399).
-apt-get install -y -qq     seatd     libcap2-bin     chromium     pipewire-pulse wireplumber pulseaudio-utils     python3-websocket     fontconfig     grim slurp     qemu-guest-agent     libnotify-bin     xdg-desktop-portal xdg-desktop-portal-wlr xdg-desktop-portal-gtk     lxpolkit     udisks2     brightnessctl     bluez alsa-utils     mpv     flatpak     nftables
+apt-get install -y -qq     seatd     libcap2-bin     chromium     pipewire-pulse wireplumber pulseaudio-utils     python3-websocket     fontconfig     grim slurp     qemu-guest-agent     libnotify-bin     xdg-desktop-portal xdg-desktop-portal-wlr xdg-desktop-portal-gtk     lxpolkit     udisks2     brightnessctl     upower power-profiles-daemon     bluez alsa-utils     mpv     flatpak     nftables
 
 # Three programs the shell shells out to by name, and did not have.
 #   swaybg     — yantrik-companion-tools/src/wallpaper.rs: setting a wallpaper did nothing
@@ -263,11 +274,12 @@ apt-get install -y -qq     swaybg     xdg-utils     espeak-ng
 # The first hour on a machine: the image had no text editor and no process viewer at all, so
 # the terminal could edit a file only through Python and list processes only through the
 # System Monitor app. nano is what yantrik-session exports as EDITOR, so `git commit`,
-# `crontab -e` and everything else that asks has something to open — the image ships no vi
-# either. htop complements, and does not replace, the app. No `|| true`: release-check
-# (tier ci) asserts both commands on the booted image, and yantrik-update reconciles them
-# on machines whose base system drifted from this list (#210).
-apt-get install -y -qq     nano     htop
+# `crontab -e` and everything else that asks has something to open. htop complements, and
+# does not replace, the app. vim-tiny: muscle memory and scripts call `vi`, and the
+# fresh-install audit found `command not found: vi` on the shipped image (#678).
+# No `|| true`: release-check (tier ci) asserts these commands on the booted image, and
+# yantrik-update reconciles them on machines whose base system drifted from this list (#210).
+apt-get install -y -qq     nano     htop     vim-tiny
 
 # ── A developer's baseline (#401) ──
 # git: the image used to install it only to build llama.cpp and then remove it, so a machine
@@ -289,6 +301,7 @@ systemctl --global disable podman.socket 2>/dev/null || true
 apt-get install -y -qq \
     jq parted rsync openssh-server openssl \
     dosfstools e2fsprogs grub-efi-amd64-bin grub-pc-bin \
+    efibootmgr \
     libpam-modules initramfs-tools || true
 
 # ── Disk encryption (#400 step b) ──
@@ -297,6 +310,13 @@ apt-get install -y -qq \
 # passphrase typed on a German keyboard is read as German. Copied onto the disk with the rest of
 # the live system. No `|| true`: without them an encrypted install cannot boot.
 apt-get install -y -qq     cryptsetup     cryptsetup-initramfs     console-setup
+
+# The pre-boot screen the disk's password is typed on (stage-boot-unlock.sh): plymouth draws it
+# on whatever framebuffer the firmware left (simpledrm/efifb on a Mac mini, no GPU driver),
+# plymouth-label and DejaVu write its words, busybox runs the keyscript in the initramfs. Without
+# any of them the keyscript asks in text, with the same words; so `|| true` is not needed to
+# boot, but they are expected, and the stage below checks.
+apt-get install -y -qq     plymouth     plymouth-label     fonts-dejavu-core     busybox
 
 # ── Calamares installer ──
 apt-get install -y -qq \
@@ -374,6 +394,87 @@ case "$MISE_SAYS" in
     *) fail "mise ${MISE_VERSION} does not run inside the image (it said: ${MISE_SAYS:-nothing})" ;;
 esac
 ok "mise ${MISE_VERSION} (sha256 checked) in /usr/local/bin"
+
+# ── The one-password start (an encrypted install asks once, before boot) ──
+# The keyscript, the initramfs hook and marker, the session's root helper and the plymouth theme.
+# Nothing in them acts unless an install names the keyscript in crypttab, so the live system
+# and an unencrypted install are unchanged.
+sudo sh "$SCRIPT_DIR/stage-boot-unlock.sh" "$ROOTFS" \
+    || fail "stage-boot-unlock.sh failed — an encrypted install would ask for its password in plain text"
+sudo chroot "$ROOTFS" plymouth-set-default-theme yantrik \
+    || warn "plymouth could not select the Yantrik theme; the installed initramfs hook still names it"
+# The socket's group. Empty in the image; enrol makes the installed account its one member.
+sudo chroot "$ROOTFS" groupadd -f --system yantrik-boot-unlock \
+    || fail "could not make group yantrik-boot-unlock — the boot-unlock socket would not start"
+for required in usr/lib/yantrik/boot-unlock/askpass usr/lib/yantrik/boot-unlock/consume \
+                etc/initramfs-tools/hooks/yantrik-unlock etc/initramfs-tools/scripts/local-bottom/yantrik-unlock \
+                usr/share/plymouth/themes/yantrik/yantrik.script usr/sbin/plymouthd \
+                etc/systemd/system/sockets.target.wants/yantrik-boot-unlock.socket \
+                etc/systemd/system/multi-user.target.wants/yantrik-boot-unlock-expire.service \
+                usr/bin/jq usr/sbin/cryptsetup; do
+    # Inside the image: the .wants links are absolute, and would be read against the build host.
+    sudo chroot "$ROOTFS" test -e "/$required" || fail "$required missing from the image — the one-password start would not work"
+done
+sudo chroot "$ROOTFS" getent group yantrik-boot-unlock >/dev/null \
+    || fail "group yantrik-boot-unlock missing from the image — the boot-unlock socket would not start"
+ok "Pre-boot unlock screen, keyscript and signed-in marker staged"
+
+# ── The live system's shutdown says nothing about removing its medium ──
+# live-tools' system-shutdown hook ejected the disk the medium is on and waited for ENTER after
+# "Please remove the live-medium". On a Mac the installer is a partition of the internal disk
+# (YKINSTALL). Ours opens a disc's tray and otherwise does nothing (yantrik-live-medium-eject).
+#
+# Diverted under both names. With merged /usr they are one file, but dpkg matches a diversion by
+# the path a package lists: live-tools ships /bin/live-medium-eject today, and a live-tools that
+# moved it to /usr/bin would, with only the /bin diversion, write its own over ours through the
+# /bin symlink. The first --rename moves the package's file aside; the second finds nothing left
+# to move and only records the name.
+for name in /bin/live-medium-eject /usr/bin/live-medium-eject; do
+    sudo chroot "$ROOTFS" dpkg-divert --local --rename --divert "$name.live-tools" --add "$name" >/dev/null \
+        || fail "could not set live-tools' $name aside"
+done
+sudo install -m 0755 -o root -g root "$SCRIPT_DIR/yantrik-live-medium-eject" "$ROOTFS/bin/live-medium-eject" \
+    || fail "could not install yantrik-live-medium-eject"
+# Without merged /usr the two names are two files, and both are ours.
+[ "$ROOTFS/bin/live-medium-eject" -ef "$ROOTFS/usr/bin/live-medium-eject" ] \
+    || sudo install -m 0755 -o root -g root "$SCRIPT_DIR/yantrik-live-medium-eject" "$ROOTFS/usr/bin/live-medium-eject" \
+    || fail "could not install yantrik-live-medium-eject as /usr/bin/live-medium-eject"
+# dpkg-divert --truename is where dpkg writes a package's copy of a name: for both names it must
+# be the .live-tools path, never a path holding our script; and what the shutdown hook runs,
+# /bin/live-medium-eject (and /usr/bin/live-medium-eject), must be our script.
+for name in /bin/live-medium-eject /usr/bin/live-medium-eject; do
+    truename="$(sudo chroot "$ROOTFS" dpkg-divert --truename "$name")"
+    [ "$truename" = "$name.live-tools" ] \
+        || fail "dpkg would write live-tools' $name to $truename, over ours"
+    sudo cmp -s "$SCRIPT_DIR/yantrik-live-medium-eject" "$ROOTFS$name" \
+        || fail "$name is not yantrik-live-medium-eject"
+done
+ok "The live system's shutdown leaves an internal installer partition alone"
+
+# ── Intel Macs (the Mac mini 2012 is the first real machine this image runs on) ──
+# Fan control, and the Broadcom BCM4331 Wi-Fi driver fetched from Debian on the machine once it
+# is online: neither the wl module nor Broadcom's b43 firmware may be redistributed in a public
+# image, so neither is in it. See yantrik-broadcom-wifi for the whole reasoning.
+sudo sh "$SCRIPT_DIR/stage-mac-support.sh" "$ROOTFS" \
+    || fail "stage-mac-support.sh failed — the image would not drive a Mac's fans or Wi-Fi"
+sudo chroot "$ROOTFS" systemctl enable mbpfan.service \
+    || fail "could not enable mbpfan.service"
+for required in usr/lib/yantrik/yantrik-broadcom-wifi usr/lib/yantrik/yantrik-mac-fans \
+                etc/systemd/system/multi-user.target.wants/yantrik-broadcom-wifi.service \
+                etc/systemd/system/mbpfan.service.d/yantrik-apple.conf \
+                etc/NetworkManager/dispatcher.d/90-yantrik-broadcom-wifi; do
+    # Inside the chroot: a unit's enable link is absolute, and from the host it would resolve
+    # against the build machine's /etc, not the image's.
+    sudo chroot "$ROOTFS" test -e "/$required" || fail "$required missing from the image"
+done
+sudo chroot "$ROOTFS" bash -n /usr/lib/yantrik/yantrik-broadcom-wifi \
+    || fail "yantrik-broadcom-wifi does not parse"
+# Neither of these may ever be in a published image (see above).
+if sudo chroot "$ROOTFS" dpkg-query -W -f='${db:Status-Status}\n' broadcom-sta-dkms firmware-b43-installer 2>/dev/null \
+        | grep -qx installed; then
+    fail "broadcom-sta-dkms or firmware-b43-installer is installed in the image — it cannot be published"
+fi
+ok "Intel Mac support: mbpfan (Apple hardware only), BCM4331 Wi-Fi fetched on first network"
 
 # ═══════════════════════════════════════════════════════════════
 # STEP 3: Create yantrik user + directory structure
@@ -515,6 +616,10 @@ for required in share/labwc/rc.xml share/labwc/menu.xml share/labwc/autostart bi
                 share/icons/hicolor/scalable/apps/yantrik.svg; do
     [ -e "$ROOTFS/opt/yantrik/$required" ] || fail "$required missing from the image — the desktop session would not be the shipped one"
 done
+# What both installers run to make an installed machine's /opt/yantrik root's (#397).
+for required in bin/yantrik-update bin/yantrik-lockdown; do
+    [ -x "$ROOTFS/opt/yantrik/$required" ] || fail "$required missing from the image — an install could not make /opt/yantrik root's"
+done
 
 # ── The app icon, also in the system icon theme ──
 #
@@ -564,6 +669,11 @@ for required in yantrik-ui yantrik yantrik-notes weather-service yos; do
     [ -e "$ROOTFS/opt/yantrik/bin/$required" ] \
         || fail "$required missing from the image — the ISO would boot without it"
 done
+# The text installer's planner for installing beside macOS (crates/yantrik-install-target). It
+# comes with the workspace build like every other binary; without it yantrik-install.sh refuses
+# to install beside anything, so an image that lacks it is not one to ship.
+[ -x "$ROOTFS/opt/yantrik/bin/yantrik-install-target" ] \
+    || fail "yantrik-install-target missing from the image — the text installer could not install beside macOS"
 
 # Copy i18n files if they exist
 if [ -d "$PROJECT_ROOT/crates/yantrik-ui/i18n" ]; then
@@ -594,70 +704,19 @@ else
     warn "all rights reserved, and nobody who downloads the ISO may redistribute it"
 fi
 
-# ── The Hermes plugin ──
+# ── The harnesses ──
 #
-# Not a Yantrik binary and not started by anything here: it is the adapter that lets an
-# existing Hermes install attach to this desktop's harness socket, so it ships as source
-# beside the OS rather than being installed into a Python environment the image does not have.
-# Hermes keeps its own model, keys and memory; nothing about them is in this image.
-if [ -d "$PROJECT_ROOT/harnesses/hermes" ]; then
-    sudo mkdir -p "$ROOTFS/opt/yantrik/share/harnesses/hermes"
-    # harness.yaml goes with it: it is what Settings > Harnesses reads to say Hermes exists at
-    # all, and without it the desktop is back to only knowing what has attached.
-    sudo cp "$PROJECT_ROOT/harnesses/hermes/"*.py "$PROJECT_ROOT/harnesses/hermes/plugin.yaml" \
-        "$PROJECT_ROOT/harnesses/hermes/harness.yaml" \
-        "$ROOTFS/opt/yantrik/share/harnesses/hermes/" 2>/dev/null || true
-    ok "Hermes desktop plugin staged at /opt/yantrik/share/harnesses/hermes"
-fi
-
-# ── The other harnesses ──
+# Staged by the one script that decides what of harnesses/ ships, which the release bundle uses
+# too (see stage-harnesses.sh for why there must be only one). Source beside the OS, NOTHING
+# ENABLED: each needs an endpoint, a model and a key that only the person has, and an image that
+# started one on its own would be an image that phoned a provider the first time it booted.
 #
-# Same rule as Hermes and for the same reason: source beside the OS, nothing installed into a
-# Python environment the image does not have, and NOTHING ENABLED. Each one needs an endpoint,
-# a model and a key that only the person has, and an image that started one of these on its own
-# would be an image that phoned a provider the first time it booted.
-#
-# `lib` is the half they share (attach, poll, heartbeat, the MCP client, one place a turn is
-# closed); `deepseek` is a tool-calling loop over an OpenAI-compatible API; `pi` drives the pi
-# coding agent over its RPC mode and carries the extension that gives it the desktop's tools;
-# `openclaw` drives an OpenClaw install, which brings its own MCP client and so reaches the
-# desktop's tools through an entry in the person's own ~/.openclaw/openclaw.json rather than
-# through anything staged here.
-#
-# Each one's unit file is staged TWICE and the second copy is the one that matters. Beside its
-# source, where a person following the README copies it from — and in /etc/systemd/user, where
-# systemd itself looks. Without the second, `systemctl --user enable --now yantrik-pi` fails
-# with "unit not found" and the Start button on the Harnesses page has nothing to start: the
-# image shipped a harness whose own instructions were the only way to run it. Staging a unit is
-# not enabling it — `enable` writes a symlink into default.target.wants and nothing here does,
-# so the rule above still holds and a fresh image still starts none of them.
-sudo mkdir -p "$ROOTFS/etc/systemd/user"
-for harness in lib deepseek pi openclaw; do
-    [ -d "$PROJECT_ROOT/harnesses/$harness" ] || continue
-    sudo mkdir -p "$ROOTFS/opt/yantrik/share/harnesses/$harness"
-    sudo cp -r "$PROJECT_ROOT/harnesses/$harness/." \
-        "$ROOTFS/opt/yantrik/share/harnesses/$harness/" 2>/dev/null || true
-    # __pycache__ from someone's checkout is not part of the image.
-    sudo rm -rf "$ROOTFS/opt/yantrik/share/harnesses/$harness/__pycache__"
-    unit="$PROJECT_ROOT/harnesses/$harness/yantrik-$harness.service"
-    if [ -f "$unit" ]; then
-        sudo install -m 644 "$unit" "$ROOTFS/etc/systemd/user/" \
-            || fail "could not stage yantrik-$harness.service — the image would ship a harness nothing can start"
-        ok "Harness staged at /opt/yantrik/share/harnesses/$harness, unit installed (not enabled)"
-    else
-        ok "Harness source staged at /opt/yantrik/share/harnesses/$harness (no unit of its own)"
-    fi
-done
-
-# The manifests are what Settings > Harnesses reads, so an image that staged the source and not
-# the manifests is an image whose picker is back to listing only what has attached. Asserted
-# rather than hoped for: this is the whole of issue #56 and it is one missing file away.
-for harness in hermes deepseek pi openclaw; do
-    [ -d "$PROJECT_ROOT/harnesses/$harness" ] || continue
-    [ -f "$ROOTFS/opt/yantrik/share/harnesses/$harness/harness.yaml" ] \
-        || fail "$harness has no harness.yaml in the image — Settings would not know it exists"
-done
-ok "Harness manifests staged — Settings can name every mind this image ships"
+# Each harness's unit is also staged in /etc/systemd/user, where systemd itself looks. Without it
+# `systemctl --user enable --now yantrik-pi` fails with "unit not found" and the Start button on
+# the Harnesses page has nothing to start. Staging a unit is not enabling it — `enable` writes a
+# symlink into default.target.wants and nothing here does.
+sudo sh "$SCRIPT_DIR/stage-harnesses.sh" "$PROJECT_ROOT" "$ROOTFS/opt/yantrik/share/harnesses"     "$ROOTFS/etc/systemd/user"     || fail "the harnesses did not stage — Settings would not know which minds this image ships"
+ok "Harnesses staged at /opt/yantrik/share/harnesses, units in /etc/systemd/user (not enabled)"
 
 # ── The mind, beside the OS ──
 #
@@ -705,7 +764,9 @@ else
     done
     [ -L "$ROOTFS/etc/systemd/user/default.target.wants/yantrik-mind.service" ] \
         || fail "yantrik-mind.service is not enabled in the image"
-    [ ! -e "$ROOTFS/etc/systemd/user/default.target.wants/yantrik-memory.service" ] \
+    # -L as well as -e: the enable link is absolute, so from the host -e alone never sees it.
+    { [ ! -e "$ROOTFS/etc/systemd/user/default.target.wants/yantrik-memory.service" ] \
+        && [ ! -L "$ROOTFS/etc/systemd/user/default.target.wants/yantrik-memory.service" ]; } \
         || fail "yantrik-memory.service is enabled — it would fight the mind for the memory file"
     ok "Yantrik Mind $(sed -n 's/^commit=//p' "$ROOTFS/opt/yantrik-mind/BUILD" 2>/dev/null) installed beside the OS, enabled for every user"
 fi
@@ -971,6 +1032,14 @@ FOOTINI
 
 # Fix ownership
 sudo chown -R 1000:1000 "$ROOTFS/home/yantrik"
+# The LIVE image's tree is the live user's on purpose, as its blanket sudo rule above is: the live
+# session runs the installer and nothing on it is kept. An installed machine must not inherit
+# either (#397). The installer copies this tree and then runs `yantrik-update migrate-ownership`
+# on the target, which makes /opt/yantrik root's (the person keeps logs/, data/, config.yaml),
+# and puts the narrow sudo rule in place. Both installers then remove /etc/sudoers.d/yantrik,
+# check the result, and lock the tree down themselves when it is not right
+# (crates/yantrik-ui/src/wire/installer_ownership.rs; yantrik-lockdown for yantrik-install.sh).
+# Change this line and that migration together.
 sudo chown -R 1000:1000 "$ROOTFS/opt/yantrik"
 
 ok "labwc + foot configured"
@@ -1362,24 +1431,24 @@ set menu_color_highlight=white/blue
 # installer mode. Both entries used to pass it, so there was no way to boot this image and
 # simply try the desktop — an ISO that can only be installed is one nobody evaluates first.
 menuentry "Install Yantrik OS" {
-    linux /live/vmlinuz boot=live yantrik.install=true live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 quiet
+    linux /live/vmlinuz boot=live yantrik.install=true live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 plymouth.enable=0 quiet
     initrd /live/initrd
 }
 
 menuentry "Try Yantrik OS (live, no install)" {
-    linux /live/vmlinuz boot=live live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 quiet
+    linux /live/vmlinuz boot=live live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 plymouth.enable=0 quiet
     initrd /live/initrd
 }
 
 menuentry "Install Yantrik OS (Safe Mode — software rendering)" {
-    linux /live/vmlinuz boot=live yantrik.install=true live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 nomodeset quiet
+    linux /live/vmlinuz boot=live yantrik.install=true live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 plymouth.enable=0 nomodeset quiet
     initrd /live/initrd
 }
 
 # No `quiet`, so the kernel and systemd say what they are doing on the serial line. This is
 # the entry a bug report is made from, and the one an automated boot check selects.
 menuentry "Try Yantrik OS (verbose, serial console)" {
-    linux /live/vmlinuz boot=live live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 nomodeset systemd.log_level=info
+    linux /live/vmlinuz boot=live live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 plymouth.enable=0 nomodeset systemd.log_level=info
     initrd /live/initrd
 }
 GRUBCFG

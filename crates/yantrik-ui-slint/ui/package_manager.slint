@@ -1,13 +1,17 @@
 // Package Manager — Debian packages and Flathub apps.
 // Screen 21. Search, browse, install, remove, upgrade. Every row carries its source, because a
 // Debian package and a Flatpak are installed, removed and updated by different commands (#399).
-// Wrapped in WindowFrame by app.slint — no internal header needed.
+// Wrapped in WindowFrame by app.slint, which draws no bar of its own over it
+// (content-has-controls): this screen's AppHeader is the window's one bar.
 // Firelight treatment: glassmorphism, holographic glows, gradient accents.
 
 import { Theme } from "theme.slint";
 import { AppIdentity } from "components/app_color.slint";
 import { Icon, Icons } from "components/icon.slint";
-import { ListView, LineEdit } from "std-widgets.slint";
+import { AppAction, AppHeader } from "components/app_header.slint";
+import { YEmptyState } from "components/y_empty_state.slint";
+import { YStatusPill } from "components/y_status_pill.slint";
+import { ListView } from "std-widgets.slint";
 
 export struct PackageData {
     // What the commands take: the package name, or a Flatpak's app id.
@@ -30,9 +34,15 @@ export struct PendingAction {
 }
 
 export component PackageManager inherits Rectangle {
-    // This screen draws its own header rather than AppHeader, so it has to say what
-    // it is: AppIdentity is otherwise left holding whichever app was opened before it.
-    init => { AppIdentity.id = "packages"; }
+    // The window's own buttons, carried in this screen's AppHeader now that its WindowFrame no
+    // longer draws a bar above it (content-has-controls). Without them this screen, hosted
+    // restored or maximised, would have no minimise, restore or close at all.
+    in property <bool> show-window-controls: false;
+    in property <bool> maximized: true;
+    callback minimize();
+    callback toggle-maximize();
+    callback close-window();
+    callback back-pressed();
 
     background: transparent;
 
@@ -81,11 +91,66 @@ export component PackageManager inherits Rectangle {
     callback ai-intent(string);
     callback ai-dismiss();
 
+    // The header's verbs. AI Explain needs a package open to explain; Upgrade All is the screen's
+    // one primary action, and only there when something can be upgraded.
+    property <AppAction> ai-action: {
+        id: "ai", icon: Icons.spark, label: root.ai-is-working ? "Analyzing" : "AI Explain", emphasis: 1,
+        loading: root.ai-is-working, active: root.ai-panel-open,
+        disabled: root.detail-name == "" && !root.ai-panel-open,
+    };
+    property <AppAction> refresh-action: { id: "refresh", icon: Icons.refresh, label: "Refresh", loading: root.is-loading };
+    property <[AppAction]> actions-plain: [root.ai-action, root.refresh-action];
+    property <[AppAction]> actions-with-upgrade: [
+        root.ai-action, root.refresh-action,
+        { id: "upgrade-all", icon: Icons.download, label: "Upgrade All", emphasis: 2 },
+    ];
+
     // ── Layout: header + list/detail + pending queue + status ──
     VerticalLayout {
-        // ── Header Bar ──
+        // ── Header ──
+        //
+        // VM 520 sweep, 4 October: Packages had no title at all -- its top row was a search
+        // field and filter chips, so nothing on screen said which app this was, and there was
+        // no back arrow. It wears the shared AppHeader now, as Settings and Bond do: the search
+        // is the header's own field, and the verbs (AI Explain, Refresh, Upgrade All) are its
+        // actions. The filter chips change what the list shows, so they keep a row under it.
+        AppHeader {
+            show-window-controls: root.show-window-controls;
+            maximized: root.maximized;
+            minimize => { root.minimize(); }
+            toggle-maximize => { root.toggle-maximize(); }
+            close-window => { root.close-window(); }
+            app-id: "packages";
+            show-back: true;
+            icon: Icons.packages;
+            title: "Packages";
+            subtitle: "Debian packages and Flathub apps";
+            show-search: true;
+            search-placeholder: "Search packages and apps";
+            search-text <=> root.search-query;
+            search-edited(text) => { root.search(text); }
+            actions: root.upgradable-count > 0 ? root.actions-with-upgrade : root.actions-plain;
+            back => { root.back-pressed(); }
+            action(id) => {
+                if (id == "ai") {
+                    if (root.ai-panel-open) {
+                        root.ai-dismiss();
+                        root.ai-panel-open = false;
+                    } else if (root.detail-name != "") {
+                        root.ai-explain-pressed();
+                        root.ai-panel-open = true;
+                    }
+                } else if (id == "refresh") {
+                    root.refresh();
+                } else if (id == "upgrade-all") {
+                    root.upgrade-all();
+                }
+            }
+        }
+
+        // ── Filters ──
         Rectangle {
-            height: 52px;
+            height: 44px;
             background: Theme.bg-card;
             border-radius: 0;
 
@@ -93,41 +158,7 @@ export component PackageManager inherits Rectangle {
                 padding-left: 16px;
                 padding-right: 16px;
                 spacing: 10px;
-                alignment: center;
-
-                // Search bar
-                Rectangle {
-                    horizontal-stretch: 1;
-                    height: 36px;
-                    background: Theme.bg-input;
-                    border-radius: Theme.radius-pill;
-                    border-width: 1px;
-                    border-color: search-focus.has-focus ? AppIdentity.accent : Theme.border-subtle;
-
-                    HorizontalLayout {
-                        padding-left: 12px;
-                        padding-right: 8px;
-                        spacing: 8px;
-                        alignment: center;
-
-                        Icon {
-                            commands: Icons.search;
-                            size: 13px;
-                            tint: Theme.text-secondary;
-                            y: (parent.height - self.height) / 2;
-                        }
-
-                        search-focus := LineEdit {
-                            horizontal-stretch: 1;
-                            text <=> root.search-query;
-                            placeholder-text: "Search packages and Flathub apps...";
-                            font-size: Theme.font-body;
-                            edited(text) => {
-                                root.search(text);
-                            }
-                        }
-                    }
-                }
+                alignment: start;
 
                 // Filter: All
                 Rectangle {
@@ -247,90 +278,6 @@ export component PackageManager inherits Rectangle {
                         }
                     }
                 }
-
-                // AI Explain button
-                TouchArea {
-                    width: ai-pkg-btn.preferred-width + 16px;
-                    height: 32px;
-                    clicked => {
-                        if root.ai-panel-open {
-                            root.ai-dismiss();
-                            root.ai-panel-open = false;
-                        } else if root.detail-name != "" {
-                            root.ai-explain-pressed();
-                            root.ai-panel-open = true;
-                        }
-                    }
-                    ai-pkg-btn := Rectangle {
-                        height: 32px;
-                        border-radius: Theme.radius-pill;
-                        background: root.ai-is-working ? AppIdentity.accent
-                            : (root.detail-name != "" ? Theme.bg-card : Theme.hover-fill);
-                        border-width: 1px;
-                        border-color: root.detail-name != "" ? Theme.border-subtle : transparent;
-                        HorizontalLayout {
-                            padding-left: 10px;
-                            padding-right: 10px;
-                            spacing: 4px;
-                            alignment: center;
-                            Icon {
-                                commands: root.ai-is-working ? Icons.spark : Icons.spark;
-                                size: 12px;
-                                tint: Theme.text-secondary;
-                                y: (parent.height - self.height) / 2;
-                            }
-                            Text {
-                                text: root.ai-is-working ? "Analyzing..." : "AI Explain";
-                                color: root.ai-is-working ? Theme.text-on-accent
-                                    : (root.detail-name != "" ? Theme.text-secondary : Theme.text-dim);
-                                font-size: Theme.fs-micro;
-                                font-weight: 500;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-                }
-
-                // Refresh button
-                Rectangle {
-                    width: 36px;
-                    height: 36px;
-                    background: refresh-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
-                    border-radius: Theme.radius-card;
-
-                    Icon {
-                        commands: Icons.refresh;
-                        size: 18px;
-                        tint: root.is-loading ? AppIdentity.accent : Theme.text-secondary;
-                        x: (parent.width - self.width) / 2;
-                        y: (parent.height - self.height) / 2;
-                    }
-
-                    refresh-ta := TouchArea {
-                        clicked => { root.refresh(); }
-                    }
-                }
-
-                // Upgrade All button (shown when upgradable > 0)
-                if root.upgradable-count > 0 : Rectangle {
-                    width: 108px;
-                    height: 36px;
-                    background: upgrade-all-ta.has-hover ? Theme.color-success.brighter(20%) : Theme.color-success;
-                    border-radius: Theme.radius-pill;
-
-                    Text {
-                        text: "Upgrade All";
-                        font-size: Theme.font-small;
-                        color: Theme.text-on-accent;
-                        font-weight: 600;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-
-                    upgrade-all-ta := TouchArea {
-                        clicked => { root.upgrade-all(); }
-                    }
-                }
             }
         }
 
@@ -425,32 +372,31 @@ export component PackageManager inherits Rectangle {
                         }
                     }
 
-                    // Empty state
-                    if packages.length == 0 && !root.is-loading : Rectangle {
+                    // Still reading, and nothing read yet.
+                    //
+                    // VM 520 sweep, 4 October: while "Updating package database…" ran, the list
+                    // was a 3px moving stripe over an empty pane -- indistinguishable from a
+                    // screen that had failed. It says what it is doing now, in the empty-state
+                    // style Files and Memory use. The list itself fills in as soon as what is
+                    // installed has been read (wire/package_manager.rs lists that before it
+                    // asks the mirrors), so this is only ever the first second or two.
+                    if packages.length == 0 && root.is-loading : YEmptyState {
                         vertical-stretch: 1;
+                        icon-path: Icons.packages;
+                        title: "Reading your packages";
+                        description: root.status-text + " What is installed shows here as soon as it has been read.";
+                    }
 
-                        VerticalLayout {
-                            alignment: center;
-                            spacing: 12px;
-
-                            Text {
-                                text: root.search-query != "" ? "No packages found"
-                                    : root.active-filter == 3 ? "Find something to install"
-                                    : "Click Refresh to load packages";
-                                font-size: Theme.font-title;
-                                color: Theme.text-dim;
-                                horizontal-alignment: center;
-                            }
-
-                            Text {
-                                text: root.search-query != "" ? "Try a different search term"
-                                    : root.active-filter == 3 ? "Search Flathub apps and Debian packages by name"
-                                    : "Or search for a package by name";
-                                font-size: Theme.font-small;
-                                color: Theme.text-dim;
-                                horizontal-alignment: center;
-                            }
-                        }
+                    // Nothing to show
+                    if packages.length == 0 && !root.is-loading : YEmptyState {
+                        vertical-stretch: 1;
+                        icon-path: root.search-query != "" || root.active-filter == 3 ? Icons.search : Icons.packages;
+                        title: root.search-query != "" ? "No packages found"
+                            : root.active-filter == 3 ? "Find something to install"
+                            : "No packages listed";
+                        description: root.search-query != "" ? "Try a different search term."
+                            : root.active-filter == 3 ? "Search Flathub apps and Debian packages by name."
+                            : "Press Refresh to read what is installed, or search for a package by name.";
                     }
 
                     // Package list
@@ -462,25 +408,41 @@ export component PackageManager inherits Rectangle {
                             background: idx == root.selected-index ? Theme.bg-selected
                                 : row-ta.has-hover ? Theme.hover-fill : transparent;
 
+                            // A fixed grid, left-aligned at 16px: status 16, name and description
+                            // flexible, source pill, tag pill, size 72 right-aligned, state 96. Every
+                            // column is the same width on every row, so the names read down one
+                            // edge. The row used to centre its content on its own width, and the
+                            // name drifted by up to 90px from one row to the next.
                             HorizontalLayout {
                                 padding-left: 16px;
                                 padding-right: 16px;
                                 spacing: 12px;
-                                alignment: center;
+                                alignment: start;
 
-                                // Status indicator dot
+                                // Status: an 8px dot in its 16px column. Installed is a neutral
+                                // fill, not the success teal, which is the minds' colour; the state
+                                // pill says the word.
                                 Rectangle {
-                                    width: 8px;
-                                    height: 8px;
-                                    border-radius: 4px;
-                                    background: pkg.upgradable ? Theme.holo-blue
-                                        : pkg.installed ? Theme.color-success
-                                        : Theme.text-dim;
+                                    width: 16px;
+
+                                    Rectangle {
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                        width: 8px;
+                                        height: 8px;
+                                        border-radius: 4px;
+                                        background: pkg.upgradable ? Theme.holo-blue
+                                            : pkg.installed ? Theme.text-secondary
+                                            : transparent;
+                                        border-width: pkg.upgradable || pkg.installed ? 0px : 1px;
+                                        border-color: Theme.text-dim;
+                                    }
                                 }
 
-                                // Name + description
+                                // Name + description: the one flexible column.
                                 VerticalLayout {
                                     horizontal-stretch: 1;
+                                    min-width: 0px;
                                     alignment: center;
                                     spacing: 2px;
 
@@ -511,75 +473,97 @@ export component PackageManager inherits Rectangle {
                                     }
                                 }
 
-                                // Source badge: which store the row is from, so a Flatpak and a
+                                // Source pill: which store the row is from, so a Flatpak and a
                                 // Debian package of the same name are never mistaken for each other.
+                                // In a fixed slot, so the tag after it starts at one x.
                                 Rectangle {
-                                    width: source-text.preferred-width + 14px;
-                                    height: 20px;
-                                    background: pkg.source == "flathub" ? AppIdentity.accent.transparentize(80%) : Theme.hover-fill;
-                                    border-radius: 10px;
-                                    border-width: 1px;
-                                    border-color: pkg.source == "flathub" ? AppIdentity.accent.transparentize(50%) : transparent;
+                                    width: 64px;
 
-                                    source-text := Text {
-                                        text: pkg.source == "flathub" ? "Flathub" : "Debian";
-                                        font-size: Theme.fs-micro;
-                                        font-weight: 600;
-                                        color: pkg.source == "flathub" ? AppIdentity.accent : Theme.text-secondary;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
+                                    Rectangle {
+                                        x: 0;
+                                        y: (parent.height - self.height) / 2;
+                                        width: source-text.preferred-width + 14px;
+                                        height: 20px;
+                                        background: pkg.source == "flathub" ? AppIdentity.accent.transparentize(80%) : Theme.hover-fill;
+                                        border-radius: 10px;
+                                        border-width: 1px;
+                                        border-color: pkg.source == "flathub" ? AppIdentity.accent.transparentize(50%) : transparent;
+
+                                        source-text := Text {
+                                            text: pkg.source == "flathub" ? "Flathub" : "Debian";
+                                            font-size: Theme.fs-micro;
+                                            font-weight: 600;
+                                            color: pkg.source == "flathub" ? AppIdentity.accent : Theme.text-secondary;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
                                     }
                                 }
 
-                                // Repo badge
-                                if pkg.repo != "" : Rectangle {
-                                    width: repo-text.width + 12px;
-                                    height: 20px;
-                                    background: Theme.hover-fill;
-                                    border-radius: 10px;
+                                // Tag pill: the Debian section or the Flatpak branch. The slot stays
+                                // when a row has none, so the columns after it do not move.
+                                Rectangle {
+                                    width: 72px;
 
-                                    repo-text := Text {
-                                        text: pkg.repo;
-                                        font-size: Theme.fs-micro;
-                                        color: Theme.text-dim;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
+                                    if pkg.repo != "" : Rectangle {
+                                        x: 0;
+                                        y: (parent.height - self.height) / 2;
+                                        width: min(parent.width, repo-text.preferred-width + 12px);
+                                        height: 20px;
+                                        background: Theme.hover-fill;
+                                        border-radius: 10px;
+
+                                        repo-text := Text {
+                                            width: parent.width - 12px;
+                                            text: pkg.repo;
+                                            font-size: Theme.fs-micro;
+                                            color: Theme.text-dim;
+                                            overflow: elide;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
                                     }
                                 }
 
-                                // Size
-                                if pkg.size-text != "" : Text {
+                                // Size, right-aligned so the figures line up by their last digit.
+                                Text {
+                                    width: 72px;
                                     text: pkg.size-text;
                                     font-size: Theme.font-small;
                                     color: Theme.text-dim;
-                                    width: 60px;
+                                    overflow: elide;
                                     horizontal-alignment: right;
                                     vertical-alignment: center;
                                 }
 
-                                // Status badge
+                                // State. Installed is the kit's neutral outline pill: the word
+                                // carries the state. Upgradable keeps the accent, because it is an
+                                // action waiting to be taken.
                                 Rectangle {
-                                    width: 76px;
-                                    height: 24px;
-                                    background: pkg.upgradable ? Theme.accent-dim
-                                        : pkg.installed ? Theme.color-success-dim
-                                        : transparent;
-                                    border-radius: 12px;
-                                    border-width: pkg.installed || pkg.upgradable ? 1px : 0;
-                                    border-color: pkg.upgradable ? AppIdentity.accent.transparentize(60%)
-                                        : pkg.installed ? Theme.color-success.transparentize(60%)
-                                        : transparent;
+                                    width: 96px;
 
-                                    Text {
-                                        text: pkg.upgradable ? "Upgradable"
-                                            : pkg.installed ? "Installed"
-                                            : "";
-                                        font-size: Theme.fs-micro;
-                                        color: pkg.upgradable ? Theme.holo-blue
-                                            : pkg.installed ? Theme.color-success
-                                            : transparent;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
+                                    if pkg.upgradable : Rectangle {
+                                        y: (parent.height - self.height) / 2;
+                                        width: parent.width;
+                                        height: 22px;
+                                        background: Theme.accent-dim;
+                                        border-radius: 11px;
+                                        border-width: 1px;
+                                        border-color: AppIdentity.accent.transparentize(60%);
+
+                                        Text {
+                                            text: "Upgradable";
+                                            font-size: Theme.fs-micro;
+                                            color: Theme.holo-blue;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    if !pkg.upgradable && pkg.installed : YStatusPill {
+                                        y: (parent.height - self.height) / 2;
+                                        width: parent.width;
+                                        text: "Installed";
                                     }
                                 }
                             }
@@ -705,7 +689,7 @@ export component PackageManager inherits Rectangle {
                             if root.detail-upgradable : Rectangle {
                                 width: 100px;
                                 height: 36px;
-                                background: upg-ta.has-hover ? AppIdentity.accent.brighter(20%) : Theme.accent;
+                                background: upg-ta.has-hover ? Theme.accent-button-hover : Theme.accent;
                                 border-radius: Theme.radius-pill;
 
                                 Text {
@@ -726,13 +710,13 @@ export component PackageManager inherits Rectangle {
                             if root.detail-installed : Rectangle {
                                 width: 100px;
                                 height: 36px;
-                                background: remove-ta.has-hover ? Theme.color-danger.brighter(20%) : Theme.color-danger;
+                                background: remove-ta.has-hover ? Theme.destructive-hover : Theme.destructive;
                                 border-radius: Theme.radius-pill;
 
                                 Text {
                                     text: "Remove";
                                     font-size: Theme.font-body;
-                                    color: Theme.text-on-accent;
+                                    color: Theme.text-on-danger;
                                     font-weight: 600;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
