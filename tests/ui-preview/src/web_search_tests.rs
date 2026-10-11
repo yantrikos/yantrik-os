@@ -42,7 +42,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         g.set_test_line("12 results from brave, duckduckgo, wikipedia. Unresponsive: google (CAPTCHA).".into());
         g.set_can_save(true);
         g.set_saved_line("Saved: SearXNG at http://192.168.4.42:8888 · 5 Oct 2026, 14:02".into());
-        g.set_egress_line("The egress proxy is enforcing and no rule lets minds reach 192.168.4.42:8888 over plain http on your local network, so their searches there are refused. The button adds one rule for exactly that.".into());
+        g.set_egress_line("Your minds can't reach this address yet, so their searches there fail. The button allows this one address and port.".into());
         g.set_egress_offer(true);
         let searxng = draw();
         let changed = (300..height as usize)

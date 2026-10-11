@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use slint::ComponentHandle;
 use yantrik_web_search::{client, Service, Target};
 
-use super::{apply, check_egress, show_saved};
+use super::{apply, check_egress, show_saved_keeping};
 use crate::{App, WebSearchState};
 
 /// The least time between two agent-initiated Test probes.
@@ -111,7 +111,7 @@ pub fn set_from_agent(service: &str, url: &str, ui: slint::Weak<App>) -> Result<
             apply(Service::Builtin, None)?;
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = ui.upgrade() {
-                    show_saved(&ui);
+                    show_saved_keeping(&ui, true);
                 }
             });
             Ok("Saved: built-in (DuckDuckGo).".into())
@@ -133,7 +133,7 @@ pub fn set_from_agent(service: &str, url: &str, ui: slint::Weak<App>) -> Result<
                     }
                     match apply(Service::Searxng, Some(checked.url.clone())) {
                         Ok(_) => {
-                            show_saved(&ui);
+                            show_saved_keeping(&ui, true);
                             check_egress(&ui, checked);
                         }
                         Err(e) => g.set_save_error(format!("Not saved: {e}").into()),

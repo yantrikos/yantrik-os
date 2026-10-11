@@ -98,11 +98,18 @@ pub fn saved_line(ws: &WebSearch) -> String {
 
 /// Put what is saved on screen, as the page shows it after a save or at start.
 fn show_saved(ui: &App) {
+    show_saved_keeping(ui, false);
+}
+
+/// [`show_saved`], for a save the person did not make (an agent's): an address they are typing
+/// stays in the field rather than being replaced under their hands.
+pub(super) fn show_saved_keeping(ui: &App, keep_typed: bool) {
     set_offer(None);
     let ws = crate::wire::settings::web_search();
     let g = ui.global::<WebSearchState>();
     g.set_service(ws.service.as_str().into());
-    if !ws.searxng_url.is_empty() {
+    let typing = keep_typed && !g.get_url().is_empty();
+    if !ws.searxng_url.is_empty() && !typing {
         g.set_url(ws.searxng_url.clone().into());
     }
     g.set_saved_line(saved_line(&ws).into());
@@ -366,9 +373,10 @@ mod tests {
         assert!(press.contains("OFFERED.lock()") && press.contains(".take()") && press.contains("offered_url("), "{press}");
     }
 
-    /// Security review of #656, finding 2: Save, Test and the egress button answer a pointer and
-    /// nothing else, so no process in the session can press them through the accessibility
-    /// default action. YButton's own gate is tested in yantrik-ui-kit.
+    /// Security review of #656, finding 2: Save and the egress button answer a pointer and nothing
+    /// else, so no process in the session can press them through the accessibility default action.
+    /// Test changes nothing and stays reachable from the keyboard (re-review). YButton's own gate is
+    /// tested in yantrik-ui-kit.
     #[test]
     fn the_cards_buttons_are_pointer_only() {
         let src = include_str!("../../../../yantrik-ui-slint/ui/components/web_search_card.slint");
@@ -377,12 +385,14 @@ mod tests {
             let open = src[..at].rfind("YButton {").expect("a YButton opens before it");
             src[open..open + src[open..].find('}').unwrap()].to_string()
         };
-        for label in ["label: \"Save\";", "label: WebSearchState.testing ? \"Testing…\" : \"Test\";", "label: \"Allow minds to reach this search service\";"] {
+        for label in ["label: \"Save\";", "label: \"Allow minds to reach this search service\";"] {
             let b = button_with(label);
             assert!(b.contains("pointer-only: true;"), "{label} lost pointer-only:\n{b}");
         }
-        assert_eq!(src.matches("YButton {").count(), 3, "a fourth button needs pointer-only and a line here");
-        assert_eq!(src.matches("pointer-only: true;").count(), 3);
+        let test = button_with("label: WebSearchState.testing ? \"Testing…\" : \"Test\";");
+        assert!(!test.contains("pointer-only"), "Test is reachable from the keyboard:\n{test}");
+        assert_eq!(src.matches("YButton {").count(), 3, "a fourth button needs a decision and a line here");
+        assert_eq!(src.matches("pointer-only: true;").count(), 2);
         for banned in ["accessible-action", "forward-focus", ".focus()"] {
             assert!(!src.contains(banned), "the card must not use `{banned}`");
         }
