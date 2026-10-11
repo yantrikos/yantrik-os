@@ -31,6 +31,10 @@
 use std::path::PathBuf;
 use yantrik_companion::CompanionConfig;
 
+// The perception reader is the OS's eyesight; if the module is ever cfg-gated out, this fails the
+// build rather than shipping a shell that cannot see (#58).
+const _: () = assert!(perception::READER_WIRED);
+
 mod accounts;
 mod activity_feed;
 /// Every agent — one conversation with one mind — and its session, drawn by the Agents screen.

@@ -174,6 +174,11 @@ fn worth_remembering(o: &Observation) -> Option<(String, f64)> {
 ///
 /// Failing to start is not fatal and not even unusual — the OS runs perfectly well without
 /// perception, it simply cannot see. That is said once at info level rather than repeated.
+/// Compile-time sentinel that the reader is wired into the shell binary: `main.rs` asserts this
+/// at the top of the crate, so if the module is ever cfg-gated out again the build fails instead
+/// of silently shipping an OS with no eyesight (#58).
+pub(crate) const READER_WIRED: bool = true;
+
 pub fn spawn(bridge: Arc<CompanionBridge>) {
     std::thread::Builder::new()
         .name("perception-reader".into())
@@ -280,6 +285,14 @@ fn run(bridge: Arc<CompanionBridge>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reader must stay wired into the shell binary: `main.rs` asserts `READER_WIRED` at
+    /// compile time, and this test guards the sentinel itself so a build that drops the module
+    /// (or the constant) fails rather than shipping an OS with no eyesight (#58).
+    #[test]
+    fn the_reader_is_wired_into_the_shell() {
+        assert!(READER_WIRED);
+    }
 
     fn obs(kind: Kind, salience: f32, actor: Option<&str>) -> Observation {
         Observation {
