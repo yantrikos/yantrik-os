@@ -102,7 +102,10 @@ fn fetch_as(base: &SearxUrl, query: &str, timeout: Duration, named: bool) -> Res
         Err(ureq::Error::Transport(t)) => return Err(Failure::Unreachable(transport_reason(&t, base, timeout, named))),
     };
     if (300..400).contains(&response.status()) {
-        return Err(Failure::Redirected(response.header("Location").unwrap_or_default().chars().take(200).collect()));
+        // Where it redirects is the address, or near enough (http → https of the same host), so
+        // a model's reading gets the bare fact and only the person's sees where.
+        let to = if named { response.header("Location").unwrap_or_default().chars().take(200).collect() } else { String::new() };
+        return Err(Failure::Redirected(to));
     }
     let content_type = response.content_type().to_string();
     let mut body = Vec::new();
