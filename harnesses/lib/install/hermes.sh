@@ -13,6 +13,7 @@
 # loads the plugin and so what attaches to the desktop.
 set -eu
 . "$(dirname "$0")/common.sh"
+. "$(dirname "$0")/hermes-launcher.sh"
 
 [ $# -eq 1 ] || fail "usage: hermes.sh PLUGIN_DIR"
 plugin=$1
@@ -43,6 +44,13 @@ if ! command -v hermes >/dev/null 2>&1; then
         || fail "Hermes's own installer stopped; its last lines are above"
     command -v hermes >/dev/null 2>&1 || fail "Hermes installed, but there is no hermes in ~/.local/bin"
 fi
+
+# Hermes's installer writes its launcher naming the Python in the temporary directory it worked
+# in, not the copy it keeps in ~/.hermes/tools; after the next /tmp cleanup `hermes` and the
+# gateway are dead (#712). Pointed at the kept copy here, every time, so a Hermes installed before
+# this is mended by pressing Install again. Nothing here leaves a launcher naming /tmp.
+hermes_repoint_launcher "$HOME" \
+    || fail "Hermes's launcher names a Python in a temporary directory, and it could not be pointed at the one in ~/.hermes/tools"
 say "$(hermes --version 2>/dev/null | head -n 1 || echo Hermes) is here"
 
 say "copying the desktop plugin into ~/.hermes"

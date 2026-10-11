@@ -2901,6 +2901,48 @@ reconcile_private_dirs() {
   done
 }
 
+# Hermes's launcher (#712). Hermes's installer left it naming the Python in its own temporary
+# directory, so on every machine Hermes was installed on before the installer repointed it, the
+# first /tmp cleanup killed the hermes command and the gateway. The repair is the installer's own
+# function (harnesses/lib/install/hermes-launcher.sh, shipped in share/harnesses), run as the
+# person in their home, keeping the launcher as it was beside it as *.before-712.
+HERMES_LAUNCHER_LIB="$SHARE_DIR/harnesses/lib/install/hermes-launcher.sh"
+
+repoint_hermes_launcher() { # <home> [<owner>]: as <owner> when given (this is root), else as this account
+  local home="$1" owner="${2:-}" out
+  [ -f "$HERMES_LAUNCHER_LIB" ] || return 0
+  [ -d "$home/.hermes/hermes-agent/.hermes/bin" ] || return 0
+  local run=(sh -c '. "$1" && hermes_repoint_launcher "$2" keep' sh "$HERMES_LAUNCHER_LIB" "$home")
+  [ -z "$owner" ] || run=(runuser -u "$owner" -- "${run[@]}")
+  if ! out="$("${run[@]}" 2>&1)"; then
+    warn "Hermes's launcher still names a Python under /tmp: $out"
+    return 1
+  fi
+  [ -n "$out" ] || return 0
+  printf '%s\n' "$out" | while IFS= read -r line; do info "$line"; done
+  # The gateway has been failing since /tmp was cleaned; now it has a Python to start with.
+  if [ -n "$owner" ] && systemctl --user -M "$owner@" -q is-enabled hermes-gateway.service 2>/dev/null; then
+    systemctl --user -M "$owner@" reset-failed hermes-gateway.service >/dev/null 2>&1 || true
+    systemctl --user -M "$owner@" restart hermes-gateway.service >/dev/null 2>&1 \
+      && info "Hermes's gateway restarted" \
+      || warn "Hermes's gateway did not restart; see: journalctl --user -u hermes-gateway"
+  fi
+  return 0
+}
+
+reconcile_hermes_launcher() {
+  [ "$(id -u)" = 0 ] || return 0
+  command -v runuser >/dev/null 2>&1 || return 0
+  local owner home
+  owner="$(desktop_owner)"
+  case "$owner" in
+    ''|root|*[!a-z0-9_-]*) return 0 ;;
+  esac
+  home="$(getent passwd "$owner" | cut -d: -f6)"
+  case "$home" in /?*) ;; *) return 0 ;; esac
+  repoint_hermes_launcher "$home" "$owner" || true
+}
+
 # The system units the bundle ships for minds (share/systemd), into /etc/systemd/system, by
 # content like every other root file (#419). Installed, not enabled: a mind's unit is enabled by
 # `migrate-minds`, once what it remembers has moved out of the person's home.
@@ -3231,6 +3273,7 @@ cmd_reconcile() {
   reconcile_egress
   reconcile_mind_egress
   reconcile_private_dirs
+  reconcile_hermes_launcher
   private_config
   reconcile_registries
   reconcile_podman_socket
@@ -4413,6 +4456,38 @@ c.sendall((json.dumps({"ok": True, "seeded": req["rules"]}) + "\n").encode())' "
     done
   else
     printf '  skip mind-egress nft syntax check: no nft, or no user namespace to run it in\n'
+  fi
+
+  # Hermes's launcher naming the installer's temporary Python, long since cleaned out of /tmp
+  # (#712), repointed at the copy in ~/.hermes/tools by the installer's own function. The home is
+  # not under /tmp: a home there would name /tmp after the repair as well.
+  local hh hl py=python-3.14.7+20260901-linux-x64
+  if hh="$(mktemp -d /var/tmp/yantrik-hermes-XXXXXX 2>/dev/null)"; then
+    hl="$hh/.hermes/hermes-agent/.hermes/bin/hermes"
+    mkdir -p "${hl%/*}" "$hh/.hermes/tools/$py/bin"
+    printf '#!/bin/sh\nexec /tmp/tmp.gone712/tools/%s/bin/python3 -I -c %s "$@"\n' "$py" "'import hermes'" > "$hl"
+    chmod 755 "$hl"
+    local before; before="$(cat "$hl")"
+    HERMES_LAUNCHER_LIB="$(dirname "$0")/../../harnesses/lib/install/hermes-launcher.sh" \
+      repoint_hermes_launcher "$hh" > /dev/null 2>&1
+    is "hermes launcher: no Python to point at, so it is left as it was" "$before" "$(cat "$hl")"
+    printf '#!/bin/sh\necho "Hermes Agent 0.0 ($0)"\n' > "$hh/.hermes/tools/$py/bin/python3.14"
+    chmod 755 "$hh/.hermes/tools/$py/bin/python3.14"
+    out="$(HERMES_LAUNCHER_LIB="$(dirname "$0")/../../harnesses/lib/install/hermes-launcher.sh" \
+      repoint_hermes_launcher "$hh" 2>&1)"
+    t "hermes launcher: says what it repointed" "now runs the Python in $hh/.hermes/tools" "$out"
+    is "hermes launcher: names the kept Python, not /tmp" \
+      "exec $hh/.hermes/tools/$py/bin/python3.14 -I -c 'import hermes' \"\$@\"" "$(sed -n 2p "$hl")"
+    is "hermes launcher: still executable" "yes" "$([ -x "$hl" ] && echo yes || echo no)"
+    t "hermes launcher: and it runs" "Hermes Agent 0.0" "$("$hl" --version 2>&1)"
+    is "hermes launcher: the old one kept beside it, not executable" "$before no" \
+      "$(cat "$hl.before-712") $([ -x "$hl.before-712" ] && echo yes || echo no)"
+    out="$(HERMES_LAUNCHER_LIB="$(dirname "$0")/../../harnesses/lib/install/hermes-launcher.sh" \
+      repoint_hermes_launcher "$hh" 2>&1)"
+    is "hermes launcher: a second run has nothing to do, its own backup included" "" "$out"
+    rm -rf "$hh"
+  else
+    printf '  skip hermes launcher: /var/tmp is not writable here\n'
   fi
 
   # The blanket sudo rules taken away once the narrow one is in place (#397), cloud-init's included.

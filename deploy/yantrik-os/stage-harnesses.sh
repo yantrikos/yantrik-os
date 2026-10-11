@@ -37,7 +37,7 @@ find "$dest" -name __pycache__ -type d -prune -exec rm -rf {} +
 for harness in hermes deepseek pi openclaw; do
     [ -f "$dest/$harness/harness.yaml" ] || { echo "$harness has no harness.yaml in $dest" >&2; exit 1; }
 done
-for script in common.sh npm.sh hermes.sh; do
+for script in common.sh npm.sh hermes.sh hermes-launcher.sh; do
     [ -f "$dest/lib/install/$script" ] || { echo "lib/install/$script did not stage" >&2; exit 1; }
 done
 
