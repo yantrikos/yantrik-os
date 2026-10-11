@@ -379,7 +379,6 @@ bond.score: "درجة الرابطة"
 bond.level: "المستوى"
 bond.interactions: "إجمالي التفاعلات"
 bond.days: "أيام معًا"
-bond.streak: "السلسلة الحالية"
 
 # ── Power ──
 power.shutdown: "إيقاف التشغيل"

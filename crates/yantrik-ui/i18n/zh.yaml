@@ -378,7 +378,6 @@ bond.score: "羁绊值"
 bond.level: "等级"
 bond.interactions: "总互动次数"
 bond.days: "相处天数"
-bond.streak: "当前连续天数"
 
 # ── Power ──
 power.shutdown: "关机"

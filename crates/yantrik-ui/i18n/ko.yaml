@@ -378,7 +378,6 @@ bond.score: "유대 점수"
 bond.level: "레벨"
 bond.interactions: "총 상호작용"
 bond.days: "함께한 날"
-bond.streak: "현재 연속 기록"
 
 # ── Power ──
 power.shutdown: "종료"

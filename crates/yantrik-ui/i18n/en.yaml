@@ -378,7 +378,6 @@ bond.score: "Bond Score"
 bond.level: "Level"
 bond.interactions: "Total Interactions"
 bond.days: "Days Together"
-bond.streak: "Current Streak"
 
 # ── Power ──
 power.shutdown: "Shut Down"

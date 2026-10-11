@@ -233,13 +233,13 @@ pub struct StateSnapshot {
 pub struct BondSnapshot {
     pub bond_score: f64,
     pub bond_level: String,
+    /// What this level changes about how the companion talks, in one short line.
+    pub bond_description: String,
     /// Which of the five levels, 1 to 5, so the screen can say "Level 4 of 5".
     pub level_number: i64,
     pub total_interactions: i64,
     pub days_together: i64,
-    pub current_streak: i64,
     pub humor_rate: f64,
-    pub vulnerability_events: i64,
     pub shared_references: i64,
 }
 
@@ -251,12 +251,11 @@ impl BondSnapshot {
             loaded: true,
             bond_score: self.bond_score as f32,
             bond_level: self.bond_level.clone().into(),
+            bond_description: self.bond_description.clone().into(),
             level_number: self.level_number as i32,
             total_interactions: self.total_interactions as i32,
             days_together: self.days_together as i32,
-            current_streak: self.current_streak as i32,
             humor_rate: self.humor_rate as f32,
-            vulnerability_events: self.vulnerability_events as i32,
             shared_references: self.shared_references as i32,
         }
     }
@@ -2941,13 +2940,12 @@ fn bond_snapshot(companion: &CompanionService) -> BondSnapshot {
     BondSnapshot {
         bond_score: bond.bond_score,
         bond_level: bond.bond_level.name().to_string(),
+        bond_description: bond.bond_level.description().to_string(),
         // Stranger is 1 and Partner-in-Crime 5 (yantrik-companion-core's `BondLevel`).
         level_number: bond.bond_level.as_u8() as i64,
         total_interactions: bond.total_interactions,
         days_together: bond.days_together as i64,
-        current_streak: bond.current_streak_days,
         humor_rate,
-        vulnerability_events: bond.vulnerability_events,
         shared_references: bond.shared_references,
     }
 }

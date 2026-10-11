@@ -137,7 +137,6 @@ pub fn push_translations(ui: &App, i18n: &I18n) {
     tr.set_bond_level(i18n.tr("bond.level").into());
     tr.set_bond_interactions(i18n.tr("bond.interactions").into());
     tr.set_bond_days(i18n.tr("bond.days").into());
-    tr.set_bond_streak(i18n.tr("bond.streak").into());
 
     // ── Notifications ──
     tr.set_notifications_no_notifications(i18n.tr("notifications.no_notifications").into());

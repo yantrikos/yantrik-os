@@ -378,7 +378,6 @@ bond.score: "Puntuación de vínculo"
 bond.level: "Nivel"
 bond.interactions: "Interacciones totales"
 bond.days: "Días juntos"
-bond.streak: "Racha actual"
 
 # ── Power ──
 power.shutdown: "Apagar"

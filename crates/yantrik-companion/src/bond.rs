@@ -1,7 +1,7 @@
 //! Bond tracking — measures and evolves the relationship between companion and user.
 //!
-//! Bond score grows through interaction signals: frequency, depth, vulnerability,
-//! memory callbacks, and daily streaks. Bond level unlocks personality behaviors:
+//! Bond score grows through interaction signals: frequency, depth, and memory
+//! callbacks. Bond level unlocks personality behaviors:
 //!
 //! | Level | Score   | Name             | Behavior                                    |
 //! |-------|---------|------------------|---------------------------------------------|
@@ -18,30 +18,6 @@ pub use yantrik_companion_core::bond::{BondLevel, BondState};
 
 /// Tracks and evolves the bond between companion and user.
 pub struct BondTracker;
-
-/// Default vulnerability keywords.
-const VULNERABILITY_PATTERNS: &[&str] = &[
-    "i feel",
-    "i'm scared",
-    "i'm afraid",
-    "i'm worried",
-    "nobody understands",
-    "i can't",
-    "i lost",
-    "i miss",
-    "i'm lonely",
-    "i'm sad",
-    "i'm depressed",
-    "i'm anxious",
-    "i'm stressed",
-    "i hate myself",
-    "i love you",
-    "thank you for listening",
-    "you're the only one",
-    "i trust you",
-    "i've never told",
-    "don't tell anyone",
-];
 
 impl BondTracker {
     /// Ensure bond tables exist. Called once on startup.
@@ -162,6 +138,10 @@ impl BondTracker {
 
     /// Score an interaction and update bond state. Returns the new bond level
     /// and whether the level changed.
+    ///
+    /// The bond grows from conversation; it never rewards streaks, never pays
+    /// for disclosing feelings, and never drops for absence
+    /// (design/ux-psychology-2026-10-11.md, "What we will not build").
     pub fn score_interaction(
         conn: &Connection,
         user_text: &str,
@@ -185,31 +165,6 @@ impl BondTracker {
         let mem_bonus = (memories_recalled.min(3) as f64) * 0.01;
         delta += mem_bonus;
 
-        // Vulnerability detection
-        let user_lower = user_text.to_lowercase();
-        let is_vulnerable = VULNERABILITY_PATTERNS
-            .iter()
-            .any(|p| user_lower.contains(p));
-        if is_vulnerable {
-            delta += 0.05;
-            Self::log_event(conn, "vulnerability", delta, "{}");
-            conn.execute(
-                "UPDATE bond_state SET vulnerability_events = vulnerability_events + 1 WHERE id = 1",
-                [],
-            )
-            .ok();
-        }
-
-        // Deep conversation detection (long + emotional)
-        if user_text.len() > 300 {
-            delta += 0.01;
-            conn.execute(
-                "UPDATE bond_state SET deep_conversations = deep_conversations + 1 WHERE id = 1",
-                [],
-            )
-            .ok();
-        }
-
         // Streak tracking
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
         let last_date: Option<String> = conn
@@ -220,10 +175,10 @@ impl BondTracker {
             )
             .ok();
 
-        let (new_streak, streak_bonus) = match last_date {
+        let new_streak = match last_date {
             Some(ref d) if d == &today => {
                 // Same day — no streak change
-                (old_state.current_streak_days, 0.0)
+                old_state.current_streak_days
             }
             Some(ref d) => {
                 // Check if yesterday
@@ -231,15 +186,13 @@ impl BondTracker {
                     .format("%Y-%m-%d")
                     .to_string();
                 if d == &yesterday {
-                    let new = old_state.current_streak_days + 1;
-                    (new, 0.005 * new.min(7) as f64) // Streak bonus caps at 7 days
+                    old_state.current_streak_days + 1
                 } else {
-                    (1, 0.0) // Streak broken
+                    1 // Streak broken
                 }
             }
-            None => (1, 0.0), // First interaction
+            None => 1, // First interaction
         };
-        delta += streak_bonus;
 
         // Compute new score (capped at 5.0)
         let new_score = (old_state.bond_score + delta).min(5.0);
@@ -278,8 +231,6 @@ impl BondTracker {
             &serde_json::json!({
                 "msg_len": user_text.len(),
                 "memories": memories_recalled,
-                "vulnerable": is_vulnerable,
-                "streak": new_streak,
             })
             .to_string(),
         );
@@ -510,5 +461,80 @@ mod tests {
         let future = (chrono::Utc::now() + chrono::Duration::hours(6)).timestamp() as f64;
         let conn = conn_with_first_interaction(Some(future));
         assert_eq!(BondTracker::get_state(&conn).days_together, 1.0);
+    }
+
+    /// Score one turn and return the delta it added to the score.
+    fn delta_for(conn: &Connection, text: &str) -> f64 {
+        let before = BondTracker::get_state(conn).bond_score;
+        BondTracker::score_conversation_turn(conn, text);
+        BondTracker::get_state(conn).bond_score - before
+    }
+
+    #[test]
+    fn a_streak_never_changes_the_score() {
+        // #753: the bond must not reward streaks. The same message on consecutive
+        // days earns the same delta as on days with a gap between them.
+        let conn = conn_with_first_interaction(None);
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let yesterday = (chrono::Utc::now() - chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+        let three_days_ago = (chrono::Utc::now() - chrono::Duration::days(3))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        // Consecutive days: yesterday, then today.
+        conn.execute(
+            "UPDATE bond_state SET current_streak_days = 1, last_interaction_date = ?1 WHERE id = 1",
+            params![yesterday],
+        )
+        .unwrap();
+        let consecutive = delta_for(&conn, "how is the build going?");
+
+        // A gap: three days ago, then today.
+        conn.execute(
+            "UPDATE bond_state SET current_streak_days = 1, last_interaction_date = ?1 WHERE id = 1",
+            params![three_days_ago],
+        )
+        .unwrap();
+        let gapped = delta_for(&conn, "how is the build going?");
+
+        assert_eq!(consecutive, gapped, "a streak must not change the score");
+    }
+
+    #[test]
+    fn saying_how_you_feel_earns_nothing_extra() {
+        // #753: the bond must not pay for disclosing feelings. A message that says
+        // how the person feels earns the same delta as a neutral one of the same length.
+        let conn = conn_with_first_interaction(None);
+        let feelings = "i'm worried about the trip";
+        let neutral = "the build is running again";
+        assert_eq!(feelings.len(), neutral.len(), "the two messages must be the same length");
+        assert_eq!(
+            delta_for(&conn, feelings),
+            delta_for(&conn, neutral),
+            "disclosing feelings must not change the score"
+        );
+    }
+
+    #[test]
+    fn the_bond_never_drops_for_absence() {
+        // #753: the bond must not decay for absence. Thirty days away, a turn still
+        // moves the score up, never below its old value.
+        let conn = conn_with_first_interaction(None);
+        BondTracker::score_conversation_turn(&conn, "hello");
+        let thirty_days_ago = now_ts() - 30.0 * 86400.0;
+        conn.execute(
+            "UPDATE bond_state SET last_interaction_at = ?1 WHERE id = 1",
+            params![thirty_days_ago],
+        )
+        .unwrap();
+        let before = BondTracker::get_state(&conn).bond_score;
+        BondTracker::score_conversation_turn(&conn, "hello again");
+        let after = BondTracker::get_state(&conn).bond_score;
+        assert!(
+            after >= before,
+            "absence must never lower the score: {before} -> {after}"
+        );
     }
 }
