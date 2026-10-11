@@ -2349,11 +2349,13 @@ mod tests {
         assert!(header.contains("clicked => { root.open-in-agents(); }"));
         let lens = read("../yantrik-ui-slint/ui/components/intent_lens.slint");
         assert!(lens.contains("open-in-agents => { root.open-in-agents(); }"));
-        let desktop = read("../yantrik-ui-slint/ui/desktop.slint");
-        assert!(desktop.contains("open-in-agents => { root.lens-open-in-agents(); }"));
-        assert!(desktop.contains("can-open-in-agents: root.lens-can-open-in-agents;"));
-        let app = read("../yantrik-ui-slint/ui/app.slint");
-        assert!(app.contains("lens-open-in-agents => { root.lens-open-in-agents(); }"));
+        // The Lens is a window of its own (#733): its window forwards the press to the shell.
+        let window = read("../yantrik-ui-slint/ui/lens_window.slint");
+        assert!(window.contains("open-in-agents => { root.lens-open-in-agents(); }"));
+        assert!(window.contains("can-open-in-agents: root.lens-can-open-in-agents;"));
+        let forward = read("src/lens_window.rs");
+        assert!(forward.contains("ui.invoke_lens_open_in_agents();"));
+        assert!(forward.contains("get_lens_can_open_in_agents => set_lens_can_open_in_agents"));
         let this = read("src/wire/agents.rs");
         assert!(this.contains("ui.on_lens_open_in_agents(") && this.contains("feed::main_agent(&host.active_id())"));
     }
@@ -2971,9 +2973,10 @@ mod first_prompt_attribution_tests {
         // The Lens's card answers through the Agents view's own callback, the one path to
         // `answer_for`; it has no answering of its own.
         let app = read("../yantrik-ui-slint/ui/app.slint");
-        assert!(app.contains("question-answer(agent, request, answer, pressed) => { AgentsState.answer-question(agent, request, answer, pressed); }"));
-        let desktop = read("../yantrik-ui-slint/ui/desktop.slint");
-        assert!(desktop.contains("questions: root.questions;"), "the desktop screen hands the Lens its questions");
+        assert!(app.contains("AgentsState.answer-question(agent, request, answer, pressed);"));
+        let window = read("../yantrik-ui-slint/ui/lens_window.slint");
+        assert!(window.contains("questions: root.lens-questions;"), "the Lens's window hands the Lens its questions");
+        assert!(window.contains("question-answer(agent, request, answer, pressed) => { root.question-answer(agent, request, answer, pressed); }"));
         let lens = read("../yantrik-ui-slint/ui/components/intent_lens.slint");
         assert!(lens.contains("for q in root.questions : QuestionCard"), "the Lens draws them");
     }
@@ -3029,6 +3032,17 @@ mod first_prompt_attribution_tests {
             let code = text.split("#[cfg(test)]").next().unwrap();
             for call in ["invoke_answer_question", "invoke_question_answer"] {
                 assert!(!code.contains(call), "{} answers a question for the person: {call}", file.display());
+            }
+            // The Lens's window hands a press on an answer to the shell (#733): from its own
+            // `question-answer` callback, which only a pointer fires, and from nowhere else.
+            let relays = code.matches("invoke_lens_question_answer").count();
+            if file.ends_with("lens_window.rs") {
+                assert_eq!(relays, 1, "the Lens's window relays its press once");
+                let at = code.find("invoke_lens_question_answer").unwrap();
+                let line = &code[code[..at].rfind('\n').unwrap()..at];
+                assert!(line.contains("on!(on_question_answer,"), "and only from its question-answer callback: {line}");
+            } else {
+                assert_eq!(relays, 0, "{} answers a question for the person through the Lens", file.display());
             }
             if file != wire {
                 assert!(!code.contains("answer_for(") && !code.contains("answer_question("), "{} can answer a run's question", file.display());

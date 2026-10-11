@@ -3648,6 +3648,13 @@ export component App inherits Window {
         }
     }
 
+    /// A press on an answer of a question card in the Lens's window, handed here to the Agents
+    /// view's own callback, the one path to `answer_for` (wire/agents.rs). Only the window's
+    /// `question-answer` callback, a pointer's, calls it (lens_window.rs; tested there).
+    public function lens-question-answer(agent: string, request: string, answer: string, pressed: bool) {
+        AgentsState.answer-question(agent, request, answer, pressed);
+    }
+
     /// Give the shell's shortcut scope the keyboard, so there is a focus chain to deliver to.
     ///
     /// Called from `main` once the window exists. Without it the first key press after startup

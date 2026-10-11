@@ -368,9 +368,9 @@ fn forward(w: &LensWindow, ui: &App) {
     on!(on_approval_allow, |ui, id| ui.invoke_approval_allow(id));
     on!(on_approval_allow_session, |ui, id| ui.invoke_approval_allow_session(id));
     on!(on_approval_deny, |ui, id| ui.invoke_approval_deny(id));
-    on!(on_question_answer, |ui, agent, request, answer, pressed| ui
-        .global::<AgentsState>()
-        .invoke_answer_question(agent, request, answer, pressed));
+    // A pointer's press on an answer, and the only caller of this function (tested in
+    // wire/agents.rs, `nothing_a_mind_can_call_answers_a_question`).
+    on!(on_question_answer, |ui, agent, request, answer, pressed| ui.invoke_lens_question_answer(agent, request, answer, pressed));
     on!(on_lens_new_chat, |ui| ui.invoke_lens_new_chat());
     // Mind View is an ordinary window on the person's desktop; the switcher brings it in front.
     on!(on_view_desk, |ui, _run| ui.invoke_switch_window(crate::mind_view::TITLE.into()));
