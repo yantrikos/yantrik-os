@@ -1733,6 +1733,11 @@ fn worker_loop(
                         now_secs(),
                     );
                     tracing::info!(kind = kind.key(), level = level.words(), "Less of this");
+                    // "Less of this" is the person's answer to that message. Left pending, their
+                    // next chat message would count as accepting it and undo the step at once.
+                    if last_proactive_kind == Some(kind) {
+                        last_proactive_kind = None;
+                    }
                 }
                 push_proactive_kinds(&companion, &ui_weak);
             }
