@@ -1044,6 +1044,7 @@ pub fn publish(
     let panel_ui = ui_for.clone();
     let desk_ui = ui_for.clone();
     let rule_ui = ui_for.clone();
+    let auto_lock_ui = ui_for.clone();
     let lock_ui = ui_for;
 
     let surface = ControlSurface::new("shell")
@@ -2029,6 +2030,39 @@ pub fn publish(
                 // pinned list rather than with the flag it was given.
                 Ok(serde_json::json!({
                     "do_not_disturb": crate::wire::settings::dnd_mode(),
+                }))
+            },
+        )
+        .action(
+            // The idle lock, for a caller — the setting the issue could only reach by clicking
+            // the Settings row twice. Same contract as `set_do_not_disturb` above: the file
+            // first, the error propagated, the screen after, because `settled` is a promise
+            // about the settings file and the idle watcher reads the timeout off the window
+            // every poll, so the window has to follow the file.
+            //
+            // `sensitive` because turning the lock off is a security decision: the machine
+            // stands open until somebody moves a mouse, and the change stands after a restart.
+            // Only the timeouts Settings offers are taken — the idle watch was measured against
+            // those, and the Settings row would have to show something for a timeout nobody
+            // offered.
+            Action::new("set_auto_lock", "Set when an idle machine locks itself: 30, 60, 120, 300, 600 seconds, or 0 for never. Stays after a restart")
+                .risk("sensitive")
+                .arg(Param::number("secs").describe("Seconds of idle before the shell locks; one of 30, 60, 120, 300, 600, 0 (never)")),
+            move |args| {
+                let ui = auto_lock_ui()?;
+                let secs = args["secs"]
+                    .as_i64()
+                    // A whole number sent as a float (30.0) is taken; 30.7 is not a timeout.
+                    .or_else(|| args["secs"].as_f64().filter(|f| f.fract() == 0.0).map(|f| f as i64))
+                    .ok_or("`secs` must be a whole number of seconds")?;
+                // A number that does not fit an i32 is not an offered timeout either;
+                // `i32::MIN` lets the settings module refuse it in the same words as the rest.
+                let secs = i32::try_from(secs).unwrap_or(i32::MIN);
+                crate::wire::settings::set_auto_lock_secs(secs)?;
+                ui.set_settings_auto_lock_secs(secs);
+                tracing::info!(secs, "Idle lock set, and written to the settings file");
+                Ok(serde_json::json!({
+                    "auto_lock_secs": ui.get_settings_auto_lock_secs(),
                 }))
             },
         )
@@ -3550,5 +3584,70 @@ mod status_gate_tests {
         let field = &src[at..at + 260];
         assert!(field.contains("if agent_reading { String::new() }"), "{field}");
         assert!(field.contains("status_for_describe"), "{field}");
+    }
+}
+
+#[cfg(test)]
+mod auto_lock_action_tests {
+    use std::path::Path;
+
+    /// The whole file above the tests — the shell as it is published.
+    fn source() -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/control.rs");
+        let whole = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        whole
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// `set_auto_lock`'s handler as it is written, taken from the code above the tests: a check
+    /// that names what it forbids is worth nothing if it can match itself.
+    fn handler() -> String {
+        let src = source();
+        let from = src
+            .find("\"set_auto_lock\"")
+            .expect("the shell still publishes set_auto_lock");
+        let rest = &src[from..];
+        let end = rest.find(".action(").unwrap_or(rest.len());
+        rest[..end].to_string()
+    }
+
+    /// Turning the idle lock off is a security decision, so the action runs under a card, and
+    /// the write is the action: `settled` is a promise about the settings file, so a failed
+    /// save has to come back as an error, the same contract `set_do_not_disturb` keeps.
+    #[test]
+    fn set_auto_lock_is_sensitive_and_writes_the_file_before_answering() {
+        let handler = handler();
+        assert!(
+            handler.contains(".risk(\"sensitive\")"),
+            "`set_auto_lock` must be graded `sensitive` — turning the idle lock off leaves \
+             the machine standing open, and the change stands after a restart. Handler as \
+             written:\n{handler}"
+        );
+        assert!(
+            handler.contains("settings::set_auto_lock_secs(secs)?"),
+            "`set_auto_lock` must write through `wire::settings::set_auto_lock_secs` — the \
+             same persist path the Settings row's cycle uses — and hand its failure on with \
+             `?`, because returning Ok answers `settled: true`. Handler as written:\n{handler}"
+        );
+    }
+
+    /// A caller that cannot see the timeout cannot tell "never" from "five minutes" without
+    /// the button, which is the blind half of the issue.
+    #[test]
+    fn describe_reports_the_idle_lock_timeout() {
+        let src = source();
+        let at = src
+            .find(".with(\"settings\",")
+            .expect("describe shell has a `settings` section");
+        let settings = &src[at..at + 900];
+        assert!(
+            settings.contains("\"auto_lock_secs\":ui.get_settings_auto_lock_secs()"),
+            "describe's `settings` must carry `auto_lock_secs` read off the window, the same \
+             property the idle watcher polls. Section as written:\n{settings}"
+        );
     }
 }

@@ -407,6 +407,11 @@ fn start_services() -> yantrik_shell_core::service_manager::ServiceManager {
     // `yos perception`, and so os_perception, asks for it on the first request. Without that the
     // machine rail's "on demand" was a caption on a process nothing anywhere ever ran.
     mgr.register("perception", "perception-service", false);
+    // The journal behind it (#705): perception's ring is memory, and an outage upstream of
+    // memory was silent because nothing drained it. Autostarted, unlike perception itself — it
+    // needs no privilege, and while perception is not running it costs one failed connect per
+    // 15 s. It must be up before perception is, or the ring overwrites before anything reads it.
+    mgr.register("perception-journal", "perception-journal", true);
 
     // Start autostart services (best-effort — binary may not exist in dev)
     mgr.start_autostart();

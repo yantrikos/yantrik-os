@@ -3,7 +3,7 @@ Type=Application
 Name=Network
 Comment=WiFi, Bluetooth, VPN network management
 Exec=/opt/yantrik/bin/yantrik-network-manager
-# One mark for now: brand/yantrik-mark.svg, installed as hicolor `yantrik`.
+# One mark for now: brand/yantrik-icon.svg, installed as hicolor `yantrik`.
 Icon=yantrik
 Categories=System;Network;
 Keywords=wifi;bluetooth;vpn;network;

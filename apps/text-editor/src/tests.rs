@@ -564,6 +564,7 @@ fn read_pages_a_tab_another_tab_and_a_file(
     let long_tab = s.borrow().active;
     act_on(published, "select_tab", serde_json::json!({ "index": in_front })).expect("back");
     let page = act_on(published, "read", serde_json::json!({ "tab": long_tab })).expect("read a tab");
+    assert_eq!(page["modified"], true, "a new tab never saved is a buffer, not a file: {page}");
     assert!(page["how_to_see_the_rest"].as_str().unwrap().contains(&format!("tab {long_tab} and from_line ")), "{page}");
     assert_eq!(walk(published, serde_json::json!({ "tab": long_tab })), spec);
     assert_eq!(s.borrow().active, in_front, "reading a tab does not bring it forward");
@@ -586,6 +587,7 @@ fn read_pages_a_tab_another_tab_and_a_file(
     let read_with = opened["read_with"].as_str().unwrap().to_string();
     let from: usize = read_with.strip_prefix("read from_line ").expect(&read_with).parse().unwrap();
     let rest = act_on(published, "read", serde_json::json!({ "from_line": from })).expect("the named call");
+    assert_eq!(rest["modified"], false, "a page of the file as saved says so: {rest}");
     assert!(spec.lines().nth(from - 1).map_or(false, |l| rest["text"].as_str().unwrap().starts_with(l)), "{rest}");
     assert_eq!(walk(published, serde_json::json!({})), spec, "the opened file, read whole");
     act_on(published, "close", serde_json::json!({})).expect("close the spec");

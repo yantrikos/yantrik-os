@@ -3,7 +3,7 @@ Type=Application
 Name=yPresent
 Comment=Slide presentation editor
 Exec=/opt/yantrik/bin/yantrik-presentation
-# One mark for now: brand/yantrik-mark.svg, installed as hicolor `yantrik`.
+# One mark for now: brand/yantrik-icon.svg, installed as hicolor `yantrik`.
 Icon=yantrik
 Categories=Office;Presentation;
 Keywords=slides;presentation;powerpoint;

@@ -20,6 +20,18 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+def _quoted_in(prompt: str, needle: Dict[str, Any]) -> bool:
+    """The host's consent check, played: the needle is exactly one quoted span (at least four
+    characters) of the question as the person was shown it."""
+    import yantrik_harness
+
+    return any(
+        yantrik_harness.needle(span) == needle
+        for span in yantrik_harness.quoted_spans(prompt)
+        if len(span) >= yantrik_harness.REDACT_MIN_CHARS
+    )
+
+
 ROOT = Path(__file__).resolve().parents[2]
 HARNESSES = ROOT / "harnesses"
 for _path in (HARNESSES / "lib", HARNESSES / "deepseek", HARNESSES / "pi"):
@@ -122,6 +134,8 @@ class FakeDesktop:
         # runs is being played; one that does not refuses every question, as the host does.
         self.questions: Dict[Tuple[int, str], Dict[str, Any]] = {}
         self.keeps_runs = True
+        # Every `redact` that arrived, as (turn id, event), accepted or not.
+        self.redactions: List[Tuple[int, Dict[str, Any]]] = []
         self._next_turn = 1
         self._next_session = 1
         # Whether an attach's `resume` is honoured, as a desktop from #246 on does.
@@ -174,6 +188,7 @@ class FakeDesktop:
             if q is None or q.get("answered"):
                 return False
             q["answered"] = True
+            q["answer"] = answer
             self.notices["answers"].append({"turn_id": turn_id, "request_id": request_id, "answer": answer})
             return True
 
@@ -300,6 +315,25 @@ class FakeDesktop:
                     self.open_turns.add(turn["turn_id"])
                     reply.update(turn)
                 return reply, None
+
+            event = params.get("event") or {}
+            if method == "harness.event" and self.events_supported and event.get("kind") == "redact":
+                # The host's rule, played: a question this run asked, answered with the offered
+                # Erase, once. The turn may already be closed.
+                turn_id = params.get("turn_id")
+                rid = str(event.get("request_id") or "")
+                earlier = any(t == turn_id and e.get("request_id") == rid for t, e in self.redactions)
+                self.redactions.append((turn_id, dict(event)))
+                q = self.questions.get((turn_id, rid))
+                if q is None:
+                    return {"refused": "run %s never asked %r" % (turn_id, rid)}, None
+                if q.get("answer") != "Erase" or "Erase" not in (q.get("options") or []):
+                    return {"refused": "the answer was not the offered Erase"}, None
+                if not all(_quoted_in(str(q.get("prompt") or ""), n) for n in event.get("needles") or []):
+                    return {"refused": "a needle is not in the question the person answered"}, None
+                if earlier:
+                    return {"refused": "one redaction per question"}, None
+                return {"redacted": len(event.get("needles") or []), "where": ["transcript", "runs"]}, None
 
             if method == "harness.event" and self.events_supported:
                 turn_id = params.get("turn_id")

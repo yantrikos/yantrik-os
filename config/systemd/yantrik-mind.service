@@ -10,8 +10,15 @@
 # once the mind's memory has moved out of the person's home and been counted twice.
 [Unit]
 Description=Yantrik Mind, attached to the desktop as its own account
-After=network-online.target yantrik-egress.service
+# yantrik-mind-egress.service (made by yantrik-update) holds this account to the proxy in the
+# kernel (table inet yantrik_mind_egress): the proxy and memory server on loopback, DNS in audit
+# only, and the person's direct set, nothing else. The proxy variables below are how well-behaved
+# code reaches it; the kernel rule is the enforcement. Required, not wanted: no mind runs
+# unguarded. If the table cannot be made (no nft), there is no mind; if nftables is stopped or
+# restarted, the mind is too.
+After=network-online.target yantrik-egress.service yantrik-mind-egress.service
 Wants=network-online.target yantrik-egress.service
+Requires=yantrik-mind-egress.service
 # One owner of the memory file at a time. See yantrik-memory.service.
 Conflicts=yantrik-memory.service
 # Not in the installer's live session.
@@ -54,6 +61,9 @@ Environment=NO_PROXY=127.0.0.1,localhost,::1 no_proxy=127.0.0.1,localhost,::1
 # settings at YM_ENV_PATH as the mind itself, and starts the Mind with them.
 # Never on an empty memory while the old one is still in a person's home: that would be a mind
 # that silently forgot everything. Run as root (+), the only one that can look there.
+# And never without the table that holds it to the proxy: a hand `nft flush ruleset` leaves the
+# unit above active and the table gone.
+ExecStartPre=+/bin/sh -c '/usr/sbin/nft list table inet yantrik_mind_egress >/dev/null 2>&1 || { echo "Yantrik Mind: the egress table (inet yantrik_mind_egress) is not loaded. Run: sudo yantrik-update mind-egress apply" >&2; exit 1; }'
 ExecStartPre=+/bin/sh -c 'for d in /home/*/.local/share/yantrik-mind/mind.db; do if [ -e "$$d" ] && [ ! -e /var/lib/yantrik-mind/mind.db ]; then echo "Yantrik Mind: its memory is still at $$d. Run: sudo yantrik-update migrate-minds" >&2; exit 1; fi; done; exit 0'
 # The Mind's settings are read by the mind itself, not by systemd as root (see the launcher).
 ExecStart=/opt/yantrik/bin/yantrik-mind-launch

@@ -1,0 +1,27 @@
+[
+  {
+    "text": "Stra\u00dfe",
+    "sha256": "787f4770613d3824cbc89b6d5da90a123e41b07b90b45ea3738c216b14616140",
+    "len": 6
+  },
+  {
+    "text": "\u0130stanbul",
+    "sha256": "4a4df120f7d1f3c286f58651abfcec2aade892ace635f96f02b946c96e6e1f86",
+    "len": 9
+  },
+  {
+    "text": "\u00c9",
+    "sha256": "4a99557e4033c3539de2eb65472017cad5f9557f7a0625a09f1c3f6e2ba69c4c",
+    "len": 1
+  },
+  {
+    "text": "E\u0301",
+    "sha256": "4a99557e4033c3539de2eb65472017cad5f9557f7a0625a09f1c3f6e2ba69c4c",
+    "len": 1
+  },
+  {
+    "text": "throwaway-erase2",
+    "sha256": "de4eb651078a4b17390362aabb5461503693864b7ce52f05f4ff617278c1c709",
+    "len": 16
+  }
+]

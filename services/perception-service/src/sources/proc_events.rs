@@ -17,6 +17,7 @@
 
 use std::collections::HashMap;
 use std::io::Read;
+use std::path::{Path, PathBuf};
 
 use crate::bus::Bus;
 use crate::observation::{Actor, Kind};
@@ -141,6 +142,13 @@ pub fn run(bus: Bus, sock: libc::c_int) {
                 if command.is_empty() {
                     continue;
                 }
+                let parent = read_ppid(pid);
+                let parent_exe = parent.and_then(read_exe);
+                let child_exe = read_exe(pid);
+                if is_own_chatter(parent_exe.as_deref(), child_exe.as_deref(), &command) {
+                    bus.note_noise();
+                    continue;
+                }
                 if live.len() >= REMEMBERED {
                     live.clear();
                 }
@@ -240,6 +248,15 @@ fn read_proc(pid: i32, file: &str) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
+/// The executable a process is running, as a path. A process that has been unlinked since it
+/// started reads back with a trailing " (deleted)", which is not part of the path.
+fn read_exe(pid: i32) -> Option<PathBuf> {
+    let link = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+    let text = link.to_string_lossy();
+    let text = text.strip_suffix(" (deleted)").unwrap_or(&text);
+    Some(PathBuf::from(text))
+}
+
 /// The command line, NUL-separated in `/proc`, as something readable.
 fn read_cmdline(pid: i32) -> Option<String> {
     let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
@@ -308,6 +325,82 @@ fn redact(command: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Where our own binaries live. The executable path is what identifies a program, not the name it
+/// chose for itself (`comm`), so a copy of `yos` in `/tmp` is not ours.
+const YANTRIK_BIN: &str = "/opt/yantrik/bin";
+
+/// The Wayland compositor the shell runs under. Its helpers are the OS polling itself too.
+const LABWC: &str = "/usr/bin/labwc";
+
+/// Our own services, by exact binary name. A parent is only "ours" if it is one of these, never
+/// by a `-service` suffix: `comm` is chosen by the program itself, so any program could hide its
+/// children by naming itself `x-service`.
+const OUR_SERVICES: &[&str] = &[
+    "a11y-service",
+    "calendar-service",
+    "email-service",
+    "network-service",
+    "notes-service",
+    "notifications-service",
+    "perception-journal",
+    "perception-service",
+    "system-monitor-service",
+    "weather-service",
+];
+
+/// Helper binaries the shell or a service polls. A binary goes here only if the shell or a service
+/// polls it, never a user-facing app.
+const SHELL_HELPERS: &[&str] = &[
+    "nmcli", "wl-paste", "wl-copy", "cat", "pactl", "upower", "ip", "iw", "brightnessctl", "wpctl",
+];
+
+/// Whether a launch is the OS's own machinery rather than a person's or an agent's work.
+///
+/// The shell (`yantrik-ui`, `labwc`) and our own services spawn helpers constantly — `nmcli`,
+/// `wl-paste`, `cat` — and the agent reads perception with `yos`. Those are the firehose that
+/// fills the ring, not signal. A terminal such as `yantrik-terminal` is different: commands run
+/// there are real work, so the parent is matched exactly, never by the `yantrik` prefix.
+///
+/// The decision is made from the executables (`/proc/<pid>/exe`), not the names the programs chose
+/// for themselves: `comm` is truncated to 15 characters and is whatever the program says it is, so
+/// a copy of `yos` in `/tmp` or a child of a process that merely calls itself `yantrik-ui` must
+/// not be hidden.
+fn is_own_chatter(parent_exe: Option<&Path>, child_exe: Option<&Path>, command: &str) -> bool {
+    let program = command
+        .split(' ')
+        .next()
+        .unwrap_or_default()
+        .rsplit('/')
+        .next()
+        .unwrap_or_default();
+
+    // A perception read is the feedback loop: `yos perception` reads what we just recorded. The
+    // executable must be our own `yos`, not any program that happens to be named `yos`.
+    if child_exe == Some(Path::new(&format!("{YANTRIK_BIN}/yos")))
+        && command.split(' ').nth(1) == Some("perception")
+    {
+        return true;
+    }
+
+    // A helper spawned by the shell or one of our services is the OS polling itself.
+    let parent_is_ours = match parent_exe {
+        Some(exe) => {
+            exe == Path::new(LABWC)
+                || (exe.starts_with(YANTRIK_BIN)
+                    && exe
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|name| name == "yantrik-ui" || OUR_SERVICES.contains(&name)))
+        }
+        None => false,
+    };
+    if parent_is_ours && SHELL_HELPERS.contains(&program) {
+        return true;
+    }
+
+    false
 }
 
 fn read_ppid(pid: i32) -> Option<i32> {
@@ -412,6 +505,31 @@ mod tests {
         assert_eq!(redact("/usr/bin/mysqldump -pS3cret schema"), "/usr/bin/mysqldump -p<redacted> schema");
         assert_eq!(redact("psql -pletmein"), "psql -p<redacted>");
         assert_eq!(redact("cargo build --release"), "cargo build --release");
+    }
+
+    #[test]
+    fn the_os_polling_itself_is_filtered_but_real_work_is_not() {
+        let yantrik_ui = Path::new("/opt/yantrik/bin/yantrik-ui");
+        let system_monitor = Path::new("/opt/yantrik/bin/system-monitor-service");
+        let bash = Path::new("/usr/bin/bash");
+        let labwc = Path::new("/usr/bin/labwc");
+        let yos = Path::new("/opt/yantrik/bin/yos");
+
+        // The shell and our services polling helpers is the OS talking to itself.
+        assert!(is_own_chatter(Some(yantrik_ui), Some(Path::new("/usr/bin/nmcli")), "nmcli -w 2 device"));
+        assert!(is_own_chatter(Some(system_monitor), Some(Path::new("/usr/bin/cat")), "cat /proc/stat"));
+        assert!(is_own_chatter(Some(bash), Some(yos), "/opt/yantrik/bin/yos perception 20"));
+
+        // Real work is not chatter, even when it looks close.
+        assert!(!is_own_chatter(Some(yantrik_ui), Some(Path::new("/usr/bin/firefox")), "firefox"));
+        assert!(!is_own_chatter(Some(labwc), Some(Path::new("/usr/bin/foot")), "foot"));
+        assert!(!is_own_chatter(Some(bash), Some(yos), "yos act shell open_app name=notes"));
+        // A copy of `yos` somewhere else is not ours.
+        assert!(!is_own_chatter(Some(bash), Some(Path::new("/tmp/yos")), "/tmp/yos perception 20"));
+        // A program that merely calls itself `yantrik-ui` is not the shell.
+        assert!(!is_own_chatter(Some(Path::new("/tmp/yantrik-ui")), Some(Path::new("/usr/bin/nmcli")), "nmcli"));
+        // A process that exited before we could read its exe is not chatter.
+        assert!(!is_own_chatter(None, None, "nmcli"));
     }
 
     #[test]

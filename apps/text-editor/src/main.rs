@@ -1059,12 +1059,22 @@ fn number(args: &serde_json::Value, name: &str) -> Option<i64> {
 /// applies the answer when the worker wakes the event loop. An action handler runs on the UI
 /// thread too, so returning as soon as the job was sent is why `save` could only ever answer
 /// "accepted" — the caller was told nothing about the file it had asked to write. Draining the
-/// channel here is what lets the answer report the bytes on disk. The 800 ms budget leaves the
+/// channel here is what lets the answer report the bytes on disk. The budget leaves the
 /// runtime's 3 s `UI_ROUNDTRIP` intact even for a call that waits twice, and a save of the 1 MiB
 /// this editor allows is still sub-millisecond; an unsettled call answers `modified: true`
 /// rather than guess.
+///
+/// Production keeps 800 ms so the runtime's 3 s `UI_ROUNDTRIP` holds; under test the worker is
+/// only a thread that CPU load can starve, and the test must wait for the saved state, not a
+/// clock (#446).
+const SETTLE_BUDGET: Duration = if cfg!(test) {
+    Duration::from_secs(30)
+} else {
+    Duration::from_millis(800)
+};
+
 fn settle(ui: &TextEditorApp, s: &State) -> bool {
-    let deadline = std::time::Instant::now() + Duration::from_millis(800);
+    let deadline = std::time::Instant::now() + SETTLE_BUDGET;
     while ui.get_busy() && std::time::Instant::now() < deadline {
         receive(ui, s);
         if !ui.get_busy() {
@@ -1463,7 +1473,11 @@ fn surface(ui: &TextEditorApp, s: &State) -> Vec<(Action, Handler)> {
                 ));
             }
             let call = tab.map(|i| format!("tab {i} and ")).unwrap_or_default();
-            Ok(reading::page(&d.text, shown_path(d), from_line, &call))
+            // Whether the tab holds unsaved changes: a page of an edited buffer is not the file on
+            // disk, and a mind that vouches for a file by its disk timestamps must know the difference.
+            let mut page = reading::page(&d.text, shown_path(d), from_line, &call);
+            page["modified"] = serde_json::json!(d.dirty());
+            Ok(page)
         },
     );
 
