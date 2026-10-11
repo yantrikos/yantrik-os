@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Yantrik OS
+Description=Yantrik OS: the disk's password, asked once, before the system starts
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/yantrik
+ScriptFile=/usr/share/plymouth/themes/yantrik/yantrik.script
