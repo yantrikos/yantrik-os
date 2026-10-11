@@ -35,11 +35,9 @@ mod local;
 mod netlink;
 mod peer;
 // The policy is the library half (lib.rs), so the desktop checks a rule the way this does.
-use yantrik_egress::policy;
+use yantrik_egress::{policy, ranges, seed};
 mod proxy;
-mod ranges;
 mod request;
-mod seed;
 mod state;
 
 use std::net::SocketAddr;

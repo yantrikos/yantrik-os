@@ -48,6 +48,7 @@ pub fn rule_for(url: &SearxUrl) -> Rule {
         http: url.http,
         lan: url.place == Place::Lan,
         why: "Web search: the person's SearXNG (Settings → Network → Web search)".to_string(),
+        seeded: false,
     }
 }
 
@@ -242,7 +243,7 @@ mod tests {
         assert_eq!(allow(&path, &url).unwrap(), Pressed::NotNeeded(Need::Audit));
         assert!(!ops(&seen).contains(&"allow".to_string()));
 
-        let covering = Rule { host: "*.example.com".into(), ports: vec![443], http: false, lan: false, why: "x".into() };
+        let covering = Rule { host: "*.example.com".into(), ports: vec![443], http: false, lan: false, why: "x".into(), seeded: false };
         let (_dir, path, seen, _) = proxy(enforce(vec![covering]));
         assert_eq!(check(&path, &url), Need::Covered);
         assert_eq!(allow(&path, &url).unwrap(), Pressed::NotNeeded(Need::Covered));
@@ -252,7 +253,7 @@ mod tests {
     #[test]
     fn a_rule_for_https_only_does_not_cover_plain_http() {
         let url = yantrik_web_search::check("http://10.0.0.5:8080").unwrap();
-        let tunnel_only = Rule { host: "10.0.0.5".into(), ports: vec![8080], http: false, lan: true, why: "x".into() };
+        let tunnel_only = Rule { host: "10.0.0.5".into(), ports: vec![8080], http: false, lan: true, why: "x".into(), seeded: false };
         assert!(matches!(need(&enforce(vec![tunnel_only]), &url), Need::Missing(_)));
     }
 
