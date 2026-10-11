@@ -201,10 +201,7 @@ pub fn starter(kind: &str) -> Option<&'static str> {
 /// for the person to finish and send, never sent for them.
 fn make(ui: &App, kind: &str) {
     let Some(text) = starter(kind) else { return };
-    if ui.get_current_screen() != 1 {
-        ui.set_current_screen(1);
-        ui.invoke_navigate(1);
-    }
+    // The Lens is a window of its own over whatever screen is up (#733): the screen stays.
     ui.set_lens_input_text(text.into());
     ui.set_lens_open(true);
     ui.invoke_open_lens();
