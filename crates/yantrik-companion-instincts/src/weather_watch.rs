@@ -187,17 +187,23 @@ impl Instinct for WeatherWatchInstinct {
             serde_json::Value::String(weather.trim().to_string()),
         );
 
+        // Weather that can hurt someone is a safety signal: no throttle holds it (#754). It keeps
+        // a cooldown key of its own: on the shared key a tornado only boosted a rain urge already
+        // waiting (a stopped Weather kind keeps one waiting), and was skipped for 2 h after rain.
+        let dangerous = is_dangerous(&condition_lower);
         let spec = UrgeSpec::new(
             "weather_watch",
             &format!("Notable weather: {}", alert),
             0.55,
         )
-        .with_cooldown("weather_watch:alert")
+        .with_cooldown(if dangerous { DANGER_COOLDOWN_KEY } else { "weather_watch:alert" })
         .with_context(serde_json::Value::Object(context));
-        // Weather that can hurt someone is a safety signal: no throttle holds it (#754).
-        vec![if is_dangerous(&condition_lower) { spec.safety() } else { spec }]
+        vec![if dangerous { spec.safety() } else { spec }]
     }
 }
+
+/// The cooldown key of weather that can hurt someone, apart from ordinary notable weather's.
+pub const DANGER_COOLDOWN_KEY: &str = "weather_watch:danger";
 
 /// Fetch brief weather from wttr.in.
 fn fetch_weather() -> Option<String> {

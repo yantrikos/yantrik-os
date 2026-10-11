@@ -133,12 +133,13 @@ impl UrgeQueue {
             )
             .unwrap_or(0);
 
+        // A safety urge is never the one evicted (#754).
         if pending_count >= self.config.max_pending as i64 {
             conn.execute(
                 "UPDATE urges SET status = 'expired'
                  WHERE urge_id = (
                      SELECT urge_id FROM urges
-                     WHERE status = 'pending'
+                     WHERE status = 'pending' AND COALESCE(context, '') NOT LIKE '%\"_safety\":true%'
                      ORDER BY urgency ASC LIMIT 1
                  )",
                 [],
@@ -189,7 +190,7 @@ impl UrgeQueue {
                 "SELECT urge_id, instinct_name, reason, urgency, suggested_message,
                  action, context, cooldown_key, status, created_at, delivered_at,
                  expires_at, boost_count
-                 FROM urges WHERE status = 'pending'
+                 FROM urges WHERE status = 'pending' AND COALESCE(context, '') NOT LIKE '%\"_safety\":true%'
                  ORDER BY urgency DESC LIMIT ?1",
             )
             .expect("prepare pop_for_interaction");
@@ -200,6 +201,9 @@ impl UrgeQueue {
             })
             .expect("query pop_for_interaction")
             .filter_map(|r| r.ok())
+            // Not into a chat's context either: a safety urge is said as itself (above, by the
+            // query), and an urge from a memory the person excluded is not used (#754).
+            .filter(|u| !crate::proactive_backoff::MemoryExclusions::any_excluded(conn, &u.memory_ids))
             .collect();
 
         // Mark as delivered

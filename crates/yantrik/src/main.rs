@@ -522,7 +522,8 @@ fn run_headless_think_cycle(
             reason = %spec.reason,
             "Urge generated"
         );
-        if over_budget {
+        // The daily budget is for the mind's own ideas; a safety signal is never held (#754).
+        if over_budget && !spec.safety {
             companion.record_suppressed_urge(&spec.cooldown_key, "daily budget exceeded");
             continue;
         }

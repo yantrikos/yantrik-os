@@ -5906,6 +5906,28 @@ mod proactive_queue_tests {
         assert!(crate::proactive_backoff::choices_for(&m).is_empty(), "and offers no Less of this");
     }
 
+    /// A full queue never evicts a safety urge, and a chat turn never takes one into its context
+    /// (where it would be marked delivered without being said) (#754).
+    #[test]
+    fn a_full_queue_and_a_chat_turn_never_take_a_safety_urge() {
+        let c = companion();
+        let danger = crate::types::UrgeSpec::new("weather_watch", "Notable weather: tornado", 0.05)
+            .with_cooldown("weather_watch:danger")
+            .with_message("A tornado warning is in effect where you are.")
+            .safety();
+        c.urge_queue.push(&c.db.conn(), &danger).expect("queued");
+        for i in 0..crate::config::UrgeQueueConfig::default().max_pending + 3 {
+            let idea = crate::types::UrgeSpec::new("curiosity", &format!("idea {i}"), 0.5)
+                .with_cooldown(&format!("curiosity:{i}"))
+                .with_message("An idea.");
+            c.urge_queue.push(&c.db.conn(), &idea);
+        }
+        let popped = c.urge_queue.pop_for_interaction(&c.db.conn(), 100);
+        assert!(!popped.iter().any(|u| u.safety), "a chat turn does not take it");
+        let pending = c.urge_queue.get_pending(&c.db.conn(), 100);
+        assert!(pending.iter().any(|u| u.safety), "still waiting to be said as itself");
+    }
+
     /// An urge made from an excluded memory is never queued; one from another memory is, and
     /// carries its memory ids.
     #[test]
