@@ -71,8 +71,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 tracing::info!("Voice: mic button → activate");
             }
             VoiceMode::Speaking => {
-                // Barge-in via button
-                state_mic.activate();
+                // Barge-in via button. The runtime is inside the reply loop, which reads the
+                // stop signal; `activate` would only be read after the reply had ended.
+                state_mic.request_stop_tts();
                 tracing::info!("Voice: mic button → barge-in");
             }
             VoiceMode::Following => {
@@ -113,7 +114,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 }
             }
             VoiceMode::Speaking => {
-                state_hotkey.activate(); // barge-in
+                state_hotkey.request_stop_tts(); // barge-in, read inside the reply loop
             }
             VoiceMode::Following => {
                 // User pressed hotkey in follow mode — they want to speak

@@ -158,11 +158,16 @@ fn builtin_turn(
     bridge: &Arc<CompanionBridge>,
     text: &str,
     handover: Option<&crate::agents::handover::Handover>,
+    spoken: Option<&str>,
     streams: &streaming::Streams,
 ) -> crossbeam_channel::Receiver<String> {
     let sent = match handover {
         Some(h) => crate::agents::handover::with_handover(h, text),
         None => text.to_string(),
+    };
+    let sent = match spoken {
+        Some(desk) => with_voice_frame(desk, &sent),
+        None => sent,
     };
     let answer = bridge.send_message(sent);
     let (tx, rx) = crossbeam_channel::unbounded::<String>();
@@ -206,6 +211,25 @@ fn builtin_turn(
         None => streaming::stream_into(ui_weak.clone(), rx, text, streams),
     }
     theirs
+}
+
+/// A spoken turn, for the built-in: it has no `origin` or `context` to read, so the desktop says
+/// so in front of the words, the way it hands a conversation over (`with_handover`). The reply is
+/// read aloud, so it must be short plain sentences, and the desk is what "this" and "my screen"
+/// mean. The person's bubble still shows only what they said.
+pub(crate) fn with_voice_frame(desk: &str, text: &str) -> String {
+    let mut frame = String::from(
+        "[From the desktop: the person said this aloud and will hear your reply spoken. Answer \
+         briefly, in plain sentences: no lists, tables, code or markdown.",
+    );
+    if !desk.trim().is_empty() {
+        frame.push_str(" Their desk: ");
+        frame.push_str(&desk.trim().replace('\n', "; "));
+        frame.push('.');
+    }
+    frame.push_str("]\n\n");
+    frame.push_str(text);
+    frame
 }
 
 /// The desktop's line when the conversation changes hands: who answers now, and that it knows.
@@ -268,6 +292,10 @@ fn turn(
     desk: &str,
     streams: &streaming::Streams,
 ) -> TurnStream {
+    // Spoken at the desk: the built-in is told so in front of the words (`with_voice_frame`); an
+    // attached mind reads it from `origin`, and the desk from the context.
+    let spoken = (origin.channel == "voice").then_some(desk);
+
     // A person just said something — to whichever mind. The Synthesis Gate, which decides
     // whether the built-in companion may speak unprompted, used to read a timestamp bumped only
     // inside the companion's own message arm, so a conversation with a harness mind looked like
@@ -289,7 +317,7 @@ fn turn(
 
     let Some(host) = super::harness::host() else {
         // No host yet (very early boot). The builtin is the only thing that could answer.
-        return TurnStream::new(builtin_turn(ui_weak, bridge, text, None, streams), None);
+        return TurnStream::new(builtin_turn(ui_weak, bridge, text, None, spoken, streams), None);
     };
 
     // The conversation, handed over when the answering mind has changed since the last word
@@ -313,7 +341,7 @@ fn turn(
     // The builtin keeps its own path: it carries tool calls, the __REPLACE__ convention and the
     // job board, none of which the harness protocol has or needs.
     if route(&active) == Route::Builtin {
-        return TurnStream::new(builtin_turn(ui_weak, bridge, text, handover.as_ref(), streams), None);
+        return TurnStream::new(builtin_turn(ui_weak, bridge, text, handover.as_ref(), spoken, streams), None);
     }
 
     // A mind already at work is answered by the desktop first, from its own record of the task:
@@ -651,6 +679,17 @@ mod send_turn_tests {
         assert_eq!(turn.text, "what time is it");
         assert_eq!(turn.origin, Some(Origin::voice()));
         assert_eq!(harness_turn("hi".into(), "{}".into(), Origin::desk()).origin, Some(Origin::desk()));
+    }
+
+    /// The built-in hears that a turn was spoken, and what was on the desk, in the desktop's own
+    /// bracket in front of the words — the words themselves unchanged after it.
+    #[test]
+    fn the_builtin_is_told_a_turn_was_spoken() {
+        let sent = with_voice_frame("Active app: Terminal\nCompanion status: listening\n", "what time is it");
+        assert!(sent.starts_with("[From the desktop: the person said this aloud"), "{sent}");
+        assert!(sent.contains("Their desk: Active app: Terminal; Companion status: listening."), "{sent}");
+        assert!(sent.ends_with("]\n\nwhat time is it"), "{sent}");
+        assert!(!with_voice_frame("", "hi").contains("Their desk"), "no desk, no desk line");
     }
 
     #[test]

@@ -48,6 +48,9 @@ export component ChatMessage inherits Rectangle {
             property <length> mark-h: root.spoken ? 18px : 0px;
             height: label.preferred-height + 24px + self.mark-h;
             if root.spoken : HorizontalLayout {
+                // As wide as its content: a layout in a Rectangle otherwise fills it, and the
+                // mark would sit at the left edge rather than under the bubble.
+                width: self.preferred-width;
                 x: parent.width - self.width - Theme.sp-4;
                 y: parent.height - parent.mark-h + 2px;
                 height: 16px;

@@ -144,8 +144,10 @@ impl VoiceState {
         self.activate.swap(false, Ordering::Relaxed)
     }
 
-    /// Signal barge-in — stop TTS immediately.
-    fn request_stop_tts(&self) {
+    /// Signal barge-in — stop TTS immediately. The mic button and Super+Space call it while a
+    /// reply is being spoken: the runtime is inside the reply loop then, which reads this signal
+    /// and not `activate`.
+    pub fn request_stop_tts(&self) {
         self.stop_tts.store(true, Ordering::Relaxed);
     }
 
@@ -435,6 +437,8 @@ fn voice_runtime_loop(
                                     300,
                                 ));
                                 pipeline = Some(p);
+                                // A microphone plugged in after boot: the Lens's mic works now.
+                                set_mic_unavailable(&ui_weak, String::new());
                                 tracing::info!("Voice: audio pipeline ready");
                             }
                             Err(e) => {
@@ -632,6 +636,10 @@ fn voice_runtime_loop(
 
                         // ── Stream response → sentence-split → TTS ──
                         let mut barged_in = false;
+                        // Whether any of the reply has arrived: until it has, the mind may still
+                        // be at other work in this conversation (a turn queues behind a task), and
+                        // a cough must not stop that work.
+                        let mut heard_reply = false;
 
                         loop {
                             // Check barge-in
@@ -650,6 +658,7 @@ fn voice_runtime_loop(
                                         }
                                         break;
                                     }
+                                    heard_reply = true;
                                     response_text.push_str(&token);
                                     tts_buffer.push_str(&token);
 
@@ -704,17 +713,26 @@ fn voice_runtime_loop(
                             }
                         }
 
-                        // The person spoke over the reply: the mind stops too, not only the voice.
+                        // The person spoke over the reply: the mind stops too, not only the voice —
+                        // but only while this reply is still being written. `interrupt` stops the
+                        // conversation's turn in flight, so a reply that has already ended (its end
+                        // is waiting unread) or never began leaves the mind alone.
                         if barged_in {
-                            reply.interrupt();
-                        }
-
-                        // Drain remaining tokens if barged in
-                        if barged_in {
-                            while let Ok(token) = token_rx.recv_timeout(Duration::from_millis(10))
-                            {
+                            let pending: Vec<String> = token_rx.try_iter().collect();
+                            if should_interrupt(heard_reply, &pending) {
+                                reply.interrupt();
+                            }
+                            // Drain remaining tokens. The desktop's markers are not the reply.
+                            let mut rest = pending.into_iter().chain(std::iter::from_fn(|| {
+                                token_rx.recv_timeout(Duration::from_millis(10)).ok()
+                            }));
+                            for token in rest.by_ref() {
                                 if token == "__DONE__" {
                                     break;
+                                }
+                                if token == "__REPLACE__" {
+                                    response_text.clear();
+                                    continue;
                                 }
                                 response_text.push_str(&token);
                             }
@@ -762,6 +780,12 @@ fn voice_runtime_loop(
 }
 
 // ─── Barge-in detection ─────────────────────────────────────────────────────
+
+/// Whether talking over a reply should stop the mind as well as the voice: only once some of the
+/// reply has arrived, and only while it has not ended (`pending` is what is still unread).
+fn should_interrupt(heard_reply: bool, pending: &[String]) -> bool {
+    heard_reply && !pending.iter().any(|t| t == "__DONE__")
+}
 
 fn check_barge_in(mic_energy: &Arc<Mutex<f32>>) -> bool {
     mic_energy
@@ -851,6 +875,17 @@ mod tests {
 
     /// A spoken turn sends what the person said, not a prompt wrapped around it: the desk's state
     /// rides beside the words, and the origin tells the mind it was spoken.
+    /// Talking over a reply stops the mind only while that reply is being written: not before any
+    /// of it has come (the mind may be at other work), and not once it has ended.
+    #[test]
+    fn talking_over_a_reply_interrupts_only_a_reply_in_flight() {
+        let none: Vec<String> = vec![];
+        assert!(!should_interrupt(false, &none), "nothing has arrived yet");
+        assert!(should_interrupt(true, &none), "mid-reply");
+        assert!(should_interrupt(true, &["more ".to_string()]));
+        assert!(!should_interrupt(true, &["last.".to_string(), "__DONE__".to_string()]), "already ended");
+    }
+
     #[test]
     fn a_voice_turn_sends_the_transcript_said_aloud() {
         let turn = voice_turn(" what time is it ", "Active app: Terminal\nCompanion status: listening\n");
