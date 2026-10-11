@@ -14,6 +14,7 @@
 set -eu
 . "$(dirname "$0")/common.sh"
 . "$(dirname "$0")/hermes-launcher.sh"
+. "$(dirname "$0")/hermes-streaming.sh"
 
 [ $# -eq 1 ] || fail "usage: hermes.sh PLUGIN_DIR"
 plugin=$1
@@ -54,6 +55,7 @@ say "copying the desktop plugin into ~/.hermes"
 mkdir -p "$HOME/.hermes/plugins/yantrik"
 cp -r "$plugin/." "$HOME/.hermes/plugins/yantrik/"
 hermes plugins enable yantrik-desktop || fail "Hermes would not enable the desktop plugin"
+enable_hermes_streaming "$HOME"
 
 # Hermes's gateway as the person's own user service, started now and at every login: nothing
 # else loads the plugin. `--if-missing` leaves one that is already there alone.
