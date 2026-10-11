@@ -125,6 +125,14 @@ pub fn windows() -> Option<Vec<TopWindow>> {
     SNAPSHOT.lock().ok().map(|s| s.clone())
 }
 
+/// The id of the first window in `windows` whose title is exactly `title`, or `None`.
+///
+/// Exact, because `wlrctl`'s `title:` matchspec is exact too: a prefix match would answer with
+/// `Notes 2` when the person asked for `Notes`.
+pub fn id_titled(windows: &[TopWindow], title: &str) -> Option<u64> {
+    windows.iter().find(|w| w.title == title).map(|w| w.id)
+}
+
 /// The window in front now as (id, title), or `None` when the stream is not being followed.
 pub fn front() -> Option<(u64, String)> {
     if !LIVE.load(Ordering::Relaxed) {
@@ -152,6 +160,22 @@ pub fn activate(id: u64) -> bool {
         return false;
     };
     handle.activate(&seat);
+    conn.flush().is_ok()
+}
+
+/// Ask the compositor to undo window `id`'s minimized state, which brings it back at the size it
+/// had — normal, or maximized if it was maximized. `false` when the id is not a live window or the
+/// stream is not followed.
+///
+/// This is the only way back that does not change the window's size: `wlrctl` has no un-minimize,
+/// and the `maximize … state:minimized` line the shell used before (#265) matches the minimized
+/// window and maximizes it, so every window came back filling the screen.
+pub fn unminimize(id: u64) -> bool {
+    let Some(conn) = CONN.lock().ok().and_then(|c| c.clone()) else { return false };
+    let Some(handle) = HANDLES.lock().ok().and_then(|h| h.iter().find(|(k, _)| *k == id).map(|(_, h)| h.clone())) else {
+        return false;
+    };
+    handle.unset_minimized();
     conn.flush().is_ok()
 }
 
@@ -560,5 +584,24 @@ mod tests {
         assert!(is_activated(&bytes(&[0, 2])));
         assert!(!is_activated(&bytes(&[0, 1])));
         assert!(!is_activated(&[]));
+    }
+
+    fn window(id: u64, title: &str) -> TopWindow {
+        TopWindow { id, title: title.into(), app_id: String::new() }
+    }
+
+    /// The search the shell's restore plan is built on: the whole title, or nothing.
+    /// "Notes" must not answer with "Notes 2", and two windows wearing one title are answered by
+    /// the first in the compositor's order.
+    #[test]
+    fn a_title_is_matched_exactly() {
+        let windows = [window(1, "Notes 2"), window(2, "Notes"), window(3, "Terminal")];
+        assert_eq!(id_titled(&windows, "Notes"), Some(2));
+        assert_eq!(id_titled(&windows, "Terminal"), Some(3));
+        assert_eq!(id_titled(&windows, "Note"), None);
+        assert_eq!(id_titled(&windows, "notes"), None);
+        assert_eq!(id_titled(&[], "Notes"), None);
+        let twins = [window(7, "Notes"), window(8, "Notes")];
+        assert_eq!(id_titled(&twins, "Notes"), Some(7));
     }
 }
