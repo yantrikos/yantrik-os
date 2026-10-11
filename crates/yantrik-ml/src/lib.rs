@@ -19,6 +19,7 @@ pub mod capability;
 // Chat template formatting (always compiled — used by candle + llamacpp backends)
 mod chat_template;
 pub mod chat_templates;
+pub mod compact_tools;
 
 // Candle-specific modules (gated behind candle-llm / candle-stt features)
 #[cfg(feature = "candle-llm")]

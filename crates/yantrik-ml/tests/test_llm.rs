@@ -6,7 +6,8 @@
 //! Uses Q4_K_M quantization (~491MB) — same as production deployment.
 
 use yantrik_ml::{
-    ChatMessage, GGUFFiles, GenerationConfig, LLMEngine,
+    ChatMessage, GGUFFiles, GenerationConfig, LLMEngine, ModelFamily, ModelTier,
+    template_for_family,
 };
 
 const GGUF_REPO: &str = "Qwen/Qwen2.5-0.5B-Instruct-GGUF";
@@ -167,4 +168,86 @@ fn test_llm_tool_calling() {
     // The model may or may not emit a tool call — 0.5B is small.
     // Just verify the response is non-empty and parsing doesn't crash.
     assert!(!response.text.is_empty());
+}
+
+fn sample_tool_def() -> serde_json::Value {
+    let mut desc = String::new();
+    for _ in 0..20 {
+        desc.push_str("This is a long tool description sentence. ");
+    }
+    let mut props = serde_json::Map::new();
+    for i in 0..8 {
+        let mut pdesc = String::new();
+        for _ in 0..10 {
+            pdesc.push_str("A long parameter description sentence. ");
+        }
+        props.insert(
+            format!("param_{i}"),
+            serde_json::json!({
+                "type": "string",
+                "description": pdesc,
+                "enum": ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"],
+            }),
+        );
+    }
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "sample_tool",
+            "description": desc,
+            "parameters": {
+                "type": "object",
+                "properties": props,
+                "required": ["param_0", "param_1"],
+                "additionalProperties": false,
+            }
+        }
+    })
+}
+
+#[test]
+fn small_tier_gets_compact_text() {
+    let def = sample_tool_def();
+    let tools = vec![def];
+    let template = template_for_family(ModelFamily::Qwen);
+    let text = template.format_tools_compact(&tools, &ModelTier::Small);
+
+    assert!(!text.contains("additionalProperties"));
+    assert!(!text.contains("$schema"));
+    // The compact per-tool body must be materially shorter than the JSON form.
+    let json_form = template.format_tools(&tools);
+    assert!(text.len() < json_form.len(), "compact form should be shorter");
+    // Per-tool body (between the <tools> wrapper) must stay under 600 chars.
+    let body = text
+        .split("<tools>\n")
+        .nth(1)
+        .and_then(|s| s.split("\n</tools>").next())
+        .unwrap_or("");
+    assert!(body.len() < 600, "compact body too long: {} chars", body.len());
+}
+
+#[test]
+fn large_tier_keeps_the_full_schema() {
+    let def = sample_tool_def();
+    let tools = vec![def];
+    let template = template_for_family(ModelFamily::Qwen);
+    let text = template.format_tools_compact(&tools, &ModelTier::Large);
+
+    assert!(text.contains("additionalProperties"));
+    assert!(text.contains("This is a long tool description sentence"));
+}
+
+#[test]
+fn name_and_required_params_survive() {
+    let def = sample_tool_def();
+    let tools = vec![def];
+    let template = template_for_family(ModelFamily::Qwen);
+    let text = template.format_tools_compact(&tools, &ModelTier::Tiny);
+
+    assert!(text.contains("sample_tool"));
+    assert!(text.contains("*param_0"));
+    assert!(text.contains("*param_1"));
+    for i in 0..8 {
+        assert!(text.contains(&format!("param_{i}")), "missing param_{i}");
+    }
 }

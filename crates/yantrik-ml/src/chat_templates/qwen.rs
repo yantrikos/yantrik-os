@@ -5,12 +5,14 @@
 //! Tool results: Standard `role: tool` messages.
 
 use super::ChatTemplate;
+use crate::capability::ModelTier;
+use crate::compact_tools::{compact_tool, ToolBudget};
 use crate::types::{ChatMessage, ToolCall};
 
 pub struct QwenTemplate;
 
-impl ChatTemplate for QwenTemplate {
-    fn format_tools(&self, tools: &[serde_json::Value]) -> String {
+impl QwenTemplate {
+    fn format_tools_with(&self, tools: &[serde_json::Value], budget: Option<ToolBudget>) -> String {
         if tools.is_empty() {
             return String::new();
         }
@@ -25,7 +27,10 @@ impl ChatTemplate for QwenTemplate {
              You are provided with function signatures within <tools></tools> XML tags:\n<tools>\n"
         );
         for tool in tools {
-            s.push_str(&serde_json::to_string(tool).unwrap_or_default());
+            match budget {
+                Some(b) => s.push_str(&compact_tool(tool, b)),
+                None => s.push_str(&serde_json::to_string(tool).unwrap_or_default()),
+            }
             s.push('\n');
         }
         s.push_str(&format!(
@@ -35,6 +40,21 @@ impl ChatTemplate for QwenTemplate {
             example_name
         ));
         s
+    }
+}
+
+impl ChatTemplate for QwenTemplate {
+    fn format_tools(&self, tools: &[serde_json::Value]) -> String {
+        self.format_tools_with(tools, None)
+    }
+
+    fn format_tools_compact(&self, tools: &[serde_json::Value], tier: &ModelTier) -> String {
+        match tier {
+            ModelTier::Tiny | ModelTier::Small => {
+                self.format_tools_with(tools, Some(ToolBudget::for_tier(tier)))
+            }
+            ModelTier::Medium | ModelTier::Large => self.format_tools(tools),
+        }
     }
 
     fn parse_tool_calls(&self, text: &str) -> Vec<ToolCall> {

@@ -9,9 +9,26 @@
 //! `model/parsers/nemotron3nano.go`.
 
 use super::ChatTemplate;
+use crate::capability::ModelTier;
+use crate::compact_tools::ToolBudget;
 use crate::types::{ChatMessage, ToolCall};
 
 pub struct NemotronTemplate;
+
+/// Cut a description to its first sentence, then to at most `max` chars.
+fn first_sentence(desc: &str, max: usize) -> &str {
+    let desc = desc.trim();
+    let first = if let Some(pos) = desc.find(". ") {
+        &desc[..pos]
+    } else {
+        desc
+    };
+    if first.len() > max {
+        &first[..first.floor_char_boundary(max)]
+    } else {
+        first
+    }
+}
 
 impl NemotronTemplate {
     /// Parse `<function=name>...<parameter=p>value</parameter>...</function>` blocks from text.
@@ -59,8 +76,8 @@ impl NemotronTemplate {
     }
 }
 
-impl ChatTemplate for NemotronTemplate {
-    fn format_tools(&self, tools: &[serde_json::Value]) -> String {
+impl NemotronTemplate {
+    fn format_tools_with(&self, tools: &[serde_json::Value], budget: Option<ToolBudget>) -> String {
         if tools.is_empty() {
             return String::new();
         }
@@ -78,7 +95,10 @@ impl ChatTemplate for NemotronTemplate {
 
             if !desc.is_empty() {
                 s.push_str("\n<description>");
-                s.push_str(desc.trim());
+                match budget {
+                    Some(b) => s.push_str(first_sentence(desc, b.desc_chars)),
+                    None => s.push_str(desc.trim()),
+                }
                 s.push_str("</description>");
             }
 
@@ -99,7 +119,10 @@ impl ChatTemplate for NemotronTemplate {
 
                         if let Some(pdesc) = param_fields.get("description").and_then(|d| d.as_str()) {
                             s.push_str("\n<description>");
-                            s.push_str(pdesc.trim());
+                            match budget {
+                                Some(b) => s.push_str(first_sentence(pdesc, b.param_desc_chars)),
+                                None => s.push_str(pdesc.trim()),
+                            }
                             s.push_str("</description>");
                         }
 
@@ -140,6 +163,21 @@ impl ChatTemplate for NemotronTemplate {
         );
 
         s
+    }
+}
+
+impl ChatTemplate for NemotronTemplate {
+    fn format_tools(&self, tools: &[serde_json::Value]) -> String {
+        self.format_tools_with(tools, None)
+    }
+
+    fn format_tools_compact(&self, tools: &[serde_json::Value], tier: &ModelTier) -> String {
+        match tier {
+            ModelTier::Tiny | ModelTier::Small => {
+                self.format_tools_with(tools, Some(ToolBudget::for_tier(tier)))
+            }
+            ModelTier::Medium | ModelTier::Large => self.format_tools(tools),
+        }
     }
 
     fn parse_tool_calls(&self, text: &str) -> Vec<ToolCall> {

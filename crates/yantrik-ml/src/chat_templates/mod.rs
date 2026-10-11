@@ -12,7 +12,7 @@ pub mod phi;
 pub mod native;
 pub mod generic;
 
-use crate::capability::ModelFamily;
+use crate::capability::{ModelFamily, ModelTier};
 use crate::types::{ChatMessage, ToolCall};
 
 /// Chat template trait — defines how a model family formats tool calling.
@@ -27,6 +27,12 @@ pub trait ChatTemplate: Send + Sync {
     /// Format tool definitions for text injection into the system prompt.
     /// Called when the model does NOT use native API tool calling.
     fn format_tools(&self, tools: &[serde_json::Value]) -> String;
+
+    /// Format tool definitions with a tier-aware compact form for small models.
+    /// Defaults to `format_tools`; families that support compacting override it.
+    fn format_tools_compact(&self, tools: &[serde_json::Value], _tier: &ModelTier) -> String {
+        self.format_tools(tools)
+    }
 
     /// Parse tool calls from raw model text output.
     /// Used as fallback when native API tool_calls are empty.
