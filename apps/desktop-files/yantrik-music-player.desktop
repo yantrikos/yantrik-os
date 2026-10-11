@@ -3,7 +3,7 @@ Type=Application
 Name=Music
 Comment=Music player with library management
 Exec=/opt/yantrik/bin/yantrik-music-player
-# One mark for now: brand/yantrik-mark.svg, installed as hicolor `yantrik`.
+# One mark for now: brand/yantrik-icon.svg, installed as hicolor `yantrik`.
 Icon=yantrik
 Categories=AudioVideo;Audio;Player;
 Keywords=music;audio;player;

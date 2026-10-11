@@ -47,6 +47,10 @@ const CONNECT_TIME: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 15
 pub const IDLE: Duration = Duration::from_secs(600);
 /// The most connections at once.
 pub const MOST_OPEN: usize = 256;
+/// What a refusal added to by [`crate::local::Net::assumed`] says opens the destination: a `lan`
+/// rule, which only the endpoint door ever consults, so this is said on that door alone — on the
+/// public one it would send the person to a rule that can never help.
+const LAN_RULE: &str = " A rule with `lan: true` reaches it.";
 
 pub struct Proxy {
     pub state: Arc<Mutex<State>>,
@@ -280,10 +284,15 @@ async fn one(proxy: &Proxy, stream: &mut TcpStream, peer: SocketAddr) -> Result<
     // 5. The verdict: the door's, then the policy's. Private mode is the policy's word, first.
     let (verdict, private) = verdict(proxy, &host, port, http, place);
     // The local network only by the /56 guessed around this machine's address: said, so the
-    // person knows why, and what opens it.
+    // person knows why, and on this door what opens it.
     let verdict = match verdict {
         Verdict::Refuse(why) if place == Place::Lan && !private => match usable.iter().map(|a| net.assumed(a.ip())).collect::<Option<Vec<_>>>() {
-            Some(by) if !by.is_empty() => Verdict::Refuse(format!("{} {why}", by[0])),
+            Some(by) if !by.is_empty() => {
+                // Said with the guess it follows, not at the end of the whole refusal: the ledger
+                // keeps only the first 300 characters of a why.
+                let guess = if proxy.door == Door::Endpoint { format!("{}{LAN_RULE}", by[0]) } else { by[0].clone() };
+                Verdict::Refuse(format!("{guess} {why}"))
+            }
             _ => Verdict::Refuse(why),
         },
         v => v,

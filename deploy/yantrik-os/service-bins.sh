@@ -12,8 +12,8 @@
 # and its binary is the [service] `binary = "…"` in that manifest — the same manifests
 # start_services (crates/yantrik-ui/src/main.rs) scans on an installed machine, so the
 # list that ships is derived the way the shell itself finds services. A member without a
-# manifest is a helper the shell never registers — perception-journal sits under
-# services/ and carries none — and is skipped rather than failed over.
+# manifest is a helper the shell never registers, and is skipped rather than failed over —
+# selftest check 5 is what keeps that skip from hiding a service that forgot its manifest.
 #
 # That is the rule deploy.sh, its BUILD_ALL branch and scripts/publish-components.sh
 # were each expressing by hand, and the copies disagreed with each other: BUILD_ALL, the
@@ -35,6 +35,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 WORKSPACE="$PROJECT_ROOT/Cargo.toml"
 MAIN_RS="$PROJECT_ROOT/crates/yantrik-ui/src/main.rs"
+
+# Crate directory names under services/ that are deliberately not services — a crate that
+# lives there for cargo's sake and carries no yantrik.toml because the shell has nothing to
+# register. Every entry needs its reason written next to it, and selftest check 5 fails an
+# entry whose directory is gone or which grew a manifest after all.
+NOT_SHIPPED=""
 
 # The `binary = "…"` value in a manifest's [service] section. A section runs from its
 # header to the next header; only a line at column zero is a header, so nothing indented
@@ -135,7 +141,9 @@ list_service_bins() {
 # start_services) against the list the packaging scripts are given here — a channel
 # whose manifest lacks a binary the shell registers is the defect this script was
 # written for — and the packaging scripts against this reader, so a service named by
-# hand in one of them again fails here instead of silently not shipping.
+# hand in one of them again fails here instead of silently not shipping. Since #705 it
+# also holds every crate under services/ against the manifests: the reader skips a member
+# without one, and that skip is how perception-journal sat built, tested and unstarted.
 cmd_selftest() {
   local fails=0 out flat
   local c_grn c_red c_off
@@ -222,6 +230,42 @@ cmd_selftest() {
       esac
     done
   done
+
+  # 5. Every crate under services/ ships or is exempt. The reader skips a member without a
+  #    manifest — the rule that lets helpers live there — and that skip is how
+  #    perception-journal shipped for a release: built by cargo, tested by CI, started by
+  #    nothing. A directory under services/ with no yantrik.toml and no NOT_SHIPPED entry
+  #    fails here, and so does a directory cargo never builds (not a services/… member of
+  #    the workspace — no build, so nothing for any packaging script to find). The listing
+  #    path above stays lenient; a helper may live under services/ without tripping a
+  #    deploy. What fails is the silence, in selftest only.
+  local members5 dir base exempt fails5=$fails
+  members5="$(sed -n '/^members = \[/,/^\]/p' "$WORKSPACE" \
+    | sed -n 's|^[[:space:]]*"\(services/[^"]\+\)".*|\1|p' | sed 's|^services/||' | paste -sd' ' -)"
+  for dir in "$PROJECT_ROOT"/services/*/; do
+    [ -d "$dir" ] || continue
+    base="$(basename "$dir")"
+    case " $NOT_SHIPPED " in
+      *" $base "*) continue ;;
+    esac
+    if [ ! -f "$dir/yantrik.toml" ]; then
+      t_fail "services/$base carries no yantrik.toml, so nothing ships or starts it — add the manifest, or name it in NOT_SHIPPED at the top of this script with a reason"
+    fi
+    case " $members5 " in
+      *" $base "*) ;;
+      *) t_fail "services/$base is not a services/… member of $WORKSPACE — cargo never builds it, so no packaging can ship it; add it to the workspace or move it out of services/" ;;
+    esac
+  done
+  for exempt in $NOT_SHIPPED; do
+    if [ ! -d "$PROJECT_ROOT/services/$exempt" ]; then
+      t_fail "NOT_SHIPPED names \"$exempt\" and services/$exempt does not exist — the exemption is stale, delete it"
+    elif [ -f "$PROJECT_ROOT/services/$exempt/yantrik.toml" ]; then
+      t_fail "NOT_SHIPPED still exempts \"$exempt\" and services/$exempt/yantrik.toml is there — it is a service now, drop the exemption"
+    fi
+  done
+  if [ "$fails" -eq "$fails5" ]; then
+    t_ok "every crate under services/ carries a manifest or a NOT_SHIPPED reason"
+  fi
 
   if [ "$fails" -gt 0 ]; then
     printf '%s%s selftest check(s) failed%s\n' "$c_red" "$fails" "$c_off"

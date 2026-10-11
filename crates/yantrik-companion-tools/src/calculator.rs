@@ -1,5 +1,4 @@
-//! Calculator tool — evaluate mathematical expressions.
-//! Uses `bc` with safety guards.
+//! Calculator tool — evaluate mathematical expressions in-process.
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 
@@ -28,7 +27,7 @@ impl Tool for CalculateTool {
                     "properties": {
                         "expression": {
                             "type": "string",
-                            "description": "Math expression (e.g. '15% of 2347', '2^10', 'sqrt(144)', '3.14 * 5^2')"
+                            "description": "Math expression over + - * / % ^, parentheses and decimals (e.g. '2^10', '3.14 * 5^2', '(6+7)/2')"
                         },
                         "precision": {
                             "type": "integer",
@@ -53,81 +52,169 @@ impl Tool for CalculateTool {
             return "Error: expression too long".to_string();
         }
 
-        // Block dangerous characters (only allow math-safe chars)
-        if expr.contains(|c: char| {
-            !c.is_alphanumeric() && c != '+' && c != '-' && c != '*' && c != '/'
-                && c != '^' && c != '(' && c != ')' && c != '.' && c != ' '
-                && c != '%' && c != '_'
-        }) {
-            return "Error: expression contains invalid characters".to_string();
-        }
-
-        // Pre-process common patterns
-        let processed = preprocess_expr(expr);
-
-        // Feed to bc with scale
-        let bc_input = format!("scale={}; {}", precision, processed);
-
-        let mut child = match std::process::Command::new("bc")
-            .arg("-l")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(e) => return format!("Error (bc not available?): {e}"),
-        };
-
-        if let Some(mut stdin) = child.stdin.take() {
-            use std::io::Write;
-            let _ = stdin.write_all(bc_input.as_bytes());
-            let _ = stdin.write_all(b"\n");
-        }
-
-        match child.wait_with_output() {
-            Ok(o) if o.status.success() => {
-                let result = String::from_utf8_lossy(&o.stdout);
-                let trimmed = result.trim();
-                if trimmed.is_empty() {
-                    let err = String::from_utf8_lossy(&o.stderr);
-                    format!("Error: {}", err.trim())
-                } else {
-                    // Clean up trailing zeros
-                    let cleaned = clean_number(trimmed);
-                    format!("{expr} = {cleaned}")
-                }
-            }
-            Ok(o) => {
-                let err = String::from_utf8_lossy(&o.stderr);
-                format!("Calculation error: {}", err.trim())
-            }
+        match eval_expr(expr, precision as usize) {
+            Ok(value) => format!("{expr} = {value}"),
             Err(e) => format!("Error: {e}"),
         }
     }
 }
 
-/// Pre-process natural-language math into bc syntax.
-fn preprocess_expr(expr: &str) -> String {
-    let mut s = expr.to_lowercase();
+/// Evaluate an arithmetic expression: + - * / % ^, parentheses, unary signs,
+/// decimals. Replaces the `bc` subprocess (#543): the image does not ship bc,
+/// and a shell tool for plain arithmetic is one more thing to sandbox.
+/// Anything else — names, assignment, stray characters — is refused with a
+/// short error a model can read.
+fn eval_expr(src: &str, precision: usize) -> Result<String, String> {
+    let mut p = Parser { src: src.as_bytes(), pos: 0, depth: 0 };
+    let value = p.expr()?;
+    p.skip_ws();
+    if p.pos != p.src.len() {
+        return Err(format!("unexpected character '{}'", p.src[p.pos] as char));
+    }
+    if !value.is_finite() {
+        return Err("result is not finite".to_string());
+    }
+    Ok(clean_number(&format!("{:.*}", precision, value)))
+}
 
-    // "15% of 2347" → "2347 * 15 / 100"
-    if s.contains("% of ") {
-        let parts: Vec<&str> = s.split("% of ").collect();
-        if parts.len() == 2 {
-            let pct = parts[0].trim();
-            let base = parts[1].trim();
-            return format!("{base} * {pct} / 100");
+/// Recursive-descent parser. ^ is right-associative and binds tighter than a
+/// leading minus, as in ordinary notation: -2^2 is -4 (bc says 4), 2^-1 is 0.5.
+struct Parser<'a> {
+    src: &'a [u8],
+    pos: usize,
+    depth: u32,
+}
+
+impl<'a> Parser<'a> {
+    fn peek(&self) -> Option<u8> {
+        self.src.get(self.pos).copied()
+    }
+
+    fn skip_ws(&mut self) {
+        while matches!(self.peek(), Some(b' ') | Some(b'\t')) {
+            self.pos += 1;
         }
     }
 
-    // "X% " at end → "* X / 100" doesn't apply cleanly, skip
+    fn eat(&mut self, c: u8) -> bool {
+        if self.peek() == Some(c) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
 
-    // sqrt(x) → bc uses sqrt()
-    // ^ → bc uses ^ for power
-    s = s.replace("**", "^");
+    // Nesting depth is bounded so a 500-character "(" storm cannot overflow
+    // the stack through the expr/unary recursion.
+    fn enter(&mut self) -> Result<(), String> {
+        self.depth += 1;
+        if self.depth > 64 {
+            return Err("expression nested too deeply".to_string());
+        }
+        Ok(())
+    }
 
-    s
+    /// expr := term (('+' | '-') term)*
+    fn expr(&mut self) -> Result<f64, String> {
+        self.enter()?;
+        let mut value = self.term()?;
+        loop {
+            self.skip_ws();
+            if self.eat(b'+') {
+                value += self.term()?;
+            } else if self.eat(b'-') {
+                value -= self.term()?;
+            } else {
+                self.depth -= 1;
+                return Ok(value);
+            }
+        }
+    }
+
+    /// term := unary (('*' | '/' | '%') unary)*
+    fn term(&mut self) -> Result<f64, String> {
+        let mut value = self.unary()?;
+        loop {
+            self.skip_ws();
+            if self.eat(b'*') {
+                value *= self.unary()?;
+            } else if self.eat(b'/') {
+                let d = self.unary()?;
+                if d == 0.0 {
+                    return Err("division by zero".to_string());
+                }
+                value /= d;
+            } else if self.eat(b'%') {
+                let d = self.unary()?;
+                if d == 0.0 {
+                    return Err("division by zero".to_string());
+                }
+                value %= d;
+            } else {
+                return Ok(value);
+            }
+        }
+    }
+
+    /// unary := ('+' | '-') unary | power
+    fn unary(&mut self) -> Result<f64, String> {
+        self.skip_ws();
+        if self.peek() == Some(b'-') || self.peek() == Some(b'+') {
+            self.enter()?;
+            let neg = self.eat(b'-');
+            let _ = self.eat(b'+');
+            let value = self.unary()?;
+            self.depth -= 1;
+            return Ok(if neg { -value } else { value });
+        }
+        self.power()
+    }
+
+    /// power := atom ('^' unary)?
+    fn power(&mut self) -> Result<f64, String> {
+        let base = self.atom()?;
+        self.skip_ws();
+        if self.eat(b'^') {
+            let exp = self.unary()?;
+            return Ok(base.powf(exp));
+        }
+        Ok(base)
+    }
+
+    /// atom := number | '(' expr ')'
+    fn atom(&mut self) -> Result<f64, String> {
+        self.skip_ws();
+        if self.eat(b'(') {
+            let value = self.expr()?;
+            self.skip_ws();
+            if !self.eat(b')') {
+                return Err("expected ')'".to_string());
+            }
+            return Ok(value);
+        }
+        self.number()
+    }
+
+    fn number(&mut self) -> Result<f64, String> {
+        if let Some(c) = self.peek() {
+            if c == b'_' || c.is_ascii_alphabetic() {
+                return Err("names are not supported".to_string());
+            }
+        }
+        let start = self.pos;
+        while matches!(self.peek(), Some(b'0'..=b'9') | Some(b'.')) {
+            self.pos += 1;
+        }
+        if start == self.pos {
+            return Err(match self.peek() {
+                Some(c) => format!("unexpected character '{}'", c as char),
+                None => "unexpected end of expression".to_string(),
+            });
+        }
+        let text = std::str::from_utf8(&self.src[start..self.pos]).unwrap();
+        text.parse::<f64>().map_err(|_| format!("invalid number '{text}'"))
+    }
 }
 
 /// Remove trailing zeros from a decimal result.
@@ -245,4 +332,74 @@ fn convert(value: f64, from: &str, to: &str) -> Option<f64> {
     }
 
     Some(value * from_factor / to_factor)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::eval_expr;
+
+    fn eval(src: &str) -> String {
+        eval_expr(src, 4).unwrap()
+    }
+
+    #[test]
+    fn operator_precedence() {
+        assert_eq!(eval("2+3*4"), "14");
+        assert_eq!(eval("(2+3)*4"), "20");
+        assert_eq!(eval("2+3*4^2"), "50");
+        assert_eq!(eval("10-2-3"), "5");
+        assert_eq!(eval("20/2/5"), "2");
+    }
+
+    #[test]
+    fn power_is_right_associative() {
+        assert_eq!(eval("2^3^2"), "512");
+        assert_eq!(eval("2^-1"), "0.5");
+    }
+
+    #[test]
+    fn unary_minus() {
+        assert_eq!(eval("-2^2"), "-4");
+        assert_eq!(eval("(-2)^2"), "4");
+        assert_eq!(eval("-(3+4)"), "-7");
+        assert_eq!(eval("--5"), "5");
+        assert_eq!(eval("6*-7"), "-42");
+    }
+
+    #[test]
+    fn decimals_and_modulo() {
+        assert_eq!(eval("6*7"), "42");
+        assert_eq!(eval("3.14*2"), "6.28");
+        assert_eq!(eval(".5+.25"), "0.75");
+        assert_eq!(eval("10%3"), "1");
+        assert_eq!(eval("-7%3"), "-1");
+    }
+
+    #[test]
+    fn division_by_zero() {
+        assert_eq!(eval_expr("1/0", 4), Err("division by zero".to_string()));
+        assert_eq!(eval_expr("5%(2-2)", 4), Err("division by zero".to_string()));
+    }
+
+    #[test]
+    fn refuses_input_it_cannot_evaluate() {
+        assert!(eval_expr("foo", 4).unwrap_err().contains("names"));
+        assert!(eval_expr("x = 3", 4).unwrap_err().contains("names"));
+        assert!(eval_expr("sqrt(144)", 4).unwrap_err().contains("names"));
+        assert!(eval_expr("2 +", 4).unwrap_err().contains("end of expression"));
+        assert!(eval_expr("1;2", 4).is_err());
+        assert!(eval_expr("1..2", 4).is_err());
+        assert!(eval_expr("(1", 4).is_err());
+        assert!(eval_expr("1)", 4).is_err());
+        assert!(eval_expr("", 4).is_err());
+        assert!(eval_expr(&"(".repeat(100), 4).unwrap_err().contains("nested too deeply"));
+        assert!(eval_expr("10^308*10^308", 4).unwrap_err().contains("not finite"));
+    }
+
+    #[test]
+    fn precision_and_trailing_zeros() {
+        assert_eq!(eval_expr("1/3", 4).unwrap(), "0.3333");
+        assert_eq!(eval_expr("1/3", 2).unwrap(), "0.33");
+        assert_eq!(eval_expr("10", 2).unwrap(), "10");
+    }
 }

@@ -338,6 +338,25 @@ async fn a_refusal_by_the_guessed_56_says_so() {
     assert!(!seen(&d, "2a02:8070:abcd:1::20", 443).why.contains("/56"));
 }
 
+/// The same guess on the public door: the refusal still says the address is the home network only
+/// by the /56, but not of a `lan` rule — a `lan` rule is honoured on the endpoint door only, so
+/// here it would send the person to a rule that can never open anything.
+#[tokio::test]
+async fn the_public_door_does_not_offer_a_lan_rule_for_a_guessed_56() {
+    fn guessed() -> Option<Net> {
+        let mut net = home()?;
+        net.assumed.push(("2a02:8070:abcd:1::5".parse().unwrap(), 56));
+        Some(net)
+    }
+    let d = start_on("assumed-public", Policy { mode: Mode::Guarded, rules: vec![] }, guessed).await;
+    assert_eq!(both(d.public, "[2a02:8070:abcd:2::30]:443").await, [403, 403]);
+    let s = seen(&d, "2a02:8070:abcd:2::30", 443);
+    assert!(s.why.contains("2a02:8070:abcd::/56") && !s.why.contains("lan: true"), "{s:?}");
+    // The endpoint door still names the rule that opens it.
+    assert_eq!(both(d.endpoint, "[2a02:8070:abcd:2::30]:443").await, [403, 403]);
+    assert!(seen(&d, "2a02:8070:abcd:2::30", 443).why.contains("lan: true"), "the endpoint door still says it");
+}
+
 /// A network that came up after the last read (at most a second old) brings a new address of
 /// this machine and its prefix. A connection that leaves from that address has the network read
 /// again, and is judged on it: a destination that is now the home network, or this machine, is

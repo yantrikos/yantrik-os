@@ -451,7 +451,7 @@ impl Net {
         let known = Net { assumed: Vec::new(), ..self.clone() };
         (!known.on_link(ip)).then(|| {
             format!(
-                "{ip} is the home network only by a guess: it is in {}, the /56 around this machine's {}; a rule with `lan: true` reaches it.",
+                "{ip} is the home network only by a guess: it is in {}, the /56 around this machine's {}.",
                 prefix(by.0, by.1),
                 by.0
             )
@@ -780,7 +780,8 @@ mod tests {
         assert_eq!(place(ip("2a0c:3333:4444:6::1"), Some(&net)), Place::Internet, "nor tun0's");
         assert_eq!(place(ip("2a02:8070:abcd:2::30"), Some(&net)), Place::Lan);
         let why = net.assumed(ip("2a02:8070:abcd:2::30")).expect("Lan only by the /56");
-        assert!(why.contains("2a02:8070:abcd::/56") && why.contains("2a02:8070:abcd:1::5") && why.contains("lan: true"), "{why}");
+        assert!(why.contains("2a02:8070:abcd::/56") && why.contains("2a02:8070:abcd:1::5"), "{why}");
+        assert!(!why.contains("lan: true"), "which rule opens it is the door's word, not this one's: {why}");
         assert_eq!(net.assumed(ip("2a02:8070:abcd:1::20")), None, "on eth0's own /64: not a guess");
         assert_eq!(net.assumed(ip("2606:4700::1111")), None);
     }

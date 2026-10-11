@@ -320,7 +320,7 @@ features:
 ```
 
 Themes live at `~/.config/yantrik/theme-override.yaml`; the token list is in
-[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Development
 
@@ -382,6 +382,7 @@ yantrik-os/
 ├── config/labwc/              compositor config, theme and autostart
 ├── deploy/yantrik-os/         cloud-init, session, release and update scripts
 ├── scripts/                   probes and the screen survey
+├── CONTRIBUTING.md            contributor guide
 └── docs/
     ├── getting-started.md     download, verify, boot, attach a mind, install, update
     ├── hardware-requirements.md  what it has actually been run on, and what is unmeasured
@@ -390,8 +391,7 @@ yantrik-os/
     ├── app-control.md         how apps publish state and accept actions (the guide)
     ├── surface-protocol.md    the protocol itself, normative; schema/ beside it
     ├── harness.md             attaching a different mind
-    ├── footprint.md           what it costs to run, and where that goes
-    └── CONTRIBUTING.md        contributor guide
+    └── footprint.md           what it costs to run, and where that goes
 ```
 
 ## Privacy and security
@@ -442,7 +442,7 @@ wrote the code.
 | **help** forum | say what broke; the audits under `design/` mean nothing here needs defending |
 | `#showcase` | what you made with it |
 
-**Want to contribute?** Start with [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md): where to begin, how
+**Want to contribute?** Start with [CONTRIBUTING.md](CONTRIBUTING.md): where to begin, how
 to build and test it the way CI does, and what a pull request needs. Security problems go to
 [SECURITY.md](SECURITY.md), not to a public issue.
 
