@@ -22,20 +22,33 @@ use std::path::Path;
 /// (`app-<launcher>-<app id>-<random>.scope`), so a reader can tell the shell started it.
 const LAUNCHER: &str = "yantrik";
 
+/// The most bytes the escaped app id may take in a unit name. With the prefix, two pids' worth of
+/// digits and `.scope`, this keeps the whole name well under systemd's 255.
+pub const MAX_ESCAPED_ID: usize = 150;
+
 /// The scope unit one launch runs in: `app-yantrik-<app id>-<shell pid>_<seq>.scope`.
 ///
 /// `shell_pid` and `seq` together keep the name unique across launches and across shell
 /// restarts, so a launch never asks for a unit name an earlier one still holds. A `-` inside the
 /// app id is escaped (`\x2d`) as the naming convention asks, because `-` separates the fields;
 /// anything systemd does not allow in a unit name becomes `_`.
+///
+/// systemd refuses a unit name over 255 bytes, and every `-` costs four, so the escaped id is cut
+/// at [`MAX_ESCAPED_ID`] bytes, between whole escapes: a refused name would make `systemd-run`
+/// exit without running the app at all.
 pub fn unit_name(app_id: &str, shell_pid: u32, seq: u64) -> String {
-    let mut id = String::with_capacity(app_id.len());
+    let mut id = String::with_capacity(app_id.len().min(MAX_ESCAPED_ID));
+    let mut buf = [0u8; 4];
     for c in app_id.chars() {
-        match c {
-            '-' => id.push_str("\\x2d"),
-            c if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':') => id.push(c),
-            _ => id.push('_'),
+        let piece: &str = match c {
+            '-' => "\\x2d",
+            c if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':') => c.encode_utf8(&mut buf),
+            _ => "_",
+        };
+        if id.len() + piece.len() > MAX_ESCAPED_ID {
+            break;
         }
+        id.push_str(piece);
     }
     if id.is_empty() {
         id.push_str("app");
@@ -62,38 +75,38 @@ pub fn systemd_run_args(unit: &str) -> Vec<String> {
 }
 
 /// The `systemctl` arguments that clear what a launch may have left failed once its process has
-/// exited: the shell's own scope, and any scope the app made for that same pid itself
-/// (`app-*-<pid>.scope`, the name Chromium uses). `reset-failed` takes glob patterns and is a no-op
-/// for units that are not failed, so this is safe to run after every exit. The app's own scope
-/// goes first: the shell's is usually already collected (`--collect`), and an error about that
-/// name must not be what stops the other from being cleared.
-pub fn reset_failed_args(unit: &str, pid: u32) -> Vec<String> {
-    vec![
-        "--user".into(),
-        "reset-failed".into(),
-        format!("app-*-{pid}.scope"),
-        unit.to_string(),
-    ]
+/// exited: any scope the app made for that same pid itself (`app-*-<pid>.scope`, the name
+/// Chromium uses), whether or not the shell gave it a scope, and the shell's own scope when it
+/// did. `reset-failed` takes glob patterns and is a no-op for units that are not failed, so this
+/// is safe to run after every exit. The app's own scope goes first: the shell's is usually
+/// already collected (`--collect`), and an error about that name must not be what stops the
+/// other from being cleared.
+pub fn reset_failed_args(unit: Option<&str>, pid: u32) -> Vec<String> {
+    let mut args = vec!["--user".into(), "reset-failed".into(), format!("app-*-{pid}.scope")];
+    args.extend(unit.map(str::to_string));
+    args
 }
 
-/// Whether a launch whose scope reports `active_state` (systemd's `ActiveState`) can be counted
-/// as a running app.
+/// Whether a scoped launch's exit means `systemd-run` could not make the scope, so the app should
+/// be started once more without one rather than recorded as an app that cannot start.
 ///
-/// A `failed` scope never held a running app, whatever the shell's registry last recorded, so the
-/// dock must not show it as open. Every other state is left to the pid check the registry already
-/// makes: `inactive` is also what an app that moved itself into a scope of its own leaves behind
-/// (and what a collected unit reads as), so it is not evidence the app is gone.
-pub fn scope_counts_as_running(active_state: &str) -> bool {
-    active_state.trim() != "failed"
+/// `systemd-run` exits non-zero without running the app when the user manager refuses the unit
+/// (a manager that is stopping, a bus that is not systemd's). From the outside that is a non-zero
+/// exit inside the grace period, the same as an app that crashed at once, so the retry is made
+/// once and the caller stops scoping for the rest of the session: an app that really cannot start
+/// then fails bare, and is recorded as it always was.
+pub fn retry_bare(scoped: bool, lived_ms: u64, grace_ms: u64, status_success: bool) -> bool {
+    scoped && lived_ms < grace_ms && !status_success
 }
 
-/// Whether the person's systemd user manager can be asked for a scope: its runtime directory is
+/// Whether the person's systemd user manager can be asked for a scope: its private socket is
 /// there and the session bus `systemd-run --user` talks to is reachable. Without both, wrapping a
 /// launch in `systemd-run` would turn a working launch into a failed one, so the caller launches
-/// the app bare instead.
+/// the app bare instead. The socket, not the `systemd` directory: the directory outlives a
+/// manager that crashed or is stopping.
 pub fn user_manager_reachable(runtime_dir: Option<&Path>, session_bus_address_set: bool) -> bool {
     let Some(runtime) = runtime_dir else { return false };
-    runtime.join("systemd").is_dir() && (session_bus_address_set || runtime.join("bus").exists())
+    runtime.join("systemd/private").exists() && (session_bus_address_set || runtime.join("bus").exists())
 }
 
 #[cfg(test)]
@@ -138,21 +151,42 @@ mod tests {
     #[test]
     fn reset_failed_clears_the_shells_scope_and_the_apps_own_for_that_pid() {
         assert_eq!(
-            reset_failed_args("app-yantrik-chromium-42_1.scope", 5150),
+            reset_failed_args(Some("app-yantrik-chromium-42_1.scope"), 5150),
             ["--user", "reset-failed", "app-*-5150.scope", "app-yantrik-chromium-42_1.scope"]
         );
     }
 
+    /// A launch without a scope of ours (Mind View, no user manager) still has the app's own
+    /// hand-over scope for its pid cleared.
     #[test]
-    fn a_failed_scope_is_never_a_running_app() {
-        assert!(!scope_counts_as_running("failed"));
-        assert!(!scope_counts_as_running("failed\n"));
-        assert!(scope_counts_as_running("active"));
-        assert!(scope_counts_as_running("activating"));
-        // An app that moved into a scope of its own empties ours; that is not a failed launch.
-        assert!(scope_counts_as_running("inactive"));
-        // Unknown is not failure: the pid check decides.
-        assert!(scope_counts_as_running(""));
+    fn reset_failed_without_a_scope_of_ours_still_clears_the_apps_own() {
+        assert_eq!(reset_failed_args(None, 77), ["--user", "reset-failed", "app-*-77.scope"]);
+    }
+
+    #[test]
+    fn a_long_dashed_id_is_cut_between_whole_escapes_and_stays_under_systemds_limit() {
+        let id = "a-".repeat(200);
+        let name = unit_name(&id, u32::MAX, u64::MAX);
+        assert!(name.len() <= 255, "{} bytes: systemd would refuse it", name.len());
+        let escaped = name
+            .strip_prefix("app-yantrik-")
+            .and_then(|n| n.rsplit_once('-'))
+            .map(|(id, _)| id)
+            .unwrap();
+        assert!(escaped.len() <= MAX_ESCAPED_ID);
+        // Never a half escape at the cut: the id is whole `a\x2d` pairs, maybe one trailing `a`.
+        let rest = escaped.replace("a\\x2d", "");
+        assert!(rest.is_empty() || rest == "a", "cut through an escape: {escaped}");
+    }
+
+    /// Only a scoped launch that died non-zero inside the grace is retried bare; a clean close, an
+    /// app that lived, and an unscoped launch are what they always were.
+    #[test]
+    fn a_scoped_launch_that_failed_at_once_is_retried_bare() {
+        assert!(retry_bare(true, 40, 3_000, false));
+        assert!(!retry_bare(true, 40, 3_000, true), "a clean exit is a handover or a close");
+        assert!(!retry_bare(true, 5_000, 3_000, false), "an app that lived is not a scope failure");
+        assert!(!retry_bare(false, 40, 3_000, false), "a bare launch has nothing to retry without");
     }
 
     #[test]
@@ -163,6 +197,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         assert!(!user_manager_reachable(Some(&dir), true), "no systemd dir: no user manager");
         std::fs::create_dir_all(dir.join("systemd")).unwrap();
+        assert!(
+            !user_manager_reachable(Some(&dir), true),
+            "the directory without the private socket is a manager that is gone or going"
+        );
+        std::fs::write(dir.join("systemd/private"), b"").unwrap();
         assert!(!user_manager_reachable(Some(&dir), false), "no bus to reach it on");
         assert!(user_manager_reachable(Some(&dir), true));
         std::fs::write(dir.join("bus"), b"").unwrap();
