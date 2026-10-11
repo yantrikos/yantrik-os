@@ -206,6 +206,16 @@ pub fn why_for(source: &str, data: &serde_json::Value) -> String {
     }
 }
 
+/// A message with its why as its own last line, for surfaces that carry only text (Telegram).
+pub fn with_why_line(text: &str, why: &str) -> String {
+    let why = why.trim();
+    if why.is_empty() {
+        text.to_string()
+    } else {
+        format!("{text}\n\nWhy: {why}")
+    }
+}
+
 /// Why a safety signal appeared. It has no kind to back off and offers no choices.
 pub const SAFETY_WHY: &str = "It may matter for your safety.";
 
@@ -628,6 +638,25 @@ impl MemoryExclusions {
         memory_ids.iter().any(|id| Self::is_excluded(conn, id))
     }
 
+    /// Every excluded memory with the start of its text, for Settings, newest first. A memory no
+    /// longer stored says so rather than vanishing from the list.
+    pub fn labelled(conn: &Connection) -> Vec<(String, String)> {
+        Self::all(conn)
+            .into_iter()
+            .map(|id| {
+                let text: Option<String> = conn
+                    .query_row("SELECT text FROM memories WHERE rid = ?1", params![id], |r| r.get(0))
+                    .ok();
+                let label = match text {
+                    Some(t) if t.chars().count() > 80 => format!("{}\u{2026}", t.chars().take(79).collect::<String>()),
+                    Some(t) => t,
+                    None => "A memory no longer stored".to_string(),
+                };
+                (id, label)
+            })
+            .collect()
+    }
+
     /// Every excluded memory, newest first.
     pub fn all(conn: &Connection) -> Vec<String> {
         conn.prepare("SELECT memory_id FROM proactive_memory_exclusions ORDER BY since DESC, memory_id")
@@ -986,6 +1015,8 @@ mod tests {
         }
         assert!(!why_text(ProactiveKind::Ideas, &none).contains("interested"));
         assert_eq!(why_for("reminder", &none), "You asked me to remind you.");
+        assert_eq!(with_why_line("Build done.", "You asked me to watch this."), "Build done.\n\nWhy: You asked me to watch this.");
+        assert_eq!(with_why_line("Build done.", " "), "Build done.");
     }
 
     #[test]

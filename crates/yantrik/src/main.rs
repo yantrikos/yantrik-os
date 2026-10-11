@@ -365,6 +365,21 @@ fn cmd_serve(config_path: Option<PathBuf>) {
 
 /// Run a single headless think cycle (no UI required).
 /// Evaluates instincts, processes EXECUTE urges, delivers proactive messages via Telegram.
+/// A backed-off kind's own cooldown before its level's multiplier: the desktop's value (#754).
+const HEADLESS_KIND_BASE_COOLDOWN_SECS: f64 = 1800.0;
+
+/// Whether Do Not Disturb is on for this person: the desktop's own setting
+/// (`~/.config/yantrik/settings.yaml`, `dnd_mode`), so the mind is quiet headless when it would
+/// be quiet on the desktop (#754). No file, or no such key, is off.
+fn desktop_dnd_mode() -> bool {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    std::fs::read_to_string(format!("{home}/.config/yantrik/settings.yaml"))
+        .ok()
+        .and_then(|text| serde_yaml::from_str::<serde_yaml::Value>(&text).ok())
+        .and_then(|v| v.get("dnd_mode").and_then(|d| d.as_bool()))
+        .unwrap_or(false)
+}
+
 fn run_headless_think_cycle(
     companion: &mut CompanionService,
     execute_cooldowns: &mut std::collections::HashMap<String, f64>,
@@ -390,6 +405,8 @@ fn run_headless_think_cycle(
                 "reason": t.reason,
                 "urgency": t.urgency,
                 "context": t.context,
+                // The memories it came from, so "Don't use this memory" can exclude them (#754).
+                "source_rids": t.source_rids,
             }))
             .collect();
 
@@ -575,10 +592,10 @@ fn run_headless_think_cycle(
                     kind: yantrik_companion::proactive_backoff::ProactiveKind::from_source(&instinct_name)
                         .key()
                         .into(),
-                    why: yantrik_companion::proactive_backoff::why_text(
-                        yantrik_companion::proactive_backoff::ProactiveKind::from_source(&instinct_name),
-                        &exec_urge.context,
-                    ),
+                    why: yantrik_companion::proactive_backoff::why_for(&instinct_name, &exec_urge.context),
+                    // The urge's safety marker and the memories it was made from (#754).
+                    safety: exec_urge.safety,
+                    memory_ids: exec_urge.memory_ids.clone(),
                     ..Default::default()
                 };
                 companion.set_proactive_message(msg);
@@ -610,13 +627,34 @@ fn run_headless_think_cycle(
             state.idle_seconds, false, 0.5,
         );
 
-        let gate_suppressed = matches!(gate_result, yantrik_companion::synthesis_gate::GateDecision::Suppress { .. });
-        if let yantrik_companion::synthesis_gate::GateDecision::Suppress { ref reason } = gate_result {
-            tracing::info!(reason = %reason, text = msg.text, "Synthesis Gate suppressed proactive message");
-            companion.record_suppressed_urge(&delivery_key, reason);
+        // The same rule the desktop applies (#754): Do Not Disturb, the person's "Stop this kind"
+        // and the backed-off levels, and the memories they excluded. A backed-off message waits in
+        // the queue; a safety signal passes this and every throttle here.
+        let safety = msg.safety;
+        let backoff_gate = yantrik_companion::proactive_backoff::gate(
+            &companion.db.conn(),
+            &msg,
+            desktop_dnd_mode(),
+            HEADLESS_KIND_BASE_COOLDOWN_SECS,
+            now_ts,
+        );
+
+        let gate_suppressed = !safety
+            && matches!(gate_result, yantrik_companion::synthesis_gate::GateDecision::Suppress { .. });
+        if gate_suppressed {
+            if let yantrik_companion::synthesis_gate::GateDecision::Suppress { ref reason } = gate_result {
+                tracing::info!(reason = %reason, text = msg.text, "Synthesis Gate suppressed proactive message");
+                companion.record_suppressed_urge(&delivery_key, reason);
+            }
         }
 
-        if on_cooldown {
+        if let yantrik_companion::proactive_backoff::Gate::Wait(why) = backoff_gate {
+            tracing::debug!(kind = %msg.kind, why, "Proactive message waits");
+            companion.set_proactive_message(msg);
+        } else if let yantrik_companion::proactive_backoff::Gate::Drop(why) = backoff_gate {
+            tracing::info!(kind = %msg.kind, why, "Proactive message dropped");
+            companion.record_suppressed_urge(&delivery_key, why);
+        } else if on_cooldown && !safety {
             tracing::info!(key = %delivery_key, "Proactive message on per-key cooldown, skipping");
         } else if gate_suppressed {
             // Already logged
@@ -643,15 +681,23 @@ fn run_headless_think_cycle(
                 *last_cortex_fire_ts = now_ts;
             }
 
-            // Deliver via Telegram
+            // The kind's own cooldown, as on the desktop (#754). A safety signal counts against none.
+            if !safety {
+                if let Some(kind) = yantrik_companion::proactive_backoff::ProactiveKind::from_key(&msg.kind) {
+                    yantrik_companion::proactive_backoff::KindBackoff::record_delivery(&companion.db.conn(), kind, now_ts);
+                }
+            }
+
+            // Deliver via Telegram, with its why (#754)
+            let said = yantrik_companion::proactive_backoff::with_why_line(&msg.text, &msg.why);
             if companion.config.telegram.enabled && companion.config.telegram.forward_proactive {
-                match yantrik_companion::telegram::send_message(&companion.config.telegram, &msg.text) {
+                match yantrik_companion::telegram::send_message(&companion.config.telegram, &said) {
                     Ok(_) => tracing::info!("Proactive message sent to Telegram"),
                     Err(e) => tracing::warn!(error = %e, "Failed to send proactive to Telegram"),
                 }
             } else {
                 // Log to stdout if Telegram is not configured
-                println!("\n[PROACTIVE] {}\n", msg.text);
+                println!("\n[PROACTIVE] {}\n", said);
             }
 
             if !delivery_key.is_empty() {
