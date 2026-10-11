@@ -110,19 +110,22 @@ impl CardManager {
     /// the rest wait behind the hint badge. A kind that is off until the person asks shows
     /// nothing; a backed-off kind waits its longer cooldown and never interrupts.
     pub fn add_at(&mut self, scored: &features::ScoredUrge, dnd: bool, now: Instant) {
-        if scored.tier == features::UrgeTier::Queue {
-            self.hint_count += 1;
-            return;
-        }
         // A safety signal (a security warning, a battery about to die) is decided before any
         // backoff, and never throttled (#754).
         let security = scored.urge.safety || scored.urge.category == features::UrgeCategory::Security;
+        if scored.tier == features::UrgeTier::Queue && !security {
+            self.hint_count += 1;
+            return;
+        }
         if dnd && !security {
             self.hint_count += 1;
             return;
         }
         let kind = if security { None } else { card_kind(&scored.urge.source) };
         let mut tier = scored.tier.clone();
+        if security && tier == features::UrgeTier::Queue {
+            tier = features::UrgeTier::Whisper;
+        }
         if let Some(kind) = kind {
             let level = self.level(kind);
             let Some(mult) = level.cooldown_multiplier() else {
@@ -173,9 +176,10 @@ impl CardManager {
             self.last_shown.insert(kind, now);
         }
 
-        // Trim to max
+        // Trim to max: the oldest card that is not a safety signal goes first.
         while self.cards.len() > self.max_visible + 2 {
-            self.cards.remove(0);
+            let oldest = self.cards.iter().position(|c| c.why != SECURITY_WHY).unwrap_or(0);
+            self.cards.remove(oldest);
         }
     }
 
@@ -498,6 +502,32 @@ mod tests {
         let c = mgr.cards.iter().find(|c| c.id == "bc").expect("shown through Do Not Disturb");
         assert_eq!(c.kind, None);
         assert_eq!(c.tier, features::UrgeTier::Interrupt);
+    }
+
+    /// Focus mode leaves interruptibility at 0.1: a safety signal still becomes a card, never a
+    /// drop or a badge, and a full stack of cards never pushes it out (#754).
+    #[test]
+    fn focus_mode_and_a_full_stack_never_hide_a_safety_card() {
+        let mut scorer = features::UrgencyScorer::new();
+        scorer.set_interruptibility(0.1);
+        let mut warn = urge("sec", "clipboard_intelligence", features::UrgeCategory::Security, features::UrgeTier::Drop).urge;
+        warn.urgency = 0.95;
+        let mut idea = warn.clone();
+        idea.id = "idea".into();
+        idea.safety = false;
+        idea.category = features::UrgeCategory::Resource;
+        let scored = scorer.score(vec![warn, idea]);
+        assert_eq!(scored.len(), 1, "the ordinary card is dropped in focus mode; the safety card is not");
+        assert_eq!(scored[0].tier, features::UrgeTier::Whisper);
+
+        let mut mgr = CardManager::new();
+        let now = Instant::now();
+        mgr.add_at(&urge("q", "process_sentinel", features::UrgeCategory::Security, features::UrgeTier::Queue), false, now);
+        assert_eq!(mgr.cards.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["q"], "a queued safety card still floats");
+        for i in 0..mgr.max_visible + 4 {
+            mgr.add_at(&urge(&format!("n{i}"), "NotificationRelay", features::UrgeCategory::Resource, features::UrgeTier::Interrupt), false, now);
+        }
+        assert!(mgr.cards.iter().any(|c| c.id == "q"), "the trim never removes the safety card");
     }
 
     const COOLDOWN_FACTOR_FOR_TEST: f64 = yantrik_companion::proactive_backoff::COOLDOWN_LESS_OFTEN;

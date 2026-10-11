@@ -238,6 +238,14 @@ impl UrgencyScorer {
                 p if p >= 0.25 => UrgeTier::Queue,
                 _ => UrgeTier::Drop,
             };
+            // A safety signal is never dropped or left as a badge for low interruptibility —
+            // focus mode would otherwise hide a copied-secret warning or a dying battery (#754).
+            let tier = match tier {
+                UrgeTier::Drop | UrgeTier::Queue if urge.safety || urge.category == UrgeCategory::Security => {
+                    UrgeTier::Whisper
+                }
+                t => t,
+            };
 
             if tier != UrgeTier::Drop {
                 self.recent_urges.insert(urge.id.clone(), now);

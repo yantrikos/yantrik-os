@@ -1195,14 +1195,23 @@ fn companion_notification_text(text: &str) -> Option<String> {
 /// The message's plain why (#754), from fixed templates, is the body's last line, and the choices
 /// behind "Less of this" are its buttons ([`proactive_buttons`]).
 fn notify_companion_thought(text: &str, msg: &yantrik_companion::types::ProactiveMessage) -> bool {
-    let Some(cleaned) = companion_notification_text(text) else {
+    // A safety signal is filed even when the rule would keep it to the Lens, and is never held
+    // by the daily cap (#754): on the notification-only route this is its one way out.
+    let judged = companion_notification_text(text);
+    let judged = match judged {
+        None if msg.safety && yantrik_companion::proactive::must_not_be_said(text).is_none() => {
+            Some(text.trim().to_string())
+        }
+        other => other,
+    };
+    let Some(cleaned) = judged else {
         tracing::info!(
             text,
             "an unprompted companion thought may not become a notification; leaving it to the Lens"
         );
         return false;
     };
-    if !companion_cap_record() {
+    if !msg.safety && !companion_cap_record() {
         tracing::info!(
             cap = COMPANION_DAILY_CAP,
             "companion notification cap reached for today; not filing another"
