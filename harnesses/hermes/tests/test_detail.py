@@ -66,7 +66,8 @@ def _hermes_reporting(config):
 class DetailTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.detail = _load_detail()
+        # staticmethod: a plain function stored on the class would be called with `self`.
+        cls.detail = staticmethod(_load_detail())
 
     @classmethod
     def tearDownClass(cls):
