@@ -13,3 +13,7 @@ tracing = { workspace = true }
 crossbeam-channel = { workspace = true }
 tungstenite = { workspace = true }
 ureq = { workspace = true }
+# The private scratch dir for voice-message files (`yantrik_ml::private_dir`), so its ownership
+# and link checks are not written twice. Every build that uses this crate — the companion and
+# the shell — already compiles yantrik-ml.
+yantrik-ml = { workspace = true }

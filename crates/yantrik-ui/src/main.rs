@@ -31,13 +31,15 @@
 use std::path::PathBuf;
 use yantrik_companion::CompanionConfig;
 
+mod accounts;
 mod activity_feed;
 /// Every agent — one conversation with one mind — and its session, drawn by the Agents screen.
 mod agents;
-mod agents_overview;
 mod ambient;
 mod app_context;
 mod approvals;
+mod approval_wording;
+mod approval_bounds;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
 #[allow(dead_code)]
 mod apps;
@@ -47,17 +49,52 @@ mod caller_identity;
 mod companion_rpc;
 mod control;
 mod control_approvals;
+mod control_overlays;
+mod control_switcher;
+mod alt_tab;
+mod window_name;
+mod power_status;
+mod control_network;
+mod control_power;
 mod control_installer;
+mod control_installer_consent;
+mod control_installer_target;
+mod control_levels;
+mod control_levels_actions;
+mod control_theme;
+mod boot_unlock;
+mod installer_medium;
+mod installer_rules;
+/// What the first-run screens say about a Wi-Fi chip still waiting for its driver (Mac BCM4331).
+mod wifi_note;
 mod control_update;
 mod control_files;
+mod control_screen;
+/// The decision model, asked by the person's own surfaces (the browser's commitment check).
+mod control_decide;
+/// Private mode: the Mind off and nothing recorded, until the person turns it off.
+mod private_mode;
+/// What the desktop knows about each channel a person can reach it from.
+mod channels;
+/// What Private mode stops outright: the agents that run as the person, frozen.
+mod private_freeze;
+/// Where a mind may take the Files screen, and what it may do with the folder there (#443).
+mod control_files_create;
+mod control_files_mind;
+/// Whether a mind may paste the Files clipboard into the folder on screen (#443).
+mod control_files_paste;
 /// Agents' commands on the shell's surface: agent_run / agent_job / agent_input / agent_kill.
 mod control_agent_terminal;
 /// A recipe on the shell's surface: answer_recipe / pause_recipe / resume_recipe / cancel_recipe.
 mod control_recipes;
 /// Agents on the shell's surface: new_agent / send_to_agent / stop_agent / read_agent / show_agent.
 mod control_agents;
+mod control_workroom;
+// The chat in one read, for the Yantrik terminal (`chat_view`).
+mod control_chat;
 mod jobs;
 mod cards;
+mod card_watch;
 mod clipboard;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
 // Remove once rustc is updated past the fix.
@@ -79,15 +116,43 @@ mod lens;
 /// The Lens's conversation put back from the saved session when it opens empty (#246).
 mod lens_history;
 mod lock;
+mod lock_wallpaper;
+mod memory_grants;
 mod markdown;
-/// What the mind may do without being asked: plan / ask / auto / bypass. See its module doc.
+/// What the mind may do without being asked: plan / ask / auto / bypass / bypass_all. See its module doc.
 mod mind_mode;
+mod never_ask;
 /// The right edge of every screen: the answering mind, what is at work, what it did.
 mod mind_panel;
 /// A desktop of the mind's own, inside one window: where the apps a mind opens are drawn (#239).
 mod mind_view;
+/// Whether the window a launch promised appeared, and where: `open_app`'s answer reads it back.
+mod mind_landing;
+mod app_glance;
+/// The agent terminal's visible half: a terminal in Mind View showing a mind's commands.
+mod mind_agent_terminal;
+mod open_url;
+mod session_lock;
+// The snap layouts: rc.xml's regions and keys, and the window menu, kept in step (tests only).
+mod snap_layouts;
+// The keyboard cheat sheet (Super+/), generated from rc.xml.
+mod cheat_sheet;
+// Every key the screens advertise is bound in rc.xml, and every binding names a real action (tests only).
+#[cfg(test)]
+mod rc_keys;
 mod notifications;
+// The short "Sent by … · verified" line on a notification card.
+mod notification_sender;
+// A mind's turn notices: their words, and the run of them that folds into one group.
+mod notification_groups;
+// A notification's title and body: the first sentence over the whole text, never a cut in two.
+mod notification_title;
+// The Memory screen's newest memories, by recall's own domain rule.
+mod recent_memories;
+// The newest memories read from the store directly, never queued behind the companion.
+mod memory_reader;
 mod onboarding;
+mod perception;
 mod icons;
 mod render_backend;
 /// Every recipe the companion holds, as the worker last published them: the Recipes screen,
@@ -99,11 +164,20 @@ mod surfaces;
 mod system_context;
 mod telegram;
 mod terminal;
+mod terminal_window;
+mod toplevel_watch;
+mod provider_handoff;
+mod private_file;
+mod programs;
+mod runs_on;
 mod trail;
 // What protects the credential vault on this machine, and the honest answer when nothing does.
 mod vault_unlock;
 mod voice;
+mod dock_model;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
+// It guards `windows`, the next line, and only it: a `mod` added between this comment and
+// `mod windows;` would take the attribute and leave `windows` bare (#585 B1).
 #[allow(dead_code)]
 mod windows;
 mod wire;
@@ -118,6 +192,10 @@ fn main() {
     // being read as the name of a config file that does not exist.
     yantrik_version::handle_version_flag("yantrik-ui");
 
+    // Private mode lasts until the person turns it off, so it is read back before the companion,
+    // the clipboard watcher or the harness socket can start thinking it is off.
+    let private_at_start = private_mode::load();
+
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -125,6 +203,9 @@ fn main() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
+    if private_at_start {
+        tracing::warn!("Private mode is on, as the person left it: no mind is listening, nothing is recorded");
+    }
 
     // The shell does not go through the runtime's `init_tracing`, so it installs the same
     // panic hook itself: a panic here becomes a problem record before it becomes a stack trace.
@@ -149,6 +230,9 @@ fn main() {
     // A browser the companion opens goes where a mind's apps go (#239), not onto the person's
     // display, which is where its tools used to put it unconditionally.
     yantrik_companion::tools::browser::set_display_for_mind(mind_view::display_for_mind);
+    // A Mind View an earlier shell left running goes now, not when a mind next opens an app: until
+    // then it sits on the desktop as a window nothing tracks.
+    mind_view::stop_left_behind();
 
     // Pick the renderer before Slint reads SLINT_BACKEND — it only looks once, at App::new().
     // Getting this wrong is not a small penalty: femtovg on a machine with no GPU falls through
@@ -188,17 +272,18 @@ fn main() {
     // way is never described as stopped.
     {
         let starter = service_manager.clone();
-        yantrik_ipc_transport::service::set_local_starter(move |id| {
-            // `status` before `start`, the same order the control surface uses: it reaps a child
-            // that has exited, and without it an entry still marked Running short-circuits the
-            // start and the socket never comes back.
-            let _ = starter.status(id);
-            starter.start(id)
-        });
+        // `start` reaps a child that has exited before it checks for Running (#58), so a
+        // service that died is started again rather than reported as up.
+        yantrik_ipc_transport::service::set_local_starter(move |id| starter.start(id));
     }
 
     // Initialize all shared state
     let ctx = app_context::AppContext::init(config, &ui, config_path);
+
+    // Read perception-service into the companion's memory, through the reader's gate: the OS's
+    // own processes, low salience and anything over the rate ceiling stay out. The service is
+    // started on demand, so most of the time this parks on a retry and costs nothing (#58).
+    perception::spawn(ctx.bridge.clone());
 
     // Wire all callbacks
     wire::wire_all(&ui, &ctx);
@@ -239,6 +324,11 @@ fn main() {
             ui.invoke_navigate(screen);
         }
     }
+
+    // A desktop that was locked when the last shell ended stays locked, by this shell (#415).
+    session_lock::take_over_orphans(&ui);
+    // And a desktop that was just booted starts locked behind the account's password (#415).
+    session_lock::lock_at_start(&ui);
 
     // Give the shell's shortcut scope the keyboard.
     //
@@ -310,6 +400,10 @@ fn start_services() -> yantrik_shell_core::service_manager::ServiceManager {
     // Reads windows we did not write. Autostarted: it costs nothing when there is no
     // accessibility bus, and connects lazily if one appears later.
     mgr.register("a11y", "a11y-service", true);
+    // The browser as an app (#477): the one DevTools client, serving app-browser to `yos web` and
+    // every mind's web tools. Autostarted: a socket and a thread while no browser is open, and it
+    // connects when one is.
+    mgr.register("browser", "yantrik-browser", true);
     // The kernel's periphery. Not autostarted, because it wants CAP_NET_ADMIN and CAP_SYS_ADMIN
     // to open its descriptors and a desktop session cannot grant either: started from here it
     // comes up on PSI alone, which is worth having on request and not worth running all session
@@ -317,6 +411,11 @@ fn start_services() -> yantrik_shell_core::service_manager::ServiceManager {
     // `yos perception`, and so os_perception, asks for it on the first request. Without that the
     // machine rail's "on demand" was a caption on a process nothing anywhere ever ran.
     mgr.register("perception", "perception-service", false);
+    // The journal behind it (#705): perception's ring is memory, and an outage upstream of
+    // memory was silent because nothing drained it. Autostarted, unlike perception itself — it
+    // needs no privilege, and while perception is not running it costs one failed connect per
+    // 15 s. It must be up before perception is, or the ring overwrites before anything reads it.
+    mgr.register("perception-journal", "perception-journal", true);
 
     // Start autostart services (best-effort — binary may not exist in dev)
     mgr.start_autostart();

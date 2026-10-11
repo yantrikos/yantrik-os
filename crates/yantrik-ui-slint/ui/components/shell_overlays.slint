@@ -1,0 +1,234 @@
+// The overlays the bar opens: the network popover, Today (the clock's), Quick Settings, the power
+// popover and the clipboard panel, and the keyboard cheat sheet (Super+/).
+//
+// They stood inside DesktopScreen, which is only on screen while the desktop is. The bar is the
+// shell's and is drawn above every screen, so its network, settings and power buttons toggled a
+// flag on any screen -- and from Files, Settings or Agents the flag drew nothing, because the
+// panel it opens was not there to draw. They live here now, instantiated once in app.slint
+// after the screens, so a click on the bar shows what it promises wherever the person is.
+//
+// Nothing here owns state: every flag and value is the app's, bound through, so the desktop's
+// own keybinds, the control surface and the bar all open the same panels.
+
+import { Theme } from "theme.slint";
+import { QuickSettings } from "quick_settings.slint";
+import { PowerMenu } from "power_menu.slint";
+import { ClipboardPanel, ClipboardEntryData } from "clipboard_panel.slint";
+import { CheatSheet, CheatRowData } from "cheat_sheet.slint";
+import { BatteryPopover } from "bar/battery_popover.slint";
+import { NetworkPopover } from "popovers/network_popover.slint";
+import { NetworkState } from "bar/network_state.slint";
+import { TodayPopover } from "popovers/today_popover.slint";
+
+export component ShellOverlays inherits Rectangle {
+    // Quick Settings
+    in-out property <bool> quick-settings-open: false;
+    in property <bool> battery-available: false;
+    in property <int> battery-level: 100;
+    in property <bool> battery-charging: false;
+    // The machine's real levels (wire/audio.rs, wire/backlight.rs): nothing invented, and a
+    // row for hardware that is absent is not drawn.
+    in property <bool> brightness-available: false;
+    in-out property <int> brightness-level: 0;
+    in property <bool> volume-available: false;
+    in property <bool> volume-muted: false;
+    in property <string> volume-device: "";
+    in-out property <int> volume-level: 0;
+    callback brightness-changed(int);
+    callback volume-changed(int);
+    callback volume-mute-toggled();
+    // The minds' tiles: the mode, Private, and where a mind's apps open. All of them are the
+    // app's own state and callbacks, the same ones the bar's mode chip and Settings use.
+    in property <string> mind-mode: "ask";
+    in property <string> mind-mode-label: "Ask";
+    in property <bool> private-mode: false;
+    in property <bool> mind-view-on: true;
+    callback mind-mode-chosen(string);
+    callback mind-mode-details();
+    callback mind-private-chosen(bool);
+    callback mind-view-chosen(bool);
+    // The machine's tiles. Do Not Disturb is Today's own `dnd-mode` and `toggle-dnd-mode`.
+    in property <bool> dark-on: true;
+    callback toggle-dark();
+    // The footer.
+    callback take-screenshot();
+    callback open-settings();
+    callback lock-screen();
+
+    // Battery popover: level, state, time and the power profile, under the bar's battery.
+    in-out property <bool> battery-popover-open: false;
+    in property <length> battery-anchor-x: 0;
+    in property <string> battery-status-text: "";
+    in property <string> battery-time-text: "";
+    in property <string> power-profile: "";
+    in property <bool> power-performance-offered: false;
+    callback set-power-profile(string);
+    // Network popover: hangs from the bar's network mark. Its content is `NetworkState`, which
+    // the shell fills from NetworkManager; only where it hangs and whether it is open are the
+    // app's.
+    in-out property <bool> network-open: false;
+    in property <length> network-anchor-x: 0;
+    callback network-settings();
+
+    // Today: hangs from the clock, centred on the screen. Its content is `TodayState`.
+    in-out property <bool> today-open: false;
+    in property <bool> dnd-mode: false;
+    in property <int> notification-unread: 0;
+    callback toggle-dnd-mode();
+    callback all-notifications();
+    callback notification-tapped(string);
+    callback notification-action(string, string);
+
+    // Power popover: hangs from the right edge, where Quick Settings does.
+    in-out property <bool> power-menu-open: false;
+    in property <bool> power-can-hibernate: false;
+    in property <int> power-minds-working: 0;
+    callback power-refresh();
+    callback power-action(string);
+
+    // Clipboard panel
+    in-out property <bool> clip-panel-open: false;
+    in property <[ClipboardEntryData]> clip-panel-entries: [];
+    in-out property <string> clip-search-query: "";
+    callback clipboard-paste(int);
+    callback clipboard-search(string);
+    callback clipboard-clear();
+
+    // Keyboard cheat sheet
+    in-out property <bool> cheat-sheet-open: false;
+    in property <[CheatRowData]> cheat-sheet-rows: [];
+    in-out property <string> cheat-sheet-query: "";
+    callback cheat-sheet-search(string);
+
+    width: 100%;
+    height: 100%;
+
+    NetworkPopover {
+        open: root.network-open;
+        anchor-x: root.network-anchor-x;
+        anchor-y: Theme.status-bar-height;
+        close-requested => { root.network-open = false; }
+        settings-requested => { root.network-open = false; root.network-settings(); }
+    }
+
+    TodayPopover {
+        open: root.today-open;
+        anchor-x: root.width / 2;
+        anchor-y: Theme.status-bar-height;
+        dnd: root.dnd-mode;
+        unread: root.notification-unread;
+        close-requested => { root.today-open = false; }
+        dnd-toggled => { root.toggle-dnd-mode(); }
+        all-notifications => { root.today-open = false; root.all-notifications(); }
+        notification-tapped(id) => { root.notification-tapped(id); }
+        notification-action(id, action) => { root.notification-action(id, action); }
+    }
+
+    QuickSettings {
+        open: root.quick-settings-open;
+        // Right-anchored: the panel hangs from the far right of the bar and is clamped inside
+        // the screen, so any anchor past the right edge lands it against the margin.
+        anchor-x: root.width;
+        anchor-y: Theme.status-bar-height;
+        close-requested => { root.quick-settings-open = false; }
+
+        mind-mode: root.mind-mode;
+        mind-mode-label: root.mind-mode-label;
+        private-mode: root.private-mode;
+        mind-view-on: root.mind-view-on;
+        mind-mode-chosen(m) => { root.mind-mode-chosen(m); }
+        mind-mode-details => { root.quick-settings-open = false; root.mind-mode-details(); }
+        private-chosen(on) => { root.mind-private-chosen(on); }
+        mind-view-chosen(on) => { root.mind-view-chosen(on); }
+
+        // The Wi-Fi tile is the radio, from the same reading the network popover shows; its
+        // chevron opens that popover in place of this panel.
+        wifi-present: NetworkState.wifi-present;
+        wifi-radio-on: NetworkState.radio-on;
+        wifi-connected: NetworkState.kind == "wifi" && NetworkState.online;
+        wifi-ssid: NetworkState.ssid;
+        wired-online: NetworkState.kind == "wired" && NetworkState.online;
+        toggle-wifi => { NetworkState.set-radio(!NetworkState.radio-on); }
+        network-details => { root.quick-settings-open = false; root.network-open = true; }
+
+        dnd-on: root.dnd-mode;
+        dark-on: root.dark-on;
+        power-profile: root.power-profile;
+        power-performance-offered: root.power-performance-offered;
+        toggle-dnd => { root.toggle-dnd-mode(); }
+        toggle-dark => { root.toggle-dark(); }
+        power-profile-chosen(p) => { root.set-power-profile(p); }
+
+        brightness-available: root.brightness-available;
+        brightness-level <=> root.brightness-level;
+        volume-available: root.volume-available;
+        volume-muted: root.volume-muted;
+        volume-device: root.volume-device;
+        volume-level <=> root.volume-level;
+        brightness-changed(val) => { root.brightness-changed(val); }
+        volume-changed(val) => { root.volume-changed(val); }
+        volume-mute-toggled => { root.volume-mute-toggled(); }
+
+        battery-available: root.battery-available;
+        battery-level: root.battery-level;
+        battery-charging: root.battery-charging;
+        // Put away first, so the capture does not photograph the panel it was pressed on.
+        screenshot => { root.quick-settings-open = false; root.take-screenshot(); }
+        settings => { root.quick-settings-open = false; root.open-settings(); }
+        lock => { root.quick-settings-open = false; root.lock-screen(); }
+        power => { root.quick-settings-open = false; root.power-menu-open = true; }
+    }
+
+    BatteryPopover {
+        open: root.battery-popover-open;
+        anchor-x: root.battery-anchor-x;
+        anchor-y: Theme.status-bar-height;
+        level: root.battery-level;
+        status-text: root.battery-status-text;
+        time-text: root.battery-time-text;
+        power-profile: root.power-profile;
+        performance-offered: root.power-performance-offered;
+        profile-chosen(p) => { root.set-power-profile(p); }
+        brightness-available: root.brightness-available;
+        brightness-level: root.brightness-level;
+        brightness-changed(v) => {
+            // The slider shows `value` once the drag ends, so the shared level moves with it.
+            root.brightness-level = v;
+            root.brightness-changed(v);
+        }
+        close-requested => { root.battery-popover-open = false; }
+    }
+
+    PowerMenu {
+        open: root.power-menu-open;
+        anchor-x: root.width;
+        anchor-y: Theme.status-bar-height;
+        can-hibernate: root.power-can-hibernate;
+        minds-working: root.power-minds-working;
+        refresh => { root.power-refresh(); }
+        power-action(action) => { root.power-action(action); }
+        close-requested => { root.power-menu-open = false; }
+    }
+
+    ClipboardPanel {
+        width: 100%;
+        height: 100%;
+        is-open <=> root.clip-panel-open;
+        entries: root.clip-panel-entries;
+        search-query <=> root.clip-search-query;
+        paste-entry(idx) => { root.clipboard-paste(idx); }
+        search-changed(query) => { root.clipboard-search(query); }
+        clear-history => { root.clipboard-clear(); }
+        close => { root.clip-panel-open = false; }
+    }
+
+    CheatSheet {
+        width: 100%;
+        height: 100%;
+        is-open <=> root.cheat-sheet-open;
+        rows: root.cheat-sheet-rows;
+        search-query <=> root.cheat-sheet-query;
+        search-changed(query) => { root.cheat-sheet-search(query); }
+        close => { root.cheat-sheet-open = false; }
+    }
+}

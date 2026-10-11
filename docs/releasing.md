@@ -22,6 +22,11 @@ under test, as the person, in their session:
     release-check --tier rc             # adds the minds and the browser
     release-check --tier rc --interactive   # adds the checks a person takes part in
     release-check --json report.json    # the same, written down
+    release-check --may-lock            # also the check that locks the desktop (#203)
+
+The lock check leaves the machine locked until a person signs in, and nothing on the socket can
+undo that, so it runs only with `--may-lock`: the boot test's throwaway QEMU passes it, and a
+person at the keyboard may. Never pass it on a shared test machine from afar.
 
 **Tier ci** asserts, through the control surfaces:
 - the shell answers and names its build; the mind mode is published for apps to read;

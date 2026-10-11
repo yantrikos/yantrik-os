@@ -216,6 +216,8 @@ component MindCard inherits Rectangle {
     in property <length> height-ceiling;
     in property <string> mode;
     in property <string> mode-label;
+    // Either bypass is drawn red, as the status bar's chip is.
+    property <bool> in-bypass: root.mode == "bypass" || root.mode == "bypass_all";
     in property <string> ceiling;
     in property <int> recipes-screen;
     in property <int> cpu-percent;
@@ -329,10 +331,10 @@ component MindCard inherits Rectangle {
                     width: 100%;
                     height: 100%;
                     border-radius: Theme.r-sm;
-                    background: root.mode == "bypass" ? Theme.color-danger-dim
+                    background: root.in-bypass ? Theme.color-danger-dim
                         : root.mode == "plan" ? Theme.tint-amber
                         : mode-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
-                    border-width: root.mode == "bypass" ? 1px : 0px;
+                    border-width: root.in-bypass ? 1px : 0px;
                     border-color: Theme.color-danger;
                     mode-row := HorizontalLayout {
                         padding-left: 8px;
@@ -341,16 +343,16 @@ component MindCard inherits Rectangle {
                         Icon {
                             commands: root.mode == "plan" ? Icons.eye : Icons.shield;
                             size: 12px;
-                            tint: root.mode == "bypass" ? Theme.color-danger
+                            tint: root.in-bypass ? Theme.color-danger
                                 : root.mode == "plan" ? Theme.amber : Theme.text-secondary;
                             y: (parent.height - self.height) / 2;
                         }
                         Text {
                             text: "Mode " + root.mode-label;
-                            color: root.mode == "bypass" ? Theme.color-danger
+                            color: root.in-bypass ? Theme.color-danger
                                 : root.mode == "plan" ? Theme.amber : Theme.text-primary;
                             font-size: Theme.fs-micro;
-                            font-weight: root.mode == "bypass" ? 700 : 500;
+                            font-weight: root.in-bypass ? 700 : 500;
                             vertical-alignment: center;
                         }
                     }

@@ -16,6 +16,18 @@ use yantrik_app_runtime::prelude::*;
 use yantrik_terminal::Session;
 slint::include_modules!();
 
+/// The most tabs open at once. Each tab is a shell process and a PTY, so the
+/// number stays bounded; 32 is enough for an agent that opens tabs as it works
+/// (#683) without exhausting the machine.
+pub const MAX_TABS: usize = 32;
+
+/// The refusal to open one more tab, or `None` when there is room.
+fn tabs_full(open: usize) -> Option<String> {
+    (open >= MAX_TABS).then(|| {
+        format!("Terminal has {MAX_TABS} tabs. Close a tab before opening another.")
+    })
+}
+
 struct Tab {
     id: u64,
     session: Session,
@@ -40,7 +52,7 @@ impl Workbench {
     }
     /// Open a tab beside the active one, in the same directory the active shell is sitting in.
     ///
-    /// Returns the reason it could not, rather than only painting it: the eight-tab cap used to
+    /// Returns the reason it could not, rather than only painting it: the tab cap used to
     /// `return` here in silence, so the New Tab button did nothing and said nothing — and the
     /// control surface, which had no way to find out, answered `{"tabs": 8}` as though it had
     /// opened one. The notice is still set here so the person at the window sees it too.
@@ -59,8 +71,8 @@ impl Workbench {
         result
     }
     fn new_tab_at(&mut self, ui: &TerminalApp, dir: &std::path::Path) -> Result<(), String> {
-        if self.tabs.len() >= 8 {
-            return Err("Terminal has eight tabs. Close a tab before opening another.".into());
+        if let Some(full) = tabs_full(self.tabs.len()) {
+            return Err(full);
         }
         let dir = std::fs::canonicalize(dir).map_err(|e| format!("Could not open folder: {e}"))?;
         if !dir.is_dir() {
@@ -718,12 +730,13 @@ fn refuse(ui: &TerminalApp, message: impl Into<String>) -> String {
 /// The same guard Notes and the Editor grew when their `for name in [...]` loops were taken out:
 /// a description that is only the action's name, or too short to say what it does and to which
 /// shell, stops the app before `serve()` and inside the tests.
-fn act(name: &'static str, sentence: &'static str) -> Action {
+fn act(name: &'static str, sentence: impl Into<String>) -> Action {
+    let sentence = sentence.into();
     assert!(
         sentence.len() >= 20 && !sentence.starts_with("Terminal:"),
         "terminal action `{name}` was given a placeholder description: {sentence:?}"
     );
-    Action::new(name, sentence)
+    Action::new(name, &sentence)
 }
 
 /// One argument, with the format it takes and what leaving it out means. Required by default.
@@ -930,7 +943,9 @@ fn surface(ui: &TerminalApp, state: &State) -> Vec<(Action, Handler)> {
         // `dangerous` grade would put it above the shipped `sensitive` ceiling and leave the app
         // publishing nothing a mind could use. What the command itself may destroy is the
         // machine's ceiling to decide — `tool_permission` in settings.yaml — not this app's, and
-        // the person can see and interrupt every line that arrives.
+        // the person can see and interrupt every line that arrives. Open-ended: the line is
+        // whatever it is given, so it asks once in ask, auto and bypass, and a session rule
+        // answers the rest (29 September 2026).
         act(
             "run",
             "Type a command line into the active shell and press Return. It does not wait for \
@@ -940,6 +955,7 @@ fn surface(ui: &TerminalApp, state: &State) -> Vec<(Action, Handler)> {
         )
         .risk("sensitive")
         .defers()
+        .open_ended()
         .arg(arg(
             "command",
             "One command line, exactly as it would be typed; a newline is added. It is \
@@ -985,7 +1001,9 @@ fn surface(ui: &TerminalApp, state: &State) -> Vec<(Action, Handler)> {
 
     add(
         // Sensitive for the same reason as `run`: whatever is waiting on the other end of the
-        // PTY reads these bytes, and a program at a prompt cannot tell them from typing.
+        // PTY reads these bytes, and a program at a prompt cannot tell them from typing — which
+        // makes it open-ended as `run` is: a line ending in \n at the shell's prompt is a command.
+        // `new_tab` and `open_directory` are not: they start a shell and run nothing they are given.
         act(
             "send_input",
             "Send raw bytes to the active shell without pressing Return — for answering a \
@@ -994,6 +1012,7 @@ fn surface(ui: &TerminalApp, state: &State) -> Vec<(Action, Handler)> {
         )
         .risk("sensitive")
         .defers()
+        .open_ended()
         .arg(arg(
             "text",
             "The exact characters to send, with no newline added: end it with \\n to submit a \
@@ -1032,8 +1051,10 @@ fn surface(ui: &TerminalApp, state: &State) -> Vec<(Action, Handler)> {
         // exist, and grading the door below the thing it opens would be the grade not meaning it.
         act(
             "new_tab",
-            "Start another interactive shell in a new tab, in the same directory as the tab \
-             that is active now, and make the new one active. Up to eight tabs.",
+            format!(
+                "Start another interactive shell in a new tab, in the same directory as the tab \
+                 that is active now, and make the new one active. Up to {MAX_TABS} tabs."
+            ),
         )
         .risk("sensitive"),
         |ui, state, _| {

@@ -1,6 +1,7 @@
 //! App registry — .desktop file scanner + built-in app definitions.
 //!
-//! Scans /usr/share/applications/ and ~/.local/share/applications/ for .desktop files.
+//! Scans /usr/share/applications/ and ~/.local/share/applications/ for .desktop files, and the
+//! directories Flatpak exports its apps' entries to, so an app installed from Flathub is listed.
 //! Parses Name, Exec, Icon, Categories, Comment, and visibility flags.
 //! Provides fuzzy search for Intent Lens integration.
 //!
@@ -318,6 +319,29 @@ fn match_score(entry: &DesktopEntry, query: &str, words: &[&str]) -> u32 {
 /// still wins.
 pub const YANTRIK_APPLICATIONS: &str = "/opt/yantrik/share/applications";
 
+/// Where Flatpak exports the entries of the apps it installs system-wide.
+pub const FLATPAK_SYSTEM_APPLICATIONS: &str = "/var/lib/flatpak/exports/share/applications";
+
+/// Where Flatpak exports the entries of the apps installed for this account, under `$HOME`.
+/// The Package Manager installs Flathub apps here (#399).
+pub const FLATPAK_USER_APPLICATIONS: &str = ".local/share/flatpak/exports/share/applications";
+
+/// The Flatpak export directories, the person's own first, as flatpak's own profile script
+/// orders them.
+///
+/// The session names both on `XDG_DATA_DIRS`, and that is how they are normally found. They are
+/// named here too for the same reason [`YANTRIK_APPLICATIONS`] is: a shell started without the
+/// session's environment would otherwise install an app from the Package Manager and never
+/// show it — the install succeeds, and the launcher, the Lens and `open_app` have no idea.
+pub fn flatpak_app_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(home) = std::env::var("HOME") {
+        dirs.push(PathBuf::from(home).join(FLATPAK_USER_APPLICATIONS));
+    }
+    dirs.push(PathBuf::from(FLATPAK_SYSTEM_APPLICATIONS));
+    dirs
+}
+
 /// The application directories, in the order freedesktop says to search them.
 pub fn app_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
@@ -337,6 +361,7 @@ pub fn app_dirs() -> Vec<PathBuf> {
         dirs.push(PathBuf::from("/usr/share/applications"));
         dirs.push(PathBuf::from("/usr/local/share/applications"));
     }
+    dirs.extend(flatpak_app_dirs());
     dirs.push(PathBuf::from(YANTRIK_APPLICATIONS));
 
     let mut seen = std::collections::HashSet::new();
@@ -924,6 +949,52 @@ X-Yantrik-Surface=not-this-one
         assert_eq!(dirs.last().map(PathBuf::as_path), Some(Path::new(YANTRIK_APPLICATIONS)));
         let unique: std::collections::HashSet<_> = dirs.iter().collect();
         assert_eq!(unique.len(), dirs.len(), "no directory is scanned twice");
+    }
+
+    /// A Flatpak installed from the Package Manager is in the launcher even when the shell was
+    /// started without the session's `XDG_DATA_DIRS`.
+    #[test]
+    fn flatpak_exports_are_always_searched() {
+        let dirs = app_dirs();
+        for dir in flatpak_app_dirs() {
+            assert!(dirs.contains(&dir), "{} is not scanned", dir.display());
+        }
+        assert!(dirs.contains(&PathBuf::from(FLATPAK_SYSTEM_APPLICATIONS)));
+    }
+
+    /// Flatpak's exported entry, as `flatpak install --user` writes it: the Exec line runs the
+    /// app through `flatpak run`, and TryExec is gone (flatpak removes it on export). It lists
+    /// under its app id, and launches through flatpak with the file markers left in place.
+    #[test]
+    fn a_flatpak_export_is_an_app_that_runs_through_flatpak() {
+        let text = "[Desktop Entry]
+                    Name=Visual Studio Code
+                    Comment=Code Editing. Redefined.
+                    Exec=/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=code --file-forwarding com.visualstudio.code @@ %F @@
+                    Icon=com.visualstudio.code
+                    Type=Application
+                    Categories=TextEditor;Development;IDE;
+                    X-Flatpak=com.visualstudio.code
+                    
+                    [Desktop Action new-empty-window]
+                    Name=New Empty Window
+                    Exec=/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=code com.visualstudio.code --new-window %F
+";
+        let entry = parse_desktop_text("com.visualstudio.code", text).expect("an app");
+        assert_eq!(entry.app_id, "com.visualstudio.code");
+        assert_eq!(entry.name, "Visual Studio Code");
+        assert_eq!(entry.icon, "com.visualstudio.code");
+        assert!(entry.try_exec.is_none());
+        let argv = exec_argv(&entry.exec, None);
+        assert_eq!(argv[0], "/usr/bin/flatpak");
+        assert_eq!(
+            argv[1..],
+            ["run", "--branch=stable", "--arch=x86_64", "--command=code", "--file-forwarding", "com.visualstudio.code", "@@", "@@"]
+        );
+        assert_eq!(
+            exec_argv(&entry.exec, Some("/home/p/notes.txt"))[6..],
+            ["com.visualstudio.code", "@@", "/home/p/notes.txt", "@@"]
+        );
     }
 }
 

@@ -6,6 +6,17 @@
 //!
 //! TTS priority: edge-tts (Microsoft neural voices) → espeak-ng (fallback).
 
+/// Remove whatever is at `path` (a link included — the link, not what it points at) before an
+/// external program is told to write there. We cannot give ffmpeg's or edge-tts's `open` an
+/// `O_NOFOLLOW`, so the name is cleared instead.
+fn clear(path: &str) -> Result<(), String> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("cannot clear {path}: {e}")),
+    }
+}
+
 /// Convert OGG/Opus file to 16 kHz mono f32 PCM samples (for Whisper STT).
 pub fn ogg_to_pcm_f32(ogg_path: &str) -> Result<Vec<f32>, String> {
     let output = std::process::Command::new("ffmpeg")
@@ -46,6 +57,10 @@ pub fn ogg_to_pcm_f32(ogg_path: &str) -> Result<Vec<f32>, String> {
 /// `voice` is the edge-tts voice name (e.g. "en-US-GuyNeural").
 /// `rate` and `pitch` are espeak-ng parameters (only used for fallback).
 pub fn text_to_ogg(text: &str, out_path: &str, rate: u32, pitch: u32) -> Result<(), String> {
+    // ffmpeg -y would overwrite whatever is at the name, following a link if that is what is
+    // there; clearing the name first means it always makes a fresh file of its own.
+    clear(out_path)?;
+
     // Try edge-tts first (high quality neural TTS)
     if has_edge_tts() {
         return text_to_ogg_edge(text, out_path);
@@ -59,9 +74,12 @@ pub fn text_to_ogg(text: &str, out_path: &str, rate: u32, pitch: u32) -> Result<
 fn text_to_ogg_edge(text: &str, out_path: &str) -> Result<(), String> {
     // edge-tts outputs MP3, we convert to OGG/Opus via ffmpeg
     let mp3_path = format!("{}.mp3", out_path);
+    clear(&mp3_path)?;
 
+    // `--text=…` in one argument: the text is the model's reply, and as a separate argument one
+    // that starts with `-` is read by argparse as another option rather than as the text.
     let edge_output = std::process::Command::new("edge-tts")
-        .arg("--text").arg(text)
+        .arg(format!("--text={text}"))
         .arg("--voice").arg("en-US-GuyNeural")
         .arg("--rate").arg("+10%")
         .arg("--write-media").arg(&mp3_path)
@@ -103,6 +121,10 @@ fn text_to_ogg_espeak(text: &str, out_path: &str, rate: u32, pitch: u32) -> Resu
         .arg("--stdout")
         .arg("-s").arg(rate.to_string())
         .arg("-p").arg(pitch.to_string())
+        // `--` first: the text is the model's reply, and without it a reply beginning with `-`
+        // is parsed as espeak-ng options (`-w <file>` writes wherever it names). espeak-ng takes
+        // its options through getopt_long, which stops at `--` and reads the rest as text.
+        .arg("--")
         .arg(text)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

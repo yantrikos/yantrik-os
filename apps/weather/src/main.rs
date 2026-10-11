@@ -188,6 +188,16 @@ struct WeatherData {
 /// is not news the next half-hourly refresh gets to throw away.
 const DEGRADED_NOTICE: &str = "Readings came straight from Open-Meteo";
 
+/// Who the forecast is from. Both paths end at Open-Meteo: weather-service asks
+/// api.open-meteo.com, and so does `fetch_weather_direct` when the service does not answer.
+const PROVIDER: &str = "Open-Meteo";
+
+/// The line under the hourly header: the provider, and the place it was asked about.
+fn hourly_source(location: &str) -> String {
+    let location = location.trim();
+    if location.is_empty() { PROVIDER.to_string() } else { format!("{PROVIDER} · {location}") }
+}
+
 /// The saved places, in the shape the panel draws them.
 fn to_slint_locations(state: &WeatherState) -> Vec<WeatherSavedLocation> {
     let active = state.active_index();
@@ -766,6 +776,7 @@ fn apply_weather_data(ui: &WeatherApp, data: WeatherData) {
         ui.set_hourly_tz_label(
             if location.is_empty() { SharedString::new() } else { format!("{location} time").into() },
         );
+        ui.set_hourly_source(hourly_source(location).into());
     }
     if let Some(current) = data.current { ui.set_current(current); }
     if let Some(hourly) = data.hourly { ui.set_hourly(ModelRc::new(VecModel::from(hourly))); }
@@ -1326,6 +1337,18 @@ fn day_of_week(date_str: &str) -> String {
     let h = ((h + 7) % 7) as usize;
     let names = ["Sat", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri"];
     names[h].to_string()
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::hourly_source;
+
+    /// The hourly strip names who measured it and where, and never an empty "· ".
+    #[test]
+    fn the_hourly_strip_names_its_provider_and_place() {
+        assert_eq!(hourly_source("Paris"), "Open-Meteo · Paris");
+        assert_eq!(hourly_source("  "), "Open-Meteo");
+    }
 }
 
 #[cfg(test)]

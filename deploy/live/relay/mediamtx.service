@@ -1,0 +1,47 @@
+# Yantrik Live relay: SRT in from the live instance, HLS out to nginx. Installed by setup-relay.sh.
+[Unit]
+Description=Yantrik Live relay (MediaMTX)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=mediamtx
+Group=mediamtx
+# Root-owned and 600: systemd reads it before dropping to mediamtx.
+EnvironmentFile=/etc/mediamtx/secrets.env
+# An empty publisher password would let anyone on the internet publish to the public page.
+# $$ reaches the shell as $, so the secrets never appear on a command line.
+ExecStartPre=/bin/sh -c 'test -n "$$MTX_AUTHINTERNALUSERS_0_PASS" && test "$${#MTX_PATHS_LIVE_SRTPUBLISHPASSPHRASE}" -ge 10 && test "$${#MTX_PATHS_LIVE_SRTPUBLISHPASSPHRASE}" -le 79 || { echo "secrets.env must set the publisher password and a 10-79 character SRT passphrase" >&2; exit 1; }'
+ExecStart=/opt/mediamtx/mediamtx /etc/mediamtx/mediamtx.yml
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+# A shared host: the relay may not take it over.
+MemoryMax=300M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

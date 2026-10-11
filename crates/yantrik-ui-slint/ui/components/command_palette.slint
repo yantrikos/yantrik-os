@@ -1,7 +1,8 @@
 // Command Palette — Ctrl+Shift+P overlay for quick command access.
-// Glassmorphic centered panel with fuzzy search, categorized results, keyboard navigation.
+// A solid centred panel with search, categorised results and keyboard navigation.
 
 import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
 
 export struct CommandItem {
     label: string,
@@ -40,66 +41,68 @@ export component CommandPalette inherits Rectangle {
         }
     }
 
-    // Panel — glassmorphic, centered with slide+fade entrance
+    // The panel is solid, like every panel the colour system draws: the old one was a translucent
+    // fill with a gradient rim and an accent glow, and under the software renderer the rim drew
+    // as a notch in the frame (a-command-palette.png).
     if root.is-open : Rectangle {
         x: (parent.width - 580px) / 2;
         y: 72px;
         width: 580px;
-        height: min(palette-layout.preferred-height + Theme.sp-4, parent.height - 160px);
+        height: min(palette-layout.preferred-height, parent.height - 160px);
         border-radius: Theme.r-xl;
         clip: true;
-
-        // Glass background. Slint's software renderer (GPU-less machines, VM 520) paints a gradient
-        // fill as a square inside the rounded border (#172), so a rounded panel's fill is solid.
-        background: Theme.bg-deep.transparentize(12%);
+        background: Theme.panel-solid;
         border-width: 1px;
-        border-color: Theme.hover-fill-strong;
+        border-color: Theme.border-card;
 
-        // Top glass rim
-        Rectangle {
-            x: Theme.sp-6; y: 0;
-            width: parent.width - Theme.sp-9;
-            height: 1px;
-            background: @linear-gradient(90deg, transparent 0%, Theme.border-strong 50%, transparent 100%);
+        // Blocks a click on the panel from reaching the backdrop and closing it.
+        TouchArea { width: 100%; height: 100%; }
+
+        // The palette never took the keyboard: nothing here was focused, so Escape, the arrows
+        // and Enter went to whatever was behind it. Typing stays in the field while the arrows
+        // move the selection.
+        FocusScope {
+            width: 100%; height: 100%;
+            capture-key-pressed(event) => {
+                if (event.text == Key.Escape) { root.is-open = false; root.close(); return accept; }
+                if (root.filtered-commands.length > 0) {
+                    if (event.text == Key.DownArrow) { root.selected-index = min(root.filtered-commands.length - 1, root.selected-index + 1); return accept; }
+                    if (event.text == Key.UpArrow) { root.selected-index = max(0, root.selected-index - 1); return accept; }
+                }
+                reject
+            }
         }
-
-        // Accent glow
-        drop-shadow-blur: 40px;
-        drop-shadow-color: Theme.accent-glow;
-        drop-shadow-offset-y: 8px;
 
         palette-layout := VerticalLayout {
             padding: 0px;
             spacing: 0px;
 
-            // Search input area
+            // Search input row. The field is stretched: inside a centred row it collapsed to
+            // nothing, which is why the old palette showed only a ">" and "Esc".
             Rectangle {
                 height: Theme.lens-input-height;
-                background: Theme.border-subtle;
-                clip: true;
 
                 HorizontalLayout {
                     padding-left: Theme.sp-4;
                     padding-right: Theme.sp-4;
-                    spacing: Theme.sp-2;
-                    alignment: center;
+                    spacing: Theme.sp-3;
 
-                    // Prompt icon
-                    Text {
-                        text: ">";
-                        color: Theme.accent;
-                        font-size: Theme.fs-headline;
-                        font-weight: 700;
-                        vertical-alignment: center;
-                        width: 18px;
+                    Icon {
+                        commands: Icons.search;
+                        size: 16px;
+                        thickness: 1.7px;
+                        tint: Theme.text-dim;
+                        y: (parent.height - self.height) / 2;
                     }
 
                     search-input := TextInput {
+                        init => { self.focus(); }
                         text: root.search-text;
-                        font-size: Theme.fs-headline;
+                        single-line: true;
+                        font-size: Theme.fs-body;
                         color: Theme.text-primary;
-                        horizontal-alignment: left;
                         vertical-alignment: center;
+                        horizontal-stretch: 1;
                         input-type: text;
                         edited => {
                             root.selected-index = 0;
@@ -120,9 +123,9 @@ export component CommandPalette inherits Rectangle {
                         height: 20px;
                         y: (parent.height - 20px) / 2;
                         border-radius: Theme.r-sm;
-                        background: Theme.bg-elevated;
+                        background: Theme.keycap-fill;
                         border-width: 1px;
-                        border-color: Theme.border-subtle;
+                        border-color: Theme.keycap-border;
 
                         Text {
                             text: "Esc";
@@ -132,6 +135,15 @@ export component CommandPalette inherits Rectangle {
                             vertical-alignment: center;
                         }
                     }
+                }
+
+                if search-input.text == "" : Text {
+                    x: Theme.sp-4 + 16px + Theme.sp-3;
+                    height: 100%;
+                    text: "Type a command";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-body;
+                    vertical-alignment: center;
                 }
 
                 // Bottom separator
@@ -220,9 +232,9 @@ export component CommandPalette inherits Rectangle {
                                     width: shortcut-text.preferred-width + Theme.sp-3;
                                     height: 20px;
                                     border-radius: Theme.r-sm;
-                                    background: Theme.bg-elevated;
+                                    background: Theme.keycap-fill;
                                     border-width: 1px;
-                                    border-color: Theme.border-subtle;
+                                    border-color: Theme.keycap-border;
 
                                     shortcut-text := Text {
                                         text: item.shortcut;
@@ -262,7 +274,7 @@ export component CommandPalette inherits Rectangle {
             // Footer hint
             Rectangle {
                 height: 32px;
-                background: Theme.border-subtle;
+                background: Theme.bg-surface;
 
                 // Top separator
                 Rectangle {

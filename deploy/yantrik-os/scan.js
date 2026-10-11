@@ -1,7 +1,8 @@
-// The page reader: every interactive element on the page, numbered, with the name a screen
-// reader would give it, leading with what is on screen. ONE copy, used by both ways into the
-// browser: `yos web` reads this file from beside itself, and the companion's browser tools
-// compile it in (crates/yantrik-companion-tools/src/browser.rs, `SCAN_ELEMENTS_JS`). It lived
+// The page reader of the companion's own browser tools, which compile it in
+// (crates/yantrik-companion-tools/src/browser.rs, `SCAN_ELEMENTS_JS`): every interactive element
+// on the page, numbered, with the name a screen reader would give it, leading with what is on
+// screen. `yos web` no longer uses it — it is a client of the browser's surface (apps/browser,
+// #477), whose reader is apps/browser/yantrik_browser/page.js. It lived
 // only inside that Rust file, `yos` looked for a scan.js that was never committed or shipped,
 // and so `yos web`, `web_read`, `web_find` and clicking by ref failed on every published build.
 //

@@ -1,0 +1,41 @@
+// App label probe: AppLabel straight on the lake wallpaper (white over its 1px shadow) across the
+// sky, the ridge and the reflection, beside the same names in the card ink with no shadow, and
+// on a glass card the way the desktop's workspace draws them. Rendered by `verify-labels`.
+import { Theme } from "theme.slint";
+import { AppLabel } from "app_label.slint";
+
+component Names inherits HorizontalLayout {
+    in property <bool> on-wallpaper;
+    spacing: 0px;
+    for name in ["Files", "Notes", "Terminal", "Calendar", "Music", "Settings", "System Monitor"] : AppLabel {
+        width: 104px;
+        text: name;
+        on-wallpaper: root.on-wallpaper;
+    }
+}
+
+export component LabelProbe inherits Window {
+    width: 1280px;
+    height: 800px;
+    default-font-family: Theme.font-ui;
+    background: Theme.bg-deep;
+    Image { width: 100%; height: 100%; source: @image-url("../../crates/yantrik-ui-slint/ui/wallpapers/lake.jpg"); image-fit: cover; }
+    // y is where each row's box starts; every one is a whole pixel, as AppLabel asks.
+    for row-y[i] in [120px, 360px, 430px, 560px, 700px] : Rectangle {
+        y: row-y;
+        height: 2 * Theme.lh-label + 8px;
+        Names { x: 40px; y: 0px; height: Theme.lh-label; on-wallpaper: true; }
+        Names { x: 40px; y: Theme.lh-label + 8px; height: Theme.lh-label; on-wallpaper: false; }
+    }
+    Rectangle {
+        x: 820px; y: 200px; width: 420px; height: 64px;
+        background: Theme.glass-panel;
+        border-radius: Theme.r-xl;
+        border-width: 1px;
+        border-color: Theme.glass-border;
+        HorizontalLayout {
+            padding: 24px;
+            for name in ["Files", "Notes", "Terminal", "Music"] : AppLabel { text: name; }
+        }
+    }
+}

@@ -250,7 +250,20 @@ fn drain(journal: Arc<Mutex<Journal>>, health: Arc<Mutex<Health>>, cursor_path: 
                 }
             }
 
-            for chunk in observations.chunks(BATCH) {
+            // Private mode: the person's activity is not recorded while it is on. The eye is still
+            // drained, so nothing piles up to be written later, and what passed is one hole in
+            // the journal that says why — never the observations themselves.
+            let private = yantrik_ipc_transport::privacy::is_private();
+            if private && next_seq > cursor.next_seq + missed {
+                let _ = j.append(&Record::Gap {
+                    from: cursor.next_seq + missed,
+                    to: next_seq,
+                    at: now(),
+                    cause: "private".into(),
+                });
+            }
+
+            for chunk in observations.chunks(BATCH).filter(|_| !private) {
                 for o in chunk {
                     let seq = o["seq"].as_u64().unwrap_or(0);
                     let at = o["at"].as_f64().unwrap_or_else(now);

@@ -13,6 +13,8 @@ name = "test-brain"
 path = "src/bin/test_brain.rs"
 
 [dependencies]
+# The lock screen's helpers shared with yantrik-lock (yantrik_ui_kit::lock_shared).
+yantrik-ui-kit = { workspace = true }
 yantrik-harness = { workspace = true }
 # Agents' commands, each in a PTY the shell owns (design/agents-workspace-2026-09-23.md, decision 3).
 yantrik-agent-terminal = { workspace = true }
@@ -30,7 +32,14 @@ yantrik-shell-core = { workspace = true }
 # What is running here, resolved in one place: About, the boot screen, Settings and the
 # /etc/os-release the installer writes all say the same string.
 yantrik-version = { workspace = true }
+# Installing into one partition beside macOS or Windows: what can be chosen, the plan, the
+# re-check before writing (wire/installer_partition.rs, wire/installer_boot.rs).
+yantrik-install-target = { workspace = true }
 slint = { workspace = true }
+# Which window had focus, as the compositor reports it (toplevel_watch.rs). Both are already in
+# the lockfile through winit; these name them for the one protocol the shell listens to itself.
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 crossbeam-channel = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -40,6 +49,8 @@ serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 # The agent catalog's roles are TOML files (src/agents/catalog.rs, config/agents/).
 toml = "0.8"
+# The lock screen's blurred wallpaper is written as a PNG (lock_wallpaper.rs).
+png = "0.18"
 # Notification timestamps arrive from the service as RFC 3339; the centre draws "4 minutes ago".
 chrono = { workspace = true }
 cpal = { workspace = true }

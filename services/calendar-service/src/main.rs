@@ -771,7 +771,7 @@ mod tests {
     /// A machine at `ceiling`, in `mode`, with no grant spent — the authority pinned per case
     /// rather than inherited from whatever files the machine running the tests has.
     fn at(ceiling: &str, mode: &str) -> Authority {
-        Authority { ceiling: ceiling.into(), mode: gate::Mode::named(mode), granted: false }
+        Authority { ceiling: ceiling.into(), mode: gate::Mode::named(mode), granted: false, asks_above: None }
     }
 
     /// `app.act` for `action` with `args`, and a grant id beside it when the test says one was
@@ -798,6 +798,11 @@ mod tests {
     fn spend_through_a_stand_in_shell() {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
+            // The stand-in shell answers what a token may reach, as the shell does (#189): the
+            // one reach reader this process has, which names the two agents the maker test
+            // uses and gives every other token no role. (One reader per process: a second
+            // one here would race it.)
+            stand_in_reach_file();
             gate::spend_grants_with(|id, _app, _action, args, _caller| {
                 if !id.starts_with("ok-") {
                     return Err(format!("no approval request `{id}`."));
@@ -1343,6 +1348,7 @@ mod tests {
                     name: "Coder".into(),
                     surfaces: vec!["calendar".into()],
                     ceiling: "sensitive".into(),
+                    asks_above: None,
                 }),
                 "tok-stranger" => Some(reach::Reach {
                     agent: "deepseek:c-stranger".into(),
@@ -1350,6 +1356,7 @@ mod tests {
                     name: "Reviewer".into(),
                     surfaces: vec!["calendar".into()],
                     ceiling: "sensitive".into(),
+                    asks_above: None,
                 }),
                 _ => None,
             });

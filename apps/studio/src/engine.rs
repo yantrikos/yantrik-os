@@ -255,7 +255,7 @@ impl Snapshot {
             return "no backend configured, so pictures are placeholders".to_string();
         }
         match self.facts.kind {
-            "fake" => "the fake backend, so pictures are placeholders".to_string(),
+            "fake" => "placeholder images, because no image model is configured".to_string(),
             "comfyui" if !self.facts.prompt_leaves => {
                 format!("ComfyUI at {}", self.config.backend.base_url)
             }
@@ -1560,7 +1560,8 @@ mod tests {
         let engine = engine_with(r#"{"backend":{"kind":"fake"}}"#, &found);
         let idle = engine.snapshot().summary();
         assert!(idle.starts_with("Studio — "), "{idle}");
-        assert!(idle.contains("fake backend"), "{idle}");
+        assert!(idle.contains("placeholder images"), "{idle}");
+        assert!(!idle.contains("fake"), "the summary is read by a person: {idle}");
         assert!(idle.contains("nothing in the gallery yet"), "{idle}");
         assert_eq!(idle.lines().count(), 1, "{idle}");
 

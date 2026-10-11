@@ -50,6 +50,15 @@ pub fn socket_dir() -> std::path::PathBuf {
         // and resolves it again gets a permission error on the directory it just made itself, and
         // falls through to candidates it can create even less. That is exactly how
         // perception-service died pointing at /tmp/yantrik-0.
+        // Ours, and not a link: a shared /tmp lets any account create /tmp/yantrik-<uid> first,
+        // and a directory someone else made is one they can empty or fill with their own sockets.
+        if let Ok(meta) = std::fs::symlink_metadata(dir) {
+            use std::os::unix::fs::MetadataExt;
+            if meta.file_type().is_symlink() || meta.uid() != uid {
+                tracing::warn!(dir = %dir.display(), "socket dir candidate is a link or someone else's; skipped");
+                continue;
+            }
+        }
         if !dir.is_dir() {
             if let Err(e) = std::fs::create_dir_all(dir) {
                 tracing::debug!(dir = %dir.display(), error = %e, "socket dir candidate: cannot create");
@@ -188,6 +197,9 @@ pub struct RpcServer {
     /// on a file nobody can find.
     #[cfg_attr(not(unix), allow(dead_code))]
     bound: bool,
+    /// The mind door socket this server bound (#411), removed on drop like the main one.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    door: Option<String>,
 }
 
 impl RpcServer {
@@ -197,6 +209,7 @@ impl RpcServer {
         Self {
             address: address.to_string(),
             bound: false,
+            door: None,
         }
     }
 
@@ -284,8 +297,31 @@ impl RpcServer {
         private_socket_file(path);
         tracing::info!(socket = %self.address, service = handler.service_id(), "RPC server listening (UDS)");
 
+        // And at the mind door (#411), when this machine has one: the same service, for callers
+        // the kernel says are the mind account and nobody else.
+        if let Some(door_path) = crate::mind_door::serving_dir()
+            .and_then(|door| crate::mind_door::door_for(path, &socket_dir(), &door))
+        {
+            match self.bind_door(&door_path) {
+                Ok(door_listener) => {
+                    let handler = handler.clone();
+                    tokio::spawn(serve_door(door_listener, handler));
+                }
+                Err(e) => tracing::warn!(door = %door_path.display(), error = %e, "the mind door could not be opened; minds cannot reach this service"),
+            }
+        }
+
         loop {
-            let (stream, _) = listener.accept().await?;
+            // A failed accept is waited out, not returned: out of descriptors (EMFILE) is a
+            // moment, and ending this loop would end the service for the person.
+            let stream = match listener.accept().await {
+                Ok((stream, _)) => stream,
+                Err(e) => {
+                    tracing::warn!(error = %e, service = handler.service_id(), "accept failed; retrying");
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    continue;
+                }
+            };
             // Read at accept, not when somebody asks. The peer of these sockets is routinely a
             // short-lived process — `yos` runs one JSON-RPC call and exits — so by the time a
             // handler wants to know who called, the pid may already be gone or, worse, reused.
@@ -300,6 +336,19 @@ impl RpcServer {
                 handle_connection(BufReader::new(reader), writer, &handler, peer).await;
             });
         }
+    }
+
+    #[cfg(unix)]
+    fn bind_door(&mut self, door_path: &std::path::Path) -> std::io::Result<tokio::net::UnixListener> {
+        use std::os::unix::fs::PermissionsExt;
+        crate::owner::claim(door_path)?;
+        let listener = tokio::net::UnixListener::bind(door_path)?;
+        self.door = Some(door_path.display().to_string());
+        // The minds' group writes it (the directory's setgid gave it the group); nobody else. Bound
+        // closed while the person is in Private mode; the shell opens it when they leave it.
+        std::fs::set_permissions(door_path, std::fs::Permissions::from_mode(crate::mind_door::socket_mode()))?;
+        tracing::info!(door = %door_path.display(), "RPC server listening at the mind door");
+        Ok(listener)
     }
 
     #[cfg(windows)]
@@ -408,6 +457,115 @@ impl Drop for RpcServer {
         if self.bound {
             let _ = std::fs::remove_file(&self.address);
         }
+        if let Some(door) = &self.door {
+            let _ = std::fs::remove_file(door);
+        }
+    }
+}
+
+/// A door handler that answers every request with the privacy refusal while the person is in
+/// Private mode, and passes it on otherwise.
+#[cfg(unix)]
+struct PrivateDoor {
+    inner: Arc<dyn ServiceHandler>,
+    /// Asked per request: `privacy::is_private`, or a stand-in in tests.
+    private: fn() -> bool,
+}
+
+#[cfg(unix)]
+impl ServiceHandler for PrivateDoor {
+    fn service_id(&self) -> &str {
+        self.inner.service_id()
+    }
+
+    fn handle(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, yantrik_ipc_contracts::email::ServiceError> {
+        self.handle_from(method, params, None)
+    }
+
+    fn handle_from(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        peer: Option<PeerCred>,
+    ) -> Result<serde_json::Value, yantrik_ipc_contracts::email::ServiceError> {
+        if (self.private)() {
+            // An application answer (-32602), not a transport failure: the mind is told why and
+            // draws no conclusion that the desktop is down.
+            return Err(yantrik_ipc_contracts::email::ServiceError { code: -32602, message: crate::privacy::REFUSAL.to_string() });
+        }
+        self.inner.handle_from(method, params, peer)
+    }
+}
+
+/// Mind connections one door serves at a time.
+#[cfg(unix)]
+const DOOR_CONNECTIONS: usize = 32;
+
+/// Serve the mind door: every connection whose peer the kernel does not say is the mind account
+/// is closed unread. The directory already keeps everyone else out; this is what makes the uid,
+/// not the path, the fact a handler is told.
+#[cfg(unix)]
+async fn serve_door(listener: tokio::net::UnixListener, handler: Arc<dyn ServiceHandler>) {
+    // Private mode is asked on every request, not once per connection: turning it on reaches a
+    // mind that is already connected (`crate::privacy`).
+    let handler: Arc<dyn ServiceHandler> = Arc::new(PrivateDoor { inner: handler, private: crate::privacy::is_private });
+    // A bounded number of mind connections at once: a mind that opens connections and holds them
+    // uses up its own share and nothing of the person's.
+    let slots = Arc::new(tokio::sync::Semaphore::new(DOOR_CONNECTIONS));
+    loop {
+        let Ok(slot) = slots.clone().acquire_owned().await else { return };
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => stream,
+            Err(e) => {
+                tracing::warn!(error = %e, service = handler.service_id(), "accept at the mind door failed; retrying");
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                continue;
+            }
+        };
+        let peer = stream
+            .peer_cred()
+            .ok()
+            .map(|c| PeerCred { pid: c.pid().unwrap_or(0), uid: c.uid(), gid: c.gid() });
+        match peer {
+            Some(p) if crate::mind_door::is_mind(p.uid) => {
+                let handler = handler.clone();
+                tokio::spawn(async move {
+                    let _slot = slot;
+                    let (reader, writer) = stream.into_split();
+                    handle_connection(BufReader::new(reader), writer, &handler, peer).await;
+                });
+            }
+            other => {
+                tracing::warn!(uid = other.map(|p| p.uid), service = handler.service_id(), "refused a caller at the mind door that is not the mind account");
+            }
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod private_door_tests {
+    use super::*;
+
+    struct Echo;
+
+    impl ServiceHandler for Echo {
+        fn service_id(&self) -> &str {
+            "echo"
+        }
+        fn handle(&self, method: &str, _: serde_json::Value) -> Result<serde_json::Value, yantrik_ipc_contracts::email::ServiceError> {
+            Ok(serde_json::json!(method))
+        }
+    }
+
+    #[test]
+    fn a_private_door_answers_every_method_with_the_refusal() {
+        let door = PrivateDoor { inner: Arc::new(Echo), private: || true };
+        for method in ["app.describe", "app.act", "memory_validate", "anything"] {
+            let err = door.handle_from(method, serde_json::json!({}), None).unwrap_err();
+            assert_eq!((err.code, err.message.as_str()), (-32602, crate::privacy::REFUSAL), "{method}");
+        }
+        let open = PrivateDoor { inner: Arc::new(Echo), private: || false };
+        assert_eq!(open.handle_from("app.describe", serde_json::json!({}), None).unwrap(), "app.describe");
     }
 }
 

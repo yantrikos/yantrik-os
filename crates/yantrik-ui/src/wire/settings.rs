@@ -6,21 +6,32 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::sync::{Arc, Mutex};
 
 use crate::app_context::AppContext;
+use crate::wire::provider_models::{list_models, ListedModel};
 use crate::{
     AIModelData, AIProviderData, AIStatusData, AccentPreset, App, SettingsCategoryItem, ThemeMode,
 };
 
-/// Accent color preset names in cycle order (matches AccentPreset.index).
-const ACCENT_PRESETS: &[&str] = &["cyan", "amber", "purple", "green", "pink"];
+// The accents Settings offers, and what a retired one falls back to, are one table shared with
+// every app (yantrik_app_runtime::theme::ACCENTS), so the shell and an app can never disagree
+// about which colour a saved name is.
+use yantrik_app_runtime::theme::{offered_accent, ACCENTS};
+pub use yantrik_app_runtime::theme::accent_name_to_index;
 
-/// Known wallpaper preset names.
-/// The wallpapers this OS ships, scenes first.
+/// The wallpapers this OS ships, the default first.
+///
+/// Lake leads: it is what a new install and a reset get, and the picker shows it first. The
+/// others stay selectable, and a person's saved choice is never replaced by the default — only a
+/// settings file with no wallpaper in it (a new install) gets Lake.
 ///
 /// The scenes are rendered by scripts/render-scene-wallpapers.py and the gradients by
 /// scripts/render-wallpapers.py; both write into crates/yantrik-ui-slint/ui/wallpapers and both
 /// are committed beside their output, so the desktop stays editable and reproducible rather
 /// than being four PNGs somebody exported once.
-const WALLPAPER_PRESETS: &[&str] = &[
+/// What a new install and a reset start on.
+pub const DEFAULT_WALLPAPER: &str = "lake";
+
+pub const WALLPAPER_PRESETS: &[&str] = &[
+    "lake",
     "serenity",
     "first-light",
     "nightfall",
@@ -40,6 +51,15 @@ pub struct UserSettings {
     pub auto_lock_secs: i32,
     pub dnd_mode: bool,
     pub wallpaper: String,
+    /// The theme (a place: palette, accent, wallpaper) last chosen, by id. A file written before
+    /// themes existed has none, and gets the default one.
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    /// Whether the person (or a mind they allowed) has chosen a theme. Until then the machine's
+    /// files are left as they are at start: an upgrade must not rewrite a terminal's colours the
+    /// person set themselves because a theme they never picked exists now.
+    #[serde(default)]
+    pub theme_chosen: bool,
     #[serde(default)]
     pub user_name: String,
     #[serde(default)]
@@ -68,7 +88,7 @@ pub struct UserSettings {
     pub preferred_mind: String,
     /// What a mind on the socket may do without being asked: `plan`, `ask` or `auto`.
     ///
-    /// Deliberately not `bypass`. Bypass is the fourth mode and it is never written here — a
+    /// Deliberately never a bypass. `bypass` and `bypass_all` are never written here — a
     /// machine that booted into "do not ask me about anything" would be in a mode nobody had
     /// chosen in that sitting, and the only thing that makes bypass acceptable is that somebody
     /// picked it, just now, off a confirmation that said what it meant. A bypass persists the
@@ -94,7 +114,9 @@ impl Default for UserSettings {
             dnd_mode: false,
             // Named rather than empty: an empty wallpaper draws the flat fallback gradient,
             // which is the one backdrop that makes the translucent surfaces above it pointless.
-            wallpaper: "serenity".to_string(),
+            wallpaper: DEFAULT_WALLPAPER.to_string(),
+            theme: crate::wire::theme::DEFAULT.to_string(),
+            theme_chosen: false,
             user_name: String::new(),
             companion_name: String::new(),
             agent_mode: false,
@@ -131,6 +153,10 @@ pub struct Place {
     pub source: String,
 }
 
+fn default_theme() -> String {
+    crate::wire::theme::DEFAULT.to_string()
+}
+
 /// The live settings, so other wiring can persist one preference without keeping a second copy
 /// of the file. Set by [`wire`]; everything below tolerates it being unset.
 static LIVE: std::sync::OnceLock<SharedSettings> = std::sync::OnceLock::new();
@@ -155,6 +181,43 @@ pub fn set_place(place: Place) {
     let mut settings = load();
     settings.place = place;
     save(&settings);
+}
+
+/// The id of the theme last chosen.
+pub fn theme_id() -> String {
+    match LIVE.get().and_then(|s| s.lock().ok()) {
+        Some(settings) => settings.theme.clone(),
+        None => load().theme,
+    }
+}
+
+/// Whether a theme has ever been chosen (see `UserSettings::theme_chosen`).
+pub fn theme_chosen() -> bool {
+    match LIVE.get().and_then(|s| s.lock().ok()) {
+        Some(settings) => settings.theme_chosen,
+        None => load().theme_chosen,
+    }
+}
+
+/// Record a chosen theme: its id, and the dark flag, accent and wallpaper it brings, which are
+/// the settings the rest of the shell reads. Saved at once, so the choice outlives a restart.
+pub fn record_theme(theme: &crate::wire::theme::Theme) -> Result<(), String> {
+    let apply = |settings: &mut UserSettings| {
+        settings.theme = theme.id.clone();
+        settings.theme_chosen = true;
+        settings.dark_mode = theme.dark;
+        settings.accent_color = theme.accent.clone();
+        settings.wallpaper = theme.wallpaper.clone();
+    };
+    if let Some(shared) = LIVE.get() {
+        if let Ok(mut settings) = shared.lock() {
+            apply(&mut settings);
+        }
+        return persist(shared);
+    }
+    let mut settings = load();
+    apply(&mut settings);
+    save(&settings)
 }
 
 /// The apps pinned to START, in order.
@@ -257,7 +320,7 @@ pub fn mind_mode() -> String {
     }
 }
 
-/// Record the mode. Never called with `bypass` — see the field's comment and `mind_mode::persist`.
+/// Record the mode. Never called with a bypass — see the field's comment and `mind_mode::persist`.
 pub fn set_mind_mode(mode: &str) {
     if let Some(shared) = LIVE.get() {
         if let Ok(mut settings) = shared.lock() {
@@ -306,8 +369,74 @@ fn settings_path() -> String {
     format!("{}/.config/yantrik/settings.yaml", home)
 }
 
+/// The auto-lock choices Settings cycles through, 0 meaning never. Each is a threshold the idle
+/// watch reports (`yantrik_os` idle, #412), so each locks on time.
+pub const AUTO_LOCK_CHOICES: &[i32] = &[30, 60, 120, 300, 600, 0];
+
+/// A persisted auto-lock value as one of the choices. The file is anybody's to edit: a negative
+/// value read as "never" while Settings said "30 seconds", and 7200 was shown but never reached.
+/// Anything not offered is the default, five minutes.
+pub fn auto_lock_choice(secs: i32) -> i32 {
+    if AUTO_LOCK_CHOICES.contains(&secs) {
+        secs
+    } else {
+        300
+    }
+}
+
+/// The choice after `current` in the Settings cycle, back to the first after "never".
+pub fn next_auto_lock(current: i32) -> i32 {
+    let at = AUTO_LOCK_CHOICES.iter().position(|&c| c == current);
+    at.map_or(AUTO_LOCK_CHOICES[0], |i| AUTO_LOCK_CHOICES[(i + 1) % AUTO_LOCK_CHOICES.len()])
+}
+
+/// Whether `secs` is one of the offered timeouts, refusing the rest by naming them.
+///
+/// Split out from `set_auto_lock_secs` so the refusal is testable without a settings file —
+/// the write path takes its path from `HOME`, which no test in here touches.
+fn check_auto_lock_choice(secs: i32) -> Result<(), String> {
+    if AUTO_LOCK_CHOICES.contains(&secs) {
+        Ok(())
+    } else {
+        let choices: Vec<String> = AUTO_LOCK_CHOICES.iter().map(|c| c.to_string()).collect();
+        Err(format!(
+            "{secs} is not an auto-lock timeout; the timeouts offered are {} (0 means never)",
+            choices.join(", ")
+        ))
+    }
+}
+
+/// Set the idle lock to one of the offered timeouts, the same contract as `set_dnd_mode`:
+/// `set_auto_lock` answers `settled`, so a failed write has to come back as an error rather
+/// than as a setting that quietly didn't change. Only an offered value is taken — the idle
+/// watcher trusts the number it is given, and the Settings row would have to show something
+/// for a timeout nobody offered (#527).
+pub fn set_auto_lock_secs(secs: i32) -> Result<(), String> {
+    check_auto_lock_choice(secs)?;
+    if let Some(shared) = LIVE.get() {
+        if let Ok(mut settings) = shared.lock() {
+            settings.auto_lock_secs = secs;
+        }
+        return persist(shared);
+    }
+    let mut settings = load();
+    settings.auto_lock_secs = secs;
+    save(&settings)
+}
+
 /// Load persisted settings (or defaults if missing/corrupt).
 pub fn load() -> UserSettings {
+    offered_choices(load_file())
+}
+
+/// A file from a build that offered amber or green opens on the soft blue, with the swatch that
+/// is lit, the accent drawn and the next save all saying so.
+fn offered_choices(mut settings: UserSettings) -> UserSettings {
+    settings.accent_color = offered_accent(&settings.accent_color).to_string();
+    settings
+}
+
+fn load_file() -> UserSettings {
     let path = settings_path();
     match crate::config_store::load(&path).and_then(|v| v.ok_or_else(|| "No settings file".into()))
     {
@@ -331,9 +460,7 @@ pub fn load() -> UserSettings {
                             .trim_start_matches("accent_color:")
                             .trim()
                             .trim_matches('"');
-                        if ACCENT_PRESETS.contains(&val) {
-                            settings.accent_color = val.to_string();
-                        }
+                        settings.accent_color = offered_accent(val).to_string();
                     }
                 }
                 if save(&settings).is_ok() {
@@ -426,18 +553,6 @@ fn unavailable_service(ui: &App, service: &str) {
     }
 }
 
-/// Convert accent color name to AccentPreset index.
-pub fn accent_name_to_index(name: &str) -> i32 {
-    match name {
-        "cyan" => 0,
-        "amber" => 1,
-        "purple" => 2,
-        "green" => 3,
-        "pink" => 4,
-        _ => 0,
-    }
-}
-
 /// Wire settings callbacks with persistence.
 pub fn wire(ui: &App, ctx: &AppContext) {
     STATUS_UI.with(|slot| *slot.borrow_mut() = Some(ui.as_weak()));
@@ -483,21 +598,21 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let new_val = !ui.get_settings_dark_mode();
         ui.set_settings_dark_mode(new_val);
         ui.global::<ThemeMode>().set_dark(new_val);
+        crate::wire::theme::dark_mode_changed(&ui);
         if let Ok(mut st) = s.lock() {
             st.dark_mode = new_val;
         }
         persist(&s);
     });
 
-    // Cycle accent color: cyan → amber → purple → green → pink → cyan
+    // Cycle accent color through the offered ones: soft blue → violet → pink → soft blue
     let ui_weak = ui.as_weak();
     let s = settings.clone();
     ui.on_cycle_accent_color(move || {
         let Some(ui) = ui_weak.upgrade() else { return };
         let current = ui.get_settings_accent_color().to_string();
-        let current_idx = accent_name_to_index(&current);
-        let next_idx = (current_idx + 1) % ACCENT_PRESETS.len() as i32;
-        let next_name = ACCENT_PRESETS[next_idx as usize];
+        let at = ACCENTS.iter().position(|(n, _)| *n == offered_accent(&current)).unwrap_or(0);
+        let (next_name, next_idx) = ACCENTS[(at + 1) % ACCENTS.len()];
         ui.set_settings_accent_color(next_name.into());
         ui.global::<AccentPreset>().set_index(next_idx);
         if let Ok(mut st) = s.lock() {
@@ -557,14 +672,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     ui.on_cycle_auto_lock(move || {
         let Some(ui) = ui_weak.upgrade() else { return };
         let current = ui.get_settings_auto_lock_secs();
-        let next = match current {
-            30 => 60,
-            60 => 120,
-            120 => 300,
-            300 => 600,
-            600 => 0,
-            _ => 30,
-        };
+        let next = next_auto_lock(current);
         ui.set_settings_auto_lock_secs(next);
         if let Ok(mut st) = s.lock() {
             st.auto_lock_secs = next;
@@ -610,6 +718,8 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 st.wallpaper = wp.clone();
             }
             persist(&s);
+            // The lock screen shows this wallpaper, blurred once now rather than live.
+            crate::lock_wallpaper::refresh(&wp);
             tracing::info!(wallpaper = %wp, "Wallpaper changed (preset)");
             return;
         }
@@ -625,6 +735,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                         st.wallpaper = wp.clone();
                     }
                     persist(&s);
+                    crate::lock_wallpaper::refresh(&wp);
                     tracing::info!(wallpaper = %wp, "Wallpaper changed (custom image)");
                 }
                 Err(e) => {
@@ -683,6 +794,12 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     // ── AI Provider Management ──
 
     let providers = Arc::new(Mutex::new(ProviderStore::load()));
+    // A provider chosen for the companion in Settings is the companion's from the start, every
+    // start: it lives in providers.yaml, not in config.yaml, which is never rewritten (#524).
+    if let Some(chosen) = providers.lock().ok().and_then(|s| s.primary().cloned()) {
+        tracing::info!(provider = %chosen.provider_type, "The companion starts on the provider chosen in Settings");
+        crate::wire::provider_panel::reload_primary(&ctx.bridge, &chosen);
+    }
     let s = settings.clone();
     ui.on_retry_settings_save(move || {
         let _ = persist(&s);
@@ -691,7 +808,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let accent_settings = settings.clone();
     ui.on_choose_accent(move |name| {
         let Some(ui) = weak.upgrade() else { return };
-        if !ACCENT_PRESETS.contains(&name.as_str()) {
+        if !ACCENTS.iter().any(|(n, _)| *n == name.as_str()) {
             return;
         }
         ui.set_settings_accent_color(name.clone());
@@ -703,11 +820,14 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let _ = persist(&accent_settings);
     });
 
+    // Theme cards and what choosing one does (wire/theme.rs).
+    crate::wire::theme::wire(ui);
+
     // Push initial AI status + providers to UI
     {
         let ps = providers.lock().unwrap();
         push_providers_to_ui(ui, &ps);
-        push_ai_status_to_ui(ui, &ps, ctx.bridge.is_online());
+        crate::wire::ai_status::refresh(ui, &ps);
     }
 
     // Settings search (sidebar category filtering)
@@ -777,139 +897,14 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         ui.set_settings_categories(ModelRc::new(VecModel::from(filtered)));
     });
 
-    // Add provider (opens panel — UI-side only, but we log it)
-    ui.on_add_provider(move || {
-        tracing::info!("Add provider panel opened");
-    });
-
-    // Provider preset selected — fill form fields with known defaults
-    let ui_weak = ui.as_weak();
-    ui.on_provider_preset_selected(move |preset| {
-        let Some(ui) = ui_weak.upgrade() else { return };
-        let preset_str = preset.to_string();
-        let (name, url) = provider_preset(&preset_str);
-        tracing::info!(preset = %preset_str, name, url, "Provider preset selected");
-        ui.set_settings_provider_form_name(name.into());
-        ui.set_settings_provider_form_url(url.into());
-        ui.set_settings_provider_test_result("".into());
-    });
-
     wire_rest(ui, ctx, providers);
 }
 
-/// Known provider presets: id -> (display name, OpenAI-compatible base URL).
-///
-/// Shared with onboarding so first boot and Settings cannot drift apart.
-pub(crate) fn provider_preset(id: &str) -> (&'static str, &'static str) {
-    match id {
-        "openai" => ("OpenAI", "https://api.openai.com/v1"),
-        "anthropic" => ("Anthropic", "https://api.anthropic.com/v1"),
-        "gemini" => (
-            "Google Gemini",
-            "https://generativelanguage.googleapis.com/v1beta/openai",
-        ),
-        "deepseek" => ("DeepSeek", "https://api.deepseek.com/v1"),
-        "groq" => ("Groq", "https://api.groq.com/openai/v1"),
-        "mistral" => ("Mistral", "https://api.mistral.ai/v1"),
-        "xai" => ("xAI Grok", "https://api.x.ai/v1"),
-        "perplexity" => ("Perplexity", "https://api.perplexity.ai"),
-        "cerebras" => ("Cerebras", "https://api.cerebras.ai/v1"),
-        "sambanova" => ("SambaNova", "https://api.sambanova.ai/v1"),
-        "qwen" => ("Qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-        "minimax" => ("MiniMax", "https://api.minimax.chat/v1"),
-        "kimi" => ("Kimi", "https://api.moonshot.cn/v1"),
-        "baidu" => ("Baidu", "https://qianfan.baidubce.com/v2"),
-        "zhipu" => ("Zhipu GLM", "https://open.bigmodel.cn/api/paas/v4"),
-        "openrouter" => ("OpenRouter", "https://openrouter.ai/api/v1"),
-        "together" => ("Together", "https://api.together.xyz/v1"),
-        "fireworks" => ("Fireworks", "https://api.fireworks.ai/inference/v1"),
-        "huggingface" => ("HuggingFace", "https://api-inference.huggingface.co/v1"),
-        "nanogpt" => ("NanoGPT", "https://api.nano-gpt.com/v1"),
-        "ollama" => ("Ollama", "http://localhost:11434/v1"),
-        "ollama-cloud" => ("Ollama Cloud", ""),
-        "llamacpp" => ("llama.cpp", "http://localhost:8080/v1"),
-        "lmstudio" => ("LM Studio", "http://localhost:1234/v1"),
-        "vllm" => ("vLLM", "http://localhost:8000/v1"),
-        _ => ("Custom", ""),
-    }
-}
-
 /// Remainder of the settings wiring, split out when `provider_preset` was
-/// lifted to a shared function.
+/// lifted to a shared function (now in `wire::provider_catalogue`).
 fn wire_rest(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStore>>) {
-    // Save provider
-    let ui_weak = ui.as_weak();
-    let ps = providers.clone();
-    let bridge = ctx.bridge.clone();
-    let bridge_for_save = ctx.bridge.clone();
-    ui.on_save_provider(move |name, ptype, url, key, auth| {
-        let entry = ProviderStoreEntry {
-            id: format!("{}-{}", ptype.to_string().to_lowercase(), uuid_short()),
-            name: name.to_string(),
-            provider_type: ptype.to_string(),
-            base_url: url.to_string(),
-            api_key: if key.is_empty() {
-                None
-            } else {
-                Some(key.to_string())
-            },
-            auth_type: auth.to_string(),
-            is_primary: false,
-            is_fallback: false,
-        };
-        tracing::info!(name = %entry.name, provider_type = %entry.provider_type, "Saving provider");
-        let made_primary = if let Ok(mut store) = ps.lock() {
-            let before = store.clone();
-            // If this is the first provider, make it primary
-            let make_primary = store.entries.is_empty();
-            store.entries.push(entry.clone());
-            if make_primary {
-                if let Some(e) = store.entries.last_mut() {
-                    e.is_primary = true;
-                }
-            }
-            if store.save().is_err() {
-                *store = before;
-                return;
-            }
-            if let Some(ui) = ui_weak.upgrade() {
-                push_providers_to_ui(&ui, &store);
-                push_ai_status_to_ui(&ui, &store, bridge.is_online());
-            }
-            make_primary
-        } else {
-            false
-        };
-
-        // Hot-reload the LLM backend if this is the primary provider
-        if made_primary {
-            // Default model per provider type
-            let default_model = match entry.provider_type.as_str() {
-                "ollama" => "llama3.2:latest",
-                "openai" => "gpt-4o-mini",
-                "anthropic" => "claude-3-5-sonnet-latest",
-                "google" => "gemini-2.0-flash",
-                "deepseek" => "deepseek-chat",
-                _ => "default",
-            };
-            // Build base URL with /v1 suffix for OpenAI-compatible APIs
-            let base_url = if entry.provider_type == "ollama" && !entry.base_url.contains("/v1") {
-                format!("{}/v1", entry.base_url.trim_end_matches('/'))
-            } else {
-                entry.base_url.clone()
-            };
-            tracing::info!(
-                model = default_model,
-                "Hot-reloading LLM with new primary provider"
-            );
-            bridge_for_save.reload_llm(
-                entry.provider_type.clone(),
-                base_url,
-                entry.api_key.clone(),
-                default_model.to_string(),
-            );
-        }
-    });
+    // Presets, Connect, the model picker and Save live in their own module.
+    crate::wire::provider_panel::wire(ui, ctx, providers.clone());
 
     // Delete provider
     let ui_weak = ui.as_weak();
@@ -927,7 +922,7 @@ fn wire_rest(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStore>>) {
             }
             if let Some(ui) = ui_weak.upgrade() {
                 push_providers_to_ui(&ui, &store);
-                push_ai_status_to_ui(&ui, &store, bridge.is_online());
+                crate::wire::ai_status::refresh(&ui, &store);
             }
         }
     });
@@ -965,7 +960,7 @@ fn wire_rest(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStore>>) {
                         ui.set_settings_provider_test_result(if result.success {
                             "success".into()
                         } else {
-                            format!("error: {}", result.message).into()
+                            result.message.clone().into()
                         });
                     }
                 });
@@ -973,61 +968,44 @@ fn wire_rest(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStore>>) {
         }
     });
 
-    // Test new provider (from add panel)
-    let ui_weak = ui.as_weak();
-    ui.on_test_new_provider(move |url, key, auth| {
-        let url_str = url.to_string();
-        let key_str = if key.is_empty() {
-            None
-        } else {
-            Some(key.to_string())
-        };
-        let auth_str = auth.to_string();
-
-        tracing::info!(url = %url_str, "Testing new provider connection");
-
-        let weak = ui_weak.clone();
-        // Set testing state
-        if let Some(ui) = weak.upgrade() {
-            ui.set_settings_provider_test_result("testing".into());
-        }
-
-        let weak2 = weak.clone();
-        std::thread::spawn(move || {
-            let result = test_provider_connection(&url_str, key_str.as_deref(), &auth_str);
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = weak2.upgrade() {
-                    ui.set_settings_provider_test_result(if result.success {
-                        "success".into()
-                    } else {
-                        format!("error: {}", result.message).into()
-                    });
-                }
-            });
-        });
-    });
-
     // Set primary provider
     let ui_weak = ui.as_weak();
     let ps = providers.clone();
     let bridge = ctx.bridge.clone();
+    // "Use for the companion": chosen in providers.yaml, and the companion switched to it now.
+    // Before this, the choice only changed the list and the card, and the companion went on
+    // answering from what it had: a card naming a provider nothing used. An empty id returns the
+    // companion to the machine's own address in config.yaml.
     ui.on_set_primary_provider(move |id| {
         let id = id.to_string();
-        tracing::info!(id = %id, "Setting primary provider");
-        if let Ok(mut store) = ps.lock() {
-            let before = store.clone();
-            for e in &mut store.entries {
-                e.is_primary = e.id == id;
+        tracing::info!(id = %id, "Choosing the companion's provider");
+        let Ok(mut store) = ps.lock() else { return };
+        let before = store.clone();
+        for e in &mut store.entries {
+            e.is_primary = !id.is_empty() && e.id == id;
+        }
+        if store.save().is_err() {
+            *store = before;
+            return;
+        }
+        let Some(ui) = ui_weak.upgrade() else { return };
+        match store.primary().cloned() {
+            Some(chosen) => {
+                if !chosen.model.is_empty() {
+                    ui.set_settings_llm_api_model(chosen.model.clone().into());
+                }
+                crate::wire::provider_panel::reload_primary(&bridge, &chosen);
             }
-            if store.save().is_err() {
-                *store = before;
-                return;
-            }
-            if let Some(ui) = ui_weak.upgrade() {
-                push_providers_to_ui(&ui, &store);
-                push_ai_status_to_ui(&ui, &store, bridge.is_online());
+            None => {
+                let url = ui.get_settings_llm_api_url().to_string();
+                let model = ui.get_settings_llm_api_model().to_string();
+                if !url.trim().is_empty() {
+                    bridge.reload_llm("api".into(), url, crate::wire::ai_status::config_key(), model);
+                }
             }
         }
+        push_providers_to_ui(&ui, &store);
+        crate::wire::ai_status::refresh(&ui, &store);
     });
 
     // Set fallback provider
@@ -1048,7 +1026,7 @@ fn wire_rest(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStore>>) {
             }
             if let Some(ui) = ui_weak.upgrade() {
                 push_providers_to_ui(&ui, &store);
-                push_ai_status_to_ui(&ui, &store, bridge.is_online());
+                crate::wire::ai_status::refresh(&ui, &store);
             }
         }
     });
@@ -1077,30 +1055,25 @@ fn wire_rest(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStore>>) {
             ui.set_settings_llm_api_model(id.clone().into());
         }
 
-        // Find the primary provider and hot-reload the LLM with the new model
-        let primary = if let Ok(store) = ps_sm.lock() {
-            store.entries.iter().find(|e| e.is_primary).cloned()
+        // Save the choice on the primary provider, then hot-reload onto it.
+        let primary = if let Ok(mut store) = ps_sm.lock() {
+            let before = store.clone();
+            if let Some(p) = store.entries.iter_mut().find(|e| e.is_primary) {
+                p.model = id.clone();
+            }
+            if store.save().is_err() {
+                *store = before;
+            }
+            store.primary().cloned()
         } else {
             None
         };
 
         if let Some(provider) = primary {
-            // Build base URL with /v1 suffix for OpenAI-compatible APIs
-            let base_url = if provider.provider_type == "ollama" && !provider.base_url.contains("/v1") {
-                format!("{}/v1", provider.base_url.trim_end_matches('/'))
-            } else {
-                provider.base_url.clone()
-            };
-            tracing::info!(model = %id, base_url = %base_url, "Hot-reloading LLM with selected model");
-            bridge_sm.reload_llm(
-                provider.provider_type.clone(),
-                base_url,
-                provider.api_key.clone(),
-                id,
-            );
+            crate::wire::provider_panel::reload_primary(&bridge_sm, &provider);
             // Push fresh AI status with new online state
             if let (Some(ui), Ok(store)) = (ui_weak_sm.upgrade(), ps_sm.lock()) {
-                push_ai_status_to_ui(&ui, &store, true);
+                crate::wire::ai_status::refresh(&ui, &store);
                 push_providers_to_ui(&ui, &store);
             }
         } else {
@@ -1125,7 +1098,7 @@ fn wire_rest(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStore>>) {
                     &provider.base_url,
                     provider.api_key.as_deref(),
                     &provider.auth_type,
-                    &provider.provider_type,
+                    &provider.model,
                 );
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = weak.upgrade() {
@@ -1188,6 +1161,11 @@ pub struct ProviderStoreEntry {
     pub is_primary: bool,
     #[serde(default)]
     pub is_fallback: bool,
+    /// The model this provider runs, as the person picked it from the
+    /// provider's own list. Empty (and absent from older files) until then;
+    /// the companion falls back to the catalogue's default.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
 }
 
 fn default_provider_type() -> String {
@@ -1238,7 +1216,7 @@ impl ProviderStore {
 }
 
 /// Generate a short unique ID.
-fn uuid_short() -> String {
+pub(crate) fn uuid_short() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1248,7 +1226,8 @@ fn uuid_short() -> String {
 }
 
 /// Push provider list to UI.
-fn push_providers_to_ui(ui: &App, store: &ProviderStore) {
+pub(crate) fn push_providers_to_ui(ui: &App, store: &ProviderStore) {
+    crate::wire::runs_on_card::set_saved(ui, store.entries.iter().map(|e| e.base_url.clone()).collect());
     let items: Vec<AIProviderData> = store
         .entries
         .iter()
@@ -1296,29 +1275,6 @@ fn push_providers_to_ui_with_test(ui: &App, store: &ProviderStore, result: &Test
 }
 
 /// Push AI status derived from provider store + bridge state.
-fn push_ai_status_to_ui(ui: &App, store: &ProviderStore, online: bool) {
-    let primary = store.primary();
-    let fallback = store.fallback();
-
-    let status = AIStatusData {
-        provider_name: primary.map_or(SharedString::default(), |p| p.name.clone().into()),
-        provider_type: primary.map_or(SharedString::default(), |p| p.provider_type.clone().into()),
-        model_name: ui.get_settings_llm_api_model(),
-        model_tier: SharedString::default(), // filled by capability profile later
-        status: if online {
-            "connected".into()
-        } else {
-            "disconnected".into()
-        },
-        latency_ms: -1,
-        tokens_per_sec: 0.0,
-        tokens_today: 0,
-        using_fallback: !online && fallback.is_some(),
-        fallback_provider: fallback.map_or(SharedString::default(), |f| f.name.clone().into()),
-        fallback_model: SharedString::default(),
-    };
-    ui.set_settings_ai_status(status);
-}
 
 // ──────────────────────────────────────────────────────────────
 // Provider testing + model fetching
@@ -1328,9 +1284,13 @@ pub(crate) struct TestResult {
     pub success: bool,
     pub message: String,
     pub latency_ms: i32,
+    /// What the provider listed, when it answered.
+    pub models: Vec<ListedModel>,
 }
 
-/// Test a provider connection by hitting its models endpoint.
+/// Test a provider connection: list its models (`provider_models`), which
+/// checks the key on the way. The message is a sentence for the person,
+/// never carrying the key.
 ///
 /// Shared with onboarding (`wire::ai_onboarding`) so first boot validates a
 /// provider the same way Settings does, instead of simulating a result.
@@ -1339,54 +1299,17 @@ pub(crate) fn test_provider_connection(
     api_key: Option<&str>,
     auth_type: &str,
 ) -> TestResult {
-    let url = if base_url.contains("/v1") {
-        format!("{}/models", base_url.trim_end_matches('/'))
-    } else {
-        // Ollama-style: /api/tags
-        format!("{}/api/tags", base_url.trim_end_matches('/'))
-    };
-
     let start = std::time::Instant::now();
-
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(10))
-        .build();
-
-    let mut request = agent.get(&url);
-    if let Some(key) = api_key {
-        match auth_type {
-            "x-api-key" => {
-                request = request.set("x-api-key", key);
-            }
-            "none" => {}
-            _ => {
-                request = request.set("Authorization", &format!("Bearer {}", key));
-            }
-        }
-    }
-
-    match request.call() {
-        Ok(response) => {
-            let latency = start.elapsed().as_millis() as i32;
-            TestResult {
-                success: true,
-                message: "OK".into(),
-                latency_ms: latency,
-            }
-        }
-        Err(ureq::Error::Status(code, _response)) => {
-            let latency = start.elapsed().as_millis() as i32;
-            TestResult {
-                success: false,
-                message: format!("HTTP {}", code),
-                latency_ms: latency,
-            }
-        }
-        Err(e) => TestResult {
-            success: false,
-            message: format!("{}", e),
-            latency_ms: -1,
+    let listed = list_models(base_url, api_key, auth_type);
+    let latency_ms = start.elapsed().as_millis() as i32;
+    match listed {
+        Ok(models) => TestResult {
+            success: true,
+            message: format!("{} models", models.len()),
+            latency_ms,
+            models,
         },
+        Err(e) => TestResult { success: false, message: e.to_string(), latency_ms: -1, models: Vec::new() },
     }
 }
 
@@ -1401,100 +1324,23 @@ struct FetchedModel {
     is_local: bool,
 }
 
-/// Fetch available models from a provider.
-fn fetch_models(
-    base_url: &str,
-    api_key: Option<&str>,
-    auth_type: &str,
-    provider_type: &str,
-) -> Vec<FetchedModel> {
-    let url =
-        if provider_type == "ollama" || (!base_url.contains("/v1") && !base_url.contains("api.")) {
-            format!("{}/api/tags", base_url.trim_end_matches('/'))
-        } else {
-            format!("{}/models", base_url.trim_end_matches('/'))
-        };
-
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(15))
-        .build();
-
-    let mut request = agent.get(&url);
-    if let Some(key) = api_key {
-        match auth_type {
-            "x-api-key" => {
-                request = request.set("x-api-key", key);
-            }
-            "none" => {}
-            _ => {
-                request = request.set("Authorization", &format!("Bearer {}", key));
-            }
-        }
-    }
-
-    let response = match request.call() {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to fetch models");
-            return vec![];
-        }
-    };
-
-    let body: String = match response.into_string() {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to read model response body");
-            return vec![];
-        }
-    };
-
-    // Parse JSON — handle both Ollama and OpenAI formats
-    let json: serde_json::Value = match serde_json::from_str(&body) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to parse model JSON");
-            return vec![];
-        }
-    };
-
-    let mut models = Vec::new();
-
-    // Ollama format: { "models": [ { "name": "...", "size": ... } ] }
-    if let Some(model_list) = json.get("models").and_then(|v| v.as_array()) {
-        for m in model_list {
-            let name = m.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
-            let size = m.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
-            let param_count = format_param_count(size);
-            let tier = detect_tier(name);
-            models.push(FetchedModel {
-                id: name.to_string(),
-                name: name.to_string(),
-                tier,
-                param_count,
-                context_length: String::new(),
-                is_active: false,
-                is_local: true,
-            });
-        }
-    }
-    // OpenAI format: { "data": [ { "id": "..." } ] }
-    else if let Some(data_list) = json.get("data").and_then(|v| v.as_array()) {
-        for m in data_list {
-            let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
-            let tier = detect_tier(id);
-            models.push(FetchedModel {
-                id: id.to_string(),
-                name: id.to_string(),
-                tier,
-                param_count: String::new(),
-                context_length: String::new(),
-                is_active: false,
-                is_local: false,
-            });
-        }
-    }
-
-    models
+/// The primary's models for the MODELS list, `active` marked. Empty when the
+/// provider cannot be listed; the reason is logged by `list_models`.
+fn fetch_models(base_url: &str, api_key: Option<&str>, auth_type: &str, active: &str) -> Vec<FetchedModel> {
+    let local = base_url.contains("localhost") || base_url.contains("127.0.0.1");
+    list_models(base_url, api_key, auth_type)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| FetchedModel {
+            tier: detect_tier(&m.id),
+            param_count: format_param_count(m.size_bytes),
+            context_length: String::new(),
+            is_active: m.id == active,
+            is_local: local || m.size_bytes > 0,
+            id: m.id,
+            name: m.name,
+        })
+        .collect()
 }
 
 /// Public wrapper for tier detection (used by system_monitor.rs).
@@ -1572,6 +1418,78 @@ fn format_param_count(size_bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_providers_file_from_before_models_still_loads() {
+        let old = "entries:\n- id: openai-1a2b\n  name: OpenAI\n  provider_type: openai\n  base_url: https://api.openai.com/v1\n  api_key: sk-1\n  auth_type: bearer\n  is_primary: true\n  is_fallback: false\n";
+        let store: ProviderStore = serde_yaml::from_str(old).expect("an old file loads");
+        let primary = store.primary().expect("primary");
+        assert_eq!(primary.model, "", "no model was ever chosen");
+        assert_eq!(primary.api_key.as_deref(), Some("sk-1"));
+    }
+
+    #[test]
+    fn a_chosen_model_survives_the_write_and_the_reload() {
+        let mut store: ProviderStore = serde_yaml::from_str(
+            "entries:\n- id: openrouter-1\n  name: OpenRouter\n  base_url: https://openrouter.ai/api/v1\n  is_primary: true\n",
+        )
+        .unwrap();
+        store.entries[0].model = "anthropic/claude-sonnet-5-5".into();
+        let yaml = serde_yaml::to_string(&store).unwrap();
+        let back: ProviderStore = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(back.entries[0].model, "anthropic/claude-sonnet-5-5");
+        // An entry with no model writes no model line, as older files had none.
+        store.entries[0].model.clear();
+        assert!(!serde_yaml::to_string(&store).unwrap().contains("model"));
+    }
+
+    #[test]
+    fn an_auto_lock_value_nobody_offered_is_the_default_and_every_offer_cycles() {
+        for offered in AUTO_LOCK_CHOICES {
+            assert_eq!(auto_lock_choice(*offered), *offered);
+        }
+        for edited in [-1, 1, 45, 7200, i32::MAX] {
+            assert_eq!(auto_lock_choice(edited), 300, "{edited} read from the file");
+        }
+        assert_eq!(
+            [30, 60, 120, 300, 600, 0].map(next_auto_lock),
+            [60, 120, 300, 600, 0, 30],
+            "30 s, 1, 2, 5, 10 min, never, and round"
+        );
+    }
+    /// A new install and a reset start on the lake; a saved choice is never replaced by it, and
+    /// the others stay in the picker, the lake first.
+    #[test]
+    fn the_lake_is_the_default_wallpaper_and_a_saved_choice_is_never_overwritten() {
+        assert_eq!(UserSettings::default().wallpaper, "lake", "a reset or a new install");
+        assert_eq!(WALLPAPER_PRESETS[0], "lake", "the picker shows it first");
+        for old in ["serenity", "first-light", "nightfall", "aurora", "sunset", "ocean", "nebula"] {
+            assert!(WALLPAPER_PRESETS.contains(&old), "{old} stays selectable");
+        }
+        // A settings file that has a wallpaper keeps it, whatever the default is now.
+        for chosen in ["serenity", "sunset", "", "/home/p/Pictures/mine.jpg"] {
+            let saved: UserSettings = serde_yaml::from_str(&format!("wallpaper: \"{chosen}\"\n")).expect("parses");
+            assert_eq!(saved.wallpaper, chosen, "a saved choice survives a load");
+        }
+        // One with no wallpaper in it (never chosen: a new install) gets the lake; no theme gets Lake.
+        let fresh: UserSettings = serde_yaml::from_str("dark_mode: true\n").expect("parses");
+        assert_eq!((fresh.wallpaper.as_str(), fresh.theme.as_str()), ("lake", "lake"));
+        assert!(!fresh.theme_chosen, "nothing was chosen, so the machine's files are left alone at start");
+    }
+
+    /// Choosing a theme brings its dark flag, accent and wallpaper and saves with them.
+    #[test]
+    fn a_chosen_theme_is_what_the_settings_file_says_after() {
+        let night = crate::wire::theme::find("nightfall").expect("ships");
+        let mut settings = UserSettings::default();
+        settings.theme = night.id.clone();
+        settings.dark_mode = night.dark;
+        settings.accent_color = night.accent.clone();
+        settings.wallpaper = night.wallpaper.clone();
+        let back: UserSettings = serde_yaml::from_str(&serde_yaml::to_string(&settings).unwrap()).unwrap();
+        assert_eq!((back.theme.as_str(), back.accent_color.as_str(), back.wallpaper.as_str()), ("nightfall", "purple", "nightfall"));
+    }
+
     use std::path::{Path, PathBuf};
 
     /// A settings file of our own, in a directory of its own, so the preference store's
@@ -1669,6 +1587,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
+    /// Amber and green were accents once; a file that still says either loads as the soft blue,
+    /// and the accents still offered load as themselves.
+    #[test]
+    fn a_retired_accent_loads_as_the_soft_blue() {
+        for (saved, loaded) in [("amber", "cyan"), ("green", "cyan"), ("purple", "purple"), ("pink", "pink"), ("cyan", "cyan")] {
+            let file: UserSettings = serde_yaml::from_str(&format!("accent_color: {saved}")).expect("parses");
+            assert_eq!(offered_choices(file).accent_color, loaded, "{saved}");
+        }
+    }
+
     /// A settings file written before the preference existed opens with notifications audible.
     #[test]
     fn a_settings_file_with_no_do_not_disturb_reads_as_released() {
@@ -1698,5 +1626,50 @@ mod tests {
              never read.",
             path.display()
         );
+    }
+
+    /// The idle lock is a security decision, so a caller gets only the timeouts Settings offers
+    /// and the rest are refused by naming them: 45 seconds was never measured against the idle
+    /// watch, and a timeout the Settings row cannot show is one the file should not hold (#527).
+    #[test]
+    fn the_idle_lock_takes_every_offered_timeout_and_refuses_the_rest() {
+        for &secs in AUTO_LOCK_CHOICES {
+            check_auto_lock_choice(secs)
+                .unwrap_or_else(|e| panic!("{secs} is offered and must be taken: {e}"));
+        }
+        for secs in [45, -1, 1, 7200, 30000] {
+            let err = check_auto_lock_choice(secs).expect_err("a timeout nobody offered must be refused");
+            assert!(err.contains("30, 60"), "the refusal must list the choices: {err}");
+            assert!(err.contains("never"), "the refusal must say what 0 means: {err}");
+        }
+    }
+
+    /// The refusal happens before the disk. `set_auto_lock` answers `settled` through this
+    /// function, so a refused value must not be written on the way to saying no.
+    #[test]
+    fn the_idle_lock_refuses_before_touching_the_settings_file() {
+        let err = set_auto_lock_secs(45).expect_err("45 is not an offered timeout");
+        assert_eq!(err, check_auto_lock_choice(45).unwrap_err());
+    }
+
+    /// `0` means never, and it is the value that matters most for "did the lock actually go
+    /// off" — it has to survive the file rather than read back as the five-minute default.
+    #[test]
+    fn the_never_timeout_survives_the_write_and_the_reload() {
+        let path = scratch("auto-lock-never");
+        let name = path.to_string_lossy().to_string();
+
+        let mut settings = UserSettings::default();
+        settings.auto_lock_secs = 0;
+        save_to(&name, &settings).expect("the settings file is written");
+
+        let raw = std::fs::read_to_string(&path).expect("the settings file is on the disk");
+        assert!(
+            raw.contains("auto_lock_secs: 0"),
+            "the durable copy says nothing about the idle lock:\n{raw}"
+        );
+        assert_eq!(reload(&path).auto_lock_secs, 0, "never did not survive the reload");
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

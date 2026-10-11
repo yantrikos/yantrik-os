@@ -1,4 +1,5 @@
 //! Files workbench. Workers perform I/O; the UI owns navigation and selection.
+use super::files_gone;
 use crate::app_context::AppContext;
 use crate::{
     filebrowser as fsview, fileops, App, BreadcrumbSegment, FileDetailData, FileEntry,
@@ -44,11 +45,14 @@ enum Job {
     Create(PathBuf, String, bool),
 }
 enum Event {
+    // Generation, the path listed, trash, record, a note to show once it is on screen (a
+    // folder that had gone, and where Files landed instead), and the listing.
     Listed(
         u64,
         String,
         bool,
         bool,
+        Option<String>,
         Result<(Vec<Item>, String, String), String>,
     ),
     Preview(u64, String, FileDetailData, String),
@@ -285,6 +289,8 @@ impl Browser {
         ui.set_file_browser_loading(true);
         let sink = self.sink.clone();
         std::thread::spawn(move || {
+            // Set when the folder asked for had gone and a parent was listed instead.
+            let mut landed: Option<String> = None;
             let result = (|| {
                 let root = fileops::trash_root();
                 let (items, space, badge) = if trash {
@@ -332,8 +338,23 @@ impl Browser {
                     (items, String::new(), String::new())
                 } else {
                     let expanded = fsview::expand_home(&path);
-                    let dir = std::fs::canonicalize(&expanded)
-                        .map_err(|e| format!("Could not open {}: {e}", expanded.display()))?;
+                    let dir = match std::fs::canonicalize(&expanded) {
+                        Ok(dir) => dir,
+                        // A folder Files was already showing (a reopen, a refresh, Back) that
+                        // has been deleted since: land on the nearest folder above it, quietly.
+                        // A folder the person just asked for is not second-guessed (`record`).
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !record => {
+                            let home = std::env::var_os("HOME").map(PathBuf::from);
+                            let near = files_gone::nearest_existing(&expanded, home.as_deref());
+                            let shown = fsview::collapse_home(&near);
+                            let dir = std::fs::canonicalize(&near)
+                                .map_err(|e| files_gone::open_failure(&shown, &e))?;
+                            landed = Some(shown);
+                            dir
+                        }
+                        Err(e) => return Err(files_gone::open_failure(&path, &e)),
+                    };
+                    let path = landed.as_deref().unwrap_or(&path);
                     if cancel.load(Ordering::Acquire) {
                         return Err("Canceled".into());
                     }
@@ -358,8 +379,15 @@ impl Browser {
                 };
                 Ok((items, space, badge))
             })();
+            let (path, note) = match landed {
+                Some(to) => {
+                    let note = files_gone::gone_note(&path, &to);
+                    (to, Some(note))
+                }
+                None => (path, None),
+            };
             if !cancel.load(Ordering::Acquire) {
-                sink.send(Event::Listed(generation, path, trash, record, result));
+                sink.send(Event::Listed(generation, path, trash, record, note, result));
             }
         });
     }
@@ -713,6 +741,26 @@ fn run_job(job: Job, cancel: Arc<AtomicBool>, sink: Sink) {
     sink.send(Event::Done(message, created, undo, moved, remaining));
 }
 
+thread_local! {
+    /// The browser `wire` made, for the control surface to read on the same (UI) thread.
+    static BROWSER: RefCell<std::rc::Weak<RefCell<Browser>>> = RefCell::new(std::rc::Weak::new());
+}
+
+/// What a paste would copy or move right now: the Files clipboard's paths, and whether they are
+/// cut. The person's clipboard, not the caller's: a mind pasting has to be checked against what
+/// the person put there, which may be anything they could select (#443). `Ok(None)` when
+/// nothing is on it; `Err` when it cannot be read - no browser, or one mid-callback - which a
+/// check must refuse on rather than read as "nothing to paste".
+pub fn clipboard_now() -> Result<Option<(Vec<PathBuf>, bool)>, String> {
+    let browser = BROWSER
+        .with(|b| b.borrow().upgrade())
+        .ok_or_else(|| "the Files clipboard cannot be read: Files is not running".to_string())?;
+    let browser = browser
+        .try_borrow()
+        .map_err(|_| "the Files clipboard cannot be read right now; try again".to_string())?;
+    Ok(browser.clipboard.as_ref().map(|c| (c.paths.clone(), c.cut)))
+}
+
 pub fn wire(ui: &App, ctx: &AppContext) {
     let (sender, receiver) = mpsc::channel();
     let sink = Sink {
@@ -747,11 +795,12 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         job_cancel: None,
         sink,
     }));
+    BROWSER.with(|b| *b.borrow_mut() = Rc::downgrade(&state));
     macro_rules! bind {($callback:ident, |$u:ident,$s:ident $(,$arg:ident)*| $body:block)=>{{let weak=ui.as_weak();let state=state.clone();ui.$callback(move|$($arg),*|{if let Some($u)=weak.upgrade(){let mut $s=state.borrow_mut();$body}});}};}
     bind!(on_file_worker_event, |u, s| {
         while let Ok(event) = receiver.try_recv() {
             match event {
-                Event::Listed(generation, path, trash, record, result) => {
+                Event::Listed(generation, path, trash, record, note, result) => {
                     if generation != s.generation {
                         continue;
                     }
@@ -798,6 +847,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                             s.all = items;
                             s.paint(&u);
                             s.tabs_ui(&u);
+                            if let Some(note) = note {
+                                set_notice(&u, &note, None);
+                            }
                         }
                         Err(e) => set_notice(&u, &e, None),
                     }

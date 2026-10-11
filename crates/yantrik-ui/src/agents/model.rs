@@ -103,10 +103,15 @@ pub enum Tab {
     NeedsYou,
     Complete,
     All,
+    /// Every request a person made, one row each, whichever conversation it was in (#234).
+    Tasks,
 }
 
 impl Tab {
+    /// The views over agents, which `Store::counts` counts.
     pub const EVERY: [Tab; 4] = [Tab::Active, Tab::NeedsYou, Tab::Complete, Tab::All];
+    /// Every tab the screen shows: the agent views, then Tasks.
+    pub const SHOWN: [Tab; 5] = [Tab::Active, Tab::NeedsYou, Tab::Complete, Tab::All, Tab::Tasks];
 
     pub fn key(self) -> &'static str {
         match self {
@@ -114,6 +119,7 @@ impl Tab {
             Tab::NeedsYou => "needs_you",
             Tab::Complete => "complete",
             Tab::All => "all",
+            Tab::Tasks => "tasks",
         }
     }
 
@@ -123,11 +129,12 @@ impl Tab {
             Tab::NeedsYou => "Needs you",
             Tab::Complete => "Complete",
             Tab::All => "All",
+            Tab::Tasks => "Tasks",
         }
     }
 
     pub fn from_key(key: &str) -> Tab {
-        Tab::EVERY.into_iter().find(|t| t.key() == key).unwrap_or(Tab::Active)
+        Tab::SHOWN.into_iter().find(|t| t.key() == key).unwrap_or(Tab::Active)
     }
 
     /// Whether an agent in this state is listed under this tab.
@@ -141,7 +148,7 @@ impl Tab {
             Tab::Active => state.live(),
             Tab::NeedsYou => state == State::WaitingForYou,
             Tab::Complete => !state.live(),
-            Tab::All => true,
+            Tab::All | Tab::Tasks => true,
         }
     }
 }
@@ -386,6 +393,11 @@ impl Capped {
     /// Everything ever pushed, in bytes, kept or not.
     pub fn total(&self) -> u64 {
         self.total
+    }
+
+    /// The bytes kept: the head and the tail.
+    pub fn kept(&self) -> usize {
+        self.head.len() + self.tail.len()
     }
 
     /// How much fell between the head and the tail.
@@ -789,9 +801,65 @@ pub struct Card {
     pub output: Output,
     pub started: u64,
     pub ended: Option<u64>,
+    /// How the call is shown once the person had words erased that it holds. The call itself is
+    /// the record of what happened and keeps them; every view draws [`Card::shown`] instead.
+    pub mask: Option<Box<CardMask>>,
+}
+
+/// What a card shows in place of its own fields after an erasure: the same fields with the marker
+/// where the words were. No words and no digest of them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CardMask {
+    /// The erasure that made it: the Keep/Erase question the person answered.
+    pub request: String,
+    pub target: String,
+    pub args: serde_json::Value,
+    pub preview: String,
+    pub summary: String,
+    /// The kept output, as the card's own buffer holds it (a terminal's escapes included).
+    pub output: String,
+}
+
+/// A card as a view draws it: itself, or, after an erasure, a copy with its masked fields.
+pub enum Shown<'a> {
+    Plain(&'a Card),
+    Masked(Box<Card>),
+}
+
+impl std::ops::Deref for Shown<'_> {
+    type Target = Card;
+
+    fn deref(&self) -> &Card {
+        match self {
+            Shown::Plain(card) => card,
+            Shown::Masked(card) => card,
+        }
+    }
 }
 
 impl Card {
+    /// The card every view draws: the card, or its mask when words it holds were erased.
+    pub fn shown(&self) -> Shown<'_> {
+        let Some(mask) = &self.mask else { return Shown::Plain(self) };
+        Shown::Masked(Box::new(Card {
+            call: self.call.clone(),
+            name: self.name.clone(),
+            target: mask.target.clone(),
+            args: mask.args.clone(),
+            preview: mask.preview.clone(),
+            repeats: self.repeats,
+            state: self.state,
+            summary: mask.summary.clone(),
+            exit_code: self.exit_code,
+            provenance: self.provenance,
+            mark: self.mark,
+            output: Output::restore(self.output.kind, &mask.output, self.output.bytes.total(), self.output.lines()),
+            started: self.started,
+            ended: self.ended,
+            mask: None,
+        }))
+    }
+
     pub fn new(call: &str, name: &str, target: &str, args: serde_json::Value, provenance: Provenance, at: u64) -> Card {
         Card {
             call: call.to_string(),
@@ -808,6 +876,7 @@ impl Card {
             output: Output::default(),
             started: at,
             ended: None,
+            mask: None,
         }
     }
 
@@ -824,6 +893,22 @@ impl Card {
 
     pub fn running(&self) -> bool {
         self.state == CallState::Running
+    }
+
+    /// More of the call's output. A masked card's mask takes it too, so what is drawn keeps up;
+    /// output that arrives after an erasure is shown as it comes.
+    pub fn push_output(&mut self, stream: Stream, delta: &[u8]) {
+        self.output.push(stream, delta);
+        if let Some(mask) = self.mask.as_mut() {
+            mask.output.push_str(&String::from_utf8_lossy(delta));
+            if mask.output.len() > CARD_CAP {
+                let mut from = mask.output.len() - CARD_CAP;
+                while !mask.output.is_char_boundary(from) {
+                    from += 1;
+                }
+                mask.output.drain(..from);
+            }
+        }
     }
 
     /// Whether this is a command — something with a process, a PTY and an exit code.
@@ -929,6 +1014,49 @@ pub struct Approval {
     pub settled: Option<u64>,
 }
 
+/// A question the agent asked the person (#25). Answered only through its card, once; the answer
+/// goes to the run that asked, through the host, which refuses a second one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Question {
+    /// The harness's own id for it, unique within its run.
+    pub request: String,
+    pub prompt: String,
+    /// The answers offered as buttons; empty for a free answer.
+    pub options: Vec<String>,
+    /// What the person answered; empty while it waits.
+    pub answer: String,
+    /// Why it can no longer be answered, when that happened; empty while it can.
+    pub closed: String,
+    pub asked: u64,
+}
+
+impl Question {
+    /// Why it closed when the agent stopped waiting on it: the turn that asked ended unanswered,
+    /// or the host refused the answer because the run no longer asks. The card reads "No longer
+    /// waiting: the agent stopped asking."
+    pub const STOPPED_ASKING: &'static str = "the agent stopped asking";
+    /// Why it closed when the desktop restarted: its run was orphaned with the shell.
+    pub const RESTARTED: &'static str = "the desktop restarted while it waited";
+
+    /// Still waiting for the person.
+    pub fn waiting(&self) -> bool {
+        self.answer.is_empty() && self.closed.is_empty()
+    }
+}
+
+/// Where a turn came from: the person's chat with a mind (the Lens), or agent work (an agent
+/// started as one, a recipe's step, a hand-off, a word in its pane). The Agents screen lists
+/// agent work and the chat's requests that did work; plain conversation stays with the chat.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnOrigin {
+    /// Saved before turns said where they came from.
+    #[default]
+    Unknown,
+    Chat,
+    Agent,
+}
+
 /// One thing in a turn, in the order it happened.
 #[derive(Debug)]
 pub enum Item {
@@ -940,6 +1068,8 @@ pub enum Item {
     Note(String),
     /// An approval the shell asked the person for, on this agent's behalf.
     Approval(Approval),
+    /// A question the agent itself asked the person.
+    Question(Question),
 }
 
 /// One prompt and everything that came of it.
@@ -951,6 +1081,11 @@ pub struct Turn {
     pub started: u64,
     pub ended: Option<u64>,
     pub ok: Option<bool>,
+    /// Ended by the desktop stopping, not by the mind (#234): its task is lost, which is not the
+    /// same as failed. A harness that comes back may pick the work up again as a new turn.
+    pub lost: bool,
+    /// Where it came from: the chat, or agent work.
+    pub origin: TurnOrigin,
     pub items: Vec<Item>,
     /// Whether any structured `harness.event` arrived in this turn. Once one has, trail lines in
     /// the text are the same calls told twice and are not made into cards.
@@ -960,6 +1095,11 @@ pub struct Turn {
 }
 
 impl Turn {
+    /// Whether it did work: a call, a question to the person, or an approval asked for.
+    pub fn did_work(&self) -> bool {
+        self.items.iter().any(|i| matches!(i, Item::Card(_) | Item::Question(_) | Item::Approval(_)))
+    }
+
     pub fn open(&self) -> bool {
         self.ended.is_none()
     }
@@ -1016,6 +1156,11 @@ pub struct Agent {
     /// While one does, the row stays `WaitingForYou` even when a settled card would
     /// otherwise send it back to work.
     pub job_waits: bool,
+    /// The refusal lines as shown, once an erasure masked any of them; the same length as
+    /// `refusals`, which keep their words.
+    pub refusals_shown: Option<Vec<String>>,
+    /// What was erased from this session at the person's request, oldest first: never the words.
+    pub erasures: Vec<Erasure>,
     /// Creation order, to break ties between agents started in the same second.
     pub seq: u64,
     /// Last time anything happened to it.
@@ -1023,7 +1168,28 @@ pub struct Agent {
     pub next_turn: u64,
 }
 
+/// One erasure at the person's request (a `redact`), as the session keeps it: the question they
+/// answered *Erase*, how many places it reached (the run store's and this session's), and when.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Erasure {
+    pub request: String,
+    pub places: usize,
+    pub at: u64,
+}
+
+impl Erasure {
+    /// How the pane and `describe` say it.
+    pub fn line(&self) -> String {
+        format!("Erased {} place{} at your request.", self.places, if self.places == 1 { "" } else { "s" })
+    }
+}
+
 impl Agent {
+    /// The refusal lines as a view shows them.
+    pub fn shown_refusals(&self) -> &[String] {
+        self.refusals_shown.as_deref().unwrap_or(&self.refusals)
+    }
+
     pub fn open_turn(&self) -> Option<&Turn> {
         self.turns.last().filter(|t| t.open())
     }
@@ -1032,7 +1198,32 @@ impl Agent {
         self.turns.iter().flat_map(|t| t.cards())
     }
 
+    /// The questions it asked the person that still wait for an answer (#25), oldest first.
+    pub fn waiting_questions(&self) -> impl Iterator<Item = &Question> {
+        self.turns.iter().flat_map(|t| t.items.iter()).filter_map(|i| match i {
+            Item::Question(q) if q.waiting() => Some(q),
+            _ => None,
+        })
+    }
+
     /// Whether anything of it is still running: its turn, or a command the shell owns.
+    /// A mind's main conversation with no role, recipe or parent: the person's chat with it (the
+    /// Lens). Its turns are listed as runs, not the conversation as one agent.
+    pub fn is_plain_main(&self) -> bool {
+        self.meta.id.conversation() == AgentId::MAIN && self.meta.role.is_none() && self.meta.recipe.is_none() && self.meta.parent.is_none()
+    }
+
+    /// Whether turn `t` of this agent is a run the Agents screen lists: agent work always; a chat
+    /// request only if it did work. A turn saved before turns said where they came from counts as
+    /// chat on a plain main conversation, and as agent work anywhere else.
+    pub fn is_run(&self, t: &Turn) -> bool {
+        match t.origin {
+            TurnOrigin::Agent => true,
+            TurnOrigin::Chat => t.did_work(),
+            TurnOrigin::Unknown => !self.is_plain_main() || t.did_work(),
+        }
+    }
+
     pub fn busy(&self) -> bool {
         self.state.working() || self.open_turn().is_some() || self.cards().any(|c| c.running())
     }

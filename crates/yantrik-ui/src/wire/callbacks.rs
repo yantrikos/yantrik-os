@@ -36,34 +36,31 @@ pub fn wire(ui: &App, ctx: &AppContext) {
 fn wire_lock(ui: &App, ctx: &AppContext) {
     let ui_weak = ui.as_weak();
     let bridge = ctx.bridge.clone();
-    ui.on_try_unlock(move |pin| {
-        let pin = pin.to_string();
-        if lock::check_pin(&pin) {
-            if let Some(ui) = ui_weak.upgrade() {
-                ui.set_current_screen(1);
-                ui.set_lock_error("".into());
-                tracing::info!("Screen unlocked");
-            }
-            // The screen is open; now see whether the same keystrokes also open the vault.
-            //
-            // Usually they will not: the screen PIN and the vault passphrase are different
-            // secrets, and on most machines the PIN is still the default. It is offered anyway
-            // because on a machine where the person has made them the same — which is the
-            // obvious thing to do once the desktop has asked for a vault passphrase — coming
-            // back to an unlocked screen with a still-locked vault is a second prompt for a
-            // secret they just typed. A wrong guess here costs one Argon2id derivation and is
-            // silent: the person was unlocking a screen, and telling them they failed at
-            // something they were not attempting is worse than telling them nothing.
-            offer_screen_secret_to_vault(&bridge, &pin);
-        } else {
-            if let Some(ui) = ui_weak.upgrade() {
-                ui.set_lock_error("Wrong PIN".into());
-            }
-            tracing::debug!("Unlock failed — wrong PIN");
-        }
+    let unlock_bridge = bridge.clone();
+    // The secret this lock asks for, decided when it locked (#414): the login password, or the
+    // PIN on an account without one. Both closures run on the UI thread.
+    let asking = std::rc::Rc::new(std::cell::Cell::new(lock::Secret::Password));
+    let asked = asking.clone();
+    ui.on_try_unlock(move |given| {
+        let given = given.to_string();
+        let secret = asked.get();
+        let (ui_weak, bridge) = (ui_weak.clone(), unlock_bridge.clone());
+        // Off the UI thread: the check runs `unix_chkpwd`.
+        std::thread::spawn(move || {
+            let verdict = lock::check_unlock(&given);
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(ui) = ui_weak.upgrade() else { return };
+                if let lock::Verdict::Open(checked) = verdict {
+                    unlocked(&ui, &bridge, &given, checked);
+                } else {
+                    ui.set_lock_error(verdict.message(secret).into());
+                }
+            });
+        });
     });
 
     let ui_weak_lock = ui.as_weak();
+    let lock_bridge = bridge.clone();
     ui.on_lock_screen(move || {
         // Before the screen goes dark, not after: the key is zeroed while this is still the
         // person's own action. A locked screen with the vault's key still in memory protects a
@@ -71,13 +68,134 @@ fn wire_lock(ui: &App, ctx: &AppContext) {
         // process for as long as the machine stayed on.
         crate::vault_unlock::on_screen_lock();
         if let Some(ui) = ui_weak_lock.upgrade() {
+            // What this lock covers, unless it covers a lock already (a second lock asked for
+            // while locked keeps the first one's answer).
+            let covering = ui.get_current_screen();
+            if !crate::control::locked_screen(covering) {
+                SCREEN_BEFORE_LOCK.store(covering, std::sync::atomic::Ordering::SeqCst);
+            }
             ui.set_current_screen(3);
             ui.set_lock_error("".into());
             ui.set_lock_date_text(app_context::current_date_text().into());
             ui.set_lock_greeting(ui.get_greeting_text());
-            tracing::info!("Screen locked — the vault's key was zeroed with it");
+            // Who is locked in, and what the screen says about the machine, read here on the UI
+            // thread from what the shell already holds: no process, no probe.
+            let name = lock_name(&ui);
+            ui.set_lock_initial(lock_initial(&name).into());
+            ui.set_lock_user_name(name.clone().into());
+            let wallpaper = crate::lock_wallpaper::ready();
+            // The shell's own screen loads the same small PNG the lock client does.
+            let image = wallpaper.as_deref().and_then(|p| slint::Image::load_from_path(p).ok());
+            ui.set_lock_has_wallpaper(image.is_some());
+            if let Some(image) = image {
+                ui.set_lock_wallpaper(image);
+            }
+            let no_restart = lock::start_open_marker_present();
+            ui.set_lock_can_restart(!no_restart);
+            let look = crate::session_lock::Look {
+                name,
+                // The kind of connection, never its name: a Wi-Fi name says where this machine is,
+                // to anyone standing at the lock screen (security review of #601).
+                network: network_kind(ui.get_network_online(), &ui.get_network_medium(), network_read(&ui)),
+                no_restart,
+                notifications: ui.get_notification_unread_count().max(0) as u32,
+                wallpaper,
+            };
+            let secret = lock::secret_for_this_account();
+            asking.set(secret);
+            ui.set_lock_prompt(secret.prompt().into());
+            tracing::info!(secret = secret.arg(), "Screen locked — the vault's key was zeroed with it");
+            // And at the compositor (#313): the shell's screen alone left every app window
+            // above it, visible and usable. The session lock shows only the lock.
+            let bridge = lock_bridge.clone();
+            crate::session_lock::engage(ui.as_weak(), ui.get_greeting_text().to_string(), look, secret, move |ui, given, kind| {
+                unlocked(ui, &bridge, given, kind)
+            });
         }
     });
+}
+
+/// The name under the avatar: what the person told the shell to call them, else their login.
+fn lock_name(ui: &App) -> String {
+    let said = ui.get_settings_user_name().trim().to_string();
+    if !said.is_empty() {
+        return said;
+    }
+    std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).unwrap_or_default()
+}
+
+/// What the lock screen's corner says about the network: its kind, or "Offline". Nothing at all
+/// before the shell has read the network once (`read` false): "Offline" there would be a guess.
+/// The Wi-Fi network's name is never in it (security review of #601).
+fn network_kind(online: bool, medium: &str, read: bool) -> String {
+    match (read, online, medium) {
+        (false, _, _) => String::new(),
+        (true, false, _) => "Offline".into(),
+        (true, true, "wifi") => "Wi-Fi".into(),
+        (true, true, "ethernet") => "Wired".into(),
+        (true, true, _) => "Online".into(),
+    }
+}
+
+/// The shell has a network reading: `network-detail` is empty until wire/network.rs publishes the
+/// first one, and never empty after ("Offline" when nothing is up).
+fn network_read(ui: &App) -> bool {
+    !ui.get_network_detail().is_empty()
+}
+
+/// The letter in the avatar disc: one rule, shared with the session-lock client.
+fn lock_initial(name: &str) -> String {
+    yantrik_ui_kit::lock_shared::initial_of(name)
+}
+
+/// The screen is open: back to the desktop, and the same secret offered to the vault. One path
+/// for the shell's own lock screen and the compositor's session lock (#313).
+/// The screen that was showing when the desktop locked, to come back to on unlock.
+///
+/// Unlocking always went to the desktop, so the first boot after an install, which starts locked
+/// (#415) in front of the optional setup (#400), unlocked straight past the setup; and a lock
+/// taken over Settings or Files came back to the desktop instead. 0 when nothing is remembered.
+static SCREEN_BEFORE_LOCK: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// Where an unlock goes: the screen the lock covered. A lock taken during boot (the desktop
+/// starts locked, #415) goes where boot would have: the optional setup when it is waiting (the
+/// first boot after an install), else the desktop. A locked screen is never returned to.
+fn screen_after_unlock(before: i32, setup_waiting: bool) -> i32 {
+    match before {
+        0 if setup_waiting => 2,
+        0 | 3 | 32 => 1,
+        screen => screen,
+    }
+}
+
+fn unlocked(
+    ui: &App,
+    bridge: &std::sync::Arc<crate::bridge::CompanionBridge>,
+    secret: &str,
+    kind: lock::Secret,
+) {
+    crate::session_lock::released();
+    let before = SCREEN_BEFORE_LOCK.swap(0, std::sync::atomic::Ordering::SeqCst);
+    ui.set_current_screen(screen_after_unlock(before, ui.get_onboarding_step() > 0));
+    ui.set_lock_error("".into());
+    tracing::info!("Screen unlocked");
+    // The screen is open; now see whether the same keystrokes also open the vault.
+    //
+    // They usually will: the screen unlocks with the login password (#414), and the login
+    // screen wraps the vault's key under that same password. Where they differ (the PIN on an
+    // account without a password, or a vault wrapped under an older password) a wrong guess costs
+    // one Argon2id derivation and is silent: the person was unlocking a screen, and telling them
+    // they failed at something they were not attempting is worse than telling them nothing.
+    if kind == lock::Secret::Password {
+        // A verified login password: what the login screen does with one, the vault protected
+        // under it the first time and opened every time after. Since the desktop starts locked at
+        // boot (#415), this is where that happens on a machine that logs in by itself.
+        crate::vault_unlock::note_session_password_seen();
+        let (bridge, password) = (bridge.clone(), secret.to_string());
+        std::thread::spawn(move || crate::wire::login::adopt_session_password(&bridge, &password));
+    } else {
+        offer_screen_secret_to_vault(bridge, secret);
+    }
 }
 
 /// Try the secret that just unlocked the screen on the vault, without making anybody wait.
@@ -100,7 +218,9 @@ fn offer_screen_secret_to_vault(bridge: &std::sync::Arc<crate::bridge::Companion
     let bridge = bridge.clone();
     let secret = secret.to_string();
     std::thread::spawn(move || {
-        match bridge.vault(Op::Adopt(secret), std::time::Duration::from_secs(20)) {
+        // Open, never Adopt: unlocking a screen must not wrap an unprotected vault under what was
+        // typed (on an account without a password, the PIN every mind can read).
+        match bridge.vault(Op::Open(secret), std::time::Duration::from_secs(20)) {
             Ok(reply) if matches!(reply.outcome, Some(Outcome::Unlocked)) => {
                 tracing::info!("The vault opened with the secret that unlocked the screen");
                 vault_unlock::dismiss();
@@ -278,53 +398,19 @@ fn wire_whisper_cards(ui: &App, ctx: &AppContext) {
 fn wire_quick_settings(ui: &App) {
     use super::dep_check::has_command;
 
-    // Toggle WiFi via nmcli
-    ui.on_toggle_wifi(move || {
-        if !has_command("nmcli") {
-            tracing::warn!("nmcli not installed — WiFi toggle unavailable (apk add networkmanager)");
-            return;
-        }
-        let output = std::process::Command::new("nmcli")
-            .args(["radio", "wifi"])
-            .output();
-        let currently_on = output
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "enabled")
-            .unwrap_or(false);
-        let new_state = if currently_on { "off" } else { "on" };
-        let _ = std::process::Command::new("nmcli")
-            .args(["radio", "wifi", new_state])
-            .spawn();
-        tracing::info!(new_state, "WiFi toggled");
-    });
+    // The Wi-Fi tile is the radio, and it is wired in `wire::network` (`NetworkState.set-radio`),
+    // the same act as the network popover's tile. It used to run `nmcli radio wifi off` here
+    // under the caption "Tap to disconnect".
 
-    // Brightness via brightnessctl
-    ui.on_brightness_changed(move |level| {
-        if !has_command("brightnessctl") {
-            tracing::debug!("brightnessctl not installed — brightness control unavailable");
-            return;
-        }
-        let pct = format!("{}%", level);
-        let _ = std::process::Command::new("brightnessctl")
-            .args(["s", &pct])
-            .spawn();
-        tracing::debug!(level, "Brightness changed");
-    });
-
-    // Volume via amixer
-    ui.on_volume_changed(move |level| {
-        if !has_command("amixer") {
-            tracing::debug!("amixer not installed — volume control unavailable");
-            return;
-        }
-        let pct = format!("{}%", level);
-        let _ = std::process::Command::new("amixer")
-            .args(["-M", "set", "Master", &pct])
-            .spawn();
-        tracing::debug!(level, "Volume changed");
-    });
+    // Brightness and volume are wired in wire/backlight.rs and wire/audio.rs, which read the
+    // machine's real levels as well as set them.
 }
 
 // ── Memory search ──
+
+/// How many of the newest memories the Memory screen shows before anything is searched: the
+/// same page size a search returns (bridge.rs, `recall_text(.., 20)`).
+const RECENT_MEMORIES: usize = 20;
 
 fn wire_memory_search(ui: &App, ctx: &AppContext) {
     let bridge = ctx.bridge.clone();
@@ -332,22 +418,46 @@ fn wire_memory_search(ui: &App, ctx: &AppContext) {
     let search_timer: Rc<RefCell<Option<Timer>>> = Rc::new(RefCell::new(None));
     let timer_inner = search_timer.clone();
 
+    // An empty query lists the newest memories instead of searching. The screen asks for that
+    // when it opens and when its search is cleared (wire/navigate.rs, memory_browser.slint):
+    // VM 520 sweep, 4 October, it was blank until something was typed, over about 1,036
+    // stored memories.
     ui.on_search_memories(move |query| {
-        let query = query.to_string();
-        if query.is_empty() {
-            return;
-        }
+        let query = query.trim().to_string();
+        let recent = query.is_empty();
 
         if let Some(ui) = ui_weak.upgrade() {
             ui.set_is_searching_memories(true);
+            ui.set_memory_busy(false);
+            ui.set_memory_showing_recent(recent);
         }
+        let started = std::time::Instant::now();
 
-        let reply_rx = bridge.recall_memories(query);
+        let reply_rx = if recent {
+            bridge.recent_memories(RECENT_MEMORIES)
+        } else {
+            bridge.recall_memories(query)
+        };
         let weak = ui_weak.clone();
         let handle = timer_inner.clone();
         let timer = Timer::default();
         timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
-            if let Ok(results) = reply_rx.try_recv() {
+            // An end to every wait (VM 520, 4 October): an answer, or after a few seconds the
+            // screen's "busy" state with Retry. It sat on "searching" over a blank page before.
+            let results = match super::memory_wait::poll(started, std::time::Instant::now(), reply_rx.try_recv().ok()) {
+                super::memory_wait::Wait::Pending => return,
+                super::memory_wait::Wait::Busy => {
+                    tracing::info!("memory screen: no answer in time, offering Retry");
+                    if let Some(ui) = weak.upgrade() {
+                        ui.set_is_searching_memories(false);
+                        ui.set_memory_busy(true);
+                    }
+                    *handle.borrow_mut() = None;
+                    return;
+                }
+                super::memory_wait::Wait::Answered(results) => results,
+            };
+            {
                 if let Some(ui) = weak.upgrade() {
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -423,4 +533,48 @@ fn wire_file_assistant(ui: &App, ctx: &AppContext) {
     let summarize = request.clone();
     ui.on_file_request_summarize(move || summarize(true));
     ui.on_file_request_ask_ai(move || request(false));
+}
+
+#[cfg(test)]
+mod unlock_screen_tests {
+    use super::screen_after_unlock;
+
+    #[test]
+    fn an_unlock_returns_to_what_the_lock_covered() {
+        assert_eq!(screen_after_unlock(0, true), 2, "locked at boot, with the first boot's setup waiting");
+        assert_eq!(screen_after_unlock(0, false), 1, "locked at boot, nothing waiting: the desktop");
+        assert_eq!(screen_after_unlock(2, false), 2, "locked over the setup itself");
+        assert_eq!(screen_after_unlock(7, false), 7, "Settings");
+        assert_eq!(screen_after_unlock(1, true), 1);
+        for nowhere in [3, 32] {
+            assert_eq!(screen_after_unlock(nowhere, true), 1, "screen {nowhere} is never returned to");
+        }
+    }
+}
+
+#[cfg(test)]
+mod lock_network_tests {
+    use super::network_kind;
+
+    /// The lock screen's corner names the kind of connection, says "Offline" when nothing is up,
+    /// and says nothing before the first reading. Never a Wi-Fi network's name (#601).
+    #[test]
+    fn the_lock_names_the_kind_of_connection_never_the_network() {
+        assert_eq!(network_kind(true, "ethernet", true), "Wired");
+        assert_eq!(network_kind(true, "wifi", true), "Wi-Fi");
+        assert_eq!(network_kind(true, "", true), "Online");
+        assert_eq!(network_kind(false, "", true), "Offline");
+        assert_eq!(network_kind(false, "", false), "", "no reading yet is not Offline");
+        // The shell's own lock screen (app.slint) says the same words from the same properties.
+        let app = include_str!("../../../yantrik-ui-slint/ui/app.slint");
+        let at = app.find("network-text: root.network-detail == \"\" ? \"\"").expect("the shell's lock screen reads the same state");
+        let words = &app[at..at + app[at..].find(';').unwrap()];
+        for w in ["\"Offline\"", "\"Wi-Fi\"", "\"Wired\"", "\"Online\""] {
+            assert!(words.contains(w), "{w} missing from: {words}");
+        }
+        assert!(!words.contains("ssid"), "the network's name stays off the lock screen: {words}");
+        let view = include_str!("../../../yantrik-ui-kit/slint/lock_view.slint");
+        let corner = &view[view.find("How the machine is connected").unwrap()..view.find("── Notifications").unwrap()];
+        assert!(!corner.contains("TouchArea") && !corner.contains("FocusScope"), "the corner takes no click and no key");
+    }
 }

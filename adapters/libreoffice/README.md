@@ -56,7 +56,7 @@ edits become the file, and the only step that destroys anything (the old content
 one step where the person is asked. In `auto` mode it runs unasked, which is what `auto` means.
 
 None of the descriptions says the action "cannot be undone", on purpose. Those words make the
-dispatch ask about an action in every mode but `bypass` (docs/surface-protocol.md §7), and a
+dispatch ask about an action in every mode but full bypass (`bypass_all`) (docs/surface-protocol.md §7), and a
 person who chose `auto` has said `sensitive` work may run unasked. The save description says
 exactly what happens — the old contents are replaced and LibreOffice keeps no copy — and the grade
 does the asking. `tests/test_surface.py` holds both decisions.

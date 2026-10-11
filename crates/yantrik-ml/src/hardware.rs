@@ -652,8 +652,8 @@ fn recommend_model(hw: &HardwareProfile, mode: SetupMode) -> Option<String> {
             }
         }
         SetupMode::Cloud => {
-            // Suggest a cloud model
-            Some("gpt-4o-mini".to_string())
+            // Suggest a cloud model: the catalogue's default for OpenAI.
+            crate::provider::ProviderDescriptor::by_id("openai").map(|p| p.default_model.to_string())
         }
         SetupMode::CPUFallback => {
             Some("qwen3.5:0.8b-nothink".to_string())

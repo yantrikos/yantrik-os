@@ -383,7 +383,7 @@ fn a_sentence_becomes_a_file_a_record_and_an_answer_a_mind_can_read_back() {
     let summary = rendered["summary"].as_str().unwrap();
     assert!(summary.starts_with("Studio — "), "{summary}");
     assert!(summary.contains("2 pictures in"), "{summary}");
-    assert!(summary.contains("the fake backend"), "{summary}");
+    assert!(summary.contains("placeholder images"), "{summary}");
 
     let state = &rendered["state"];
     assert_eq!(state["backend"]["kind"], json!("fake"));
@@ -1663,7 +1663,9 @@ fn the_window_shows_the_queue_the_gallery_and_the_record_of_the_chosen_picture()
     tick(&queue, &window);
 
     // ── empty ──
-    assert_eq!(ui.get_backend_line(), "No backend configured — drawing placeholders from your prompt's hash");
+    assert_eq!(ui.get_backend_line(), "Placeholder images · no image model configured");
+    // The primary button says what it will make; `fake` is the config's word, not the person's.
+    assert_eq!(ui.get_generate_label(), "Make placeholder");
     assert!(ui.get_facts().contains("No backend is configured"), "{}", ui.get_facts());
     assert!(ui.get_facts().contains("graded `standard`"), "{}", ui.get_facts());
     assert_eq!(ui.get_output_folder(), engine::display(&found.gallery));
@@ -1719,7 +1721,8 @@ fn the_window_shows_the_queue_the_gallery_and_the_record_of_the_chosen_picture()
 
     let top = ui.get_shots().row_data(0).unwrap();
     assert_eq!(top.prompt, "a lighthouse in fog");
-    assert!(top.meta.contains("fake"), "{}", top.meta);
+    assert!(top.meta.starts_with("placeholder · seed "), "{}", top.meta);
+    assert!(!top.meta.contains("fake"), "{}", top.meta);
     assert!(top.meta.contains("seed "), "{}", top.meta);
     assert!(top.meta.contains("256×192"), "{}", top.meta);
     assert!(top.meta.contains(" s"), "{}", top.meta);
@@ -1742,7 +1745,8 @@ fn the_window_shows_the_queue_the_gallery_and_the_record_of_the_chosen_picture()
     assert!(detail.contains("Seed: "), "{detail}");
     assert!(detail.contains("Size: 256×192"), "{detail}");
     assert!(detail.contains("Steps: 4"), "{detail}");
-    assert!(detail.contains("Made by: fake"), "{detail}");
+    assert!(detail.contains("Made by: placeholder"), "{detail}");
+    assert!(!detail.contains("fake"), "{detail}");
     assert!(detail.contains("Took: "), "{detail}");
     assert!(detail.contains("When: "), "{detail}");
     assert!(ui.get_shots().row_data(0).unwrap().selected, "the chosen row does not show as chosen");
@@ -1905,7 +1909,7 @@ fn the_gallery_the_window_and_the_files_agree() {
     let shown = row(&engine.snapshot().gallery[0], "");
     assert_eq!(shown.prompt, from_the_disk.prompt);
     assert!(shown.meta.contains(&format!("seed {}", from_the_disk.seed)), "{}", shown.meta);
-    assert!(shown.meta.contains("fake"), "{}", shown.meta);
+    assert!(shown.meta.starts_with("placeholder · "), "{}", shown.meta);
     assert!(shown.meta.contains("256×256"), "{}", shown.meta);
     assert_eq!(shown.name, name);
     assert!(!shown.selected);

@@ -125,7 +125,11 @@ impl Tool for SendNotificationTool {
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
         let title = args.get("title").and_then(|v| v.as_str()).unwrap_or_default();
         let body = args.get("body").and_then(|v| v.as_str()).unwrap_or_default();
-        let urgency = args.get("urgency").and_then(|v| v.as_str()).unwrap_or("normal");
+        // The schema's enum is a request to the model, not a check: hold it to the three levels.
+        let urgency = match args.get("urgency").and_then(|v| v.as_str()) {
+            Some(level @ ("low" | "normal" | "critical")) => level,
+            _ => "normal",
+        };
 
         if title.is_empty() || body.is_empty() {
             return "Error: title and body are required".to_string();
@@ -137,6 +141,9 @@ impl Tool for SendNotificationTool {
 
         let mut cmd = std::process::Command::new("notify-send");
         cmd.arg("-u").arg(urgency);
+        // `--` before the model's text, so a title or body beginning with `-` is shown rather than
+        // parsed as a notify-send option.
+        cmd.arg("--");
         cmd.arg(title);
         cmd.arg(body);
 

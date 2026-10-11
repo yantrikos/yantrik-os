@@ -209,6 +209,16 @@ pub fn main_agent(harness: &str) -> AgentId {
     AgentId::new(harness, AgentId::MAIN)
 }
 
+/// The run the chat's latest turn with `agent` was, as a row id (`mind:main#n`), when that turn
+/// did work; None for talk. What the chat's reply links to.
+pub fn chat_run(agent: &AgentId) -> Option<String> {
+    super::store().read(|s| {
+        let a = s.agent(agent)?;
+        let t = a.turns.last().filter(|t| t.did_work())?;
+        Some(super::RowKey::run(agent, t.n).id())
+    })
+}
+
 /// Who an agent is, from what the harness host knows of it: its mind's name, and whether that
 /// mind holds more than one conversation.
 pub fn meta_for(agent: &AgentId) -> AgentMeta {
@@ -243,7 +253,7 @@ pub fn lens_turn(harness: &str, prompt: &str, answer: Answer) -> Answer {
     super::store().upsert_agent(meta_for(&agent));
     let working = working(&agent);
     if !working {
-        super::store().open_turn(&agent, prompt);
+        super::store().open_chat_turn(&agent, prompt);
     }
     let prompt = prompt.to_string();
     let (tx, rx) = mpsc::channel();
@@ -258,7 +268,7 @@ pub fn lens_turn(harness: &str, prompt: &str, answer: Answer) -> Answer {
                     super::store().note(&agent, &format!("While it worked, you asked: “{}”", brief(&prompt)));
                     *aside = Some(String::new());
                 } else {
-                    super::store().open_turn(&agent, &prompt);
+                    super::store().open_chat_turn(&agent, &prompt);
                 }
             }
         };

@@ -1,0 +1,187 @@
+// YIndicator — one status glyph on the bar: volume, network, battery, Bluetooth, brightness.
+//
+// Usage
+//   YIndicator {
+//       icon: Audio.muted ? Icons.volume-off : Icons.volume;   // an Icons path (20x20 grid)
+//       label: "";                      // optional text beside the glyph, e.g. "45%"
+//       tooltip: "Volume 62%";          // what it says on hover, and what assistive tech reads
+//       active: Shell.sound-open;       // its popover is open: the highlight stays on
+//       attention: Network.captive;     // an amber dot: something here needs a look
+//       clicked => { Shell.sound-open = !Shell.sound-open; }
+//       middle-clicked => { Audio.toggle-mute(); }
+//       scrolled(steps) => { Audio.nudge(steps); }       // +1 per wheel click up
+//   }
+//
+// An indicator is only drawn for hardware that exists: the owner wraps it in `if`, it is never
+// shown greyed with a made-up value. It is a glyph, a hover wash and a click, nothing more;
+// what opens from it is a YPopover the owner places under it.
+//
+// Size: `Theme.h-regular` tall, `Theme.bar-icon-size` (18px) glyph, as wide as its content and
+// never narrower than it is tall, so a row of icon-only indicators is a row of squares.
+//
+// Input
+//   pointer   left click -> `clicked`; middle click -> `middle-clicked` (and not `clicked`);
+//             wheel -> `scrolled(steps)`, accumulated like YSlider's (see YWheelArea).
+//   keyboard  Tab reaches it; Space/Enter -> `clicked`. The ring shows for keyboard focus only.
+//   hover     the wash, and after `Theme.dur-tooltip` a one-line tooltip, above by default
+//             (`tooltip-above: false` for a bar along the top). It is drawn where it is; a
+//             tooltip that would cross the screen edge is the owner's to avoid.
+//
+// A glyph that is more than a path (the battery's fill follows the level) puts its extra
+// shapes inside the indicator as children; they are drawn in the glyph's own box.
+//
+// States: rest, hover, pressed, active (popover open), keyboard focus, attention dot, disabled
+// (dimmed, inert). Accessible role button; `active` is reported as expanded.
+import { Theme } from "theme.slint";
+import { Icon } from "icon.slint";
+import { YWheelArea } from "y_wheel.slint";
+import { YTooltip } from "y_tooltip.slint";
+
+export component YIndicator inherits Rectangle {
+    in property <string> icon: "";
+    // A fainter glyph drawn beneath `icon` in the same box: the unlit bars of a signal mark, so
+    // 2 of 4 reads as two lit and two dim. Empty draws nothing.
+    in property <string> icon-under: "";
+    in property <string> label: "";
+    in property <string> tooltip: "";
+    in property <bool> active: false;
+    in property <bool> attention: false;
+    in property <bool> enabled: true;
+    in property <bool> tooltip-above: true;
+    // Hang the tooltip from the indicator's right edge instead of centring it, for the one at the
+    // far right of a bar, whose centred tooltip would run off the screen.
+    in property <bool> tooltip-end: false;
+    callback clicked();
+    callback middle-clicked();
+    callback scrolled(int);
+    // Where this indicator is, in window coordinates, for placing its popover:
+    // `YPopover { anchor-x: ind.anchor-x; anchor-y: ind.anchor-bottom; }`.
+    // Read these, not `ind.absolute-position`: Slint 1.17 adds a layout child's own offset twice
+    // when you ask a component instance for its absolute position (a bar's right-aligned row put
+    // the indicator 343px off, a plain Rectangle beside it was right). The area inside is exact.
+    out property <length> anchor-x: area.absolute-position.x + root.width / 2;
+    out property <length> anchor-top: area.absolute-position.y;
+    out property <length> anchor-bottom: area.absolute-position.y + root.height;
+    // Keyboard focus is on it: for an owner that tracks where focus is.
+    out property <bool> focused: keys.has-focus;
+    // Put keyboard focus on the indicator, for an owner that moves focus itself.
+    public function focus-indicator() { keys.focus(); }
+
+    forward-focus: keys;
+    accessible-role: button;
+    accessible-label: root.tooltip != "" ? root.tooltip : root.label;
+    accessible-expanded: root.active;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { root.activate(); }
+
+    property <bool> pointer-focus: false;
+    property <bool> ring: keys.has-focus && !root.pointer-focus && root.enabled;
+    property <bool> hovered: root.enabled && area.has-hover;
+    property <bool> pressed: root.enabled && area.pressed;
+    property <color> fg: (root.hovered || root.active) ? Theme.text-primary : Theme.text-secondary;
+
+    height: Theme.h-regular;
+    min-width: self.height;
+    preferred-width: row.preferred-width;
+    horizontal-stretch: 0;
+    border-radius: Theme.r-md;
+    opacity: root.enabled ? 1.0 : 0.4;
+    animate opacity { duration: Theme.dur-fast; }
+    background: root.pressed ? Theme.hover-fill-strong
+              : root.active ? Theme.hover-fill-strong
+              : root.hovered ? Theme.hover-fill
+              : transparent;
+    animate background { duration: Theme.dur-fast; }
+    border-width: root.ring ? Theme.focus-ring-width : 0px;
+    border-color: Theme.focus-ring;
+
+    function activate() { if (root.enabled) { root.clicked(); } }
+
+    keys := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            root.pointer-focus = false;
+            if ((event.text == " " || event.text == "\n") && !event.repeat) { root.activate(); return accept; }
+            reject
+        }
+    }
+
+    area := YWheelArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        pointer-event(event) => {
+            // A press hides the tooltip: YTooltip below is told the pointer is not resting while
+            // the indicator is pressed.
+            if (event.kind == PointerEventKind.down) {
+                if (event.button == PointerEventButton.left) {
+                    root.pointer-focus = true;
+                    keys.focus();
+                }
+            }
+            if (event.kind == PointerEventKind.up && event.button == PointerEventButton.middle && self.has-hover) {
+                root.middle-clicked();
+            }
+        }
+        clicked => { root.activate(); }
+        wheel(steps) => { root.scrolled(steps); }
+    }
+
+    row := HorizontalLayout {
+        padding-left: Theme.sp-2;
+        padding-right: Theme.sp-2;
+        spacing: Theme.sp-1;
+        alignment: center;
+
+        // A box exactly the glyph wide and the row tall: the glyph centred in it, the attention
+        // dot pinned to its upper right. (A Path cannot hold children, hence the box.)
+        Rectangle {
+            width: Theme.bar-icon-size;
+            if root.icon-under != "" : Icon {
+                commands: root.icon-under;
+                size: Theme.bar-icon-size;
+                tint: Theme.text-dim.with-alpha(0.45);
+                thickness: Theme.icon-stroke;
+                y: (parent.height - self.height) / 2;
+            }
+            Icon {
+                commands: root.icon;
+                size: Theme.bar-icon-size;
+                tint: root.fg;
+                thickness: Theme.icon-stroke;
+                y: (parent.height - self.height) / 2;
+            }
+            if root.attention : Rectangle {
+                x: parent.width - Theme.bar-dot / 2;
+                y: (parent.height - Theme.bar-icon-size) / 2 - Theme.bar-dot / 2;
+                width: Theme.bar-dot;
+                height: Theme.bar-dot;
+                border-radius: self.height / 2;
+                background: Theme.color-warning;
+            }
+            // Drawn over the glyph, in exactly its square (the glyph is centred in the row, so
+            // this is too): the battery's fill and bolt. Anything placed here is decoration for
+            // the glyph and takes no input.
+            Rectangle {
+                y: (parent.height - Theme.bar-icon-size) / 2;
+                width: Theme.bar-icon-size;
+                height: Theme.bar-icon-size;
+                @children
+            }
+        }
+
+        if root.label != "" : Text {
+            text: root.label;
+            color: root.fg;
+            font-size: Theme.fs-caption;
+            font-weight: Theme.fw-body-strong;
+            vertical-alignment: center;
+        }
+    }
+
+    YTooltip {
+        text: root.tooltip;
+        hovered: root.hovered && !root.pressed;
+        x: root.tooltip-end ? parent.width + Theme.sp-2 - self.width : (parent.width - self.width) / 2;
+        y: root.tooltip-above ? -self.height - Theme.sp-1 : parent.height + Theme.sp-1;
+    }
+}

@@ -32,6 +32,10 @@
 
 use std::time::Duration;
 
+// One definition of a plausible zone name, shared with the installer, which checks the timezone
+// it is about to write into the installed system against the same shape.
+use crate::installer_rules::is_plausible_timezone;
+
 /// How long the lookup may take before it is abandoned. It runs on a worker thread and nothing
 /// waits for it, so this only bounds how long that thread lives.
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(6);
@@ -197,16 +201,6 @@ fn current_timezone() -> Option<String> {
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .find_map(|l| l.strip_prefix("Timezone=").map(str::to_string))
-}
-
-/// The shape of an IANA zone name: `America/Chicago`, `Etc/UTC`, `Asia/Kolkata`.
-fn is_plausible_timezone(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 64
-        && !s.starts_with('/')
-        && !s.contains("..")
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '+' | '-'))
 }
 
 #[cfg(test)]

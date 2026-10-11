@@ -100,8 +100,8 @@ pub use args::{
     with_defaults,
 };
 pub use call::{
-    finish_later, next_action_id, refusal, service_id_for, ActCall, NO_SUCH_METHOD, REFUSED,
-    UNANSWERED,
+    finish_later, needs_standing, next_action_id, refusal, service_id_for, ActCall, NO_SUCH_METHOD,
+    REFUSED, STANDING_NOT_NEEDED, UNANSWERED,
 };
 pub use context::{
     agent_token, answer_later, caller, off_the_reactor, AgentTokenScope, Caller, CallerScope, Later,
@@ -118,7 +118,7 @@ pub use serde_json;
 /// two replies built from them. [`Explainer`] is the sentence an action says about one call of
 /// itself (#137); most authors meet it only through [`Action::explain`].
 pub use yantrik_ipc_contracts::control_surface::{
-    act_json, describe_json, Action, Explainer, Param, View, PARAM_TYPES,
+    act_json, act_json_stateless, describe_json, Action, Explainer, Param, View, PARAM_TYPES,
 };
 pub use yantrik_ipc_contracts::email::ServiceError;
 /// The ceiling, mode and grant rule every `app.act` meets. The dispatch calls it; it is exported
@@ -208,6 +208,7 @@ mod over_a_socket {
                     name: "Counter".into(),
                     surfaces: vec!["counter.increment".into(), "counter.who".into()],
                     ceiling: "standard".into(),
+                    asks_above: None,
                 })
             });
 

@@ -1,0 +1,51 @@
+// YTooltip — one line of text a control shows when the pointer rests on it.
+//
+// The bubble and its delay, in one place: YIndicator drew its own, and a toolbar that wants to
+// say why a button is off ("Open a picture first") needs the same one rather than a second copy.
+// The owner places it and says whether the pointer is on the control; the tooltip waits
+// `Theme.dur-tooltip` before it shows and hides the moment the pointer leaves.
+//
+//     YTooltip { text: "Open a picture first"; hovered: ta.has-hover; y: parent.height + Theme.sp-1; }
+//
+// It is drawn where it is. An owner that clips (YButton, a Flickable) cannot hold one that hangs
+// outside it, and one drawn over a later sibling needs its owner raised with `z`.
+import { Theme } from "theme.slint";
+
+export component YTooltip inherits Rectangle {
+    in property <string> text;
+    // The pointer is on the control this explains.
+    in property <bool> hovered: false;
+    out property <bool> shown: false;
+
+    changed hovered => { if (!root.hovered) { root.shown = false; } }
+
+    // One single-shot delay: it runs only while the pointer rests on the control, and stops
+    // itself the moment the tooltip is up. Nothing ticks at rest.
+    Timer {
+        running: root.hovered && !root.shown && root.text != "";
+        // The same 600ms as `Theme.dur-tooltip`, written out: the idle-window test reads a Timer's
+        // rate from its text and cannot resolve a token. Repeating at this rate is harmless here,
+        // because `running` goes false after the first tick.
+        interval: 600ms;
+        triggered => { root.shown = true; }
+    }
+
+    visible: root.shown && root.text != "";
+    width: tip-text.preferred-width + 2 * Theme.sp-3;
+    height: tip-text.preferred-height + 2 * Theme.sp-1 + Theme.sp-1;
+    border-radius: Theme.r-sm;
+    background: Theme.bg-elevated;
+    border-width: Theme.hairline;
+    border-color: Theme.border-card;
+    drop-shadow-blur: Theme.shadow-md-blur;
+    drop-shadow-offset-y: Theme.shadow-md-dy;
+    drop-shadow-color: Theme.overlay-shadow;
+
+    tip-text := Text {
+        text: root.text;
+        color: Theme.text-primary;
+        font-size: Theme.fs-caption;
+        x: Theme.sp-3;
+        y: (parent.height - self.height) / 2;
+    }
+}

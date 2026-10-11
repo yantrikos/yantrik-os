@@ -28,6 +28,17 @@ fn agent(role: &str, prompt: &str, store_as: &str, context: Option<&str>) -> Rec
         prompt: prompt.to_string(),
         store_as: store_as.to_string(),
         context: context.map(str::to_string),
+        title: None,
+    }
+}
+
+/// An Agent step named on screen by `title` rather than by its role alone.
+fn titled(title: &str, step: RecipeStep) -> RecipeStep {
+    match step {
+        RecipeStep::Agent { role, prompt, store_as, context, .. } => {
+            RecipeStep::Agent { role, prompt, store_as, context, title: Some(title.to_string()) }
+        }
+        other => other,
     }
 }
 
@@ -50,7 +61,9 @@ pub fn defaults(template_id: &str) -> &'static [(&'static str, &'static str, &'s
             ("attacker", "red-team", "the role that attacks"),
         ],
         WRITERS_ROOM => &[
-            ("cast", "Voice A, Voice B, Narrator", "the three voices, in order, one per writer"),
+            ("voice_1", "Voice A", "the first writer's voice"),
+            ("voice_2", "Voice B", "the second writer's voice"),
+            ("voice_3", "Narrator", "the third writer's voice"),
         ],
         _ => &[],
     }
@@ -200,22 +213,29 @@ pub fn templates() -> Vec<RecipeTemplate> {
             keywords: &["writers room", "writers' room", "write a scene", "script", "dialogue from beats"],
             required_vars: &[("beats", "The showrunner's beats, in order — separate them with ; or new lines")],
             steps: || {
-                let writer = |which: &str| {
-                    format!(
-                        "You are one of three writers in a writers' room. The cast, in order: {{{{cast}}}}. \
-                         You write only for the {which} of them. For every beat below, in order, write that \
-                         voice's lines — none if it would not speak — each marked with the beat it belongs \
-                         to. The other writers write the other voices; do not write theirs."
+                // Each writer is named by its voice, on screen and in its brief (#194): three stages
+                // that all read "Writer · deepseek" could not be told apart.
+                let writer = |n: u8| {
+                    let prompt = format!(
+                        "You are one of three writers in a writers' room. The cast, in order: {{{{voice_1}}}}, \
+                         {{{{voice_2}}}}, {{{{voice_3}}}}. You write only for {{{{voice_{n}}}}}. For every beat \
+                         below, in order, write that voice's lines — none if it would not speak — each marked \
+                         with the beat it belongs to. The other writers write the other voices; do not write \
+                         theirs."
+                    );
+                    titled(
+                        &format!("Writer ({{{{voice_{n}}}}})"),
+                        agent("writer", &prompt, &format!("lines_{n}"), Some("The beats:\n{{beats}}")),
                     )
                 };
                 vec![
-                    agent("writer", &writer("first"), "lines_1", Some("The beats:\n{{beats}}")),
-                    agent("writer", &writer("second"), "lines_2", Some("The beats:\n{{beats}}")),
-                    agent("writer", &writer("third"), "lines_3", Some("The beats:\n{{beats}}")),
+                    writer(1),
+                    writer(2),
+                    writer(3),
                     agent(
                         "scribe",
                         "Do not summarise this time: assemble the scene. Three writers each wrote one \
-                         voice's lines for the beats below (the cast, in order: {{cast}}). Put the lines \
+                         voice's lines for the beats below (the cast, in order: {{voice_1}}, {{voice_2}}, {{voice_3}}). Put the lines \
                          together beat by beat, in the beats' order, each under the voice that speaks it. \
                          Keep every line exactly as written, and mark a beat nobody wrote for.",
                         "script",

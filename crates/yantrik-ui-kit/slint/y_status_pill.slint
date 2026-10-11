@@ -1,0 +1,36 @@
+// YStatusPill — a settled state, said in a word inside a neutral outline.
+//
+// "Installed", "Completed", "File gone": states a row has come to rest in, which need reading and
+// not a colour. Packages drew Installed in the success teal (the minds' colour) and Downloads drew
+// File gone in red (the destructive colour), so each borrowed a hue whose meaning it contradicted.
+// This one has none: the hairline border every neutral tile wears, and secondary text. The word
+// carries the state, so colour is never the only signal.
+//
+//     YStatusPill { text: "Installed"; width: 96px; }
+//
+// Not a button: it takes no input. A state that is ON or in progress keeps its own accent pill.
+import { Theme } from "theme.slint";
+
+export component YStatusPill inherits Rectangle {
+    in property <string> text;
+
+    height: 22px;
+    preferred-width: label.preferred-width + 2 * Theme.sp-3;
+    horizontal-stretch: 0;
+    border-radius: self.height / 2;
+    border-width: 1px;
+    border-color: Theme.tile-border;
+    background: transparent;
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+
+    label := Text {
+        text: root.text;
+        color: Theme.text-secondary;
+        font-size: Theme.fs-micro;
+        font-weight: 500;
+        overflow: elide;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}

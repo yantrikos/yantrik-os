@@ -20,16 +20,19 @@ taken out of the build for being drawings of apps.
 
 ## 1. Download the image
 
-The current image and its checksum are published at
-**<https://iso.yantrikos.com/nightly/>**, with `latest.json` naming the current file, its
-sha256, its size and its version. Four lines, and you can see every step:
+One link, always the newest nightly: **<https://iso.yantrikos.com/latest.iso>**. It leads to
+`https://iso.yantrikos.com/nightly/yantrik-os-latest.iso`, which the release host re-points at
+each build as it is published, and its checksum file names it, so three lines fetch and check it:
 
 ```bash
-curl -fsSL https://iso.yantrikos.com/nightly/latest.json          # what the current file is called
-curl -fL -O https://iso.yantrikos.com/nightly/<that file>
-curl -fL -O https://iso.yantrikos.com/nightly/<that file>.sha256
-sha256sum -c <that file>.sha256
+curl -fL -O https://iso.yantrikos.com/nightly/yantrik-os-latest.iso
+curl -fL -O https://iso.yantrikos.com/nightly/yantrik-os-latest.iso.sha256
+sha256sum -c yantrik-os-latest.iso.sha256
 ```
+
+Which build that is today, with its sha256, size and version, is in
+`https://iso.yantrikos.com/nightly/latest.json`. The host keeps only the newest few builds, so
+never link a build's own filename: it is gone a week later.
 
 `install.sh` in this repository does the same thing for you and is also served from
 `https://get.yantrikos.com/install.sh`:
@@ -43,9 +46,8 @@ Piped straight into a shell with no flag it explains and does nothing else — i
 file, installs nothing and wants no privilege. That is deliberate: an installer that runs the
 moment it is piped into `sh` is asking you to trust bytes you have not read.
 
-The image is about **1.3 GiB**. There is also `yantrik-os-nightly-latest.iso`, which always
-points at the newest one — convenient for a script, less good for a person, because the file
-you tested is not the file that name will mean tomorrow.
+The image is about **1.7 GiB**. If you want to keep the exact build you tested, keep the file:
+the `latest` name will mean the next build tomorrow.
 
 **Verify the checksum before you boot it.** The point is not that someone is attacking you;
 it is that a 1.3 GiB download that ends at 98% gives you an image that boots halfway and
@@ -210,8 +212,13 @@ Also in the status bar, to the left of the mind chip, is the **mode**:
 |---|---|
 | `plan` | read only — every change is refused and it has to tell you what it *would* do |
 | `ask` | routine things run; sensitive ones put a card in front of you (the default) |
-| `auto` | sensitive things run; you are still asked about destructive ones |
-| `bypass` | nothing is asked. Time-boxed, and never written to disk, so no machine boots into it |
+| `auto` | sensitive things run; you are still asked about destructive ones, and once per session before it runs commands |
+| `bypass` | nothing is asked except before anything an app marks as impossible to undo, such as a purchase or a calendar delete — that still puts a card up — and once per session before running commands. Time-boxed, and never written to disk, so no machine boots into it |
+| `bypass_all` | "Full bypass": nothing is asked at all, those included. Time-boxed and never written to disk, like `bypass`; chosen on the same confirmation |
+
+A command — the Terminal's `run`, an agent's own terminal — can do anything you can, so it asks
+before it runs in `ask`, `auto` and `bypass`. Press **Allow for this session** on that card and
+the mind's commands after it run without asking until the shell restarts.
 
 Everything that ran without you being asked is written down in
 `~/.local/share/yantrik/mind-audit.jsonl` and readable from the mode menu.

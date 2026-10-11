@@ -506,7 +506,7 @@ fn blob_to_embedding(blob: &[u8]) -> Vec<f32> {
 /// Build a compact tool card for MCQ prompts (~40 tokens).
 ///
 /// Format: `tool_name — Short description. Use for: keyword1, keyword2, keyword3.`
-fn build_compact_card(def: &Value) -> String {
+pub fn build_compact_card(def: &Value) -> String {
     let name = def["function"]["name"].as_str().unwrap_or("unknown");
     let desc = def["function"]["description"].as_str().unwrap_or("");
 

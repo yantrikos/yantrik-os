@@ -7,10 +7,14 @@ name: ISO
 # sequence — build, package, assemble, boot it and make it answer for itself, publish — run by
 # something that does not get tired, with a key that can only publish.
 #
-#   06:00 UTC, daily        -> nightly, and only if main moved since the last published one
+#   06:00 UTC, daily        -> built and boot-tested, NEVER published (only if main moved)
 #   tag  v*-beta*           -> beta
 #   tag  v* (anything else) -> stable
-#   push to an iso/** branch-> nightly, for trying an image before the change is on main
+#   push to an iso/** branch-> nightly: how a commit that passed the 7-task gate is published
+#
+# The public nightly is what real installs update from, so it carries only a commit that passed
+# the gate on the test machine (Pranab, 5 Oct 2026: "build only, never publish"). The daily run
+# still builds and boots main, so breakage shows the morning it lands; it just publishes nothing.
 #   run by hand             -> the channel you pick, publishing optional
 #
 # It used to build on every push to main. A merged pull request is not a release: fifteen of
@@ -86,7 +90,8 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             channel="${{ inputs.channel }}"; publish="${{ inputs.publish }}"
           elif [ "${{ github.event_name }}" = "schedule" ]; then
-            channel=nightly; publish=true
+            # Built and booted, never published: main has not passed the gate (see the top).
+            channel=nightly; publish=false
           elif [[ "$GITHUB_REF" == refs/tags/v*-beta* ]]; then
             channel=beta; publish=true
           elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
@@ -146,6 +151,19 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo docker image prune --all --force > /dev/null 2>&1 || true
           df -h / | tail -1
+
+      - name: Swap for the generated UI crate
+        # rustc holds ~14 GB compiling yantrik-ui-slint (Cargo.toml's profile note), and a hosted
+        # runner has 16 GB. As the shell's UI grew, the release build was killed twice on 4 October
+        # (exit 143, no compiler error, ~13 min in, during the last crates). Swap on the runner's
+        # scratch disk lets the peak spill instead of ending the run.
+        run: |
+          sudo swapoff -a || true
+          sudo fallocate -l 12G /mnt/yantrik-swap
+          sudo chmod 600 /mnt/yantrik-swap
+          sudo mkswap /mnt/yantrik-swap > /dev/null
+          sudo swapon /mnt/yantrik-swap
+          free -h
 
       - name: System dependencies
         run: |

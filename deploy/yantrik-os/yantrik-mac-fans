@@ -1,0 +1,136 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# yantrik-mac-fans — mbpfan's settings for the Mac this is running on
+# ═══════════════════════════════════════════════════════════════════════════════════════
+#
+# Run before mbpfan starts (mbpfan.service.d/yantrik-apple.conf), and only on a Mac. Without
+# mbpfan nothing on Linux asks the SMC for more air, and a Mac mini under load sits at its
+# 1800 rpm floor while the CPU throttles.
+#
+# mbpfan reads each fan's limits from applesmc (fan*_min, fan*_max) unless its config names
+# them, and falls back to 2000-6200 rpm when it cannot read them, which is above the Mac mini's
+# 5500 rpm ceiling. So the models we know get their limits written down; any other Mac gets the
+# SMC's own figures, which is mbpfan's default behaviour.
+#
+#   Macmini6,1 / Macmini6,2 (late 2012): one fan, 1800-5500 rpm.
+#
+# The temperatures are lower than mbpfan's MacBook defaults (63/66/86 °C): a quad-core i7 in a
+# Mac mini's case has little thermal mass, and a desktop can afford the noise. Below low_temp the
+# fan idles; above high_temp it ramps; at max_temp it runs flat out.
+#
+# /etc/mbpfan.conf is written only while it is still ours (it carries MARKER below) or is
+# Debian's untouched default, so a person's own edits are never overwritten: delete the marker
+# line and the file is theirs.
+#
+# Usage: yantrik-mac-fans configure | show | selftest
+set -eu
+
+DMI="${YANTRIK_DMI:-/sys/class/dmi/id}"
+CONF="${YANTRIK_MBPFAN_CONF:-/etc/mbpfan.conf}"
+MARKER="# Written by yantrik-mac-fans"
+
+# Debian's mbpfan.conf, as shipped, has these speed lines commented out; that is how its
+# untouched default is recognised.
+debian_default() {
+    grep -q '^#min_fan1_speed' "$1" 2>/dev/null && ! grep -q '^min_fan' "$1" 2>/dev/null
+}
+
+# "min max" for a model whose fan limits we have written down, nothing otherwise.
+fan_limits() {
+    case "$1" in
+        Macmini6,1|Macmini6,2) echo "1800 5500" ;;
+        *) return 1 ;;
+    esac
+}
+
+render() {
+    local model="$1" limits min max
+    echo "$MARKER for $model. Delete this line to keep your own edits."
+    echo "[general]"
+    if limits="$(fan_limits "$model")"; then
+        min="${limits% *}"; max="${limits#* }"
+        echo "# This model's fan, from Apple's SMC limits."
+        echo "min_fan1_speed = $min"
+        echo "max_fan1_speed = $max"
+    else
+        echo "# No limits written down for this model: mbpfan reads them from applesmc"
+        echo "# (/sys/devices/platform/applesmc.768/fan*_min and fan*_max)."
+    fi
+    echo "low_temp = 55"
+    echo "high_temp = 63"
+    echo "max_temp = 80"
+    echo "polling_interval = 1"
+}
+
+cmd_configure() {
+    local model
+    model="$(cat "$DMI/product_name" 2>/dev/null || echo unknown)"
+    if [ -e "$CONF" ] && ! grep -q "^$MARKER" "$CONF" && ! debian_default "$CONF"; then
+        echo "yantrik-mac-fans: $CONF has been edited by hand; leaving it alone"
+        return 0
+    fi
+    local tmp="$CONF.tmp.$$"
+    render "$model" > "$tmp"
+    chmod 0644 "$tmp"
+    mv -f "$tmp" "$CONF"
+    echo "yantrik-mac-fans: wrote $CONF for $model"
+}
+
+cmd_show() {
+    render "$(cat "$DMI/product_name" 2>/dev/null || echo unknown)"
+}
+
+# The checks read as sentences: `test && ok name || bad name`. ok never fails.
+# shellcheck disable=SC2015
+cmd_selftest() {
+    local self tmp fails=0
+    self="$(readlink -f "$0")"
+    tmp="$(mktemp -d)"
+    ok() { echo "ok   $1"; }
+    bad() { echo "FAIL $1"; fails=$((fails + 1)); }
+    mk() { mkdir -p "$tmp/$1"; echo "$2" > "$tmp/$1/product_name"; }
+    cfg() { YANTRIK_DMI="$tmp/$1" YANTRIK_MBPFAN_CONF="$tmp/$2" bash "$self" configure >/dev/null; }
+
+    mk mini Macmini6,2
+    mk mbp MacBookPro9,2
+
+    # No file yet: written, with the Mac mini's limits.
+    cfg mini c1
+    grep -qx 'min_fan1_speed = 1800' "$tmp/c1" && grep -qx 'max_fan1_speed = 5500' "$tmp/c1" \
+        && ok "Macmini6,2 gets 1800-5500 rpm" || bad "Macmini6,2 limits"
+    grep -qx 'max_temp = 80' "$tmp/c1" && ok "temperatures written" || bad "temperatures"
+
+    # Another Mac: no speed lines, so mbpfan asks the SMC.
+    cfg mbp c2
+    ! grep -q '^min_fan' "$tmp/c2" && ! grep -q '^max_fan' "$tmp/c2" \
+        && ok "unknown model leaves limits to applesmc" || bad "unknown model wrote limits"
+
+    # Debian's untouched default is replaced.
+    printf '[general]\n#min_fan1_speed = 2000\n#max_fan1_speed = 6200\nlow_temp = 63\n' > "$tmp/c3"
+    cfg mini c3
+    grep -q "^$MARKER" "$tmp/c3" && ok "Debian default replaced" || bad "Debian default kept"
+
+    # Ours is rewritten (the model may have changed, the disk moved to another Mac).
+    cfg mbp c1
+    ! grep -q '^min_fan' "$tmp/c1" && ok "our own file is refreshed" || bad "our own file not refreshed"
+
+    # A person's file is never touched.
+    printf '[general]\nmin_fan1_speed = 2500\n' > "$tmp/c4"
+    cfg mini c4
+    grep -qx 'min_fan1_speed = 2500' "$tmp/c4" && ! grep -q "^$MARKER" "$tmp/c4" \
+        && ok "hand-edited file left alone" || bad "hand-edited file overwritten"
+
+    rm -rf "$tmp"
+    if [ "$fails" -gt 0 ]; then
+        echo "$fails check(s) failed"
+        return 1
+    fi
+    echo "all checks passed"
+}
+
+case "${1:-configure}" in
+    configure) cmd_configure ;;
+    show) cmd_show ;;
+    selftest) cmd_selftest ;;
+    *) echo "usage: $0 configure | show | selftest" >&2; exit 2 ;;
+esac

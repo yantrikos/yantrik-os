@@ -24,9 +24,22 @@ pub fn run(w:&MinimalSoftwareWindow, output:&str,width:u32,height:u32)->Result<(
             let f=BufWriter::new(File::create(path)?);let mut enc=png::Encoder::new(f,width,height);enc.set_color(png::ColorType::Rgb);enc.set_depth(png::BitDepth::Eight);enc.write_header()?.write_image_data(pixels.as_bytes())?;
         }
     }
-    ui.set_category(5);draw();click(w,width as f32-75.,if width>=1000{536.}else{545.});assert_eq!(ui.get_action(),"screen:28","Permissions opens its own dashboard");
+    ui.set_category(5);draw();click(w,width as f32-75.,if width>=1000{536.}else{528.});assert_eq!(ui.get_action(),"screen:28","Permissions opens its own dashboard");
     ui.set_category(0);ui.set_dark(width>=1000);draw();
-    click(w,width as f32-139.,if width>=1000{395.}else{413.});assert_eq!(ui.get_accent(),"purple","Direct accent choice");
+    // The theme cards (176px and the gap, 196 in all) sit above the accent row now: on a tall
+    // canvas it is that much lower, on a short one it is scrolled up to where it was.
+    let accent_y=if width>=1000{395.}else{413.};
+    let accent_y=if height>=700{accent_y+196.}else{
+        w.dispatch_event(WindowEvent::PointerScrolled{position:slint::LogicalPosition::new(width as f32-100.,height as f32-150.),delta_x:0.,delta_y:-196.});
+        std::thread::sleep(std::time::Duration::from_millis(350));draw();accent_y};
+    // The swatches as settings.slint lays them out: 38px each, no gap, flush right inside the
+    // row's padding and the page's margin (44px in all), in this order. Clicked by place in this
+    // list, not by a pixel number: two presets were taken out (#626) and a fixed x went on
+    // clicking where Purple used to be, which is now the soft blue. Purple is clicked last, so
+    // the keyboard check below presses the swatch that has focus.
+    const SWATCHES:[&str;3]=["cyan","purple","pink"];
+    let swatch_x=|id:&str|{let i=SWATCHES.iter().position(|s|*s==id).unwrap();width as f32-44.-(SWATCHES.len()-i) as f32*38.+19.};
+    for id in ["cyan","pink","purple"]{click(w,swatch_x(id),accent_y);assert_eq!(ui.get_accent(),id,"Direct accent choice: the {id} swatch");}
     key(w," ".into());assert_eq!(ui.get_action(),"accent:purple","Accent keyboard activation");
     ui.set_accent("cyan".into());draw();
     let p=draw();let f=BufWriter::new(File::create(output)?);let mut e=png::Encoder::new(f,width,height);e.set_color(png::ColorType::Rgb);e.set_depth(png::BitDepth::Eight);e.write_header()?.write_image_data(p.as_bytes())?;

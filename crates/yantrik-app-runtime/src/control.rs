@@ -77,7 +77,7 @@
 //!
 //! # The mode, and the grant
 //!
-//! Under the ceiling the person has a *mode* — plan, ask, auto or bypass — that says what may run
+//! Under the ceiling the person has a *mode* — plan, ask, auto, bypass or full bypass — that says what may run
 //! without asking them. For a while that lived only in the MCP bridge: it read the mode, raised
 //! the approval card when the mode said to, and acted once the person pressed Allow. `yos act`
 //! and a raw client on the socket ran the same `sensitive` action in `ask` mode with no card and
@@ -259,9 +259,10 @@ pub fn other_names(app_id: &str) -> &'static [&'static str] {
 // `ControlRpc::dispatch`), and the registry decides with `gate::decide` inside the same turn of
 // the event loop as the handler.
 pub use yantrik_ipc_transport::gate::{
-    boot_id, configured_ceiling, configured_mode, decide, grant_of, mode_from, mode_path, permit,
-    proc_start_ticks, spend_grants_with, unrecoverable, Authority, CallingAgent, Mode, AGENT_TOKEN,
-    DEFAULT_MODE, LADDER, MODES, MODE_FILE, SOCKET_FLOOR, UNRECOVERABLE_PHRASES,
+    boot_id, configured_ceiling, configured_mode, decide, grant_of, mode_from, mode_path, open_ended,
+    permit, proc_start_ticks, spend_grants_with, unrecoverable, Authority, CallingAgent, Mode,
+    AGENT_TOKEN, DEFAULT_MODE, LADDER, MODES, MODE_FILE, OPEN_ENDED, SOCKET_FLOOR,
+    UNRECOVERABLE_PHRASES,
 };
 #[cfg(test)]
 use yantrik_ipc_transport::gate::{agent_token_of, ceiling_from, DEFAULT_CEILING};
@@ -303,6 +304,63 @@ thread_local! {
 // learns this exists.
 pub use yantrik_surface::{agent_token, answer_later, caller, AgentTokenScope, Caller, CallerScope};
 
+/// Whether the call being dispatched on this thread is an agent's rather than the person's: the
+/// mind's own account by the kernel's word, or any caller that presented an agent token, believed
+/// or not - one that presented a token is not the person. An app that holds a rule for agents
+/// only (which files they may name, #443) asks this inside the handler, where both are in scope.
+///
+/// It cannot see an agent that runs as the person and presents no token, nor tell whether the
+/// caller descends from an attached mind: that takes the shell's /proc walk
+/// (`mind_view::requester_now`). A `describe` carries no token, so there only the mind account
+/// is seen.
+pub fn agent_is_calling() -> bool {
+    agent_token().is_some() || caller().is_some_and(|c| yantrik_ipc_transport::mind_door::is_mind(c.uid))
+}
+
+// ── Whether a person allowed this call ──────────────────────────────
+//
+// A grant is spent on the RPC thread before the handler runs (`ControlRpc::dispatch`), so a
+// handler that refuses afterwards for a reason of its own uses up a person's Allow on an act that
+// never runs. The shell has one such reason: while one card waits, a mind may not move windows
+// over it (`card_watch::hold_windows`). With a second card waiting, the act the person had just
+// allowed on the first was refused by it, and the Allow was gone for nothing (final review of
+// the card fix, 2 Oct 2026). The handler has to be able to see that this call is the one the
+// person said yes to.
+//
+// Carried as the caller and the token are: installed on the UI thread for exactly the one
+// dispatch. Not moved into `check_call` instead: the hold depends on which window an action
+// would move (focusing the shell is free, the second Show desktop press is not), which only the
+// handler knows, and a refusal before the spend would still leave the approved act unrun.
+
+thread_local! {
+    /// Whether the `app.act` being dispatched on THIS thread spent a grant.
+    static GRANTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the call being handled on this thread carries a person's Allow, already spent for
+/// exactly this action and these arguments. `false` outside a dispatch, and for every call that
+/// carried no grant: it is a fact the dispatch establishes, never one a caller can claim.
+pub fn call_was_granted() -> bool {
+    GRANTED.with(|g| g.get())
+}
+
+/// Installs [`call_was_granted`] for one dispatch and puts back what was there, panic or not.
+/// The dispatch enters it; so do tests, which have no socket to spend a grant through.
+#[must_use = "the grant is forgotten when this guard is dropped"]
+pub struct GrantedScope(bool);
+
+impl GrantedScope {
+    pub fn enter(granted: bool) -> GrantedScope {
+        GrantedScope(GRANTED.with(|g| g.replace(granted)))
+    }
+}
+
+impl Drop for GrantedScope {
+    fn drop(&mut self) {
+        GRANTED.with(|g| g.set(self.0));
+    }
+}
+
 /// The grade THIS app publishes for one of its own actions.
 ///
 /// Reads the registry installed by [`App::serve`], so it answers only on the thread that owns
@@ -316,6 +374,15 @@ pub use yantrik_surface::{agent_token, answer_later, caller, AgentTokenScope, Ca
 /// a refusal, not a default.
 pub fn published_grade(action: &str) -> Option<&'static str> {
     REGISTRY.with(|cell| cell.borrow().as_ref().and_then(|reg| reg.published_grade(action)))
+}
+
+/// The description THIS app publishes for one of its own actions, beside [`published_grade`] and
+/// for the same reason: the shell asking itself over its socket is a call that cannot be
+/// answered. The shell's approval card reads it so that what the gate reads in a description —
+/// that it cannot be undone, or that it runs whatever it is given — is read on the card's path
+/// too, and the card and the dispatch cannot disagree about the shell's own actions.
+pub fn published_description(action: &str) -> Option<String> {
+    REGISTRY.with(|cell| cell.borrow().as_ref().and_then(|reg| reg.published_description(action)))
 }
 
 /// Re-declare the grade THIS app publishes for one of its own actions, while it is running.
@@ -490,6 +557,15 @@ impl ServiceHandler for ControlRpc {
         peer: Option<PeerCred>,
     ) -> Result<serde_json::Value, ServiceError> {
         let who = peer.map(Caller::from);
+        // The agent the call arrived as, kept for the view read again after deferred work: that
+        // read is a describe of the app's state, and a state that tells an agent less than the
+        // person (the shell's, #475) has to know it is an agent reading, token and all.
+        let token = params
+            .get(AGENT_TOKEN)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string);
         // Nothing left over from an earlier call on this thread can be taken for this one's.
         LATER_HANDED.with(|cell| cell.borrow_mut().take());
         let answer = self.dispatch(method, params, who);
@@ -497,8 +573,12 @@ impl ServiceHandler for ControlRpc {
         match (answer, later) {
             // The work runs here, off the UI thread, and the view beside its result is read
             // again on the UI thread once it has.
-            (Ok(envelope), Some(later)) if method == "app.act" => finish_later(envelope, later, || {
-                on_ui_thread(who, |reg| reg.snapshot()).ok()
+            (Ok(envelope), Some(later)) if method == "app.act" => finish_later(envelope, later, move || {
+                on_ui_thread(who, move |reg| {
+                    let _agent = AgentTokenScope::enter(token);
+                    reg.snapshot()
+                })
+                .ok()
             }),
             (answer, _) => answer,
         }
@@ -517,6 +597,10 @@ impl ControlRpc {
 
             "app.act" => {
                 let call = ActCall::parse(&params)?;
+                // Private mode first: while it is on, no agent acts at all.
+                call.require_not_private(who)?;
+                // A mind account's call acts only as a live agent (#411), before anything else.
+                call.require_standing(&self.app_id, who)?;
                 // Agents catalog: the calling agent's reach (`yantrik_ipc_transport::reach`) —
                 // read here, where IO belongs, and held to below before any grant is spent and
                 // before the handler runs. No token, or a token with no reach, is not held.
@@ -527,6 +611,9 @@ impl ControlRpc {
                 // IO, spending a grant is a round trip, and the dispatch closure is a turn of
                 // the event loop.
                 let mut authority = Authority::now();
+                // An agent answering a turn from the person's phone asks above what its reach
+                // says, whatever the mode (design/channels-2026-09-29.md).
+                authority.held_by(reach.as_ref());
                 // A grant is spent only once everything that could still refuse the call without
                 // asking anybody has passed: the action exists, the agent's reach covers it, its
                 // arguments are right, and the ceiling allows its grade (#154) — or a person's
@@ -548,6 +635,9 @@ impl ControlRpc {
                 let ActCall { action, args, agent_token, expect_revision, .. } = call;
                 on_ui_thread(who, move |reg| {
                     let _agent = AgentTokenScope::enter(agent_token);
+                    // So a handler can tell the act a person just allowed from any other: see
+                    // `call_was_granted`.
+                    let _granted = GrantedScope::enter(authority.granted);
                     // The reach, on the grade this surface publishes now — the one `act` decides on.
                     reg.within_reach(reach.as_ref(), &action, &args).and_then(|()| {
                         reg.act(&action, &args, expect_revision.as_deref(), &action_id, &authority)
@@ -807,19 +897,20 @@ mod tests {
     /// boundary.
     const OPEN: &str = "dangerous";
 
-    /// Authority that binds nothing: the ceiling and the mode both at the top of the ladder.
+    /// Authority that binds nothing: the ceiling and the mode both at the top of the ladder —
+    /// full bypass, which asks about nothing, not even what cannot be undone.
     fn open() -> Authority {
-        Authority { ceiling: OPEN.into(), mode: Mode::named("bypass"), granted: false }
+        Authority { ceiling: OPEN.into(), mode: Mode::named("bypass_all"), granted: false, asks_above: None }
     }
 
     /// A machine at `ceiling`, in a mode that asks about nothing under it: the ceiling tests.
     fn under(ceiling: &str) -> Authority {
-        Authority { ceiling: ceiling.into(), mode: Mode::named("bypass"), granted: false }
+        Authority { ceiling: ceiling.into(), mode: Mode::named("bypass_all"), granted: false, asks_above: None }
     }
 
     /// An open ceiling and the mode under test, with or without a grant spent for the call.
     fn in_mode(mode: &str, granted: bool) -> Authority {
-        Authority { ceiling: OPEN.into(), mode: Mode::named(mode), granted }
+        Authority { ceiling: OPEN.into(), mode: Mode::named(mode), granted, asks_above: None }
     }
 
     type Act = Box<dyn Fn(&serde_json::Value) -> Result<serde_json::Value, String>>;
@@ -1122,7 +1213,8 @@ mod tests {
     /// The dispatch reads the action's own description, not only its grade: Calendar's
     /// `delete_event` is `sensitive` and says "It is not recoverable", and in auto the shell and
     /// the bridge asked about it while `yos act` ran it (map gap 4 of the surface SDK). Asked
-    /// about on this door too now; bypass still asks nobody.
+    /// about on this door too now, and in bypass too since 28 September 2026: only full bypass
+    /// asks nobody.
     #[test]
     fn what_the_app_says_cannot_be_undone_is_asked_about_in_auto() {
         let delete = |ran: Rc<Cell<bool>>| {
@@ -1148,9 +1240,16 @@ mod tests {
         assert!(!ran.get(), "the handler must not have run");
 
         let ran = Rc::new(Cell::new(false));
-        delete(ran.clone())
+        let err = delete(ran.clone())
             .act("delete_event", &serde_json::json!({"id": "e1"}), None, "calendar#2", &in_mode("bypass", false))
-            .expect("bypass asks nobody");
+            .unwrap_err();
+        assert!(err.contains("bypass mode, which asks before anything that cannot be undone"), "{err}");
+        assert!(!ran.get(), "bypass still asks before a delete");
+
+        let ran = Rc::new(Cell::new(false));
+        delete(ran.clone())
+            .act("delete_event", &serde_json::json!({"id": "e1"}), None, "calendar#3", &in_mode("bypass_all", false))
+            .expect("full bypass asks nobody");
         assert!(ran.get());
     }
 
@@ -1178,6 +1277,21 @@ mod tests {
     fn spend_through_a_stand_in_shell() {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
+            // The stand-in shell answers what a token may reach, as the shell does (#189): the
+            // reviewer's token is held to its role; every other token has no role, so a call
+            // carrying it is held by nothing but the grade, the mode and the grant. One reader
+            // per process, as the shell has one registry.
+            use yantrik_ipc_transport::reach;
+            reach::read_reach_with(|token| {
+                (token == "tok-reach-reviewer").then(|| reach::Reach {
+                    agent: "deepseek:c-reach1".into(),
+                    role: "reviewer".into(),
+                    name: "Reviewer".into(),
+                    surfaces: vec!["caller-test.echo".into(), "caller-test.nuke".into()],
+                    ceiling: "safe".into(),
+                    asks_above: None,
+                })
+            });
             let spent = std::sync::Mutex::new(std::collections::HashSet::<String>::new());
             spend_grants_with(move |id, app, action, args, caller| {
                 SPEND_CALLERS.lock().unwrap_or_else(|e| e.into_inner())
@@ -1330,12 +1444,27 @@ mod tests {
         let odd = format!(r#"{{"mode":"bypass","previous":"bypass","bypass_expires_unix":{}}}"#, now);
         assert_eq!(mode_from(&odd, now).name, DEFAULT_MODE);
         assert_eq!(mode_from(r#"{"mode":"bypass","previous":"ask","bypass_expires_unix":null}"#, now).name, "bypass");
+        let full = format!(r#"{{"mode":"bypass_all","previous":"auto","bypass_expires_unix":{}}}"#, now + 60);
+        assert_eq!(mode_from(&full, now).name, "bypass_all");
+        assert_eq!(mode_from(&full, now + 60).name, "auto", "full bypass ends on time too");
 
         // And each mode's column of the table: what it runs unasked.
         for (mode, top) in MODES {
             assert_eq!(LADDER[Mode::named(mode).allows()], top, "{mode}");
         }
         assert_eq!(LADDER[Mode::named("yolo").allows()], "standard", "an unknown mode reads as ask");
+    }
+
+    #[test]
+    fn a_call_with_a_token_is_an_agent_and_the_persons_own_is_not() {
+        let me = unsafe { libc::getuid() };
+        let _person = CallerScope::enter(Some(Caller { pid: 4242, uid: me, gid: me }));
+        assert!(!agent_is_calling(), "the person's own account, no token");
+        {
+            let _agent = AgentTokenScope::enter(Some("tok-anything".into()));
+            assert!(agent_is_calling(), "a token, believed or not, is not the person");
+        }
+        assert!(!agent_is_calling(), "and the token goes with its call");
     }
 
     #[test]
@@ -1426,7 +1555,11 @@ mod tests {
                                 .arg(Param::text("command").optional())
                                 .explain(|args| format!("this call echoes {args}")),
                             Box::new(|args| {
-                                Ok(serde_json::json!({ "args": args, "agent_token": agent_token() }))
+                                Ok(serde_json::json!({
+                                    "args": args,
+                                    "agent_token": agent_token(),
+                                    "granted": call_was_granted(),
+                                }))
                             }),
                         ),
                         (
@@ -1614,18 +1747,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn an_agent_is_held_to_its_reach_on_the_socket_before_any_grant_is_spent() {
-        use yantrik_ipc_transport::reach;
-
+        // The stand-in shell's reader holds `tok-reach-reviewer` to the reviewer's reach.
         spend_through_a_stand_in_shell();
-        reach::read_reach_with(|token| {
-            (token == "tok-reach-reviewer").then(|| reach::Reach {
-                agent: "deepseek:c-reach1".into(),
-                role: "reviewer".into(),
-                name: "Reviewer".into(),
-                surfaces: vec!["caller-test.echo".into(), "caller-test.nuke".into()],
-                ceiling: "safe".into(),
-            })
-        });
         let act = |action: &str, token: &str, grant: Option<&str>| {
             let mut params = serde_json::json!({ "action": action, "args": {}, "agent_token": token });
             if let Some(grant) = grant {
@@ -1740,6 +1863,49 @@ mod tests {
         assert_eq!(mistyped["error"]["code"], -32602);
     }
 
+    /// Every app's agent rail asks whether the companion can be reached on a timer, on the
+    /// window's thread — the thread `describe` runs on. It used to be a round trip to the shell
+    /// right there, so a describe that arrived during one waited for the shell; `yos check
+    /// weather` measured ~600 ms. Here the shell takes two seconds to answer, the rail ticks on the
+    /// UI stand-in just before each describe, and each describe still answers within the bound.
+    #[cfg(unix)]
+    #[test]
+    fn a_rail_asking_a_slow_shell_on_the_ui_thread_holds_up_no_describe() {
+        use crate::companion::{Reach, ReachWatch, REACH_FIRST_WAIT};
+        use std::time::Instant;
+
+        served_test_surface();
+        let watch = ReachWatch::new(
+            Box::new(|| {
+                std::thread::sleep(Duration::from_secs(2));
+                Reach::Ready
+            }),
+            Duration::from_millis(50),
+            REACH_FIRST_WAIT,
+            Duration::from_secs(30),
+        );
+        // What `refresh_agent_rail` does on its timer, on the thread that owns the window.
+        let rail_tick = |watch: &Arc<ReachWatch>| {
+            let watch = Arc::clone(watch);
+            post_to_ui(Box::new(move || {
+                let _ = watch.get();
+            }))
+            .expect("the UI stand-in takes the tick");
+        };
+
+        for read in 0..3 {
+            rail_tick(&watch);
+            let glance = Instant::now();
+            let described = call(r#"{"jsonrpc":"2.0","id":1,"method":"app.describe","params":{}}"#);
+            assert_eq!(described["result"]["app"], "caller-test", "{described}");
+            assert!(
+                glance.elapsed() < Duration::from_millis(700),
+                "describe {read} waited {:?} behind the rail asking a two-second shell",
+                glance.elapsed()
+            );
+        }
+    }
+
     /// The token rides beside `args` and reaches the handler through `agent_token()`; `args` —
     /// what an approval card shows and an audit line keeps — never holds it, even when a caller
     /// puts it there.
@@ -1848,5 +2014,46 @@ mod tests {
         let reply = act("spend-182-person", None);
         assert!(reply["result"].is_object(), "the same act with no token still runs: {reply}");
         assert_eq!(spend_caller("spend-182-person"), Some(None), "no token, no agent claimed");
+    }
+
+    /// Final review of the card fix: the shell refused an act a person had just allowed, because
+    /// another card was waiting, and the Allow was spent for nothing. A handler can now see that
+    /// its call is the allowed one, over the real socket, and only that call: the next one on the
+    /// same thread, with no grant, is not.
+    #[cfg(unix)]
+    #[test]
+    fn a_handler_sees_the_call_a_person_allowed_and_no_other() {
+        spend_through_a_stand_in_shell();
+        let args = serde_json::json!({"command": "open"});
+        allow("granted-seen", "caller-test", "echo", args.clone());
+        let act = |grant: Option<&str>| {
+            let mut params = serde_json::json!({ "action": "echo", "args": args });
+            if let Some(grant) = grant {
+                params["grant"] = serde_json::json!(grant);
+            }
+            call(&serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "app.act", "params": params}).to_string())
+        };
+
+        let reply = act(Some("granted-seen"));
+        assert_eq!(reply["result"]["result"]["granted"], true, "the allowed act knows it: {reply}");
+        let reply = act(None);
+        assert_eq!(reply["result"]["result"]["granted"], false, "nothing left over for the next call: {reply}");
+    }
+
+    /// The guard puts back what was there, so a nested or panicking dispatch cannot leave the
+    /// next call on this thread reading as allowed.
+    #[test]
+    fn a_grant_is_seen_for_its_own_call_only() {
+        assert!(!call_was_granted(), "outside a dispatch nothing was allowed");
+        {
+            let _allowed = GrantedScope::enter(true);
+            assert!(call_was_granted());
+            {
+                let _inner = GrantedScope::enter(false);
+                assert!(!call_was_granted());
+            }
+            assert!(call_was_granted(), "the inner call's end restores the outer one's");
+        }
+        assert!(!call_was_granted(), "and the grant goes with its call");
     }
 }

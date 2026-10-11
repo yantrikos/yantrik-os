@@ -23,6 +23,9 @@ chrono = { workspace = true }
 # panics.
 zbus = { workspace = true }
 tracing = { workspace = true }
+# Folding fullwidth, mathematical and accented letters to plain Latin before a name is compared
+# with the desktop's own (names.rs).
+unicode-normalization = { workspace = true }
 
 [dev-dependencies]
 # One test serves the real handler on a real socket, as `run_service` does.

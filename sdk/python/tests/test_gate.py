@@ -11,7 +11,7 @@ import time
 import unittest
 
 import support
-from yantrik_surface import (Authority, GrantRefused, Mode, Surface, agent_token, decide,
+from yantrik_surface import (Action, Authority, GrantRefused, Mode, Surface, agent_token, decide,
                              gate, grant_refusal, mode_from, wire)
 
 G = support.RUST_GATE
@@ -57,6 +57,18 @@ class TestReadingTheFiles(unittest.TestCase):
         self.assertEqual(mode_from(json.dumps(dict(bypass, previous="bypass")), now + 60).name,
                          "ask")
         self.assertEqual(mode_from(json.dumps(dict(bypass, previous=None)), now + 60).name, "ask")
+        # A lapse is a lowering: the session rules the file lists end with the bypass.
+        ruled = dict(bypass, session_rules=[{"app": "terminal", "action": "run"}])
+        self.assertEqual(len(mode_from(json.dumps(ruled), now).session_rules), 1)
+        self.assertEqual(mode_from(json.dumps(ruled), now + 60), ("auto", set()))
+        # Full bypass is time-boxed the same way, and neither bypass is ever what one ends in.
+        full = dict(bypass, mode="bypass_all")
+        self.assertEqual(mode_from(json.dumps(full), now).name, "bypass_all")
+        self.assertEqual(mode_from(json.dumps(full), now + 60).name, "auto")
+        for back_to in ("bypass", "bypass_all"):
+            for name in ("bypass", "bypass_all"):
+                self.assertEqual(mode_from(json.dumps(dict(bypass, mode=name, previous=back_to)),
+                                           now + 60).name, "ask", (name, back_to))
         # `as_u64`: a deadline that is not a whole non-negative number is no deadline at all.
         for until in (None, -5, 1.5e9, "1800000000", True):
             self.assertEqual(
@@ -188,15 +200,20 @@ class TestReadingTheFiles(unittest.TestCase):
     def test_the_tables_are_the_rust_tables(self):
         support.quoted(self, G, 'pub const LADDER: [&str; 4] = ["safe", "standard", "sensitive", '
                                 '"dangerous"];')
-        support.quoted(self, G, '[("plan", "safe"), ("ask", "standard"), ("auto", "sensitive"), '
-                                '("bypass", "dangerous")];')
+        support.quoted(self, G, 'pub const MODES: [(&str, &str); 5] = [\n    ("plan", "safe"),\n'
+                                '    ("ask", "standard"),\n    ("auto", "sensitive"),\n'
+                                '    ("bypass", "dangerous"),\n    ("bypass_all", "dangerous"),\n];')
+        support.quoted(self, G, 'pub const TIME_BOXED: [&str; 2] = ["bypass", "bypass_all"];')
+        support.quoted(self, G, 'self.name != "bypass_all"')
         support.quoted(self, G, 'pub const SOCKET_FLOOR: &str = "standard";')
         support.quoted(self, G, 'pub const DEFAULT_MODE: &str = "ask";')
         support.quoted(self, G, 'pub const DEFAULT_CEILING: &str = "sensitive";')
         support.quoted(self, G, 'pub const MODE_FILE: &str = "mind-mode.json";')
         self.assertEqual(gate.LADDER, ("safe", "standard", "sensitive", "dangerous"))
         self.assertEqual(list(gate.MODES.items()), [("plan", "safe"), ("ask", "standard"),
-                                                    ("auto", "sensitive"), ("bypass", "dangerous")])
+                                                    ("auto", "sensitive"), ("bypass", "dangerous"),
+                                                    ("bypass_all", "dangerous")])
+        self.assertEqual(gate.TIME_BOXED, ("bypass", "bypass_all"))
         self.assertEqual((gate.SOCKET_FLOOR, gate.DEFAULT_MODE, gate.DEFAULT_CEILING,
                           gate.MODE_FILE), ("standard", "ask", "sensitive", "mind-mode.json"))
 
@@ -206,6 +223,85 @@ def at(ceiling, mode, granted=False):
 
 
 class TestDecide(unittest.TestCase):
+    def test_a_call_held_from_a_phone_asks_above_its_level_in_every_mode(self):
+        for mode in ("plan", "ask", "auto", "bypass", "bypass_all"):
+            held = Authority("dangerous", Mode(mode, frozenset()), asks_above=0)
+            self.assertIsNone(decide(held, "notes", "list_notes", "safe", "List them"), mode)
+            err = decide(held, "notes", "new_note", "standard", "Make a note")
+            self.assertTrue(err and err.startswith("GRANT:"), (mode, err))
+            if mode != "plan":
+                self.assertIn("request_approval", err, mode)
+            held.granted = True
+            self.assertIsNone(decide(held, "notes", "new_note", "standard", "Make a note"), mode)
+        ruled = Authority("dangerous", Mode("auto", frozenset({("notes", "new_note")})), asks_above=0)
+        self.assertIsNotNone(decide(ruled, "notes", "new_note", "standard", "Make a note"))
+
+    def test_an_open_ended_action_asks_once_and_a_session_rule_covers_it(self):
+        # Pranab's decision of 29 September 2026, as `gate.rs` holds it.
+        support.quoted(self, G, "fn an_open_ended_action_asks_once_and_a_session_rule_covers_it()")
+        support.quoted(self, support.RUST_CONTRACTS,
+                       'pub const OPEN_ENDED: &str = "What it runs can do anything you can.";')
+        self.assertEqual(gate.OPEN_ENDED, "What it runs can do anything you can.")
+        run = "Type a command line into the active shell and press Return. " + gate.OPEN_ENDED
+        for mode in ("ask", "auto", "bypass"):
+            for graded in ("standard", "sensitive"):
+                err = decide(at("sensitive", mode), "terminal", "run", graded, run)
+                self.assertTrue(err.startswith("GRANT: terminal.run is graded `%s`" % graded), err)
+                self.assertIn("%s mode, which asks once before running anything like that" % mode, err)
+                self.assertIn("Allowed for this session from the card", err)
+                ruled = Authority("sensitive", Mode(mode, frozenset({("terminal", "run")})))
+                self.assertIsNone(decide(ruled, "terminal", "run", graded, run), (mode, graded))
+        self.assertIsNone(decide(at("sensitive", "ask"), "terminal", "read", "safe", run))
+        self.assertIsNone(decide(at("sensitive", "bypass_all"), "terminal", "run", "sensitive", run))
+        self.assertIn("plan mode, which raises no card for that",
+                      decide(at("sensitive", "plan"), "terminal", "run", "standard", run))
+        self.assertNotIn("for this session",
+                         decide(at("dangerous", "bypass"), "blender", "run_python", "dangerous", run))
+        both = "Run a script, then delete what it made. It cannot be undone. " + gate.OPEN_ENDED
+        ruled = Authority("dangerous", Mode("bypass", frozenset({("terminal", "run_and_clean")})))
+        err = decide(ruled, "terminal", "run_and_clean", "sensitive", both)
+        self.assertIn(support.GATE_FINAL_WORD, err, "cannot-be-undone wins")
+        self.assertNotIn("for this session", err)
+        held = Authority("dangerous", Mode("auto", frozenset({("terminal", "run")})), asks_above=0)
+        self.assertIn("person's phone", decide(held, "terminal", "run", "sensitive", run))
+
+    def test_an_action_says_it_is_open_ended_the_way_the_rust_builder_does(self):
+        support.quoted(self, support.RUST_CONTRACTS, "fn with_open_ended(description: &str) -> String {")
+        a = Action("run", "Type a command line into the shell", "sensitive", open_ended=True)
+        self.assertEqual(a.description,
+                         "Type a command line into the shell. What it runs can do anything you can.")
+        self.assertEqual(gate.with_open_ended(a.description), a.description, "said once")
+        self.assertEqual(gate.with_open_ended("Run it.  "), "Run it. What it runs can do anything you can.")
+        self.assertEqual(gate.with_open_ended(""), gate.OPEN_ENDED)
+        self.assertEqual(a.schema()["description"], a.description)
+        self.assertTrue(gate.open_ended(a.description.upper()))
+        self.assertFalse(gate.open_ended("Type a command line into the shell"))
+        s = Surface("terminal-under-test")
+
+        @s.action(grade="sensitive", open_ended=True)
+        def run(command: str) -> dict:
+            """Type a command line into the active shell and press Return."""
+            return {}
+        described = {x["name"]: x for x in s.describe_json()["actions"]}
+        self.assertTrue(described["run"]["description"].endswith(gate.OPEN_ENDED))
+
+    def test_a_held_call_is_refused_for_the_hold_in_the_holds_words(self):
+        # In full bypass, on an action that cannot be undone, the hold is the only reason, and
+        # the refusal must not say full bypass asks about it.
+        fragment = "which asks before anything above `{above}` whatever the mode"
+        support.quoted(self, G, fragment)
+        held = Authority("dangerous", Mode("bypass_all", frozenset()), asks_above=0)
+        err = decide(held, "calendar", "delete_event", "sensitive", DELETE)
+        self.assertEqual(err, (
+            "GRANT: calendar.delete_event is graded `sensitive` and this call answers a turn from "
+            "the person's phone, which asks before anything above `safe` whatever the mode — so it "
+            "was not run. " + support.GATE_HOW))
+        self.assertNotIn("bypass_all mode", err)
+        planned = Authority("dangerous", Mode("plan", frozenset()), asks_above=0)
+        err = decide(planned, "notes", "new_note", "standard", "Make a note")
+        self.assertIn("plan mode", err)
+        self.assertNotIn("phone", err)
+
     """`gate.rs`'s own tests, ported one for one."""
 
     def test_the_order_is_ceiling_then_mode_and_each_says_which_it_was(self):
@@ -215,11 +311,15 @@ class TestDecide(unittest.TestCase):
         self.assertTrue(err.startswith("GRANT:") and "ask mode" in err)
         self.assertIsNone(decide(at("dangerous", "bypass"), "system-monitor", "kill_process",
                                  "dangerous"))
+        self.assertIsNone(decide(at("dangerous", "bypass_all"), "system-monitor", "kill_process",
+                                 "dangerous"))
+        self.assertTrue(decide(at("sensitive", "bypass_all"), "system-monitor", "kill_process",
+                               "dangerous").startswith("CEILING:"))
         self.assertIsNone(decide(at("dangerous", "ask", granted=True), "system-monitor",
                                  "kill_process", "dangerous"))
 
     def test_standard_is_the_floor_in_every_mode_and_the_ceiling_still_binds_it(self):
-        for mode in ("plan", "ask", "auto", "bypass"):
+        for mode in ("plan", "ask", "auto", "bypass", "bypass_all"):
             self.assertIsNone(decide(at("sensitive", mode), "notifications", "notify",
                                      "standard"), mode)
         self.assertTrue(decide(at("safe", "bypass"), "notifications", "notify",
@@ -284,13 +384,39 @@ class TestWhatCannotBeUndone(unittest.TestCase):
         err = decide(at("sensitive", "ask"), "blender", "delete_object", "standard",
                      "Delete an object. Past that undo it is not recoverable.")
         self.assertTrue(err.startswith("GRANT:") and "cannot be undone" in err, err)
-        # Bypass asks nobody, a grant answers it, and a `safe` read is never turned into a card.
-        self.assertIsNone(decide(at("sensitive", "bypass"), "calendar", "delete_event",
+        # Full bypass asks nobody, a grant answers it, and a `safe` read is never turned into a
+        # card. Plain bypass asks (the next test).
+        self.assertIsNone(decide(at("sensitive", "bypass_all"), "calendar", "delete_event",
                                  "sensitive", DELETE))
+        self.assertIsNotNone(decide(at("sensitive", "bypass"), "calendar", "delete_event",
+                                    "sensitive", DELETE))
         self.assertIsNone(decide(at("sensitive", "auto", granted=True), "calendar",
                                  "delete_event", "sensitive", DELETE))
         self.assertIsNone(decide(at("sensitive", "plan"), "files", "describe_trash", "safe",
                                  "Lists what was deleted permanently"))
+
+    def test_bypass_still_asks_before_what_cannot_be_undone_and_full_bypass_does_not(self):
+        support.quoted(self, G, "fn bypass_still_asks_before_what_cannot_be_undone_and_full_bypass_does_not()")
+        commit = "Press the button that completes the purchase. It cannot be undone"
+        err = decide(at("dangerous", "bypass"), "calendar", "delete_event", "sensitive", DELETE)
+        self.assertTrue(err.startswith("GRANT:") and "bypass mode, which asks before anything "
+                        "that cannot be undone" in err, err)
+        self.assertIn("request_approval", err)
+        self.assertIsNotNone(decide(at("dangerous", "bypass"), "browser", "commit", "sensitive",
+                                    commit))
+        self.assertIsNone(decide(at("dangerous", "bypass"), "system-monitor", "kill_process",
+                                 "dangerous"))
+        for app, action, purpose in (("calendar", "delete_event", DELETE),
+                                     ("browser", "commit", commit)):
+            self.assertIsNone(decide(at("dangerous", "bypass_all"), app, action, "sensitive",
+                                     purpose), action)
+            self.assertIsNone(decide(at("dangerous", "bypass", granted=True), app, action,
+                                     "sensitive", purpose), action)
+        ruled = Authority("dangerous", Mode("bypass", frozenset({("calendar", "delete_event")})))
+        self.assertIsNotNone(decide(ruled, "calendar", "delete_event", "sensitive", DELETE))
+        self.assertTrue(Mode("bypass").asks_before_what_cannot_be_undone())
+        self.assertFalse(Mode("bypass_all").asks_before_what_cannot_be_undone())
+        self.assertTrue(Mode("yolo").asks_before_what_cannot_be_undone())
 
     def test_a_session_rule_never_covers_what_cannot_be_undone_nor_anything_in_plan(self):
         def with_rule(mode, action):
@@ -357,9 +483,11 @@ class Shell:
     def __init__(self):
         self.spent = []
         self.calls = []
+        self.callers = []
 
-    def __call__(self, grant, app, action, args):
+    def __call__(self, grant, app, action, args, caller=None):
         self.calls.append((grant, app, action, args))
+        self.callers.append(caller)
         if not grant.startswith("ok-"):
             raise GrantRefused("no approval request `%s`." % grant)
         if (app, action, args) != ("system-monitor", "kill_process", {"pid": 42}):
@@ -370,8 +498,14 @@ class Shell:
         self.spent.append(grant)
 
 
+def no_reach(token, what):
+    """The shell's answer to `reach_of` for a live token with no role: nothing to hold it to."""
+    return {"jsonrpc": "2.0", "id": 1, "result": {"accepted": True, "settled": True,
+                                                  "result": {"reach": None, "known": True}}}
+
+
 def sysmon(shell):
-    s = Surface("system-monitor", spend_grant=shell)
+    s = Surface("system-monitor", spend_grant=shell, ask_shell=no_reach)
     seen = {}
 
     @s.action("kill_process", grade="dangerous")
@@ -434,7 +568,7 @@ class TestGrants(support.MachineCase):
             why="no approval request `made-up`."))
 
     def test_any_grant_attached_is_spent_even_where_the_mode_would_not_ask(self):
-        self.machine.set_mode("bypass")
+        self.machine.set_mode("bypass_all")
         shell = Shell()
         s, _ = sysmon(shell)
         message = self.refusal(lambda: s.act({"action": "kill_process", "args": {"pid": 7},
@@ -473,9 +607,11 @@ class TestGrants(support.MachineCase):
                                         {"pid": 42})])
         self.assertEqual(seen["token"], "tok-1", "the token beside args reaches the handler")
         self.assertIsNone(agent_token(), "and is gone once the dispatch is over")
+        # Spent as no agent: the shell cannot yet believe an agent forwarded by a Python app (#466).
+        self.assertEqual(shell.callers, [None])
 
     def test_a_token_inside_args_alone_is_removed_and_not_used(self):
-        self.machine.set_mode("bypass")
+        self.machine.set_mode("bypass_all")
         s, seen = sysmon(Shell())
         with contextlib.redirect_stderr(io.StringIO()):
             s.act({"action": "kill_process", "args": {"pid": 1, "agent_token": "smuggled"}})

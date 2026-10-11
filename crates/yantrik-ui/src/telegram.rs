@@ -171,6 +171,7 @@ fn poller_loop(
                                 .downcast_ref::<VecModel<crate::MessageData>>()
                                 .unwrap();
                             model.push(crate::MessageData {
+                                run: Default::default(),
                                 role: SharedString::from("user"),
                                 content: SharedString::from(format!("[Telegram] {}", user_text)),
                                 is_streaming: false,
@@ -270,6 +271,7 @@ fn poller_loop(
                                 .downcast_ref::<VecModel<crate::MessageData>>()
                                 .unwrap();
                             model.push(crate::MessageData {
+                                run: Default::default(),
                                 role: SharedString::from("assistant"),
                                 content: SharedString::from(format!("[Telegram] {}", resp_text)),
                                 is_streaming: false,
@@ -314,7 +316,22 @@ fn handle_voice_message(
     let _ = yantrik_companion::telegram::send_typing(config);
 
     // 1. Download the voice file
-    let ogg_path = format!("/tmp/tg_voice_{}.ogg", update.message_id);
+    // A fresh private directory for this message's audio, removed when the handler returns. The
+    // files are the person's voice, and curl and ffmpeg write them, not us; a name in /tmp (and a
+    // message id is no secret) could be read, or planted as a link for them to write through.
+    // A directory made new for this call, in the work dir the file tools cannot reach, has nothing
+    // in it for anyone to have planted, and nobody can add anything while edge-tts waits.
+    let (_work, ogg_path, reply_ogg) = match voice_workdir() {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::warn!(error = %e, "No private directory for the voice file");
+            let _ = yantrik_companion::telegram::send_message(
+                config, "(couldn't download your voice message)",
+            );
+            let _ = yantrik_companion::telegram::clear_reaction(config, update.message_id);
+            return;
+        }
+    };
     let file_path = match yantrik_companion::telegram::get_file(config, &voice.file_id) {
         Ok(p) => p,
         Err(e) => {
@@ -402,6 +419,7 @@ fn handle_voice_message(
                 .downcast_ref::<VecModel<crate::MessageData>>()
                 .unwrap();
             model.push(crate::MessageData {
+                run: Default::default(),
                 role: SharedString::from("user"),
                 content: SharedString::from(ui_text),
                 is_streaming: false,
@@ -478,8 +496,6 @@ fn handle_voice_message(
     let _ = yantrik_companion::telegram::send_recording_voice(config);
 
     let (rate, pitch) = tts_params_for_bond(bridge);
-    let reply_ogg = format!("/tmp/tg_reply_{}.ogg", update.message_id);
-
     match yantrik_companion::audio_convert::text_to_ogg(&response, &reply_ogg, rate, pitch) {
         Ok(()) => {
             if let Err(e) = yantrik_companion::telegram::send_voice(config, &reply_ogg) {
@@ -505,6 +521,7 @@ fn handle_voice_message(
                 .downcast_ref::<VecModel<crate::MessageData>>()
                 .unwrap();
             model.push(crate::MessageData {
+                run: Default::default(),
                 role: SharedString::from("assistant"),
                 content: SharedString::from(format!("[Telegram] {}", resp_text)),
                 is_streaming: false,
@@ -512,6 +529,16 @@ fn handle_voice_message(
             });
         }
     });
+}
+
+/// A fresh private directory for one voice message, with the paths (as the `&str` the telegram
+/// and audio helpers take) of the incoming voice and the spoken reply inside it. The directory
+/// and both files go when the first element is dropped.
+fn voice_workdir() -> Result<(yantrik_ml::private_dir::FreshDir, String, String), String> {
+    let work = yantrik_ml::private_dir::fresh_work_dir("tg-voice").map_err(|e| e.to_string())?;
+    let voice = work.file("voice.ogg").map_err(|e| e.to_string())?;
+    let reply = work.file("reply.ogg").map_err(|e| e.to_string())?;
+    Ok((work, voice, reply))
 }
 
 /// Lazily load Whisper STT engine (loaded once on first voice message).

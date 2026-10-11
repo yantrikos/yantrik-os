@@ -50,6 +50,7 @@ export component DownloadManagerApp inherits AppWindow {
     in property <string> total-speed <=> inner.total-speed;
     in property <int> completed-today <=> inner.completed-today;
     in property <string> error-text <=> inner.error-text;
+    in property <bool> error-is-info <=> inner.error-is-info;
 
     // Filter
     in-out property <int> active-filter <=> inner.active-filter;

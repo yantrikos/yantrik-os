@@ -14,11 +14,13 @@ pub fn register(reg: &mut ToolRegistry, ollama_base: &str, model: &str) {
     reg.register(Box::new(SmartRenameTool { ollama_base: base, model: mdl }));
 }
 
-/// Capture a screenshot via grim (Wayland) and return the file path.
-fn capture_screenshot() -> Result<String, String> {
-    let path = "/tmp/yantrik-vision-screenshot.png";
+/// Capture a screenshot via grim (Wayland) and return the PNG bytes.
+///
+/// grim writes to its stdout (`-`), not a file: the capture is the whole screen, and a file at a
+/// fixed name is one to clear, race and clean up, where a pipe has no name at all.
+fn capture_screenshot() -> Result<Vec<u8>, String> {
     let output = std::process::Command::new("grim")
-        .args(["-t", "png", path])
+        .args(["-t", "png", "-"])
         .output()
         .map_err(|e| format!("grim not available: {e}"))?;
 
@@ -26,7 +28,7 @@ fn capture_screenshot() -> Result<String, String> {
         return Err(format!("grim failed: {}", String::from_utf8_lossy(&output.stderr)));
     }
 
-    Ok(path.to_string())
+    Ok(output.stdout)
 }
 
 /// Base64-encode a file using the `base64` CLI tool (avoids Rust crate dep).
@@ -43,11 +45,14 @@ fn base64_encode_file(path: &str) -> Result<String, String> {
     String::from_utf8(output.stdout).map_err(|e| format!("Invalid UTF-8 from base64: {e}"))
 }
 
-/// Send an image to Ollama's vision API and get a text response.
-/// Writes payload to a temp file to avoid argument length limits with large base64 data.
+/// Send an image file to Ollama's vision API and get a text response.
 fn vision_request(ollama_base: &str, model: &str, prompt: &str, image_path: &str) -> Result<String, String> {
-    let b64 = base64_encode_file(image_path)?;
+    vision_request_b64(ollama_base, model, prompt, base64_encode_file(image_path)?)
+}
 
+/// Send a base64 image to Ollama's vision API and get a text response. The body goes to curl on
+/// its stdin, which also keeps a large base64 image clear of argument length limits.
+fn vision_request_b64(ollama_base: &str, model: &str, prompt: &str, b64: String) -> Result<String, String> {
     // Build JSON payload for Ollama native /api/chat
     let payload = serde_json::json!({
         "model": model,
@@ -59,27 +64,9 @@ fn vision_request(ollama_base: &str, model: &str, prompt: &str, image_path: &str
         "stream": false
     });
 
-    // Write payload to temp file (base64 images can be huge)
-    let payload_path = "/tmp/yantrik-vision-payload.json";
-    std::fs::write(payload_path, payload.to_string())
-        .map_err(|e| format!("Failed to write payload: {e}"))?;
-
     let url = format!("{}/api/chat", ollama_base);
-
-    // Use curl with @file to avoid argument length limits
-    let output = std::process::Command::new("curl")
-        .args([
-            "-fsSL",
-            "--max-time", "120",
-            "-H", "Content-Type: application/json",
-            "-d", &format!("@{payload_path}"),
-            &url,
-        ])
-        .output()
+    let output = crate::pipe::post_json(&url, 120, payload.to_string().into_bytes())
         .map_err(|e| format!("curl failed: {e}"))?;
-
-    // Clean up payload file
-    let _ = std::fs::remove_file(payload_path);
 
     if !output.status.success() {
         return Err(format!("Ollama vision request failed: {}", String::from_utf8_lossy(&output.stderr)));
@@ -130,12 +117,16 @@ impl Tool for AnalyzeScreenTool {
             .and_then(|v| v.as_str())
             .unwrap_or("Describe what's currently visible on this screen. Be specific about applications, text, and content you can see.");
 
-        let image_path = match capture_screenshot() {
-            Ok(path) => path,
+        let png = match capture_screenshot() {
+            Ok(png) => png,
             Err(e) => return format!("Screenshot failed: {e}"),
         };
+        let b64 = {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(png)
+        };
 
-        match vision_request(&self.ollama_base, &self.model, question, &image_path) {
+        match vision_request_b64(&self.ollama_base, &self.model, question, b64) {
             Ok(description) => description,
             Err(e) => format!("Vision analysis failed: {e}"),
         }
@@ -270,7 +261,10 @@ impl Tool for SmartRenameTool {
             return "Error: vision model returned empty filename".to_string();
         }
 
-        let parent = file_path.parent().unwrap_or(std::path::Path::new("/tmp"));
+        // A rename stays beside the file; there is no sensible elsewhere, least of all /tmp.
+        let Some(parent) = file_path.parent() else {
+            return format!("Error: cannot rename {}", file_path.display());
+        };
         let new_path = parent.join(format!("{new_name}.{ext}"));
 
         if new_path.exists() {

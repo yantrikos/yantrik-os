@@ -1,0 +1,26 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Detect</title></head>
+<body>
+<h1>Bot check</h1>
+<p id="result">not checked</p>
+<button onclick="check()">Check</button>
+<script>
+  // What bot-detection scripts do (Cloudflare, DataDome and others use variants of it): log an
+  // object whose `stack` has a getter. Nothing reads it — unless a debugger has the Runtime domain
+  // enabled, which serialises console arguments and so calls the getter.
+  function check() {
+    let seen = false;
+    const bait = new Error();
+    Object.defineProperty(bait, 'stack', { get() { seen = true; return ''; } });
+    console.debug(bait);
+    setTimeout(() => {
+      const verdict = [];
+      if (seen) verdict.push('debugger');
+      if (navigator.webdriver) verdict.push('webdriver');
+      document.getElementById('result').textContent = verdict.length ? 'BOT: ' + verdict.join(', ') : 'human';
+      document.title = verdict.length ? 'BOT' : 'HUMAN';
+    }, 200);
+  }
+  check();
+</script>
+</body></html>

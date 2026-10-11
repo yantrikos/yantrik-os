@@ -76,7 +76,8 @@ export global AppColor {
     // icon is an object with its own colour, like a real one on a real desk, and does not
     // change because the surface around it did. Each is dark enough to hold a white glyph at
     // 3:1 or better, except the three light hues (lime, yellow, amber), which carry a dark
-    // glyph instead — see `on-tile`.
+    // glyph instead — see `on-tile`. AppTile's pre-rendered art is generated from these and from
+    // `hue-for-app` (design/icons/generate.py): change one and run it, or the kit's tests fail.
     out property <color> tile-blue:    #2f6fe4;
     out property <color> tile-sky:     #2f8ae8;
     out property <color> tile-azure:   #1492c2;
@@ -128,15 +129,24 @@ export global AppColor {
              : id == "arcade"         ? "orange"
 
              // The files, and the machine. Files is the folder blue; the rest are cool.
+             //
+             // Not teal: teal is a mind's colour (colour roles), so a wall of teal machine tiles
+             // read as a wall of minds. Containers is the blue (its launcher neighbour Calendar
+             // is red), Downloads the folder sky it saves into, Packages green. Browser alone
+             // keeps teal, because the design names it so (`the_design_colours_hold`).
              : id == "files"          ? "sky"
              : id == "terminal"       ? "green"
              : id == "system"         ? "azure"
              : id == "sysmonitor"     ? "lime"
+             // htop, installed with the OS: a process viewer, so System Monitor's lime with bars
+             // of its own. Its theme icon was a photograph of a bar chart on the neutral plate,
+             // the one picture in a row of flat glyphs (sign-off, 5 October).
+             : id == "htop"           ? "lime"
              : id == "network"        ? "azure"
-             : id == "containers"     ? "teal"
-             : id == "packages"       ? "teal"
+             : id == "containers"     ? "blue"
+             : id == "packages"       ? "green"
              : id == "devices"        ? "slate"
-             : id == "downloads"      ? "teal"
+             : id == "downloads"      ? "sky"
              : id == "browser"        ? "teal"
              : id == "weather"        ? "azure"
 

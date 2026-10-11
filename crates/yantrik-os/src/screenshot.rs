@@ -4,11 +4,8 @@
 //! ~/Pictures/Screenshots/ with timestamp filenames, or pipes directly
 //! to the Wayland clipboard via `wl-copy`.
 //!
-//! Keybinds (configured in labwc rc.xml via `keybinds.rs`):
-//! - Print         -> full screen capture (save to file)
-//! - Shift+Print   -> region selection (save to file)
-//! - Ctrl+Print    -> full screen capture (copy to clipboard)
-//! - Ctrl+S+Print  -> region selection (copy to clipboard)
+//! The Print and Super+Shift+S keys are bound in `config/labwc/rc.xml`, which calls grim
+//! itself; this module serves the command palette and the control surface.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};

@@ -8,13 +8,12 @@ Type=simple
 ExecStart=/usr/bin/python3 /opt/yantrik/share/harnesses/openclaw/yantrik_openclaw.py
 Restart=on-failure
 RestartSec=5
-# A user service does not inherit a login shell's PATH, and `openclaw` and `node` are installed
-# per-user (~/.npm-global/bin, ~/.local/node/bin). Without this the CLI route cannot start
-# openclaw at all and the picker line says "openclaw" with no version, because even
-# `openclaw --version` could not be run:
-#   Environment=PATH=%h/.npm-global/bin:%h/.local/node/bin:/usr/bin:/bin
-# The same string can go in `path` in ~/.config/yantrik/openclaw.json instead, which this
-# harness prepends.
+# A user service does not inherit a login shell's PATH, and the Install button puts `openclaw`
+# and the `node` it runs on in ~/.local/bin (harnesses/lib/install/npm.sh). Without it on PATH
+# the CLI route cannot start openclaw at all and the picker line says "openclaw" with no
+# version, because even `openclaw --version` could not be run. An install somewhere else goes
+# in `path` in ~/.config/yantrik/openclaw.json, which this harness prepends.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 #
 # OpenClaw's model, keys, memory and MCP servers are OpenClaw's own business and live in
 # ~/.openclaw/openclaw.json and ~/.openclaw/.env. Nothing in this unit and nothing in the image

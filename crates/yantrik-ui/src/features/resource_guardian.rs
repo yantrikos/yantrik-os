@@ -70,7 +70,7 @@ impl ProactiveFeature for ResourceGuardian {
         let mut urges = Vec::new();
 
         match event {
-            SystemEvent::BatteryChanged { level, charging, time_to_empty_mins } => {
+            SystemEvent::BatteryChanged { level, charging, time_to_empty_mins, .. } => {
                 if !charging {
                     if *level <= self.battery_critical && self.should_fire("battery_critical") {
                         let body = match time_to_empty_mins {
@@ -327,6 +327,8 @@ mod tests {
             level: 15,
             charging: false,
             time_to_empty_mins: Some(45),
+            time_to_full_mins: None,
+            state: Default::default(),
         };
 
         let urges = guardian.on_event(&event, &ctx);
@@ -344,6 +346,8 @@ mod tests {
             level: 5,
             charging: false,
             time_to_empty_mins: Some(10),
+            time_to_full_mins: None,
+            state: Default::default(),
         };
 
         let urges = guardian.on_event(&event, &ctx);
@@ -360,6 +364,8 @@ mod tests {
             level: 15,
             charging: true,
             time_to_empty_mins: None,
+            time_to_full_mins: None,
+            state: Default::default(),
         };
 
         let urges = guardian.on_event(&event, &ctx);
@@ -375,6 +381,8 @@ mod tests {
             level: 15,
             charging: false,
             time_to_empty_mins: None,
+            time_to_full_mins: None,
+            state: Default::default(),
         };
 
         let urges1 = guardian.on_event(&event, &ctx);

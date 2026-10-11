@@ -13,6 +13,8 @@ import { AppHeader } from "components/app_header.slint";
 import { AgentRail, AgentContextItem, AgentSuggestion } from "components/agent_rail.slint";
 import { AgentProposalCard, AgentProposal } from "components/agent_proposal.slint";
 import { AppColor, AppIdentity } from "components/app_color.slint";
+import { YButton } from "components/y_button.slint";
+import { YReading } from "components/y_reading.slint";
 
 // ── Data structs ──
 
@@ -29,7 +31,7 @@ export struct EthernetInterface {
     status: string,       // "UP", "DOWN"
     ip-address: string,
     mac-address: string,
-    speed: string,        // "1000Mbps"
+    speed: string,        // "1000 Mbit/s"; "" when the link reports none (virtio)
     is-dhcp: bool,
     subnet: string,
     gateway: string,
@@ -120,7 +122,7 @@ component ToggleSwitch inherits TouchArea {
             width: 44px;
             height: 24px;
             border-radius: Theme.r-lg;
-            background: checked ? AppIdentity.accent : Theme.bg-elevated;
+            background: checked ? Theme.accent : Theme.bg-elevated;
             border-width: 1px;
             border-color: checked ? Theme.accent-dim : Theme.text-dim;
 
@@ -131,47 +133,14 @@ component ToggleSwitch inherits TouchArea {
                 width: 18px;
                 height: 18px;
                 border-radius: 9px;
-                background: Theme.text-primary;
+                background: checked ? Theme.text-on-accent : Theme.text-primary;
                 animate x { duration: Theme.dur-fast; easing: ease-in-out; }
             }
         }
     }
 }
-// ── Action button component ──
-
-component ActionButton inherits TouchArea {
-    in property <string> label;
-    in property <bool> danger: false;
-    in property <bool> primary: false;
-    height: 36px;
-
-    Rectangle {
-        border-radius: Theme.r-lg;
-        background: primary ? AppIdentity.accent
-                  : danger ? Theme.color-danger-dim
-                  : (parent.has-hover ? Theme.hover-fill-strong : Theme.bg-elevated);
-        border-width: 1px;
-        border-color: primary ? Theme.accent-dim
-                    : danger ? Theme.color-danger
-                    : Theme.border-subtle;
-
-        HorizontalLayout {
-            padding-left: Theme.sp-4;
-            padding-right: Theme.sp-4;
-            alignment: center;
-
-            Text {
-                text: label;
-                color: primary ? Theme.bg-deep
-                     : danger ? Theme.color-danger
-                     : Theme.text-primary;
-                font-size: Theme.fs-caption;
-                font-weight: 600;
-                vertical-alignment: center;
-            }
-        }
-    }
-}
+// Buttons are the kit's YButton. This screen drew its own, and its primary wore the app's
+// cyan identity rather than the accent every primary is (colour system).
 
 // ── Main component ──
 
@@ -557,8 +526,12 @@ export component NetworkManager inherits Rectangle {
                                 }
                                 Text {
                                     // The rail carries live state: the point of the app is to see
-                                    // all six at once, not one per tab.
-                                    text: root.ethernet-interfaces.length == 0 ? "No interface" : root.ethernet-interfaces[0].status == "UP" ? root.ethernet-interfaces[0].speed : "Down";
+                                    // all six at once, not one per tab. A link up with no speed
+                                    // reported (virtio has none) is still up, not blank.
+                                    text: root.ethernet-interfaces.length == 0 ? "No interface"
+                                        : root.ethernet-interfaces[0].status != "UP" ? "Down"
+                                        : root.ethernet-interfaces[0].speed != "" ? root.ethernet-interfaces[0].speed
+                                        : "Up";
                                     color: root.ethernet-interfaces.length > 0 && root.ethernet-interfaces[0].status == "UP" ? Theme.color-success : Theme.text-dim;
                                     font-size: Theme.fs-micro;
                                     overflow: elide;
@@ -619,6 +592,10 @@ export component NetworkManager inherits Rectangle {
                                     text: root.firewall-state == "absent" ? "Not installed"
                                         : root.firewall-state == "unknown" ? "Unknown"
                                         : root.firewall-rule-count < 0 ? root.firewall-state
+                                        // Active and inactive say so in words, not in green and
+                                        // amber alone.
+                                        : root.firewall-state == "active" ? "Filtering · \{root.firewall-rule-count} rules"
+                                        : root.firewall-state == "inactive" ? "Not filtering · \{root.firewall-rule-count} rules"
                                         : "\{root.firewall-rule-count} rules";
                                     color: root.firewall-state == "active" ? Theme.color-success
                                          : root.firewall-state == "inactive" ? Theme.color-warning
@@ -811,10 +788,11 @@ export component NetworkManager inherits Rectangle {
                                     }
                                 }
 
-                                ActionButton {
+                                YButton {
                                     label: "Disconnect";
-                                    width: 110px;
-                                    danger: true;
+                                    // Secondary, not the destructive red: a network you leave
+                                    // is one click from rejoining; nothing is lost.
+                                    variant: 1;
                                     clicked => { root.wifi-disconnect(); }
                                 }
                             }
@@ -822,21 +800,13 @@ export component NetworkManager inherits Rectangle {
                             // Details row
                             HorizontalLayout {
                                 spacing: Theme.sp-6;
-                                VerticalLayout {
-                                    spacing: 2px;
-                                    Text { text: "IP Address"; color: Theme.text-dim; font-size: Theme.fs-caption; }
-                                    Text { text: root.wifi-ip-address != "" ? root.wifi-ip-address : "—"; color: Theme.text-secondary; font-size: Theme.fs-body; }
-                                }
+                                YReading { label: "IP Address"; value: root.wifi-ip-address; }
                                 VerticalLayout {
                                     spacing: 2px;
                                     Text { text: "Signal"; color: Theme.text-dim; font-size: Theme.fs-caption; }
                                     Text { text: root.wifi-signal-strength + "%"; color: Theme.text-secondary; font-size: Theme.fs-body; }
                                 }
-                                VerticalLayout {
-                                    spacing: 2px;
-                                    Text { text: "Speed"; color: Theme.text-dim; font-size: Theme.fs-caption; }
-                                    Text { text: root.wifi-speed != "" ? root.wifi-speed : "—"; color: Theme.text-secondary; font-size: Theme.fs-body; }
-                                }
+                                YReading { label: "Speed"; value: root.wifi-speed; }
                             }
                         }
                     }
@@ -887,30 +857,14 @@ export component NetworkManager inherits Rectangle {
                                 // Row 1
                                 HorizontalLayout {
                                     spacing: Theme.sp-7;
-                                    VerticalLayout {
-                                        spacing: 2px;
-                                        Text { text: "IP Address"; color: Theme.text-dim; font-size: Theme.fs-caption; }
-                                        Text { text: root.wifi-ip-address != "" ? root.wifi-ip-address : "\u{2014}"; color: Theme.text-secondary; font-size: Theme.fs-body; }
-                                    }
-                                    VerticalLayout {
-                                        spacing: 2px;
-                                        Text { text: "Subnet Mask"; color: Theme.text-dim; font-size: Theme.fs-caption; }
-                                        Text { text: root.wifi-subnet != "" ? root.wifi-subnet : "\u{2014}"; color: Theme.text-secondary; font-size: Theme.fs-body; }
-                                    }
+                                    YReading { label: "IP Address"; value: root.wifi-ip-address; }
+                                    YReading { label: "Subnet Mask"; value: root.wifi-subnet; }
                                 }
                                 // Row 2
                                 HorizontalLayout {
                                     spacing: Theme.sp-7;
-                                    VerticalLayout {
-                                        spacing: 2px;
-                                        Text { text: "Gateway"; color: Theme.text-dim; font-size: Theme.fs-caption; }
-                                        Text { text: root.wifi-gateway != "" ? root.wifi-gateway : "\u{2014}"; color: Theme.text-secondary; font-size: Theme.fs-body; }
-                                    }
-                                    VerticalLayout {
-                                        spacing: 2px;
-                                        Text { text: "DNS"; color: Theme.text-dim; font-size: Theme.fs-caption; }
-                                        Text { text: root.wifi-dns != "" ? root.wifi-dns : "\u{2014}"; color: Theme.text-secondary; font-size: Theme.fs-body; }
-                                    }
+                                    YReading { label: "Gateway"; value: root.wifi-gateway; }
+                                    YReading { label: "DNS"; value: root.wifi-dns; }
                                 }
                             }
                         }
@@ -944,10 +898,9 @@ export component NetworkManager inherits Rectangle {
                                     vertical-alignment: center;
                                 }
 
-                                ActionButton {
+                                YButton {
                                     label: "Scan";
-                                    width: 80px;
-                                    primary: true;
+                                    variant: 0;
                                     clicked => { root.wifi-scan(); }
                                 }
                             }
@@ -1195,40 +1148,16 @@ export component NetworkManager inherits Rectangle {
                             // Details grid
                             HorizontalLayout {
                                 spacing: Theme.sp-7;
-                                VerticalLayout {
-                                    spacing: 2px;
-                                    Text { text: "IP Address"; color: Theme.text-dim; font-size: Theme.fs-caption; }
-                                    Text { text: iface.ip-address != "" ? iface.ip-address : "—"; color: Theme.text-secondary; font-size: Theme.fs-body; }
-                                }
-                                VerticalLayout {
-                                    spacing: 2px;
-                                    Text { text: "MAC"; color: Theme.text-dim; font-size: Theme.fs-caption; }
-                                    Text { text: iface.mac-address != "" ? iface.mac-address : "—"; color: Theme.text-secondary; font-size: Theme.fs-body; }
-                                }
-                                VerticalLayout {
-                                    spacing: 2px;
-                                    Text { text: "Speed"; color: Theme.text-dim; font-size: Theme.fs-caption; }
-                                    Text { text: iface.speed != "" ? iface.speed : "—"; color: Theme.text-secondary; font-size: Theme.fs-body; }
-                                }
+                                YReading { label: "IP Address"; value: iface.ip-address; }
+                                YReading { label: "MAC"; value: iface.mac-address; }
+                                YReading { label: "Speed"; value: iface.speed; }
                             }
 
                             if iface.status == "UP" : HorizontalLayout {
                                 spacing: Theme.sp-7;
-                                VerticalLayout {
-                                    spacing: 2px;
-                                    Text { text: "Subnet"; color: Theme.text-dim; font-size: Theme.fs-caption; }
-                                    Text { text: iface.subnet != "" ? iface.subnet : "—"; color: Theme.text-secondary; font-size: Theme.fs-body; }
-                                }
-                                VerticalLayout {
-                                    spacing: 2px;
-                                    Text { text: "Gateway"; color: Theme.text-dim; font-size: Theme.fs-caption; }
-                                    Text { text: iface.gateway != "" ? iface.gateway : "—"; color: Theme.text-secondary; font-size: Theme.fs-body; }
-                                }
-                                VerticalLayout {
-                                    spacing: 2px;
-                                    Text { text: "DNS"; color: Theme.text-dim; font-size: Theme.fs-caption; }
-                                    Text { text: iface.dns != "" ? iface.dns : "—"; color: Theme.text-secondary; font-size: Theme.fs-body; }
-                                }
+                                YReading { label: "Subnet"; value: iface.subnet; }
+                                YReading { label: "Gateway"; value: iface.gateway; }
+                                YReading { label: "DNS"; value: iface.dns; }
                             }
                         }
                     }
@@ -1289,10 +1218,13 @@ export component NetworkManager inherits Rectangle {
 
                                 Text {
                                     // Four words, four different statements. "Unknown" is not
-                                    // "Off", and "not installed" is neither.
+                                    // "Off", and "not installed" is neither. Absent means only
+                                    // that none of the tools the service looks for is on the
+                                    // machine: the kernel's own rules were not read, so it says
+                                    // no more than that (review by GPT-6 Astra, G).
                                     text: root.firewall-state == "active" ? "Filtering"
                                         : root.firewall-state == "inactive" ? "Installed, not filtering"
-                                        : root.firewall-state == "absent" ? "No firewall installed"
+                                        : root.firewall-state == "absent" ? "No supported firewall manager detected"
                                         : "Could not be determined";
                                     color: root.firewall-state == "active" ? Theme.color-success
                                          : root.firewall-state == "inactive" ? Theme.color-warning
@@ -1302,6 +1234,14 @@ export component NetworkManager inherits Rectangle {
                                     vertical-alignment: center;
                                     horizontal-stretch: 1;
                                 }
+                            }
+
+                            // What was not looked at, when only the tools were.
+                            if root.firewall-state == "absent" : Text {
+                                text: "Active filtering rules: not checked";
+                                color: Theme.text-secondary;
+                                font-size: Theme.fs-caption;
+                                wrap: word-wrap;
                             }
 
                             // Why the line above says what it says. Always drawn when there is a
@@ -1501,15 +1441,14 @@ export component NetworkManager inherits Rectangle {
                         spacing: 10px;
                         alignment: end;
 
-                        ActionButton {
+                        YButton {
                             label: "Cancel";
-                            width: 80px;
+                            variant: 1;
                             clicked => { root.wifi-password-visible = false; }
                         }
-                        ActionButton {
+                        YButton {
                             label: "Connect";
-                            width: 100px;
-                            primary: true;
+                            variant: 0;
                             clicked => {
                                 root.wifi-connect(root.wifi-password-ssid, root.wifi-password-input);
                                 root.wifi-password-visible = false;

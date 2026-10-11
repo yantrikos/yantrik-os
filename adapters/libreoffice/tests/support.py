@@ -70,7 +70,7 @@ class Case(unittest.TestCase):
     """A surface over a running fake LibreOffice, on a machine of the test's own."""
 
     ceiling = "sensitive"
-    mode = "bypass"
+    mode = "bypass_all"
 
     def setUp(self):
         self.machine = Machine(self.ceiling, self.mode)

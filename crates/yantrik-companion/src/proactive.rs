@@ -663,7 +663,7 @@ fn is_emoji(c: char) -> bool {
 }
 
 /// Collapse the double spaces a removal left behind and trim, without flattening line breaks —
-/// `headline_and_rest` in the shell still reads them to split a title from a body.
+/// `title_and_body` in the shell still reads them to find where a title stops.
 fn tidy_spaces(text: &str) -> String {
     text.split('\n')
         .map(|line| {

@@ -1,0 +1,114 @@
+// YNoticeBar — what could not be done, said once, in the layout, until it is dismissed.
+//
+// One component for a line every app had drawn for itself: Calendar, the container manager and
+// Agents each had their own, and Calendar's was positioned at y: 0 over whatever its sidebar was
+// showing — a refused delete wrote itself across the day's header ("3 events", New) and spilled
+// past its own box. This one takes its own row in whatever layout holds it, so nothing sits
+// under it; wraps, up to `max-lines`, and elides the rest; and has a close button when the
+// owner handles `dismissed`.
+//
+//     VerticalLayout {
+//         if root.notice != "" : YNoticeBar { text: root.notice; dismissed => { root.dismiss-notice(); } }
+//         ... the content, below it ...
+//     }
+//
+// The text is for a person. A caller's refusal reason, with its ids and action names, belongs in
+// the answer to the caller; what goes here is the one sentence the person needs.
+//
+// Two tones, and neither is a request. Danger (1) is a failure: a red edge on a red tint. Plain
+// information (0) is the neutral raised surface with a 1px edge and an info glyph, no hue: a
+// refused request that left everything as it was is information, and drawing it red said
+// something was destroyed. Nothing here waits on the person — something that does is an
+// approval, with its own card and its own answer, and must not be dressed as a notice.
+import { Theme } from "theme.slint";
+import { YButton } from "y_button.slint";
+import { Icons, Icon } from "icon.slint";
+
+export component YNoticeBar inherits Rectangle {
+    in property <string> text;
+    // 1 = danger (something could not be done), 0 = plain information.
+    in property <int> tone: 1;
+    // The glyph a plain notice leads with. Information by default; a caller whose line reports a
+    // failure that destroys nothing passes `Icons.warning`, so a shape tells the two apart and
+    // not a hue.
+    in property <string> icon-path: Icons.info;
+    in property <bool> dismissible: true;
+    // Beyond this many lines the rest is elided rather than pushing the content off the screen.
+    in property <int> max-lines: 3;
+    // One way to act on what the notice is about ("Open event"), under the text. Empty: none.
+    in property <string> action-label: "";
+    callback dismissed();
+    callback action();
+
+    // A line of caption text, measured once so the cap follows the theme's type size.
+    property <length> line: probe.preferred-height;
+
+    background: root.tone == 1 ? Theme.color-danger-dim : Theme.notice-surface;
+    border-width: root.tone == 1 ? 0 : 1px;
+    border-color: Theme.notice-line;
+    height: row.preferred-height;
+
+    probe := Text { visible: false; text: "X"; font-size: Theme.fs-caption; }
+
+    // The edge, in the danger colour: the one mark that says this line is a failure.
+    if root.tone == 1 : Rectangle {
+        x: 0;
+        width: 2px;
+        height: 100%;
+        background: Theme.color-danger;
+    }
+
+    row := HorizontalLayout {
+        padding-left: root.tone == 1 ? Theme.sp-4 : Theme.sp-3;
+        padding-right: root.dismissible ? Theme.sp-1 : Theme.sp-4;
+        padding-top: Theme.sp-2;
+        padding-bottom: Theme.sp-2;
+        spacing: Theme.sp-2;
+
+        // Top-aligned with the first line, so a wrapped notice keeps its glyph beside its start.
+        if root.tone != 1 : VerticalLayout {
+            alignment: start;
+            padding-top: (root.line - 16px) / 2;
+            Icon { commands: root.icon-path; size: 16px; tint: Theme.text-secondary; }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: Theme.sp-2;
+            alignment: center;
+
+            Text {
+                text: root.text;
+                color: Theme.text-primary;
+                font-size: Theme.fs-caption;
+                wrap: word-wrap;
+                overflow: elide;
+                vertical-alignment: center;
+                max-height: root.line * root.max-lines;
+            }
+
+            // Outline, regular (32px): it opens something, it decides nothing.
+            if root.action-label != "" : HorizontalLayout {
+                alignment: start;
+                YButton {
+                    label: root.action-label;
+                    variant: 1;
+                    size: 1;
+                    clicked => { root.action(); }
+                }
+            }
+        }
+
+        if root.dismissible : VerticalLayout {
+            alignment: start;
+            YButton {
+                label: "Dismiss";
+                icon-path: Icons.close;
+                icon-only: true;
+                variant: 1;
+                size: 0;
+                clicked => { root.dismissed(); }
+            }
+        }
+    }
+}

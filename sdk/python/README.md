@@ -147,7 +147,7 @@ Every action carries one. Choose by what the action can cost the person:
 
 Say in the description what cannot be undone ("It is not recoverable", "cannot be undone",
 "permanently"…): the approval card shows it in red, and the dispatch asks about such an action in
-every mode but `bypass`, whatever its grade above `safe` — and no session rule covers it.
+every mode but full bypass (`bypass_all`), whatever its grade above `safe` — and no session rule covers it.
 
 What happens to a call, in order — the same order every door uses (docs/surface-protocol.md
 §5). First its arguments: a missing one, one the action does not take, and one of the wrong type
@@ -162,10 +162,10 @@ never going to run. Then:
    on an act that cannot run; and only
    to the desktop's own shell — the process listening on `app-shell.sock` must be a
    `yantrik-ui` binary, or the grant is not offered to it.
-3. **The mode** — `plan`, `ask`, `auto` or `bypass`, published by the shell in
+3. **The mode** — `plan`, `ask`, `auto`, `bypass` or `bypass_all`, published by the shell in
    `mind-mode.json`. Above what the mode runs unasked (`ask` runs `standard`, `auto` runs
-   `sensitive`, `bypass` everything under the ceiling), or anything whose description says it
-   cannot be undone, with no grant and no session rule (none in plan), the call is refused with
+   `sensitive`, both bypasses everything under the ceiling), or — in every mode but
+   `bypass_all` — anything whose description says it cannot be undone, with no grant and no session rule (none in plan), the call is refused with
    `GRANT:`, which says how to get one. `standard` runs unasked in every mode on a socket,
    because the desktop's own processes make standard calls.
 

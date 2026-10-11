@@ -45,6 +45,21 @@ impl ServiceHandler for NotesHandler {
         "notes"
     }
 
+    /// The methods that write a note answer the desktop's own programs only (#161). None has a
+    /// caller on the desktop today, and `notes.delete` removes a file outright, with no trash;
+    /// the Notes app's graded actions are the door for everyone else.
+    fn handle_from(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        peer: Option<yantrik_service_sdk::PeerCred>,
+    ) -> Result<serde_json::Value, ServiceError> {
+        if matches!(method, "notes.create" | "notes.update" | "notes.delete" | "notes.set_pinned" | "notes.set_tags") {
+            yantrik_service_sdk::desktop_programs_only(peer, method)?;
+        }
+        self.handle(method, params)
+    }
+
     fn handle(
         &self,
         method: &str,
@@ -427,6 +442,25 @@ mod tests {
         let dir = root.join("notes");
         std::fs::create_dir_all(&dir).unwrap();
         (root, NotesHandler { dir })
+    }
+
+    /// #161: a raw write answers only the desktop's own programs. This test binary is none of
+    /// them, so its `notes.delete` is refused and the note is still there.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_raw_delete_from_a_program_not_the_desktops_is_refused() {
+        let (root, notes) = scratch("raw-delete");
+        std::fs::write(notes.dir.join("keep.md"), "# keep
+
+mine").unwrap();
+        let peer = yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 };
+        let err = notes.handle_from("notes.delete", serde_json::json!({ "id": "keep" }), Some(peer)).unwrap_err();
+        assert_eq!(err.code, -32001, "{}", err.message);
+        assert!(err.message.contains("app.act"), "{}", err.message);
+        assert!(notes.dir.join("keep.md").exists(), "nothing was deleted");
+        // Reading stays open to anyone: it changes nothing.
+        assert!(notes.handle_from("notes.list", serde_json::json!({}), Some(peer)).is_ok());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

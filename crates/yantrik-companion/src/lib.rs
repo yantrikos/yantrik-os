@@ -54,6 +54,9 @@ pub mod telegram;
 pub mod task_manager;
 pub mod query_planner;
 pub mod interjection;
+pub mod judge_route;
+/// The decision model, shared with every thread that asks it.
+pub mod decisions;
 pub mod recipe;
 pub mod recipe_executor;
 pub mod recipe_templates;

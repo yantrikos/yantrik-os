@@ -52,6 +52,20 @@ pub fn close(window: &slint::Window) {
     let _ = window.dispatch_event(slint::platform::WindowEvent::CloseRequested);
 }
 
+/// Call `f` each time the window becomes the active one: brought back to the front, clicked into,
+/// or switched to. For a window that has to check something it may have missed while the person
+/// was elsewhere (Calendar asks whether the date has turned). A window that is not on a winit
+/// backend is never told, and `f` is never called.
+pub fn on_activated(window: &slint::Window, mut f: impl FnMut() + 'static) {
+    use slint::winit_030::{winit::event::WindowEvent, EventResult};
+    window.on_winit_window_event(move |_, event| {
+        if matches!(event, WindowEvent::Focused(true)) {
+            f();
+        }
+        EventResult::Propagate
+    });
+}
+
 /// Connect an `AppWindow`'s bar to its window. Once, after the component is made, in a crate
 /// whose root `.slint` exports the kit's `WindowChrome` global:
 ///

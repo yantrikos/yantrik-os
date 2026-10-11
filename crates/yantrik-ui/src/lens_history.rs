@@ -24,6 +24,7 @@ pub fn bubbles(turns: &[Turn], limit: usize) -> Vec<MessageData> {
     for turn in &turns[start..] {
         if !turn.prompt.trim().is_empty() {
             out.push(MessageData {
+                run: Default::default(),
                 role: "user".into(),
                 content: turn.prompt.as_str().into(),
                 is_streaming: false,
@@ -33,6 +34,7 @@ pub fn bubbles(turns: &[Turn], limit: usize) -> Vec<MessageData> {
         let (content, blocks) = reply(turn);
         if !blocks.is_empty() {
             out.push(MessageData {
+                run: Default::default(),
                 role: "assistant".into(),
                 content: content.into(),
                 is_streaming: false,
@@ -62,12 +64,21 @@ fn reply(turn: &Turn) -> (String, Vec<ContentBlock>) {
                 text.push(said);
             }
             Item::Card(card) => {
+                let card = card.shown();
                 let call = ToolCallData { status: card.state.status().into(), ..card.as_call().to_card() };
                 blocks.push(ContentBlock { block_type: "tool".into(), text: call.summary.clone(), call });
             }
             Item::Note(note) => blocks.push(line(note)),
+            // Never the question's words: a bubble is a copy the Lens keeps on screen, which an
+            // erasure of them could not reach. The question itself is in Agents.
+            Item::Question(q) => blocks.push(line(&match (q.answer.as_str(), q.closed.as_str()) {
+                ("", "") => "Asked you a question (in Agents)".to_string(),
+                ("", why) => format!("Asked you a question (in Agents; not answered: {why})"),
+                (answer, _) => format!("Asked you a question (in Agents; you answered: {answer})"),
+            })),
             Item::Approval(approval) => {
-                let record = if approval.record.trim().is_empty() { &approval.what } else { &approval.record };
+                let record = approval.record.as_str();
+                let record = if record.trim().is_empty() { approval.what.as_str() } else { record };
                 blocks.push(line(record));
             }
             // Folded in the Agents pane, and not part of what was said.
@@ -90,6 +101,13 @@ fn line(text: &str) -> ContentBlock {
 /// none when the Lens already holds a conversation, when the built-in companion is answering (its
 /// conversation is not an agent's), or when the mind has said nothing yet.
 pub fn restore_if_empty(ui: &App) -> usize {
+    // Once per shell start: the empty Lens this is for is the one a start leaves. An empty Lens
+    // later is one the person emptied with New chat (#246), and filling it again would undo the
+    // press the next time the Lens opened.
+    static TRIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if TRIED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return 0;
+    }
     let messages = ui.get_messages();
     let Some(model) = messages.as_any().downcast_ref::<VecModel<MessageData>>() else {
         return 0;
@@ -130,6 +148,7 @@ mod tests {
             started: 100 + n,
             ended: ended.then_some(200 + n),
             ok: ended.then_some(true),
+            lost: false, origin: Default::default(),
             items,
             events: false,
             trail_seq: 0,

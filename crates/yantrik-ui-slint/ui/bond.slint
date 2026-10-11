@@ -1,11 +1,13 @@
-// Bond visualization screen.
-// Shows bond ring, level name, and relationship stats.
+// Interaction history (the Bond screen).
+// Shows the usage-derived level, how it was counted, and the plain counts it was counted from.
+// Headed "Interaction history", not "Bond", and the level labelled as derived from use (review of
+// the UI overhaul by GPT-6 Astra, H): it counts conversation, and says nothing about whether a
+// mind understands the person, can be relied on, or may do anything. The scoring is unchanged.
 
 import { Theme } from "theme.slint";
 import { Icons } from "components/icon.slint";
 import { AppHeader } from "components/app_header.slint";
 import { AppColor } from "components/app_color.slint";
-import { BondRing } from "components/bond_ring.slint";
 
 export struct BondData {
     // False until the companion worker has pushed the store's bond once. This struct's Slint
@@ -16,6 +18,8 @@ export struct BondData {
     loaded: bool,
     bond-score: float,
     bond-level: string,
+    // Which of the five levels, 1 (Stranger) to 5 (Partner-in-Crime): "Level 4 of 5".
+    level-number: int,
     total-interactions: int,
     days-together: int,
     current-streak: int,
@@ -61,7 +65,7 @@ export component BondScreen inherits Rectangle {
             app-id: "bond";
             show-back: true;
             icon: Icons.bond;
-            title: "Bond";
+            title: "Interaction history";
             back => { root.back-pressed(); }
         }
 
@@ -77,26 +81,70 @@ export component BondScreen inherits Rectangle {
             VerticalLayout {
                 width: parent.width;
                 padding: 24px;
-                spacing: 24px;
+                // The level block and the stats card: the derivation ends 16px above the card.
+                spacing: Theme.sp-4;
                 alignment: start;
 
-                // Bond ring centered
-                HorizontalLayout {
-                    alignment: center;
-                    BondRing {
-                        score: data.bond-score;
-                        size-px: 160;
+                // The level, and where it comes from.
+                //
+                // There was a full ring here with "5 / 5.0" in it, over counts like "0% humor
+                // rate" — a finished circle whose denominator nobody could see or check. The
+                // level now says which of five it is and what it was counted from, and the line
+                // under it says how, from `BondTracker::score_interaction` (yantrik-companion's
+                // bond.rs) and `BondLevel::from_score`: change those and this line with them.
+                if data.loaded : VerticalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: data.bond-level;
+                        // A heading, not a state: primary text. Amber is only "needs you".
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-display;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        letter-spacing: 1px;
                     }
-                }
-
-                // Level name
-                Text {
-                    text: data.bond-level;
-                    color: Theme.amber-light;
-                    font-size: Theme.fs-display;
-                    font-weight: 600;
-                    horizontal-alignment: center;
-                    letter-spacing: 1px;
+                    Text {
+                        text: "Usage-derived level \u{b7} not a measure of understanding, reliability or permissions";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-caption;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: "Level " + data.level-number + " of 5 · from "
+                            + data.total-interactions + (data.total-interactions == 1 ? " interaction" : " interactions")
+                            + " over " + data.days-together + (data.days-together == 1 ? " day" : " days");
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-body;
+                        horizontal-alignment: center;
+                    }
+                    // How it is counted, one rule to a line, left-aligned in a column no wider than
+                    // 720px: a centred paragraph of numbers is hard to read and harder to check.
+                    HorizontalLayout {
+                        padding-top: Theme.sp-3;
+                        alignment: start;
+                        VerticalLayout {
+                            max-width: 720px;
+                            spacing: 2px;
+                            for line in [
+                                "How this is counted:",
+                                "Each conversation turn adds 0.01 to a score.",
+                                "A longer message adds up to 0.03 more.",
+                                "One that says how you feel (\"I'm worried\", \"I miss…\") adds 0.05 more.",
+                                "The first turn of each day in a run of days adds up to 0.035 more.",
+                                "Laughing at a joke (\"haha\", \"lol\") adds 0.02.",
+                                "The score stops at 5.0 and sets the level:",
+                                "Stranger below 0.5, Acquaintance below 1.5, Friend below 2.5, Confidant below 3.5, Partner-in-Crime from 3.5.",
+                                "It is " + Math.round(data.bond-score * 100) / 100 + " now."
+                            ] : Text {
+                                text: line;
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-label;
+                                horizontal-alignment: left;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
                 }
 
                 // Stats grid (2 columns)
@@ -158,8 +206,9 @@ export component BondScreen inherits Rectangle {
                                     font-size: Theme.fs-display;
                                     font-weight: 600;
                                 }
+                                // A plain count, not a run to keep up.
                                 Text {
-                                    text: "streak";
+                                    text: "in a row with a conversation";
                                     color: Theme.text-secondary;
                                     font-size: Theme.font-small;
                                 }
@@ -193,8 +242,9 @@ export component BondScreen inherits Rectangle {
                                     font-size: Theme.fs-display;
                                     font-weight: 600;
                                 }
+                                // A plain count of what the scoring counted, not a stage reached.
                                 Text {
-                                    text: "vulnerability";
+                                    text: "messages that said how you felt";
                                     color: Theme.text-secondary;
                                     font-size: Theme.font-small;
                                 }

@@ -126,12 +126,36 @@ mod wire {
             tx_bytes: 2,
             state: "up".into(),
             conn_type: ConnectionType::Ethernet,
+            ..Default::default()
         }];
         let sent = serde_json::to_value(&rows).unwrap();
         let read: Vec<NetworkInterfaceInfo> = serde_json::from_value(sent).unwrap();
         assert_eq!(read[0].name, "eth0");
         assert_eq!(read[0].conn_type, ConnectionType::Ethernet);
         assert_eq!(read[0].conn_type.as_str(), "ethernet");
+    }
+
+    #[test]
+    fn link_details_cross_the_wire_and_a_service_without_them_still_parses() {
+        let row = NetworkInterfaceInfo {
+            name: "ens18".into(),
+            speed_mbps: Some(1000),
+            subnet: Some("255.255.255.0".into()),
+            gateway: Some("192.168.4.1".into()),
+            ..Default::default()
+        };
+        let read: NetworkInterfaceInfo = serde_json::from_value(serde_json::to_value(&row).unwrap()).unwrap();
+        assert_eq!(read.speed_mbps, Some(1000));
+        assert_eq!(read.subnet.as_deref(), Some("255.255.255.0"));
+        assert_eq!(read.gateway.as_deref(), Some("192.168.4.1"));
+        // A service from before the three fields: its rows arrive with all three unknown, which
+        // the window says as "not reported", rather than as a shape error over the whole list.
+        let old = serde_json::json!({
+            "name": "ens18", "mac_address": "52:54:00:12:34:56", "ip_address": "192.168.4.20",
+            "rx_bytes": 1, "tx_bytes": 2, "state": "up", "conn_type": "Ethernet",
+        });
+        let read: NetworkInterfaceInfo = serde_json::from_value(old).unwrap();
+        assert_eq!((read.speed_mbps, read.subnet, read.gateway), (None, None, None));
     }
 
     #[test]

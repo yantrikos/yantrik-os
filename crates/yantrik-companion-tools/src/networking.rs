@@ -230,6 +230,11 @@ fn validate_host(host: &str) -> Result<(), String> {
     if host.len() > 253 {
         return Err("hostname too long".to_string());
     }
+    // The host goes to ping and traceroute as an argument; one beginning with `-` would be read
+    // as one of their options (`-f` floods, `-p` sets a payload) instead of a host.
+    if host.starts_with('-') {
+        return Err("host cannot begin with '-'".to_string());
+    }
     if host.contains(|c: char| c == '`' || c == '$' || c == ';' || c == '|' || c == '&' || c == ' ' || c == '\'' || c == '"') {
         return Err("host contains invalid characters".to_string());
     }
@@ -1032,6 +1037,14 @@ mod tests {
     use yantrik_ipc_contracts::network::{ConnectionType, DnsSetResult};
 
     #[test]
+    fn a_host_is_never_read_as_an_option() {
+        assert!(validate_host("-f").is_err());
+        assert!(validate_host("--help").is_err());
+        assert!(validate_host("example.com").is_ok());
+        assert!(validate_host("my-host.lan").is_ok(), "a '-' inside a name is fine");
+    }
+
+    #[test]
     fn an_interface_with_no_address_says_so_rather_than_showing_a_blank() {
         let text = format_interfaces(&[NetworkInterfaceInfo {
             name: "eth0".into(),
@@ -1041,6 +1054,7 @@ mod tests {
             tx_bytes: 20,
             state: "down".into(),
             conn_type: ConnectionType::Ethernet,
+            ..Default::default()
         }]);
         assert!(text.contains("no address"), "{text}");
         assert!(text.contains("eth0 [down]"), "{text}");

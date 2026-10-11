@@ -28,6 +28,8 @@
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icon.slint";
 import { YButton } from "y_button.slint";
+import { YSegmented } from "y_segmented.slint";
+import { YTooltip } from "y_tooltip.slint";
 import { WindowControls } from "window_controls.slint";
 import { AppColor, AppIdentity } from "app_color.slint";
 import { WindowChrome } from "window_chrome.slint";
@@ -64,6 +66,9 @@ export struct AppAction {
     trailing-icon: bool,
     // Work in flight — YButton draws its spinner and swallows the click.
     loading: bool,
+    // What the button says on hover, under the header; on a disabled one, why it is off. It hangs
+    // below the bar, so an owner whose next row is opaque raises the header with `z: 1`.
+    tooltip: string,
 }
 
 // ── The header ──────────────────────────────────────────────────────────────────────────
@@ -90,6 +95,14 @@ export component AppHeader inherits Rectangle {
     in property <string> status: "";
     // Actions left of the spacer, beside the title. Mode switches, not verbs.
     in property <[AppAction]> leading-actions: [];
+    // One choice among a few, beside the mode switches: °C / °F. Drawn as a segmented control,
+    // not as an action, because an action labelled with the current choice reads as a verb, and
+    // drawn active it took the primary's filled accent. Empty draws nothing.
+    in property <[string]> segments: [];
+    in property <int> segment: 0;
+    // What the choice is about, for assistive tech: "Temperature unit".
+    in property <string> segments-label: "";
+    callback segment-chosen(int);
     // Actions at the right edge. The usual place.
     in property <[AppAction]> actions: [];
     in property <bool> show-search: false;
@@ -141,6 +154,11 @@ export component AppHeader inherits Rectangle {
     property <int> inline-count: root.actions.length > 4 || root.width < 900px ? min(2, root.actions.length) : root.actions.length;
     property <bool> has-overflow: root.actions.length > root.inline-count;
     property <int> menu-index: root.inline-count;
+    // The inline action the pointer is on, and its centre within the header, for its tooltip.
+    // The tooltip is drawn by the header and not the button: the button clips, and so does the
+    // Flickable the header's row sits in, and a tooltip under the bar is outside both.
+    property <int> tip-index: -1;
+    property <length> tip-x: 0px;
 
     // Not negotiable, and not a default an app can quietly override: this is the number.
     height: Theme.h-app-header;
@@ -200,7 +218,7 @@ export component AppHeader inherits Rectangle {
                     icon-path: Icons.arrow-left;
                     icon-only: true;
                     size: 0;
-                    variant: 2;
+                    variant: 1;
                     clicked => { root.back(); }
                 }
             }
@@ -297,6 +315,17 @@ export component AppHeader inherits Rectangle {
                 }
             }
 
+            if root.segments.length > 0 : VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 0;
+                YSegmented {
+                    label: root.segments-label;
+                    items: root.segments;
+                    selected: root.segment;
+                    chosen(i) => { root.segment-chosen(i); }
+                }
+            }
+
             Rectangle { horizontal-stretch: 1; }
 
             // ── Search ──
@@ -382,12 +411,23 @@ export component AppHeader inherits Rectangle {
                             size: 0;
                             disabled: a.disabled;
                             loading: a.loading;
+                            tooltip: a.tooltip;
                             variant: a.active ? 0
                                    : a.emphasis == 3 ? 3
                                    : a.emphasis == 2 ? 0
                                    : a.emphasis == 1 ? 1
                                    : 2;
                             clicked => { root.action(a.id); }
+                            // Cleared only by the button that set it: moving straight from one
+                            // button to the next may report the arrival before the departure.
+                            changed pointer-over => {
+                                if (self.pointer-over && a.tooltip != "") {
+                                    root.tip-index = idx;
+                                    root.tip-x = self.anchor-x - bar-drag.absolute-position.x;
+                                } else if (root.tip-index == idx) {
+                                    root.tip-index = -1;
+                                }
+                            }
                         }
                     }
                 }
@@ -427,6 +467,14 @@ export component AppHeader inherits Rectangle {
                 }
             }
         }
+    }
+
+    YTooltip {
+        text: root.tip-index >= 0 ? root.actions[root.tip-index].tooltip : "";
+        hovered: root.tip-index >= 0;
+        // Centred under its button, and kept inside the header's width.
+        x: max(0px, min(root.width - self.width, root.tip-x - self.width / 2));
+        y: root.height + Theme.sp-1;
     }
 
     overflow-menu := PopupWindow {

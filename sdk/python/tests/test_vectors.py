@@ -144,6 +144,9 @@ FROM_GATE_RS = [
      "outcome": "GRANT"},
     {"id": "bypass-runs-it", "app": "system-monitor", "action": "kill_process", "purpose": KILL,
      "grade": "dangerous", "ceiling": "dangerous", "mode": "bypass", "outcome": "allow"},
+    {"id": "full-bypass-runs-it", "app": "system-monitor", "action": "kill_process",
+     "purpose": KILL, "grade": "dangerous", "ceiling": "dangerous", "mode": "bypass_all",
+     "outcome": "allow"},
     {"id": "a-grant-runs-it", "app": "system-monitor", "action": "kill_process", "purpose": KILL,
      "grade": "dangerous", "ceiling": "dangerous", "mode": "ask", "grant": True,
      "outcome": "allow"},
@@ -158,7 +161,7 @@ FROM_GATE_RS = [
     {"id": "standard-floor-%s" % mode, "app": "notifications", "action": "notify",
      "purpose": "Post a notification", "grade": "standard", "ceiling": "sensitive", "mode": mode,
      "outcome": "allow"}
-    for mode in ("plan", "ask", "auto", "bypass")
+    for mode in ("plan", "ask", "auto", "bypass", "bypass_all")
 ] + [
     {"id": "standard-under-safe-ceiling", "app": "notifications", "action": "notify",
      "purpose": "Post a notification", "grade": "standard", "ceiling": "safe", "mode": "bypass",

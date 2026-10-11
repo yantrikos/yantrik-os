@@ -1,0 +1,55 @@
+// AppLabel — an app's name, as it is written under the app's tile.
+//
+// The desktop's workspace, the launcher, the window switcher, a mind's desk card and the dock's
+// hover label all name an app through this, so the name is one object the way AppTile is: 13px
+// medium in the primary ink (Theme.fs-label / fw-label). It was 11-12px regular and often grey,
+// and on a 1x screen drawn by the software rasteriser that read soft beside crisp tiles.
+//
+// Whole pixels: the box is Theme.lh-label per line, and the text sits at its top. Barlow's ascent
+// is exactly its size, so a box on a whole pixel puts the first baseline on a whole pixel. Text
+// centred in a box instead lands wherever (box - 15.6px) / 2 falls, which is a fraction, and a
+// baseline on a fraction smears every horizontal stroke across two rows. A caller that centres a
+// label rounds the offset (see LauncherCell and the dock's label).
+//
+// On the wallpaper, with no card behind it, the name is white over a copy of itself 1px lower in
+// 35% black (Theme.label-on-wallpaper, Theme.label-shadow).
+import { Theme } from "theme.slint";
+
+export component AppLabel inherits Rectangle {
+    in property <string> text;
+    /// Lines before the ellipsis. Two in the launcher: on one, "Chromium Web Browser" was
+    /// "Chromium We…".
+    in property <int> lines: 1;
+    in property <bool> on-wallpaper: false;
+    in property <TextHorizontalAlignment> align: center;
+
+    height: root.lines * Theme.lh-label;
+    preferred-width: ink.preferred-width;
+    min-width: 0px;
+
+    if root.on-wallpaper : Text {
+        y: 1px;
+        width: root.width;
+        height: root.height;
+        text: root.text;
+        color: Theme.label-shadow;
+        font-size: Theme.fs-label;
+        font-weight: Theme.fw-label;
+        horizontal-alignment: root.align;
+        vertical-alignment: top;
+        wrap: root.lines > 1 ? TextWrap.word-wrap : TextWrap.no-wrap;
+        overflow: elide;
+    }
+    ink := Text {
+        width: root.width;
+        height: root.height;
+        text: root.text;
+        color: root.on-wallpaper ? Theme.label-on-wallpaper : Theme.text-primary;
+        font-size: Theme.fs-label;
+        font-weight: Theme.fw-label;
+        horizontal-alignment: root.align;
+        vertical-alignment: top;
+        wrap: root.lines > 1 ? TextWrap.word-wrap : TextWrap.no-wrap;
+        overflow: elide;
+    }
+}

@@ -22,13 +22,6 @@ hf-hub = { version = "0.5", optional = true }
 # API backend (optional)
 ureq = { version = "3", features = ["json"], optional = true }
 
-# Secure API key storage (optional — used with api-llm)
-keyring = { version = "3", optional = true }
-aes-gcm = { version = "0.10", optional = true }
-dirs-next = { version = "2", optional = true }
-hostname = { version = "0.4", optional = true }
-whoami = { version = "1", optional = true }
-
 # Hardware detection (optional — used with api-llm)
 sysinfo = { version = "0.33", optional = true }
 
@@ -61,8 +54,8 @@ cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
 accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
 
-# API backend (includes provider registry, secret storage, hardware detection)
-api-llm = ["dep:ureq", "dep:keyring", "dep:aes-gcm", "dep:dirs-next", "dep:hostname", "dep:whoami", "dep:sysinfo"]
+# API backend (includes provider registry, hardware detection)
+api-llm = ["dep:ureq", "dep:sysinfo"]
 
 # Claude Code CLI backend (no extra deps — uses std::process::Command)
 claude-cli = []
@@ -82,6 +75,10 @@ llamacpp-cuda = ["llamacpp", "llama-cpp-2/cuda"]          # NVIDIA (GeForce, Qua
 llamacpp-rocm = ["llamacpp", "llama-cpp-2/rocm"]          # AMD (Radeon, Instinct)
 llamacpp-vulkan = ["llamacpp", "llama-cpp-2/vulkan"]       # Universal GPU (Intel Arc, AMD, NVIDIA)
 llamacpp-metal = ["llamacpp", "llama-cpp-2/metal"]         # Apple Silicon (M1/M2/M3/M4)
+
+# geteuid, for checking that a private directory is really ours (private_dir.rs)
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

@@ -210,13 +210,16 @@ fn wire_selected(ui: &App, ctx: &AppContext) {
             ui.set_lens_open(true);
             ui.invoke_open_lens();
         } else if action == "system:screenshot" {
-            let _ = std::process::Command::new("grim")
-                .arg("/tmp/screenshot.png")
-                .spawn();
+            // The same capture the Print key does: a timestamped file in ~/Pictures/Screenshots
+            // and a notification naming it. This used to run grim straight at
+            // /tmp/screenshot.png — one fixed name, readable by every account, overwritten by the
+            // next one, and never mentioned to the person who asked for it.
+            crate::wire::screenshot::take_screenshot(ui.as_weak(), yantrik_os::screenshot::CaptureMode::FullScreen);
         } else if action == "system:toggle-theme" {
-            let current = ui.global::<crate::ThemeMode>().get_dark();
-            ui.global::<crate::ThemeMode>().set_dark(!current);
-            ui.set_settings_dark_mode(!current);
+            // The Quick Settings tile's own callback (wired in `wire::settings`), so the flag,
+            // the theme's colours and the saved setting move together. Setting the flag here
+            // left the palette's colours behind and lost the choice at the next restart.
+            ui.invoke_toggle_dark_mode();
         }
     });
 }
@@ -266,6 +269,17 @@ fn cmd(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// "Toggle Dark Mode" is the tile's callback and nothing beside it: no second path that sets
+    /// the flag without saving it or re-applying the theme.
+    #[test]
+    fn toggle_dark_mode_goes_through_the_tiles_callback() {
+        let source = include_str!("command_palette.rs");
+        let arm = &source[source.find("action == \"system:toggle-theme\"").unwrap()..];
+        let arm = &arm[..arm.find("\n        }").unwrap()];
+        assert!(arm.contains("ui.invoke_toggle_dark_mode()"), "the same path the tile and Settings take");
+        assert!(!arm.contains("set_dark(") && !arm.contains("set_settings_dark_mode("), "no second path beside the tile's");
+    }
 
     /// The palette does not offer a shelved app, by any of its names.
     ///

@@ -295,6 +295,9 @@ impl ChatProvider for IrcProvider {
             OutboundContent::Text(text) => {
                 // IRC has a ~512 byte line limit. Split long messages.
                 let max_len = 400; // Leave room for PRIVMSG prefix
+                // A lone CR ends a line for many servers, and `lines()` does not split on it: a
+                // reply carrying one could send a raw command. Both go.
+                let text = text.replace('\r', "\n");
                 for line in text.lines() {
                     if line.len() <= max_len {
                         self.send_raw(&format!("PRIVMSG {} :{}", target.id, line))?;
@@ -305,9 +308,8 @@ impl ChatProvider for IrcProvider {
                             let split_at = if remaining.len() <= max_len {
                                 remaining.len()
                             } else {
-                                remaining[..max_len]
-                                    .rfind(' ')
-                                    .unwrap_or(max_len)
+                                let at = remaining.floor_char_boundary(max_len);
+                                remaining[..at].rfind(' ').filter(|i| *i > 0).unwrap_or(at)
                             };
                             let (chunk, rest) = remaining.split_at(split_at);
                             self.send_raw(&format!("PRIVMSG {} :{}", target.id, chunk.trim()))?;

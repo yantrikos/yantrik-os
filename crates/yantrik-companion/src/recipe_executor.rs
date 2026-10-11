@@ -553,7 +553,7 @@ fn agent_step<H: RecipeHost>(
     put_off_since: Option<f64>,
     put_off_why: Option<&str>,
 ) -> Advance {
-    let RecipeStep::Agent { role, prompt, store_as, context } = here else {
+    let RecipeStep::Agent { role, prompt, store_as, context, title } = here else {
         return fail(host, recipe, cur, "not an Agent step", "not an Agent step");
     };
     let id = recipe.id.as_str();
@@ -592,7 +592,7 @@ fn agent_step<H: RecipeHost>(
             tracing::info!(recipe_id = id, step = cur, agent = %s.agent, role = %s.role, "Recipe handed work to an agent");
             let run = AgentRun {
                 role: s.role,
-                role_name: s.role_name,
+                role_name: crate::recipe::stage_title(title.as_ref(), vars).unwrap_or(s.role_name),
                 mind: s.mind,
                 agent: s.agent,
                 store_as: store_as.clone(),
@@ -889,7 +889,7 @@ fn agent_in_arm<H: RecipeHost>(
     now: f64,
     put_off: Option<(f64, &str)>,
 ) -> Advance {
-    let RecipeStep::Agent { role, prompt, store_as, context } = here else {
+    let RecipeStep::Agent { role, prompt, store_as, context, title } = here else {
         return fail(host, recipe, cur, "not an Agent step", "not an Agent step");
     };
     let id = recipe.id.as_str();
@@ -950,7 +950,7 @@ fn agent_in_arm<H: RecipeHost>(
             tracing::info!(recipe_id = id, step = cur, key = %key, agent = %s.agent, role = %s.role, "A Branch handed work to an agent");
             let run = AgentRun {
                 role: s.role,
-                role_name: s.role_name,
+                role_name: crate::recipe::stage_title(title.as_ref(), vars).unwrap_or(s.role_name),
                 mind: s.mind,
                 agent: s.agent,
                 store_as: store_as.clone(),
@@ -1381,7 +1381,14 @@ impl RecipeHost for CompanionService {
         f(&self.db.conn())
     }
 
+    /// A recipe step runs any tool but those that read or change the vault, or hand a credential
+    /// to the model: a recipe can be written by a program on the companion's socket, and a step
+    /// that lists, overwrites or deletes vault entries is not something such a program may do.
     fn run_tool(&mut self, name: &str, args: &serde_json::Value) -> String {
+        let category = self.category_of(name).unwrap_or("");
+        if yantrik_companion_core::taint::reads_or_writes_secrets(name, category) {
+            return format!("Refused: a recipe step may not use `{name}`: it reads or changes the vault.");
+        }
         self.execute_tool_direct(name, args)
     }
 
@@ -1992,7 +1999,7 @@ mod tests {
     }
 
     fn agent(role: &str, prompt: &str, store_as: &str) -> RecipeStep {
-        RecipeStep::Agent { role: role.into(), prompt: prompt.into(), store_as: store_as.into(), context: None }
+        RecipeStep::Agent { role: role.into(), prompt: prompt.into(), store_as: store_as.into(), context: None, title: None }
     }
 
     fn format(template: &str, store_as: &str) -> RecipeStep {
@@ -2848,6 +2855,21 @@ mod tests {
         assert_eq!(desk.hands().released.len(), 5, "every agent let go once it answered");
     }
 
+    /// #194: the three writer stages are named by their voices, before they start and once their
+    /// agents run, so the Recipes screen does not read "Writer" three times.
+    #[test]
+    fn a_writers_rooms_stages_are_named_by_voice() {
+        let mut desk = Desk::new();
+        desk.hands().says("writer", vec![AgentPoll::Working]);
+        let id = formation(&desk, formations::WRITERS_ROOM, json!({"beats": "a; b", "voice_3": "The Ghost"}));
+        let before: Vec<String> = desk.view(&id).steps[..3].iter().map(|s| s.label.clone()).collect();
+        assert_eq!(before, ["Writer (Voice A)", "Writer (Voice B)", "Writer (The Ghost)"]);
+        desk.tick();
+        let running: Vec<String> = desk.view(&id).steps[..3].iter().map(|s| s.label.clone()).collect();
+        assert_eq!(running, ["Writer (Voice A) · pi", "Writer (Voice B) · pi", "Writer (The Ghost) · pi"]);
+        assert!(desk.hands().started[2].1.contains("You write only for The Ghost."));
+    }
+
     /// Writers' room: three writers, one voice each, at once, on the showrunner's beats; the
     /// Scribe assembles the scene from their lines.
     #[test]
@@ -2857,12 +2879,12 @@ mod tests {
         let id = formation(&desk, formations::WRITERS_ROOM, json!({"beats": "They meet; the door will not open; one of them has the key"}));
         desk.tick();
         assert_eq!(desk.hands().roles(), ["writer", "writer", "writer"], "three at once");
-        let voices: Vec<bool> = ["first", "second", "third"]
+        let voices: Vec<bool> = ["Voice A", "Voice B", "Narrator"]
             .iter()
             .zip(&desk.hands().started)
-            .map(|(which, (_, task, context))| {
-                task.contains(&format!("only for the {which} of them"))
-                    && task.contains("Voice A, Voice B, Narrator")
+            .map(|(voice, (_, task, context))| {
+                task.contains(&format!("You write only for {voice}."))
+                    && task.contains("The cast, in order: Voice A, Voice B, Narrator.")
                     && context.contains("the door will not open")
             })
             .collect();

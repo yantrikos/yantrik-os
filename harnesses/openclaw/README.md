@@ -74,10 +74,12 @@ the standard library, and the HTTP route above reaches the same agent without an
 
 ## Install
 
-**Settings → Harnesses** lists OpenClaw whether or not it is installed. It offers no *Install*
-button, on purpose — OpenClaw's own documentation is the only thing that knows how to install
-OpenClaw — but it says so rather than leaving the row out, and once `openclaw` is on `PATH` the
-*Start* button enables the unit below.
+**Settings → Harnesses** lists OpenClaw whether or not it is installed. Its *Install* button
+runs OpenClaw's own documented route, `npm install -g openclaw` (pinned to a tested version), through
+`harnesses/lib/install/npm.sh`: a pinned Node 24 into `~/.local` first when there is none new
+enough (the image ships none), then OpenClaw into `~/.local/bin`. Onboarding asks questions, so
+it is yours to run: `openclaw onboard`. Once `openclaw` is there the *Start* button enables the
+unit below.
 
 ```sh
 mkdir -p ~/.config/yantrik
@@ -98,8 +100,9 @@ yos act shell use_harness id=openclaw            # once it appears in the picker
 Nothing is enabled by default. The image ships this as source and starts nothing: a machine that
 has never been configured never talks to a provider.
 
-A user service does not inherit a login shell's PATH, and `openclaw` and `node` are usually
-per-user installs. Without `PATH` in the unit (or `path` in the config) the CLI route cannot
+A user service does not inherit a login shell's PATH, and `openclaw` and `node` are per-user
+installs. The unit puts `~/.local/bin` on its PATH, which is where *Install* puts both; for an
+install anywhere else, set `path` in the config. Without one or the other the CLI route cannot
 start OpenClaw at all, and even the picker's version line comes up blank.
 
 ## Giving OpenClaw the desktop's tools
@@ -171,7 +174,7 @@ somebody who has already configured OpenClaw.
   "route": "gateway",
   "token_env": "OPENCLAW_GATEWAY_TOKEN",
   "model": "ollama-cloud/kimi-k3",
-  "path": "/home/you/.local/node/bin:/home/you/.npm-global/bin"
+  "path": "/home/you/.local/bin"
 }
 ```
 

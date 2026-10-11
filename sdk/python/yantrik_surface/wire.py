@@ -23,6 +23,7 @@ stays silent for a second — keeps its name; only a socket nobody listens on, a
 file is replaced (`owner::claim` in the transport).
 """
 
+import contextlib
 import errno
 import json
 import math
@@ -33,8 +34,11 @@ import stat
 import struct
 import sys
 import threading
+import time
 import traceback
 from collections import namedtuple
+
+from . import mind_door, privacy
 
 # JSON-RPC error codes, the transport's own constants.
 RPC_PARSE_ERROR = -32700
@@ -356,6 +360,11 @@ class Server:
         self._server = None
         self._thread = None
         self._inode = None
+        # The mind door (#411), when this machine has one: the same surface, for callers the
+        # kernel says are the mind account and nobody else. None when there is no door.
+        self.door = None
+        self._door_server = None
+        self._door_inode = None
 
     def start(self):
         directory = os.path.dirname(self.path)
@@ -387,7 +396,44 @@ class Server:
             daemon=True,
         )
         self._thread.start()
+        self._open_door()
         return self
+
+    def _open_door(self):
+        """Listen at the mind door as well, when the machine has one set up exactly as the
+        updater makes it (`mind_door.serving_dir`) and this surface's socket is one that gets a
+        door. A door that cannot be opened is said and skipped: the person's socket still works,
+        and minds cannot reach this surface — as `bind_door` failing does in the transport."""
+        door = mind_door.serving_dir()
+        path = mind_door.door_for(self.path, socket_dir(), door) if door else None
+        if path is None:
+            return
+        try:
+            claim(path)
+            server = _DoorServer(path)
+        except OSError as e:
+            print("[yantrik] the mind door could not be opened at %s (%s); minds cannot reach "
+                  "this surface" % (path, e), file=sys.stderr)
+            return
+        server.handler = self.handler
+        try:
+            # The minds' group writes it (the directory's setgid gave it the group); nobody else.
+            # Bound closed while the person is in Private mode; the shell opens it when they
+            # leave it (mind_door::close_door in the transport).
+            os.chmod(path, 0o600 if privacy.is_private() else 0o660)
+        except OSError as e:
+            server.server_close()
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+            print("[yantrik] the mind door at %s could not be made the minds' (%s); minds cannot "
+                  "reach this surface" % (path, e), file=sys.stderr)
+            return
+        self.door = path
+        self._door_server = server
+        self._door_inode = _inode(path)
+        threading.Thread(target=server.serve_forever, daemon=True,
+                         name="%s-door" % getattr(self.handler, "service_id", "app")).start()
+        print("[yantrik] also answering minds at %s" % path, file=sys.stderr)
 
     def _link(self, link):
         target = os.path.basename(self.path)
@@ -427,6 +473,17 @@ class Server:
                 pass
         self._inode = None
         self._unlink_links()
+        if self._door_server is not None:
+            # The mind connections still open end with the surface, not after it.
+            self._door_server.close_all()
+            self._door_server.shutdown()
+            self._door_server.server_close()
+            self._door_server = None
+            if self._door_inode is not None and _inode(self.door) == self._door_inode:
+                with contextlib.suppress(OSError):
+                    os.unlink(self.door)
+            self._door_inode = None
+            self.door = None
 
     def _unlink_links(self):
         target = os.path.basename(self.path)
@@ -466,7 +523,7 @@ def who_holds(path, patience=CLAIM_PING):
 
         def ask(method):
             try:
-                probe.sendall(('{"jsonrpc":"2.0","id":1,"method":"%s"}\n' % method).encode())
+                send_all(probe, ('{"jsonrpc":"2.0","id":1,"method":"%s"}\n' % method).encode())
                 return json.loads(reader.readline().decode("utf-8"))
             except (OSError, ValueError):
                 return None
@@ -524,18 +581,143 @@ class _Connection(socketserver.StreamRequestHandler):
     """One caller. Reads lines until the caller goes away."""
 
     def handle(self):
+        self.serve(peer_cred(self.connection))
+
+    def serve(self, peer, max_line=None, door=False):
+        """Answer one request per line until the caller goes away. With `max_line`, a line longer
+        than that is answered as a parse error and the connection is closed: nothing past the
+        limit is buffered. At the `door`, every request is refused while the person is private."""
         handler = getattr(self.server, "handler", None)
-        peer = peer_cred(self.connection)
-        for raw in self.rfile:
+        if door:
+            handler = _PrivateDoor(handler)
+        while True:
+            try:
+                raw = self.rfile.readline(max_line + 1) if max_line else self.rfile.readline()
+            except OSError:  # the caller went away, or sat silent past the connection's timeout
+                return
+            if not raw:
+                return
+            if max_line and len(raw) > max_line and not raw.endswith(b"\n"):
+                with contextlib.suppress(OSError):
+                    send_all(self.connection, encode(_error(
+                        None, RPC_PARSE_ERROR, "Parse error: request too large — at most %d bytes "
+                        "on one line here; this one was longer, so it was not read and the "
+                        "connection is closed. Nothing was run." % max_line)))
+                return
             line = raw.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
             reply = answer(handler, line, peer)
             try:
-                self.wfile.write(encode(reply))
-                self.wfile.flush()
+                send_all(self.connection, encode(reply))
             except OSError:
                 return
+
+
+# Never a signal for writing to a socket whose other end has gone. A standalone Python ignores
+# SIGPIPE; an embedding host need not, and Blender does not — a reply written to a caller that had
+# already hung up killed Blender outright, render and unsaved scene with it (VM 520, 28 Sep 2026),
+# and any caller, a mind at the door included, could do that on purpose. With this flag the write
+# fails with EPIPE, which is an OSError like any other lost caller.
+_NO_SIGNAL = getattr(socket, "MSG_NOSIGNAL", 0)
+
+
+def send_all(sock, data):
+    """`sock.sendall(data)`, without SIGPIPE."""
+    sock.sendall(data, _NO_SIGNAL)
+
+
+# The longest request line a mind may send at the door, and how long a door connection may sit
+# silent before it is closed. A mind that has not yet shown it is an attached agent could
+# otherwise make the person's app buffer one endless line, or hold every slot open forever.
+DOOR_MAX_LINE = 4 * 1024 * 1024
+DOOR_IDLE = 120.0
+
+
+class _DoorServer(_UnixServer):
+    """The mind door's listener. The peer is checked on the accepting thread, before a thread is
+    started for it, and anyone but the mind account is closed unread. At most `DOOR_CONNECTIONS`
+    are served at once; one more waits to be accepted, as the transport's semaphore makes it wait
+    — a mind holding connections open uses up its own share and nothing of the person's."""
+
+    def __init__(self, path):
+        super().__init__(path, _DoorConnection)
+        self.slots = threading.BoundedSemaphore(mind_door.DOOR_CONNECTIONS)
+        self.held = set()
+        self.held_lock = threading.Lock()
+        self.stopping = False
+        self._refused = 0
+        self._said = None
+
+    def verify_request(self, request, client_address):
+        peer = peer_cred(request)
+        if peer is not None and mind_door.is_mind(peer.uid):
+            return True
+        # Said at most every ten seconds, with a count: a caller that knocks in a loop does not
+        # get to fill the person's log.
+        self._refused += 1
+        now = time.monotonic()
+        if self._said is None or now - self._said >= 10:
+            print("[yantrik] refused %d caller(s) at the mind door that are not the mind account "
+                  "(the last: uid %s)" % (self._refused, peer.uid if peer else "unknown"),
+                  file=sys.stderr)
+            self._refused, self._said = 0, now
+        return False
+
+    def process_request(self, request, client_address):
+        while not self.slots.acquire(timeout=0.5):
+            if self.stopping:
+                self.shutdown_request(request)
+                return
+        with self.held_lock:
+            self.held.add(request)
+        super().process_request(request, client_address)
+
+    def shutdown_request(self, request):
+        with self.held_lock:
+            mine = request in self.held
+            self.held.discard(request)
+        if mine:
+            self.slots.release()
+        super().shutdown_request(request)
+
+    def close_all(self):
+        """End every mind connection still open, and accept no more."""
+        self.stopping = True
+        with self.held_lock:
+            held = list(self.held)
+        for request in held:
+            with contextlib.suppress(OSError):
+                request.shutdown(socket.SHUT_RDWR)
+
+
+class _DoorConnection(_Connection):
+    """One caller at the mind door, already checked on accept to be the mind account. Checked
+    again here, so the uid the surface is told is the one the kernel gave for this connection."""
+
+    timeout = DOOR_IDLE
+
+    def handle(self):
+        peer = peer_cred(self.connection)
+        if peer is None or not mind_door.is_mind(peer.uid):
+            return
+        self.serve(peer, max_line=DOOR_MAX_LINE, door=True)
+
+
+class _PrivateDoor:
+    """A door handler that refuses every request while the person is in Private mode, asked per
+    request so turning it on reaches a mind already connected, and passes it on otherwise."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.service_id = getattr(inner, "service_id", "app")
+
+    def handle_from(self, method, params, peer):
+        if privacy.is_private():
+            raise RpcError(RPC_INVALID_PARAMS, privacy.REFUSAL)
+        if hasattr(self.inner, "handle_from"):
+            return self.inner.handle_from(method, params, peer)
+        return self.inner.handle(method, params)
 
 
 def encode(reply):
@@ -634,7 +816,7 @@ def call_once(path, method, params, timeout=10.0, request_id=1, peer_rule=None):
         payload = json.dumps(
             {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
             ensure_ascii=False) + "\n"
-        client.sendall(payload.encode("utf-8"))
+        send_all(client, payload.encode("utf-8"))
         buf = b""
         while not buf.endswith(b"\n"):
             chunk = client.recv(65536)

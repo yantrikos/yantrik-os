@@ -347,7 +347,7 @@ export component MusicPlayerScreen inherits Rectangle {
                         Rectangle { horizontal-stretch: 1; }
                         YIconButton {
                             icon-path: Icons.close;
-                            variant: 2;
+                            variant: 1;
                             clicked => {
                                 root.ai-panel-open = false;
                                 root.ai-dismiss();
@@ -1581,8 +1581,8 @@ export component MusicPlayerScreen inherits Rectangle {
                                     commands: root.is-playing ? Icons.pause : Icons.play;
                                     size: 18px;
                                     thickness: 2px;
-                                    tint: Theme.bg-deep;
-                                    fill: root.is-playing ? transparent : Theme.bg-deep;
+                                    tint: Theme.text-on-accent;
+                                    fill: root.is-playing ? transparent : Theme.text-on-accent;
                                     x: (parent.width - self.width) / 2 + (root.is-playing ? 0px : 1px);
                                     y: (parent.height - self.height) / 2;
                                 }
@@ -1647,7 +1647,7 @@ export component MusicPlayerScreen inherits Rectangle {
                                     background: Theme.accent;
                                     Text {
                                         text: "1";
-                                        color: Theme.bg-deep;
+                                        color: Theme.text-on-accent;
                                         font-size: Theme.fs-micro;
                                         font-weight: 700;
                                         horizontal-alignment: center;
@@ -1841,7 +1841,7 @@ export component MusicPlayerScreen inherits Rectangle {
                 width: 30px;
                 height: 26px;
                 border-radius: Theme.r-sm;
-                background: active ? AppIdentity.accent : sp-ta.has-hover ? Theme.hover-fill : transparent;
+                background: active ? Theme.accent : sp-ta.has-hover ? Theme.hover-fill : transparent;
 
                 sp-ta := TouchArea {
                     mouse-cursor: pointer;
@@ -1853,7 +1853,7 @@ export component MusicPlayerScreen inherits Rectangle {
 
                 Text {
                     text: "\{sp}x";
-                    color: active ? Theme.bg-deep : Theme.text-secondary;
+                    color: active ? Theme.text-on-accent : Theme.text-secondary;
                     font-size: Theme.fs-micro;
                     font-family: Theme.font-mono;
                     horizontal-alignment: center;
@@ -1937,7 +1937,7 @@ export component MusicPlayerScreen inherits Rectangle {
 
                     YButton {
                         label: "Cancel";
-                        variant: 2;
+                        variant: 1;
                         size: 0;
                         clicked => { root.show-add-playlist-dialog = false; }
                     }
@@ -1995,7 +1995,7 @@ export component MusicPlayerScreen inherits Rectangle {
                     }
                     YIconButton {
                         icon-path: Icons.close;
-                        variant: 2;
+                        variant: 1;
                         clicked => { root.show-scan-folders-dialog = false; }
                     }
                 }

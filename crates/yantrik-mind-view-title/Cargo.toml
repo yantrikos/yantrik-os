@@ -1,0 +1,11 @@
+[package]
+name = "yantrik-mind-view-title"
+version = "0.1.0"
+edition = "2021"
+description = "Preloaded into Mind View's nested labwc so its window is titled Mind View, not labwc - WL-1"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"

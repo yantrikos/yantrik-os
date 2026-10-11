@@ -49,6 +49,7 @@ export component CalendarApp inherits AppWindow {
     in property <[CalendarEvent]> events-today <=> cal.events-today;
     in property <int> selected-day <=> cal.selected-day;
     in property <string> notice <=> cal.notice;
+    in property <string> notice-event <=> cal.notice-event;
 
     // ── View mode ──
     in-out property <int> view-mode <=> cal.view-mode;
@@ -56,6 +57,7 @@ export component CalendarApp inherits AppWindow {
     // ── Week view ──
     in property <[CalendarTimeEvent]> week-events <=> cal.week-events;
     in property <[string]> week-day-labels <=> cal.week-day-labels;
+    in property <bool> week-starts-monday <=> cal.week-starts-monday;
     in property <int> current-hour <=> cal.current-hour;
     in property <int> current-minute <=> cal.current-minute;
 
@@ -91,6 +93,8 @@ export component CalendarApp inherits AppWindow {
     callback add-event <=> cal.add-event;
     callback save-event <=> cal.save-event;
     callback delete-event <=> cal.delete-event;
+    callback dismiss-notice <=> cal.dismiss-notice;
+    callback open-notice-event <=> cal.open-notice-event;
     callback cancel-event-form <=> cal.cancel-event-form;
     callback today-pressed <=> cal.today-pressed;
     callback ai-explain-pressed <=> cal.ai-explain-pressed;

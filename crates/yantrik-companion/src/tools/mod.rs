@@ -36,6 +36,7 @@ pub use yantrik_companion_tools::network;
 pub use yantrik_companion_tools::plugin;
 // The shell reads `LOCKED_ANSWER` and polls `take_unlock_request` to draw its unlock prompt.
 pub use yantrik_companion_tools::vault;
+pub use yantrik_companion_tools::provider_keys;
 pub use yantrik_companion_tools::discovery;
 
 /// Context needed to spawn parallel sub-agents from a tool.

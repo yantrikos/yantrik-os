@@ -9,6 +9,11 @@ import { AppHeader } from "components/app_header.slint";
 import { AgentRail, AgentContextItem, AgentSuggestion } from "components/agent_rail.slint";
 import { AgentProposalCard, AgentProposal } from "components/agent_proposal.slint";
 import { AppColor, AppIdentity } from "components/app_color.slint";
+import { YNoticeBar } from "components/notice_bar.slint";
+import { MonthGrid, CalendarDay } from "components/month_grid.slint";
+
+// The struct moved with the grid that draws it; the app's Rust still names it from here.
+export { CalendarDay }
 
 // ── Data Structures ──
 
@@ -19,15 +24,6 @@ export struct CalendarEvent {
     time-text: string,       // "2:00 PM - 3:00 PM" or "All day"
     color: color,            // category color
     is-all-day: bool,
-}
-
-export struct CalendarDay {
-    day-number: int,         // 1-31, 0 = empty cell
-    is-today: bool,
-    is-selected: bool,
-    is-current-month: bool,
-    has-events: bool,
-    event-count: int,
 }
 
 export struct CalendarTimeEvent {
@@ -94,6 +90,10 @@ export component CalendarScreen inherits Rectangle {
     /// empty, and the only way to find out the event had not been stored was to look for it
     /// later. A calendar that cannot save has to say so at the moment it cannot.
     in property <string> notice: "";
+    /// The id of the event `notice` is about, when it is information about one event rather than
+    /// a failure: a caller was refused that event and it is untouched. The bar is then neutral
+    /// and offers "Open event"; empty, the notice is a failure and draws as one.
+    in property <string> notice-event: "";
 
     // View mode: 0=month, 1=week, 2=day
     in-out property <int> view-mode: 0;
@@ -102,6 +102,8 @@ export component CalendarScreen inherits Rectangle {
     // Week view data
     in property <[CalendarTimeEvent]> week-events: [];
     in property <[string]> week-day-labels: [];
+    // Whether the month grid's first column is Monday; the week view's own labels come from Rust.
+    in property <bool> week-starts-monday: false;
 
     // Where "now" is on the hour grid.
     //
@@ -130,6 +132,10 @@ export component CalendarScreen inherits Rectangle {
     callback add-event();
     callback save-event(string, string, string, string);
     callback delete-event(int);
+    // The notice bar's close button: the app clears `notice`.
+    callback dismiss-notice();
+    // "Open event" on a notice about one event: the app shows that event's day.
+    callback open-notice-event();
     callback cancel-event-form();
     callback today-pressed();
 
@@ -271,7 +277,7 @@ export component CalendarScreen inherits Rectangle {
                             Rectangle { horizontal-stretch: 1; }
                             YIconButton {
                                 icon-path: Icons.close;
-                                variant: 2;
+                                variant: 1;
                                 clicked => { root.cal-template-panel-open = false; }
                             }
                         }
@@ -329,131 +335,14 @@ export component CalendarScreen inherits Rectangle {
                 // ═══════════════════════════════════════
                 // MONTH VIEW (view-mode == 0)
                 // ═══════════════════════════════════════
-                if root.view-mode == 0 : VerticalLayout {
-                    spacing: 2px;
-
-                    // A month needs 6 rows only when it spills past cell 35; drawing
-                    // 6 regardless left an empty band under every shorter month.
-                    property <int> month-rows: root.days.length > 35
-                        && root.days[35].day-number > 0 ? 6 : 5;
-
-                    // Day-of-week headers
-                    HorizontalLayout {
-                        spacing: 2px;
-
-                        for header in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] : Rectangle {
-                            height: 32px;
-
-                            // Same box the date numeral gets below (x:6, width:22),
-                            // so the header sits on the column's own axis instead of
-                            // the column's centre ~38px to its right.
-                            Text {
-                                x: 6px;
-                                width: 22px;
-                                height: 100%;
-                                text: header;
-                                color: Theme.text-dim;
-                                font-size: Theme.fs-micro;
-                                font-weight: 600;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-
-                    // Calendar grid (6 rows x 7 cols = 42 cells)
-                    // Rows share the pane height; a cell never drops below 56px.
-                    VerticalLayout {
-                        spacing: 2px;
-                        vertical-stretch: 1;
-
-                        for row in parent.month-rows : HorizontalLayout {
-                            spacing: 2px;
-
-                            for col in 7 : Rectangle {
-                                property <int> cell-idx: row * 7 + col;
-                                property <CalendarDay> cell-day: root.days.length > cell-idx
-                                    ? root.days[cell-idx]
-                                    : { day-number: 0, is-today: false, is-selected: false, is-current-month: false, has-events: false, event-count: 0 };
-
-                                min-height: 56px;
-                                border-radius: Theme.r-sm;
-                                // Days of this month sit on a faint surface so the month reads as
-                                // a grid; days spilling in from the neighbouring months do not.
-                                // bg-surface, not bg-surface at 55% opacity.
-                                //
-                                // #161622 over #0c0c14 at 55% lands on #111119 -- five values
-                                // from the background, which is to say invisible. The month
-                                // read as thirty numbers floating on a black field with no
-                                // grid at all, which is the one thing a month view has to be.
-                                background: cell-day.is-selected ? AppIdentity.tint
-                                    : cell-day.is-current-month ? Theme.bg-surface
-                                    : transparent;
-                                border-width: cell-day.is-selected ? 1px : 0;
-                                border-color: cell-day.is-selected ? Theme.accent-dim : transparent;
-
-                                if cell-day.day-number > 0 : day-ta := TouchArea {
-                                    clicked => { root.day-clicked(cell-day.day-number); }
-                                    mouse-cursor: pointer;
-                                }
-
-                                // The cell's contents are positioned, not laid out: a layout child
-                                // reports a preferred width upward, and that made cells with a date
-                                // shrink to their content while empty cells ate the rest of the row
-                                // — the columns stopped lining up with the weekday header.
-                                // A Rectangle does not size to its children, so the row stays even.
-
-                                // Date, top-left. Today is a filled disc: the day you look for
-                                // first should not have to be read.
-                                if cell-day.day-number > 0 : Rectangle {
-                                    x: 6px;
-                                    y: 6px;
-                                    width: 22px;
-                                    height: 20px;
-                                    border-radius: Theme.r-sm;
-                                    background: cell-day.is-today ? AppIdentity.accent : transparent;
-
-                                    Text {
-                                        text: cell-day.day-number;
-                                        color: cell-day.is-today ? Theme.bg-deep
-                                            : cell-day.is-selected ? AppIdentity.accent
-                                            : cell-day.is-current-month ? Theme.text-secondary
-                                            : Theme.text-dim.transparentize(30%);
-                                        font-size: Theme.fs-caption;
-                                        font-weight: cell-day.is-today ? 700 : cell-day.is-current-month ? 500 : 400;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-
-                                // What is on that day
-                                if cell-day.has-events : HorizontalLayout {
-                                    x: 9px;
-                                    y: 32px;
-                                    width: parent.width - 18px;
-                                    height: 6px;
-                                    alignment: start;
-                                    spacing: 3px;
-
-                                    Rectangle {
-                                        width: 5px; height: 5px;
-                                        border-radius: 2.5px;
-                                        background: Theme.accent;
-                                    }
-                                    if cell-day.event-count > 1 : Rectangle {
-                                        width: 5px; height: 5px;
-                                        border-radius: 2.5px;
-                                        background: Theme.amber;
-                                    }
-                                    if cell-day.event-count > 2 : Rectangle {
-                                        width: 5px; height: 5px;
-                                        border-radius: 2.5px;
-                                        background: Theme.color-purple;
-                                    }
-                                }
-                            }
-                        }
-                    }
+                if root.view-mode == 0 : MonthGrid {
+                    days: root.days;
+                    month-title: root.month-title;
+                    monday-first: root.week-starts-monday;
+                    cell-min-height: 56px;
+                    accent: AppIdentity.accent;
+                    tint: AppIdentity.tint;
+                    day-clicked(day) => { root.day-clicked(day); }
                 }
 
                 // ═══════════════════════════════════════
@@ -761,339 +650,332 @@ export component CalendarScreen inherits Rectangle {
                 background: Theme.separator;
             }
 
-            // What could not be done, above whatever the sidebar is showing. Outside the form
-            // because the failure outlives it: a delete that could not reach the store has no
-            // form to report into.
-            if root.notice != "" : Rectangle {
-                y: 0;
-                height: notice-text.preferred-height + Theme.sp-4;
-                background: Theme.color-danger-dim;
+            // What could not be done, in its own row above whatever the sidebar is showing — the kit's
+            // notice bar, so nothing is drawn under it. Outside the form because the failure outlives it:
+            // a delete that could not reach the store has no form to report into.
+            VerticalLayout {
+                if root.notice != "" : YNoticeBar {
+                    text: root.notice;
+                    tone: root.notice-event != "" ? 0 : 1;
+                    // The refusal names the event, who asked and what the person can do; at the
+                    // sidebar's width that is five lines, and cutting it cuts the part to act on.
+                    max-lines: 6;
+                    action-label: root.notice-event != "" ? "Open event" : "";
+                    action => { root.open-notice-event(); }
+                    dismissed => { root.dismiss-notice(); }
+                }
 
                 Rectangle {
-                    x: 0;
-                    width: 2px;
-                    height: 100%;
-                    background: Theme.color-danger;
-                }
+                    vertical-stretch: 1;
 
-                notice-text := Text {
-                    x: Theme.sp-4;
-                    width: parent.width - Theme.sp-4 * 2;
-                    y: Theme.sp-2;
-                    text: root.notice;
-                    color: Theme.text-primary;
-                    font-size: Theme.fs-caption;
-                    wrap: word-wrap;
-                }
-            }
-
-            // Event form overlay
-            if root.show-event-form : VerticalLayout {
-                padding: Theme.sp-5;
-                padding-top: root.notice != "" ? Theme.sp-5 * 2 : Theme.sp-5;
-                spacing: Theme.sp-3;
-
-                HorizontalLayout {
-                    alignment: space-between;
-
-                    Text {
-                        text: "New Event";
-                        color: Theme.text-primary;
-                        font-size: Theme.fs-title-2;
-                        font-weight: Theme.fw-title-2;
-                        vertical-alignment: center;
-                    }
-
-                    YIconButton {
-                        icon: "X";
-                        variant: 1;
-                        clicked => { root.cancel-event-form(); }
-                    }
-                }
-
-                // Title
-                VerticalLayout {
-                    spacing: 4px;
-
-                    Text {
-                        text: "Title";
-                        color: Theme.text-dim;
-                        font-size: Theme.fs-micro;
-                    }
-                    Rectangle {
-                        height: 38px;
-                        border-radius: 8px;
-                        background: Theme.bg-card; clip: true;
+                    // Event form overlay
+                    if root.show-event-form : VerticalLayout {
+                        padding: Theme.sp-5;
+                        spacing: Theme.sp-3;
 
                         HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
+                            alignment: space-between;
 
-                            TextInput {
-                                text <=> root.event-title;
+                            Text {
+                                text: "New Event";
                                 color: Theme.text-primary;
+                                font-size: Theme.fs-title-2;
+                                font-weight: Theme.fw-title-2;
+                                vertical-alignment: center;
+                            }
+
+                            YIconButton {
+                                icon: "X";
+                                variant: 1;
+                                clicked => { root.cancel-event-form(); }
+                            }
+                        }
+
+                        // Title
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            Text {
+                                text: "Title";
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-micro;
+                            }
+                            Rectangle {
+                                height: 38px;
+                                border-radius: 8px;
+                                background: Theme.bg-card; clip: true;
+
+                                HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 12px;
+
+                                    TextInput {
+                                        text <=> root.event-title;
+                                        color: Theme.text-primary;
+                                        font-size: Theme.fs-body;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Date
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            Text {
+                                text: "Date";
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-micro;
+                            }
+                            Rectangle {
+                                height: 38px;
+                                border-radius: 8px;
+                                background: Theme.bg-card; clip: true;
+
+                                HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 12px;
+
+                                    TextInput {
+                                        text <=> root.event-date;
+                                        color: Theme.text-primary;
+                                        font-size: Theme.fs-body;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Time
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            Text {
+                                text: "Time (e.g. 2:00 PM - 3:00 PM)";
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-micro;
+                            }
+                            Rectangle {
+                                height: 38px;
+                                border-radius: 8px;
+                                background: Theme.bg-card; clip: true;
+
+                                HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 12px;
+
+                                    TextInput {
+                                        text <=> root.event-time;
+                                        color: Theme.text-primary;
+                                        font-size: Theme.fs-body;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Notes
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            Text {
+                                text: "Notes";
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-micro;
+                            }
+                            Rectangle {
+                                height: 80px;
+                                border-radius: 8px;
+                                background: Theme.bg-card; clip: true;
+
+                                ScrollView {
+                                    VerticalLayout {
+                                        alignment: start;
+                                        padding: 10px;
+
+                                        TextInput {
+                                            text <=> root.event-notes;
+                                            color: Theme.text-primary;
+                                            font-size: Theme.fs-body;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Timezone display
+                        if root.cal-timezone-display != "" : Text {
+                            text: root.cal-timezone-display;
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-micro;
+                        }
+
+                        // The reminder selector and the attendees section were here. Both are
+                        // recorded at the top of this file: neither had anywhere to put what was typed
+                        // into it, and a control that cannot keep what it is given is worse than no
+                        // control, because the person believes they set something.
+
+                        // Save button
+                        Rectangle {
+                            height: 40px;
+                            border-radius: 8px;
+                            background: Theme.accent;
+
+                            TouchArea {
+                                clicked => {
+                                    root.save-event(root.event-title, root.event-date, root.event-time, root.event-notes);
+                                }
+                                mouse-cursor: pointer;
+                            }
+
+                            Text {
+                                text: "Save Event";
+                                color: Theme.text-on-accent;
                                 font-size: Theme.fs-body;
+                                font-weight: 600;
+                                horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
                         }
                     }
-                }
 
-                // Date
-                VerticalLayout {
-                    spacing: 4px;
+                    // Events list (when form is hidden)
+                    if !root.show-event-form : VerticalLayout {
+                        padding: 20px;
+                        spacing: 12px;
 
-                    Text {
-                        text: "Date";
-                        color: Theme.text-dim;
-                        font-size: Theme.fs-micro;
-                    }
-                    Rectangle {
-                        height: 38px;
-                        border-radius: 8px;
-                        background: Theme.bg-card; clip: true;
-
+                        // Agenda header: the day, and how full it is
                         HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
+                            spacing: Theme.sp-2;
 
-                            TextInput {
-                                text <=> root.event-date;
-                                color: Theme.text-primary;
-                                font-size: Theme.fs-body;
-                                vertical-alignment: center;
+                            VerticalLayout {
+                                spacing: 2px;
+                                horizontal-stretch: 1;
+
+                                Text {
+                                    text: root.selected-day > 0 ? "DAY \{root.selected-day}" : "TODAY";
+                                    color: Theme.text-dim;
+                                    font-size: Theme.fs-micro;
+                                    font-weight: Theme.fw-micro;
+                                    letter-spacing: 1px;
+                                }
+                                Text {
+                                    text: root.events-today.length == 0 ? "Nothing scheduled"
+                                        : root.events-today.length == 1 ? "1 event"
+                                        : "\{root.events-today.length} events";
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-title-2;
+                                    font-weight: Theme.fw-title-2;
+                                    letter-spacing: -0.2px;
+                                }
+                            }
+
+                            YButton {
+                                label: "New";
+                                icon-path: Icons.plus;
+                                variant: 0;
+                                size: 0;
+                                y: (parent.height - self.height) / 2;
+                                clicked => { root.add-event(); }
                             }
                         }
-                    }
-                }
 
-                // Time
-                VerticalLayout {
-                    spacing: 4px;
+                        Rectangle { height: 1px; background: Theme.separator; }
 
-                    Text {
-                        text: "Time (e.g. 2:00 PM - 3:00 PM)";
-                        color: Theme.text-dim;
-                        font-size: Theme.fs-micro;
-                    }
-                    Rectangle {
-                        height: 38px;
-                        border-radius: 8px;
-                        background: Theme.bg-card; clip: true;
+                        if root.events-today.length == 0 : Rectangle {
+                            height: 160px;
 
-                        HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 8px;
 
-                            TextInput {
-                                text <=> root.event-time;
-                                color: Theme.text-primary;
-                                font-size: Theme.fs-body;
-                                vertical-alignment: center;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Icon {
+                                        commands: Icons.calendar;
+                                        size: 26px;
+                                        tint: AppIdentity.accent.transparentize(55%);
+                                    }
+                                }
+                                Text {
+                                    text: "A clear day";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.fs-body;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "Press New to put something in it.";
+                                    color: Theme.text-dim;
+                                    font-size: Theme.fs-caption;
+                                    horizontal-alignment: center;
+                                }
                             }
                         }
-                    }
-                }
-
-                // Notes
-                VerticalLayout {
-                    spacing: 4px;
-
-                    Text {
-                        text: "Notes";
-                        color: Theme.text-dim;
-                        font-size: Theme.fs-micro;
-                    }
-                    Rectangle {
-                        height: 80px;
-                        border-radius: 8px;
-                        background: Theme.bg-card; clip: true;
 
                         ScrollView {
                             VerticalLayout {
                                 alignment: start;
-                                padding: 10px;
+                                spacing: 8px;
 
-                                TextInput {
-                                    text <=> root.event-notes;
-                                    color: Theme.text-primary;
-                                    font-size: Theme.fs-body;
-                                    wrap: word-wrap;
-                                }
-                            }
-                        }
-                    }
-                }
+                                for event in root.events-today : Rectangle {
+                                    height: event-content.preferred-height + 20px;
+                                    border-radius: 10px;
+                                    background: Theme.bg-card;
+                                    border-width: 1px;
+                                    border-color: Theme.border-subtle;
 
-                // Timezone display
-                if root.cal-timezone-display != "" : Text {
-                    text: root.cal-timezone-display;
-                    color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
-                }
+                                    // Color accent bar
+                                    Rectangle {
+                                        x: 0;
+                                        y: 8px;
+                                        width: 3px;
+                                        height: parent.height - 16px;
+                                        border-radius: 1.5px;
+                                        background: event.color;
+                                    }
 
-                // The reminder selector and the attendees section were here. Both are
-                // recorded at the top of this file: neither had anywhere to put what was typed
-                // into it, and a control that cannot keep what it is given is worse than no
-                // control, because the person believes they set something.
+                                    event-content := VerticalLayout {
+                                        padding: 10px;
+                                        padding-left: 14px;
+                                        spacing: 4px;
 
-                // Save button
-                Rectangle {
-                    height: 40px;
-                    border-radius: 8px;
-                    background: Theme.accent;
+                                        Text {
+                                            text: event.title;
+                                            color: Theme.text-primary;
+                                            font-size: Theme.fs-body;
+                                            font-weight: 600;
+                                            overflow: elide;
+                                        }
 
-                    TouchArea {
-                        clicked => {
-                            root.save-event(root.event-title, root.event-date, root.event-time, root.event-notes);
-                        }
-                        mouse-cursor: pointer;
-                    }
+                                        Text {
+                                            text: event.time-text;
+                                            color: Theme.text-secondary;
+                                            font-size: Theme.fs-micro;
+                                        }
+                                    }
 
-                    Text {
-                        text: "Save Event";
-                        color: Theme.bg-deep;
-                        font-size: Theme.fs-body;
-                        font-weight: 600;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-            }
+                                    // Delete
+                                    del-ta := TouchArea {
+                                        x: parent.width - 32px;
+                                        y: 6px;
+                                        width: 26px;
+                                        height: 26px;
+                                        mouse-cursor: pointer;
+                                        clicked => { root.delete-event(event.id); }
 
-            // Events list (when form is hidden)
-            if !root.show-event-form : VerticalLayout {
-                padding: 20px;
-                spacing: 12px;
-
-                // Agenda header: the day, and how full it is
-                HorizontalLayout {
-                    spacing: Theme.sp-2;
-
-                    VerticalLayout {
-                        spacing: 2px;
-                        horizontal-stretch: 1;
-
-                        Text {
-                            text: root.selected-day > 0 ? "DAY \{root.selected-day}" : "TODAY";
-                            color: Theme.text-dim;
-                            font-size: Theme.fs-micro;
-                            font-weight: Theme.fw-micro;
-                            letter-spacing: 1px;
-                        }
-                        Text {
-                            text: root.events-today.length == 0 ? "Nothing scheduled"
-                                : root.events-today.length == 1 ? "1 event"
-                                : "\{root.events-today.length} events";
-                            color: Theme.text-primary;
-                            font-size: Theme.fs-title-2;
-                            font-weight: Theme.fw-title-2;
-                            letter-spacing: -0.2px;
-                        }
-                    }
-
-                    YButton {
-                        label: "New";
-                        icon-path: Icons.plus;
-                        variant: 0;
-                        size: 0;
-                        y: (parent.height - self.height) / 2;
-                        clicked => { root.add-event(); }
-                    }
-                }
-
-                Rectangle { height: 1px; background: Theme.separator; }
-
-                if root.events-today.length == 0 : Rectangle {
-                    height: 160px;
-
-                    VerticalLayout {
-                        alignment: center;
-                        spacing: 8px;
-
-                        HorizontalLayout {
-                            alignment: center;
-                            Icon {
-                                commands: Icons.calendar;
-                                size: 26px;
-                                tint: AppIdentity.accent.transparentize(55%);
-                            }
-                        }
-                        Text {
-                            text: "A clear day";
-                            color: Theme.text-secondary;
-                            font-size: Theme.fs-body;
-                            horizontal-alignment: center;
-                        }
-                        Text {
-                            text: "Press New to put something in it.";
-                            color: Theme.text-dim;
-                            font-size: Theme.fs-caption;
-                            horizontal-alignment: center;
-                        }
-                    }
-                }
-
-                ScrollView {
-                    VerticalLayout {
-                        alignment: start;
-                        spacing: 8px;
-
-                        for event in root.events-today : Rectangle {
-                            height: event-content.preferred-height + 20px;
-                            border-radius: 10px;
-                            background: Theme.bg-card;
-                            border-width: 1px;
-                            border-color: Theme.border-subtle;
-
-                            // Color accent bar
-                            Rectangle {
-                                x: 0;
-                                y: 8px;
-                                width: 3px;
-                                height: parent.height - 16px;
-                                border-radius: 1.5px;
-                                background: event.color;
-                            }
-
-                            event-content := VerticalLayout {
-                                padding: 10px;
-                                padding-left: 14px;
-                                spacing: 4px;
-
-                                Text {
-                                    text: event.title;
-                                    color: Theme.text-primary;
-                                    font-size: Theme.fs-body;
-                                    font-weight: 600;
-                                    overflow: elide;
-                                }
-
-                                Text {
-                                    text: event.time-text;
-                                    color: Theme.text-secondary;
-                                    font-size: Theme.fs-micro;
-                                }
-                            }
-
-                            // Delete
-                            del-ta := TouchArea {
-                                x: parent.width - 32px;
-                                y: 6px;
-                                width: 26px;
-                                height: 26px;
-                                mouse-cursor: pointer;
-                                clicked => { root.delete-event(event.id); }
-
-                                Rectangle {
-                                    border-radius: Theme.r-sm;
-                                    background: del-ta.has-hover ? Theme.color-danger-dim : transparent;
-                                    Icon {
-                                        commands: Icons.trash;
-                                        size: 12px;
-                                        tint: del-ta.has-hover ? Theme.color-danger : Theme.text-dim;
-                                        x: (parent.width - self.width) / 2;
-                                        y: (parent.height - self.height) / 2;
+                                        Rectangle {
+                                            border-radius: Theme.r-sm;
+                                            background: del-ta.has-hover ? Theme.color-danger-dim : transparent;
+                                            Icon {
+                                                commands: Icons.trash;
+                                                size: 12px;
+                                                tint: del-ta.has-hover ? Theme.color-danger : Theme.text-dim;
+                                                x: (parent.width - self.width) / 2;
+                                                y: (parent.height - self.height) / 2;
+                                            }
+                                        }
                                     }
                                 }
                             }

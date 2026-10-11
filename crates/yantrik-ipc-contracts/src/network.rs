@@ -149,6 +149,21 @@ pub struct NetworkInterfaceInfo {
     /// The kernel's own `operstate`: `up`, `down`, `unknown`.
     pub state: String,
     pub conn_type: ConnectionType,
+    /// Link speed in Mbit/s, from `/sys/class/net/<if>/speed`. `None` when the driver does not
+    /// report one — virtio answers -1 or refuses the read — and never a guessed figure.
+    ///
+    /// The three fields below are `default` so a service from before them still parses: its
+    /// rows arrive with all three unknown, which is what that service knew.
+    #[serde(default)]
+    pub speed_mbps: Option<u32>,
+    /// The address's netmask, as `255.255.255.0`: the same form as [`WifiState::subnet`], so the
+    /// two panes' "Subnet" fields read alike. `None` with no address.
+    #[serde(default)]
+    pub subnet: Option<String>,
+    /// The router this interface's default route goes through. `None` for an interface that
+    /// carries no default route.
+    #[serde(default)]
+    pub gateway: Option<String>,
 }
 
 /// Overall connectivity: the one-line "am I online, and how".

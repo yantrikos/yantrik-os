@@ -1,0 +1,157 @@
+// The work card: one per reply that started a run, updated in place as the run moves.
+//
+// It says what the shell already knows and nothing it does not. The title is what was asked, the
+// state is one of the eight words every surface uses (Queued, Working, Needs you, Paused,
+// Finished, Stopped, Couldn't finish, Connection lost), and the one activity line is a call the
+// agent store recorded, or "Last update 10:42" when nothing is observable. There is no progress
+// bar because nothing here measures progress. The 96x60 desk preview from the spec is a follow-up
+// until there is a Mind View snapshot to draw.
+//
+// Amber appears only on "Needs you": it is the one colour the panel keeps for a person's answer
+// being waited on.
+
+import { Theme } from "theme.slint";
+import { ChatPill } from "chat_parts.slint";
+
+export struct WorkCardData {
+    // The run's row id (`mind:main#n`), which is also what a reply's `run` names.
+    run: string,
+    title: string,
+    mind: string,
+    // queued | working | needs-you | paused | finished | stopped | failed | lost
+    state: string,
+    // The state in the shared vocabulary.
+    label: string,
+    activity: string,
+    // A desk exists to watch only while the run is live.
+    can-view-desk: bool,
+    // Finished with calls on record: the changes are listed in the run's pane.
+    can-review: bool,
+}
+
+export component WorkCard inherits Rectangle {
+    in property <WorkCardData> data;
+    callback view-desk(string);
+    callback details(string);
+
+    property <bool> needs-you: root.data.state == "needs-you";
+    height: body.preferred-height;
+    border-radius: Theme.chat-radius;
+    background: Theme.chat-bar;
+    border-width: 1px;
+    border-color: root.needs-you ? Theme.chat-needs-you : Theme.chat-border;
+
+    body := VerticalLayout {
+        padding: Theme.sp-4;
+        spacing: Theme.sp-2;
+
+        Text {
+            text: root.data.title;
+            color: Theme.chat-text;
+            font-size: Theme.fs-title-2;
+            font-weight: 600;
+            wrap: word-wrap;
+            overflow: elide;
+            max-height: 44px;
+        }
+        HorizontalLayout {
+            spacing: Theme.sp-2;
+            alignment: start;
+            Text {
+                text: root.data.mind + " \u{00b7} ";
+                color: Theme.chat-text-2;
+                font-size: Theme.fs-caption;
+                vertical-alignment: center;
+            }
+            Text {
+                text: root.data.label;
+                color: root.needs-you ? Theme.chat-needs-you : Theme.chat-text;
+                font-size: Theme.fs-caption;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+        }
+        Text {
+            text: root.data.activity;
+            color: Theme.chat-text-2;
+            font-size: Theme.fs-body;
+            overflow: elide;
+            wrap: no-wrap;
+        }
+        HorizontalLayout {
+            spacing: Theme.sp-2;
+            padding-top: Theme.sp-1;
+            alignment: start;
+            if root.data.can-view-desk : ChatPill {
+                label: "View desk";
+                primary: true;
+                clicked => { root.view-desk(root.data.run); }
+            }
+            if root.data.can-review : ChatPill {
+                label: "Review changes";
+                primary: true;
+                clicked => { root.details(root.data.run); }
+            }
+            ChatPill {
+                label: "Details";
+                clicked => { root.details(root.data.run); }
+            }
+        }
+    }
+}
+
+// The 48px strip between the conversation and the composer, drawn only while a run in this chat
+// is live. One run: "Yantrik Mind · Working · View desk". Several: how many, and how many need you.
+export component WorkStrip inherits Rectangle {
+    in property <string> mind;
+    in property <string> state-label;
+    in property <bool> needs-you;
+    // How many runs are live in this chat; 1 shows the single-run form.
+    in property <int> live-runs: 1;
+    in property <int> waiting-runs: 0;
+    in property <bool> can-view-desk: false;
+    callback view-desk();
+    callback view-work();
+
+    height: Theme.chat-strip-height;
+    background: Theme.chat-bar;
+
+    Rectangle {
+        y: 0;
+        height: 1px;
+        background: Theme.chat-border;
+    }
+    HorizontalLayout {
+        padding-left: Theme.sp-4;
+        padding-right: Theme.sp-3;
+        spacing: Theme.sp-2;
+
+        Rectangle {
+            width: 6px;
+            height: 6px;
+            y: (parent.height - 6px) / 2;
+            border-radius: 3px;
+            background: root.needs-you ? Theme.chat-needs-you : Theme.chat-mind;
+        }
+        Text {
+            text: root.live-runs > 1
+                ? root.live-runs + " runs in this chat \u{00b7} " + root.waiting-runs + " needs you"
+                : root.mind + " \u{00b7} " + root.state-label;
+            color: Theme.chat-text;
+            font-size: Theme.fs-body;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        VerticalLayout {
+            alignment: center;
+            ChatPill {
+                label: root.live-runs > 1 ? "View work" : "View desk";
+                enabled: root.live-runs > 1 || root.can-view-desk;
+                clicked => {
+                    if (root.live-runs > 1) { root.view-work(); } else { root.view-desk(); }
+                }
+            }
+        }
+    }
+}

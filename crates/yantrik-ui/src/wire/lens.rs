@@ -265,8 +265,8 @@ fn wire_result_selected(ui: &App, ctx: &AppContext) {
             }
             lens::LensAction::OpenUrl(url) => {
                 tracing::info!(%url, "Opening URL from Lens");
-                match std::process::Command::new("xdg-open").arg(&url).spawn() {
-                    Ok(_) => tracing::info!(%url, "URL opened"),
+                match crate::open_url::open(&url) {
+                    Ok(()) => tracing::info!(%url, "URL opened"),
                     Err(e) => tracing::error!(%url, error = %e, "Failed to open URL"),
                 }
                 if let Some(ui) = ui_weak.upgrade() {

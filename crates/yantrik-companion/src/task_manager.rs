@@ -6,7 +6,7 @@
 //! detect completions. SQLite table persists task metadata across restarts.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::process::{Child, Command, Stdio};
 
 use rusqlite::Connection;
@@ -66,7 +66,7 @@ impl TaskManager {
     /// Spawn a command in the background.
     ///
     /// Returns the task_id on success. Stdout and stderr are redirected to
-    /// `/tmp/yantrik-task-{id}.out`.
+    /// `yantrik-task-{id}.out` in the private scratch dir (see `output_path`).
     pub fn spawn(
         &mut self,
         conn: &Connection,
@@ -90,8 +90,10 @@ impl TaskManager {
         let task_id = format!("t{:04x}", self.next_id);
         self.next_id += 1;
 
-        let output_path = format!("/tmp/yantrik-task-{}.out", task_id);
-        let log_file = std::fs::File::create(&output_path)
+        let output_path = Self::output_path(&task_id)?;
+        // Not a plain create: the file tools can write into scratch too, and a link or second
+        // hard link left at this predictable name must not be followed and emptied.
+        let log_file = yantrik_ml::private_dir::create_scratch(&Self::output_name(&task_id))
             .map_err(|e| format!("Failed to create output file: {e}"))?;
         let stderr_file = log_file
             .try_clone()
@@ -168,13 +170,14 @@ impl TaskManager {
     /// Get status of a specific task.
     pub fn get_status(&self, conn: &Connection, task_id: &str) -> Option<TaskInfo> {
         conn.query_row(
-            "SELECT task_id, command, label, pid, status, exit_code, started_at, finished_at, output_file
+            "SELECT task_id, command, label, pid, status, exit_code, started_at, finished_at
              FROM background_tasks WHERE task_id = ?1",
             [task_id],
             |row| {
-                let output_file: String = row.get(8)?;
+                let task_id: String = row.get(0)?;
                 Ok(TaskInfo {
-                    task_id: row.get(0)?,
+                    output_tail: Self::read_output(&task_id, 20),
+                    task_id,
                     command: row.get(1)?,
                     label: row.get(2)?,
                     pid: row.get(3)?,
@@ -182,7 +185,6 @@ impl TaskManager {
                     exit_code: row.get(5)?,
                     started_at: row.get(6)?,
                     finished_at: row.get(7)?,
-                    output_tail: Self::read_output_from_path(&output_file, 20),
                 })
             },
         )
@@ -193,12 +195,12 @@ impl TaskManager {
     pub fn list(&self, conn: &Connection, status_filter: Option<&str>) -> Vec<TaskInfo> {
         let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match status_filter {
             Some(s) => (
-                "SELECT task_id, command, label, pid, status, exit_code, started_at, finished_at, output_file
+                "SELECT task_id, command, label, pid, status, exit_code, started_at, finished_at
                  FROM background_tasks WHERE status = ?1 ORDER BY started_at DESC LIMIT 20",
                 vec![Box::new(s.to_string()) as Box<dyn rusqlite::types::ToSql>],
             ),
             None => (
-                "SELECT task_id, command, label, pid, status, exit_code, started_at, finished_at, output_file
+                "SELECT task_id, command, label, pid, status, exit_code, started_at, finished_at
                  FROM background_tasks ORDER BY started_at DESC LIMIT 20",
                 vec![],
             ),
@@ -213,9 +215,10 @@ impl TaskManager {
             params.iter().map(|p| p.as_ref()).collect();
 
         stmt.query_map(param_refs.as_slice(), |row| {
-            let output_file: String = row.get(8)?;
+            let task_id: String = row.get(0)?;
             Ok(TaskInfo {
-                task_id: row.get(0)?,
+                output_tail: Self::read_output(&task_id, 5),
+                task_id,
                 command: row.get(1)?,
                 label: row.get(2)?,
                 pid: row.get(3)?,
@@ -223,7 +226,6 @@ impl TaskManager {
                 exit_code: row.get(5)?,
                 started_at: row.get(6)?,
                 finished_at: row.get(7)?,
-                output_tail: Self::read_output_from_path(&output_file, 5),
             })
         })
         .ok()
@@ -271,17 +273,38 @@ impl TaskManager {
     }
 
     /// Read the last N lines from a task's output file.
+    ///
+    /// Opened through `read_scratch`, not a plain open: the names are predictable and the file
+    /// tools can write into scratch, so `yantrik-task-t0001.out` could be a link to a key that
+    /// "the task's output" would then hand to the model.
     pub fn read_output(task_id: &str, tail_lines: usize) -> String {
-        let path = format!("/tmp/yantrik-task-{}.out", task_id);
-        Self::read_output_from_path(&path, tail_lines)
+        match yantrik_ml::private_dir::read_scratch(&Self::output_name(task_id)) {
+            Ok(file) => Self::read_output_tail(file, tail_lines),
+            Err(_) => String::new(),
+        }
     }
 
-    fn read_output_from_path(path: &str, tail_lines: usize) -> String {
-        let file = match std::fs::File::open(path) {
-            Ok(f) => f,
-            Err(_) => return String::new(),
-        };
+    /// Where a task's stdout and stderr go, and where `read_output` looks for them.
+    ///
+    /// Task ids are a counter (`t0001`, `t0002`, …) that restarts with the process, so under
+    /// `/tmp` every name was guessable in advance: another account could plant a symlink there
+    /// and have `File::create` truncate a file of their choosing, or leave output of its own for
+    /// the agent to read back as the result of a command it ran. The private scratch dir is ours
+    /// alone. The id is also refused if it is not a plain name, since `read_output` takes it from
+    /// the model's tool call. A string, because it is stored in the tasks table as one.
+    ///
+    /// The path is always worked out from the id, never read back from the tasks table: rows
+    /// written before this change point into /tmp, where the file at that name may now be anyone's.
+    fn output_path(task_id: &str) -> Result<String, String> {
+        yantrik_ml::private_dir::scratch_file_string(&Self::output_name(task_id))
+            .map_err(|e| format!("No private directory for task output: {e}"))
+    }
 
+    fn output_name(task_id: &str) -> String {
+        format!("yantrik-task-{task_id}.out")
+    }
+
+    fn read_output_tail(file: std::fs::File, tail_lines: usize) -> String {
         // Read last N lines by seeking backwards
         let metadata = match file.metadata() {
             Ok(m) => m,
@@ -293,23 +316,29 @@ impl TaskManager {
             return String::new();
         }
 
-        // For small files, just read all lines
-        if size < 8192 {
-            let reader = BufReader::new(file);
-            let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
-            let start = lines.len().saturating_sub(tail_lines);
-            return lines[start..].join("\n");
-        }
-
-        // For larger files, seek near the end
+        // A small file is read whole; a larger one only its last few kilobytes.
         let mut file = file;
-        let seek_pos = size.saturating_sub(4096);
+        let seek_pos = if size < 8192 {
+            0
+        } else {
+            size.saturating_sub(4096)
+        };
         if file.seek(SeekFrom::Start(seek_pos)).is_err() {
             return String::new();
         }
-        let reader = BufReader::new(file);
-        let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
-        // Skip the first partial line if we seeked into the middle
+
+        // The bytes are decoded in one go rather than line by line. A seek can land inside a
+        // multi-byte character, and `BufRead::lines` drops that whole line as undecodable, so the
+        // skip below threw away a second, complete line with the partial one. Decoding lossily
+        // leaves the broken character on the first line, which is the line being skipped, and a
+        // read error ends the read instead of failing again on every retry.
+        let mut chunk = Vec::new();
+        if file.read_to_end(&mut chunk).is_err() {
+            return String::new();
+        }
+        let text = String::from_utf8_lossy(&chunk);
+        let lines: Vec<&str> = text.lines().collect();
+        // The first line is partial whenever the read started inside the file.
         let skip = if seek_pos > 0 { 1 } else { 0 };
         let valid = &lines[skip.min(lines.len())..];
         let start = valid.len().saturating_sub(tail_lines);
@@ -373,5 +402,79 @@ fn format_duration(secs: f64) -> String {
         format!("{}m {}s", s / 60, s % 60)
     } else {
         format!("{}h {}m", s / 3600, (s % 3600) / 60)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TaskManager;
+    use std::io::Write;
+
+    /// A log big enough that the tail is read from `size - 4096`, with that cut landing inside a
+    /// multi-byte character of the third-to-last line. The two lines after the cut are complete,
+    /// so they are the last two lines of the log and both must come back: the old code dropped the
+    /// partial line as undecodable and then skipped a complete one on top of it.
+    #[test]
+    fn a_tail_cut_inside_a_character_loses_no_line() {
+        let mut content = String::new();
+        while content.len() + 1024 <= 8192 {
+            content.push_str(&"r".repeat(1023));
+            content.push('\n');
+        }
+        // The cut sits 4096 bytes from the end, so it falls inside the first of these three lines
+        // and, since they are made of 3-byte characters, inside a character.
+        content.push_str(&"字".repeat(1400));
+        content.push('\n');
+        content.push_str("second-to-last line: 日本語のテキスト\n");
+        let last_line = "last line: 日本語\n";
+        content.push_str(last_line);
+        let bytes = content.as_bytes();
+
+        // The assertions below are only worth anything if the read really starts mid-character.
+        let cut = bytes.len() - 4096;
+        assert!(bytes.len() >= 8192, "big enough to seek: {}", bytes.len());
+        assert!(
+            (bytes[cut] & 0xc0) == 0x80,
+            "the cut at {cut} must land inside a character, not on its first byte"
+        );
+
+        let last_two = format!("second-to-last line: 日本語のテキスト\n{}", last_line.trim_end());
+        assert_eq!(tail(&content, 2), last_two);
+        assert_eq!(tail(&content, 1), "last line: 日本語");
+    }
+
+    /// A log under the size where nothing is skipped, since all of it is read.
+    #[test]
+    fn a_small_log_tails_its_last_lines() {
+        let content = "one\ntwo\nthree\nfour\n";
+        assert_eq!(tail(content, 2), "three\nfour");
+        assert_eq!(tail(content, 99), content.trim_end());
+    }
+
+    /// An empty log has no tail, and a log with fewer lines than asked for returns all of them.
+    #[test]
+    fn an_empty_log_tails_to_nothing() {
+        assert_eq!(tail("", 5), "");
+        assert_eq!(tail("only\n", 5), "only");
+    }
+
+    /// Writes `content` where `read_output_tail` can read it back. Each call gets its own name:
+    /// the tests run in parallel and one log's content was landing in another's file.
+    fn tail(content: &str, tail_lines: usize) -> String {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "yantrik-task-tail-{}-{n}",
+            std::process::id()
+        ));
+        {
+            let mut file = std::fs::File::create(&path).unwrap();
+            file.write_all(content.as_bytes()).unwrap();
+            file.flush().unwrap();
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let got = TaskManager::read_output_tail(file, tail_lines);
+        let _ = std::fs::remove_file(&path);
+        got
     }
 }

@@ -152,7 +152,14 @@ impl Surface {
     ) -> Result<Value, ServiceError> {
         let call = ActCall::parse(params)?;
         let who = peer.map(Caller::from);
+        // Private mode first: while it is on, no agent acts at all.
+        call.require_not_private(who)?;
+        // A mind account's call acts only as a live agent (#411), before anything else.
+        call.require_standing(self.registry.app_id(), who)?;
         let reach = call.reach()?;
+        // An agent answering a turn from the person's phone asks above what its reach says,
+        // whatever the mode (design/channels-2026-09-29.md).
+        authority.held_by(reach.as_ref());
         let action_id = next_action_id(&self.service_id);
         // Before a grant is spent: the action, the agent's reach, the arguments as sent.
         call.spend_grant(&mut authority, self.registry.app_id(), who, || {

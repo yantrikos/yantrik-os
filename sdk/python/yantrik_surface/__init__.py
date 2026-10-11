@@ -31,6 +31,7 @@ from .gate import (
     DEFAULT_MODE,
     LADDER,
     MODES,
+    OPEN_ENDED,
     SOCKET_FLOOR,
     Authority,
     GrantRefused,
@@ -38,6 +39,7 @@ from .gate import (
     decide,
     grant_refusal,
     mode_from,
+    open_ended,
     unrecoverable,
 )
 from .surface import (
@@ -51,6 +53,7 @@ from .surface import (
     agent_token,
     caller,
 )
+from .stopping import StopOnSignal
 from .wire import PeerCred, PeerRefused, RpcError, SocketBusy, call_once, revision, socket_dir
 
 __version__ = "0.1.0"
@@ -66,6 +69,7 @@ __all__ = [
     "MODES",
     "Mode",
     "NotAnswered",
+    "OPEN_ENDED",
     "PROTOCOL",
     "Param",
     "PeerCred",
@@ -74,6 +78,7 @@ __all__ = [
     "RpcError",
     "SOCKET_FLOOR",
     "SocketBusy",
+    "StopOnSignal",
     "Surface",
     "agent_token",
     "call_once",
@@ -81,6 +86,7 @@ __all__ = [
     "decide",
     "grant_refusal",
     "mode_from",
+    "open_ended",
     "revision",
     "socket_dir",
     "unrecoverable",

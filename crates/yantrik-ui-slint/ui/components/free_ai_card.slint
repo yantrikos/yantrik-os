@@ -1,0 +1,283 @@
+// Settings → AI & Intelligence → Free AI accounts.
+//
+// The free tiers the pool can use, and the way to each: the person signs up themselves (one
+// account per provider), this card opens the right pages in order and takes the key from the
+// clipboard, checks it with the provider's own address, and keeps it in the vault. A key never
+// enters this file: Rust sends a row's state, its words, and at most the key's last four
+// characters, and every callback carries an id and nothing else (free_ai_tests).
+//
+// Every string a row shows is made in Rust (wire/free_ai): the card draws, it does not decide.
+
+import { Theme } from "theme.slint";
+import { YButton } from "y_button.slint";
+
+// One value a provider asks for while a key is awaited (Cloudflare asks for two).
+export struct FreeAiValue {
+    id: string,        // the key-store id: "groq", "cloudflare_account", "cloudflare"
+    label: string,     // "API key", "Account ID"
+    where: string,     // where on the provider's page
+    done: bool,        // already pasted and kept
+}
+
+export struct FreeAiRow {
+    id: string,
+    name: string,
+    // not-set-up · sign-up-opened · waiting · checking · ready · rejected · skipped · off ·
+    // confirm-remove · open (no account needed)
+    state: string,
+    state-words: string,   // the caption at the right: "ready", "waiting for key", …
+    offer: string,         // what the free tier gives
+    needs: string,         // "Needs: an account · about 3 min"
+    detail: string,        // the state's own line: an instruction, "Key ends in 7f3k · …", a reason
+    trains: bool,          // the free tier may train on what it is sent
+    on: bool,              // the pool may use it
+    values: [FreeAiValue],
+    opt-out: string,       // where its training can be turned off, or ""
+}
+
+export global FreeAiState {
+    in-out property <[FreeAiRow]> rows;
+    // The same rows, split: those that never train on prompts, and those that may.
+    in-out property <[FreeAiRow]> clean-rows;
+    in-out property <[FreeAiRow]> trains-rows;
+    in-out property <string> summary;       // "3 of 8 ready · 3 to set up · 2 skipped"
+    in-out property <string> next-line;     // "Next: Groq · needs an account · about 3 min", or ""
+    in-out property <string> next-id;
+    in-out property <string> next-name;
+    in-out property <bool> vault-locked;
+    in-out property <bool> expanded: true;
+    // The status bar's paste chip, while a key is awaited: "Paste Groq key", and the value it is for.
+    in-out property <string> chip-label;
+    in-out property <string> chip-value-id;
+
+    callback start(string);
+    callback have-key(string);
+    callback open-keys(string);
+    callback paste(string);            // a value's id
+    callback skip(string);
+    callback unskip(string);
+    callback toggle(string);
+    callback replace(string);
+    callback remove(string);           // asks first (confirm-remove)
+    callback confirm-remove(string);
+    callback cancel-remove(string);
+    callback set-expanded(bool);
+    callback chip-pressed();
+}
+
+component Dot inherits Rectangle {
+    in property <string> state;
+    width: 8px;
+    height: 8px;
+    border-radius: 4px;
+    y: 6px;
+    background: root.state == "ready" || root.state == "open" ? Theme.color-success
+        : root.state == "rejected" ? Theme.color-emotional
+        : root.state == "sign-up-opened" || root.state == "waiting" || root.state == "checking" ? Theme.amber
+        : Theme.text-dim;
+}
+
+component Pill inherits Rectangle {
+    in property <string> text;
+    height: 20px;
+    width: pill-text.preferred-width + 14px;
+    border-radius: 10px;
+    background: Theme.tint-amber;
+    pill-text := Text {
+        text: root.text;
+        color: Theme.amber;
+        font-size: Theme.fs-micro;
+        font-weight: 600;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+}
+
+component Line inherits Text {
+    color: Theme.text-secondary;
+    font-size: Theme.fs-caption;
+    wrap: word-wrap;
+}
+
+component ProviderRow inherits VerticalLayout {
+    in property <FreeAiRow> item;
+    in property <bool> vault-locked;
+    spacing: Theme.sp-1;
+
+    HorizontalLayout {
+        spacing: Theme.sp-2;
+        Dot { state: root.item.state; }
+        Text {
+            text: root.item.state == "skipped" ? root.item.name + " · skipped" : root.item.name;
+            color: root.item.state == "skipped" ? Theme.text-dim : Theme.text-primary;
+            font-size: Theme.fs-body;
+            font-weight: 600;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        if root.item.trains && root.item.state != "skipped" : Pill { text: "trains on your prompts"; }
+        if root.item.state != "skipped" : Text {
+            text: root.item.state-words;
+            color: Theme.text-dim;
+            font-size: Theme.fs-caption;
+            vertical-alignment: center;
+        }
+        if root.item.state == "skipped" : YButton {
+            label: "Undo skip";
+            variant: 1;
+            size: 0;
+            clicked => { FreeAiState.unskip(root.item.id); }
+        }
+    }
+
+    if root.item.state != "skipped" : VerticalLayout {
+        padding-left: 16px;
+        spacing: Theme.sp-1;
+
+        if root.item.state == "not-set-up" || root.item.state == "open" : Line { text: root.item.offer; }
+        if root.item.state == "not-set-up" : Line { text: root.item.needs; color: Theme.text-dim; }
+        if root.item.detail != "" : Line {
+            text: root.item.detail;
+            color: root.item.state == "rejected" ? Theme.color-emotional : Theme.text-secondary;
+        }
+        if root.item.opt-out != "" && (root.item.state == "not-set-up" || root.item.state == "ready") : Line {
+            text: root.item.opt-out;
+            color: Theme.text-dim;
+        }
+
+        // The values a key needs, while it is awaited: one Paste per value.
+        if root.item.state == "waiting" || root.item.state == "rejected" : VerticalLayout {
+            spacing: Theme.sp-1;
+            for v[i] in root.item.values : HorizontalLayout {
+                spacing: Theme.sp-2;
+                alignment: root.item.values.length > 1 ? stretch : start;
+                if root.item.values.length > 1 : Line { text: (i + 1) + ". " + v.label + ": " + v.where; horizontal-stretch: 1; }
+                YButton {
+                    label: v.done ? v.label + " is in" : (root.item.values.length > 1 ? "Paste " + v.label : "Paste key from clipboard");
+                    variant: v.done ? 1 : 0;
+                    size: 0;
+                    disabled: v.done || root.vault-locked;
+                    clicked => { FreeAiState.paste(v.id); }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: Theme.sp-2;
+            alignment: start;
+            if root.item.state == "not-set-up" : YButton { label: "Start"; variant: 0; size: 0; clicked => { FreeAiState.start(root.item.id); } }
+            if root.item.state == "not-set-up" : YButton { label: "I already have a key"; variant: 1; size: 0; clicked => { FreeAiState.have-key(root.item.id); } }
+            if root.item.state == "sign-up-opened" : YButton { label: "Open key page"; variant: 0; size: 0; clicked => { FreeAiState.open-keys(root.item.id); } }
+            // A provider often shows the key right after sign-up: the paste is here too, not only
+            // after "Open key page" (Pranab, 1 Oct 2026: OpenRouter's row had no way to paste).
+            // A provider with two values (Cloudflare) takes them in order from its key page.
+            if root.item.state == "sign-up-opened" && root.item.values.length == 1 : YButton {
+                label: "Paste key from clipboard";
+                variant: 1;
+                size: 0;
+                disabled: FreeAiState.vault-locked;
+                clicked => { FreeAiState.paste(root.item.values[0].id); }
+            }
+            if root.item.state == "waiting" || root.item.state == "rejected" : YButton { label: "Open key page again"; variant: 1; size: 0; clicked => { FreeAiState.open-keys(root.item.id); } }
+            if root.item.state == "checking" : YButton { label: "Checking"; loading: true; variant: 1; size: 0; }
+            if root.item.state == "ready" || root.item.state == "off" || root.item.state == "open" : HorizontalLayout {
+                spacing: Theme.sp-2;
+                Text { text: "Use in the pool"; color: Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; }
+                YButton { label: root.item.on ? "On" : "Off"; variant: root.item.on ? 0 : 1; size: 0; clicked => { FreeAiState.toggle(root.item.id); } }
+            }
+            if root.item.state == "ready" : YButton { label: "Replace key"; variant: 1; size: 0; clicked => { FreeAiState.replace(root.item.id); } }
+            if root.item.state == "ready" || root.item.state == "off" : YButton { label: "Remove key…"; variant: 1; size: 0; clicked => { FreeAiState.remove(root.item.id); } }
+            if root.item.state == "confirm-remove" : YButton { label: "Cancel"; variant: 1; size: 0; clicked => { FreeAiState.cancel-remove(root.item.id); } }
+            if root.item.state == "confirm-remove" : YButton { label: "Remove key"; variant: 3; size: 0; clicked => { FreeAiState.confirm-remove(root.item.id); } }
+            if root.item.state == "not-set-up" || root.item.state == "sign-up-opened" || root.item.state == "waiting" || root.item.state == "rejected" : YButton {
+                label: "Skip";
+                variant: 1;
+                size: 0;
+                clicked => { FreeAiState.skip(root.item.id); }
+            }
+        }
+    }
+}
+
+component Group inherits VerticalLayout {
+    in property <string> heading;
+    in property <string> warning;
+    in property <string> group;
+    spacing: Theme.sp-3;
+    Text {
+        text: root.heading;
+        color: Theme.text-dim;
+        font-size: Theme.fs-micro;
+        font-weight: 600;
+        letter-spacing: 2px;
+        wrap: word-wrap;
+    }
+    if root.warning != "" : Rectangle {
+        background: Theme.tint-amber;
+        border-radius: Theme.r-md;
+        height: warn.preferred-height;
+        warn := VerticalLayout {
+            padding: Theme.sp-3;
+            Text { text: root.warning; color: Theme.amber; font-size: Theme.fs-caption; wrap: word-wrap; }
+        }
+    }
+    for r in root.group == "trains" ? FreeAiState.trains-rows : FreeAiState.clean-rows : ProviderRow {
+        item: r;
+        vault-locked: FreeAiState.vault-locked;
+    }
+}
+
+export component FreeAiCard inherits Rectangle {
+    // At most 600px: with a provider's page snapped to one half of the screen, the whole card
+    // fits in the other.
+    max-width: 600px;
+    background: Theme.bg-card;
+    border-radius: Theme.r-lg;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+    height: layout.preferred-height;
+
+    layout := VerticalLayout {
+        padding: Theme.sp-4;
+        spacing: Theme.sp-3;
+
+        Text { text: "Free AI from " + FreeAiState.rows.length + " providers"; color: Theme.text-primary; font-size: Theme.fs-body; font-weight: 700; }
+        Text { text: FreeAiState.summary; color: Theme.text-secondary; font-size: Theme.fs-caption; }
+        Line {
+            text: "Ready means the pool can use it now. You sign up yourself, one account per provider; keys are kept in the vault and this page shows at most their last four characters.";
+            color: Theme.text-dim;
+        }
+        if FreeAiState.vault-locked : Line {
+            text: "Unlock the credential vault to save keys.";
+            color: Theme.amber;
+        }
+        if FreeAiState.next-line != "" : Line { text: FreeAiState.next-line; color: Theme.text-primary; }
+        HorizontalLayout {
+            spacing: Theme.sp-2;
+            alignment: start;
+            if FreeAiState.next-id != "" : YButton {
+                label: "Set up " + FreeAiState.next-name;
+                variant: 0;
+                size: 1;
+                clicked => { FreeAiState.start(FreeAiState.next-id); }
+            }
+            YButton {
+                label: FreeAiState.expanded ? "Show fewer" : "Show all " + FreeAiState.rows.length;
+                variant: 1;
+                size: 1;
+                clicked => { FreeAiState.set-expanded(!FreeAiState.expanded); }
+            }
+        }
+
+        if FreeAiState.expanded : Group {
+            group: "clean";
+            heading: "NEVER TRAINS ON YOUR PROMPTS";
+            warning: "";
+        }
+        if FreeAiState.expanded : Group {
+            group: "trains";
+            heading: "TRAINS ON YOUR PROMPTS: READ THIS BEFORE YOU SIGN UP";
+            warning: "These providers may use what is sent to improve their models, and people there may read it. Yantrik never sends them a turn that carries anything of yours: only turns with nothing private in them go here. Some let you turn training off in their own settings; the label stays either way.";
+        }
+    }
+}

@@ -105,7 +105,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
 /// Every branch logs at most a state. The password is borrowed for the call and is not put in a
 /// span, a field, or a message; `secret_never_reaches_a_message` in `vault_unlock` covers the
 /// strings this function can reach.
-fn adopt_session_password(bridge: &Arc<crate::bridge::CompanionBridge>, password: &str) {
+pub(crate) fn adopt_session_password(bridge: &Arc<crate::bridge::CompanionBridge>, password: &str) {
     use crate::vault_unlock::{Op, Outcome};
 
     // Generous, because Argon2id is deliberately slow and the worker may be mid-thought. The
@@ -140,92 +140,80 @@ fn adopt_session_password(bridge: &Arc<crate::bridge::CompanionBridge>, password
 }
 
 /// Verify username/password against the system.
-/// Tries unix_chkpwd first (preferred, PAM-aware), falls back to shadow file.
-fn verify_password(username: &str, password: &str) -> bool {
-    // Method 1: unix_chkpwd — the PAM helper binary
-    // It reads the password from stdin and checks against /etc/shadow
+///
+/// `unix_chkpwd` is PAM's setgid-shadow helper: run as the account itself it checks that
+/// account's password, which it reads from stdin **NUL-terminated**, in the mode named by its
+/// second argument. That argument was `chkexpiry`, commented as a dummy the helper ignores. It is
+/// not ignored: `chkexpiry` is the expiry check, which never reads a password and exits 0 for any
+/// account that has not expired — so every login, and every unlock, accepted any password at all
+/// (verified on VM 520: a wrong password, exit 0). `nonull` is the password check (an empty
+/// password is refused), and the password went down the pipe newline-terminated, which the helper
+/// reads as part of the password. `chkpwd_request` is the one place both are decided.
+///
+/// A failed check is final. Only when the helper cannot be run at all does root read
+/// /etc/shadow itself (the installer's chroot); there is no third way.
+pub(crate) fn verify_password(username: &str, password: &str) -> bool {
+    // The helper reads up to a NUL: "right\0anything" would be checked as "right".
+    if password.is_empty() || password.contains('\0') {
+        return false;
+    }
     for chkpwd_path in &["/usr/sbin/unix_chkpwd", "/sbin/unix_chkpwd"] {
-        if std::path::Path::new(chkpwd_path).exists() {
-            match Command::new(chkpwd_path)
-                .arg(username)
-                .arg("chkexpiry") // dummy arg, unix_chkpwd ignores it but needs something
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-            {
-                Ok(mut child) => {
-                    if let Some(ref mut stdin) = child.stdin {
-                        use std::io::Write;
-                        let _ = stdin.write_all(format!("{password}\n").as_bytes());
-                    }
-                    drop(child.stdin.take());
-                    match child.wait() {
-                        Ok(status) => {
-                            tracing::debug!(
-                                path = chkpwd_path,
-                                status = %status,
-                                "unix_chkpwd result"
-                            );
-                            return status.success();
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "unix_chkpwd wait failed");
-                        }
-                    }
+        if !std::path::Path::new(chkpwd_path).exists() {
+            continue;
+        }
+        let (mode, stdin) = chkpwd_request(password);
+        match Command::new(chkpwd_path)
+            .args([username, mode])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(mut child) => {
+                if let Some(mut pipe) = child.stdin.take() {
+                    use std::io::Write;
+                    let _ = pipe.write_all(&stdin);
                 }
-                Err(e) => {
-                    tracing::warn!(path = chkpwd_path, error = %e, "unix_chkpwd spawn failed");
-                }
+                return match child.wait() {
+                    Ok(status) => status.success(),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "unix_chkpwd wait failed");
+                        false
+                    }
+                };
+            }
+            Err(e) => {
+                tracing::warn!(path = chkpwd_path, error = %e, "unix_chkpwd spawn failed");
             }
         }
     }
 
-    // Method 2: Read /etc/shadow directly and verify hash
-    // This works when running as root (which we do via autologin)
+    // No helper: only root can read /etc/shadow, and then it checks the hash itself.
     if let Ok(shadow) = std::fs::read_to_string("/etc/shadow") {
         for line in shadow.lines() {
             let parts: Vec<&str> = line.split(':').collect();
             if parts.len() >= 2 && parts[0] == username {
                 let stored_hash = parts[1];
-                // Skip locked/disabled accounts
                 if stored_hash.starts_with('!') || stored_hash.starts_with('*') || stored_hash.is_empty() {
                     tracing::warn!(user = username, "Account is locked or has no password");
                     return false;
                 }
-                // Use openssl to verify: generate hash with same salt, compare
                 return verify_shadow_hash(password, stored_hash);
             }
         }
         tracing::warn!(user = username, "User not found in /etc/shadow");
     } else {
-        tracing::warn!("Cannot read /etc/shadow — running as non-root?");
+        tracing::warn!("No unix_chkpwd and no /etc/shadow to read: the password cannot be checked");
     }
-
-    // Method 3: Try `su` with the credentials via `expect`-like approach
-    // This is a last resort
-    match Command::new("su")
-        .args(["-c", "true", username])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(mut child) => {
-            if let Some(ref mut stdin) = child.stdin {
-                use std::io::Write;
-                let _ = stdin.write_all(format!("{password}\n").as_bytes());
-            }
-            drop(child.stdin.take());
-            match child.wait() {
-                Ok(status) => return status.success(),
-                Err(_) => {}
-            }
-        }
-        Err(_) => {}
-    }
-
     false
+}
+
+/// What `unix_chkpwd` is asked, and what goes down its stdin: the password check (`nonull`), and
+/// the password NUL-terminated, exactly as typed.
+fn chkpwd_request(password: &str) -> (&'static str, Vec<u8>) {
+    let mut stdin = password.as_bytes().to_vec();
+    stdin.push(0);
+    ("nonull", stdin)
 }
 
 /// Verify a password against a shadow hash (e.g. $6$salt$hash).
@@ -247,7 +235,7 @@ fn verify_shadow_hash(password: &str, stored_hash: &str) -> bool {
     };
 
     // Use openssl to generate hash with the same salt
-    match Command::new("openssl")
+    match Command::new("/usr/bin/openssl")
         .args(["passwd", &format!("-{}", parts[1]), "-salt", parts[2], "-stdin"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -274,5 +262,39 @@ fn verify_shadow_hash(password: &str, stored_hash: &str) -> bool {
             tracing::warn!(error = %e, "openssl passwd failed for shadow verification");
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod password_check_tests {
+    use super::*;
+
+    /// `chkexpiry` never reads the password and passes every account that has not expired: any
+    /// password logged in. The check is `nonull`, and the helper reads up to a NUL.
+    #[test]
+    fn the_helper_is_asked_to_check_the_password_as_typed() {
+        let (mode, stdin) = chkpwd_request("pa ss\u{e9}");
+        assert_eq!(mode, "nonull", "any other mode does not check the password");
+        assert_eq!(stdin, b"pa ss\xc3\xa9\0", "the password, exactly, then NUL; no newline");
+    }
+
+    #[test]
+    fn an_empty_password_is_wrong_before_anything_is_asked() {
+        assert!(!verify_password("nobody-at-all", ""));
+        assert!(!verify_password("nobody-at-all", "right\0junk"), "a NUL would end the password early");
+    }
+
+    /// Against the real helper, as the account being checked (it only checks its caller's own).
+    /// `YOS_CHKPWD_PASSWORD` is that account's password; run where one is set up for it:
+    /// `YOS_CHKPWD_PASSWORD=… cargo test -- --ignored the_real_helper`.
+    #[test]
+    #[ignore]
+    fn the_real_helper_takes_the_right_password_and_refuses_a_wrong_one() {
+        let user = String::from_utf8(Command::new("/usr/bin/id").arg("-un").output().unwrap().stdout).unwrap();
+        let user = user.trim();
+        let right = std::env::var("YOS_CHKPWD_PASSWORD").expect("YOS_CHKPWD_PASSWORD");
+        assert!(verify_password(user, &right), "the right password was refused");
+        assert!(!verify_password(user, "definitely-not-the-password"), "a wrong password was accepted");
+        assert!(!verify_password(user, &format!("{right} ")), "a different password was accepted");
     }
 }

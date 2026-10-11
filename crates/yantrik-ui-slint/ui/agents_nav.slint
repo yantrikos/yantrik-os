@@ -1,0 +1,246 @@
+// The Agents workroom's left navigation: Workroom · Needs you · History, then MINDS (agents.slint
+// mounts it; agents_workroom.slint has the pages it points at).
+//
+// A mind's row is 64px, with its mark, its name, its real state and — when requests wait on the
+// person — an amber count. Its live task agents sit under it. Selection is a raised neutral fill
+// with a white keyline, never teal: teal marks a mind, amber a request waiting.
+
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "components/icon.slint";
+import { YButton } from "components/y_button.slint";
+import { WorkNavData, MindMark } from "agents_workroom.slint";
+
+// An amber count: requests waiting on the person. Only ever drawn when there is one.
+component NeedsBadge inherits Rectangle {
+    in property <int> count;
+    width: max(Theme.wr-badge-h, label.preferred-width + Theme.sp-3);
+    height: Theme.wr-badge-h;
+    border-radius: self.height / 2;
+    background: Theme.amber;
+    label := Text {
+        text: root.count;
+        color: Theme.bg-surface;
+        font-size: Theme.fs-caption;
+        font-weight: Theme.fw-headline;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component NavItem inherits Rectangle {
+    in property <string> label;
+    in property <string> icon;
+    in property <bool> selected;
+    in property <int> count;
+    in property <bool> amber;
+    callback clicked;
+    height: Theme.wr-nav-item-h;
+    border-radius: Theme.r-md;
+    background: root.selected ? Theme.bg-elevated : ta.has-hover ? Theme.hover-fill : transparent;
+    border-width: root.selected ? Theme.hairline : 0px;
+    border-color: Theme.text-primary;
+    accessible-role: button;
+    accessible-label: root.label;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: Theme.sp-3;
+        padding-right: Theme.sp-3;
+        spacing: Theme.sp-2h;
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                commands: root.icon;
+                size: Theme.bar-icon-size;
+                tint: root.selected ? Theme.text-primary : Theme.text-secondary;
+            }
+        }
+        Text {
+            text: root.label;
+            color: root.selected ? Theme.text-primary : Theme.text-secondary;
+            font-size: Theme.fs-body;
+            font-weight: root.selected ? Theme.fw-headline : Theme.fw-body;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        if root.count > 0 : VerticalLayout {
+            alignment: center;
+            if root.amber : NeedsBadge { count: root.count; }
+            if !root.amber : Text {
+                text: root.count;
+                color: Theme.text-dim;
+                font-size: Theme.fs-caption;
+            }
+        }
+    }
+}
+
+component MindRow inherits Rectangle {
+    in property <WorkNavData> data;
+    in property <bool> selected;
+    callback clicked;
+    height: Theme.wr-nav-row-h;
+    border-radius: Theme.r-md;
+    background: root.selected ? Theme.bg-elevated : ta.has-hover ? Theme.hover-fill : transparent;
+    border-width: root.selected ? Theme.hairline : 0px;
+    border-color: Theme.text-primary;
+    accessible-role: button;
+    accessible-label: root.data.label + ", " + root.data.sub;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: Theme.sp-3;
+        padding-right: Theme.sp-3;
+        spacing: Theme.sp-3;
+        VerticalLayout {
+            alignment: center;
+            MindMark { available: root.data.available; }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: Theme.sp-half;
+            horizontal-stretch: 1;
+            Text {
+                text: root.data.label;
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+                font-weight: Theme.fw-headline;
+                overflow: elide;
+            }
+            Text {
+                text: root.data.sub;
+                color: root.data.available ? Theme.text-secondary : Theme.text-dim;
+                font-size: Theme.fs-caption;
+                overflow: elide;
+            }
+        }
+        if root.data.needs > 0 : VerticalLayout {
+            alignment: center;
+            NeedsBadge { count: root.data.needs; }
+        }
+    }
+}
+
+component TaskRow inherits Rectangle {
+    in property <WorkNavData> data;
+    in property <bool> selected;
+    callback clicked;
+    height: Theme.wr-nav-item-h;
+    border-radius: Theme.r-md;
+    background: root.selected ? Theme.bg-elevated : ta.has-hover ? Theme.hover-fill : transparent;
+    border-width: root.selected ? Theme.hairline : 0px;
+    border-color: Theme.text-primary;
+    accessible-role: button;
+    accessible-label: root.data.label + ", " + root.data.sub;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: Theme.wr-nav-indent;
+        padding-right: Theme.sp-3;
+        spacing: Theme.sp-2;
+        VerticalLayout {
+            alignment: center;
+            spacing: Theme.hairline;
+            horizontal-stretch: 1;
+            Text {
+                text: root.data.label;
+                color: Theme.text-primary;
+                font-size: Theme.fs-caption;
+                overflow: elide;
+            }
+            Text {
+                text: root.data.sub;
+                color: root.data.needs > 0 ? Theme.amber : Theme.text-dim;
+                font-size: Theme.fs-micro;
+            }
+        }
+    }
+}
+
+// The left navigation: Workroom · Needs you · History, then MINDS.
+export component WorkNav inherits Rectangle {
+    // workroom | needs_you | history
+    in property <string> section;
+    // The mind the workroom is narrowed to, or "".
+    in property <string> mind;
+    // A task opened in the detail, by row key, or "".
+    in property <string> task;
+    in property <int> needs;
+    in property <int> runs;
+    in property <[WorkNavData]> minds;
+    callback pick-section(string);
+    callback pick-mind(string);
+    callback pick-task(string);
+
+    background: Theme.bg-card;
+    border-width: Theme.hairline;
+    border-color: Theme.border-subtle;
+
+    nav-flick := Flickable {
+        width: parent.width;
+        height: parent.height;
+        viewport-height: col.preferred-height;
+        Rectangle {
+          width: nav-flick.width;
+          height: col.preferred-height;
+          col := VerticalLayout {
+            padding: Theme.sp-3;
+            spacing: Theme.sp-1;
+            alignment: start;
+            NavItem {
+                label: "Workroom";
+                icon: Icons.apps;
+                selected: root.section == "workroom" && root.mind == "" && root.task == "";
+                clicked => { root.pick-section("workroom"); }
+            }
+            NavItem {
+                label: "Needs you";
+                icon: Icons.alerts;
+                count: root.needs;
+                amber: true;
+                selected: root.section == "needs_you" && root.task == "";
+                clicked => { root.pick-section("needs_you"); }
+            }
+            NavItem {
+                label: "History";
+                icon: Icons.history;
+                selected: root.section == "history" && root.task == "";
+                clicked => { root.pick-section("history"); }
+            }
+            Rectangle { height: Theme.sp-4; }
+            Text {
+                text: "MINDS";
+                color: Theme.text-dim;
+                font-size: Theme.fs-micro;
+                letter-spacing: Theme.sp-half;
+                height: Theme.wr-badge-h;
+                x: Theme.sp-3;
+            }
+            if root.minds.length == 0 : Text {
+                text: "No mind is attached right now.";
+                color: Theme.text-dim;
+                font-size: Theme.fs-caption;
+                wrap: word-wrap;
+            }
+            for row in root.minds : VerticalLayout {
+                if row.kind == "mind" : MindRow {
+                    data: row;
+                    selected: root.mind == row.id && root.task == "" && root.section == "workroom";
+                    clicked => { root.pick-mind(row.id); }
+                }
+                if row.kind == "task" : TaskRow {
+                    data: row;
+                    selected: root.task == row.id;
+                    clicked => { root.pick-task(row.id); }
+                }
+            }
+        }
+    }
+  }
+}

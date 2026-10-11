@@ -65,6 +65,13 @@ pub enum CompanionCommand {
         /// Only [`CompanionHandle::ask`] passes one. The chat UI shows the offline notice from
         /// its own wiring, and a submitted job's subscriber is the board.
         model: Option<Sender<bool>>,
+        /// Asked from away from the machine (a channel): the turn's tools are held to `Safe` —
+        /// it reads, it changes nothing — and so is what the worker runs after it, until the
+        /// person next speaks at the desk.
+        remote: bool,
+        /// Asked by a program on the companion's socket, not by the person: the turn's words
+        /// count as untrusted, so a tool that would hand back a credential is refused.
+        outside: bool,
     },
     /// Count a conversation turn — one that began with the person's words and was answered.
     ///
@@ -112,9 +119,20 @@ pub enum CompanionCommand {
         op: crate::vault_unlock::Op,
         reply_tx: Sender<crate::vault_unlock::Reply>,
     },
+    /// The free AI keys (wire::free_ai::store). Typed, like `Vault`, and reached only from the
+    /// UI's own bridge.
+    ProviderKeys {
+        op: crate::wire::free_ai::store::Op,
+        reply_tx: crossbeam_channel::Sender<crate::wire::free_ai::store::Reply>,
+    },
     /// Search memories.
     RecallMemories {
         query: String,
+        reply_tx: Sender<Vec<MemoryResult>>,
+    },
+    /// The newest memories, for the Memory screen before anything is searched.
+    RecentMemories {
+        limit: usize,
         reply_tx: Sender<Vec<MemoryResult>>,
     },
     /// Get current bond level (for voice profile adaptation).
@@ -150,6 +168,10 @@ pub enum CompanionCommand {
     SetIncognitoMode {
         enabled: bool,
     },
+    /// Switch the decision model (Settings → Decision model).
+    SetJudge {
+        config: yantrik_companion::config::JudgeConfig,
+    },
     /// Run a background think cycle.
     Think {
         /// Current interruptibility from FocusFlow (0.0 = deep work, 1.0 = normal).
@@ -169,6 +191,8 @@ pub enum CompanionCommand {
     /// Read the recipes again and publish them to `crate::recipes`, which the Recipes screen,
     /// `describe shell` and the mind panel read without waiting on this thread.
     RefreshRecipes,
+    /// The person pressed New chat (#246): the built-in's next turn starts a new conversation.
+    NewConversation,
     /// A person's answer, pause, resume or cancel for one recipe. The outcome is published to
     /// `crate::recipes` with the recipes themselves.
     Recipe {
@@ -209,12 +233,33 @@ pub struct StateSnapshot {
 pub struct BondSnapshot {
     pub bond_score: f64,
     pub bond_level: String,
+    /// Which of the five levels, 1 to 5, so the screen can say "Level 4 of 5".
+    pub level_number: i64,
     pub total_interactions: i64,
     pub days_together: i64,
     pub current_streak: i64,
     pub humor_rate: f64,
     pub vulnerability_events: i64,
     pub shared_references: i64,
+}
+
+impl BondSnapshot {
+    /// The bond as the Slint struct has it, with `loaded` set: this is only built from a read of
+    /// the store. One conversion, for the push and for the Bond screen's own fetch.
+    pub fn to_ui(&self) -> BondData {
+        BondData {
+            loaded: true,
+            bond_score: self.bond_score as f32,
+            bond_level: self.bond_level.clone().into(),
+            level_number: self.level_number as i32,
+            total_interactions: self.total_interactions as i32,
+            days_together: self.days_together as i32,
+            current_streak: self.current_streak as i32,
+            humor_rate: self.humor_rate as f32,
+            vulnerability_events: self.vulnerability_events as i32,
+            shared_references: self.shared_references as i32,
+        }
+    }
 }
 
 /// Personality/evolution screen data.
@@ -251,6 +296,9 @@ pub struct MemoryResult {
     pub valence: f64,
     pub score: f64,
     pub created_at: f64,
+    /// The memory's domain: `audit/tools` lines are the companion's record of what its tools
+    /// did, and are not handed to a program on its socket.
+    pub domain: String,
 }
 
 /// Urge data for the UI.
@@ -294,6 +342,16 @@ pub struct CompanionBridge {
     ambient: AmbientState,
     /// Cognitive event bus — shared with the entire system.
     event_bus: yantrik_os::EventBus,
+    /// The decision model the companion is set to, as Settings shows it: kept here so the UI
+    /// thread reads it without a round trip to the worker. The worker's copy is the one used.
+    judge: Arc<std::sync::Mutex<yantrik_companion::config::JudgeConfig>>,
+    /// The decision model in use, asked on the caller's thread (`yantrik_companion::decisions`).
+    decisions: yantrik_companion::decisions::Decisions,
+    /// The Settings incognito switch, and Private mode: the companion is incognito while either is on.
+    incognito_setting: AtomicBool,
+    private: AtomicBool,
+    /// The memory store's path, for reads that must not wait on the worker (`recent_memories`).
+    memory_db: String,
 }
 
 /// A companion you can use from another thread.
@@ -306,9 +364,16 @@ pub struct CompanionHandle {
     cmd_tx: Sender<CompanionCommand>,
     online: Arc<AtomicBool>,
     board: crate::jobs::Board,
+    decisions: yantrik_companion::decisions::Decisions,
 }
 
 impl CompanionHandle {
+    /// The decision model in use, asked on the caller's thread: a decision never waits behind a
+    /// chat turn on the companion's.
+    pub fn decisions(&self) -> &yantrik_companion::decisions::Decisions {
+        &self.decisions
+    }
+
     /// Ask the companion something and wait for the finished answer.
     ///
     /// The worker streams tokens for the chat UI; a caller over RPC wants one reply, so the
@@ -330,6 +395,8 @@ impl CompanionHandle {
                 token_tx,
                 job: None,
                 model: Some(model_tx),
+                remote: false,
+                outside: true,
             })
             .map_err(|_| AskError::Failed("companion worker is not running".to_string()))?;
 
@@ -425,7 +492,7 @@ impl CompanionHandle {
     /// alternative — blocking — told the caller nothing for as long as fifty seconds and then
     /// gave it no way to have chosen differently.
     pub fn submit_ask(&self, text: String) -> Result<crate::jobs::Receipt, String> {
-        let receipt = self.board.submit("model", "ask");
+        let receipt = self.board.submit_outside("model", "ask");
         // Tokens go nowhere: the board is the subscriber for a submitted job, and the chat UI is
         // not watching this one.
         let (token_tx, _token_rx) = crossbeam_channel::unbounded();
@@ -435,6 +502,8 @@ impl CompanionHandle {
                 token_tx,
                 job: Some(receipt.ticket.clone()),
                 model: None,
+                remote: false,
+                outside: true,
             })
             .map_err(|_| "companion worker is not running".to_string())?;
         Ok(receipt)
@@ -446,7 +515,7 @@ impl CompanionHandle {
         name: String,
         args: serde_json::Value,
     ) -> Result<crate::jobs::Receipt, String> {
-        let receipt = self.board.submit("model", &format!("tool:{name}"));
+        let receipt = self.board.submit_outside("model", &format!("tool:{name}"));
         let (reply_tx, _reply_rx) = crossbeam_channel::unbounded();
         self.cmd_tx
             .send(CompanionCommand::RunTool {
@@ -457,6 +526,13 @@ impl CompanionHandle {
             })
             .map_err(|_| "companion worker is not running".to_string())?;
         Ok(receipt)
+    }
+
+    /// Start the built-in's next turn in a new conversation (#246). Returns at once.
+    pub fn new_conversation(&self) -> Result<(), String> {
+        self.cmd_tx
+            .send(CompanionCommand::NewConversation)
+            .map_err(|_| "companion worker is not running".to_string())
     }
 
     /// Ask the worker to publish the recipes again. Returns at once; see `crate::recipes`.
@@ -549,12 +625,30 @@ impl CompanionBridge {
             .map_err(|_| "the vault did not answer in time".to_string())
     }
 
+    /// Keep, remove or list the free AI keys (wire::free_ai). Like [`Self::vault`], on the UI's
+    /// own bridge and not on the handle the companion socket serves: nothing on a socket can
+    /// store, read or remove a key. Blocking; every caller is off the UI thread.
+    pub fn provider_keys(
+        &self,
+        op: crate::wire::free_ai::store::Op,
+        timeout: std::time::Duration,
+    ) -> Result<crate::wire::free_ai::store::Reply, String> {
+        let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+        self.cmd_tx
+            .send(CompanionCommand::ProviderKeys { op, reply_tx })
+            .map_err(|_| "companion worker is not running".to_string())?;
+        reply_rx
+            .recv_timeout(timeout)
+            .map_err(|_| "the vault did not answer in time".to_string())
+    }
+
     /// A handle that other threads can hold. See [`CompanionHandle`].
     pub fn handle(&self) -> CompanionHandle {
         CompanionHandle {
             cmd_tx: self.cmd_tx.clone(),
             online: self.online.clone(),
             board: self.board.clone(),
+            decisions: self.decisions.clone(),
         }
     }
 
@@ -574,10 +668,20 @@ impl CompanionBridge {
         let ambient_w = ambient.clone();
         let bus_w = event_bus.clone();
 
+        let judge = Arc::new(std::sync::Mutex::new(config.judge.clone()));
+        // Private mode is read before the worker exists (`private_mode::load` in main), so the
+        // first command the worker takes is incognito, ahead of anything it could record.
+        let private = crate::private_mode::is_on();
+        if private {
+            let _ = cmd_tx.send(CompanionCommand::SetIncognitoMode { enabled: true });
+        }
+        let decisions = yantrik_companion::decisions::Decisions::default();
+        let decisions_w = decisions.clone();
+        let memory_db = config.yantrikdb.db_path.clone();
         let self_tx = cmd_tx.clone();
         let board_w = board.clone();
         let worker_handle = std::thread::spawn(move || {
-            worker_loop(config, cmd_rx, self_tx, ui_weak, online_w, bond_w, ambient_w, bus_w, board_w);
+            worker_loop(config, cmd_rx, self_tx, ui_weak, online_w, bond_w, ambient_w, bus_w, board_w, decisions_w);
         });
 
         Self {
@@ -588,6 +692,11 @@ impl CompanionBridge {
             cached_bond_level,
             ambient,
             event_bus,
+            judge,
+            decisions,
+            incognito_setting: AtomicBool::new(false),
+            private: AtomicBool::new(private),
+            memory_db,
         }
     }
 
@@ -608,6 +717,12 @@ impl CompanionBridge {
 
     /// Send a message and get a channel to receive streaming tokens.
     pub fn send_message(&self, text: String) -> Receiver<String> {
+        self.send_message_from(text, false)
+    }
+
+    /// `send_message`, saying whether the person asked it from away from the machine: a remote
+    /// turn's tools are held to `Safe`.
+    pub fn send_message_from(&self, text: String, remote: bool) -> Receiver<String> {
         let (token_tx, token_rx) = crossbeam_channel::unbounded();
         if self
             .cmd_tx
@@ -616,6 +731,8 @@ impl CompanionBridge {
                 token_tx: token_tx.clone(),
                 job: None,
                 model: None,
+                remote,
+                outside: false,
             })
             .is_err()
         {
@@ -650,6 +767,29 @@ impl CompanionBridge {
     pub fn recall_memories(&self, query: String) -> Receiver<Vec<MemoryResult>> {
         let (reply_tx, reply_rx) = crossbeam_channel::unbounded();
         let _ = self.cmd_tx.send(CompanionCommand::RecallMemories { query, reply_tx });
+        reply_rx
+    }
+
+    /// The newest `limit` memories, newest first.
+    ///
+    /// Read on a thread of its own from the store directly (`crate::memory_reader`), not through
+    /// the worker: the worker serves one command at a time, and on VM 520 (4 October) the Memory
+    /// screen sat on "searching" behind its background LLM turns. Only when the store can be read
+    /// no other way (encrypted, or the worker has not opened it yet) is the worker asked, and the
+    /// screen's own timeout covers that wait.
+    pub fn recent_memories(&self, limit: usize) -> Receiver<Vec<MemoryResult>> {
+        let (reply_tx, reply_rx) = crossbeam_channel::unbounded();
+        let db_path = self.memory_db.clone();
+        let cmd_tx = self.cmd_tx.clone();
+        std::thread::spawn(move || match crate::memory_reader::newest(&db_path, limit) {
+            Ok(items) => {
+                let _ = reply_tx.send(items);
+            }
+            Err(why) => {
+                tracing::debug!(reason = %why, "newest memories asked of the worker");
+                let _ = cmd_tx.send(CompanionCommand::RecentMemories { limit, reply_tx });
+            }
+        });
         reply_rx
     }
 
@@ -702,8 +842,47 @@ impl CompanionBridge {
         });
     }
 
-    /// Toggle incognito mode (no data persistence while active).
+    /// The decision model in use, its uses and where the chat model runs, as last published.
+    pub fn decisions(&self) -> &yantrik_companion::decisions::Decisions {
+        &self.decisions
+    }
+
+    /// The decision model the companion is set to.
+    pub fn judge_config(&self) -> yantrik_companion::config::JudgeConfig {
+        self.judge.lock().map(|j| j.clone()).unwrap_or_default()
+    }
+
+    /// Switch the decision model, from Settings: the companion rebuilds its judge and saves the
+    /// choice to its config, so it is the one used after a restart too.
+    pub fn set_judge(&self, config: yantrik_companion::config::JudgeConfig) {
+        if let Ok(mut j) = self.judge.lock() {
+            *j = config.clone();
+        }
+        let _ = self.cmd_tx.send(CompanionCommand::SetJudge { config });
+    }
+
+    /// Test the decision model in use with one known question, on the calling thread (never the
+    /// UI's: it waits for the model).
+    pub fn test_judge(&self) -> Result<yantrik_ml::judge::Verdict, String> {
+        self.decisions.test()
+    }
+
+    /// Toggle incognito mode (no data persistence while active): the person's Settings switch.
+    /// The companion is incognito while this or Private mode is on.
     pub fn set_incognito(&self, enabled: bool) {
+        self.incognito_setting.store(enabled, Ordering::SeqCst);
+        self.send_incognito();
+    }
+
+    /// Private mode came on or went off (`crate::private_mode`): the companion is incognito for
+    /// as long as it is on, and back to the Settings switch after.
+    pub fn set_private(&self, on: bool) {
+        self.private.store(on, Ordering::SeqCst);
+        self.send_incognito();
+    }
+
+    fn send_incognito(&self) {
+        let enabled = self.incognito_setting.load(Ordering::SeqCst) || self.private.load(Ordering::SeqCst);
         let _ = self.cmd_tx.send(CompanionCommand::SetIncognitoMode { enabled });
     }
 
@@ -817,6 +996,42 @@ fn signal_recipe(cmd_tx: &Sender<CompanionCommand>, queued: &mut std::collection
     }
 }
 
+/// Whether the worker drops `cmd` while the person is in Private mode, answering whoever waits on
+/// it that nothing was done. Everything the person does not ask for directly, and every question
+/// to the companion, is dropped; the switches (incognito, the decision model, the provider) and
+/// the reads the shell's own screens need are not.
+fn paused_while_private(cmd: &CompanionCommand, recipe_signals: &mut std::collections::HashSet<String>) -> bool {
+    const SAID: &str = "Private mode is on: the companion is off until you turn it off.";
+    match cmd {
+        CompanionCommand::ProcessRecipeStep { recipe_id } => {
+            recipe_signals.remove(recipe_id);
+            true
+        }
+        CompanionCommand::Think { .. }
+        | CompanionCommand::ProcessNextTask
+        | CompanionCommand::SetSystemContext { .. }
+        | CompanionCommand::RecordSystemEvent { .. }
+        | CompanionCommand::RecordSnapshot { .. }
+        | CompanionCommand::RecordIssue { .. }
+        | CompanionCommand::ScoreConversationTurn { .. } => true,
+        CompanionCommand::StartRecipe { reply_tx, .. } => {
+            if let Some(tx) = reply_tx {
+                let _ = tx.send(Err(SAID.to_string()));
+            }
+            true
+        }
+        CompanionCommand::SendMessage { token_tx, model, .. } => {
+            let _ = token_tx.send(format!("__REPLACE__{SAID}"));
+            if let Some(tx) = model {
+                let _ = tx.send(false);
+            }
+            let _ = token_tx.send("__DONE__".to_string());
+            true
+        }
+        _ => false,
+    }
+}
+
 /// The worker thread's main loop.
 fn worker_loop(
     config: CompanionConfig,
@@ -828,6 +1043,7 @@ fn worker_loop(
     ambient: AmbientState,
     event_bus: yantrik_os::EventBus,
     board: crate::jobs::Board,
+    decisions: yantrik_companion::decisions::Decisions,
 ) {
     // Save config services before moving config into build_companion
     let config_services = config.enabled_services.clone();
@@ -840,7 +1056,10 @@ fn worker_loop(
     // the difference between an OS that tells you the embedder is absent and one that looks
     // broken in sixteen places at once.
     let mut companion = match build_companion(config) {
-        Ok(c) => c,
+        Ok(mut c) => {
+            c.share_decisions(decisions);
+            c
+        }
         Err(why) => {
             tracing::error!(reason = %why, "Companion unavailable — answering every request with this");
             online.store(false, Ordering::Relaxed);
@@ -980,7 +1199,7 @@ fn worker_loop(
         }
         // The mind panel: the worker has reached its loop, so the memory count it pushes is a count.
         crate::mind_panel::worker_up();
-        if recipe_clock.elapsed() >= recipe_tick {
+        if recipe_clock.elapsed() >= recipe_tick && !crate::private_mode::is_on() {
             recipe_clock = std::time::Instant::now();
             let due = yantrik_companion::recipe_executor::due(&companion.db.conn());
             for rid in due {
@@ -991,8 +1210,19 @@ fn worker_loop(
         if matches!(received, Err(crossbeam_channel::RecvTimeoutError::Timeout)) {
             continue;
         }
+        // Private mode: the companion does nothing of its own accord and hears nothing about the
+        // person. It does not think, look at the focused window, run recipes, record what the
+        // system saw, or answer anyone; what was dropped is not done later.
+        if crate::private_mode::is_on() {
+            if let Ok(cmd) = &received {
+                if paused_while_private(cmd, &mut recipe_signals) {
+                    continue;
+                }
+            }
+        }
         match received {
             Ok(CompanionCommand::RefreshRecipes) => recipes_dirty = true,
+            Ok(CompanionCommand::NewConversation) => companion.new_conversation(),
             Ok(CompanionCommand::StartRecipe { recipe, variables, leave, reply_tx }) => {
                 let outcome = start_recipe_run(&companion.db.conn(), &recipe, &variables, leave.as_ref());
                 match &outcome {
@@ -1034,7 +1264,10 @@ fn worker_loop(
                 crate::recipes::record(&recipe_id, outcome.map(|a| a.message));
                 recipes_dirty = true;
             }
-            Ok(CompanionCommand::SendMessage { text, token_tx, job, model }) => {
+            Ok(CompanionCommand::SendMessage { text, token_tx, job, model, remote, outside }) => {
+                // From a phone, the turn reads and changes nothing (channels, P1).
+                companion.set_turn_ceiling(remote.then_some(yantrik_companion::tools::PermissionLevel::Safe));
+                companion.set_turn_outside(outside);
                 // A turn can create, run or change a recipe through its tools.
                 recipes_dirty = true;
                 // Work that arrived without a ticket gets one here, and that is not bookkeeping:
@@ -1045,7 +1278,7 @@ fn worker_loop(
                 // board at all.
                 let job = job.or_else(|| {
                     let kind = if text.contains("You just started up") { "brief" } else { "ask" };
-                    Some(board.submit("model", kind).ticket)
+                    Some(if outside { board.submit_outside("model", kind) } else { board.submit("model", kind) }.ticket)
                 });
 
                 // The moment this arm runs is the moment the job is no longer waiting. Anything
@@ -1058,21 +1291,28 @@ fn worker_loop(
                 // Synthesis Gate think somebody is. `wire::chat::dispatch` is bumped by a
                 // person typing; this arm also carries the startup brief, EXECUTE urges and
                 // the companion's own reflection prompts, so it bumps nothing.
-                let is_system_generated = text.contains("You just started up")
+                // Nor is a program on the socket: its words are not the person's, so nothing below
+                // learns from them (commitments, resonance, threading, the events the desktop reads).
+                let is_system_generated = outside
+                    || text.contains("You just started up")
                     || text.contains("EXECUTE ")
                     || text.starts_with("Reflect naturally")
                     || text.starts_with("Recall shared references");
                 tracing::trace!(is_system_generated, "companion SendMessage");
 
-                // Update ambient sentiment from user message
-                ambient.update_from_message(&text);
+                if !outside {
+                    // Update ambient sentiment from user message
+                    ambient.update_from_message(&text);
 
-                // Track user message length for conversational metabolism
-                companion.track_user_msg_length(text.len());
+                    // Track user message length for conversational metabolism
+                    companion.track_user_msg_length(text.len());
+                }
 
                 // Proactive message threading: if user replies shortly after a proactive message,
-                // prepend context so the LLM knows what the conversation is about.
-                let text = if let Some(ctx) = companion.get_threading_context() {
+                // prepend context so the LLM knows what the conversation is about. Not for an
+                // outside ask: the companion's last word to the person is the person's.
+                let threading = if outside { None } else { companion.get_threading_context() };
+                let text = if let Some(ctx) = threading {
                     format!("{}{}", ctx, text)
                 } else {
                     text
@@ -1121,7 +1361,7 @@ fn worker_loop(
                 }
 
                 // Resonance Model: record user interaction (positive quality for now)
-                {
+                if !outside {
                     let now_r = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
@@ -1186,11 +1426,7 @@ fn worker_loop(
 
                         // Record significant interactions as events for aftermath instinct
                         // Skip system-generated prompts (startup brief, EXECUTE instructions)
-                        let is_system_prompt = text.contains("You just started up")
-                            || text.contains("EXECUTE ")
-                            || text.starts_with("Reflect naturally")
-                            || text.starts_with("Recall shared references");
-                        if !response.tool_calls_made.is_empty() && !is_system_prompt {
+                        if !response.tool_calls_made.is_empty() && !is_system_generated {
                             let tools_summary = response.tool_calls_made.join(", ");
                             // Use user's message (truncated) as event description
                             let user_text = text.chars().take(80).collect::<String>();
@@ -1315,6 +1551,7 @@ fn worker_loop(
                                 valence: r.valence,
                                 score: r.score,
                                 created_at: r.created_at,
+                                domain: r.domain,
                             })
                             .collect();
                         let _ = reply_tx.send(items);
@@ -1325,15 +1562,48 @@ fn worker_loop(
                     }
                 }
             }
+            // The Memory screen's newest memories (VM 520 sweep, 4 October), by recall's own
+            // domain rule, paged until the screen's page is full: crate::recent_memories.
+            Ok(CompanionCommand::RecentMemories { limit, reply_tx }) => {
+                let newest = crate::recent_memories::collect(
+                    limit,
+                    |m: &yantrikdb_core::types::Memory| m.domain.as_str(),
+                    |offset, page| companion.db.list_memories(page, offset, None, None, None, "created_at"),
+                );
+                match newest {
+                    Ok(memories) => {
+                        let items: Vec<MemoryResult> = memories
+                            .into_iter()
+                            .map(|m| MemoryResult {
+                                rid: m.rid,
+                                text: m.text,
+                                memory_type: m.memory_type,
+                                importance: m.importance,
+                                valence: m.valence,
+                                score: 0.0,
+                                created_at: m.created_at,
+                                domain: m.domain,
+                            })
+                            .collect();
+                        let _ = reply_tx.send(items);
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Listing recent memories failed");
+                        let _ = reply_tx.send(vec![]);
+                    }
+                }
+            }
             Ok(CompanionCommand::RunTool { name, args, reply_tx, job }) => {
                 tracing::info!(tool = %name, "Running tool for an outside caller");
                 // As above: a blocking caller's tool still occupies the lane, so it still belongs
                 // on the board.
-                let job = job.or_else(|| Some(board.submit("model", &format!("tool:{name}")).ticket));
+                let job = job.or_else(|| Some(board.submit_outside("model", &format!("tool:{name}")).ticket));
                 if let Some(id) = &job {
                     board.start(id);
                 }
-                let output = companion.run_tool(&name, &args);
+                // Every RunTool is a program on the socket's (companion.tool / submit): the vault's
+                // tools and queue_task are refused to it, by what they are, not a list of names.
+                let output = companion.run_tool_for_outside(&name, &args);
                 if let Some(id) = &job {
                     // A tool that reports a permission denial or a bad argument has still *run*;
                     // it is `Done` with that answer, not `Failed`. Failure here is reserved for
@@ -1362,6 +1632,10 @@ fn worker_loop(
                 // worker's queue like anything else instead of blocking the UI thread.
                 let _ = reply_tx.send(crate::vault_unlock::run(&companion.db.conn(), op));
             }
+            Ok(CompanionCommand::ProviderKeys { op, reply_tx }) => {
+                // Not on the job board and not logged, as the vault's own command is not.
+                let _ = reply_tx.send(crate::wire::free_ai::store::run(&companion.db.conn(), op));
+            }
             Ok(CompanionCommand::GetBondLevel { reply_tx }) => {
                 let _ = reply_tx.send(companion.bond_level());
             }
@@ -1384,6 +1658,10 @@ fn worker_loop(
                 companion.set_incognito(enabled);
                 tracing::info!(incognito = enabled, "Incognito mode toggled");
             }
+            Ok(CompanionCommand::SetJudge { config }) => {
+                companion.set_judge_config(config);
+                companion.save_config();
+            }
             Ok(CompanionCommand::ScoreConversationTurn { text }) => {
                 companion.score_conversation_turn(&text);
                 cached_bond.store(companion.bond_level().as_u8(), Ordering::Relaxed);
@@ -1394,14 +1672,16 @@ fn worker_loop(
                 let new_llm: std::sync::Arc<dyn yantrik_ml::LLMBackend> = std::sync::Arc::new(
                     yantrik_ml::ApiLLM::new(base_url.clone(), api_key.clone(), &model)
                 );
-                companion.swap_llm(new_llm);
-                // Update config in memory so it persists for next restart
+                // In memory, because swap_llm rebuilds a chat-model decision model whose
+                // locality is read from it. Never written to /opt/yantrik/config.yaml: that is
+                // the machine's file, with its comments and its own default, and a re-serialised
+                // copy silently replaced both (#524). A provider chosen in Settings lives in
+                // providers.yaml and is applied from there at every start (wire::settings).
                 companion.config.llm.backend = "api".into();
                 companion.config.llm.api_base_url = Some(base_url);
                 companion.config.llm.api_model = Some(model);
                 companion.config.llm.api_key = api_key;
-                // Save config to disk
-                companion.save_config();
+                companion.swap_llm(new_llm);
                 online.store(true, Ordering::Relaxed);
                 execute_suppression_logged = false;
                 tracing::info!("LLM reloaded successfully");
@@ -1493,6 +1773,7 @@ fn worker_loop(
                                     .downcast_ref::<VecModel<crate::MessageData>>()
                                     .unwrap();
                                 model.push(crate::MessageData {
+                                    run: Default::default(),
                                     role: SharedString::from("assistant"),
                                     content: SharedString::from(&text),
                                     is_streaming: false,
@@ -2286,6 +2567,7 @@ fn worker_loop(
                                             .downcast_ref::<VecModel<crate::MessageData>>()
                                             .unwrap();
                                         model.push(crate::MessageData {
+                                            run: Default::default(),
                                             role: SharedString::from("assistant"),
                                             content: SharedString::from(&text),
                                             is_streaming: false,
@@ -2659,6 +2941,8 @@ fn bond_snapshot(companion: &CompanionService) -> BondSnapshot {
     BondSnapshot {
         bond_score: bond.bond_score,
         bond_level: bond.bond_level.name().to_string(),
+        // Stranger is 1 and Partner-in-Crime 5 (yantrik-companion-core's `BondLevel`).
+        level_number: bond.bond_level.as_u8() as i64,
         total_interactions: bond.total_interactions,
         days_together: bond.days_together as i64,
         current_streak: bond.current_streak_days,
@@ -2678,20 +2962,10 @@ fn push_bond(companion: &CompanionService, ui_weak: &slint::Weak<App>) {
     let weak = ui_weak.clone();
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = weak.upgrade() {
-            ui.set_bond_data(BondData {
-                // The one place this becomes true: the store has been read, on the thread that
-                // owns it. Until then the property is the Slint default, and the rail and
-                // `describe shell` say so instead of showing that default as a level.
-                loaded: true,
-                bond_score: bond.bond_score as f32,
-                bond_level: bond.bond_level.into(),
-                total_interactions: bond.total_interactions as i32,
-                days_together: bond.days_together as i32,
-                current_streak: bond.current_streak as i32,
-                humor_rate: bond.humor_rate as f32,
-                vulnerability_events: bond.vulnerability_events as i32,
-                shared_references: bond.shared_references as i32,
-            });
+            // `to_ui` is the one place `loaded` becomes true: the store has been read, on the
+            // thread that owns it. Until then the property is the Slint default, and the rail and
+            // `describe shell` say so instead of showing that default as a level.
+            ui.set_bond_data(bond.to_ui());
         }
     });
 }
@@ -2943,6 +3217,9 @@ fn build_companion(config: CompanionConfig) -> Result<CompanionService, String> 
     let mut db =
         yantrikdb_core::YantrikDB::new(&config.yantrikdb.db_path, config.yantrikdb.embedding_dim)
             .map_err(|e| format!("failed to create YantrikDB: {e}"))?;
+    // Whether the Memory screen may read the store's rows itself (crate::memory_reader): only
+    // when its text is kept in the clear.
+    crate::memory_reader::set_plain(!db.is_encrypted());
     db.set_embedder(match embedder_identity {
         Some(id) => Box::new(yantrik_companion::embedder_bridge::EmbedderBridge::with_identity(embedder, id)),
         None => Box::new(yantrik_companion::embedder_bridge::EmbedderBridge::new(embedder)),
@@ -2954,7 +3231,10 @@ fn build_companion(config: CompanionConfig) -> Result<CompanionService, String> 
         "Companion initialized"
     );
 
-    Ok(CompanionService::new(db, llm, config))
+    let companion = CompanionService::new(db, llm, config);
+    // Passwords the vault's tools filed in the audit log before it withheld them (#536).
+    companion.purge_vault_audit_lines();
+    Ok(companion)
 }
 
 /// V15: Pick a random older memory for serendipity connections.
@@ -3142,6 +3422,7 @@ mod ask_tests {
             cmd_tx,
             online: Arc::new(AtomicBool::new(true)),
             board: crate::jobs::Board::new(),
+            decisions: yantrik_companion::decisions::Decisions::default(),
         }
     }
 

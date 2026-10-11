@@ -423,9 +423,11 @@ fn step_view(
             label = run.stage();
             Some(format!("the {} on {} ({})", run.role_name, run.mind, run.agent))
         }
-        (RecipeStep::Agent { role, .. }, None) => {
+        (RecipeStep::Agent { role, title, .. }, None) => {
             let named = crate::recipe::resolve_vars(role, vars);
-            if !named.contains("{{") && !named.trim().is_empty() {
+            if let Some(t) = crate::recipe::stage_title(title.as_ref(), vars) {
+                label = t;
+            } else if !named.contains("{{") && !named.trim().is_empty() {
                 label = role_display(&named);
             }
             Some(label.clone())
@@ -647,7 +649,7 @@ fn describe_step(step: &RecipeStep) -> (&'static str, String, String, Vec<String
             let what = format!("{pattern} from {input_var}");
             ("extract", "Extract".into(), what.clone(), vec![format!("extracts: {what}"), stores(store_as)])
         }
-        RecipeStep::Agent { role, prompt, store_as, context } => {
+        RecipeStep::Agent { role, prompt, store_as, context, .. } => {
             let label = if role.contains("{{") { "Agent".to_string() } else { role_display(role) };
             let mut detail = vec![format!("hands to: {role}"), format!("asks: {prompt}")];
             if let Some(c) = context {
@@ -1198,6 +1200,7 @@ mod tests {
                 prompt: "Attack the plan for {{folder}}".into(),
                 store_as: "attack".into(),
                 context: Some("{{summary}} and {{sources}}".into()),
+                title: None,
             },
         ];
         let v = view(&recipe(RecipeStatus::Pending, 0), &stored(all, &[]), &Vars::new());

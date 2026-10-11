@@ -814,14 +814,14 @@ export component DocumentEditorScreen inherits Rectangle {
             Rectangle {
                 height: 28px;
                 border-radius: 4px;
-                background: root.proposal-working ? Theme.text-dim : (submit-doc-ai-ta.has-hover ? AppIdentity.accent : Theme.accent.transparentize(0.2));
+                background: root.proposal-working ? Theme.text-dim : (submit-doc-ai-ta.has-hover ? Theme.accent-button-hover : Theme.accent);
                 submit-doc-ai-ta := TouchArea {
                     enabled: !root.proposal-working;
                     clicked => { root.doc-ai-submit(root.doc-ai-prompt); }
                 }
                 Text {
                     text: root.proposal-working ? "Thinking..." : "Ask";
-                    color: white;
+                    color: Theme.text-on-accent;
                     font-size: Theme.fs-micro;
                     font-weight: 600;
                     horizontal-alignment: center;
@@ -925,17 +925,17 @@ export component DocumentEditorScreen inherits Rectangle {
                         border-width: 1px;
                         border-color: Theme.color-danger;
                         discard-ta := TouchArea { clicked => { root.doc-dialog-discard(); } }
-                        Text { text: "Discard"; color: discard-ta.has-hover ? white : Theme.color-danger; font-size: Theme.fs-caption; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { text: "Discard"; color: discard-ta.has-hover ? Theme.text-on-danger : Theme.color-danger; font-size: Theme.fs-caption; horizontal-alignment: center; vertical-alignment: center; }
                     }
 
                     Rectangle {
                         width: 92px;
                         border-radius: 5px;
-                        background: confirm-ta.has-hover ? AppIdentity.accent : Theme.accent.transparentize(0.2);
+                        background: confirm-ta.has-hover ? Theme.accent-button-hover : Theme.accent;
                         confirm-ta := TouchArea { clicked => { root.doc-dialog-confirm(); } }
                         Text {
                             text: root.doc-dialog == 1 ? "Open" : "Save";
-                            color: white;
+                            color: Theme.text-on-accent;
                             font-size: Theme.fs-caption;
                             font-weight: 600;
                             horizontal-alignment: center;

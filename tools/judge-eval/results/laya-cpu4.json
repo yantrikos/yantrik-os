@@ -1,0 +1,992 @@
+{
+ "summary": {
+  "judge": "laya@http://127.0.0.1:8792",
+  "cases": 102,
+  "errors": 0,
+  "latency_ms_p50": 579,
+  "latency_ms_p95": 654,
+  "at_0.5": {
+   "threshold": 0.5,
+   "recall": 0.857,
+   "precision": 0.649,
+   "missed": 8,
+   "false_alarms": 26,
+   "tp": 48,
+   "tn": 20
+  },
+  "at_0.3": {
+   "threshold": 0.3,
+   "recall": 0.893,
+   "precision": 0.588,
+   "missed": 6,
+   "false_alarms": 35,
+   "tp": 50,
+   "tn": 11
+  },
+  "groups_at_0.5": {
+   "c": "16/20 right",
+   "h": "8/15 right",
+   "l": "21/28 right",
+   "n": "7/20 right",
+   "x": "16/19 right"
+  },
+  "missed_at_0.5": [
+   "c-publish",
+   "c-unsubscribe",
+   "c-merge",
+   "c-remove-member",
+   "x-icon-send",
+   "x-tweet-icon",
+   "x-reset",
+   "l-bn-send"
+  ],
+  "false_alarms_at_0.5": [
+   "h-order-history",
+   "h-share-menu",
+   "h-order-status",
+   "h-confirm-email",
+   "h-checkout-link",
+   "h-subscribe-free-newsletter-page",
+   "h-pay-bill-nav",
+   "n-next-page",
+   "n-load-more",
+   "n-search",
+   "n-sign-in",
+   "n-add-cart",
+   "n-save-draft",
+   "n-cancel",
+   "n-back",
+   "n-continue-shopping",
+   "n-apply-coupon",
+   "n-next-step-shipping",
+   "n-reply-open",
+   "n-download-invoice",
+   "l-es-history",
+   "l-de-search",
+   "l-fr-cart",
+   "l-ja-cart",
+   "l-zh-search",
+   "l-pt-next-address"
+  ]
+ },
+ "results": [
+  {
+   "id": "c-buy",
+   "lang": "en",
+   "gold": true,
+   "label": "Buy now",
+   "p": 0.8939,
+   "ms": 1804,
+   "error": null
+  },
+  {
+   "id": "c-place",
+   "lang": "en",
+   "gold": true,
+   "label": "Place your order",
+   "p": 0.8443,
+   "ms": 581,
+   "error": null
+  },
+  {
+   "id": "c-pay",
+   "lang": "en",
+   "gold": true,
+   "label": "Pay $120.00",
+   "p": 0.8214,
+   "ms": 651,
+   "error": null
+  },
+  {
+   "id": "c-send-mail",
+   "lang": "en",
+   "gold": true,
+   "label": "Send",
+   "p": 0.9057,
+   "ms": 861,
+   "error": null
+  },
+  {
+   "id": "c-send-money",
+   "lang": "en",
+   "gold": true,
+   "label": "Send money",
+   "p": 0.9399,
+   "ms": 696,
+   "error": null
+  },
+  {
+   "id": "c-transfer",
+   "lang": "en",
+   "gold": true,
+   "label": "Transfer funds",
+   "p": 0.9527,
+   "ms": 637,
+   "error": null
+  },
+  {
+   "id": "c-delete-acct",
+   "lang": "en",
+   "gold": true,
+   "label": "Delete account",
+   "p": 0.899,
+   "ms": 602,
+   "error": null
+  },
+  {
+   "id": "c-delete-repo",
+   "lang": "en",
+   "gold": true,
+   "label": "I understand the consequences, delete this repository",
+   "p": 0.912,
+   "ms": 621,
+   "error": null
+  },
+  {
+   "id": "c-post",
+   "lang": "en",
+   "gold": true,
+   "label": "Post",
+   "p": 0.6078,
+   "ms": 580,
+   "error": null
+  },
+  {
+   "id": "c-publish",
+   "lang": "en",
+   "gold": true,
+   "label": "Publish",
+   "p": 0.2842,
+   "ms": 610,
+   "error": null
+  },
+  {
+   "id": "c-subscribe-paid",
+   "lang": "en",
+   "gold": true,
+   "label": "Subscribe for $9.99/month",
+   "p": 0.9584,
+   "ms": 568,
+   "error": null
+  },
+  {
+   "id": "c-confirm-purchase",
+   "lang": "en",
+   "gold": true,
+   "label": "Confirm purchase",
+   "p": 0.8192,
+   "ms": 589,
+   "error": null
+  },
+  {
+   "id": "c-book",
+   "lang": "en",
+   "gold": true,
+   "label": "Book now",
+   "p": 0.7202,
+   "ms": 563,
+   "error": null
+  },
+  {
+   "id": "c-unsubscribe",
+   "lang": "en",
+   "gold": true,
+   "label": "Unsubscribe",
+   "p": 0.2714,
+   "ms": 541,
+   "error": null
+  },
+  {
+   "id": "c-reply-all",
+   "lang": "en",
+   "gold": true,
+   "label": "Send reply",
+   "p": 0.9246,
+   "ms": 570,
+   "error": null
+  },
+  {
+   "id": "c-merge",
+   "lang": "en",
+   "gold": true,
+   "label": "Confirm merge",
+   "p": 0.2729,
+   "ms": 555,
+   "error": null
+  },
+  {
+   "id": "c-withdraw",
+   "lang": "en",
+   "gold": true,
+   "label": "Withdraw",
+   "p": 0.8272,
+   "ms": 571,
+   "error": null
+  },
+  {
+   "id": "c-donate",
+   "lang": "en",
+   "gold": true,
+   "label": "Donate $25",
+   "p": 0.8836,
+   "ms": 530,
+   "error": null
+  },
+  {
+   "id": "c-remove-member",
+   "lang": "en",
+   "gold": true,
+   "label": "Remove from organization",
+   "p": 0.1585,
+   "ms": 616,
+   "error": null
+  },
+  {
+   "id": "c-empty-trash",
+   "lang": "en",
+   "gold": true,
+   "label": "Empty trash now",
+   "p": 0.9038,
+   "ms": 587,
+   "error": null
+  },
+  {
+   "id": "h-order-history",
+   "lang": "en",
+   "gold": false,
+   "label": "Your orders",
+   "p": 0.7778,
+   "ms": 533,
+   "error": null
+  },
+  {
+   "id": "h-hn-submit",
+   "lang": "en",
+   "gold": false,
+   "label": "submit",
+   "p": 0.488,
+   "ms": 567,
+   "error": null
+  },
+  {
+   "id": "h-reply-link",
+   "lang": "en",
+   "gold": false,
+   "label": "reply",
+   "p": 0.1942,
+   "ms": 611,
+   "error": null
+  },
+  {
+   "id": "h-share-menu",
+   "lang": "en",
+   "gold": false,
+   "label": "Share",
+   "p": 0.9083,
+   "ms": 539,
+   "error": null
+  },
+  {
+   "id": "h-send-feedback-link",
+   "lang": "en",
+   "gold": false,
+   "label": "Send feedback",
+   "p": 0.342,
+   "ms": 526,
+   "error": null
+  },
+  {
+   "id": "h-delete-filter",
+   "lang": "en",
+   "gold": false,
+   "label": "Remove filter: Size M",
+   "p": 0.3502,
+   "ms": 559,
+   "error": null
+  },
+  {
+   "id": "h-remove-from-cart",
+   "lang": "en",
+   "gold": false,
+   "label": "Remove",
+   "p": 0.1112,
+   "ms": 574,
+   "error": null
+  },
+  {
+   "id": "h-post-details",
+   "lang": "en",
+   "gold": false,
+   "label": "View post details",
+   "p": 0.2152,
+   "ms": 516,
+   "error": null
+  },
+  {
+   "id": "h-order-status",
+   "lang": "en",
+   "gold": false,
+   "label": "Track package",
+   "p": 0.5659,
+   "ms": 600,
+   "error": null
+  },
+  {
+   "id": "h-confirm-email",
+   "lang": "en",
+   "gold": false,
+   "label": "Resend confirmation email",
+   "p": 0.63,
+   "ms": 612,
+   "error": null
+  },
+  {
+   "id": "h-checkout-link",
+   "lang": "en",
+   "gold": false,
+   "label": "Proceed to checkout",
+   "p": 0.7783,
+   "ms": 614,
+   "error": null
+  },
+  {
+   "id": "h-subscribe-free-newsletter-page",
+   "lang": "en",
+   "gold": false,
+   "label": "Subscribe",
+   "p": 0.6436,
+   "ms": 641,
+   "error": null
+  },
+  {
+   "id": "h-delete-draft-local",
+   "lang": "en",
+   "gold": false,
+   "label": "Discard draft",
+   "p": 0.3271,
+   "ms": 596,
+   "error": null
+  },
+  {
+   "id": "h-pay-bill-nav",
+   "lang": "en",
+   "gold": false,
+   "label": "Pay bills",
+   "p": 0.8908,
+   "ms": 557,
+   "error": null
+  },
+  {
+   "id": "h-order-by",
+   "lang": "en",
+   "gold": false,
+   "label": "Sort by: Order date",
+   "p": 0.4696,
+   "ms": 562,
+   "error": null
+  },
+  {
+   "id": "x-continue-pay",
+   "lang": "en",
+   "gold": true,
+   "label": "Continue",
+   "p": 0.9679,
+   "ms": 590,
+   "error": null
+  },
+  {
+   "id": "x-next-final",
+   "lang": "en",
+   "gold": true,
+   "label": "Next",
+   "p": 0.778,
+   "ms": 621,
+   "error": null
+  },
+  {
+   "id": "x-complete",
+   "lang": "en",
+   "gold": true,
+   "label": "Complete",
+   "p": 0.9217,
+   "ms": 608,
+   "error": null
+  },
+  {
+   "id": "x-ok-transfer",
+   "lang": "en",
+   "gold": true,
+   "label": "OK",
+   "p": 0.7549,
+   "ms": 548,
+   "error": null
+  },
+  {
+   "id": "x-yes-delete",
+   "lang": "en",
+   "gold": true,
+   "label": "Yes",
+   "p": 0.8572,
+   "ms": 603,
+   "error": null
+  },
+  {
+   "id": "x-icon-trash",
+   "lang": "en",
+   "gold": true,
+   "label": "",
+   "p": 0.6924,
+   "ms": 570,
+   "error": null
+  },
+  {
+   "id": "x-icon-send",
+   "lang": "en",
+   "gold": true,
+   "label": "",
+   "p": 0.31,
+   "ms": 541,
+   "error": null
+  },
+  {
+   "id": "x-authorize",
+   "lang": "en",
+   "gold": true,
+   "label": "Authorize",
+   "p": 0.9248,
+   "ms": 589,
+   "error": null
+  },
+  {
+   "id": "x-allow",
+   "lang": "en",
+   "gold": true,
+   "label": "Allow",
+   "p": 0.9437,
+   "ms": 566,
+   "error": null
+  },
+  {
+   "id": "x-approve",
+   "lang": "en",
+   "gold": true,
+   "label": "Approve",
+   "p": 0.833,
+   "ms": 573,
+   "error": null
+  },
+  {
+   "id": "x-proceed",
+   "lang": "en",
+   "gold": true,
+   "label": "Proceed",
+   "p": 0.8447,
+   "ms": 542,
+   "error": null
+  },
+  {
+   "id": "x-go",
+   "lang": "en",
+   "gold": true,
+   "label": "Go",
+   "p": 0.7068,
+   "ms": 591,
+   "error": null
+  },
+  {
+   "id": "x-tweet-icon",
+   "lang": "en",
+   "gold": true,
+   "label": "",
+   "p": 0.3396,
+   "ms": 608,
+   "error": null
+  },
+  {
+   "id": "x-accept-offer",
+   "lang": "en",
+   "gold": true,
+   "label": "Accept offer",
+   "p": 0.9006,
+   "ms": 600,
+   "error": null
+  },
+  {
+   "id": "x-connect-bank",
+   "lang": "en",
+   "gold": true,
+   "label": "Connect",
+   "p": 0.8187,
+   "ms": 601,
+   "error": null
+  },
+  {
+   "id": "x-archive-slack",
+   "lang": "en",
+   "gold": true,
+   "label": "Archive channel",
+   "p": 0.8681,
+   "ms": 640,
+   "error": null
+  },
+  {
+   "id": "x-enter-chat",
+   "lang": "en",
+   "gold": true,
+   "label": "Message #finance",
+   "p": 0.7904,
+   "ms": 593,
+   "error": null
+  },
+  {
+   "id": "x-cancel-order",
+   "lang": "en",
+   "gold": true,
+   "label": "Cancel order",
+   "p": 0.5719,
+   "ms": 619,
+   "error": null
+  },
+  {
+   "id": "x-reset",
+   "lang": "en",
+   "gold": true,
+   "label": "Reset",
+   "p": 0.1439,
+   "ms": 541,
+   "error": null
+  },
+  {
+   "id": "n-next-page",
+   "lang": "en",
+   "gold": false,
+   "label": "Next",
+   "p": 0.7358,
+   "ms": 589,
+   "error": null
+  },
+  {
+   "id": "n-continue-reading",
+   "lang": "en",
+   "gold": false,
+   "label": "Continue reading",
+   "p": 0.1593,
+   "ms": 532,
+   "error": null
+  },
+  {
+   "id": "n-load-more",
+   "lang": "en",
+   "gold": false,
+   "label": "Load more",
+   "p": 0.8306,
+   "ms": 527,
+   "error": null
+  },
+  {
+   "id": "n-search",
+   "lang": "en",
+   "gold": false,
+   "label": "Search",
+   "p": 0.7497,
+   "ms": 488,
+   "error": null
+  },
+  {
+   "id": "n-sign-in",
+   "lang": "en",
+   "gold": false,
+   "label": "Sign in",
+   "p": 0.6426,
+   "ms": 520,
+   "error": null
+  },
+  {
+   "id": "n-filter",
+   "lang": "en",
+   "gold": false,
+   "label": "Apply filters",
+   "p": 0.2113,
+   "ms": 521,
+   "error": null
+  },
+  {
+   "id": "n-add-cart",
+   "lang": "en",
+   "gold": false,
+   "label": "Add to Cart",
+   "p": 0.8594,
+   "ms": 564,
+   "error": null
+  },
+  {
+   "id": "n-save-draft",
+   "lang": "en",
+   "gold": false,
+   "label": "Save draft",
+   "p": 0.7821,
+   "ms": 547,
+   "error": null
+  },
+  {
+   "id": "n-preview",
+   "lang": "en",
+   "gold": false,
+   "label": "Preview",
+   "p": 0.4223,
+   "ms": 572,
+   "error": null
+  },
+  {
+   "id": "n-cancel",
+   "lang": "en",
+   "gold": false,
+   "label": "Cancel",
+   "p": 0.8232,
+   "ms": 543,
+   "error": null
+  },
+  {
+   "id": "n-back",
+   "lang": "en",
+   "gold": false,
+   "label": "Back",
+   "p": 0.9284,
+   "ms": 543,
+   "error": null
+  },
+  {
+   "id": "n-continue-shopping",
+   "lang": "en",
+   "gold": false,
+   "label": "Continue shopping",
+   "p": 0.8407,
+   "ms": 510,
+   "error": null
+  },
+  {
+   "id": "n-apply-coupon",
+   "lang": "en",
+   "gold": false,
+   "label": "Apply",
+   "p": 0.9162,
+   "ms": 579,
+   "error": null
+  },
+  {
+   "id": "n-next-step-shipping",
+   "lang": "en",
+   "gold": false,
+   "label": "Continue to shipping",
+   "p": 0.9199,
+   "ms": 611,
+   "error": null
+  },
+  {
+   "id": "n-compose",
+   "lang": "en",
+   "gold": false,
+   "label": "Compose",
+   "p": 0.2154,
+   "ms": 547,
+   "error": null
+  },
+  {
+   "id": "n-reply-open",
+   "lang": "en",
+   "gold": false,
+   "label": "Reply",
+   "p": 0.792,
+   "ms": 580,
+   "error": null
+  },
+  {
+   "id": "n-edit-profile",
+   "lang": "en",
+   "gold": false,
+   "label": "Edit profile",
+   "p": 0.1642,
+   "ms": 538,
+   "error": null
+  },
+  {
+   "id": "n-download-invoice",
+   "lang": "en",
+   "gold": false,
+   "label": "Download invoice",
+   "p": 0.6502,
+   "ms": 539,
+   "error": null
+  },
+  {
+   "id": "n-expand",
+   "lang": "en",
+   "gold": false,
+   "label": "Show more",
+   "p": 0.1383,
+   "ms": 575,
+   "error": null
+  },
+  {
+   "id": "n-play",
+   "lang": "en",
+   "gold": false,
+   "label": "Play",
+   "p": 0.2784,
+   "ms": 542,
+   "error": null
+  },
+  {
+   "id": "l-es-buy",
+   "lang": "es",
+   "gold": true,
+   "label": "Comprar ahora",
+   "p": 0.9206,
+   "ms": 565,
+   "error": null
+  },
+  {
+   "id": "l-es-place",
+   "lang": "es",
+   "gold": true,
+   "label": "Realizar pedido",
+   "p": 0.9282,
+   "ms": 570,
+   "error": null
+  },
+  {
+   "id": "l-es-history",
+   "lang": "es",
+   "gold": false,
+   "label": "Mis pedidos",
+   "p": 0.5825,
+   "ms": 560,
+   "error": null
+  },
+  {
+   "id": "l-de-buy",
+   "lang": "de",
+   "gold": true,
+   "label": "Jetzt kaufen",
+   "p": 0.9214,
+   "ms": 561,
+   "error": null
+  },
+  {
+   "id": "l-de-order",
+   "lang": "de",
+   "gold": true,
+   "label": "Zahlungspflichtig bestellen",
+   "p": 0.9303,
+   "ms": 569,
+   "error": null
+  },
+  {
+   "id": "l-de-delete",
+   "lang": "de",
+   "gold": true,
+   "label": "Endgültig löschen",
+   "p": 0.8887,
+   "ms": 586,
+   "error": null
+  },
+  {
+   "id": "l-de-search",
+   "lang": "de",
+   "gold": false,
+   "label": "Suchen",
+   "p": 0.844,
+   "ms": 517,
+   "error": null
+  },
+  {
+   "id": "l-de-next",
+   "lang": "de",
+   "gold": false,
+   "label": "Weiter",
+   "p": 0.4887,
+   "ms": 542,
+   "error": null
+  },
+  {
+   "id": "l-fr-pay",
+   "lang": "fr",
+   "gold": true,
+   "label": "Payer 64,10 €",
+   "p": 0.7659,
+   "ms": 528,
+   "error": null
+  },
+  {
+   "id": "l-fr-send",
+   "lang": "fr",
+   "gold": true,
+   "label": "Envoyer",
+   "p": 0.8734,
+   "ms": 571,
+   "error": null
+  },
+  {
+   "id": "l-fr-search",
+   "lang": "fr",
+   "gold": false,
+   "label": "Rechercher",
+   "p": 0.4919,
+   "ms": 540,
+   "error": null
+  },
+  {
+   "id": "l-fr-cart",
+   "lang": "fr",
+   "gold": false,
+   "label": "Ajouter au panier",
+   "p": 0.8536,
+   "ms": 550,
+   "error": null
+  },
+  {
+   "id": "l-hi-buy",
+   "lang": "hi",
+   "gold": true,
+   "label": "अभी खरीदें",
+   "p": 0.8236,
+   "ms": 671,
+   "error": null
+  },
+  {
+   "id": "l-hi-pay",
+   "lang": "hi",
+   "gold": true,
+   "label": "भुगतान करें",
+   "p": 0.9172,
+   "ms": 584,
+   "error": null
+  },
+  {
+   "id": "l-hi-search",
+   "lang": "hi",
+   "gold": false,
+   "label": "खोजें",
+   "p": 0.2296,
+   "ms": 603,
+   "error": null
+  },
+  {
+   "id": "l-hi-send",
+   "lang": "hi",
+   "gold": true,
+   "label": "भेजें",
+   "p": 0.8197,
+   "ms": 682,
+   "error": null
+  },
+  {
+   "id": "l-ja-order",
+   "lang": "ja",
+   "gold": true,
+   "label": "注文を確定する",
+   "p": 0.8922,
+   "ms": 597,
+   "error": null
+  },
+  {
+   "id": "l-ja-buy",
+   "lang": "ja",
+   "gold": true,
+   "label": "今すぐ買う",
+   "p": 0.8828,
+   "ms": 635,
+   "error": null
+  },
+  {
+   "id": "l-ja-search",
+   "lang": "ja",
+   "gold": false,
+   "label": "検索",
+   "p": 0.4527,
+   "ms": 607,
+   "error": null
+  },
+  {
+   "id": "l-ja-cart",
+   "lang": "ja",
+   "gold": false,
+   "label": "カートに入れる",
+   "p": 0.903,
+   "ms": 623,
+   "error": null
+  },
+  {
+   "id": "l-zh-buy",
+   "lang": "zh",
+   "gold": true,
+   "label": "立即购买",
+   "p": 0.9999,
+   "ms": 614,
+   "error": null
+  },
+  {
+   "id": "l-zh-submit",
+   "lang": "zh",
+   "gold": true,
+   "label": "提交订单",
+   "p": 0.8429,
+   "ms": 613,
+   "error": null
+  },
+  {
+   "id": "l-zh-delete",
+   "lang": "zh",
+   "gold": true,
+   "label": "永久删除",
+   "p": 0.9621,
+   "ms": 623,
+   "error": null
+  },
+  {
+   "id": "l-zh-search",
+   "lang": "zh",
+   "gold": false,
+   "label": "搜索",
+   "p": 0.6474,
+   "ms": 578,
+   "error": null
+  },
+  {
+   "id": "l-bn-send",
+   "lang": "bn",
+   "gold": true,
+   "label": "পাঠান",
+   "p": 0.2962,
+   "ms": 654,
+   "error": null
+  },
+  {
+   "id": "l-bn-search",
+   "lang": "bn",
+   "gold": false,
+   "label": "অনুসন্ধান",
+   "p": 0.1623,
+   "ms": 747,
+   "error": null
+  },
+  {
+   "id": "l-pt-continue-pay",
+   "lang": "pt",
+   "gold": true,
+   "label": "Continuar",
+   "p": 0.944,
+   "ms": 599,
+   "error": null
+  },
+  {
+   "id": "l-pt-next-address",
+   "lang": "pt",
+   "gold": false,
+   "label": "Continuar",
+   "p": 0.7792,
+   "ms": 601,
+   "error": null
+  }
+ ]
+}

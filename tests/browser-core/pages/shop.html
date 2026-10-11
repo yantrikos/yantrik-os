@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Test Shop</title>
+<style>
+  body { font: 16px sans-serif; margin: 0; }
+  .card { cursor: pointer; padding: 8px; border: 1px solid #ccc; width: 200px; }
+  #spacer { height: 2400px; }
+</style></head>
+<body>
+<h1>Test Shop</h1>
+<nav><a href="/pages/shop.html#deals">Deals</a> <a href="/pages/other.html" target="_blank">Open other in a tab</a>
+  <a href="/pages/other.html">Other page</a></nav>
+
+<h2>Sign in</h2>
+<form id="signin" onsubmit="event.preventDefault(); document.getElementById('err').textContent = document.getElementById('pw').value === 'right' ? 'Welcome back' : 'Invalid password';">
+  <label for="user">Email</label> <input id="user" type="email">
+  <label for="pw">Password</label> <input id="pw" type="password">
+  <button type="submit">Sign in</button>
+</form>
+<p id="err" role="alert"></p>
+
+<h2>Search</h2>
+<form id="search" onsubmit="event.preventDefault(); document.getElementById('results').textContent = 'Results for ' + document.getElementById('q').value;">
+  <input id="q" type="search" placeholder="Search products">
+</form>
+<div id="results"></div>
+
+<h2>Controlled field</h2>
+<!-- A framework's controlled input: the value it shows is the value it holds, set from input events. -->
+<input id="controlled" aria-label="Nickname">
+<span id="echo"></span>
+<script>
+  const c = document.getElementById('controlled');
+  let held = '';
+  c.addEventListener('input', () => { held = c.value; document.getElementById('echo').textContent = 'Held: ' + held; });
+</script>
+
+<h2>Options</h2>
+<label for="size">Size</label>
+<select id="size"><option>Small</option><option>Medium</option><option>Large</option></select>
+<label><input type="checkbox" id="gift"> Gift wrap</label>
+<button disabled>Apply coupon</button>
+
+<h2>Cart</h2>
+<div class="card" onclick="this.textContent = 'Added to wishlist'">Save for later</div>
+<form id="checkout" onsubmit="event.preventDefault(); document.title = 'ORDER PLACED';">
+  <label for="note">Order note</label> <input id="note">
+  <button type="submit">Place order</button>
+</form>
+<a href="/pages/shop.html#history">Order history</a>
+
+<h2>Account</h2>
+<button id="del" onclick="if (confirm('Delete your account?')) document.title = 'DELETED';">Close my account</button>
+<button id="hello" onclick="alert('Hello there')">Say hello</button>
+
+<custom-widget></custom-widget>
+<script>
+  customElements.define('custom-widget', class extends HTMLElement {
+    constructor() {
+      super();
+      const root = this.attachShadow({ mode: 'open' });
+      root.innerHTML = '<button id="inner">Shadow button</button><span id="shadow-out"></span>';
+      root.getElementById('inner').addEventListener('click', () => {
+        root.getElementById('shadow-out').textContent = 'Shadow pressed';
+      });
+    }
+  });
+</script>
+
+<iframe id="frame" style="width:300px;height:120px" srcdoc="<button onclick='this.textContent=&quot;Frame pressed&quot;'>Frame button</button>"></iframe>
+
+<div id="spacer"></div>
+<a id="footer" href="/pages/other.html">Far down the page</a>
+</body></html>

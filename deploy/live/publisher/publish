@@ -1,0 +1,19 @@
+#!/bin/sh
+# Yantrik Live publisher: this desktop, a few frames a second, as MPEG-TS over UDP to the gate on
+# the sealed segment (10.99.0.1). The gate's forwarder takes it to the relay on yantrikos.com.
+# Run by yantrik-live-publish.service as the person, the only account with the Wayland socket.
+#
+# It holds no secret of the relay's: those are on the gate, which nothing on this machine can
+# reach into. Anything shown on this (public) screen, the command line and the journal included,
+# is safe to show.
+set -eu
+GATE=${YANTRIK_LIVE_GATE:-10.99.0.1:9000}
+FPS=${YANTRIK_LIVE_FPS:-3}
+
+# -D: a new frame every tick even when nothing on screen changed, so a still desktop still streams
+# (the page takes a stream with no new frames for 20 s as offline). A keyframe every two seconds,
+# the relay's HLS segment length; tuned for a mostly still screen.
+exec wf-recorder -y -D -r "$FPS" -c libx264 -x yuv420p -b 0 \
+    -p preset=veryfast -p tune=stillimage -p crf=30 -p g=$((FPS * 2)) \
+    -m mpegts \
+    -f "udp://$GATE?pkt_size=1316"

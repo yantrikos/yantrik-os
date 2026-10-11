@@ -1,0 +1,60 @@
+// BatteryIndicator — the battery on the bar: an outline that fills with the level, a bolt while
+// it charges, the percentage beside it, and the state and the time in words on hover.
+//
+// Only drawn when the machine has a battery: the owner wraps it in `if battery-available`. It is
+// never shown greyed with a made-up level, and the time is left out when nothing measured it.
+//
+// Colour: under 20% the fill takes the warning colour and under 10% the critical one, but not
+// while it is charging: a low battery on the charger is recovering, not in trouble, and a
+// warning there would be the bar crying wolf.
+//
+// The fill is drawn in the glyph's own 20x20 grid (Icons.battery is the outline), scaled to the
+// bar's icon size, so it stays inside the outline at any size the token is set to.
+import { Theme } from "theme.slint";
+import { Icons, Icon } from "../icon.slint";
+import { YIndicator } from "../y_indicator.slint";
+
+export component BatteryIndicator inherits YIndicator {
+    in property <int> level: 100;
+    // charging | discharging | full | plugged-not-charging | unknown
+    in property <string> battery-state: "unknown";
+    // "Discharging", "Plugged in, not charging", ... or "" when the source did not say.
+    in property <string> status-text: "";
+    // "2 h 15 min left", "40 min to full", or "" when no estimate exists.
+    in property <string> time-text: "";
+
+    property <bool> charging: root.battery-state == "charging";
+    // One grid unit of the 20x20 icon grid, in px.
+    property <length> g: Theme.bar-icon-size / 20;
+    property <color> fill-color: root.charging ? Theme.color-success
+        : root.level < 10 ? Theme.color-danger
+        : root.level < 20 ? Theme.color-warning
+        : Theme.text-secondary;
+
+    icon: Icons.battery;
+    label: root.level + "%";
+    tooltip-above: false;
+    tooltip: "Battery " + root.level + "%"
+        + (root.status-text != "" ? ", " + root.status-text : "")
+        + (root.time-text != "" ? ", " + root.time-text : "");
+
+    // Inside the outline: x 3.5..14.5, y 7.5..12.5 on the grid. Whole levels above zero show at
+    // least a sliver, so "3%" does not look like an empty battery.
+    Rectangle {
+        x: 3.5 * root.g;
+        y: 7.5 * root.g;
+        width: root.level <= 0 ? 0px : max(1 * root.g, 11 * root.g * root.level / 100);
+        height: 5 * root.g;
+        border-radius: 0.5 * root.g;
+        background: root.fill-color;
+    }
+
+    if root.charging : Icon {
+        commands: Icons.bolt;
+        size: 10 * root.g;
+        thickness: 1px;
+        x: 4 * root.g;
+        y: 5 * root.g;
+        tint: root.level >= 40 ? Theme.text-on-accent : Theme.text-primary;
+    }
+}

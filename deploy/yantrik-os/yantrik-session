@@ -57,7 +57,10 @@ export XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-yantrik:labwc:wlroots}"
 # installed there being invisible to the launcher is a bug nobody would think to look for.
 # /opt/yantrik/share is where this OS keeps its own .desktop entries and icons, so the
 # ordinary freedesktop scan finds the apps it ships without writing into /usr.
-export XDG_DATA_DIRS="${XDG_DATA_DIRS:-/usr/local/share:/usr/share}:/opt/yantrik/share:/var/lib/flatpak/exports/share:$HOME/.local/share/flatpak/exports/share"
+# The person's own Flatpak exports before the system's, as flatpak's own profile script orders
+# them: the Package Manager installs Flathub apps per-user (#399), and an app installed both ways
+# should open the copy this account chose.
+export XDG_DATA_DIRS="${XDG_DATA_DIRS:-/usr/local/share:/usr/share}:/opt/yantrik/share:$HOME/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share"
 export XDG_CONFIG_DIRS="${XDG_CONFIG_DIRS:-/etc/xdg}"
 
 # The OS's own binaries. `yos` is the agent surface and scripts call it by name; without this
@@ -74,6 +77,25 @@ esac
 # either, and die. The `:-` so a person's own EDITOR, set above this session, still wins.
 export EDITOR="${EDITOR:-nano}"
 
+# ── git identity ────────────────────────────────────────────────────────────────────────
+# Same reason as EDITOR above, and the same failure: `git commit` from the Mind, an editor or a
+# harness died with "Please tell me who you are", because nothing ever set user.name/user.email
+# and git refuses to commit without them (#680). Default them from the account — the full name
+# from passwd, an address that is at least unique on this machine — and never touch anything
+# already set: either key present means the person (or Settings) chose them.
+# >>> git identity (#680)
+if command -v git >/dev/null 2>&1; then
+  if [ -z "$(git config --global --get user.name 2>/dev/null)" ] &&
+     [ -z "$(git config --global --get user.email 2>/dev/null)" ]; then
+    GIT_ID_NAME="$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f5 | cut -d, -f1)"
+    [ -n "$GIT_ID_NAME" ] || GIT_ID_NAME="$(id -un)"
+    git config --global user.name "$GIT_ID_NAME" || true
+    git config --global user.email "$(id -un)@$(hostname).local" || true
+    unset GIT_ID_NAME
+  fi
+fi
+# <<< git identity (#680)
+
 # ── The desktop's own chrome ────────────────────────────────────────────────────────────
 # For apps the answer is a themed frame rather than no frame. labwc reads its config from the
 # user's home, so this needs no root and re-applies on every start; a machine deployed before
@@ -82,6 +104,8 @@ CHROME=/opt/yantrik/share
 if [ -d "$CHROME/labwc" ]; then
   mkdir -p "$HOME/.config/labwc" "$HOME/.local/share/themes/Yantrik/labwc"
   cp -f "$CHROME/labwc/rc.xml" "$HOME/.config/labwc/rc.xml"
+  # The window menu (its Snap layouts); labwc falls back to its own when there is none.
+  [ -f "$CHROME/labwc/menu.xml" ] && cp -f "$CHROME/labwc/menu.xml" "$HOME/.config/labwc/menu.xml"
   cp -f "$CHROME/labwc/themerc" "$HOME/.local/share/themes/Yantrik/labwc/themerc"
   # The titlebar buttons live beside the themerc, because that is where labwc looks for them:
   # <name>-active.png / <name>-inactive.png in the theme directory, replacing the built-ins.
@@ -113,7 +137,17 @@ fi
 # written eight hours earlier and not noticing that it had.
 LOG_DIR=/opt/yantrik/logs
 mkdir -p "$LOG_DIR" 2>/dev/null || true
+# Only into a directory this account owns and alone can write. Anyone else able to write it could
+# put a link where the log goes (a link to ~/.bashrc, say) and have the shell's output appended to
+# it; yantrik-update repairs such a directory, and until it has, the log goes to the person's own.
+if [ ! -O "$LOG_DIR" ] || [ -n "$(find "$LOG_DIR" -maxdepth 0 -perm /022 2>/dev/null)" ]; then
+    LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/yantrik"
+    mkdir -p "$LOG_DIR"
+fi
+LOG="$LOG_DIR/yantrik-os.log"
+[ -L "$LOG" ] && rm -f -- "$LOG"
 # Rotate on start rather than growing without bound; one previous boot is enough to compare.
-[ -f "$LOG_DIR/yantrik-os.log" ] && mv -f "$LOG_DIR/yantrik-os.log" "$LOG_DIR/yantrik-os.log.1" 2>/dev/null
+# -T: onto the name itself, never into a directory a link there points at.
+[ -f "$LOG" ] && mv -fT -- "$LOG" "$LOG.1" 2>/dev/null
 
-exec labwc -s '/opt/yantrik/bin/yantrik-shell /opt/yantrik/config.yaml'   >>"$LOG_DIR/yantrik-os.log" 2>&1
+exec labwc -s '/opt/yantrik/bin/yantrik-shell /opt/yantrik/config.yaml'   >>"$LOG" 2>&1

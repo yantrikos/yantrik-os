@@ -14,7 +14,9 @@ use yantrik_ipc_contracts::calendar::{
 };
 use yantrik_ipc_transport::{peer_identity, reach};
 
+mod notice;
 mod ownership;
+mod today;
 mod views;
 use views::ViewMode;
 
@@ -143,6 +145,9 @@ fn set_clock(ui: &CalendarApp) {
 struct CalState {
     year: i32,
     month: u32,
+    /// The first day of the week, read once at start: the settings file's `week_start`, else the
+    /// locale. The month grid, the week view and `show_date` all read this one value.
+    week_start: views::WeekStart,
     events: Vec<CalEvent>,
     /// The date range `events` was read for, or `None` when the last read failed and the next
     /// redraw should ask again rather than show an empty calendar for the life of the process.
@@ -153,6 +158,9 @@ struct CalState {
     /// through the same service — so "the range has not changed" stopped being a reason to
     /// believe the events in hand are the events on disk. See `reread`.
     revision: Option<CalendarRevision>,
+    /// The day this window last saw as today: the marker, the day it opens on, and the day a
+    /// window left on today follows when the date turns (`follow_today`).
+    today: today::Today,
     /// How long the event the form is about should run.
     ///
     /// The form has no duration field -- it asks for a title, a date, a time and notes -- so a
@@ -205,17 +213,7 @@ fn fetch_events_in_range(
     from: chrono::NaiveDate,
     to: chrono::NaiveDate,
 ) -> Result<Vec<CalEvent>, String> {
-    let client = service::client("calendar")?;
-    let params = EventsParams {
-        start_date: format!("{}T00:00:00", from.format("%Y-%m-%d")),
-        end_date: format!("{}T23:59:59", to.format("%Y-%m-%d")),
-    };
-    let result = client
-        .call(method::EVENTS, serde_json::to_value(params).map_err(|e| e.to_string())?)
-        .map_err(|e| e.message)?;
-    let svc_events: Vec<yantrik_ipc_contracts::calendar::CalendarEvent> =
-        serde_json::from_value(result).map_err(|e| e.to_string())?;
-
+    let svc_events = fetch_service_events(from, to)?;
     Ok(svc_events.iter().enumerate().map(|(i, e)| CalEvent {
         id: e.id.clone(),
         title: e.title.clone(),
@@ -226,6 +224,23 @@ fn fetch_events_in_range(
         creator: e.creator.clone(),
         color_index: i,
     }).collect())
+}
+
+/// The store's events for `from..=to`, as the service sent them (with `location`, which the
+/// window's own `CalEvent` has no use for). `events_between` reads these directly.
+fn fetch_service_events(
+    from: chrono::NaiveDate,
+    to: chrono::NaiveDate,
+) -> Result<Vec<yantrik_ipc_contracts::calendar::CalendarEvent>, String> {
+    let client = service::client("calendar")?;
+    let params = EventsParams {
+        start_date: format!("{}T00:00:00", from.format("%Y-%m-%d")),
+        end_date: format!("{}T23:59:59", to.format("%Y-%m-%d")),
+    };
+    let result = client
+        .call(method::EVENTS, serde_json::to_value(params).map_err(|e| e.to_string())?)
+        .map_err(|e| e.message)?;
+    serde_json::from_value(result).map_err(|e| e.to_string())
 }
 
 /// Everything stored on one day, read now rather than taken off the screen.
@@ -367,66 +382,38 @@ fn update_event_via_service(
 
 // ── Date helpers ─────────────────────────────────────────────────────
 
-/// Column index of a date in the month grid: 0=Sunday .. 6=Saturday.
-///
-/// This MUST match the header row in calendar.slint, which is Sun-first. The previous
-/// hand-rolled Zeller returned a Monday-first index and the grid used it as the number of
-/// leading blanks, so every month was drawn one column to the left of the truth.
-fn day_of_week_for_date(year: i32, month: u32, day: u32) -> u32 {
-    chrono::NaiveDate::from_ymd_opt(year, month, day)
-        .map(|d| d.weekday().num_days_from_sunday())
-        .unwrap_or(0)
-}
-
-fn today() -> (i32, u32, u32) {
-    let now = chrono::Local::now();
-    (now.year(), now.month(), now.day())
+/// The day of the month the marker goes on in the month shown, if today is in it.
+fn today_in(year: i32, month: u32, today: chrono::NaiveDate) -> Option<u32> {
+    (today.year() == year && today.month() == month).then(|| today.day())
 }
 
 use chrono::{Datelike, Timelike};
 
-fn build_month_grid(year: i32, month: u32, events: &[CalEvent], today_day: Option<u32>) -> Vec<CalendarDay> {
-    let first_dow = day_of_week_for_date(year, month, 1);
-    let last = views::last_day_of_month(year, month);
-    let mut cells = Vec::with_capacity(42);
-
-    // Empty cells before month start
-    for _ in 0..first_dow {
-        cells.push(CalendarDay {
-            day_number: 0,
-            is_today: false,
+fn build_month_grid(
+    year: i32,
+    month: u32,
+    events: &[CalEvent],
+    today_day: Option<u32>,
+    week_start: views::WeekStart,
+) -> Vec<CalendarDay> {
+    // The grid itself is the contract's `month_grid`, shared with the shell's Today panel: two
+    // copies of "which column does the 1st land in" is how two calendars end up disagreeing.
+    let today = today_day.and_then(|d| chrono::NaiveDate::from_ymd_opt(year, month, d));
+    let counts = |d: u32| {
+        let prefix = format!("{:04}-{:02}-{:02}", year, month, d);
+        events.iter().filter(|e| e.start.starts_with(&prefix)).count() as i32
+    };
+    yantrik_ipc_contracts::calendar::month_grid(year, month, &counts, today, week_start)
+        .into_iter()
+        .map(|c| CalendarDay {
+            day_number: c.day as i32,
+            is_today: c.is_today,
             is_selected: false,
-            is_current_month: false,
-            has_events: false,
-            event_count: 0,
-        });
-    }
-
-    for d in 1..=last as i32 {
-        let day_str = format!("{:04}-{:02}-{:02}", year, month, d);
-        let ev_count = events.iter().filter(|e| e.start.starts_with(&day_str)).count() as i32;
-        cells.push(CalendarDay {
-            day_number: d,
-            is_today: today_day == Some(d as u32),
-            is_selected: false,
-            is_current_month: true,
-            has_events: ev_count > 0,
-            event_count: ev_count,
-        });
-    }
-
-    // Pad to 42 cells (6 weeks)
-    while cells.len() < 42 {
-        cells.push(CalendarDay {
-            day_number: 0,
-            is_today: false,
-            is_selected: false,
-            is_current_month: false,
-            has_events: false,
-            event_count: 0,
-        });
-    }
-    cells
+            is_current_month: c.is_current_month,
+            has_events: c.event_count > 0,
+            event_count: c.event_count,
+        })
+        .collect()
 }
 
 /// What is on one day, in the order the store returned it.
@@ -581,9 +568,9 @@ fn count_phrase(n: usize, one: &str, many: &str) -> String {
 /// all. Anything that changes the month, the selected day, the view, or what is stored ends here.
 fn render(ui: &CalendarApp, state: &Rc<RefCell<CalState>>) {
     let s = state.borrow();
-    let (this_year, this_month, this_day) = today();
-    let today_day =
-        if s.year == this_year && s.month == this_month { Some(this_day) } else { None };
+    // The day `follow_today` last saw, not a fresh read of the clock: the marker and the window's
+    // idea of today are one value, so they cannot disagree about which day it is.
+    let today_day = today_in(s.year, s.month, s.today.date());
     let day = ui.get_selected_day();
 
     ui.set_month_title(format!("{} {}", views::month_name(s.month), s.year).into());
@@ -592,7 +579,9 @@ fn render(ui: &CalendarApp, state: &Rc<RefCell<CalState>>) {
         s.month,
         &s.events,
         today_day,
+        s.week_start,
     ))));
+    ui.set_week_starts_monday(s.week_start == views::WeekStart::Monday);
     ui.set_events_today(ModelRc::new(VecModel::from(events_for_day(
         &s.events, s.year, s.month, day,
     ))));
@@ -602,7 +591,7 @@ fn render(ui: &CalendarApp, state: &Rc<RefCell<CalState>>) {
     let source = source_events(&s.events);
     let selected = views::selected_date(s.year, s.month, day);
 
-    let week = views::week_view(&source, selected);
+    let week = views::week_view(&source, selected, s.week_start);
     let labels: Vec<SharedString> =
         week.labels.iter().map(|l| SharedString::from(l.as_str())).collect();
     ui.set_week_day_labels(ModelRc::new(VecModel::from(labels)));
@@ -617,6 +606,27 @@ fn render(ui: &CalendarApp, state: &Rc<RefCell<CalState>>) {
     refresh_agent_rail(ui);
 }
 
+/// The week's first day on this machine: `week_start: monday | sunday` in the shell's settings
+/// file, else the locale's (`LC_ALL`, `LC_TIME`, `LANG`), else Sunday.
+fn week_start_setting() -> views::WeekStart {
+    let text = std::fs::read_to_string(yantrik_app_runtime::theme::settings_path()).unwrap_or_default();
+    views::WeekStart::system(&text)
+}
+
+/// `events_between`, as published. A function so a test can read the grade the surface will
+/// carry: this is a read, and a mind reading must not need a standard grant or move the window.
+fn events_between_action() -> yantrik_app_runtime::control::Action {
+    use yantrik_app_runtime::control::{Action, Param};
+    Action::new(
+        "events_between",
+        "List the events from one date to another, inclusive, up to 62 days, read from the \
+         calendar store whatever the window is showing. Each has date, start, end, title and location",
+    )
+    .arg(Param::text("from").describe("First day, YYYY-MM-DD"))
+    .arg(Param::text("to").describe("Last day, YYYY-MM-DD, at most 62 days after `from`"))
+    .risk("safe")
+}
+
 /// The dates the views on screen need.
 fn visible_range(
     ui: &CalendarApp,
@@ -628,6 +638,7 @@ fn visible_range(
         s.month,
         ViewMode::from_index(ui.get_view_mode()),
         ui.get_selected_day(),
+        s.week_start,
     )
 }
 
@@ -717,6 +728,55 @@ fn follow_store(ui: &CalendarApp, state: &Rc<RefCell<CalState>>) -> bool {
     }
     render(ui, state);
     true
+}
+
+/// Notice that the date has turned, and follow it.
+///
+/// Called at midnight, when the window is brought back to the front, and on the store watch's
+/// tick (a suspended machine wakes past a midnight its timer slept through). Nothing happens while it is
+/// still the day last seen. When it is not, the marker moves to the real date, and a window that
+/// was showing the old today moves with it; one the person had moved elsewhere stays where it is
+/// (`today::follow`).
+fn follow_today(ui: &CalendarApp, state: &Rc<RefCell<CalState>>, clock: &impl today::Clock) {
+    let (shown, was, now) = {
+        let mut s = state.borrow_mut();
+        let Some(was) = s.today.check(clock) else { return };
+        let shown = today::Shown { year: s.year, month: s.month, day: ui.get_selected_day().max(0) as u32 };
+        (shown, was, s.today.date())
+    };
+    let next = today::follow(shown, was, now);
+    {
+        let mut s = state.borrow_mut();
+        s.year = next.year;
+        s.month = next.month;
+    }
+    ui.set_selected_day(next.day as i32);
+    refresh(ui, state);
+}
+
+/// Keep the window's today true: at every midnight while the window is open, and each time it
+/// becomes the active window again.
+///
+/// Midnight is a chain of single-shot timers, each set for the next midnight by the one before,
+/// that ends when the window does; the event loop owns them, so there is no handle to hold.
+fn watch_the_date(app: &CalendarApp, state: &Rc<RefCell<CalState>>) {
+    fn at_midnight(weak: slint::Weak<CalendarApp>, state: Rc<RefCell<CalState>>) {
+        let wait = today::until_midnight(today::Clock::now(&today::LocalClock));
+        slint::Timer::single_shot(wait, move || {
+            let Some(ui) = weak.upgrade() else { return };
+            follow_today(&ui, &state, &today::LocalClock);
+            at_midnight(weak, state);
+        });
+    }
+    at_midnight(app.as_weak(), state.clone());
+
+    let weak = app.as_weak();
+    let st = state.clone();
+    yantrik_app_runtime::chrome::on_activated(app.window(), move || {
+        if let Some(ui) = weak.upgrade() {
+            follow_today(&ui, &st, &today::LocalClock);
+        }
+    });
 }
 
 /// Put an event on the calendar and show it, or say why not.
@@ -968,7 +1028,8 @@ fn change_and_answer(
         ask.reminder_minutes,
     ) {
         Ok(event) => {
-            ui.set_notice(SharedString::new());
+            notice::say(ui, SharedString::new());
+            show_date(ui, state, &event.start);
             Ok(serde_json::json!({
                 "id": event.id,
                 "title": event.title,
@@ -979,10 +1040,35 @@ fn change_and_answer(
             }))
         }
         Err(e) => {
-            ui.set_notice(format!("Could not change the event {}: {e}", ask.id).into());
+            notice::say(ui, format!("Could not change the event {}: {e}", ask.id).into());
             Err(e)
         }
     }
+}
+
+/// The year, month and day a `YYYY-MM-DD…` string starts with (a date, or an event's start).
+fn ymd(date: &str) -> Option<(i32, u32, i32)> {
+    let mut parts = date.get(..10)?.split('-');
+    let year = parts.next()?.parse().ok()?;
+    let month: u32 = parts.next()?.parse().ok()?;
+    let day: i32 = parts.next()?.parse().ok()?;
+    ((1..=12).contains(&month) && (1..=31).contains(&day)).then_some((year, month, day))
+}
+
+/// Put the window on `date`: its month, that day picked. What an action just changed is then what
+/// the window shows, and what the answer's first line says. `add_event` used to leave the window
+/// on whatever day was picked, so a mind adding to the 30th read "3 things on day 25", saw no sign
+/// of its event, and added it again (yantrik-mind R2, T3 rep 3), and the duplicate became a false
+/// claim in the next task.
+fn show_date(ui: &CalendarApp, state: &Rc<RefCell<CalState>>, date: &str) {
+    let Some((year, month, day)) = ymd(date) else { return };
+    {
+        let mut s = state.borrow_mut();
+        s.year = year;
+        s.month = month;
+    }
+    ui.set_selected_day(day);
+    refresh(ui, state);
 }
 
 /// Change an appointment, and show what it became — or say why it did not.
@@ -1091,7 +1177,7 @@ fn update_through_service(
 }
 
 fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
-    use yantrik_app_runtime::control::{Action, App, Param, View};
+    use yantrik_app_runtime::control::{answer_later, Action, App, Param, View};
 
     let describe = {
         let weak = app.as_weak();
@@ -1130,7 +1216,7 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
             let s = st.borrow();
             let view = ViewMode::from_index(ui.get_view_mode());
             let selected = views::selected_date(s.year, s.month, day);
-            let (week_start, week_end) = views::week_bounds(selected);
+            let (week_start, week_end) = views::week_bounds(selected, s.week_start);
 
             let today: Vec<serde_json::Value> = events_on_day(&s.events, s.year, s.month, day)
                 .into_iter()
@@ -1165,7 +1251,7 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
             // now answer as themselves: the week says its range and what each of its seven days
             // holds; the day says its date and its events in order.
             let source = source_events(&s.events);
-            let week = views::week_view(&source, selected);
+            let week = views::week_view(&source, selected, s.week_start);
             let day_view = views::day_view(&source, selected);
 
             let summary = match view {
@@ -1219,6 +1305,10 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                 // sensitive, so learning the day raised an approval card (#207).
                 .with("today", views::today_line(chrono::Local::now().date_naive()))
                 .with("view", view.as_str())
+                // The first column of the month grid and the week view, so a caller asking for
+                // "the week of Monday 28 September" knows what the window's week is. To read a
+                // range without caring, use `events_between`.
+                .with("week_starts_on", s.week_start.as_str())
                 .with("events_on_selected_day", serde_json::Value::Array(today))
                 .with("naming", serde_json::Value::Object(naming))
                 .with("days_with_events", serde_json::Value::Array(busy))
@@ -1290,6 +1380,8 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
     let own_delete_ui = ui_for.clone();
     let update_ui = ui_for.clone();
     let own_update_ui = ui_for.clone();
+    let date_state = state.clone();
+    let date_ui = ui_for.clone();
     let view_ui = ui_for;
 
     App::new("calendar")
@@ -1310,6 +1402,64 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                     .map(|e| e.title.to_string())
                     .collect();
                 Ok(serde_json::json!({ "day": day, "events": titles }))
+            },
+        )
+        .action(
+            // Any day, in any month, in one call. The window could be moved a month at a time
+            // (`show_month`) or back to today, and `select_day` picks a day of the month shown, so
+            // "what is on 25 October" took counting months first (yantrik-mind, 2026-09-27).
+            Action::new("show_date", "Show what is on one day, in whatever month it is")
+                .arg(Param::text("date").describe("YYYY-MM-DD")),
+            move |args| {
+                let ui = date_ui()?;
+                let date = args["date"].as_str().unwrap_or_default().trim().to_string();
+                if ymd(&date).is_none() {
+                    return Err(format!("`date` should look like 2026-10-25, not `{date}`"));
+                }
+                show_date(&ui, &date_state, &date);
+                let model = ui.get_events_today();
+                let titles: Vec<String> = (0..model.row_count())
+                    .filter_map(|i| model.row_data(i))
+                    .map(|e| e.title.to_string())
+                    .collect();
+                // The week the date is in, on this window's week start: in the week view that is
+                // what is now on screen, and the date is in it.
+                let (week_start, week_end) = {
+                    let s = date_state.borrow();
+                    views::week_bounds(views::selected_date(s.year, s.month, ui.get_selected_day()), s.week_start)
+                };
+                Ok(serde_json::json!({
+                    "showing": ui.get_month_title().to_string(),
+                    "date": date,
+                    "week_start": week_start.to_string(),
+                    "week_end": week_end.to_string(),
+                    "events": titles,
+                }))
+            },
+        )
+        .action(
+            // A read: it asks the store, not the grid, so a mind never has to steer the view
+            // (`set_view`, `show_date`) to see a range. On 28 Sep - 4 Oct a mind could not get the
+            // Monday week out of a Sunday-first view and gave up without writing its plan.
+            events_between_action(),
+            move |args| {
+                let from = args["from"].as_str().unwrap_or_default();
+                let to = args["to"].as_str().unwrap_or_default();
+                let (from, to) = views::parse_range(from, to)?;
+                // The socket call runs on the RPC side, not the UI thread.
+                let work = move || {
+                    let events = fetch_service_events(from, to)?;
+                    let listed = views::events_between(&events, from, to);
+                    Ok(serde_json::json!({
+                        "from": from.to_string(),
+                        "to": to.to_string(),
+                        "count": listed.len(),
+                        "events": listed,
+                    }))
+                };
+                answer_later(work)
+                    .map(|()| serde_json::json!("replaced by the work's own answer"))
+                    .or_else(|work| work())
             },
         )
         .action(
@@ -1405,11 +1555,12 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                 ) {
                     Ok(stored) => stored,
                     Err(e) => {
-                        ui.set_notice(format!("Could not save “{title}”: {e}").into());
+                        notice::say(&ui, format!("Could not save “{title}”: {e}").into());
                         return Err(e);
                     }
                 };
-                ui.set_notice(SharedString::new());
+                notice::say(&ui, SharedString::new());
+                show_date(&ui, &add_state, &date);
                 let on = if all_day { date.clone() } else { format!("{date} {time}") };
                 let mut answer = serde_json::json!({
                     "added": title, "on": on, "id": id, "all_day": all_day,
@@ -1450,14 +1601,14 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
 
                 match remove_event(&ui, &delete_state, &id) {
                     Ok(title) => {
-                        ui.set_notice(SharedString::new());
+                        notice::say(&ui, SharedString::new());
                         Ok(serde_json::json!({ "deleted": title, "id": id }))
                     }
                     // On screen as well as in the answer. A delete that did not happen leaves a
                     // row where it was, and a row that stayed put has to say which of the two
                     // things it means.
                     Err(e) => {
-                        ui.set_notice(format!("Could not delete {named}: {e}").into());
+                        notice::say(&ui, format!("Could not delete {named}: {e}").into());
                         Err(e)
                     }
                 }
@@ -1500,6 +1651,9 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                 let event = get_event_via_service(&id)?;
                 let me = requester();
                 if !ownership::may_delete_unasked(event.creator.as_deref(), me.as_deref()) {
+                    // The caller gets the rule, with the ids and the other door; the person
+                    // gets which event, that it is untouched, and who asked.
+                    notice::kept(&ui, notice::Refused::Delete, &event.title, me.as_deref(), &id);
                     let who =
                         me.unwrap_or_else(|| "nobody this machine could identify".to_string());
                     let why = match event.creator.as_deref() {
@@ -1518,17 +1672,16 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                     let why = format!(
                         "{why}. Any event comes off through `delete_event`, which asks first"
                     );
-                    ui.set_notice(format!("Could not delete {named}: {why}").into());
                     return Err(why);
                 }
 
                 match remove_event(&ui, &own_delete_state, &id) {
                     Ok(title) => {
-                        ui.set_notice(SharedString::new());
+                        notice::say(&ui, SharedString::new());
                         Ok(serde_json::json!({ "deleted": title, "id": id }))
                     }
                     Err(e) => {
-                        ui.set_notice(format!("Could not delete {named}: {e}").into());
+                        notice::say(&ui, format!("Could not delete {named}: {e}").into());
                         Err(e)
                     }
                 }
@@ -1575,6 +1728,7 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                 let event = get_event_via_service(&ask.id)?;
                 let me = requester();
                 if !ownership::may_change_unasked(event.creator.as_deref(), me.as_deref()) {
+                    notice::kept(&ui, notice::Refused::Change, &event.title, me.as_deref(), &ask.id);
                     let who =
                         me.unwrap_or_else(|| "nobody this machine could identify".to_string());
                     let why = match event.creator.as_deref() {
@@ -1595,7 +1749,6 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                     let why = format!(
                         "{why}. Any event changes through `update_event`, which asks first"
                     );
-                    ui.set_notice(format!("Could not change {}: {why}", ask.id).into());
                     return Err(why);
                 }
                 change_and_answer(&ui, &own_update_state, &ask)
@@ -1621,11 +1774,10 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
                 Ok(match ViewMode::from_index(mode) {
                     ViewMode::Week => {
                         let s = view_state.borrow();
-                        let (start, end) = views::week_bounds(views::selected_date(
-                            s.year,
-                            s.month,
-                            ui.get_selected_day(),
-                        ));
+                        let (start, end) = views::week_bounds(
+                            views::selected_date(s.year, s.month, ui.get_selected_day()),
+                            s.week_start,
+                        );
                         serde_json::json!({
                             "view": "week",
                             "week_start": start.to_string(),
@@ -1658,10 +1810,13 @@ fn publish_control(app: &CalendarApp, state: Rc<RefCell<CalState>>) {
 /// and a binding inside this function is dropped the moment it returns — see the comment at its
 /// declaration below, and `main`.
 fn wire(app: &CalendarApp) -> slint::Timer {
-    let (ty, tm, td) = today();
+    let today = today::Today::new(&today::LocalClock);
+    let opens_on = today::Shown::on(today.date());
     let state = Rc::new(RefCell::new(CalState {
-        year: ty,
-        month: tm,
+        year: opens_on.year,
+        month: opens_on.month,
+        today,
+        week_start: week_start_setting(),
         events: Vec::new(),
         range: None,
         revision: None,
@@ -1670,11 +1825,12 @@ fn wire(app: &CalendarApp) -> slint::Timer {
 
     // Initial load. The selected day goes on first because the range the week view needs is
     // decided by it.
-    app.set_selected_day(td as i32);
+    app.set_selected_day(opens_on.day as i32);
     refresh(app, &state);
 
     // Published once the first read is done, so the first `app.describe` reports real events.
     publish_control(app, state.clone());
+    watch_the_date(app, &state);
 
     // ── Prev month ──
     {
@@ -1774,7 +1930,7 @@ fn wire(app: &CalendarApp) -> slint::Timer {
             ui.set_event_time("09:00".into());
             ui.set_event_title(title);
             ui.set_event_notes(SharedString::default());
-            ui.set_notice(SharedString::new());
+            notice::say(&ui, SharedString::new());
             ui.set_show_event_form(true);
         });
     }
@@ -1791,12 +1947,12 @@ fn wire(app: &CalendarApp) -> slint::Timer {
             // is the default the store applies.
             match store_event(&ui, &st, &title, &date, &time, &notes, None, false, None) {
                 Ok(_) => {
-                    ui.set_notice(SharedString::new());
+                    notice::say(&ui, SharedString::new());
                     ui.set_show_event_form(false);
                 }
                 // The form stays open holding what was typed. Closing it on a failed save threw
                 // the event away twice: once from the store, once from the screen.
-                Err(e) => ui.set_notice(format!("Could not save “{}”: {e}", title.trim()).into()),
+                Err(e) => notice::say(&ui, format!("Could not save “{}”: {e}", title.trim()).into()),
             }
         });
     }
@@ -1822,10 +1978,41 @@ fn wire(app: &CalendarApp) -> slint::Timer {
             // The same path the `delete_event` action takes, so the trash icon cannot succeed
             // where the action would fail or report something the action would not.
             match remove_event(&ui, &st, &event_id) {
-                Ok(_) => ui.set_notice(SharedString::new()),
+                Ok(_) => notice::say(&ui, SharedString::new()),
                 // A row that stayed on screen after a delete used to mean either "it is still
                 // there" or "the store never heard"; now it means the first, and says the second.
-                Err(e) => ui.set_notice(format!("Could not delete “{event_title}”: {e}").into()),
+                Err(e) => notice::say(&ui, format!("Could not delete “{event_title}”: {e}").into()),
+            }
+        });
+    }
+
+    // ── Dismiss the notice ──
+    {
+        let weak = app.as_weak();
+        app.on_dismiss_notice(move || {
+            if let Some(ui) = weak.upgrade() {
+                notice::say(&ui, SharedString::new());
+            }
+        });
+    }
+
+    // ── Open the event a refusal was about ──
+    //
+    // Read from the store by id at the press, not remembered from the refusal: the event may have
+    // moved since, or gone. The window goes to its day, where it is in the day's list with its
+    // own delete. The notice stays up — the person opened it to act on what it says.
+    {
+        let weak = app.as_weak();
+        let st = state.clone();
+        app.on_open_notice_event(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let id = ui.get_notice_event().to_string();
+            if id.is_empty() {
+                return;
+            }
+            match get_event_via_service(&id) {
+                Ok(event) => show_date(&ui, &st, &event.start),
+                Err(e) => notice::say(&ui, format!("Could not open that event: {e}").into()),
             }
         });
     }
@@ -1846,13 +2033,17 @@ fn wire(app: &CalendarApp) -> slint::Timer {
         let st = state.clone();
         app.on_today_pressed(move || {
             let Some(ui) = weak.upgrade() else { return };
-            let (ny, nm, nd) = today();
-            {
+            // The clock is read here, at the press, so the button goes to the real date even if
+            // midnight passed since the window last looked.
+            let target = {
                 let mut s = st.borrow_mut();
-                s.year = ny;
-                s.month = nm;
-            }
-            ui.set_selected_day(nd as i32);
+                s.today.check(&today::LocalClock);
+                let target = today::Shown::on(s.today.date());
+                s.year = target.year;
+                s.month = target.month;
+                target
+            };
+            ui.set_selected_day(target.day as i32);
             refresh(&ui, &st);
         });
     }
@@ -2010,6 +2201,10 @@ fn wire(app: &CalendarApp) -> slint::Timer {
         let st = state.clone();
         watch.start(slint::TimerMode::Repeated, STORE_WATCH, move || {
             let Some(ui) = weak.upgrade() else { return };
+            // Before the visibility test: a date check is one comparison, and a window that was
+            // put away over midnight should come back on the right day. This also catches a
+            // midnight the timer above slept through on a suspended machine.
+            follow_today(&ui, &st, &today::LocalClock);
             if !ui.window().is_visible() || ui.window().is_minimized() {
                 return;
             }
@@ -2017,4 +2212,50 @@ fn wire(app: &CalendarApp) -> slint::Timer {
         });
     }
     watch
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_date_or_an_events_start_names_the_day_to_show() {
+        assert_eq!(ymd("2026-09-30"), Some((2026, 9, 30)));
+        assert_eq!(ymd("2026-10-15T16:30:00-05:00"), Some((2026, 10, 15)), "an event's start");
+        assert_eq!(ymd("2026-13-01"), None, "no month 13");
+        assert_eq!(ymd("2026-09-32"), None);
+        assert_eq!(ymd("30 Sep"), None, "not a date: the window stays where it is");
+        assert_eq!(ymd(""), None);
+    }
+
+    /// The month grid's marker is the window's today, so it moves when the date turns: on the
+    /// 30th of September before midnight, off September and on the 1st of October after it.
+    #[test]
+    fn the_marker_follows_the_date_across_midnight() {
+        let clock = today::FakeClock::at("2026-09-30 23:59:58");
+        let mut tracked = today::Today::new(&clock);
+        let marked = |year: i32, month: u32, today: chrono::NaiveDate| -> Vec<i32> {
+            build_month_grid(year, month, &[], today_in(year, month, today), views::WeekStart::Monday)
+                .iter()
+                .filter(|c| c.is_today)
+                .map(|c| c.day_number)
+                .collect()
+        };
+        assert_eq!(marked(2026, 9, tracked.date()), [30]);
+        clock.advance(5);
+        assert!(tracked.check(&clock).is_some(), "midnight passed");
+        assert_eq!(marked(2026, 9, tracked.date()), Vec::<i32>::new(), "September has no today any more");
+        assert_eq!(marked(2026, 10, tracked.date()), [1]);
+    }
+
+    /// A mind could not read "the week of Monday 28 September" because the only way to a range
+    /// was to steer a Sunday-first view. Reading is not that view's job, and it is safe: nothing
+    /// is changed and nothing is shown.
+    #[test]
+    fn events_between_is_a_safe_read() {
+        let spec = events_between_action();
+        assert_eq!(spec.permission, "safe");
+        assert!(spec.description.contains("62 days"));
+        assert_eq!(spec.params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["from", "to"]);
+    }
 }

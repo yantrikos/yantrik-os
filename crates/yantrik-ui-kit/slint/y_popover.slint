@@ -1,0 +1,122 @@
+// YPopover — the panel that hangs off a bar indicator: Sound, Network, Quick Settings, Today.
+//
+// Usage (place it last in the window so it draws over everything; it fills its parent)
+//   YPopover {
+//       open: Shell.sound-open;
+//       anchor-x: sound-indicator.anchor-x;        // the trigger's centre, window coordinates
+//       anchor-y: sound-indicator.anchor-bottom;   // the trigger's edge the panel hangs from
+//       screen-width: root.width;  screen-height: root.height;
+//       label: "Sound";
+//       close-requested => { Shell.sound-open = false; }
+//
+//       YSlider { label: "Volume"; value: Audio.volume; changed(v) => { Audio.set(v); } }
+//       YToggleTile { title: "Mute"; on: Audio.muted; toggled => { Audio.toggle-mute(); } }
+//   }
+//
+// The popover never decides whether it is open: `open` is an input and `close-requested` is the
+// only way it asks. Esc and a click outside both ask; the owner closes it (and puts focus back
+// on the trigger). That keeps one source of truth for "is Sound open", which the control
+// surface also reads.
+//
+// Placement. The panel is `panel-width` wide (360px by default), centred under `anchor-x` and
+// then clamped so it stays `Theme.popover-margin` inside the screen: a trigger at the far right
+// of the bar gets a panel whose right edge sits at the margin, never a panel half off the display. `panel-x`/`panel-y`/`panel-w`/`panel-h`
+// report where it landed. It opens below `anchor-y`; with `upward: true`, or when `screen-height`
+// is given and there is no room below, it opens above `anchor-y` instead (a bottom bar).
+//
+// Focus. Opening moves focus into the panel, so Esc works at once and Tab starts inside it.
+// Keys the content does not use bubble up to the panel's scope, which is how Esc is heard
+// from a focused slider or tile. Focus is not trapped: Tab past the last control leaves.
+//
+// Motion. It fades in over `Theme.dur-pop` (120ms) with a 4px drift toward its place, on
+// `Theme.ease-standard`; it fades out the same way. `MotionPrefs.reduced` makes both instant.
+// Slint's software renderer cannot scale an item, so this is fade and drift, not fade and scale.
+// Animations are declarative: no timer, and nothing redraws once it has settled.
+import { Theme } from "theme.slint";
+
+export component YPopover inherits Rectangle {
+    in property <bool> open: false;
+    in property <length> anchor-x: 0;
+    in property <length> anchor-y: 0;
+    // Not `width`: that is this element's own, and it fills the window.
+    in property <length> panel-width: Theme.popover-width;
+    in property <length> screen-width: root.width;
+    // 0 means "unknown": never flips on its own.
+    in property <length> screen-height: root.height;
+    in property <bool> upward: false;
+    in property <string> label: "";
+    in property <length> content-spacing: Theme.sp-3;
+    callback close-requested();
+    // A key the content did not use, before Esc is looked at: for a panel that moves focus with
+    // the arrow keys. Return accept to say it was used. Unhandled, it answers reject.
+    callback key-unhandled(KeyEvent) -> EventResult;
+
+    out property <length> panel-x: Math.max(Theme.popover-margin,
+        Math.min(root.anchor-x - root.panel-width / 2, root.screen-width - root.panel-width - Theme.popover-margin));
+    out property <bool> above: root.upward || (root.screen-height > 0px
+        && root.anchor-y + Theme.popover-gap + root.panel-h > root.screen-height - Theme.popover-margin
+        && root.anchor-y - Theme.popover-gap - root.panel-h >= Theme.popover-margin);
+    out property <length> panel-y: root.above
+        ? Math.max(Theme.popover-margin, root.anchor-y - Theme.popover-gap - root.panel-h)
+        : root.anchor-y + Theme.popover-gap;
+    out property <length> panel-w: root.panel-width;
+    out property <length> panel-h: layout.preferred-height;
+
+    public function focus-panel() { scope.focus(); }
+
+    // Arrival progress, 0..1. Animated, so there is nothing to tick.
+    property <float> t: root.open ? 1 : 0;
+    animate t { duration: Theme.dur-pop; easing: Theme.ease-standard; }
+
+    width: 100%;
+    height: 100%;
+    visible: root.open || root.t > 0;
+
+    changed open => { if (root.open) { scope.focus(); } }
+
+    // Backdrop: invisible, takes the click that means "I am done with this".
+    TouchArea {
+        width: 100%;
+        height: 100%;
+        enabled: root.open;
+        clicked => { root.close-requested(); }
+    }
+
+    panel := Rectangle {
+        x: root.panel-x;
+        y: root.panel-y + (1 - root.t) * (root.above ? Theme.sp-1 : -Theme.sp-1);
+        width: root.panel-w;
+        height: root.panel-h;
+        opacity: root.t;
+        border-radius: Theme.popover-radius;
+        // The charcoal panel the colour system draws every popover on; the tiles and sliders
+        // inside are made to stand out from exactly this (#151A1E).
+        background: Theme.panel-solid;
+        border-width: Theme.hairline;
+        border-color: Theme.border-card;
+        drop-shadow-blur: Theme.shadow-lg-blur;
+        drop-shadow-offset-y: Theme.shadow-lg-dy;
+        drop-shadow-color: Theme.overlay-shadow;
+        accessible-role: groupbox;
+        accessible-label: root.label;
+
+        // A press on the panel's own surface is not a press on the backdrop.
+        TouchArea { width: 100%; height: 100%; }
+
+        scope := FocusScope {
+            width: 100%;
+            height: 100%;
+            enabled: root.open;
+            key-pressed(event) => {
+                if (event.text == Key.Escape) { root.close-requested(); return accept; }
+                root.key-unhandled(event)
+            }
+
+            layout := VerticalLayout {
+                padding: Theme.sp-4;
+                spacing: root.content-spacing;
+                @children
+            }
+        }
+    }
+}

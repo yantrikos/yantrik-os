@@ -3,7 +3,7 @@
 //! The shell persists the user's choices in `~/.config/yantrik/settings.yaml` and applies them
 //! to the `ThemeMode` / `AccentPreset` globals at startup. A standalone app is a separate process
 //! with its own copy of those globals, so unless it reads the same file it opens in the default
-//! cyan-on-dark regardless of what the user picked. Reading the file at launch is enough: the
+//! soft-blue-on-dark regardless of what the user picked. Reading the file at launch is enough: the
 //! shell relaunches nothing on a theme change, and an app that was open keeps its look until it
 //! is next started, which is how every other desktop behaves.
 
@@ -13,7 +13,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ThemeSettings {
     pub dark: bool,
-    /// Index into `AccentPreset` — 0 cyan, 1 amber, 2 purple, 3 green, 4 pink.
+    /// Index into `AccentPreset`: 0 soft blue, 2 violet, 4 pink (see `ACCENTS`).
     pub accent_index: i32,
 }
 
@@ -23,17 +23,33 @@ impl Default for ThemeSettings {
     }
 }
 
-/// Accent names in `AccentPreset.index` order. Must match `wire/settings.rs::ACCENT_NAMES` in the
-/// shell; the two are kept in step by the test below rather than by a shared crate, because the
-/// shell does not depend on this one.
-pub const ACCENT_NAMES: [&str; 5] = ["cyan", "amber", "purple", "green", "pink"];
+/// The accents Settings offers, as (saved name, `AccentPreset.index`). The one list: the shell's
+/// picker, its settings file and every app's launch all read it from here.
+///
+/// The indices are not 0, 1, 2 because amber (1) and green (3) were taken out (colour roles,
+/// 4 Oct 2026): amber is "needs you" and green is success, so neither may be the colour of every
+/// primary. The survivors keep their numbers, so an index already handed to a window, or written
+/// by a build that had five, still means the same colour; 1 and 3 are never reused.
+///
+/// The saved name for the soft blue stays "cyan": settings files and the control surface already
+/// say it.
+pub const ACCENTS: [(&str, i32); 3] = [("cyan", 0), ("purple", 2), ("pink", 4)];
+
+/// The accent every unknown or retired choice lands on: the soft blue.
+pub const DEFAULT_ACCENT: &str = "cyan";
+
+/// The saved name as Settings offers it, or the soft blue for one it no longer offers (a file
+/// written when amber and green were choices) or never did.
+pub fn offered_accent(name: &str) -> &'static str {
+    ACCENTS
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(name.trim()))
+        .map_or(DEFAULT_ACCENT, |(n, _)| n)
+}
 
 pub fn accent_name_to_index(name: &str) -> i32 {
-    ACCENT_NAMES
-        .iter()
-        .position(|n| n.eq_ignore_ascii_case(name.trim()))
-        .map(|i| i as i32)
-        .unwrap_or(0)
+    let name = offered_accent(name);
+    ACCENTS.iter().find(|(n, _)| *n == name).map_or(0, |(_, i)| *i)
 }
 
 /// Path of the shell's settings file — the one the machine's ceiling is read from, so the theme
@@ -82,6 +98,21 @@ mod tests {
     fn unknown_accent_falls_back_to_cyan() {
         assert_eq!(accent_name_to_index("teal"), 0);
         assert_eq!(accent_name_to_index("Pink"), 4);
+    }
+
+    /// Amber and green were presets once. A settings file that still says either opens on the
+    /// soft blue, in the shell and in every app, and the survivors keep their old numbers.
+    #[test]
+    fn a_retired_accent_opens_on_the_soft_blue() {
+        for retired in ["amber", "green", "Amber"] {
+            assert_eq!(offered_accent(retired), "cyan", "{retired}");
+            assert_eq!(accent_name_to_index(retired), 0, "{retired}");
+        }
+        assert_eq!(parse("accent_color: amber").accent_index, 0);
+        assert_eq!(parse("accent_color: green").accent_index, 0);
+        assert_eq!(accent_name_to_index("purple"), 2, "violet keeps index 2");
+        assert_eq!(accent_name_to_index("pink"), 4, "pink keeps index 4");
+        assert_eq!(offered_accent(" Purple "), "purple");
     }
 
     #[test]

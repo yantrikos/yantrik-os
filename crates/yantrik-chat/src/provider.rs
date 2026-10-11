@@ -88,6 +88,23 @@ impl ProviderCapabilities {
 
 // ── The trait ────────────────────────────────────────────────────────
 
+/// Sends to a channel from any thread, apart from the provider's own polling thread, which owns the
+/// provider and spends most of its time blocked in a long poll or a socket read. Replies, answers
+/// that come later, and cards on the phone all go through this.
+pub trait Outbound: Send + Sync {
+    fn send(&self, target: &ConversationRef, msg: &OutboundMessage) -> Result<SendReceipt, ChatError>;
+}
+
+/// A provider whose `send` needs no state from its poller (a stateless HTTP call), used as an
+/// [`Outbound`] from a second instance of its own.
+pub struct Locked<P: ChatProvider>(pub std::sync::Mutex<P>);
+
+impl<P: ChatProvider> Outbound for Locked<P> {
+    fn send(&self, target: &ConversationRef, msg: &OutboundMessage) -> Result<SendReceipt, ChatError> {
+        self.0.lock().map_err(|_| ChatError::Provider("the sender's lock was poisoned".into()))?.send(target, msg)
+    }
+}
+
 /// A chat platform adapter. Implemented by each provider (Telegram, Discord, etc.).
 ///
 /// Providers are transport-only — no AI logic, no memory, no tools.
@@ -98,6 +115,12 @@ pub trait ChatProvider: Send {
 
     /// What this provider supports.
     fn capabilities(&self) -> ProviderCapabilities;
+
+    /// How to send from outside the polling thread, or `None` for a provider that cannot yet: its
+    /// channel then answers nothing, and says so in the log when it starts.
+    fn outbound(&self) -> Option<std::sync::Arc<dyn Outbound>> {
+        None
+    }
 
     // ── Lifecycle ───────────────────────────────────────────────────
 

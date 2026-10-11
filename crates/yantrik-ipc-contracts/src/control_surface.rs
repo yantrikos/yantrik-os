@@ -236,6 +236,31 @@ impl std::fmt::Debug for Explainer {
     }
 }
 
+/// The sentence that makes an action open-ended: what it runs is whatever it was given, so it
+/// can do anything the person can. [`Action::open_ended`] appends it to the description, and
+/// `yantrik_ipc_transport::gate::open_ended` looks for it, so the reader of the description is
+/// told exactly what the gate enforces — the shape `gate::unrecoverable` already reads, with one
+/// sentence instead of seven phrases, because this is a declaration and not a guess at prose.
+///
+/// What it means at the gate (Pranab's decision of 29 September 2026): above `safe` it asks in
+/// `ask`, `auto` and plain bypass, and a session rule DOES cover it — a mind asks once per
+/// session to run commands, not once per command. Full bypass runs it unasked; plan refuses it.
+pub const OPEN_ENDED: &str = "What it runs can do anything you can.";
+
+/// `description` with [`OPEN_ENDED`] said at its end, once. Pure, so the Python SDK's copy can
+/// be held to it sentence for sentence.
+pub fn with_open_ended(description: &str) -> String {
+    if description.contains(OPEN_ENDED) {
+        return description.to_string();
+    }
+    let said = description.trim_end();
+    if said.is_empty() {
+        return OPEN_ENDED.to_string();
+    }
+    let stop = if said.ends_with(['.', '!', '?']) { "" } else { "." };
+    format!("{said}{stop} {OPEN_ENDED}")
+}
+
 /// One thing an app can be asked to do.
 #[derive(Clone, Debug)]
 pub struct Action {
@@ -261,6 +286,11 @@ pub struct Action {
     /// number for every action on the machine. `None` — the default — says nothing, and a caller
     /// keeps its own.
     pub expected_seconds: Option<u32>,
+    /// Whether the answer is about something other than this app, so the reply carries the result
+    /// alone: no state, no summary, no revision, and the app is not read again after it. For a
+    /// question asked often by another program (the memory server's `memory_validate`, #447),
+    /// where the app's whole state beside a one-line answer was 35 KB of nothing it wanted.
+    pub stateless: bool,
     /// The sentence about ONE call of this action, with that call's own arguments, when the app
     /// can say one (#137). Published as `explains: true` — the fact, never the sentence, which
     /// depends on arguments `describe` does not have; a client that saw the flag asks for it with
@@ -281,8 +311,17 @@ impl Action {
             // are not have to say so.
             deferred: false,
             expected_seconds: None,
+            stateless: false,
             explainer: None,
         }
+    }
+
+    /// Declare that this action answers a question about something other than this app: its
+    /// reply is the result alone, with no state beside it. See
+    /// [`Action::stateless`](Action#structfield.stateless).
+    pub fn stateless(mut self) -> Self {
+        self.stateless = true;
+        self
     }
 
     /// Declare how long a call to this usually takes to answer. See
@@ -318,6 +357,16 @@ impl Action {
     /// killing a process, deleting a file, sending mail.
     pub fn risk(mut self, permission: &'static str) -> Self {
         self.permission = permission;
+        self
+    }
+
+    /// Declare that this action runs whatever it is given — a command line, a script, keystrokes
+    /// into a shell — so it can do anything the person can. It says so in the description
+    /// ([`OPEN_ENDED`]), which is what the gate reads: asked about once per session in `ask`,
+    /// `auto` and bypass, a session rule answering the rest. Mark only what truly runs arbitrary
+    /// input; the grade still says how much the action itself costs.
+    pub fn open_ended(mut self) -> Self {
+        self.description = with_open_ended(&self.description);
         self
     }
 
@@ -398,6 +447,23 @@ pub fn describe_json(app_id: &str, view: &View, actions: &[Action]) -> serde_jso
 ///
 /// `never `ok`, never `done``: `accepted` says the handler ran, `settled` says whether the work
 /// finished. They are different questions and only the app can answer the second.
+/// The reply to an `app.act` of a [`stateless`](Action#structfield.stateless) action: the
+/// result, and nothing of the app's state.
+pub fn act_json_stateless(
+    app_id: &str,
+    action_id: &str,
+    settled: bool,
+    result: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "app": app_id,
+        "action_id": action_id,
+        "accepted": true,
+        "settled": settled,
+        "result": result,
+    })
+}
+
 pub fn act_json(
     app_id: &str,
     action_id: &str,
@@ -415,6 +481,22 @@ pub fn act_json(
         "summary": view.summary,
         "state": view.state,
     })
+}
+
+#[cfg(test)]
+mod open_ended_tests {
+    use super::*;
+
+    #[test]
+    fn an_open_ended_action_says_so_once_at_the_end_of_its_description() {
+        let run = Action::new("run", "Type a command line into the shell").open_ended();
+        assert_eq!(run.description, "Type a command line into the shell. What it runs can do anything you can.");
+        let again = run.clone().open_ended();
+        assert_eq!(again.description, run.description, "said once, however often it is declared");
+        assert_eq!(with_open_ended("Run it.  "), "Run it. What it runs can do anything you can.");
+        assert_eq!(with_open_ended(""), OPEN_ENDED);
+        assert_eq!(run.schema()["description"], run.description.as_str(), "published as it reads");
+    }
 }
 
 #[cfg(test)]

@@ -1,0 +1,23 @@
+#!/bin/sh
+# Yantrik Live forwarder, on the gate: the instance's desktop video comes in as plain MPEG-TS over
+# UDP on the sealed segment, and goes out to the relay on yantrikos.com over SRT, encrypted with
+# the path's passphrase and with the publisher's password in its stream id.
+#
+# The relay's secrets are here, on the gate, and never on the instance: whatever the instance's
+# Mind is talked into showing on its (public) screen, it has nothing of the relay's to show.
+# systemd hands them over as a credential (yantrik-live-forward.service), readable only by this
+# service's dynamic account.
+set -eu
+ENV="$CREDENTIALS_DIRECTORY/relay.env"
+RELAY=${YANTRIK_LIVE_RELAY:-yantrikos.com:8890}
+PORT=${YANTRIK_LIVE_PORT:-9000}
+
+value() { sed -n "s/^$1=\([A-Za-z0-9]*\)\$/\1/p" "$ENV" | head -n 1; }
+pass=$(value MTX_AUTHINTERNALUSERS_0_PASS)
+phrase=$(value MTX_PATHS_LIVE_SRTPUBLISHPASSPHRASE)
+[ -n "$pass" ] && [ ${#phrase} -ge 10 ] || { echo "no relay secrets in the credential" >&2; exit 1; }
+
+# -q and -ll:error: srt-live-transmit prints nothing that carries the URL. -c 1316: seven
+# MPEG-TS packets, the payload the relay expects. It reconnects on its own when the relay drops.
+exec srt-live-transmit -q -ll:error -a:yes -c:1316 "udp://:$PORT" \
+    "srt://$RELAY?streamid=publish:live:yantrik-live:$pass&passphrase=$phrase"

@@ -7,7 +7,8 @@
 //! Every call answers `Err` when the shell is not running, which is a state an app must handle
 //! rather than hide: these binaries are meant to run on their own too.
 
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use yantrik_ipc_transport::SyncRpcClient;
 
@@ -209,14 +210,142 @@ impl Reach {
     }
 }
 
-/// Ask the shell which situation this is, before offering an AI action or saying why one
-/// cannot run.
+/// Which situation this is, as last heard from the shell — without waiting on it.
 ///
-/// Cheap — one status call, the one `is_online` made. It replaces that bool, which could not
-/// tell "no shell" from "shell with no model" and so had a dozen apps answer both with "start
-/// the Yantrik shell".
+/// Asked before offering an AI action or saying why one cannot run. It replaced `is_online`, a
+/// bool that could not tell "no shell" from "shell with no model".
+///
+/// It answers from memory. A worker thread asks the shell (`companion.status`) every
+/// [`REACH_EVERY`] while anybody in this process keeps asking, and this reads what it last heard.
+///
+/// It used to ask the shell itself, on whatever thread called it, and the thread that calls it is
+/// the window's: every app's agent rail runs it on a four-second Slint timer. A control surface's
+/// `describe` runs on that same thread (see `control`), so it queued behind a socket round trip
+/// to another process with a ninety-second ceiling, and `yos check weather` measured describe
+/// at ~600 ms. Reading a kept answer costs nothing, so neither the rail nor a describe waits on
+/// the shell now.
+///
+/// The one wait left is bounded: the call that starts the watcher — the first in a process, or
+/// the first after nobody asked for [`REACH_IDLE`] — waits up to [`REACH_FIRST_WAIT`] for its
+/// first answer, so a rail filled at startup says the right thing rather than a guess. Past that
+/// it answers with what it last knew, or [`Reach::NoShell`] when it has never heard anything.
 pub fn reach() -> Reach {
+    static WATCH: OnceLock<Arc<ReachWatch>> = OnceLock::new();
+    WATCH
+        .get_or_init(|| {
+            ReachWatch::new(Box::new(probe_reach), REACH_EVERY, REACH_FIRST_WAIT, REACH_IDLE)
+        })
+        .get()
+}
+
+/// How often the watcher asks the shell while somebody is listening. Under the rails' own four
+/// seconds, so a rail is never more than one of its own ticks behind the shell.
+pub const REACH_EVERY: Duration = Duration::from_secs(2);
+
+/// The longest the watcher's first answer is waited for. A shell that is there answers a status
+/// in a millisecond or two; this is a ceiling, not an expected cost.
+pub const REACH_FIRST_WAIT: Duration = Duration::from_millis(250);
+
+/// How long the watcher keeps asking after the last time anybody wanted the answer, so an app
+/// that asks only on a button press does not keep a thread polling the shell all day.
+pub const REACH_IDLE: Duration = Duration::from_secs(30);
+
+/// Ask the shell, once, and wait for it. Only the watcher thread calls this.
+fn probe_reach() -> Reach {
     reach_of(client().call("companion.status", serde_json::json!({})))
+}
+
+/// The last answer about [`Reach`], kept fresh by a worker thread.
+///
+/// Its own type with the probe passed in, so a test can stand a slow shell behind it and show
+/// that asking does not wait on the shell.
+pub(crate) struct ReachWatch {
+    probe: Box<dyn Fn() -> Reach + Send + Sync>,
+    every: Duration,
+    first_wait: Duration,
+    idle: Duration,
+    state: Mutex<Watched>,
+    landed: Condvar,
+}
+
+struct Watched {
+    /// What the shell said last; `None` until it first says anything.
+    last: Option<Reach>,
+    /// How many answers have landed, so a wait can tell a new one from the one it already had.
+    landings: u64,
+    /// When somebody last asked. The watcher stops once nobody has for `idle`.
+    asked: Instant,
+    /// Whether a watcher thread is alive.
+    running: bool,
+}
+
+impl ReachWatch {
+    pub(crate) fn new(
+        probe: Box<dyn Fn() -> Reach + Send + Sync>,
+        every: Duration,
+        first_wait: Duration,
+        idle: Duration,
+    ) -> Arc<Self> {
+        Arc::new(ReachWatch {
+            probe,
+            every,
+            first_wait,
+            idle,
+            state: Mutex::new(Watched {
+                last: None,
+                landings: 0,
+                asked: Instant::now(),
+                running: false,
+            }),
+            landed: Condvar::new(),
+        })
+    }
+
+    /// The last answer; see [`reach`].
+    pub(crate) fn get(self: &Arc<Self>) -> Reach {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.asked = Instant::now();
+        if s.running {
+            // The watcher is alive, so what it last heard is at most one probe old. When the
+            // probe it is in is slow, that is the watcher's wait, never this caller's.
+            return s.last.unwrap_or(Reach::NoShell);
+        }
+        s.running = true;
+        let watcher = Arc::clone(self);
+        if std::thread::Builder::new()
+            .name("companion-reach".into())
+            .spawn(move || watcher.watch())
+            .is_err()
+        {
+            // No thread to ask with. Asking inline would put the wait back on the caller, so say
+            // what was known and let the next call try again.
+            s.running = false;
+            return s.last.unwrap_or(Reach::NoShell);
+        }
+        let seen = s.landings;
+        let (s, _) = self
+            .landed
+            .wait_timeout_while(s, self.first_wait, |s| s.landings == seen)
+            .unwrap_or_else(|e| e.into_inner());
+        s.last.unwrap_or(Reach::NoShell)
+    }
+
+    /// The watcher thread: ask, keep the answer, sleep — until nobody is asking any more.
+    fn watch(self: Arc<Self>) {
+        loop {
+            let reach = (self.probe)();
+            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            s.last = Some(reach);
+            s.landings += 1;
+            self.landed.notify_all();
+            if s.asked.elapsed() >= self.idle {
+                s.running = false;
+                return;
+            }
+            drop(s);
+            std::thread::sleep(self.every);
+        }
+    }
 }
 
 /// The reading of a status reply, split out so a test can pin the distinction with no socket
@@ -268,5 +397,90 @@ mod tests {
         assert_eq!(Reach::Ready.hint(), None);
         assert_eq!(Reach::NoModel.hint(), Some(NO_MODEL_HINT));
         assert_eq!(Reach::NoShell.hint(), Some(OFFLINE_HINT));
+    }
+
+    /// A probe that takes `ms` and then answers `reach`, counting how often it was asked.
+    fn slow_probe(
+        ms: u64,
+        reach: Reach,
+        asked: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Box<dyn Fn() -> Reach + Send + Sync> {
+        Box::new(move || {
+            asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(ms));
+            reach
+        })
+    }
+
+    /// The defect: the rail asked the shell on the window's thread, and a describe queued behind
+    /// the round trip. Asking now costs a bounded first wait and nothing after it, however slow
+    /// the shell is.
+    #[test]
+    fn asking_does_not_wait_on_a_slow_shell() {
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let watch = ReachWatch::new(
+            slow_probe(1500, Reach::Ready, asked.clone()),
+            Duration::from_millis(50),
+            Duration::from_millis(100),
+            Duration::from_secs(30),
+        );
+
+        let first = Instant::now();
+        assert_eq!(watch.get(), Reach::NoShell, "nothing heard yet");
+        assert!(first.elapsed() < Duration::from_millis(600), "the first ask waited {:?}", first.elapsed());
+
+        // While the probe is still out, every ask is a read.
+        for _ in 0..20 {
+            let t = Instant::now();
+            assert_eq!(watch.get(), Reach::NoShell);
+            assert!(t.elapsed() < Duration::from_millis(50), "an ask waited {:?}", t.elapsed());
+        }
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1, "one probe, not one per ask");
+
+        // And once the shell answers, the answer is what the next ask reads.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while watch.get() != Reach::Ready {
+            assert!(Instant::now() < deadline, "the probe's answer never landed");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// A shell that is there answers inside the first wait, so a rail filled at startup says the
+    /// right thing rather than "not connected" for a tick.
+    #[test]
+    fn a_quick_shell_is_read_on_the_first_ask() {
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let watch = ReachWatch::new(
+            slow_probe(0, Reach::NoModel, asked),
+            Duration::from_millis(50),
+            Duration::from_secs(5),
+            Duration::from_secs(30),
+        );
+        assert_eq!(watch.get(), Reach::NoModel);
+    }
+
+    /// Nobody asking, nobody polling: the watcher stops, and the next ask starts it again.
+    #[test]
+    fn the_watcher_stops_when_nobody_asks_and_starts_again_when_somebody_does() {
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let watch = ReachWatch::new(
+            slow_probe(0, Reach::Ready, asked.clone()),
+            Duration::from_millis(10),
+            Duration::from_secs(5),
+            Duration::from_millis(60),
+        );
+        assert_eq!(watch.get(), Reach::Ready);
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while watch.state.lock().unwrap().running {
+            assert!(Instant::now() < deadline, "the watcher never went idle");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let idle_at = asked.load(std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), idle_at, "an idle watcher asked the shell");
+
+        assert_eq!(watch.get(), Reach::Ready);
+        assert!(watch.state.lock().unwrap().running, "an ask wakes the watcher");
     }
 }

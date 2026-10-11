@@ -1,69 +1,85 @@
 //! Real disk installer — partitions, copies live system, installs GRUB, creates user.
 //!
 //! This runs the same operations as the text-based `yantrik-install` script but
-//! from within the Slint UI, reporting progress back via a callback.
+//! from within the Slint UI (installer.slint), reporting progress back via a callback.
 
-use slint::ComponentHandle;
+use slint::{ComponentHandle, ModelRc, VecModel};
 use std::process::Command;
 
 use crate::app_context::AppContext;
-use crate::wire::ai_onboarding::auth_type_for;
-use crate::wire::settings::{provider_preset, ProviderStore, ProviderStoreEntry};
-use crate::App;
+use crate::control_installer::step;
+use crate::installer_rules;
+use crate::wire::provider_catalogue::{auth_type_for, default_model_for, provider_preset};
+use crate::wire::installer_boot;
+use crate::wire::installer_disk;
+use crate::wire::installer_locale;
+use crate::wire::installer_ownership;
+use crate::wire::installer_partition;
+use crate::wire::installer_unlock;
+use crate::wire::settings::{ProviderStore, ProviderStoreEntry};
+use crate::{App, InstallerDisk, KeyboardChoice};
+
+mod subids;
 
 /// Wire the installer callbacks.
 pub fn wire(ui: &App, _ctx: &AppContext) {
-    // Detect installer mode
-    if std::path::Path::new("/opt/yantrik/.installer-mode").exists() {
+    wire_rules(ui);
+
+    let installer_mode = std::path::Path::new("/opt/yantrik/.installer-mode").exists();
+    if installer_mode {
         ui.set_onboard_installer_mode(true);
-        tracing::info!("Installer mode detected — disk install UI enabled");
+        // Straight to the Welcome screen. The onboarding's four-second orb animation played
+        // here too, before a person who had come to install anything could do so.
+        ui.set_onboard_phase(step::WELCOME);
+        tracing::info!("Installer mode detected — the installer is screen 2");
+        prepare(ui);
     }
 
-    // Populate disk list for the UI
-    if std::path::Path::new("/opt/yantrik/.installer-mode").exists() {
-        let ui_weak_disks = ui.as_weak();
-        std::thread::spawn(move || {
-            let disks = detect_disks();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = ui_weak_disks.upgrade() {
-                    if let Some(d) = disks.get(0) {
-                        ui.set_onboard_disk_1_name(d.name.clone().into());
-                        ui.set_onboard_disk_1_size(d.size.clone().into());
-                        ui.set_onboard_disk_1_model(d.model.clone().into());
-                        // Auto-select first disk
-                        ui.set_onboard_selected_disk(d.name.clone().into());
-                    }
-                    if let Some(d) = disks.get(1) {
-                        ui.set_onboard_disk_2_name(d.name.clone().into());
-                        ui.set_onboard_disk_2_size(d.size.clone().into());
-                        ui.set_onboard_disk_2_model(d.model.clone().into());
-                    }
-                    if let Some(d) = disks.get(2) {
-                        ui.set_onboard_disk_3_name(d.name.clone().into());
-                        ui.set_onboard_disk_3_size(d.size.clone().into());
-                        ui.set_onboard_disk_3_model(d.model.clone().into());
-                    }
-                }
-            });
-        });
-    }
+    // The person picked a layout on the Welcome screen.
+    ui.on_onboard_keyboard_chosen(|layout| {
+        let layout = layout.to_string();
+        std::thread::spawn(move || installer_locale::apply_to_live_session(&layout));
+    });
 
-    // Handle install-to-disk callback from onboarding UI
+    // Handle install-to-disk callback from the installer screens and the control surface
     let ui_weak = ui.as_weak();
-    ui.on_onboard_install_to_disk(move |username, password, full_name, hostname, companion_name, target_disk| {
+    ui.on_onboard_install_to_disk(move |username, password, full_name, hostname, keyboard, timezone, target_disk, encrypt| {
         let username = username.to_string();
         let password = password.to_string();
         let full_name = full_name.to_string();
         let hostname = hostname.to_string();
-        let companion_name = companion_name.to_string();
+        let keyboard = keyboard.to_string();
+        let timezone = timezone.to_string();
         let target_disk = target_disk.to_string();
         let weak = ui_weak.clone();
+        // Read here, on the UI thread: the disk whose macOS the person agreed to erase, if any.
+        let erase_macos_disk = ui_weak
+            .upgrade()
+            .map(|ui| ui.get_onboard_erase_macos_disk().to_string())
+            .unwrap_or_default();
+        // And how: erasing a disk, or beside what is on one (wire/installer_partition.rs) with
+        // which partition, the table it was chosen from, and whether the firmware should start
+        // Yantrik first. A shell that cannot be read says nothing, and that refuses rather than
+        // erases: beside, with no target.
+        let (mode, install_into, table_fingerprint, boot_first) = match ui_weak.upgrade() {
+            Some(ui) if !ui.get_onboard_into_partition() => (InstallMode::Erase, String::new(), String::new(), false),
+            Some(ui) => {
+                let target = ui.get_onboard_install_target().to_string();
+                let disk = yantrik_install_target::parse_target_id(&target).map(|(d, _)| d).unwrap_or_default();
+                let fp = installer_partition::fingerprint_for(&ui.get_onboard_table_fingerprints(), &disk);
+                (InstallMode::Beside, target, fp, ui.get_onboard_boot_first())
+            }
+            None => (InstallMode::Beside, String::new(), String::new(), false),
+        };
 
         std::thread::spawn(move || {
             tracing::info!(
                 username = %username,
                 target_disk = %target_disk,
                 hostname = %hostname,
+                keyboard = %keyboard,
+                timezone = %timezone,
+                encrypt,
                 "Installer thread started"
             );
 
@@ -77,24 +93,21 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
                 });
             }
 
-            // The AI pages save whatever the person picked as the primary provider the
-            // moment they pick it (wire::ai_onboarding::save_primary), and that store is
-            // the only record of the choice — this callback is handed the identity fields
-            // but no AI ones. The installer used to start with an empty ai_provider, so
-            // configure_ai skipped the AI section and the installed config.yaml kept the
-            // image's default endpoint, which nothing serves on a machine built without
-            // --with-llm: the wizard's choice never reached the installed system.
+            // The installer no longer asks about AI — that is first-boot setup now (#400) —
+            // but a person who tried the live desktop first may have chosen a provider there,
+            // and wire::ai_onboarding::save_primary keeps that choice in this store. Carried
+            // over when present, so a key typed in the live session is not typed twice.
             let wizard = ProviderStore::load().primary().cloned();
-            let (ai_provider, ai_base_url, ai_api_key) = match wizard {
-                Some(p) => (p.provider_type, p.base_url, p.api_key.unwrap_or_default()),
-                None => (String::new(), String::new(), String::new()),
+            let (ai_provider, ai_base_url, ai_api_key, ai_model) = match wizard {
+                Some(p) => (p.provider_type, p.base_url, p.api_key.unwrap_or_default(), p.model),
+                None => (String::new(), String::new(), String::new(), String::new()),
             };
             // The endpoint is not a secret; the key is, so only its presence is logged.
             tracing::info!(
                 ai_provider = %ai_provider,
                 ai_endpoint = %ai_base_url,
                 has_key = !ai_api_key.is_empty(),
-                "Installer: AI choice carried over from the wizard"
+                "Installer: AI choice carried over from the live session"
             );
 
             let state = InstallerState {
@@ -104,11 +117,20 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
                 hostname,
                 language: String::new(),
                 locale: String::new(),
+                keyboard,
+                timezone,
                 target_disk: target_disk.clone(),
+                erase_macos_disk,
+                mode,
+                install_into,
+                table_fingerprint,
+                boot_first,
+                encrypt,
                 partition_scheme: "auto".into(),
                 ai_provider,
                 ai_base_url,
                 ai_api_key,
+                ai_model,
             };
 
             let weak2 = weak.clone();
@@ -133,20 +155,29 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
                     // every retry was refused as "already running".
                     ui.set_onboard_installing(false);
                     match result {
-                        Ok(()) => {
-                            ui.set_onboard_install_status("Installation complete!".into());
+                        Ok(note) => {
+                            // A note holds the Installed screen's restart and is shown there:
+                            // the machine is safe, and the person has one thing to do.
+                            let note = note.unwrap_or_default();
+                            let status = if note.is_empty() {
+                                "Installation complete!".to_string()
+                            } else {
+                                format!("Installation complete. {note}")
+                            };
+                            ui.set_onboard_install_note(note.into());
+                            ui.set_onboard_install_status(status.into());
                             ui.set_onboard_install_progress(100);
-                            // Phase 12 (complete) is shown automatically by the UI
-                            // when install-progress reaches 100
+                            // The installed step (and its restart countdown) is shown by the
+                            // screen when install-progress reaches 100.
                         }
                         Err(e) => {
                             tracing::error!(error = %e, "Installation failed");
                             ui.set_onboard_install_status(format!("Installation failed: {e}").into());
                             ui.set_onboard_install_error(format!("Installation failed: {e}").into());
-                            // Back to the summary, where the error is displayed and the Install
+                            // Back to Review, where the error is displayed and the Install
                             // button lives. The progress screen has no way off it, so failing
                             // there left the machine staring at a stalled bar.
-                            ui.set_onboard_phase(10);
+                            ui.set_onboard_phase(step::REVIEW);
                         }
                     }
                 }
@@ -167,6 +198,105 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
     });
 }
 
+/// The installer's rules, handed to its screens. One set, in installer_rules.rs, so the field
+/// that turns amber, the Next button that stays disabled and the control surface's
+/// `blocked_by` cannot disagree.
+fn wire_rules(ui: &App) {
+    let problem = |p: Option<String>| p.unwrap_or_default().into();
+    ui.on_installer_derive_username(|name| installer_rules::derive_username(&name).into());
+    ui.on_installer_hostname_for(|username| installer_rules::hostname_for(&username).into());
+    ui.on_installer_check_full_name(move |name| problem(installer_rules::full_name_problem(&name)));
+    ui.on_installer_check_username(move |u| problem(installer_rules::username_problem(&u)));
+    ui.on_installer_check_hostname(move |h| problem(installer_rules::hostname_problem(&h)));
+    ui.on_installer_check_password(move |pw, confirm| {
+        problem(installer_rules::password_problem(&pw, &confirm))
+    });
+    ui.on_installer_check_timezone(move |tz| {
+        problem(installer_rules::timezone_problem(&tz, std::path::Path::new("/usr/share/zoneinfo")))
+    });
+    ui.on_installer_is_macos_disk(|disk, list| installer_rules::disk_in_list(&disk, &list));
+    ui.on_installer_target_listed(|target, list| installer_rules::disk_in_list(&target, &list));
+}
+
+/// What the installer finds before anyone asks: the disks, the keyboard in use, and where the
+/// machine is. Each on its own worker, because two of them wait on other programs and one on
+/// the network, and the Welcome screen should not.
+fn prepare(ui: &App) {
+    // Keyboard: the list at once, with the detected layout chosen.
+    let detected = installer_locale::detect_layout();
+    let choices: Vec<KeyboardChoice> = installer_rules::layout_choices(&detected)
+        .into_iter()
+        .map(|(code, label)| KeyboardChoice { code: code.into(), label: label.into() })
+        .collect();
+    ui.set_onboard_keyboards(ModelRc::new(VecModel::from(choices)));
+    ui.set_onboard_keyboard(detected.clone().into());
+    tracing::info!(layout = %detected, "Installer: keyboard layout detected");
+
+    // Disks, and what the installer itself runs from, for the Installed screen's last word.
+    let weak = ui.as_weak();
+    std::thread::spawn(move || {
+        let disks = detect_disks();
+        let live = live_disk();
+        let medium = crate::installer_medium::medium(
+            live.as_deref(),
+            live.as_deref().is_some_and(|d| disk_is_external(&format!("/dev/{d}"))),
+        );
+        tracing::info!(?medium, live = ?live, "Installer: running from");
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            ui.set_onboard_install_media_hint(crate::installer_medium::finish_hint(medium).into());
+            // A disk is preselected only when there is nothing to guess: exactly one internal
+            // disk without macOS that the installer is not running from (on the machine most
+            // people install on there is one). Never a USB or removable disk, which may be a
+            // backup (installer_rules::default_disk); the person chooses those.
+            if let Some(first) = preselect(&disks) {
+                if ui.get_onboard_selected_disk().is_empty() {
+                    ui.set_onboard_selected_disk(first.name.clone().into());
+                }
+            }
+            let macos: Vec<&str> =
+                disks.iter().filter(|d| d.holds_macos).map(|d| d.name.as_str()).collect();
+            ui.set_onboard_macos_disks(macos.join(" ").into());
+            let rows: Vec<InstallerDisk> = disks
+                .iter()
+                .map(|d| InstallerDisk {
+                    name: d.name.clone().into(),
+                    size: d.size.clone().into(),
+                    model: d.model.clone().into(),
+                    contents: d.contents.clone().into(),
+                    has_data: d.has_data,
+                    holds_macos: d.holds_macos,
+                })
+                .collect();
+            ui.set_onboard_disks(ModelRc::new(VecModel::from(rows)));
+            ui.set_onboard_disks_scanned(true);
+        });
+    });
+
+    // Partitions and free space on every disk with a GPT, for installing beside what is there.
+    let weak = ui.as_weak();
+    std::thread::spawn(move || {
+        let scan = installer_partition::scan();
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            installer_partition::show(&ui, &scan);
+        });
+    });
+
+    // Timezone.
+    let weak = ui.as_weak();
+    std::thread::spawn(move || {
+        let zone = installer_locale::detect_timezone();
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            // Not over one the person (or an agent) already typed.
+            if ui.get_onboard_timezone().is_empty() {
+                ui.set_onboard_timezone(zone.into());
+            }
+        });
+    });
+}
+
 /// Shared installer state collected across onboarding callbacks.
 #[derive(Debug, Clone, Default)]
 pub struct InstallerState {
@@ -176,30 +306,88 @@ pub struct InstallerState {
     pub full_name: String,
     pub password: String,
     pub hostname: String,
+    /// XKB layout chosen on the Welcome screen, e.g. "de". Empty means US.
+    pub keyboard: String,
+    /// IANA zone from the Review screen, e.g. "Europe/Berlin". Empty means UTC.
+    pub timezone: String,
     pub target_disk: String,      // e.g. "sda"
+    /// The disk the person confirmed may be erased although it holds macOS. Empty: none.
+    pub erase_macos_disk: String,
+    /// Erase `target_disk`, or install beside what is on a disk into `install_into`. Carried
+    /// as itself, so an empty target can never read as "erase a disk".
+    pub mode: InstallMode,
+    /// In `InstallMode::Beside`: this partition (`sda3`) or free space (`sda@START-END`); nothing
+    /// else on the disk changes (wire/installer_partition.rs). Empty there is refused.
+    pub install_into: String,
+    /// The fingerprint of the table `install_into` was chosen from; the install is refused
+    /// when the disk no longer matches it.
+    pub table_fingerprint: String,
+    /// Installed into a partition on a UEFI machine that is not a Mac: put Yantrik first in the
+    /// firmware's boot order. Off unless asked for.
+    pub boot_first: bool,
+    /// LUKS2 on the root with the password as its passphrase (#400 step b).
+    pub encrypt: bool,
     pub partition_scheme: String,  // "auto" or "manual"
     pub ai_provider: String,
     /// The endpoint the wizard saved for the provider. Empty means nobody chose
     /// one, and the provider's well-known URL is used if a provider is set.
     pub ai_base_url: String,
     pub ai_api_key: String,
+    /// The model picked from the provider's own list in the live session.
+    /// Empty means none was picked, and the catalogue's default is used.
+    pub ai_model: String,
+}
+
+/// How the person chose to install.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InstallMode {
+    /// Erase `target_disk`, or, when none was named, the disk the Disk screen would offer.
+    #[default]
+    Erase,
+    /// Into `install_into`, beside what is on its disk. Nothing is erased, and no other disk is
+    /// ever looked for in its place.
+    Beside,
 }
 
 /// Progress callback: (percent 0-100, status message).
 type ProgressFn = Box<dyn Fn(i32, &str) + Send>;
 
 /// Run the full installation. Blocks the calling thread.
-pub fn run_install(state: &InstallerState, progress: ProgressFn) -> Result<(), String> {
+///
+/// `Ok(Some(note))` is an installed machine with something the person must read: today, that
+/// the updater could not secure /opt/yantrik and the installer locked it down instead
+/// (installer_ownership.rs).
+pub fn run_install(state: &InstallerState, progress: ProgressFn) -> Result<Option<String>, String> {
     progress(1, "Detecting target disk...");
 
-    tracing::info!(target_disk = %state.target_disk, "Installer: starting, target_disk from UI");
+    tracing::info!(
+        mode = ?state.mode, target_disk = %state.target_disk, install_into = %state.install_into,
+        "Installer: starting, target from UI"
+    );
 
-    let disk_name = if state.target_disk.is_empty() {
-        tracing::info!("Installer: no disk selected, auto-detecting...");
-        auto_detect_disk()?
-    } else {
-        state.target_disk.clone()
-    };
+    // Into one partition or free space: nothing else on the disk is touched, so there is no
+    // disk to erase and nothing about macOS to confirm. The planner refuses every partition it
+    // must keep, and a table that changed since the person saw it. With no target there is
+    // nothing to do: never the erase below, and never a disk found in its place.
+    if state.mode == InstallMode::Beside {
+        if let Some(why) = beside_problem(state) {
+            return Err(why);
+        }
+        let (disk_name, _) = yantrik_install_target::parse_target_id(&state.install_into)?;
+        let disk = format!("/dev/{disk_name}");
+        let layout = installer_partition::prepare(
+            &state.install_into,
+            &state.table_fingerprint,
+            state.encrypt,
+            &state.password,
+            &*progress,
+        )?;
+        return install_onto(state, &disk, layout, true, progress);
+    }
+
+    // Erasing takes the disk the person chose, and only that one. There is no disk found in its
+    // place: an install that erases what nobody named is the one this installer must never do.
+    let disk_name = erase_target(state)?;
     let disk = format!("/dev/{}", disk_name);
 
     tracing::info!(disk = %disk, "Installer: will use disk");
@@ -212,64 +400,62 @@ pub fn run_install(state: &InstallerState, progress: ProgressFn) -> Result<(), S
 
     tracing::info!(disk = %disk, "Installer: target disk resolved");
 
+    // A Mac's system disk is erased only on a confirmation that names it, however the install
+    // was asked for: the screens, the control surface, or anything that went round both. Read
+    // off the disk itself, now, not off a listing made minutes ago.
+    if disk_holds_macos(&disk) {
+        if let Some(why) = installer_rules::disk_problem(&disk_name, &disk_name, &state.erase_macos_disk) {
+            return Err(why);
+        }
+        tracing::warn!(disk = %disk, "Installer: erasing a disk that holds macOS, as confirmed");
+    }
+
     // Detect boot mode: EFI if /sys/firmware/efi exists, BIOS otherwise
     let is_efi = std::path::Path::new("/sys/firmware/efi").exists();
     tracing::info!(efi = is_efi, "Installer: boot mode detected");
 
-    // ── Step 1: Partition disk ────────────────────────────────────
-    progress(2, "Partitioning disk...");
-    run_cmd("parted", &["-s", &disk, "mklabel", "gpt"])?;
+    // ── Steps 1-3: partition, encrypt if asked, format, mount (installer_disk.rs) ──
+    let layout = installer_disk::prepare(&disk, is_efi, state.encrypt, &state.password, &*progress)?;
+    install_onto(state, &disk, layout, is_efi, progress)
+}
 
-    let (efi_part, root_part) = if is_efi {
-        // GPT + EFI: partition 1 = EFI (512M), partition 2 = root
-        run_cmd("parted", &["-s", &disk, "mkpart", "EFI", "fat32", "1MiB", "513MiB"])?;
-        run_cmd("parted", &["-s", &disk, "set", "1", "esp", "on"])?;
-        run_cmd("parted", &["-s", &disk, "mkpart", "root", "ext4", "513MiB", "100%"])?;
-        partition_names(&disk, 1, 2)
-    } else {
-        // GPT + BIOS: partition 1 = BIOS boot (1M), partition 2 = root (no EFI)
-        run_cmd("parted", &["-s", &disk, "mkpart", "biosboot", "", "1MiB", "2MiB"])?;
-        run_cmd("parted", &["-s", &disk, "set", "1", "bios_grub", "on"])?;
-        run_cmd("parted", &["-s", &disk, "mkpart", "root", "ext4", "2MiB", "100%"])?;
-        // No EFI partition in BIOS mode
-        (String::new(), partition_name(&disk, 2))
-    };
-    progress(8, "Disk partitioned");
-
-    // Wait for partition devices to appear
-    let _ = run_cmd("partprobe", &[&disk]);
-    std::thread::sleep(std::time::Duration::from_secs(2));
-
-    if !std::path::Path::new(&root_part).exists() {
-        let _ = run_cmd("udevadm", &["settle", "--timeout=5"]);
-        std::thread::sleep(std::time::Duration::from_secs(1));
+/// Why an install beside what is on a disk cannot start: no target, or no table to check it
+/// against. Nothing has been written when this answers.
+fn beside_problem(state: &InstallerState) -> Option<String> {
+    if state.install_into.trim().is_empty() {
+        return Some(
+            "installing beside what is on a disk was chosen, but no partition or free space was; nothing was \
+             written, and no disk is erased in its place"
+                .into(),
+        );
     }
-
-    // ── Step 2: Format filesystems ──────────────────────────────
-    if is_efi && !efi_part.is_empty() {
-        progress(10, "Formatting EFI partition (FAT32)...");
-        run_cmd("mkfs.fat", &["-F32", &efi_part])?;
+    if state.table_fingerprint.trim().is_empty() {
+        return Some(format!(
+            "{} was never scanned, so there is nothing to check its disk against; nothing was written",
+            state.install_into
+        ));
     }
+    None
+}
 
-    progress(12, "Formatting root partition (ext4)...");
-    run_cmd("mkfs.ext4", &["-q", "-L", "YANTRIK", &root_part])?;
-    progress(15, "Filesystems formatted");
-
-    // ── Step 3: Mount target ────────────────────────────────────
+/// Mount the prepared layout, install onto it, and unmount whatever happened.
+fn install_onto(
+    state: &InstallerState,
+    disk: &str,
+    layout: installer_disk::Layout,
+    is_efi: bool,
+    progress: ProgressFn,
+) -> Result<Option<String>, String> {
     let mount_dir = "/mnt/yantrik-install";
     progress(16, "Mounting target filesystem...");
-    run_cmd("mkdir", &["-p", mount_dir])?;
-    run_cmd("mount", &[&root_part, mount_dir])?;
-
-    if is_efi && !efi_part.is_empty() {
-        let efi_mount = format!("{mount_dir}/boot/efi");
-        run_cmd("mkdir", &["-p", &efi_mount])?;
-        run_cmd("mount", &[&efi_part, &efi_mount])?;
+    if let Err(e) = installer_disk::mount(&layout, mount_dir) {
+        installer_disk::release(&layout, mount_dir);
+        return Err(e);
     }
     progress(18, "Target mounted");
 
     // From here, ensure we clean up on failure
-    let result = install_to_target(state, &disk, &efi_part, is_efi, mount_dir, &progress);
+    let result = install_to_target(state, &disk, &layout, is_efi, mount_dir, &progress);
 
     // ── Cleanup: unmount everything (lazy to avoid "device busy") ──
     // Kill any processes still using the mount
@@ -280,11 +466,8 @@ pub fn run_install(state: &InstallerState, progress: ProgressFn) -> Result<(), S
     let _ = run_cmd("umount", &["-Rl", &format!("{mount_dir}/sys")]);
     let _ = run_cmd("umount", &["-Rl", &format!("{mount_dir}/proc")]);
     let _ = run_cmd("umount", &["-Rl", &format!("{mount_dir}/dev")]);
-    let _ = run_cmd("umount", &["-l", &format!("{mount_dir}/boot/efi")]);
-    let _ = run_cmd("umount", &["-l", mount_dir]);
-
-    // Sync to flush writes
-    let _ = run_cmd("sync", &[]);
+    // /boot/efi, /boot and the root, then the encrypted root closed.
+    installer_disk::release(&layout, mount_dir);
 
     result
 }
@@ -293,22 +476,19 @@ pub fn run_install(state: &InstallerState, progress: ProgressFn) -> Result<(), S
 fn install_to_target(
     state: &InstallerState,
     disk: &str,
-    efi_part: &str,
+    layout: &installer_disk::Layout,
     is_efi: bool,
     mount_dir: &str,
     progress: &ProgressFn,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     // ── Step 4: Copy live system via rsync ──────────────────────
     copy_system(mount_dir, progress)?;
     progress(55, "System files copied");
 
     // ── Step 5: Generate fstab ──────────────────────────────────
     progress(58, "Configuring filesystem table...");
-    let mut fstab = format!("LABEL=YANTRIK  /           ext4  defaults,noatime  0  1\n");
-    if is_efi && !efi_part.is_empty() {
-        fstab.push_str(&format!("{efi_part}     /boot/efi   vfat  defaults          0  2\n"));
-    }
-    sudo_write(&format!("{mount_dir}/etc/fstab"), &fstab)?;
+    // fstab, and for an encrypted root its crypttab and the initramfs settings that ask for it.
+    installer_disk::write_system_files(layout, mount_dir)?;
 
     // ── Step 6: Set hostname ────────────────────────────────────
     progress(60, "Setting hostname...");
@@ -322,6 +502,15 @@ fn install_to_target(
         &format!("{mount_dir}/etc/hosts"),
         &format!("127.0.0.1\tlocalhost\n127.0.1.1\t{hostname}\n"),
     )?;
+
+    // The clock, from the Review screen. Written here rather than left to the desktop's own
+    // geolocation, which only fills a machine still at UTC and only after the first login.
+    progress(61, "Setting the timezone...");
+    let zone = installer_locale::configure_target_timezone(
+        mount_dir,
+        if state.timezone.is_empty() { installer_locale::FALLBACK_TIMEZONE } else { &state.timezone },
+    )?;
+    tracing::info!(timezone = %zone, "Installer: timezone set");
 
     // ── Step 7: Bind-mount for chroot (needed BEFORE any chroot commands) ──
     progress(62, "Preparing chroot environment...");
@@ -344,6 +533,25 @@ fn install_to_target(
     // ── Step 8: Create user account ─────────────────────────────
     progress(65, "Creating user account...");
     create_user(mount_dir, state)?;
+    // Encrypted, the disk's password is this account's: typed once at boot, it signs them in
+    // (installer_unlock.rs). Only once the password is set, since what is enrolled is its digest.
+    if layout.encrypted() && !state.password.is_empty() {
+        installer_unlock::enrol(mount_dir, if state.username.is_empty() { "yantrik" } else { &state.username });
+    }
+
+    // The OS's own code is root's on an installed machine (#397): the shell, the updater and every
+    // binary used to belong to the desktop's user, so anything running as them could replace the
+    // OS. The updater moves the copied tree over and puts its narrow sudo rule in place; the
+    // desktop's user keeps logs/, data/ and config.yaml. The live image's blanket rule is removed
+    // and the result checked whatever the updater says; when it is not right the installer locks
+    // the tree down itself (and says so when the updater failed), and when that fails too the
+    // install does, before the bootloader (security reviews of #614 and #616, 4 October 2026: it
+    // used to warn and carry on, leaving the blanket rule and a tree the person could write).
+    let owner = if state.username.is_empty() { "yantrik" } else { &state.username };
+    let ownership_note = installer_ownership::secure_target(mount_dir, owner)?;
+    if let Some(note) = &ownership_note {
+        progress(66, note);
+    }
 
     // ── Step 9: Set locale ──────────────────────────────────────
     progress(68, "Configuring locale...");
@@ -364,6 +572,18 @@ fn install_to_target(
         &format!("LANG={locale}\n"),
     );
 
+    // The keyboard, from the Welcome screen: the console's here, the desktop's in the person's
+    // labwc environment (create_user). A failure costs the console its layout, not the install.
+    progress(69, "Configuring the keyboard...");
+    if let Err(e) = installer_locale::configure_target_keyboard(mount_dir, installed_layout(state)) {
+        // On an encrypted disk the layout is how the passphrase is read at every start; a wrong
+        // one is a disk nobody can open, so it fails the install rather than warning.
+        if layout.encrypted() {
+            return Err(format!("could not set the keyboard the disk's passphrase is typed on: {e}"));
+        }
+        tracing::warn!(error = %e, "Could not write the installed keyboard layout");
+    }
+
     // ── Step 10: Configure AI provider ───────────────────────────
     progress(70, "Configuring AI provider...");
     configure_ai(mount_dir, state);
@@ -376,69 +596,19 @@ fn install_to_target(
 
     // ── Step 12: Install GRUB ───────────────────────────────────
     progress(75, "Installing bootloader...");
-    if is_efi {
-        // Two installs, and both are needed.
-        //
-        // The first writes \EFI\yantrik and asks the firmware to remember it. The second writes
-        // \EFI\BOOT\BOOTX64.EFI, the removable-media path every UEFI implementation tries when
-        // it has no entry of its own.
-        //
-        // Only the first used to run, and with `--no-nvram` on it, so it left a disk with a
-        // bootloader in a directory nothing had been told to look in. The machine installed
-        // cleanly, reported 100%, rebooted, and came straight back up on the installation
-        // media — the firmware had no entry for the disk and no fallback file to find.
-        tracing::info!("Installer: installing GRUB for EFI");
-        let named = chroot_cmd(
-            mount_dir,
-            &[
-                "grub-install",
-                "--target=x86_64-efi",
-                "--efi-directory=/boot/efi",
-                "--bootloader-id=yantrik",
-            ],
-        );
-        if let Err(e) = named {
-            // Firmware that will not take a new entry is normal enough — a locked-down board,
-            // or efivars mounted read-only. It costs us the named entry, not the install,
-            // because the removable path below does not need NVRAM at all.
-            tracing::warn!(error = %e, "could not register a UEFI boot entry; the removable path will carry the boot");
-            chroot_cmd(
-                mount_dir,
-                &[
-                    "grub-install",
-                    "--target=x86_64-efi",
-                    "--efi-directory=/boot/efi",
-                    "--bootloader-id=yantrik",
-                    "--no-nvram",
-                ],
-            )?;
-        }
-
-        // This one is not optional and its failure is the install's failure.
-        chroot_cmd(
-            mount_dir,
-            &["grub-install", "--target=x86_64-efi", "--efi-directory=/boot/efi", "--removable"],
-        )?;
-
-        // Check the file, not the exit code. grub-install has been known to report success
-        // having written nothing useful, and "the installer said it worked" is exactly the
-        // claim that cost us a boot.
-        let fallback = format!("{mount_dir}/boot/efi/EFI/BOOT/BOOTX64.EFI");
-        if !std::path::Path::new(&fallback).exists() {
-            return Err(
-                "grub-install reported success but left no EFI/BOOT/BOOTX64.EFI on the \
-                 EFI partition; the disk would not boot"
-                    .to_string(),
-            );
-        }
-        tracing::info!("Installer: EFI fallback bootloader present");
+    // The shared-EFI-partition rules, the named grub-install and the \EFI\BOOT fallback are
+    // installer_boot.rs.
+    // A USB disk gets no NVRAM entry (it moves between ports and machines), and a Mac never does.
+    let boot_note = if is_efi {
+        installer_boot::install_efi(mount_dir, disk, layout, disk_is_external(disk), state.boot_first)?
     } else {
         tracing::info!("Installer: installing GRUB for BIOS on {disk}");
         chroot_cmd(
             mount_dir,
             &["grub-install", "--target=i386-pc", disk],
         )?;
-    }
+        None
+    };
 
     // Brand the installed system as Yantrik OS (so GRUB says "Yantrik OS" not "Debian")
     //
@@ -454,14 +624,31 @@ fn install_to_target(
         ),
     );
 
-    // Configure GRUB defaults
+    // Configure GRUB defaults. The kernel's line is installer_unlock's: the pre-boot screen on an
+    // encrypted install, and the quiet that keeps kernel lines off the password prompt.
     let _ = sudo_write(
         &format!("{mount_dir}/etc/default/grub"),
-        "GRUB_DEFAULT=0\nGRUB_TIMEOUT=3\nGRUB_DISTRIBUTOR=\"Yantrik OS\"\nGRUB_CMDLINE_LINUX_DEFAULT=\"quiet splash\"\nGRUB_CMDLINE_LINUX=\"console=tty1 console=ttyS0,115200\"\nGRUB_TERMINAL=\"console serial\"\nGRUB_SERIAL_COMMAND=\"serial --speed=115200\"\n",
+        &format!(
+            "GRUB_DEFAULT=0\nGRUB_TIMEOUT=3\nGRUB_DISTRIBUTOR=\"Yantrik OS\"\nGRUB_CMDLINE_LINUX_DEFAULT=\"{}\"\nGRUB_CMDLINE_LINUX=\"console=ttyS0,115200 console=tty1\"\nGRUB_TERMINAL=\"console serial\"\nGRUB_SERIAL_COMMAND=\"serial --speed=115200\"\n",
+            installer_unlock::cmdline_default(layout.encrypted())
+        ),
     );
 
     progress(85, "Updating GRUB configuration...");
+    // grub-mkconfig names the root by UUID only once udev has made its /dev/disk/by-uuid link,
+    // and falls back to root=/dev/sdX before that. Freshly formatted partitions may not have one
+    // yet, so wait for udev, then check what it wrote.
+    let _ = run_cmd("udevadm", &["settle"]);
+    // Beside macOS on a Mac, an entry that gets back to it.
+    installer_boot::write_macos_entry(mount_dir, layout);
     chroot_cmd(mount_dir, &["update-grub"])?;
+    let grub_cfg = run_cmd("cat", &[&format!("{mount_dir}/boot/grub/grub.cfg")])?;
+    if let Some(line) = installer_rules::root_by_device(&grub_cfg) {
+        return Err(format!(
+            "the boot menu names the root by its device, not its UUID, so the disk would not \
+             boot from another port: {line}"
+        ));
+    }
 
     // ── Step 13: Remove installer autostart from installed system ─
     progress(90, "Finalizing installed system...");
@@ -477,16 +664,27 @@ fn install_to_target(
     let marker = format!("{mount_dir}/opt/yantrik/.installer-mode");
     let _ = run_cmd("rm", &["-f", &marker]);
 
-    // Ensure log directory exists and is writable
-    let _ = run_cmd("mkdir", &["-p", &format!("{mount_dir}/opt/yantrik/logs")]);
-    let _ = run_cmd("chmod", &["777", &format!("{mount_dir}/opt/yantrik/logs")]);
+    // The session's log directory is set once, by secure_target after create_user: new, the
+    // person's and readable by them alone. It is not touched here. This step used to make it 0755
+    // again, so the log of what the person types to the companion was readable by every account,
+    // the mind's included, until the next update; and the host-side chmod and chown followed a
+    // logs/ that was a link (security review of #616, 4 October 2026).
 
-    // Regenerate initramfs without live-boot hooks
+    // Regenerate initramfs without live-boot hooks, and with the unlock when the root is
+    // encrypted. There a failure is the install's failure, and so is an image that came out
+    // without the unlock: the machine would stop at boot with nothing asking for the passphrase.
     progress(93, "Rebuilding initramfs...");
-    let _ = chroot_cmd(mount_dir, &["update-initramfs", "-u"]);
+    if layout.encrypted() {
+        chroot_cmd(mount_dir, &["update-initramfs", "-u", "-k", "all"])?;
+        installer_disk::verify_initramfs(mount_dir)?;
+    } else {
+        let _ = chroot_cmd(mount_dir, &["update-initramfs", "-u"]);
+    }
 
     progress(100, "Installation complete!");
-    Ok(())
+    // How it starts, beside macOS or another system's boot loader, is something to read too.
+    let notes: Vec<String> = ownership_note.into_iter().chain(boot_note).collect();
+    Ok((!notes.is_empty()).then(|| notes.join(" ")))
 }
 
 /// Create user account inside the chroot.
@@ -513,6 +711,10 @@ fn create_user(mount_dir: &str, state: &InstallerState) -> Result<(), String> {
             username,
         ],
     );
+
+    // Subordinate ids for rootless podman (#401). useradd normally gives the new account a range
+    // from the image's /etc/subuid, and the live user keeps the one the image gave it; checked.
+    subids::ensure(mount_dir, username);
 
     // Set password — use openssl to generate hash, then usermod to set it.
     // chpasswd inside chroot can fail silently with PAM issues.
@@ -579,7 +781,10 @@ if [ "$(tty)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
     fi
 
     # Crash guard
-    CRASH_FILE="/tmp/.yantrik-labwc-crash"
+    # The stamp lives in the home, not /tmp: any account can write a fresh one in /tmp, and a
+    # fresh one there is enough to keep this desktop from starting at all.
+    mkdir -p "$HOME/.cache"
+    CRASH_FILE="$HOME/.cache/yantrik-labwc-crash"
     if [ -f "$CRASH_FILE" ]; then
         LAST_CRASH=$(cat "$CRASH_FILE" 2>/dev/null || echo 0)
         NOW=$(date +%s)
@@ -614,10 +819,19 @@ fi
     let labwc_dir = format!("{dst_home}/.config/labwc");
     let _ = run_cmd("mkdir", &["-p", &labwc_dir]);
 
-    // YANTRIK_START_SCREEN=32 boots to the graphical login screen
+    // No YANTRIK_START_SCREEN: the shell starts an installed machine behind the session lock,
+    // asking for this password (#415). It used to name the login screen (32) here, which is drawn
+    // in the shell's own window, so an app window could sit over it; and this file is the
+    // user's, so anything running as them could name another start screen.
+    //
+    // XKB_DEFAULT_LAYOUT is the layout chosen on the Welcome screen: labwc reads it from this
+    // file, and it is what decides the keys at the lock screen where this password is asked.
     sudo_write(
         &format!("{labwc_dir}/environment"),
-        "WLR_RENDERER=pixman\nWLR_RENDERER_ALLOW_SOFTWARE=1\nXDG_SESSION_TYPE=wayland\nQT_QPA_PLATFORM=wayland\nMOZ_ENABLE_WAYLAND=1\nSLINT_BACKEND=winit\nLIBGL_ALWAYS_SOFTWARE=1\nYANTRIK_START_SCREEN=32\n",
+        &installer_rules::environment_with_layout(
+            "WLR_RENDERER=pixman\nWLR_RENDERER_ALLOW_SOFTWARE=1\nXDG_SESSION_TYPE=wayland\nQT_QPA_PLATFORM=wayland\nMOZ_ENABLE_WAYLAND=1\nSLINT_BACKEND=winit\nLIBGL_ALWAYS_SOFTWARE=1\n",
+            installed_layout(state),
+        ),
     )?;
 
     // No autostart or rc.xml here. `yantrik-session` installs the shipped ones from
@@ -625,10 +839,19 @@ fi
     // an installed machine drew the shell inside a window with a title bar and minimise, maximise
     // and close buttons, with none of the key bindings the real config carries.
 
-    // The person has just answered onboarding, in this installer. Without the marker the
-    // installed desktop opened on the same questions again, starting with their name.
+    // The installer asked only what installing needs (#400). What it used to ask on the way —
+    // interests, how to be reached, which AI — is the first boot's to offer, as optional setup.
+    // This marker says the account is done, so that setup opens on a welcome with Skip rather
+    // than asking for the person's name a second time. `.onboarding_complete` is deliberately
+    // not written: it would skip the setup altogether.
     let _ = run_cmd("mkdir", &["-p", &format!("{dst_home}/.yantrik")]);
-    sudo_write(&format!("{dst_home}/.yantrik/.onboarding_complete"), "done")?;
+    // Kept as `yantrik`, the account is the live user's copied home, which carries the live
+    // session's marker if someone finished or skipped the onboarding there.
+    let _ = run_cmd("rm", &["-f", &format!("{dst_home}/.yantrik/.onboarding_complete")]);
+    sudo_write(
+        &format!("{dst_home}/{}", crate::onboarding::AFTER_INSTALL_MARKER),
+        "installed\n",
+    )?;
 
     // Fix ownership of everything in home
     let _ = chroot_cmd(mount_dir, &["chown", "-R", &format!("{username}:{username}"), &format!("/home/{username}")]);
@@ -647,10 +870,7 @@ fi
     let _ = chroot_cmd(mount_dir, &["passwd", "-l", "root"]);
     let _ = run_cmd("sed", &["-i", "/^PermitRootLogin/d", &format!("{mount_dir}/etc/ssh/sshd_config.d/yantrik.conf")]);
 
-    // Passwordless sudo (needed for labwc/system operations)
-    let sudoers_file = format!("{mount_dir}/etc/sudoers.d/{username}");
-    let _ = sudo_write(&sudoers_file, &format!("{username} ALL=(ALL) NOPASSWD:ALL\n"));
-    let _ = run_cmd("chmod", &["0440", &sudoers_file]);
+    // /opt/yantrik is made root's right after this returns (installer_ownership.rs, #397).
 
     // Autologin to start labwc + yantrik-ui automatically (no TTY shown to user).
     // Yantrik UI shows its own graphical login screen (screen 32) for authentication.
@@ -718,6 +938,16 @@ fn configure_ai(mount_dir: &str, state: &InstallerState) {
         &format!("/home/{username}/.config/yantrik")]);
 }
 
+/// The layout to install: the chosen one if it is a layout at all, US otherwise. Checked here
+/// as well as on the screen because it is written into a file the session sources.
+fn installed_layout(state: &InstallerState) -> &str {
+    if installer_rules::is_plausible_layout(&state.keyboard) {
+        &state.keyboard
+    } else {
+        installer_rules::DEFAULT_LAYOUT
+    }
+}
+
 /// Whose name the installed system should show: the full name if one was given,
 /// the username if not, and a neutral fallback after that.
 fn installed_display_name(state: &InstallerState) -> &str {
@@ -748,16 +978,22 @@ fn installed_config_yaml(content: &str, state: &InstallerState) -> String {
         out.insert_str(0, &format!("user_name: \"{display_name}\"\n"));
     }
 
-    if !state.ai_provider.is_empty() {
-        let base_url = if !state.ai_base_url.is_empty() {
-            state.ai_base_url.as_str()
-        } else {
-            provider_base_url(&state.ai_provider)
-        };
+    let base_url = if !state.ai_base_url.is_empty() {
+        state.ai_base_url.as_str()
+    } else {
+        provider_preset(&state.ai_provider).1
+    };
+    // No endpoint (no provider chosen, or one the catalogue does not know
+    // with none saved) leaves the image's default in place.
+    if !state.ai_provider.is_empty() && !base_url.is_empty() {
         // The wizard does not ask for a model — the AI pages pick a provider and
         // a key, and Settings offers the model list later — so the provider's
         // default is what the installed system starts on.
-        let model = provider_default_model(&state.ai_provider);
+        let model = if state.ai_model.is_empty() {
+            default_model_for(&state.ai_provider)
+        } else {
+            state.ai_model.as_str()
+        };
         replace_yaml_line(&mut out, "api_base_url:", &format!("api_base_url: \"{base_url}\""));
         replace_yaml_line(&mut out, "api_model:", &format!("api_model: \"{model}\""));
     }
@@ -800,131 +1036,108 @@ fn installed_providers_yaml(state: &InstallerState) -> Option<String> {
         auth_type: auth_type_for(&state.ai_provider).to_string(),
         is_primary: true,
         is_fallback: false,
+        model: state.ai_model.clone(),
     };
     let store = ProviderStore { entries: vec![entry] };
     serde_yaml::to_string(&store).ok()
 }
 
-/// Resolve provider name to default API base URL.
-fn provider_base_url(provider: &str) -> &'static str {
-    match provider {
-        "ollama" => "http://localhost:11434/v1",
-        "openai" => "https://api.openai.com/v1",
-        "anthropic" | "claude" => "https://api.anthropic.com/v1",
-        "google" | "gemini" => "https://generativelanguage.googleapis.com/v1beta/openai",
-        "deepseek" => "https://api.deepseek.com/v1",
-        "groq" => "https://api.groq.com/openai/v1",
-        "mistral" => "https://api.mistral.ai/v1",
-        "xai" | "grok" => "https://api.x.ai/v1",
-        "perplexity" => "https://api.perplexity.ai",
-        "cerebras" => "https://api.cerebras.ai/v1",
-        "sambanova" => "https://api.sambanova.ai/v1",
-        "openrouter" => "https://openrouter.ai/api/v1",
-        "together" => "https://api.together.xyz/v1",
-        "fireworks" => "https://api.fireworks.ai/inference/v1",
-        "huggingface" => "https://api-inference.huggingface.co/v1",
-        "nanogpt" => "https://api.nano-gpt.com/v1",
-        "qwen" => "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "minimax" => "https://api.minimax.chat/v1",
-        "kimi" | "moonshot" => "https://api.moonshot.cn/v1",
-        "baidu" => "https://qianfan.baidubce.com/v2",
-        "zhipu" => "https://open.bigmodel.cn/api/paas/v4",
-        _ => "http://localhost:11434/v1",
+/// The disk an erase writes: the one named in `state.target_disk`, or a refusal when none is.
+///
+/// There used to be a fallback here that found a disk when none was named: first "any disk that
+/// is not the live media", which on a Mac is the internal disk with macOS on it, then the Disk
+/// screen's preselection. Neither is a choice the person made, so neither erases anything. The
+/// screen preselects for the person to see; the install takes only what reaches it.
+fn erase_target(state: &InstallerState) -> Result<String, String> {
+    let name = state.target_disk.trim().trim_start_matches("/dev/");
+    if name.is_empty() {
+        return Err("no disk was chosen to erase; nothing was written. Choose one on the Disk screen.".into());
     }
+    Ok(name.to_string())
 }
 
-/// Resolve provider name to a reasonable default model.
-fn provider_default_model(provider: &str) -> &'static str {
-    match provider {
-        "ollama" => "nemotron-3-nano:4b",
-        "openai" => "gpt-4o-mini",
-        "anthropic" | "claude" => "claude-sonnet-4-20250514",
-        "google" | "gemini" => "gemini-2.0-flash",
-        "deepseek" => "deepseek-chat",
-        "groq" => "llama-3.3-70b-versatile",
-        "mistral" => "mistral-small-latest",
-        "xai" | "grok" => "grok-2-latest",
-        "perplexity" => "sonar",
-        "cerebras" => "llama-3.3-70b",
-        "sambanova" => "Meta-Llama-3.3-70B-Instruct",
-        "openrouter" => "meta-llama/llama-3.3-70b-instruct",
-        "together" => "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-        "fireworks" => "accounts/fireworks/models/llama-v3p3-70b-instruct",
-        "huggingface" => "meta-llama/Llama-3.3-70B-Instruct",
-        "qwen" => "qwen-plus",
-        "minimax" => "MiniMax-Text-01",
-        "kimi" | "moonshot" => "moonshot-v1-8k",
-        _ => "auto",
-    }
+/// The disk chosen for erasing before anyone chooses (installer_rules::default_disk over the
+/// listing): the one internal disk without macOS that the installer is not running from, or
+/// none. Never a USB or removable disk.
+pub(crate) fn preselect(disks: &[DiskInfo]) -> Option<&DiskInfo> {
+    let weighed: Vec<installer_rules::EraseCandidate> = disks
+        .iter()
+        .map(|d| installer_rules::EraseCandidate {
+            name: d.name.as_str(),
+            holds_macos: d.holds_macos,
+            external: d.external,
+            runs_installer: d.runs_installer,
+        })
+        .collect();
+    let name = installer_rules::default_disk(&weighed)?;
+    disks.iter().find(|d| d.name == name)
 }
 
-/// Auto-detect the installation target disk.
-/// Picks the first non-removable, non-CD block device (excludes loop, sr, fd).
-fn auto_detect_disk() -> Result<String, String> {
-    let output = Command::new("lsblk")
-        .args(["-dn", "-o", "NAME,TYPE,RO,RM", "-e", "7,11"])
+/// The disk `/run/live/medium` is on, the one the installer runs from; `None` when nothing is
+/// mounted there or it cannot be told.
+fn live_disk() -> Option<String> {
+    let run = |cmd: &str, args: &[&str]| {
+        Command::new(cmd)
+            .args(args)
+            .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let source = run("findmnt", &["-n", "-o", "SOURCE", "/run/live/medium"])?;
+    let parent = run("lsblk", &["-no", "PKNAME", &source]).and_then(|p| p.lines().next().map(str::to_string));
+    Some(parent.unwrap_or_else(|| source.trim_start_matches("/dev/").to_string()))
+}
+
+/// Whether `/dev/<disk>` holds macOS, asked of the disk now: by its partitions' GPT types and
+/// `blkid -p` (crates/yantrik-install-target's classify), and by lsblk's FSTYPE as well. A disk
+/// that cannot be read holds macOS unless it is blank (installer_partition::holds_macos).
+fn disk_holds_macos(disk: &str) -> bool {
+    let by_lsblk = Command::new("lsblk")
+        .args(["-nro", "FSTYPE", disk])
         .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         .output()
-        .map_err(|e| format!("lsblk failed: {e}"))?;
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .any(|l| installer_rules::is_macos_fstype(l.trim()))
+        })
+        .unwrap_or(false);
+    by_lsblk || installer_partition::holds_macos(disk)
+}
 
-    let text = String::from_utf8_lossy(&output.stdout);
-    for line in text.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 4 { continue; }
-        let name = parts[0];
-        let dtype = parts[1];
-        let ro = parts[2];
-        let rm = parts[3];
-
-        // Only disk type, not read-only, not removable
-        if dtype != "disk" { continue; }
-        if ro == "1" || rm == "1" { continue; }
-        // Skip loop, sr (CD), fd (floppy)
-        if name.starts_with("loop") || name.starts_with("sr") || name.starts_with("fd") {
-            continue;
-        }
-
-        tracing::info!(disk = name, "Installer: auto-detected target disk");
-        return Ok(name.to_string());
-    }
-
-    // Fallback: try any disk that's not the live media
-    // Live media is usually sr0 or the device mounted at /run/live/medium
-    let fallback = Command::new("lsblk")
-        .args(["-dn", "-o", "NAME", "-e", "7,11"])
+/// Whether `/dev/<disk>` is on USB or marked removable: a disk that may be plugged in anywhere.
+/// An lsblk that fails, or answers nothing, counts as external: it is then never preselected
+/// for erasing, and gets no NVRAM entry.
+fn disk_is_external(disk: &str) -> bool {
+    let answer = Command::new("lsblk")
+        .args(["-dno", "TRAN,RM", disk])
         .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         .output()
-        .map_err(|e| format!("lsblk fallback: {e}"))?;
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    answer.as_deref().map_or(true, external_from_lsblk)
+}
 
-    let text = String::from_utf8_lossy(&fallback.stdout);
-    for line in text.lines() {
-        let name = line.trim();
-        if name.is_empty() || name.starts_with("sr") || name.starts_with("loop") || name.starts_with("fd") {
-            continue;
-        }
-        tracing::info!(disk = name, "Installer: fallback disk detected");
-        return Ok(name.to_string());
+/// `lsblk -dno TRAN,RM` for one disk: `usb 0`, `sata 0`, `nvme 0`, or just `1` when the
+/// transport is unknown and the column is blank. Anything else is no answer, and external.
+fn external_from_lsblk(out: &str) -> bool {
+    let words: Vec<&str> = out.split_whitespace().collect();
+    match words.as_slice() {
+        ["usb", ..] => true,
+        [_, rm] => *rm != "0",
+        [rm] => *rm != "0",
+        _ => true,
     }
-
-    Err("No suitable disk found. Ensure a hard disk is attached.".into())
 }
 
 /// Get a single partition device name by number.
-fn partition_name(disk: &str, num: u8) -> String {
-    if disk.contains("nvme") || disk.contains("mmcblk") {
-        format!("{disk}p{num}")
-    } else {
-        format!("{disk}{num}")
-    }
-}
-
-/// Get two partition device names.
-fn partition_names(disk: &str, n1: u8, n2: u8) -> (String, String) {
-    (partition_name(disk, n1), partition_name(disk, n2))
-}
 
 /// Write a file via sudo tee (since direct fs::write lacks root perms).
-fn sudo_write(path: &str, content: &str) -> Result<(), String> {
+pub(super) fn sudo_write(path: &str, content: &str) -> Result<(), String> {
     let mut child = Command::new("sudo")
         .args(["tee", path])
         .stdin(std::process::Stdio::piped())
@@ -987,6 +1200,9 @@ fn copy_system(mount_dir: &str, progress: &ProgressFn) -> Result<(), String> {
             "--exclude=/mnt/*",
             "--exclude=/live/*",
             "--exclude=/cdrom/*",
+            // The EFI partition is mounted there, and installed into a partition it is shared
+            // with macOS or Windows: only installer_boot.rs writes to it (GRUB and the \EFI\BOOT set).
+            "--exclude=/boot/efi/*",
             "/",
             &target,
         ])
@@ -1060,7 +1276,7 @@ fn rsync_percent(line: &str) -> Option<i32> {
         .filter(|p| (0..=100).contains(p))
 }
 
-fn run_cmd(cmd: &str, args: &[&str]) -> Result<String, String> {
+pub(super) fn run_cmd(cmd: &str, args: &[&str]) -> Result<String, String> {
     tracing::debug!(cmd = cmd, args = ?args, "installer: running command (via sudo)");
 
     let mut sudo_args = vec![cmd];
@@ -1081,7 +1297,7 @@ fn run_cmd(cmd: &str, args: &[&str]) -> Result<String, String> {
 }
 
 /// Run a command inside a chroot (via sudo).
-fn chroot_cmd(mount_dir: &str, args: &[&str]) -> Result<String, String> {
+pub(super) fn chroot_cmd(mount_dir: &str, args: &[&str]) -> Result<String, String> {
     let mut full_args = vec!["chroot", mount_dir];
     full_args.extend_from_slice(args);
 
@@ -1116,57 +1332,136 @@ pub(crate) struct DiskInfo {
     pub(crate) name: String,
     size: String,
     model: String,
+    /// What is on the disk now, in words: "Empty", "3 partitions (ext4, ntfs)".
+    contents: String,
+    /// Anything at all is on it — erasing it loses something. Unknown counts as yes.
+    has_data: bool,
+    /// An HFS+ or APFS filesystem is on it: a Mac's system. Never preselected, and erased only
+    /// on a confirmation that names it (installer_rules::disk_problem).
+    pub(crate) holds_macos: bool,
+    /// On USB or marked removable (or that could not be told): offered, never preselected.
+    pub(crate) external: bool,
+    /// The installer is running from it. The listing leaves such a disk out; this says so
+    /// again where it cannot (the fallback listing), and the preselection never takes it.
+    pub(crate) runs_installer: bool,
 }
 
 /// Detect available disks and return structured info. Also what the onboarding
 /// hardware scan measures its Disk row against, so the scan and the picker can
 /// never disagree about which disks are candidates.
 pub(crate) fn detect_disks() -> Vec<DiskInfo> {
-    // Use lsblk with JSON output for reliable parsing
+    // Not `-d`: the partitions under each disk are what say whether it holds anything, and
+    // "this disk has a Windows partition on it" is the one thing worth knowing before erasing it.
     let output = Command::new("lsblk")
-        .args(["-dn", "-o", "NAME,SIZE,MODEL,TYPE,RO,RM", "--json", "-e", "7,11"])
+        .args(["-J", "-o", "NAME,SIZE,MODEL,TYPE,RO,RM,FSTYPE,TRAN,MOUNTPOINT", "-e", "7,11"])
         .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         .output();
 
-    let mut disks = Vec::new();
-
     let Ok(output) = output else {
         tracing::warn!("lsblk failed for disk detection");
-        // Fallback: try non-JSON
         return detect_disks_fallback();
     };
-
     if !output.status.success() {
         return detect_disks_fallback();
     }
 
-    let text = String::from_utf8_lossy(&output.stdout);
-    // Parse JSON: {"blockdevices": [{"name":"sda","size":"80G","model":"VBOX HARDDISK","type":"disk","ro":false,"rm":false}, ...]}
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-        if let Some(devices) = json["blockdevices"].as_array() {
-            for dev in devices {
-                let dtype = dev["type"].as_str().unwrap_or("");
-                if dtype != "disk" { continue; }
-
-                let ro = dev["ro"].as_bool().unwrap_or(true);
-                let rm = dev["rm"].as_bool().unwrap_or(true);
-                if ro || rm { continue; }
-
-                let name = dev["name"].as_str().unwrap_or("").to_string();
-                if name.starts_with("loop") || name.starts_with("sr") || name.starts_with("fd") {
-                    continue;
-                }
-
-                let size = dev["size"].as_str().unwrap_or("?").to_string();
-                let model = dev["model"].as_str().unwrap_or("Unknown").trim().to_string();
-                let model = if model.is_empty() { "Unknown".to_string() } else { model };
-
-                tracing::info!(name = %name, size = %size, model = %model, "Detected disk");
-                disks.push(DiskInfo { name, size, model });
-            }
+    let mut disks = disks_from_lsblk(&String::from_utf8_lossy(&output.stdout));
+    // lsblk reads udev's records. The disk itself is asked too, by GPT type and blkid -p, so a
+    // Mac whose udev said nothing about its APFS is still a Mac (installer_partition::holds_macos).
+    for d in &mut disks {
+        if !d.holds_macos && installer_partition::holds_macos(&format!("/dev/{}", d.name)) {
+            d.holds_macos = true;
+            d.contents = format!("macOS · {}", d.contents);
         }
     }
+    for d in &disks {
+        tracing::info!(name = %d.name, size = %d.size, model = %d.model, contents = %d.contents, "Detected disk");
+    }
+    disks
+}
 
+/// The install candidates in `lsblk -J` output: whole, writable disks, each with a line about
+/// what is on it. Kept apart from running lsblk so it can be tested on fixture text.
+///
+/// Removable and USB disks are candidates: an external USB SSD is how a Mac kept on macOS gets
+/// Yantrik OS, and many USB SSD enclosures report themselves removable. What is excluded is the
+/// installer's own medium — anything carrying an ISO 9660 filesystem, or mounted where live-boot
+/// mounts it — which is what "not removable" used to stand in for.
+fn disks_from_lsblk(json: &str) -> Vec<DiskInfo> {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(json) else { return Vec::new() };
+    let Some(devices) = json["blockdevices"].as_array() else { return Vec::new() };
+
+    // util-linux wrote these flags as "0"/"1" before it wrote them as booleans; reading only
+    // one form turned every disk read-only on the other, and the installer found nothing.
+    let flag = |v: &serde_json::Value| match v {
+        serde_json::Value::Bool(b) => *b,
+        serde_json::Value::String(s) => s == "1" || s == "true",
+        serde_json::Value::Number(n) => n.as_u64() == Some(1),
+        _ => true, // unknown: treat as read-only / removable, and skip it
+    };
+
+    let mut disks = Vec::new();
+    for dev in devices {
+        if dev["type"].as_str() != Some("disk") || flag(&dev["ro"]) {
+            continue;
+        }
+        let name = dev["name"].as_str().unwrap_or("").to_string();
+        if name.is_empty() || name.starts_with("loop") || name.starts_with("sr") || name.starts_with("fd") {
+            continue;
+        }
+        let size = dev["size"].as_str().unwrap_or("?").to_string();
+        // A card reader with no card in it.
+        if size == "0B" {
+            continue;
+        }
+        let model = dev["model"].as_str().unwrap_or("").trim().to_string();
+        let model = if model.is_empty() { "Disk".to_string() } else { model };
+        // Said, so the external disk is told apart from the internal one at a glance.
+        let model = if dev["tran"].as_str() == Some("usb") { format!("USB · {model}") } else { model };
+
+        let parts: Vec<&serde_json::Value> = dev["children"]
+            .as_array()
+            .map(|c| c.iter().filter(|p| p["type"].as_str() == Some("part")).collect())
+            .unwrap_or_default();
+        let mut on_disk = std::iter::once(dev).chain(parts.iter().copied());
+        let install_medium = on_disk.any(|v| {
+            v["fstype"].as_str() == Some("iso9660")
+                || v["mountpoint"].as_str() == Some("/run/live/medium")
+        });
+        if install_medium {
+            continue;
+        }
+        let holds_macos = std::iter::once(dev)
+            .chain(parts.iter().copied())
+            .any(|v| v["fstype"].as_str().is_some_and(installer_rules::is_macos_fstype));
+        let mut kinds: Vec<String> = Vec::new();
+        for p in &parts {
+            if let Some(fs) = p["fstype"].as_str().filter(|f| !f.is_empty()) {
+                if !kinds.iter().any(|k| k == fs) {
+                    kinds.push(fs.to_string());
+                }
+            }
+        }
+        let whole_disk_fs = dev["fstype"].as_str().filter(|f| !f.is_empty());
+        let (contents, has_data) = match (parts.len(), whole_disk_fs) {
+            (0, Some(fs)) => (format!("A whole-disk filesystem ({fs})"), true),
+            (0, None) => ("Empty".to_string(), false),
+            (n, _) => {
+                let count = if n == 1 { "1 partition".to_string() } else { format!("{n} partitions") };
+                if kinds.is_empty() {
+                    (count, true)
+                } else {
+                    (format!("{count} ({})", kinds.join(", ")), true)
+                }
+            }
+        };
+        let contents = if holds_macos { format!("macOS · {contents}") } else { contents };
+        // A removable flag that cannot be read counts as removable: it only keeps the disk from
+        // being chosen for anyone.
+        let external = dev["tran"].as_str() == Some("usb") || flag(&dev["rm"]);
+        // The disk the installer runs from was left out above.
+        disks.push(DiskInfo { name, size, model, contents, has_data, holds_macos, external, runs_installer: false });
+    }
     disks
 }
 
@@ -1181,20 +1476,38 @@ fn detect_disks_fallback() -> Vec<DiskInfo> {
     let Ok(output) = output else { return disks; };
 
     let text = String::from_utf8_lossy(&output.stdout);
+    let live = live_disk();
     for line in text.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() < 5 { continue; }
         let (name, size, dtype, ro, rm) = (parts[0], parts[1], parts[2], parts[3], parts[4]);
-        if dtype != "disk" || ro == "1" || rm == "1" { continue; }
-        if name.starts_with("loop") || name.starts_with("sr") || name.starts_with("fd") { continue; }
+        if !fallback_candidate(name, dtype, ro, rm, live.as_deref()) { continue; }
 
         disks.push(DiskInfo {
             name: name.to_string(),
             size: size.to_string(),
             model: "Disk".to_string(),
+            // Nothing here can say what is on it, so it is not claimed to be empty.
+            contents: "contents unknown".to_string(),
+            has_data: true,
+            holds_macos: disk_holds_macos(&format!("/dev/{name}")),
+            external: disk_is_external(&format!("/dev/{name}")),
+            runs_installer: false,
         });
     }
     disks
+}
+
+/// Whether a line of `lsblk -dn -o NAME,SIZE,TYPE,RO,RM` is a disk the fallback listing offers
+/// for erasing: a writable, fixed disk that is not the one the installer runs from (`live`, the
+/// disk under /run/live/medium). The JSON listing leaves that disk out by its mount point; this
+/// listing cannot see mount points, so it is named.
+fn fallback_candidate(name: &str, dtype: &str, ro: &str, rm: &str, live: Option<&str>) -> bool {
+    dtype == "disk"
+        && ro != "1"
+        && rm != "1"
+        && !["loop", "sr", "fd"].iter().any(|p| name.starts_with(p))
+        && live != Some(name)
 }
 
 #[cfg(test)]
@@ -1241,6 +1554,28 @@ llm:
         // Only the primary endpoint is replaced; the fallback block is the
         // image's own and the wizard said nothing about it.
         assert!(out.contains("    api_base_url: \"http://127.0.0.1:8341/v1\""), "{out}");
+    }
+
+    #[test]
+    fn the_catalogue_supplies_url_and_model_when_none_was_saved() {
+        let out = installed_config_yaml(IMAGE_CONFIG, &wizard_state("nvidia-nim", "", "nvapi-1"));
+        assert!(out.contains("api_base_url: \"https://integrate.api.nvidia.com/v1\""), "{out}");
+        assert!(out.contains("api_model: \"nvidia/nemotron-3-super-120b-a12b\""), "{out}");
+        // A provider the catalogue does not know, with no endpoint saved, leaves
+        // the image's own endpoint rather than guessing one.
+        let out = installed_config_yaml(IMAGE_CONFIG, &wizard_state("nonesuch", "", ""));
+        assert!(out.contains("api_base_url: \"http://127.0.0.1:8341/v1\""), "{out}");
+    }
+
+    #[test]
+    fn a_model_picked_in_the_live_session_is_the_one_installed() {
+        let mut state = wizard_state("openrouter", "https://openrouter.ai/api/v1", "sk-or-1");
+        state.ai_model = "anthropic/claude-sonnet-5-5".into();
+        let out = installed_config_yaml(IMAGE_CONFIG, &state);
+        assert!(out.contains("api_model: \"anthropic/claude-sonnet-5-5\""), "{out}");
+        let yaml = installed_providers_yaml(&state).expect("a chosen provider produces a store");
+        let store: ProviderStore = serde_yaml::from_str(&yaml).expect("valid YAML");
+        assert_eq!(store.primary().expect("primary").model, "anthropic/claude-sonnet-5-5");
     }
 
     #[test]
@@ -1296,5 +1631,212 @@ llm:
         .expect("a chosen provider produces a store");
         let store: ProviderStore = serde_yaml::from_str(&yaml).expect("valid YAML");
         assert_eq!(store.primary().expect("primary").auth_type, "x-api-key");
+    }
+
+    /// `lsblk -J -o NAME,SIZE,MODEL,TYPE,RO,RM,FSTYPE` on a machine with a used disk, an
+    /// empty one, a USB stick and the ISO's CD drive.
+    const LSBLK: &str = r#"{"blockdevices": [
+        {"name":"sda","size":"80G","model":"VBOX HARDDISK","type":"disk","ro":false,"rm":false,"fstype":null,
+         "children":[
+            {"name":"sda1","size":"512M","model":null,"type":"part","ro":false,"rm":false,"fstype":"vfat"},
+            {"name":"sda2","size":"60G","model":null,"type":"part","ro":false,"rm":false,"fstype":"ntfs"},
+            {"name":"sda3","size":"19G","model":null,"type":"part","ro":false,"rm":false,"fstype":"ntfs"}
+         ]},
+        {"name":"nvme0n1","size":"476.9G","model":"Samsung SSD 980  ","type":"disk","ro":false,"rm":false,"fstype":null},
+        {"name":"sdb","size":"14.6G","model":"USB Stick","type":"disk","ro":false,"rm":true,"fstype":"iso9660"},
+        {"name":"sr0","size":"1.2G","model":"CD-ROM","type":"rom","ro":false,"rm":true,"fstype":"iso9660"}
+    ]}"#;
+
+    #[test]
+    fn the_disk_list_says_what_each_disk_holds() {
+        let disks = disks_from_lsblk(LSBLK);
+        let names: Vec<&str> = disks.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["sda", "nvme0n1"], "the installer's own stick and the CD are not candidates");
+
+        assert_eq!(disks[0].contents, "3 partitions (vfat, ntfs)");
+        assert!(disks[0].has_data);
+        assert_eq!(disks[1].contents, "Empty");
+        assert!(!disks[1].has_data);
+        assert_eq!(disks[1].model, "Samsung SSD 980", "lsblk pads models with spaces");
+    }
+
+    #[test]
+    fn older_lsblk_flags_are_read_too() {
+        // util-linux before 2.33 printed the flags as strings.
+        let old = r#"{"blockdevices":[
+            {"name":"sda","size":"20G","model":"QEMU HARDDISK","type":"disk","ro":"0","rm":"0","fstype":"ext4"},
+            {"name":"sdb","size":"8G","model":"Flash","type":"disk","ro":"0","rm":"1","fstype":null}
+        ]}"#;
+        let disks = disks_from_lsblk(old);
+        // A removable disk is a candidate now (an empty flash drive here); only the install
+        // medium is not.
+        assert_eq!(disks.len(), 2);
+        assert_eq!(disks[0].contents, "A whole-disk filesystem (ext4)");
+        assert!(disks[0].has_data);
+        assert_eq!(disks[1].name, "sdb");
+        assert!(!disks[1].has_data);
+    }
+
+    /// A Mac mini kept on macOS: the internal disk with APFS, an external USB SSD, and the
+    /// Yantrik stick it booted from (a dd'ed hybrid ISO, mounted by live-boot).
+    const MAC_MINI: &str = r#"{"blockdevices": [
+        {"name":"sda","size":"931.5G","model":"APPLE HDD HTS541010A9E662","type":"disk","ro":false,"rm":false,"fstype":null,"tran":"sata","mountpoint":null,
+         "children":[
+            {"name":"sda1","size":"200M","type":"part","ro":false,"rm":false,"fstype":"vfat","mountpoint":null},
+            {"name":"sda2","size":"931.3G","type":"part","ro":false,"rm":false,"fstype":"apfs","mountpoint":null}
+         ]},
+        {"name":"sdb","size":"465.8G","model":"Samsung PSSD T7","type":"disk","ro":false,"rm":true,"fstype":null,"tran":"usb","mountpoint":null,
+         "children":[
+            {"name":"sdb1","size":"465.8G","type":"part","ro":false,"rm":true,"fstype":"exfat","mountpoint":null}
+         ]},
+        {"name":"sdc","size":"28.9G","model":"Flash Drive","type":"disk","ro":false,"rm":true,"fstype":"iso9660","tran":"usb","mountpoint":null,
+         "children":[
+            {"name":"sdc1","size":"3.1G","type":"part","ro":false,"rm":true,"fstype":"iso9660","mountpoint":"/run/live/medium"},
+            {"name":"sdc2","size":"2.8M","type":"part","ro":false,"rm":true,"fstype":"vfat","mountpoint":null}
+         ]},
+        {"name":"sdd","size":"0B","model":"SD Card Reader","type":"disk","ro":false,"rm":true,"fstype":null,"tran":"usb","mountpoint":null}
+    ]}"#;
+
+    #[test]
+    fn on_a_mac_the_external_disk_is_offered_but_neither_it_nor_macos_is_preselected() {
+        let disks = disks_from_lsblk(MAC_MINI);
+        let names: Vec<&str> = disks.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["sda", "sdb"], "the boot stick and an empty card reader are not candidates");
+        assert!(disks[0].holds_macos);
+        assert!(disks[0].contents.starts_with("macOS · "), "{}", disks[0].contents);
+        assert!(!disks[1].holds_macos);
+        assert_eq!(disks[1].model, "USB · Samsung PSSD T7");
+        assert!(disks[1].external && !disks[0].external);
+        // A USB disk is offered for erasing, and the person chooses it: it may be a backup.
+        assert_eq!(preselect(&disks).map(|d| d.name.as_str()), None);
+
+        // With only the Mac's own disk, nothing is chosen for the person.
+        let only_mac: Vec<DiskInfo> = disks.into_iter().filter(|d| d.holds_macos).collect();
+        assert!(preselect(&only_mac).is_none());
+    }
+
+    /// The VM rehearsal of the Mac this is for: booted live from YKINSTALL on the internal disk,
+    /// with a USB stick holding someone's backup. Switching to "Erase a whole disk" chose the
+    /// stick. Nothing is chosen now: the internal disk runs the installer, and the stick is USB.
+    #[test]
+    fn booted_from_ykinstall_with_a_usb_backup_beside_it_nothing_is_chosen_for_erasing() {
+        let json = r#"{"blockdevices": [
+            {"name":"sda","size":"931.5G","model":"APPLE HDD","type":"disk","ro":false,"rm":false,"fstype":null,"tran":"sata","mountpoint":null,
+             "children":[
+                {"name":"sda1","size":"200M","type":"part","ro":false,"rm":false,"fstype":"vfat","mountpoint":null},
+                {"name":"sda2","size":"792G","type":"part","ro":false,"rm":false,"fstype":"apfs","mountpoint":null},
+                {"name":"sda3","size":"8G","type":"part","ro":false,"rm":false,"fstype":"vfat","mountpoint":"/run/live/medium"},
+                {"name":"sda4","size":"199G","type":"part","ro":false,"rm":false,"fstype":"vfat","mountpoint":null}
+             ]},
+            {"name":"sdb","size":"2G","model":"USB DISK","type":"disk","ro":false,"rm":true,"fstype":null,"tran":"usb","mountpoint":null,
+             "children":[{"name":"sdb2","size":"1G","type":"part","ro":false,"rm":true,"fstype":"vfat","mountpoint":null}]}
+        ]}"#;
+        let disks = disks_from_lsblk(json);
+        let names: Vec<&str> = disks.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["sdb"], "the disk the installer runs from is not offered for erasing");
+        assert!(disks[0].external);
+        assert_eq!(preselect(&disks).map(|d| d.name.as_str()), None);
+        // The same stick reported by an older lsblk with no transport, removable only: still USB.
+        let no_tran = json.replace(r#""tran":"usb","#, "");
+        assert_eq!(preselect(&disks_from_lsblk(&no_tran)).map(|d| d.name.as_str()), None);
+        // A flag lsblk did not write counts as removable.
+        let no_rm = json.replace(r#""rm":true,"fstype":null,"tran":"usb","#, r#""fstype":null,"#);
+        assert!(disks_from_lsblk(&no_rm).iter().all(|d| d.external), "{no_rm}");
+    }
+
+    #[test]
+    fn a_pc_with_one_internal_disk_has_it_chosen_and_one_with_two_has_neither() {
+        let one = r#"{"blockdevices":[
+            {"name":"nvme0n1","size":"476.9G","model":"Samsung SSD 980","type":"disk","ro":false,"rm":false,"fstype":null,"tran":"nvme"},
+            {"name":"sdb","size":"58G","model":"Backup","type":"disk","ro":false,"rm":true,"fstype":null,"tran":"usb"}
+        ]}"#;
+        assert_eq!(preselect(&disks_from_lsblk(one)).map(|d| d.name.as_str()), Some("nvme0n1"));
+        assert_eq!(preselect(&disks_from_lsblk(LSBLK)).map(|d| d.name.as_str()), None, "two internal disks: a guess");
+    }
+
+    #[test]
+    fn a_usb_or_removable_disk_is_external() {
+        assert!(external_from_lsblk("usb 0\n"));
+        assert!(external_from_lsblk("usb 1"));
+        assert!(external_from_lsblk("1"), "a removable disk with no transport named");
+        assert!(!external_from_lsblk("sata 0"));
+        assert!(!external_from_lsblk("nvme 0"));
+        assert!(!external_from_lsblk("0"));
+        // No answer, or one that cannot be read, is external: never preselected, no NVRAM entry.
+        assert!(external_from_lsblk(""), "lsblk said nothing");
+        assert!(external_from_lsblk("sata ?"), "a removable flag that is not 0");
+        assert!(external_from_lsblk("sata 0 extra"), "an answer of another shape");
+        assert!(disk_is_external("/dev/yantrik-no-such-disk"), "an lsblk that fails");
+    }
+
+    #[test]
+    fn the_fallback_listing_never_offers_the_installers_own_disk() {
+        assert!(fallback_candidate("sda", "disk", "0", "0", None));
+        assert!(!fallback_candidate("sda", "disk", "0", "0", Some("sda")), "the disk the installer runs from");
+        assert!(fallback_candidate("sdb", "disk", "0", "0", Some("sda")));
+        assert!(!fallback_candidate("sdb", "disk", "0", "1", None), "removable");
+        assert!(!fallback_candidate("sdb", "disk", "1", "0", None), "read-only");
+        assert!(!fallback_candidate("sdb1", "part", "0", "0", None));
+        assert!(!fallback_candidate("loop0", "disk", "0", "0", None));
+    }
+
+    /// Erasing with no disk named used to fall back to auto_detect_disk, a disk nobody chose.
+    #[test]
+    fn erasing_with_no_disk_chosen_is_refused_and_nothing_is_found_in_its_place() {
+        for target_disk in ["", "  ", "/dev/"] {
+            let state = InstallerState { mode: InstallMode::Erase, target_disk: target_disk.into(), ..InstallerState::default() };
+            let said = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+            let s = said.clone();
+            let e = run_install(&state, Box::new(move |_, m| s.lock().unwrap().push(m.to_string()))).unwrap_err();
+            assert!(e.starts_with("no disk was chosen to erase; nothing was written"), "{target_disk:?}: {e}");
+            assert!(said.lock().unwrap().iter().all(|m| m == "Detecting target disk..."), "nothing ran past the check");
+        }
+        let named = InstallerState { mode: InstallMode::Erase, target_disk: "/dev/sdb".into(), ..InstallerState::default() };
+        assert_eq!(erase_target(&named), Ok("sdb".to_string()));
+        let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/wire/installer.rs")).unwrap();
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        assert!(!code.contains("fn auto_detect_disk"), "no disk is found for an install that named none");
+    }
+
+    #[test]
+    fn nonsense_from_lsblk_is_no_disks_not_a_panic() {
+        assert!(disks_from_lsblk("").is_empty());
+        assert!(disks_from_lsblk("{}").is_empty());
+        assert!(disks_from_lsblk(r#"{"blockdevices":[{"type":"disk"}]}"#).is_empty());
+    }
+
+    #[test]
+    fn an_unusable_layout_installs_as_us() {
+        let mut state = InstallerState { keyboard: "de".into(), ..InstallerState::default() };
+        assert_eq!(installed_layout(&state), "de");
+        state.keyboard = "de\nXKB_DEFAULT_OPTIONS=x".into();
+        assert_eq!(installed_layout(&state), "us");
+        state.keyboard.clear();
+        assert_eq!(installed_layout(&state), "us");
+    }
+
+    /// Beside what is on a disk with no target chosen used to fall through to the erase path,
+    /// and with no disk named either, to a disk found for it. It is refused before anything runs.
+    #[test]
+    fn beside_with_no_target_is_refused_and_never_becomes_an_erase() {
+        let progress_seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen = progress_seen.clone();
+        for target_disk in ["", "sda"] {
+            let state = InstallerState { mode: InstallMode::Beside, target_disk: target_disk.into(), ..InstallerState::default() };
+            let seen = seen.clone();
+            let e = run_install(&state, Box::new(move |_, s| seen.lock().unwrap().push(s.to_string()))).unwrap_err();
+            assert!(e.contains("no partition or free space was") && e.contains("no disk is erased"), "{e}");
+        }
+        // Only the first word was said; nothing was detected, partitioned or erased.
+        assert!(progress_seen.lock().unwrap().iter().all(|s| s == "Detecting target disk..."));
+        let unscanned = InstallerState {
+            mode: InstallMode::Beside,
+            install_into: "sda4".into(),
+            ..InstallerState::default()
+        };
+        assert!(beside_problem(&unscanned).unwrap().contains("never scanned"));
+        let ready = InstallerState { table_fingerprint: "a7df3a2a0968d199".into(), ..unscanned };
+        assert_eq!(beside_problem(&ready), None);
+        assert_eq!(InstallerState::default().mode, InstallMode::Erase);
     }
 }

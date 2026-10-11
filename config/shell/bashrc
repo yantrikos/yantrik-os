@@ -1,0 +1,46 @@
+# Yantrik OS: the interactive shell's defaults (#401).
+#
+# Read from ~/.bashrc, whose last lines, from the image's /etc/skel, source this file. It ships
+# with every update and the updater never touches ~/.bashrc, so this file can move on while
+# anything a person writes after the line that sources it stays theirs and wins.
+
+# Interactive shells only. A script run with `bash -c`, and the agent terminal's jobs (which
+# start bash with --norc), never get here.
+case $- in
+  *i*) ;;
+  *) return ;;
+esac
+
+# ── Completion ──
+# Debian's own ~/.bashrc loads bash-completion when it is installed; this loads it for a
+# ~/.bashrc that does not, and not a second time for one that does.
+if [ -z "${BASH_COMPLETION_VERSINFO:-}" ] && ! shopt -oq posix \
+   && [ -r /usr/share/bash-completion/bash_completion ]; then
+  . /usr/share/bash-completion/bash_completion
+fi
+
+# ── Prompt ──
+# user@host, the directory, and inside a git repository its branch. Only the branch: showing
+# changed files means running `git diff` at every prompt, and a repository's own config
+# (core.fsmonitor, clean filters) can make that run a program, so a downloaded or unpacked repo
+# would run code the moment the person cd'd into it. The branch is read without any of that.
+# __git_ps1 comes with git; bash-completion usually loads it already.
+if ! command -v __git_ps1 >/dev/null 2>&1 && [ -r /usr/lib/git-core/git-sh-prompt ]; then
+  . /usr/lib/git-core/git-sh-prompt
+fi
+__yantrik_git() {
+  command -v __git_ps1 >/dev/null 2>&1 && __git_ps1 ' (%s)'
+}
+# Colour only on a terminal that has it. The window title is set to the same place.
+case "${TERM:-dumb}" in
+  dumb) PS1='\u@\h \w$(__yantrik_git)\$ ' ;;
+  *) PS1='\[\e]0;\u@\h: \w\a\]\[\e[1;32m\]\u@\h\[\e[0m\] \[\e[1;34m\]\w\[\e[0;33m\]$(__yantrik_git)\[\e[0m\]\$ ' ;;
+esac
+
+# ── Language runtimes ──
+# mise installs and switches node, python, go, rust and the rest per project, into the person's
+# own home: `mise use node@lts` in a directory, or `mise use -g node@lts` for everywhere. The
+# binary is the image's, in /usr/local/bin and root's.
+if command -v mise >/dev/null 2>&1; then
+  eval "$(mise activate bash)"
+fi

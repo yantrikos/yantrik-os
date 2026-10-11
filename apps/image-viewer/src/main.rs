@@ -21,6 +21,8 @@ use yantrik_image_core::{dimensions_from_size, read_info, Gallery, ImageInfo};
 
 slint::include_modules!();
 
+mod agent_rule;
+
 /// Fill the agent rail from the picture on screen.
 ///
 /// Name and dimensions, both of which the app read off the file. No suggestion: what would be
@@ -45,6 +47,20 @@ fn refresh_agent_rail(ui: &ImageViewerApp) {
 }
 
 type State = Rc<RefCell<Gallery>>;
+
+/// Why a view control is off: nothing is on screen to zoom, turn, describe or read the facts of.
+/// The window's buttons say it on hover (`no-picture` in image_viewer.slint) and the control
+/// surface refuses with it, so a person and a mind are told the same thing.
+const NO_PICTURE: &str = "Open a picture first";
+
+/// A picture is on screen: nothing opened and a file that would not load both leave none.
+fn picture_shown(ui: &ImageViewerApp) -> Result<(), String> {
+    if ui.get_current_image().size().width > 0 {
+        Ok(())
+    } else {
+        Err(NO_PICTURE.into())
+    }
+}
 
 fn expanded(value: &str) -> PathBuf {
     if let Some(rest) = value.strip_prefix("~/") {
@@ -247,8 +263,8 @@ fn wire(app: &ImageViewerApp, state: &State) {
         app.on_ai_describe_pressed(move || {
             let Some(ui) = weak.upgrade() else { return };
             let name = ui.get_file_name().to_string();
-            if name.is_empty() {
-                ui.set_ai_response("There is no picture open to describe.".into());
+            if let Err(why) = picture_shown(&ui) {
+                ui.set_ai_response(why.into());
                 return;
             }
             if let Some(hint) = companion::reach().hint() {
@@ -361,6 +377,11 @@ fn publish_control(app: &ImageViewerApp, state: State) {
     let describe = move || {
         let Ok(ui) = describe_ui() else { return View::new("Images — closed") };
         let g = describe_state.borrow();
+        if let Some(why) = agent_rule::hidden_from_caller(g.current().map(|p| p.as_path())) {
+            // A picture the person opened where an agent may not look: neither it nor the names
+            // of the pictures beside it are read back.
+            return View::new("Images — showing a picture an agent is not shown").with("hidden", why);
+        }
         let name = ui.get_file_name().to_string();
         let summary = if name.is_empty() {
             "Images — nothing open".to_string()
@@ -386,6 +407,8 @@ fn publish_control(app: &ImageViewerApp, state: State) {
             .with("info_panel", ui.get_viewer_info_open())
             .with("slideshow", ui.get_viewer_slideshow_active())
             .with("notice", ui.get_notice().to_string())
+            // Why rotate, fit and toggle_info will refuse right now, in the window's own words.
+            .with("view_controls_off", picture_shown(&ui).err())
             .with(
                 "folder",
                 g.paths()
@@ -399,6 +422,7 @@ fn publish_control(app: &ImageViewerApp, state: State) {
     let open_ui = ui_for.clone();
     let open_state = state.clone();
     let show_ui = ui_for.clone();
+    let show_state = state.clone();
     let next_ui = ui_for.clone();
     let next_state = state.clone();
     let prev_ui = ui_for.clone();
@@ -419,6 +443,7 @@ fn publish_control(app: &ImageViewerApp, state: State) {
                     return Err("`path` is empty".into());
                 }
                 let path = expanded(&raw);
+                agent_rule::may_open(&path)?;
                 // Checked here so the answer names the file rather than leaving a blank window
                 // and a caller believing the picture is on screen.
                 if !path.is_file() {
@@ -441,37 +466,38 @@ fn publish_control(app: &ImageViewerApp, state: State) {
         .action(Action::new("show", "Bring the window forward"), move |_| {
             let ui = show_ui()?;
             ui.window().set_minimized(false);
-            Ok(serde_json::json!({ "showing": ui.get_file_name().to_string() }))
+            let g = show_state.borrow();
+            Ok(agent_rule::answer(g.current().map(|p| p.as_path()), ui.get_file_name().to_string(), None))
         })
         .action(Action::new("next", "The next picture in the folder"), move |_| {
             let ui = next_ui()?;
             if next_state.borrow().is_empty() {
                 return Err("no pictures are open".into());
             }
+            // Stepping through a folder an agent may not see names its pictures one by one.
+            agent_rule::may_step(next_state.borrow().current().map(|p| p.as_path()))?;
             next_state.borrow_mut().next();
             show_current(&ui, &next_state);
-            Ok(serde_json::json!({
-                "showing": ui.get_file_name().to_string(),
-                "position": next_state.borrow().index() + 1,
-            }))
+            let g = next_state.borrow();
+            Ok(agent_rule::answer(g.current().map(|p| p.as_path()), ui.get_file_name().to_string(), Some(g.index() + 1)))
         })
         .action(Action::new("previous", "The previous picture in the folder"), move |_| {
             let ui = prev_ui()?;
             if prev_state.borrow().is_empty() {
                 return Err("no pictures are open".into());
             }
+            agent_rule::may_step(prev_state.borrow().current().map(|p| p.as_path()))?;
             prev_state.borrow_mut().prev();
             show_current(&ui, &prev_state);
-            Ok(serde_json::json!({
-                "showing": ui.get_file_name().to_string(),
-                "position": prev_state.borrow().index() + 1,
-            }))
+            let g = prev_state.borrow();
+            Ok(agent_rule::answer(g.current().map(|p| p.as_path()), ui.get_file_name().to_string(), Some(g.index() + 1)))
         })
         .action(
             Action::new("rotate", "Turn the picture on screen")
                 .arg(Param::text("direction").describe("left | right")),
             move |args| {
                 let ui = rotate_ui()?;
+                picture_shown(&ui)?;
                 let step = match args["direction"].as_str().unwrap_or_default().to_lowercase().as_str() {
                     "left" | "anticlockwise" | "counterclockwise" => 270,
                     "right" | "clockwise" => 90,
@@ -486,12 +512,14 @@ fn publish_control(app: &ImageViewerApp, state: State) {
         )
         .action(Action::new("fit", "Fit the picture to the window, or show it at full size"), move |_| {
             let ui = fit_ui()?;
+            picture_shown(&ui)?;
             let fit = !ui.get_fit_contain();
             ui.set_fit_contain(fit);
             Ok(serde_json::json!({ "fit_to_window": fit }))
         })
         .action(Action::new("toggle_info", "Show or hide what the file says about the picture"), move |_| {
             let ui = info_ui()?;
+            picture_shown(&ui)?;
             let open = !ui.get_viewer_info_open();
             ui.set_viewer_info_open(open);
             Ok(serde_json::json!({ "info_panel": open }))
@@ -525,6 +553,29 @@ mod describe_tests {
         // The facts go to whatever provider is configured, which may be a remote API: a
         // Describe press must not send the photo's location off the machine.
         assert!(!handler.contains("exif_gps"), "the ask must not carry the picture's GPS");
+    }
+
+    /// With no picture the window's view controls are off and say why; a caller asking for the
+    /// same actions is refused with the same words, rather than turning an empty window.
+    #[test]
+    fn the_control_surface_refuses_what_the_window_has_switched_off() {
+        let src = main_source();
+        for action in ["Action::new(\"rotate\"", "Action::new(\"fit\"", "Action::new(\"toggle_info\""] {
+            let at = src.find(action).unwrap_or_else(|| panic!("{action} is gone"));
+            let handler = &src[at..];
+            let end = handler[1..].find(".action(").map(|e| e + 1).unwrap_or(handler.len());
+            assert!(handler[..end].contains("picture_shown(&ui)?"), "{action} acts on an empty window");
+        }
+        let screen = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../crates/yantrik-ui-slint/ui/image_viewer.slint"
+        ))
+        .expect("the screen");
+        assert!(
+            screen.contains(&format!("property <string> no-picture: \"{}\";", super::NO_PICTURE)),
+            "the window and the control surface must give the same reason"
+        );
+        assert_eq!(screen.matches("enabled: root.has-picture; off-reason: root.no-picture;").count(), 9, "every view control");
     }
 
     #[test]

@@ -3,7 +3,7 @@ Type=Application
 Name=yDoc
 Comment=Rich document editor with AI assist
 Exec=/opt/yantrik/bin/yantrik-document-editor
-# One mark for now: brand/yantrik-mark.svg, installed as hicolor `yantrik`.
+# One mark for now: brand/yantrik-icon.svg, installed as hicolor `yantrik`.
 Icon=yantrik
 Categories=Office;WordProcessor;
 Keywords=document;word;editor;

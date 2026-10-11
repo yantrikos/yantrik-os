@@ -7,6 +7,7 @@ import { Theme } from "theme.slint";
 import { ScrollView, LineEdit } from "std-widgets.slint";
 import { RibbonToolButton, RibbonToolButtonWide, RibbonSeparator, RibbonTabButton, RibbonQuickAction, RibbonGroupLabel, RibbonColorButton, RibbonDropdown } from "components/app_ribbon.slint";
 import { Icons } from "components/icon.slint";
+import { YButton } from "components/y_button.slint";
 import { AppHeader } from "components/app_header.slint";
 import { AppColor, AppIdentity } from "components/app_color.slint";
 
@@ -877,7 +878,7 @@ export component SpreadsheetScreen inherits Rectangle {
                         Rectangle {
                             height: 28px;
                             border-radius: 4px;
-                            background: add-cmt-ta.has-hover ? AppIdentity.accent : Theme.accent.transparentize(20%);
+                            background: add-cmt-ta.has-hover ? Theme.accent-button-hover : Theme.accent;
 
                             add-cmt-ta := TouchArea {
                                 clicked => {
@@ -888,7 +889,7 @@ export component SpreadsheetScreen inherits Rectangle {
 
                             Text {
                                 text: root.active-comment != "" ? "Update" : "Add";
-                                color: white;
+                                color: Theme.text-on-accent;
                                 font-size: Theme.fs-caption;
                                 font-weight: 600;
                                 horizontal-alignment: center;
@@ -896,21 +897,12 @@ export component SpreadsheetScreen inherits Rectangle {
                             }
                         }
 
-                        Rectangle {
+                        YButton {
                             visible: root.active-comment != "";
-                            height: 28px;
-                            border-radius: 4px;
-                            background: del-cmt-ta.has-hover ? Theme.color-danger : Theme.color-danger.transparentize(20%);
-
-                            del-cmt-ta := TouchArea { clicked => { root.delete-comment(); } }
-
-                            Text {
-                                text: "Delete";
-                                color: white;
-                                font-size: Theme.fs-caption;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                            label: "Delete";
+                            variant: 3;
+                            size: 0;
+                            clicked => { root.delete-comment(); }
                         }
                     }
 
@@ -1165,7 +1157,7 @@ export component SpreadsheetScreen inherits Rectangle {
             Rectangle {
                 height: 28px;
                 border-radius: 4px;
-                background: root.sheet-ai-working ? Theme.text-dim : (submit-ai-ta.has-hover ? AppIdentity.accent : Theme.accent.transparentize(0.2));
+                background: root.sheet-ai-working ? Theme.text-dim : (submit-ai-ta.has-hover ? Theme.accent-button-hover : Theme.accent);
 
                 submit-ai-ta := TouchArea {
                     enabled: !root.sheet-ai-working;
@@ -1173,7 +1165,7 @@ export component SpreadsheetScreen inherits Rectangle {
                 }
                 Text {
                     text: root.sheet-ai-working ? "Thinking..." : "Ask";
-                    color: white;
+                    color: Theme.text-on-accent;
                     font-size: Theme.fs-micro;
                     font-weight: 600;
                     horizontal-alignment: center;
@@ -1217,7 +1209,7 @@ export component SpreadsheetScreen inherits Rectangle {
                     background: dismiss-ta.has-hover ? Theme.color-danger : Theme.color-danger.transparentize(20%);
 
                     dismiss-ta := TouchArea { clicked => { root.sheet-ai-dismiss(); } }
-                    Text { text: "Dismiss"; color: Theme.text-on-accent; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
+                    Text { text: "Dismiss"; color: Theme.text-on-danger; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
                 }
             }
         }

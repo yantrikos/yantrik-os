@@ -1,23 +1,17 @@
 //! App grid — populate grid apps from installed apps, handle launch, search and categories.
 
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::Arc;
 
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use crate::app_context::AppContext;
 use crate::apps::DesktopEntry;
 use crate::icons;
-use crate::{App, AppGridItem, CategoryItem};
+use crate::{App, AppGridItem};
 
 pub fn wire(ui: &App, ctx: &AppContext) {
     let catalogue = ctx.installed_apps.clone();
     let installed = catalogue.get();
-    // The visible search field is recreated on open. Reset both backing filters
-    // with it so category clicks cannot resurrect a previous search.
-    let query = Rc::new(RefCell::new(String::new()));
-    let category = Rc::new(RefCell::new(String::from("all")));
 
     // Rescan every time the launcher opens.
     //
@@ -28,8 +22,6 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     // on a keystroke and far cheaper than being wrong.
     {
         let catalogue = catalogue.clone();
-        let query = query.clone();
-        let category = category.clone();
         let weak = ui.as_weak();
         ui.on_app_grid_opened(move || {
             // The launcher is part of the shell's own window, and with an app in front that
@@ -42,42 +34,23 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             let count = catalogue.refresh();
             tracing::debug!(apps = count, "rescanned installed apps for the launcher");
             if let Some(ui) = weak.upgrade() {
-                query.borrow_mut().clear();
-                *category.borrow_mut() = "all".to_string();
-                ui.set_grid_active_category("all".into());
-                let apps = catalogue.get();
-                ui.set_grid_categories(ModelRc::new(VecModel::from(categories_for(&apps))));
-                populate_grid(&ui, &apps, "", "all");
+                // The search field is recreated on open, empty; the query and Running go with it.
+                super::launcher::reset(&ui);
+                populate_grid(&ui, &catalogue.get(), "");
             }
         });
     }
 
-    // The two filters compose: whichever one changes, the other is re-applied from here.
-    ui.set_grid_categories(ModelRc::new(VecModel::from(categories_for(&installed))));
-    populate_grid(ui, &installed, "", "all");
+    populate_grid(ui, &installed, "");
 
+    // One query filters both sections: Running here through the launcher module, All apps below.
     {
         let catalogue = catalogue.clone();
-        let query = query.clone();
-        let category = category.clone();
         let ui_weak = ui.as_weak();
         ui.on_grid_search_apps(move |q| {
-            *query.borrow_mut() = q.to_string();
             if let Some(ui) = ui_weak.upgrade() {
-                populate_grid(&ui, &catalogue.get(), &query.borrow(), &category.borrow());
-            }
-        });
-    }
-    {
-        let catalogue = catalogue.clone();
-        let query = query.clone();
-        let category = category.clone();
-        let ui_weak = ui.as_weak();
-        ui.on_grid_category_selected(move |id| {
-            *category.borrow_mut() = id.to_string();
-            if let Some(ui) = ui_weak.upgrade() {
-                ui.set_grid_active_category(id.clone());
-                populate_grid(&ui, &catalogue.get(), &query.borrow(), &category.borrow());
+                super::launcher::set_query(&ui, &q);
+                populate_grid(&ui, &catalogue.get(), &q);
             }
         });
     }
@@ -86,24 +59,12 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     // a pin can always be made or undone.
     {
         let catalogue = catalogue.clone();
-        let query = query.clone();
-        let category = category.clone();
         let ui_weak = ui.as_weak();
         ui.on_grid_toggle_pin(move |app_id| {
             super::pins::toggle(&app_id);
             let Some(ui) = ui_weak.upgrade() else { return };
             let apps = catalogue.get();
-            // Unpinning the last app while looking at "Pinned" would leave the filter selected
-            // with the category gone from the list beside it. Fall back to All, which is where a
-            // person would have to click next anyway.
-            if category.borrow().as_str() == "pinned"
-                && !apps.iter().any(|e| super::pins::is_pinned(&e.app_id))
-            {
-                *category.borrow_mut() = "all".to_string();
-                ui.set_grid_active_category("all".into());
-            }
-            ui.set_grid_categories(ModelRc::new(VecModel::from(categories_for(&apps))));
-            populate_grid(&ui, &apps, &query.borrow(), &category.borrow());
+            populate_grid(&ui, &apps, &super::launcher::query());
             // START updates now, not on the next three-second poll — a pin that takes three
             // seconds to appear reads as a click that did not work.
             super::pins::publish(&ui, &apps);
@@ -131,48 +92,25 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         // while APP_NAMES and every other launch call it `sysmonitor`) and it could not start an
         // app's adapter. Through `launch_app` the tile opens exactly what `open_app` with the same
         // name would, under the same id, with the same adapter; Blender's tile gets its route.
+        //
+        // A Running tile is the dock's own button, so its id is the dock's and goes the same way:
+        // it focuses the window that is open instead of starting a second copy.
         let installed = catalogue.get();
+        let running = ui_weak
+            .upgrade()
+            .is_some_and(|ui| ui.get_grid_running().iter().any(|b| b.app_id == app_id));
         if let Some(entry) = installed.iter().find(|e| e.app_id == app_id_str) {
             tracing::info!(app = %entry.name, exec = %entry.exec, "Launching app from grid");
             if let Some(ui) = ui_weak.upgrade() {
                 ui.invoke_launch_app(app_id);
             }
+        } else if running {
+            tracing::info!(app = %app_id_str, "Switching to a running app from the launcher");
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.invoke_launch_app(app_id);
+            }
         }
     });
-}
-
-/// "All" plus every category that has at least one app, in CATEGORY_TABLE order.
-fn categories_for(installed: &Arc<Vec<DesktopEntry>>) -> Vec<CategoryItem> {
-    let mut out = vec![CategoryItem {
-        id: "all".into(),
-        name: "All".into(),
-        count: installed.len() as i32,
-    }];
-    // Second, because it is the one a person curates. Only when it has something in it: an
-    // empty filter would open onto "Nothing matches — try another word", which is advice for a
-    // search, not for a list you have not started yet.
-    let pinned = installed.iter().filter(|e| super::pins::is_pinned(&e.app_id)).count();
-    if pinned > 0 {
-        out.push(CategoryItem {
-            id: "pinned".into(),
-            name: "Pinned".into(),
-            count: pinned as i32,
-        });
-    }
-    for (_, id) in icons::CATEGORY_TABLE {
-        let count = installed
-            .iter()
-            .filter(|e| icons::category_id(&e.categories) == *id)
-            .count();
-        if count > 0 {
-            out.push(CategoryItem {
-                id: SharedString::from(*id),
-                name: SharedString::from(icons::category_label(id)),
-                count: count as i32,
-            });
-        }
-    }
-    out
 }
 
 /// The id the icon set is keyed by, for one of the apps this OS ships.
@@ -217,6 +155,31 @@ mod launcher_tests {
             handler.contains(concat!("crate::windows::raise_", "shell()")),
             "the launcher opening must bring the shell's window forward. Handler as written:\n{handler}"
         );
+    }
+}
+
+#[cfg(test)]
+mod one_per_app_tests {
+    use super::one_per_app;
+    use crate::apps::DesktopEntry;
+
+    fn entry(app_id: &str, name: &str) -> DesktopEntry {
+        DesktopEntry { app_id: app_id.into(), name: name.into(), exec: app_id.into(), ..Default::default() }
+    }
+
+    /// The distribution's Blender and ours were two tiles; ours is the one kept.
+    #[test]
+    fn our_entry_shadows_the_one_it_wraps() {
+        let installed = vec![entry("blender", "Blender"), entry("yantrik-blender", "Blender"), entry("gimp", "GIMP")];
+        let ids: Vec<&str> = one_per_app(&installed).iter().map(|e| e.app_id.as_str()).collect();
+        assert_eq!(ids, ["yantrik-blender", "gimp"]);
+    }
+
+    /// Only the same app: a bare id that happens to match ours under another name stays.
+    #[test]
+    fn a_different_app_under_a_matching_id_is_kept() {
+        let installed = vec![entry("notes", "Sticky Notes"), entry("yantrik-notes", "Notes")];
+        assert_eq!(one_per_app(&installed).len(), 2);
     }
 }
 
@@ -394,25 +357,53 @@ mod app_colour_tests {
         assert_eq!(hue("browser"), "teal");
         assert_eq!(hue("studio"), "violet");
     }
+
+    /// Teal is a mind's colour, so an app tile wears it only where the design names it: Browser.
+    /// Containers, Downloads and Packages were teal and read as three minds in the launcher.
+    #[test]
+    fn teal_is_the_browser_alone() {
+        let src = app_color_slint();
+        let teal: Vec<String> = arms(function_body(&src, "hue-for-app"), "id")
+            .into_iter()
+            .filter(|(_, h)| h == "teal")
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(teal, ["browser"], "only Browser is a teal tile");
+        let table = arms(function_body(&src, "hue-for-app"), "id");
+        let hue = |id: &str| table.iter().find(|(k, _)| k == id).map(|(_, h)| h.clone());
+        assert_eq!(hue("containers").as_deref(), Some("blue"));
+        assert_eq!(hue("downloads").as_deref(), Some("sky"));
+        assert_eq!(hue("packages").as_deref(), Some("green"));
+    }
 }
 
-fn populate_grid(ui: &App, installed: &Arc<Vec<DesktopEntry>>, query: &str, category: &str) {
-    let query_lower = query.to_lowercase();
-    let apps: Vec<AppGridItem> = installed
+/// One tile per app.
+///
+/// The scan already keeps one entry per desktop id, but the same program can arrive under two:
+/// the distribution's `blender.desktop` and our `yantrik-blender.desktop`, which starts the same
+/// Blender with the addon that gives it a surface. "Blender" was in All apps twice. Our entry
+/// shadows the bare id it wraps — same id once `yantrik-` is taken off, same name — and the
+/// distribution's is left out of the grid. The launch dispatch routes either id to the same
+/// place, so nothing that opened before stops opening.
+fn one_per_app(installed: &[DesktopEntry]) -> Vec<&DesktopEntry> {
+    let ours: Vec<(&str, String)> = installed
         .iter()
-        .filter(|entry| match category {
-            "all" => true,
-            "pinned" => super::pins::is_pinned(&entry.app_id),
-            other => icons::category_id(&entry.categories) == other,
-        })
+        .filter_map(|e| Some((e.app_id.strip_prefix("yantrik-")?, e.name.to_lowercase())))
+        .collect();
+    installed
+        .iter()
+        .filter(|e| !ours.iter().any(|(bare, name)| *bare == e.app_id && *name == e.name.to_lowercase()))
+        .collect()
+}
+
+fn populate_grid(ui: &App, installed: &Arc<Vec<DesktopEntry>>, query: &str) {
+    let apps: Vec<AppGridItem> = one_per_app(installed)
+        .into_iter()
         .filter(|entry| {
-            if query_lower.is_empty() {
-                return true;
-            }
-            entry.name.to_lowercase().contains(&query_lower)
-                || entry.app_id.to_lowercase().contains(&query_lower)
-                || entry.categories.to_lowercase().contains(&query_lower)
-                || entry.comment.to_lowercase().contains(&query_lower)
+            super::launcher::matches(
+                query,
+                &[&entry.name, &entry.app_id, &entry.categories, &entry.comment],
+            )
         })
         .map(|entry| {
             let icon = icons::resolve(&entry.icon);

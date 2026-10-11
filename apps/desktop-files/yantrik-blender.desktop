@@ -10,7 +10,7 @@ Exec=blender --python /opt/yantrik/share/blender/bootstrap.py
 # A machine without Blender shows no tile, and `describe shell` leaves `blender` out of its
 # apps instead of offering a name `open_app` then refuses (#214).
 TryExec=blender
-# One mark for now: brand/yantrik-mark.svg, installed as hicolor `yantrik`.
+# One mark for now: brand/yantrik-icon.svg, installed as hicolor `yantrik`.
 Icon=yantrik
 Categories=Graphics;3DGraphics;
 Keywords=3d;modelling;render;animation;

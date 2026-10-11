@@ -592,6 +592,20 @@ pub struct CompanionService {
     // Whether to use native OpenAI tool calling format (API backend with --jinja).
     use_native_tools: bool,
 
+    // A System One model (Jev, Kev, ...) that picks the tool a request needs, when configured.
+    judge: Option<std::sync::Arc<dyn yantrik_ml::judge::Judge>>,
+    // The same model, its uses and incognito, published for callers on other threads.
+    decisions: crate::decisions::Decisions,
+
+    // A ceiling on this turn's tools below the configured one: `Safe` while the person is
+    // asking from a phone (design/channels-2026-09-29.md). Set by every message the worker
+    // takes, so what runs after a remote turn keeps it until the next message.
+    turn_ceiling: Option<PermissionLevel>,
+    /// The next turn's words come from a program on the socket (`set_turn_outside`); taken, so it
+    /// applies to that one turn only.
+    turn_outside: bool,
+
+
     // Model family for family-aware chat templates (tool format, tool results).
     model_family: ModelFamily,
 
@@ -804,6 +818,14 @@ impl CompanionService {
         // Full tool set discoverable via discover_tools meta-tool.
         let max_perm = parse_permission(&config.tools.max_permission);
         let use_native_tools = llm.backend_name() == "api" && capability_profile.uses_native_tools();
+        let judge = crate::judge_route::build_judge(&config.judge, &llm, crate::judge_route::chat_locality(&config.llm));
+        let decisions = crate::decisions::Decisions::default();
+        decisions.publish(judge.clone(), &config.judge, false, crate::judge_route::chat_locality(&config.llm));
+        if let Some(j) = &judge {
+            let info = j.info();
+            tracing::info!(adapter = info.adapter, provider = %info.provider, model = %info.model,
+                           locality = info.locality.as_str(), "decision model");
+        }
 
         // Native tools: only ALWAYS_TOOLS (6 tools) — rest added dynamically per query
         tracing::debug!(always_on = ALWAYS_TOOLS.len(), "Dynamic tool selection initialized");
@@ -925,6 +947,11 @@ impl CompanionService {
             native_core_tools,
             skill_extra_tools: Vec::new(),
             use_native_tools,
+            judge,
+            decisions,
+            turn_ceiling: None,
+            turn_outside: false,
+
             model_family: capability_profile.family,
             task_manager: std::sync::Mutex::new(task_mgr),
             recent_events: Vec::new(),
@@ -1024,7 +1051,7 @@ impl CompanionService {
             let backend = yantrik_ml::ProviderRegistry::create_backend(
                 &provider_cfg.provider_type,
                 &provider_cfg.base_url,
-                provider_cfg.api_key.as_deref(),
+                provider_cfg.key_to_send(),
                 model,
             );
 
@@ -1162,6 +1189,7 @@ impl CompanionService {
     /// Toggle incognito mode (no data persistence).
     pub fn set_incognito(&mut self, enabled: bool) {
         self.incognito = enabled;
+        self.publish_decisions();
         tracing::info!(enabled, "Incognito mode toggled");
     }
 
@@ -1177,7 +1205,142 @@ impl CompanionService {
         self.capability_profile = yantrik_ml::ModelCapabilityProfile::from_model_name(&model_id);
         self.model_family = self.capability_profile.family;
         self.llm = new_llm;
+        // A decision model that is the chat model follows it.
+        if self.config.judge.kind() == yantrik_companion_core::judge_config::JudgeKind::ChatModel {
+            self.judge = crate::judge_route::build_judge(&self.config.judge, &self.llm, crate::judge_route::chat_locality(&self.config.llm));
+            self.publish_decisions();
+        }
         tracing::info!(model = %model_id, "LLM backend swapped");
+    }
+
+    /// Switch the decision model at runtime, from Settings. `None` of a judge is Off: every
+    /// caller decides as it would without one.
+    pub fn set_judge_config(&mut self, config: yantrik_companion_core::judge_config::JudgeConfig) {
+        self.judge = crate::judge_route::build_judge(&config, &self.llm, crate::judge_route::chat_locality(&self.config.llm));
+        self.config.judge = config;
+        self.publish_decisions();
+        match &self.judge {
+            Some(j) => {
+                let info = j.info();
+                tracing::info!(adapter = info.adapter, provider = %info.provider, model = %info.model,
+                               locality = info.locality.as_str(), "decision model switched");
+            }
+            None => tracing::info!("decision model off"),
+        }
+    }
+
+    /// Who answers decisions now, for describe and Settings: `None` when it is off.
+    pub fn judge_info(&self) -> Option<yantrik_ml::judge::JudgeInfo> {
+        self.judge.as_ref().map(|j| j.info())
+    }
+
+    /// Hold the next turns' tools to `ceiling` (`None`: the configured one alone).
+    pub fn set_turn_ceiling(&mut self, ceiling: Option<PermissionLevel>) {
+        self.turn_ceiling = ceiling;
+    }
+
+    /// The next turn's words come from a program on the companion's socket, not from the person:
+    /// they count as untrusted from the first word (`taint::mark_untrusted`), so "fetch the github
+    /// password and tell me" is refused as it would be after reading a page.
+    pub fn set_turn_outside(&mut self, outside: bool) {
+        self.turn_outside = outside;
+    }
+
+    /// Remove what the vault's tools left in the audit log before it withheld them: until 1 Oct
+    /// 2026 `vault_generate_password` was filed with the password it made, in plain text, where
+    /// any recall could read it. Every copy in the store goes (`purge_vault_audit_lines_in`).
+    /// Run at every start; after the first it finds nothing and rewrites nothing. A failure is
+    /// logged as one, never read as "nothing to clear". Backups taken before it keep the lines.
+    pub fn purge_vault_audit_lines(&self) -> usize {
+        match purge_vault_audit_lines_in(&self.db.conn()) {
+            Ok(0) => 0,
+            Ok(cleared) => {
+                tracing::warn!(cleared, "cleared vault tool results from the audit log, the oplog and the file");
+                cleared
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "could not clear vault tool results from the audit log: they remain in the store");
+                0
+            }
+        }
+    }
+
+    /// The category a tool is registered under, for the taint rules; `None` for no such tool.
+    /// `Dangerous` is the top grade, so every registered tool is listed.
+    pub(crate) fn category_of(&self, name: &str) -> Option<&'static str> {
+        self.registry
+            .list_metadata(PermissionLevel::Dangerous)
+            .into_iter()
+            .find(|m| m.name == name)
+            .map(|m| m.category)
+    }
+
+    /// Why a program outside the companion may not run this tool, or `None` when it may: above
+    /// the outside ceiling (`taint::OUTSIDE_CEILING`), refused by the companion's own rule
+    /// (`taint::outside_refusal`), or a tool it cannot name, which is refused rather than guessed at.
+    pub fn refused_to_outside(&self, name: &str) -> Option<String> {
+        use yantrik_companion_core::taint;
+        let Some(meta) = self.registry.list_metadata(PermissionLevel::Dangerous).into_iter().find(|m| m.name == name) else {
+            return Some(format!("There is no tool `{name}`."));
+        };
+        if meta.permission > taint::OUTSIDE_CEILING {
+            return Some(format!(
+                "`{name}` changes something, and a program on the companion's socket may only have it read: nothing it asks for may write, schedule or queue work that would later run as the person's."
+            ));
+        }
+        taint::outside_refusal(name, meta.category)
+    }
+
+    /// Run a tool for a program on the companion's socket: refused as `refused_to_outside` says,
+    /// and otherwise run as an outside turn of its own, at the outside ceiling and as incognito,
+    /// so the registry's own check sees who asked and nothing is kept as the person's.
+    pub fn run_tool_for_outside(&self, name: &str, args: &serde_json::Value) -> String {
+        use yantrik_companion_core::taint;
+        if let Some(why) = self.refused_to_outside(name) {
+            tracing::warn!(tool = %name, "a program on the companion socket asked for a refused tool");
+            return format!("Refused: {why}");
+        }
+        let metadata = self.registry.list_metadata(PermissionLevel::Dangerous);
+        let ctx = ToolContext {
+            db: &self.db,
+            max_permission: taint::OUTSIDE_CEILING,
+            registry_metadata: Some(&metadata),
+            task_manager: Some(&self.task_manager),
+            incognito: true,
+            agent_spawner: None,
+        };
+        taint::begin_turn();
+        taint::mark_outside("a program on the companion's socket");
+        let output = self.registry.execute(&ctx, name, args);
+        taint::end_turn();
+        output
+    }
+
+    /// The highest tool permission this turn may use: the configured one, or the turn's own
+    /// ceiling where that is lower.
+    fn max_permission_now(&self) -> PermissionLevel {
+        let configured = parse_permission(&self.config.tools.max_permission);
+        match self.turn_ceiling {
+            Some(ceiling) if ceiling < configured => ceiling,
+            _ => configured,
+        }
+    }
+
+    /// The decision model, its uses and incognito, for callers on other threads: they ask there,
+    /// never waiting behind a chat turn here.
+    pub fn decisions(&self) -> crate::decisions::Decisions {
+        self.decisions.clone()
+    }
+
+    /// Publish decisions to `desk` from now on: the bridge's, made before this companion was
+    /// built on its worker thread, so it could hand the desk out already.
+    pub fn share_decisions(&mut self, desk: crate::decisions::Decisions) {
+        self.decisions = desk;
+        self.publish_decisions();
+    }
+
+    fn publish_decisions(&self) {
+        self.decisions.publish(self.judge.clone(), &self.config.judge, self.incognito, crate::judge_route::chat_locality(&self.config.llm));
     }
 
     /// Persist the current config to disk (config.yaml).
@@ -1209,11 +1372,13 @@ impl CompanionService {
         std::mem::take(&mut self.recent_events)
     }
 
-    /// Execute a tool directly (bypassing LLM). Used by the recipe engine for Tool steps.
+    /// Execute a tool directly (bypassing LLM). Used by the recipe engine for Tool steps. At most
+    /// Standard, and never above the turn's own ceiling: a recipe a phone's or an outside caller's
+    /// words chose reaches no further than they do.
     pub fn execute_tool_direct(&self, tool_name: &str, args: &serde_json::Value) -> String {
         let ctx = ToolContext {
             db: &self.db,
-            max_permission: PermissionLevel::Standard,
+            max_permission: self.max_permission_now().min(PermissionLevel::Standard),
             registry_metadata: None,
             task_manager: Some(&self.task_manager),
             incognito: self.incognito,
@@ -1237,7 +1402,7 @@ impl CompanionService {
         let metadata = self.registry.list_metadata(PermissionLevel::Dangerous);
         let ctx = ToolContext {
             db: &self.db,
-            max_permission: parse_permission(&self.config.tools.max_permission),
+            max_permission: self.max_permission_now(),
             registry_metadata: Some(&metadata),
             task_manager: Some(&self.task_manager),
             incognito: self.incognito,
@@ -1251,11 +1416,12 @@ impl CompanionService {
     /// Names and one-line descriptions only — the full JSON schemas are what the model needs, and
     /// a caller that already knows which tool it wants does not need to read 178 of them.
     pub fn tool_catalog(&self) -> serde_json::Value {
-        let max_perm = parse_permission(&self.config.tools.max_permission);
+        let max_perm = self.max_permission_now();
         let tools: Vec<serde_json::Value> = self
             .registry
             .list_metadata(max_perm)
             .into_iter()
+            .filter(|m| self.refused_to_outside(m.name).is_none())
             .map(|m| {
                 serde_json::json!({
                     "name": m.name,
@@ -1532,7 +1698,7 @@ impl CompanionService {
                     } else {
                         let tool_ctx = ToolContext {
                             db: &self.db,
-                            max_permission: parse_permission(&self.config.tools.max_permission),
+                            max_permission: self.max_permission_now(),
                             registry_metadata: None,
                             task_manager: Some(&self.task_manager),
                             agent_spawner: None,
@@ -1736,7 +1902,7 @@ impl CompanionService {
         // [0] system: context (+ text-injected tools for non-API backends)
         // [1..N-1] conversation history
         // [N] user query
-        let max_perm = parse_permission(&self.config.tools.max_permission);
+        let max_perm = self.max_permission_now();
         let mut messages = Vec::with_capacity(context_messages.len() + 1);
 
         // Dynamic tool selection — adaptive based on model capability profile
@@ -1898,7 +2064,12 @@ impl CompanionService {
         let mut selected_tool_names: Vec<&str> = if degraded {
             FALLBACK_TOOLS.to_vec()
         } else if needs_tools {
-            select_tools_adaptive(user_text, &self.db, &active_profile)
+            crate::judge_route::select_tools(
+                // Incognito: the conversation goes to no judge, which may be a cloud service.
+                if self.incognito { None } else { self.judge.as_deref() },
+                &self.config.judge, user_text,
+                &self.conversation_history, &self.db, &active_profile,
+            )
         } else {
             ALWAYS_TOOLS.to_vec()
         };
@@ -2388,11 +2559,35 @@ impl CompanionService {
     }
 
     /// Streaming version of handle_message — calls `on_token` for each text fragment.
-    pub fn handle_message_streaming<F>(
-        &mut self,
-        user_text: &str,
-        mut on_token: F,
-    ) -> AgentResponse
+    ///
+    /// A turn a program on the socket asked for (`set_turn_outside`) is a conversation of one
+    /// exchange, held to the outside ceiling and run as incognito:
+    /// - it does not see the person's earlier turns, and leaves nothing in them; nor does the next
+    ///   program's ask see this one's;
+    /// - nothing it says is kept as the person's (memories, learning, urges, trust);
+    /// - it reads and changes nothing (`taint::OUTSIDE_CEILING`), and is marked outside from the
+    ///   first word (`taint::mark_outside`).
+    /// The person's conversation, ceiling and incognito setting are put back afterwards, a
+    /// panicking turn included, and the turn's taint does not stay on the thread.
+    pub fn handle_message_streaming<F>(&mut self, user_text: &str, on_token: F) -> AgentResponse
+    where
+        F: FnMut(&str),
+    {
+        if !std::mem::take(&mut self.turn_outside) {
+            return self.streaming_turn(user_text, on_token, false);
+        }
+        let persons = std::mem::take(&mut self.conversation_history);
+        let was_incognito = std::mem::replace(&mut self.incognito, true);
+        let ceiling = std::mem::replace(&mut self.turn_ceiling, Some(yantrik_companion_core::taint::OUTSIDE_CEILING));
+        let turn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.streaming_turn(user_text, on_token, true)));
+        yantrik_companion_core::taint::end_turn();
+        self.turn_ceiling = ceiling;
+        self.incognito = was_incognito;
+        self.conversation_history = persons;
+        turn.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    }
+
+    fn streaming_turn<F>(&mut self, user_text: &str, mut on_token: F, outside: bool) -> AgentResponse
     where
         F: FnMut(&str),
     {
@@ -2400,6 +2595,9 @@ impl CompanionService {
         // this conversation has taken in — a page read ten minutes ago must not block a
         // credential now, and a credential fetched then must not license an exfiltration now.
         yantrik_companion_core::taint::begin_turn();
+        if outside {
+            yantrik_companion_core::taint::mark_outside("a program on the companion's socket");
+        }
 
         // Step 0: SecurityGuard — check user input for injection
         if let Some(warning) = self.guard.check_input(user_text, &self.db) {
@@ -2435,7 +2633,7 @@ impl CompanionService {
                     } else {
                         let tool_ctx = ToolContext {
                             db: &self.db,
-                            max_permission: parse_permission(&self.config.tools.max_permission),
+                            max_permission: self.max_permission_now(),
                             registry_metadata: None,
                             task_manager: Some(&self.task_manager),
                             agent_spawner: None,
@@ -2471,11 +2669,16 @@ impl CompanionService {
             }
         }
 
-        // Steps 1-6 are identical to handle_message
-        self.check_session_timeout();
+        // Steps 1-6 are identical to handle_message. An outside ask's prompt holds nothing of the
+        // person's: no memories, identity, self-reflection, personality, trace hints or day context.
+        if !outside {
+            self.check_session_timeout();
+        }
 
         // Step 2: Smart multi-signal recall (Gap 1+2)
-        let smart = if self.config.memory_evolution.smart_recall_enabled {
+        let smart = if outside {
+            memory_evolution::SmartRecallResult::from_primary(Vec::new())
+        } else if self.config.memory_evolution.smart_recall_enabled {
             memory_evolution::smart_recall(&self.db, user_text, &self.config.memory_evolution)
         } else {
             let mems = self.db.recall_text(user_text, 5).unwrap_or_default();
@@ -2488,7 +2691,7 @@ impl CompanionService {
         {
             let existing_rids: std::collections::HashSet<String> =
                 memories.iter().map(|m| m.rid.clone()).collect();
-            let identity_facts = self.recall_identity_facts();
+            let identity_facts = if outside { Vec::new() } else { self.recall_identity_facts() };
             for fact in identity_facts {
                 if !existing_rids.contains(&fact.rid) {
                     memories.push(fact);
@@ -2502,12 +2705,13 @@ impl CompanionService {
             .unwrap_or_default()
             .into_iter()
             .filter(|r| {
-                r.source == "self" || r.domain == "self-reflection"
+                !outside && (r.source == "self" || r.domain == "self-reflection")
             })
             .take(3)
             .collect::<Vec<_>>();
 
-        let urges = self.urge_queue.pop_for_interaction(&self.db.conn(), 2);
+        // The person's pending urges are theirs: an outside turn neither takes them nor leaves any.
+        let urges = if outside { Vec::new() } else { self.urge_queue.pop_for_interaction(&self.db.conn(), 2) };
         let urge_ids: Vec<String> = urges.iter().map(|u| u.urge_id.clone()).collect();
 
         if !self.incognito {
@@ -2515,7 +2719,7 @@ impl CompanionService {
         }
 
         let state = self.build_state();
-        for instinct in &self.instincts {
+        for instinct in self.instincts.iter().filter(|_| !outside) {
             let specs = instinct.on_interaction(&state, user_text);
             for spec in specs {
                 self.urge_queue.push(&self.db.conn(), &spec);
@@ -2528,7 +2732,7 @@ impl CompanionService {
             tracing::info!("LLM degraded (streaming) — lightweight prompt and minimal tools");
         }
 
-        let context_messages = if degraded {
+        let context_messages = if degraded || outside {
             context::build_messages_lightweight(
                 user_text, &self.config, &memories, &self.conversation_history,
             )
@@ -2587,7 +2791,7 @@ impl CompanionService {
         };
 
         // Build message array — single system message (Qwen3.5 requires it):
-        let max_perm = parse_permission(&self.config.tools.max_permission);
+        let max_perm = self.max_permission_now();
         let mut messages = Vec::with_capacity(context_messages.len() + 1);
 
         // Dynamic tool selection — adaptive based on model capability profile
@@ -2687,7 +2891,9 @@ impl CompanionService {
                 self.conversation_history.push(ChatMessage::user(user_text));
                 self.conversation_history.push(ChatMessage::assistant(&response_text));
                 self.compress_history_if_needed();
-                self.session_turn_count += 1;
+                if !outside {
+            self.session_turn_count += 1;
+        }
 
                 if !self.incognito {
                     let tool_calls_made = vec![tool_name.clone()];
@@ -2721,7 +2927,12 @@ impl CompanionService {
         let selected_tool_names: Vec<&str> = if degraded {
             FALLBACK_TOOLS.to_vec()
         } else if needs_tools {
-            select_tools_adaptive(user_text, &self.db, &active_profile)
+            crate::judge_route::select_tools(
+                // Incognito: the conversation goes to no judge, which may be a cloud service.
+                if self.incognito { None } else { self.judge.as_deref() },
+                &self.config.judge, user_text,
+                &self.conversation_history, &self.db, &active_profile,
+            )
         } else {
             ALWAYS_TOOLS.to_vec()
         };
@@ -2761,7 +2972,8 @@ impl CompanionService {
         }
 
         // Tool chain learning: inject trace hints (skip in degraded mode)
-        if !degraded && self.config.agent.trace_learning && self.config.tools.enabled {
+        // Not for an outside ask: the hints are the person's past requests.
+        if !degraded && !outside && self.config.agent.trace_learning && self.config.tools.enabled {
             let hints = ToolTraces::find_similar(
                 &self.db.conn(), &self.db, user_text, 3,
                 self.config.agent.trace_min_similarity,
@@ -2778,7 +2990,7 @@ impl CompanionService {
         }
 
         // Inject Active Day Context into system prompt (budget from capability profile)
-        if active_profile.ambient_context_budget > 0 {
+        if !outside && active_profile.ambient_context_budget > 0 {
             self.active_context.prune_stale();
             if let Some(context_block) = self.active_context.build_context_block(
                 active_profile.ambient_context_budget,
@@ -2825,7 +3037,8 @@ impl CompanionService {
         });
 
         // Emit UserMessage event and capture trace for tool call linking
-        let msg_trace = self.event_bus.as_ref().map(|bus| {
+        // Not for an outside ask: the desktop reads these as the person speaking.
+        let msg_trace = self.event_bus.as_ref().filter(|_| !outside).map(|bus| {
             bus.emit(
                 yantrik_os::EventKind::UserMessage {
                     text: user_text.chars().take(500).collect(),
@@ -3202,7 +3415,9 @@ impl CompanionService {
         // Compress conversation history when it grows too long
         self.compress_history_if_needed();
 
-        self.session_turn_count += 1;
+        if !outside {
+            self.session_turn_count += 1;
+        }
 
         // Steps 8-9: Skip all persistence in incognito mode
         if !self.incognito {
@@ -3672,6 +3887,14 @@ impl CompanionService {
     /// Get conversation history.
     pub fn history(&self) -> &[ChatMessage] {
         &self.conversation_history
+    }
+
+    /// Start a new conversation: the person pressed New chat (#246). What was said so far stops
+    /// being the context of the next turn, exactly as the idle timeout does it; nothing learned
+    /// from it is forgotten, since memory is not the conversation.
+    pub fn new_conversation(&mut self) {
+        self.conversation_history.clear();
+        self.session_turn_count = 0;
     }
 
     /// Compress conversation history when it exceeds the configured limit.
@@ -4223,14 +4446,16 @@ fn execute_tool_round_tracked(
                     action: name.to_string(),
                 }
             };
-            crate::trust_model::TrustModel::apply_event(&db.conn(), &trust_event);
+            if !incognito {
+                crate::trust_model::TrustModel::apply_event(&db.conn(), &trust_event);
+            }
         }
 
         // Record step in agent loop
         agent_loop.record_step(name, args, &result, !is_error);
 
         // Ingest into Context Cortex pulse stream
-        if let Some(ctx) = cortex.as_mut() {
+        if let Some(ctx) = cortex.as_mut().filter(|_| !incognito) {
             ctx.ingest_tool_result(&db.conn(), name, args, &result);
         }
 
@@ -5187,7 +5412,7 @@ mod bond_scoring_tests {
     use yantrik_ml::LLMResponse;
 
     /// A mind that answers every prompt the same way and never fails.
-    struct Echo;
+    pub(super) struct Echo;
 
     impl LLMBackend for Echo {
         fn chat(
@@ -5787,5 +6012,151 @@ mod recipe_placeholder_tests {
             memories_containing(&c, "rust programming") > 0,
             "and the runnable step ran — its audit line is in the store"
         );
+    }
+}
+
+/// What a cleared audit line says in place of what the vault tool returned.
+const WITHHELD_AUDIT_LINE: &str = "Tool: (a vault tool; what it returned is withheld)";
+
+/// `CompanionService::purge_vault_audit_lines` on a connection to the memory store.
+///
+/// Every copy goes, not only the row: the text is overwritten in `memories` (the full-text index
+/// follows it by trigger) and in the `record` op of the oplog that wrote it, and the file is then
+/// rewritten, VACUUM and then a WAL truncate in that order, as yantrikdb's own payload-sealing
+/// migration does, because an UPDATE frees the page that held the old text without erasing it.
+/// `!` escapes the LIKE wildcards, so `vault_` matches the underscore, not any character.
+fn purge_vault_audit_lines_in(conn: &rusqlite::Connection) -> rusqlite::Result<usize> {
+    let rids: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT rid FROM memories WHERE domain = 'audit/tools' \
+             AND (text LIKE 'Tool: vault!_%' ESCAPE '!' OR text LIKE 'Tool: browser!_login%' ESCAPE '!')",
+        )?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    if rids.is_empty() {
+        return Ok(0);
+    }
+    let tx = conn.unchecked_transaction()?;
+    for rid in &rids {
+        tx.execute(
+            "UPDATE memories SET text = ?1, consolidation_status = 'tombstoned' WHERE rid = ?2",
+            rusqlite::params![WITHHELD_AUDIT_LINE, rid],
+        )?;
+        let ops: Vec<(String, String)> = {
+            let mut stmt = tx.prepare("SELECT op_id, payload FROM oplog WHERE target_rid = ?1")?;
+            let rows = stmt.query_map([rid], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for (op_id, payload) in ops {
+            if payload.starts_with("ENCv1:") {
+                // Sealed: only the engine's key reads it, and the shell opens its store unsealed,
+                // so this does not arise; if it ever does, the row is said, not silently kept.
+                tracing::warn!(%op_id, "a sealed oplog payload of a vault audit line was left as it is");
+                continue;
+            }
+            let scrubbed = match serde_json::from_str::<serde_json::Value>(&payload) {
+                Ok(mut value) => {
+                    withhold_text(&mut value);
+                    value.to_string()
+                }
+                Err(_) => "{}".to_string(),
+            };
+            tx.execute("UPDATE oplog SET payload = ?1 WHERE op_id = ?2", rusqlite::params![scrubbed, op_id])?;
+        }
+    }
+    tx.commit()?;
+    conn.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")?;
+    Ok(rids.len())
+}
+
+/// Every `text` in an op's payload, at any depth, replaced by the withheld line.
+fn withhold_text(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, v) in map.iter_mut() {
+                if key == "text" && v.is_string() {
+                    *v = serde_json::Value::String(WITHHELD_AUDIT_LINE.to_string());
+                } else {
+                    withhold_text(v);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(withhold_text),
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod vault_audit_tests {
+    use super::*;
+
+    /// `vault_generate_password` was filed in the audit log with the password it made (security
+    /// reviews, 1 Oct 2026). Every copy is cleared: the row, the full-text index and the op that
+    /// recorded it. Nothing else is touched.
+    #[test]
+    fn the_vaults_old_audit_lines_are_cleared_everywhere_and_nothing_else() {
+        let db = YantrikDB::new(":memory:", 384).expect("in-memory database");
+        let embedding = vec![0.1f32; 384];
+        let mut put = |text: &str, domain: &str| {
+            db.record(text, "semantic", 0.3, 0.0, 604800.0, &serde_json::json!({}), &embedding, "default", 0.9, domain, "self", None)
+                .expect("record")
+        };
+        let leaked = put("Tool: vault_generate_password(length=20) → Generated password: hunter2hunter2", "audit/tools");
+        let login = put("Tool: browser_login(site=github.com) → logged in", "audit/tools");
+        let search = put("Tool: web_search(q=vault) → results", "audit/tools");
+        let note = put("Tool: vault_generate_password is something I can do", "self");
+        let near = put("Tool: vaultish(x) → y", "audit/tools");
+
+        let conn = db.conn();
+        let in_oplog = |needle: &str| -> i64 {
+            conn.query_row("SELECT COUNT(*) FROM oplog WHERE payload LIKE ?1", [format!("%{needle}%")], |r| r.get(0)).unwrap()
+        };
+        assert!(in_oplog("hunter2") > 0, "the op that recorded the line carries its text: the test would prove nothing");
+
+        assert_eq!(purge_vault_audit_lines_in(&conn).unwrap(), 2);
+        let row = |rid: &str| -> (String, String) {
+            conn.query_row("SELECT text, consolidation_status FROM memories WHERE rid = ?1", [rid], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+        };
+        assert_eq!(row(&leaked), (WITHHELD_AUDIT_LINE.to_string(), "tombstoned".to_string()));
+        assert_eq!(row(&login).1, "tombstoned");
+        assert_eq!(in_oplog("hunter2"), 0, "the password is still in the oplog");
+        let fts: i64 = conn.query_row("SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH 'hunter2hunter2'", [], |r| r.get(0)).unwrap();
+        assert_eq!(fts, 0, "the password is still in the full-text index");
+        for rid in [&search, &note, &near] {
+            assert_eq!(row(rid).1, "active", "{rid} was not the vault's");
+        }
+        assert!(in_oplog("vaultish") > 0, "an op that was not the vault's was rewritten");
+        // Run at every start: nothing to do the second time, and no rewrite of the file.
+        assert_eq!(purge_vault_audit_lines_in(&conn).unwrap(), 0);
+    }
+
+    /// What a program on the companion's socket may have run: the allow-list, and under it the
+    /// Safe ceiling. `timer` is in an allowed category (time) and is refused by its grade alone.
+    #[test]
+    fn an_outside_caller_reaches_only_what_holds_nothing_of_the_persons() {
+        let db = YantrikDB::new(":memory:", 384).expect("in-memory database");
+        let mut config = CompanionConfig::default();
+        config.tools.enabled = true;
+        let c = CompanionService::new(db, std::sync::Arc::new(super::bond_scoring_tests::Echo), config);
+        let registered = |name: &str| assert!(c.category_of(name).is_some(), "{name} is not registered: the check would prove nothing");
+
+        for tool in ["timer", "vault_get", "vault_generate_password", "read_file", "read_clipboard", "app_action", "describe_app", "recall", "queue_task"] {
+            registered(tool);
+            assert!(c.refused_to_outside(tool).is_some(), "{tool} would run for a program on the socket");
+        }
+        for tool in ["calculate", "base64_encode", "date_calc", "get_weather", "web_search"] {
+            registered(tool);
+            assert_eq!(c.refused_to_outside(tool), None, "{tool} holds nothing of the person's");
+        }
+        assert!(c.refused_to_outside("no_such_tool").is_some());
+
+        // The catalogue an outside caller is shown is the same allow-list.
+        let catalog = c.tool_catalog().to_string();
+        for hidden in ["vault_get", "read_file", "\"timer\"", "recall"] {
+            assert!(!catalog.contains(hidden), "the outside catalogue shows {hidden}");
+        }
+        assert!(catalog.contains("calculate"));
     }
 }

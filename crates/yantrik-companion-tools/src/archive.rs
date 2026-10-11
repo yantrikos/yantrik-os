@@ -1,6 +1,8 @@
 //! Archive tools — archive_create, archive_extract.
 
-use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path};
+use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path, validate_write_path};
+
+mod members;
 
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(ArchiveCreateTool));
@@ -58,7 +60,7 @@ impl Tool for ArchiveCreateTool {
             return "Error: too many source paths (max 20)".to_string();
         }
 
-        let out_expanded = match validate_path(output_path) {
+        let out_expanded = match validate_write_path(output_path) {
             Ok(p) => p,
             Err(e) => return format!("Error (output): {e}"),
         };
@@ -144,10 +146,16 @@ impl Tool for ArchiveExtractTool {
             Err(e) => return format!("Error (archive): {e}"),
         };
 
-        let dest_expanded = match validate_path(extract_to) {
+        let dest_expanded = match validate_write_path(extract_to) {
             Ok(p) => p,
             Err(e) => return format!("Error (destination): {e}"),
         };
+
+        // Every member, before tar writes any of them: no links, and no name that lands
+        // somewhere a single write would be refused (members.rs).
+        if let Err(e) = members::check(&archive_expanded, &dest_expanded, validate_write_path) {
+            return format!("Error: {e}");
+        }
 
         // Create destination directory
         if !std::path::Path::new(&dest_expanded).exists() {

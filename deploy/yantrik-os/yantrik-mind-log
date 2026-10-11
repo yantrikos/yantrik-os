@@ -1,0 +1,14 @@
+#!/bin/sh
+# The Mind's journal, for the desktop's account (#411): the Mind runs as its own account, so its
+# log is no longer in the person's journal, and the systemd-journal group would read every system
+# log, auth included. Installed root-owned into /usr/lib/yantrik, and allowed without a password
+# by the updater's sudo rule with no arguments at all (`""`), so there is exactly one command line:
+#
+#     sudo -n /usr/lib/yantrik/yantrik-mind-log
+#
+# This unit only; --no-pager, so no pager runs as root. The text is the Mind's own: journalctl
+# strips colour and OSC sequences and shows other control characters as "[N blob data]", but what
+# the lines say is untrusted, and a line's identifier is whatever the Mind chose to call itself.
+set -eu
+[ "$#" -eq 0 ] || { echo "yantrik-mind-log takes no arguments" >&2; exit 2; }
+exec /usr/bin/journalctl -u yantrik-mind.service -o short-precise --no-pager -n 5000

@@ -143,7 +143,10 @@ impl SyncRpcClient {
 
     /// Connect to the default address for a service.
     pub fn for_service(service_id: &str) -> Self {
-        Self::new(&RpcServer::default_address(service_id))
+        // A mind's process dials the door (#411); everyone else their own runtime directory.
+        let address = crate::mind_door::client_address(service_id)
+            .unwrap_or_else(|| RpcServer::default_address(service_id));
+        Self::new(&address)
     }
 
     /// Give this client a longer budget than [`DEFAULT_TIMEOUT`].

@@ -258,6 +258,9 @@ pub struct Engine {
     /// then acted past must not come back on the next timer tick, or nothing they do can ever
     /// clear it. A new notice raises it again.
     notice_seen: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether the current notice is information (the list came back changed) rather than a
+    /// fault. The window leads the one with an info glyph and the other with a warning glyph.
+    notice_is_info: Arc<std::sync::atomic::AtomicBool>,
     /// When the list was last written. Read only by the progress throttle.
     last_save: Arc<Mutex<Option<Instant>>>,
 }
@@ -281,6 +284,7 @@ impl Engine {
             store_path: state_dir.join("state.json"),
             notice: Arc::new(Mutex::new(String::new())),
             notice_seen: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            notice_is_info: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             last_save: Arc::new(Mutex::new(None)),
         };
         engine.load();
@@ -316,9 +320,19 @@ impl Engine {
         self.notice_seen.store(true, Ordering::Relaxed);
     }
 
+    /// Whether the notice is information rather than a fault.
+    pub fn notice_is_info(&self) -> bool {
+        self.notice_is_info.load(Ordering::Relaxed)
+    }
+
     fn set_notice(&self, text: impl Into<String>) {
+        self.set_notice_as(text, false);
+    }
+
+    fn set_notice_as(&self, text: impl Into<String>, info: bool) {
         let text = text.into();
         let raise = !text.is_empty();
+        self.notice_is_info.store(info, Ordering::Relaxed);
         if let Ok(mut notice) = self.notice.lock() {
             *notice = text;
         }
@@ -410,15 +424,9 @@ impl Engine {
 
         if interrupted > 0 || missing > 0 {
             // Said out loud rather than left for someone to notice in the list: these are the two
-            // states where what is on screen differs from what the person last saw.
-            let mut parts = Vec::new();
-            if interrupted > 0 {
-                parts.push(format!("{interrupted} interrupted by the last shutdown, now paused"));
-            }
-            if missing > 0 {
-                parts.push(format!("{missing} finished file(s) no longer on disk"));
-            }
-            self.set_notice(format!("Restored the download list — {}", parts.join("; ")));
+            // states where what is on screen differs from what the person last saw. Information,
+            // not a fault: nothing was lost by this app, and every row still says what it is.
+            self.set_notice_as(restored_notice(interrupted, missing), true);
         }
     }
 
@@ -602,7 +610,7 @@ impl Engine {
             Status::Paused | Status::Failed => {}
             other => return Err(format!("download {id} is {}, nothing to resume", other.as_str())),
         }
-        let have = std::fs::metadata(download.path()).map(|m| m.len()).unwrap_or(0);
+        let have = std::fs::symlink_metadata(download.path()).map(|m| m.len()).unwrap_or(0);
         if let Some(ctl) = self.control_for(id) {
             ctl.store(control::RUN, Ordering::Relaxed);
         }
@@ -826,10 +834,12 @@ impl Engine {
         // expression covers both.
         let total = body_len.map(|len| start_at + len);
 
+        // Never through a link: a link put where the download lands would send the bytes to
+        // wherever it points, past the rule that chose this place (agent_rule.rs).
         let file = if appending {
-            OpenOptions::new().append(true).open(&path)
+            no_follow(OpenOptions::new().append(true)).open(&path)
         } else {
-            File::create(&path)
+            no_follow(OpenOptions::new().write(true).create(true).truncate(true)).open(&path)
         };
         let mut file = match file {
             Ok(file) => file,
@@ -1339,6 +1349,16 @@ pub fn default_download_dir() -> PathBuf {
     Path::new(&home).join("Downloads")
 }
 
+/// Open options that refuse a path whose last part is a link (`O_NOFOLLOW`).
+fn no_follow(options: &mut OpenOptions) -> &mut OpenOptions {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    options
+}
+
 /// `~/x` means what it does in a shell; anything else is taken as given.
 pub fn expand_home(dir: &str) -> PathBuf {
     if let Some(rest) = dir.strip_prefix("~/").or_else(|| dir.strip_prefix("~\\")) {
@@ -1390,7 +1410,10 @@ pub fn filename_from_url(url: &str) -> String {
 /// Downloading over a file the person already has would be the one irreversible thing this app
 /// could do by accident, so it does not.
 pub fn unique_in(dir: &Path, name: &str) -> String {
-    if !dir.join(name).exists() {
+    // `symlink_metadata`, not `exists`: a link that points at nothing is not a free name. Taken
+    // as one, the transfer would write through it to wherever it points.
+    let taken = |n: &str| dir.join(n).symlink_metadata().is_ok();
+    if !taken(name) {
         return name.to_string();
     }
     let (stem, extension) = match name.rfind('.') {
@@ -1400,7 +1423,7 @@ pub fn unique_in(dir: &Path, name: &str) -> String {
     };
     for n in 1..10_000 {
         let candidate = format!("{stem} ({n}){extension}");
-        if !dir.join(&candidate).exists() {
+        if !taken(&candidate) {
             return candidate;
         }
     }
@@ -1435,6 +1458,31 @@ pub fn format_duration(secs: u64) -> String {
 
 fn now_stamp() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+/// `one` or `many` by count. A person reads "1 download is" and "6 downloads are", never
+/// "file(s)": the hedge makes them do the grammar the app already knew.
+pub fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
+    if n == 1 { one } else { many }
+}
+
+/// What a restored list says about the rows that came back different from how they were left.
+fn restored_notice(interrupted: usize, missing: usize) -> String {
+    let mut text = String::from("Restored the download list.");
+    if interrupted > 0 {
+        text.push_str(&format!(
+            " {interrupted} {} interrupted by the last shutdown and {} now paused.",
+            plural(interrupted, "download was", "downloads were"),
+            plural(interrupted, "is", "are"),
+        ));
+    }
+    if missing > 0 {
+        text.push_str(&format!(
+            " {missing} finished {} no longer on disk.",
+            plural(missing, "download is", "downloads are"),
+        ));
+    }
+    text
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -1559,6 +1607,22 @@ mod tests {
         assert_eq!(unique_in(&dir, "noext"), "noext (1)");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_is_never_a_free_name_and_a_download_never_writes_through_one() {
+        let dir = std::env::temp_dir().join(format!("yantrik-dl-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let elsewhere = dir.join("elsewhere.desktop");
+        std::os::unix::fs::symlink(&elsewhere, dir.join("a.desktop")).unwrap();
+        assert_eq!(unique_in(&dir, "a.desktop"), "a (1).desktop", "a dangling link is taken");
+        let refused = no_follow(OpenOptions::new().write(true).create(true).truncate(true))
+            .open(dir.join("a.desktop"));
+        assert!(refused.is_err(), "the open refuses a link");
+        assert!(!elsewhere.exists(), "nothing was written where the link points");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1803,10 +1867,30 @@ mod tests {
         assert_eq!(engine.snapshot().len(), 1);
         // Nothing finished means nothing to verify, and it says which state it is in.
         assert!(engine.verify(4, None).unwrap_err().contains("missing"));
+        // Said as information, in whole words, not as a fault with a "file(s)" in it.
+        assert_eq!(
+            engine.notice(),
+            "Restored the download list. 1 finished download is no longer on disk."
+        );
+        assert!(engine.notice_is_info());
 
         // Put the file back and the next start says completed again.
         store.part("moved.iso", 400);
         assert_eq!(store.engine().snapshot()[0].status, Status::Completed);
+    }
+
+    #[test]
+    fn the_restored_notice_counts_in_words() {
+        assert_eq!(
+            restored_notice(0, 6),
+            "Restored the download list. 6 finished downloads are no longer on disk."
+        );
+        assert_eq!(
+            restored_notice(1, 2),
+            "Restored the download list. 1 download was interrupted by the last shutdown and is now \
+             paused. 2 finished downloads are no longer on disk."
+        );
+        assert!(!restored_notice(3, 0).contains("(s)"));
     }
 
     #[test]
@@ -1818,6 +1902,7 @@ mod tests {
         assert!(engine.snapshot().is_empty(), "an unreadable list starts empty, not broken");
         let notice = engine.notice();
         assert!(notice.contains("could not be read"), "and the app says so: {notice}");
+        assert!(!engine.notice_is_info(), "a list it could not read is a fault, not information");
 
         let kept: Vec<String> = store
             .entries()

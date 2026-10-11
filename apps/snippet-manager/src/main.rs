@@ -279,9 +279,8 @@ fn show_all(ui: &SnippetManagerApp, state: &State) {
 /// which are painted from the store — so this can also be called from the thread hop that brings
 /// the companion's answer back, where the store is not reachable.
 ///
-/// There is no timer behind it and no `reach()` check on the way in: the companion's status
-/// call blocks on the UI thread, and this app has one refresh path — every mutation ends in
-/// [`show_detail`] — so a poll would buy nothing and could freeze the window. `agent-unavailable`
+/// There is no timer behind it and no `reach()` check on the way in: this app has one refresh
+/// path — every mutation ends in [`show_detail`] — so a poll would buy nothing. `agent-unavailable`
 /// is deliberately not touched here: it belongs to [`ask_companion`], which is the only thing
 /// that knows whether the companion answered, and a repaint must neither clear a real failure
 /// nor invent one.
@@ -1175,7 +1174,7 @@ fn publish_control(app: &SnippetManagerApp, state: State) {
             // Sensitive, not standard: this destroys something the person wrote and there is no
             // trash to take it out of. Container Manager grades `remove` the same way for the
             // same reason — the recoverable and the unrecoverable are not one grade.
-            Action::new("delete", "Throw a snippet away")
+            Action::new("delete", "Throw a snippet away. There is no trash to take it out of: it cannot be undone.")
                 .arg(Param::text("id").describe("Its id, or its title"))
                 .risk("sensitive"),
             move |args| {

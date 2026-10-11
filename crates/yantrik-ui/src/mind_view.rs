@@ -19,25 +19,55 @@
 //! (`SO_PEERCRED`) and any agent token are still in scope when the dock's spawn runs. A click
 //! has no caller at all. Everything else is sorted by [`classify`].
 //!
-//! # Failing safe
+//! # When Mind View cannot start
 //!
 //! If the nested compositor cannot be started — no labwc, no config, or it does not say which
-//! display it is serving within [`START_BUDGET`] — the app opens on the person's desktop as it
-//! did before this existed, the reason is logged and published in `describe shell`, and Mind View
-//! is not tried again until the shell restarts. A broken Mind View must never cost a mind its
-//! apps, and must never cost the person the same wait twice.
+//! display it is serving within [`START_BUDGET`] — the reason is logged and published in
+//! `describe shell`, and Mind View is tried again after `RETRY_AFTER`. The mind's launch
+//! then fails with that reason. It used to open the app on the person's desktop instead, which
+//! put a mind's work over theirs in exactly the case nobody was watching (2 Oct 2026); a refused
+//! launch that says why is better than a window in the wrong place.
 
 use std::collections::HashSet;
+
+use yantrik_companion::tools::browser::MindDisplay;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+/// The environment that titles Mind View's window: the title library preloaded into its labwc,
+/// when it ships beside the shell. Without it the window keeps labwc's own title; nothing else
+/// changes.
+fn title_preload() -> Vec<(&'static str, String)> {
+    let lib = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join(TITLE_LIBRARY)))
+        .filter(|p| p.is_file());
+    match lib {
+        Some(lib) => vec![
+            ("LD_PRELOAD", lib.display().to_string()),
+            ("YANTRIK_MIND_VIEW_TITLE", TITLE.to_string()),
+        ],
+        None => Vec::new(),
+    }
+}
+
+/// The title library's file name, beside the shell in bin/.
+const TITLE_LIBRARY: &str = "libyantrik_mind_view_title.so";
 
 /// How long the nested compositor gets to say which display it is serving.
 ///
 /// It is paid off the UI thread (the launch waits on a worker, see `wire::dock::spawn_launch`),
 /// and only the first time: labwc on the software renderer answers in well under a second.
 const START_BUDGET: Duration = Duration::from_secs(5);
+
+/// How long a failed start is believed before Mind View is started again.
+const RETRY_AFTER: Duration = Duration::from_secs(30);
+
+/// The startup script the nested labwc runs, in the session's socket directory. Only a Mind View
+/// runs it, which is how one an earlier shell left is found.
+const SEAT_SCRIPT: &str = "mind-view-seat.sh";
 
 /// Where the nested labwc's configuration is installed, and where it is in a checkout.
 const INSTALLED_CONFIG: &str = "/opt/yantrik/share/labwc-mind";
@@ -63,6 +93,11 @@ pub fn is_nested_window(declared_id: &str, title: &str) -> bool {
         .is_some_and(|(name, output)| COMPOSITORS.contains(&name) && output.starts_with("WL-"))
 }
 
+/// The title Mind View's window carries on the person's desktop. The one place the words are
+/// spelled for code that finds the window by title: the title library is handed it, and
+/// rc.xml's Super+Shift+V binding is tested against it.
+pub const TITLE: &str = "Mind View";
+
 /// The shell's own id for the Mind View window, as the window list and `show_app` spell it.
 pub const APP_ID: &str = "mind-view";
 
@@ -77,12 +112,31 @@ pub struct Seat {
 
 impl Seat {
     /// The environment a process needs to draw on this display rather than the person's.
+    ///
+    /// Also pins the toolkits' backend choice to what Mind View offers: without an Xwayland of its
+    /// own, GTK and Qt are told Wayland only, so a dead Wayland socket makes an app fail instead
+    /// of falling back to the person's X display (PR #582 review, B1).
     pub fn env(&self) -> Vec<(&'static str, String)> {
         let mut env = vec![("WAYLAND_DISPLAY", self.wayland.clone())];
-        if let Some(x11) = &self.x11 {
-            env.push(("DISPLAY", x11.clone()));
+        match &self.x11 {
+            Some(x11) => {
+                env.push(("DISPLAY", x11.clone()));
+                env.push(("GDK_BACKEND", "wayland,x11".to_string()));
+                env.push(("QT_QPA_PLATFORM", "wayland;xcb".to_string()));
+            }
+            None => {
+                env.push(("GDK_BACKEND", "wayland".to_string()));
+                env.push(("QT_QPA_PLATFORM", "wayland".to_string()));
+            }
         }
         env
+    }
+
+    /// What every launch for a mind does to its environment: everything that names the person's
+    /// session cleared first, then this display set. The one place that decides it; the launcher,
+    /// the agent terminal's viewer and the companion's browser all apply it.
+    pub fn display(&self) -> MindDisplay {
+        MindDisplay::mind_view(self.env())
     }
 }
 
@@ -105,6 +159,9 @@ pub struct CallerFacts {
     pub agent: Option<bool>,
     /// The attached mind this caller's ancestry belongs to, if any.
     pub attached_mind: Option<String>,
+    /// Whether the kernel says the caller is the mind account (#411): a caller that came in
+    /// through the mind door. A mind by what it is, before anything it says or any /proc walk.
+    pub mind_account: bool,
 }
 
 /// Sort a caller into the person or a mind.
@@ -116,6 +173,10 @@ pub struct CallerFacts {
 /// - A process descended from an attached mind (Hermes, pi through `yos-mcp`).
 /// - Anything else — `yos` typed in the Terminal, labwc's Ctrl+Alt+T — is the person.
 pub fn classify(facts: &CallerFacts, own_pid: u32) -> Requester {
+    // First: the kernel's word on the account outranks everything, a missing pid included.
+    if facts.mind_account {
+        return Requester::Mind(facts.attached_mind.clone().unwrap_or_else(|| "a mind".to_string()));
+    }
     let Some(pid) = facts.pid else { return Requester::Person };
     match facts.agent {
         Some(true) => return Requester::Mind("an agent".to_string()),
@@ -144,7 +205,8 @@ pub fn requester_now() -> Requester {
         }
         _ => None,
     };
-    classify(&CallerFacts { pid, agent, attached_mind }, std::process::id())
+    let mind_account = caller.as_ref().is_some_and(|c| yantrik_ipc_transport::mind_door::is_mind(c.uid));
+    classify(&CallerFacts { pid, agent, attached_mind, mind_account }, std::process::id())
 }
 
 /// Where one launch goes, decided while the call that asked for it is still on this thread.
@@ -156,11 +218,15 @@ pub struct Route {
     /// front. Never for a mind working in its own view: raising the person's window because a mind
     /// asked for the app is the interruption Mind View exists to end.
     pub raise_on_handover: bool,
+    /// Whether to start a process at all. `false` for a mind that asks for an app already open on
+    /// the person's desktop: a second process there would be a second window on their desk, so
+    /// nothing is started and the answer says so (PR #582 review, B2).
+    pub spawn: bool,
 }
 
 /// Route the launch the current call asked for.
 pub fn route_now(app_id: &str) -> Route {
-    let desktop = Route { mind_view: None, raise_on_handover: true };
+    let desktop = Route { mind_view: None, raise_on_handover: true, spawn: true };
     if !crate::wire::settings::minds_open_in_mind_view() {
         return desktop;
     }
@@ -170,25 +236,24 @@ pub fn route_now(app_id: &str) -> Route {
     };
     route(
         who,
-        unavailable().is_some(),
         crate::running::is_running(app_id) && !is_mind_view_app(app_id),
     )
 }
 
-/// [`route_now`] once the facts are in: a mind asked, whether Mind View has already failed this
-/// session, and whether the app is already open on the person's desktop.
-fn route(who: String, unavailable: bool, open_on_desktop: bool) -> Route {
-    if unavailable {
-        // As before Mind View existed, so a broken one costs nothing but itself.
-        return Route { mind_view: None, raise_on_handover: true };
-    }
+/// [`route_now`] once the facts are in: a mind asked, and whether the app is already open on the
+/// person's desktop. A Mind View that failed this session no longer sends the app to the desktop:
+/// a mind's app never opens on the person's desk, so the launch fails and says why.
+fn route(who: String, open_on_desktop: bool) -> Route {
     if open_on_desktop {
-        // Our apps are single-instance: a second copy in Mind View would hand over to the window
-        // already open and exit. The mind drives that window through its surface; it is not
-        // brought over the person's work to do it.
-        return Route { mind_view: None, raise_on_handover: false };
+        // Not started again, anywhere on the person's desktop. Only the shell's own apps are
+        // single-instance; a catalogue app, `foot` or a browser would open a second window on
+        // their desk at a mind's request. The mind drives the window that is open through its
+        // surface, and is told it was neither launched nor raised.
+        return Route { mind_view: None, raise_on_handover: false, spawn: false };
     }
-    Route { mind_view: Some(who), raise_on_handover: false }
+    // Also when Mind View is down: the launch then fails where it started and says why
+    // (`wire::dock::spawn_launch`), rather than opening the app over the person's work.
+    Route { mind_view: Some(who), raise_on_handover: false, spawn: true }
 }
 
 // ── The nested compositor ────────────────────────────────────────────
@@ -201,8 +266,9 @@ struct Nested {
 #[derive(Default)]
 struct State {
     nested: Option<Nested>,
-    /// Why Mind View could not be started, once it could not. Cleared only by a restart.
-    unavailable: Option<String>,
+    /// Why Mind View could not be started, and when. Tried again after [`RETRY_AFTER`], so one slow
+    /// start on a loaded machine does not refuse every mind's app until the shell restarts.
+    unavailable: Option<(String, Instant)>,
     /// The apps launched into Mind View, by pid, with the id they were launched as.
     apps: Vec<(u32, String)>,
 }
@@ -216,7 +282,7 @@ fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> T {
 
 /// Why Mind View is not available this session, if it is not.
 pub fn unavailable() -> Option<String> {
-    with_state(|s| s.unavailable.clone())
+    with_state(|s| s.unavailable.as_ref().map(|(why, _)| why.clone()))
 }
 
 /// Held for the whole of a start, so two launches in the same instant start one compositor.
@@ -230,8 +296,11 @@ static STARTING: Mutex<()> = Mutex::new(());
 pub fn ensure() -> Result<Seat, String> {
     let _starting = STARTING.lock().unwrap_or_else(|p| p.into_inner());
     let current = with_state(|state| {
-        if let Some(why) = &state.unavailable {
-            return Some(Err(why.clone()));
+        if let Some((why, since)) = &state.unavailable {
+            if since.elapsed() < RETRY_AFTER {
+                return Some(Err(why.clone()));
+            }
+            state.unavailable = None;
         }
         let nested = state.nested.as_mut()?;
         let alive = matches!(nested.child.try_wait(), Ok(None));
@@ -258,11 +327,49 @@ pub fn ensure() -> Result<Seat, String> {
             Ok(seat)
         }
         Err(why) => {
-            tracing::warn!(reason = %why, "Mind View could not start; minds' apps open on the desktop");
-            with_state(|state| state.unavailable = Some(why.clone()));
+            tracing::warn!(reason = %why, "Mind View could not start; minds' apps are refused until it can");
+            with_state(|state| state.unavailable = Some((why.clone(), Instant::now())));
             Err(why)
         }
     }
+}
+
+/// Stops every Mind View an earlier shell left running. A shell that stops, whether the
+/// supervisor restarts it or an update does, never stops the nested labwc it started, so each
+/// restart used to leave one on the person's desktop: a `labwc - WL-1` window that no shell
+/// tracks or can reach. VM 520 had two. Called once as the shell starts, and again before a Mind
+/// View is started.
+pub fn stop_left_behind() {
+    let script = yantrik_ipc_transport::server::socket_dir().join(SEAT_SCRIPT);
+    for pid in left_behind(Path::new("/proc"), &script, std::process::id()) {
+        tracing::info!(pid, "stopping a Mind View an earlier shell left running");
+        #[cfg(unix)]
+        // SAFETY: kill(2) on a pid read from /proc; a pid that has gone since is ESRCH, no harm.
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+        }
+    }
+}
+
+/// The labwcs running this session's Mind View startup script, which only a Mind View runs, from
+/// a `/proc`-shaped directory, leaving out `own` (this shell). Only asked while this shell holds
+/// no Mind View of its own: as it starts, and before it starts one.
+fn left_behind(proc_dir: &Path, script: &Path, own: u32) -> Vec<u32> {
+    let Ok(entries) = std::fs::read_dir(proc_dir) else { return Vec::new() };
+    let script = script.as_os_str().as_encoded_bytes();
+    let mut found: Vec<u32> = entries
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let pid: u32 = entry.file_name().to_str()?.parse().ok()?;
+            let cmdline = std::fs::read(entry.path().join("cmdline")).ok()?;
+            let args: Vec<&[u8]> = cmdline.split(|b| *b == 0).collect();
+            let labwc = args.first().is_some_and(|a| a.ends_with(b"labwc"));
+            let runs_script = args.windows(2).any(|w| w[0] == b"-s" && w[1] == script);
+            (labwc && runs_script && pid != own).then_some(pid)
+        })
+        .collect();
+    found.sort_unstable();
+    found
 }
 
 fn socket_path(wayland: &str) -> PathBuf {
@@ -341,6 +448,46 @@ fn parse_seat(text: &str) -> Option<Seat> {
     Some(Seat { wayland, x11 })
 }
 
+/// Mind View's window, as the person's compositor names it: labwc's app id, and the title the
+/// title library gives it (crates/yantrik-mind-view-title).
+const WINDOW_MATCH: [&str; 2] = ["app_id:labwc", "title:Mind View"];
+
+/// Minimise Mind View's window the moment it first appears (#427).
+///
+/// A window that maps is focused and raised by the person's compositor like any other, so the
+/// first app a mind opened put Mind View over whatever the person was doing and took their
+/// keyboard: over the launcher they had just opened, in the case that found it. That is the
+/// interruption Mind View exists to end. It starts out of the way; the person opens it from its
+/// taskbar entry when they want to watch, and focus returns to what they had in front. Off the UI
+/// thread: it waits for the window, and wlrctl is a process.
+fn step_aside_when_shown() {
+    std::thread::spawn(|| {
+        let deadline = Instant::now() + START_BUDGET;
+        while Instant::now() < deadline {
+            let shown = Command::new("wlrctl")
+                .args(["toplevel", "find"])
+                .args(WINDOW_MATCH)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success());
+            if shown {
+                let minimised = Command::new("wlrctl")
+                    .args(["toplevel", "minimize"])
+                    .args(WINDOW_MATCH)
+                    .status()
+                    .is_ok_and(|s| s.success());
+                if !minimised {
+                    tracing::warn!("Mind View appeared but could not be set aside; it may be over the person's work");
+                }
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        tracing::debug!("Mind View's window did not appear in time to be set aside");
+    });
+}
+
 fn start() -> Result<Nested, String> {
     if std::env::var_os("WAYLAND_DISPLAY").is_none() {
         return Err("the shell is not running under a Wayland compositor, so there is nothing \
@@ -357,7 +504,10 @@ fn start() -> Result<Nested, String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let seat_file = seat_file(&dir);
     let _ = std::fs::remove_file(&seat_file);
-    let script = dir.join("mind-view-seat.sh");
+    // One this shell does not hold is one an earlier shell left: its apps are out of reach, and
+    // it would stay on the desktop beside the new one.
+    stop_left_behind();
+    let script = dir.join(SEAT_SCRIPT);
     let outer = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
     std::fs::write(&script, seat_script(&seat_file, &config, &outer))
         .map_err(|e| format!("{}: {e}", script.display()))?;
@@ -375,6 +525,9 @@ fn start() -> Result<Nested, String> {
         .arg(&script)
         // A window on the person's compositor, not a session of its own on the hardware.
         .env("WLR_BACKENDS", "wayland")
+        // Titled "Mind View" on the person's desktop, not labwc's own "labwc - WL-1": the
+        // title library answers labwc's wlr_wl_output_set_title (crates/yantrik-mind-view-title).
+        .envs(title_preload())
         // Its Xwayland sets DISPLAY for what it starts; the person's must not leak in.
         .env_remove("DISPLAY")
         .env_remove("SLINT_FULLSCREEN")
@@ -387,6 +540,7 @@ fn start() -> Result<Nested, String> {
         if let Some(seat) = std::fs::read_to_string(&seat_file).ok().as_deref().and_then(parse_seat)
         {
             if socket_path(&seat.wayland).exists() {
+                step_aside_when_shown();
                 return Ok(Nested { child, seat });
             }
         }
@@ -405,21 +559,22 @@ fn start() -> Result<Nested, String> {
     }
 }
 
-/// Where a window a mind opens outside the launcher is drawn, as the environment to start it
-/// with: Mind View's display when minds' apps go there and it is up (started if need be), the
-/// person's own otherwise. Handed to the companion's browser tools at startup, which used to write
-/// the person's display into every launch and so bypassed Mind View entirely.
+/// Where a window a mind opens outside the launcher is drawn: Mind View's display, with every
+/// variable naming the person's session cleared (started if need be), or an error. Mind View
+/// being down is an error, not a fall back to the person's display; only the person's own
+/// setting (`minds open apps in Mind View` off) sends a mind's window to the desktop. Handed to
+/// the companion's browser tools at startup.
 ///
 /// Can wait for Mind View to start, so never on the UI thread; the companion's tools run on its
 /// own worker.
-pub fn display_for_mind() -> Vec<(&'static str, String)> {
-    if crate::wire::settings::minds_open_in_mind_view() {
-        if let Ok(seat) = ensure() {
-            return seat.env();
-        }
+pub fn display_for_mind() -> Result<MindDisplay, String> {
+    if !crate::wire::settings::minds_open_in_mind_view() {
+        let person = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
+        return Ok(MindDisplay::person(person));
     }
-    let person = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
-    vec![("WAYLAND_DISPLAY", person)]
+    ensure()
+        .map(|seat| seat.display())
+        .map_err(|why| format!("Mind View is not available ({why}); a mind's window is not opened on the person's desktop"))
 }
 
 // ── What is in it ────────────────────────────────────────────────────
@@ -430,6 +585,53 @@ pub fn mark_launched(app_id: &str, pid: u32) {
         s.apps.retain(|(p, _)| *p != pid);
         s.apps.push((pid, app_id.to_string()));
     });
+}
+
+/// The one app drawing in Mind View that `want` names, by its id or the name it goes by. None when
+/// none does, or more than one does.
+///
+/// `close_window` reaches for this when nothing on the person's desktop answers: an app a mind
+/// opened is drawn here, not there, so "Close the Notes app" was refused with "no open window
+/// matches `Notes`" while Notes was open, and the mind told the person it was not (yantrik-mind,
+/// VM 520, 2026-09-27).
+pub fn app_named(want: &str) -> Option<String> {
+    let want = want.trim().to_lowercase();
+    if want.is_empty() {
+        return None;
+    }
+    let apps: Vec<String> = with_state(|s| s.apps.iter().map(|(_, id)| id.clone()).collect());
+    let mut found: Vec<String> = apps
+        .into_iter()
+        .filter(|id| {
+            let name = crate::windows::app_display_name(id).to_lowercase();
+            id.to_lowercase() == want || name == want || name.contains(&want)
+        })
+        .collect();
+    found.sort();
+    found.dedup();
+    (found.len() == 1).then(|| found.remove(0))
+}
+
+/// Ask an app drawing in Mind View to close, as its × does: on Mind View's own display, so an app
+/// with unsaved work can still put up its dialog. Returns the name it was asked by.
+pub fn close_app(app_id: &str) -> Result<String, String> {
+    let display = with_state(|s| s.nested.as_ref().map(|n| n.seat.wayland.clone()))
+        .ok_or_else(|| "Mind View is not running, so nothing is drawn there to close".to_string())?;
+    let title = crate::windows::app_display_name(app_id);
+    let args = ["toplevel".to_string(), "close".to_string(), format!("title:{title}")];
+    let (answer, wait) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("yos-wlrctl-mind-view".to_string())
+        .spawn(move || {
+            let _ = answer.send(Command::new("wlrctl").args(&args).env("WAYLAND_DISPLAY", &display).status());
+        })
+        .map_err(|_| "could not start a thread to talk to Mind View's compositor".to_string())?;
+    match wait.recv_timeout(Duration::from_secs(2)) {
+        Ok(Ok(status)) if status.success() => Ok(title),
+        Ok(Ok(_)) => Err(format!("Mind View's compositor has no window called `{title}` to close")),
+        Ok(Err(e)) => Err(format!("could not run wlrctl: {e}")),
+        Err(_) => Err("Mind View's compositor did not answer within 2 s".to_string()),
+    }
 }
 
 /// Forget an app that has exited.
@@ -443,8 +645,87 @@ pub fn app_pids() -> HashSet<u32> {
     with_state(|s| s.apps.iter().map(|(p, _)| *p).collect())
 }
 
-fn is_mind_view_app(app_id: &str) -> bool {
+/// What is drawing in Mind View, as a person reads the apps' names, in the order they were opened.
+pub fn app_names() -> Vec<String> {
+    let ids: Vec<String> = with_state(|s| s.apps.iter().map(|(_, id)| id.clone()).collect());
+    let mut names: Vec<String> = Vec::new();
+    for id in ids {
+        let name = crate::windows::app_display_name(&id);
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+pub(crate) fn is_mind_view_app(app_id: &str) -> bool {
     with_state(|s| s.apps.iter().any(|(_, id)| id == app_id))
+}
+
+/// The windows Mind View's own compositor lists, one `wlrctl toplevel list` line each, or `None`
+/// when Mind View is not running or its compositor did not answer in 2 s. A process, so never on
+/// the UI thread.
+pub fn nested_window_lines() -> Option<Vec<String>> {
+    let display = display_now()?;
+    let (answer, wait) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("yos-wlrctl-mind-view-list".to_string())
+        .spawn(move || {
+            let _ = answer.send(
+                Command::new("wlrctl")
+                    .args(["toplevel", "list"])
+                    .env("WAYLAND_DISPLAY", &display)
+                    .stderr(Stdio::null())
+                    .output(),
+            );
+        })
+        .ok()?;
+    match wait.recv_timeout(Duration::from_secs(2)) {
+        Ok(Ok(out)) if out.status.success() => {
+            Some(String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect())
+        }
+        _ => None,
+    }
+}
+
+/// Whether one of Mind View's window lines (`app_id: title`, as `wlrctl toplevel list` prints
+/// them) is the app `id`. The line is read the way the desktop's own window list reads it
+/// (`windows::toplevel_entry`): the declared app id when the window has one, else our own
+/// windows' exact title. A third-party window also answers to `aliases` (the program it ran),
+/// compared with its declared app id only. Never a word found inside a title: a title can say
+/// anything, and the agent terminal's viewer is titled `<agent> terminal`, which made `terminal`
+/// look open after any `agent_run` (PR #582 review, S1).
+pub fn lists_app(lines: &[String], id: &str, aliases: &[&str]) -> bool {
+    let id = id.to_lowercase();
+    lines.iter().any(|line| {
+        let window = crate::windows::toplevel_entry(line);
+        if is_agent_viewer(&window.wayland_app_id.to_lowercase(), &window.title) {
+            return false;
+        }
+        if window.app_id == id {
+            return true;
+        }
+        let declared = window.wayland_app_id.to_lowercase();
+        !declared.is_empty()
+            && aliases.iter().any(|a| {
+                let a = a.to_lowercase();
+                !a.is_empty() && (declared == a || declared == a.rsplit('/').next().unwrap_or(&a))
+            })
+    })
+}
+
+/// Whether a window is one the agent terminal's viewer opened (`foot`, titled `<agent> terminal`),
+/// which is not an app a mind asked for.
+fn is_agent_viewer(app_id: &str, title: &str) -> bool {
+    app_id == "foot" && title.trim_end().ends_with(" terminal")
+}
+
+/// The Wayland display Mind View draws on, while it is running.
+pub fn display_now() -> Option<String> {
+    with_state(|s| {
+        let n = s.nested.as_mut()?;
+        matches!(n.child.try_wait(), Ok(None)).then(|| n.seat.wayland.clone())
+    })
 }
 
 /// What `describe shell` says about Mind View.
@@ -461,10 +742,21 @@ pub fn for_describe() -> serde_json::Value {
         apps.dedup();
         serde_json::json!({
             "minds_open_apps_here": on,
+            // Where a mind's windows are, in words a mind can repeat to the person.
+            "your_windows_are": if on {
+                "inside Mind View (one window on the person's screen), not as windows of their own"
+            } else {
+                "on the person's desktop, because `minds open apps in Mind View` is off"
+            },
+            "agent_terminal": if on {
+                "commands from agent_run are shown live in a terminal in Mind View"
+            } else {
+                "commands from agent_run are not drawn anywhere; their output is in the answer and on the Agents screen"
+            },
             "running": running,
             "display": s.nested.as_ref().filter(|_| running).map(|n| n.seat.wayland.clone()),
             "apps": apps,
-            "unavailable": s.unavailable,
+            "unavailable": s.unavailable.as_ref().map(|(why, _)| why),
         })
     })
 }
@@ -476,7 +768,60 @@ mod tests {
     const SHELL: u32 = 4242;
 
     fn facts(pid: Option<u32>, agent: Option<bool>, mind: Option<&str>) -> CallerFacts {
-        CallerFacts { pid, agent, attached_mind: mind.map(str::to_string) }
+        CallerFacts { pid, agent, attached_mind: mind.map(str::to_string), mind_account: false }
+    }
+
+    #[test]
+    fn a_caller_the_kernel_says_is_the_mind_account_is_a_mind_whatever_else_is_true() {
+        let own = 4242;
+        let door = CallerFacts { pid: Some(777), agent: None, attached_mind: None, mind_account: true };
+        assert_eq!(classify(&door, own), Requester::Mind("a mind".to_string()), "no token, no ancestry: still a mind");
+        let named = CallerFacts { attached_mind: Some("Pi".to_string()), ..door };
+        assert_eq!(classify(&named, own), Requester::Mind("Pi".to_string()));
+    }
+
+    #[test]
+    fn a_mind_view_an_earlier_shell_left_is_found_by_its_script_and_nothing_else_is() {
+        let proc_dir = std::env::temp_dir().join(format!("mv-left-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&proc_dir);
+        let script = Path::new("/run/user/1000/yantrik/mind-view-seat.sh");
+        let process = |pid: u32, args: &[&str]| {
+            let dir = proc_dir.join(pid.to_string());
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut cmdline = args.join("\0");
+            cmdline.push('\0');
+            std::fs::write(dir.join("cmdline"), cmdline).unwrap();
+        };
+        let left = ["/usr/bin/labwc", "-C", "/opt/yantrik/share/labwc-mind", "-s", "/run/user/1000/yantrik/mind-view-seat.sh"];
+        process(256173, &left);
+        process(1021934, &left);
+        // The person's own compositor runs the shell, not the script.
+        process(713, &["labwc", "-s", "/opt/yantrik/bin/yantrik-ui /opt/yantrik/config.yaml"]);
+        // Another user's Mind View runs a script in their own runtime dir.
+        process(900, &["/usr/bin/labwc", "-C", "x", "-s", "/run/user/1001/yantrik/mind-view-seat.sh"]);
+        // Something that only names the script is not a labwc.
+        process(901, &["cat", "-s", "/run/user/1000/yantrik/mind-view-seat.sh"]);
+        std::fs::create_dir_all(proc_dir.join("self")).unwrap();
+
+        assert_eq!(left_behind(&proc_dir, script, SHELL), vec![256173, 1021934]);
+        assert_eq!(left_behind(&proc_dir, script, 256173), vec![1021934], "never this shell itself");
+        assert!(left_behind(&proc_dir.join("absent"), script, SHELL).is_empty(), "no /proc, nothing to stop");
+        let _ = std::fs::remove_dir_all(&proc_dir);
+    }
+
+    #[test]
+    fn an_app_a_mind_opened_is_found_by_its_name_and_only_when_one_answers() {
+        mark_launched("notes", 990_001);
+        assert_eq!(app_named("Notes").as_deref(), Some("notes"), "by the name it goes by");
+        assert_eq!(app_named("notes").as_deref(), Some("notes"), "by its id");
+        assert_eq!(app_named("  NOTES "), Some("notes".to_string()));
+        assert_eq!(app_named("Calendar"), None, "not drawn here");
+        assert_eq!(app_named(""), None);
+        mark_launched("notes", 990_002);
+        assert_eq!(app_named("Notes").as_deref(), Some("notes"), "two of one app are still one app");
+        mark_exited(990_001);
+        mark_exited(990_002);
+        assert_eq!(app_named("Notes"), None, "gone once it exits");
     }
 
     #[test]
@@ -517,13 +862,11 @@ mod tests {
     }
 
     #[test]
-    fn a_minds_app_goes_to_mind_view_unless_it_cannot() {
+    fn a_minds_app_goes_to_mind_view_and_never_falls_back_to_the_desktop() {
         let who = || "Hermes".to_string();
-        assert_eq!(route(who(), false, false), Route { mind_view: Some(who()), raise_on_handover: false });
+        assert_eq!(route(who(), false), Route { mind_view: Some(who()), raise_on_handover: false, spawn: true });
         // Already open on the person's desktop: used where it is, and not raised over their work.
-        assert_eq!(route(who(), false, true), Route { mind_view: None, raise_on_handover: false });
-        // Mind View failed this session: exactly what happened before it existed.
-        assert_eq!(route(who(), true, false), Route { mind_view: None, raise_on_handover: true });
+        assert_eq!(route(who(), true), Route { mind_view: None, raise_on_handover: false, spawn: false });
     }
 
     #[test]
@@ -543,10 +886,111 @@ mod tests {
     #[test]
     fn an_app_in_mind_view_gets_both_displays() {
         let seat = Seat { wayland: "wayland-1".into(), x11: Some(":2".into()) };
-        assert_eq!(
-            seat.env(),
-            vec![("WAYLAND_DISPLAY", "wayland-1".to_string()), ("DISPLAY", ":2".to_string())]
-        );
+        let env = seat.env();
+        assert!(env.contains(&("WAYLAND_DISPLAY", "wayland-1".to_string())));
+        assert!(env.contains(&("DISPLAY", ":2".to_string())));
+    }
+
+    fn env_of(command: &Command, key: &str) -> Option<Option<String>> {
+        command.get_envs().find(|(k, _)| *k == key).map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+    }
+
+    /// B1: with no Xwayland of its own, Mind View must not leave the person's `DISPLAY` (or their
+    /// socket, or their X authority) in the environment of what a mind starts, and the toolkits
+    /// are told Wayland only so a dead socket fails instead of falling back to their X display.
+    #[test]
+    fn a_minds_app_never_inherits_the_persons_display() {
+        let seat = Seat { wayland: "wayland-1".into(), x11: None };
+        let mut command = Command::new("true");
+        // What the shell itself holds, and `session_env` puts back.
+        command.env("DISPLAY", ":0").env("WAYLAND_DISPLAY", "wayland-0").env("WAYLAND_SOCKET", "3").env("XAUTHORITY", "/home/p/.Xauthority");
+        command.env("GDK_BACKEND", "x11").env("QT_QPA_PLATFORM", "xcb");
+        seat.display().apply(&mut command);
+        assert_eq!(env_of(&command, "DISPLAY"), Some(None), "DISPLAY must be cleared, not inherited");
+        assert_eq!(env_of(&command, "WAYLAND_SOCKET"), Some(None));
+        assert_eq!(env_of(&command, "XAUTHORITY"), Some(None));
+        assert_eq!(env_of(&command, "WAYLAND_DISPLAY"), Some(Some("wayland-1".to_string())));
+        assert_eq!(env_of(&command, "GDK_BACKEND"), Some(Some("wayland".to_string())));
+        assert_eq!(env_of(&command, "QT_QPA_PLATFORM"), Some(Some("wayland".to_string())));
+    }
+
+    #[test]
+    fn with_an_xwayland_only_mind_views_own_display_is_set() {
+        let seat = Seat { wayland: "wayland-1".into(), x11: Some(":7".into()) };
+        let mut command = Command::new("true");
+        command.env("DISPLAY", ":0");
+        seat.display().apply(&mut command);
+        assert_eq!(env_of(&command, "DISPLAY"), Some(Some(":7".to_string())));
+        assert_eq!(env_of(&command, "WAYLAND_DISPLAY"), Some(Some("wayland-1".to_string())));
+        // Whatever it is set to, it is never one of the person's displays.
+        assert!(!seat.env().iter().any(|(_, v)| v == ":0" || v == "wayland-0"));
+    }
+
+    /// Every variable the companion's browser tools clear is cleared by the shell's launcher too:
+    /// one list.
+    #[test]
+    fn the_shells_launches_clear_what_the_browser_tools_clear() {
+        let seat = Seat { wayland: "wayland-1".into(), x11: None };
+        assert_eq!(seat.display().clear, yantrik_companion::tools::browser::PERSON_SESSION_VARS.to_vec());
+    }
+
+    /// B3: Mind View down is an error for a mind's window, not the person's display.
+    #[test]
+    fn a_window_for_a_mind_is_refused_not_sent_to_the_person_when_mind_view_is_down() {
+        let src = include_str!("mind_view.rs");
+        let f = &src[src.find("pub fn display_for_mind()").unwrap()..];
+        let f = &f[..f.find("\n}\n").unwrap()];
+        assert!(f.contains("map_err"), "an unavailable Mind View must be an Err: {f}");
+        assert!(!f.contains("unwrap_or_else(|_| \"wayland-0\"") || f.contains("minds_open_in_mind_view"),
+            "the person's display is chosen only by the person's setting");
+    }
+
+    // ── Which window is the app (S1) ──
+
+    fn lines(l: &[&str]) -> Vec<String> {
+        l.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The agent terminal's viewer is a `foot` titled `<agent> terminal`: it is not the Terminal
+    /// app, and not `foot` the app either.
+    #[test]
+    fn the_agent_viewer_is_not_the_terminal_app_or_foot() {
+        let l = lines(&["foot: hermes terminal"]);
+        assert!(!lists_app(&l, "terminal", &["foot"]));
+        assert!(!lists_app(&l, "foot", &["foot"]));
+    }
+
+    /// Our own windows declare no app id, so they are known by their exact title.
+    #[test]
+    fn our_own_windows_are_found_by_their_title_and_not_by_words_in_one() {
+        assert!(lists_app(&lines(&[": Terminal"]), "terminal", &[]));
+        assert!(!lists_app(&lines(&["firefox: Files you may like - Mozilla Firefox"]), "files", &[]));
+        assert!(!lists_app(&lines(&["foot: notes.txt - editor"]), "notes", &[]));
+    }
+
+    /// A third-party window is found by the app id it declares, which is not the shell's id for it.
+    #[test]
+    fn a_third_party_window_is_found_by_the_program_it_ran() {
+        let l = lines(&["chromium: New Tab - Chromium", "Blender: Blender 4.2"]);
+        assert!(lists_app(&l, "browser", &["/usr/bin/chromium"]));
+        assert!(lists_app(&l, "blender", &["blender"]), "compared without case");
+        assert!(!lists_app(&l, "browser", &["firefox"]));
+        assert!(!lists_app(&l, "browser", &[""]), "an empty alias matches nothing");
+    }
+
+    #[test]
+    fn the_describe_text_does_not_contradict_itself() {
+        let src = include_str!("mind_view.rs");
+        assert!(!src.contains("never on their desk\""), "N2");
+        assert!(!src.contains("open on the desktop\");"), "N1");
+    }
+
+    /// S6: one failed start does not refuse every mind's app for the rest of the session.
+    #[test]
+    fn a_failed_start_is_tried_again_after_a_while() {
+        let src = include_str!("mind_view.rs");
+        assert!(src.contains("RETRY_AFTER"));
+        assert!(RETRY_AFTER <= Duration::from_secs(60));
     }
 
     /// The startup command is run by labwc, and what it writes is what [`parse_seat`] reads.
@@ -596,5 +1040,27 @@ mod tests {
         assert!(!is_nested_window("", "labwc - notes.txt"));
         assert!(!is_nested_window("", "wlroots - WLAN setup"));
         assert!(!is_nested_window("firefox", "Mozilla Firefox"));
+    }
+
+    /// The mind path's environment is the nested display's and nothing of the person's: what the
+    /// dock's `launch` overlays after the session's own.
+    #[test]
+    fn the_mind_path_launches_with_mind_views_display_and_never_the_persons() {
+        let seat = Seat { wayland: "wayland-1".into(), x11: Some(":2".into()) };
+        let env = seat.env();
+        assert!(env.contains(&("WAYLAND_DISPLAY", "wayland-1".to_string())));
+        assert!(env.contains(&("DISPLAY", ":2".to_string())));
+        assert!(!env.iter().any(|(_, v)| v == "wayland-0" || v == ":0"));
+        // The source of the launch path: a mind's launch whose Mind View is down is refused, not
+        // handed to `launch` with no seat (the person's desktop).
+        let dock = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/wire/dock.rs")).unwrap();
+        let body = &dock[dock.find("fn spawn_launch(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let worker = &body[body.find("std::thread::spawn").unwrap()..];
+        assert!(
+            !worker.contains("None, true)") && !worker.contains("adapter, None"),
+            "a mind's launch must never fall back to the person's display:\n{worker}"
+        );
+        assert!(worker.contains("Some(&seat)"), "the worker launches on Mind View's seat");
     }
 }

@@ -14,10 +14,26 @@ requires:
   - file: yantrik_openclaw.py
     why: the harness script, staged beside this file
 
-# No `install` command on purpose. OpenClaw's own documentation is the only thing that knows
-# how to install OpenClaw, and a command invented here is a command that goes stale without
-# anybody noticing — so the row says it is not installed and names the README instead of
-# offering a button that would run a guess.
+install:
+  # OpenClaw's own documented route, `npm install -g openclaw`, into ~/.local, with the
+  # Node it requires (24.16 or newer) fetched first. Its install scripts are allowed to run,
+  # unlike Pi's: OpenClaw's postinstall sets up the plugins it bundles, and it does not work
+  # without them — which is why the version is pinned and bumped by hand: an unpinned package
+  # with install scripts is whatever was published last, run as the person. Onboarding
+  # asks questions, so it is `configure` below: a terminal the person answers it in.
+  # npm 11 runs no install scripts unless each package is allowed by name, so the four this
+  # version needs are named: OpenClaw's own, and the native modules under it. Anything else a
+  # later version adds stays off until someone reads it and adds it here.
+  command: >-
+    sh {dir}/../lib/install/npm.sh openclaw@2026.9.6 openclaw 24.16
+    --allow-scripts=openclaw,koffi,protobufjs,@google/genai
+  doing: fetching Node from nodejs.org and openclaw 2026.9.6 from npm
+
+configure:
+  # OpenClaw's own onboarding: its model, keys and memory, which stay in ~/.openclaw.
+  command: openclaw onboard
+  label: Set up OpenClaw
+  title: Set up OpenClaw
 
 # No `setup` either: with no config file at all this harness runs `openclaw agent` with
 # OpenClaw's own defaults, which is a working setup for somebody who has configured OpenClaw.

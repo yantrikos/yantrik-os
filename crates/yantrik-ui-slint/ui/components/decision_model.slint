@@ -1,0 +1,180 @@
+// Settings → AI & Intelligence → Decision model.
+//
+// The small model that makes quick yes/no and pick-one judgements for the desktop: which tool a
+// request needs, whether a browser press would buy, send or delete something, an agent's own
+// quick questions. Optional: Off means every such decision is made the way it would be without
+// one. The person picks which model answers, sees where it runs (a cloud model receives what is
+// judged), tests it, and turns each use on or off, told what each one sends. Every model answers
+// in the same shape, so switching changes nothing else.
+
+import { Theme } from "theme.slint";
+import { YButton } from "y_button.slint";
+import { YInput } from "y_input.slint";
+
+export struct DecisionPreset {
+    id: string,
+    label: string,
+}
+
+// One use of the decision model (JUDGE_USES in judge_config.rs).
+export struct DecisionUse {
+    id: string,
+    label: string,
+    sends: string,     // what it sends the model, in words
+    on: bool,
+}
+
+export component DecisionModelCard inherits Rectangle {
+    in property <[DecisionPreset]> presets;
+    in property <string> provider;              // the active preset's id
+    in property <string> endpoint;
+    in property <string> model;
+    in property <string> key-env;
+    in property <[DecisionUse]> uses;
+    in property <string> where-note;            // where the chosen model runs, in words
+    in property <string> status;                // "", "testing", or what the last test found
+    in property <bool> status-good;             // the last test answered
+    in property <bool> leaves-machine;          // what is judged goes to the cloud
+    callback choose(string);                    // a preset id
+    callback save(string, string, string);      // endpoint, model, key variable
+    callback test();
+    callback toggle-use(string);                // a use's id
+
+    // The form's own copy, so typing does not fight the saved values.
+    property <string> form-endpoint: root.endpoint;
+    property <string> form-model: root.model;
+    property <string> form-key: root.key-env;
+    property <bool> is-server: root.provider != "off" && root.provider != "chat_model" && root.provider != "";
+
+    background: Theme.bg-card;
+    border-radius: Theme.r-lg;
+    border-width: 1px;
+    border-color: root.provider == "off" || root.provider == "" ? Theme.border-subtle : Theme.accent-dim;
+    height: layout.preferred-height;
+
+    layout := VerticalLayout {
+        padding: Theme.sp-4;
+        spacing: Theme.sp-3;
+
+        Text {
+            text: "A small, fast model for quick judgements across the desktop: which tool a request needs, whether a press in the browser would buy, send or delete something, and agents' own quick questions. Optional; with it off, those decisions are made as they would be without it.";
+            color: Theme.text-secondary;
+            font-size: Theme.fs-body;
+            wrap: word-wrap;
+        }
+
+        for p in root.presets : Rectangle {
+            height: 38px;
+            border-radius: Theme.r-md;
+            background: p.id == root.provider ? Theme.accent-dim : (row-touch.has-hover ? Theme.hover-fill : transparent);
+            HorizontalLayout {
+                padding-left: Theme.sp-3;
+                padding-right: Theme.sp-3;
+                spacing: Theme.sp-2;
+                Text {
+                    text: p.id == root.provider ? "●" : "○";
+                    color: p.id == root.provider ? Theme.accent : Theme.text-secondary;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: p.label;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-body;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+            }
+            row-touch := TouchArea {
+                clicked => { root.choose(p.id); }
+            }
+        }
+
+        if root.where-note != "" : Text {
+            text: root.where-note;
+            color: root.leaves-machine ? Theme.amber : Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            wrap: word-wrap;
+        }
+
+        if root.is-server : VerticalLayout {
+            spacing: Theme.sp-2;
+            YInput {
+                placeholder: "Server, e.g. http://192.168.4.20:8009";
+                value <=> root.form-endpoint;
+            }
+            YInput {
+                placeholder: "Model, e.g. kev-latest";
+                value <=> root.form-model;
+            }
+            YInput {
+                placeholder: "Key variable (only the name of the variable, never the key)";
+                value <=> root.form-key;
+            }
+            HorizontalLayout {
+                spacing: Theme.sp-2;
+                alignment: start;
+                YButton {
+                    label: "Save";
+                    variant: 0;
+                    size: 0;
+                    clicked => { root.save(root.form-endpoint, root.form-model, root.form-key); }
+                }
+                YButton {
+                    label: root.status == "testing" ? "Testing…" : "Test";
+                    variant: 1;
+                    size: 0;
+                    loading: root.status == "testing";
+                    clicked => { root.test(); }
+                }
+            }
+        }
+
+        if root.provider == "chat_model" : HorizontalLayout {
+            alignment: start;
+            YButton {
+                label: root.status == "testing" ? "Testing…" : "Test";
+                variant: 1;
+                size: 0;
+                loading: root.status == "testing";
+                clicked => { root.test(); }
+            }
+        }
+
+        if root.status != "" && root.status != "testing" : Text {
+            text: root.status;
+            color: root.status-good ? Theme.color-success : Theme.amber;
+            font-size: Theme.fs-caption;
+            wrap: word-wrap;
+        }
+
+        if root.provider != "off" && root.provider != "" : VerticalLayout {
+            spacing: Theme.sp-2;
+            for u in root.uses : HorizontalLayout {
+                spacing: Theme.sp-2;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    Text {
+                        text: u.label;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-body;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: "Sends " + u.sends;
+                        color: root.leaves-machine ? Theme.amber : Theme.text-secondary;
+                        font-size: Theme.fs-caption;
+                        wrap: word-wrap;
+                    }
+                }
+                YButton {
+                    label: u.on ? "On" : "Off";
+                    variant: u.on ? 0 : 1;
+                    size: 0;
+                    clicked => { root.toggle-use(u.id); }
+                }
+            }
+        }
+    }
+}

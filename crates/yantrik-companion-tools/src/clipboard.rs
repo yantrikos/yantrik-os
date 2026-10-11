@@ -47,6 +47,9 @@ impl Tool for ClipboardHistoryTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        if let Some(refused) = crate::provider_keys::clipboard_refusal() {
+            return refused;
+        }
         let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10).min(20) as usize;
 
@@ -107,6 +110,9 @@ impl Tool for ClipboardAnalyzeTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> String {
+        if let Some(refused) = crate::provider_keys::clipboard_refusal() {
+            return refused;
+        }
         let content = read_clipboard_text();
         if content.is_empty() {
             return "Clipboard is empty.".to_string();
@@ -197,6 +203,9 @@ impl Tool for ClipboardFetchUrlTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> String {
+        if let Some(refused) = crate::provider_keys::clipboard_refusal() {
+            return refused;
+        }
         let content = read_clipboard_text();
         let trimmed = content.trim();
 
@@ -281,6 +290,9 @@ impl Tool for ClipboardTransformTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        if let Some(refused) = crate::provider_keys::clipboard_refusal() {
+            return refused;
+        }
         let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
         if action.is_empty() {
             return "Error: action is required".to_string();
@@ -394,6 +406,9 @@ impl Tool for TextActionTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        if let Some(refused) = crate::provider_keys::clipboard_refusal() {
+            return refused;
+        }
         let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
         let language = args.get("language").and_then(|v| v.as_str()).unwrap_or("English");
 
@@ -428,16 +443,39 @@ impl Tool for TextActionTool {
 // ── Helpers ──
 
 /// Read current clipboard text via wl-paste.
-fn read_clipboard_text() -> String {
-    match std::process::Command::new("wl-paste")
-        .arg("--no-newline")
-        .output()
-    {
-        Ok(output) if output.status.success() => {
-            String::from_utf8_lossy(&output.stdout).to_string()
-        }
-        _ => String::new(),
+/// The clipboard's text for a tool: bounded, and never a provider's key (withheld whole).
+pub(crate) fn read_clipboard_text() -> String {
+    let text = read_text_bounded(64 * 1024, std::time::Duration::from_secs(3)).unwrap_or_default();
+    if crate::provider_keys::looks_like_a_key(&text) {
+        return "<withheld: the clipboard holds an AI provider's API key>".to_string();
     }
+    text
+}
+
+/// The clipboard's text, read with a bound and a deadline: at most `max` bytes (`None` when there
+/// is more, or none in time), as text only. `wl-paste` is killed at the deadline, so a program
+/// holding the clipboard that never sends it cannot hang the reader.
+pub fn read_text_bounded(max: usize, timeout: std::time::Duration) -> Option<String> {
+    use std::io::Read;
+    let mut child = std::process::Command::new("wl-paste")
+        .args(["--no-newline", "--type", "text"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut out = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = (&mut out).take(max as u64 + 1).read_to_end(&mut buf);
+        let _ = tx.send(buf);
+    });
+    let got = rx.recv_timeout(timeout);
+    let _ = child.kill();
+    let _ = child.wait();
+    let buf = got.ok()?;
+    (buf.len() <= max).then(|| String::from_utf8_lossy(&buf).into_owned())
 }
 
 /// Detect MIME types available in clipboard.

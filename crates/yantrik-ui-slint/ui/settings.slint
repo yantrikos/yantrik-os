@@ -7,8 +7,16 @@ import { Theme, AccentPreset } from "theme.slint";
 import { AppIdentity } from "components/app_color.slint";
 import { SkillStore, SkillData } from "skill_store.slint";
 import { YButton, YIconButton } from "components/y_button.slint";
+import { ModelTierBadge } from "components/model_tier_badge.slint";
 import { YInput } from "components/y_input.slint";
+import { ListView } from "std-widgets.slint";
 import { Icon, Icons } from "components/icon.slint";
+import { DecisionModelCard, DecisionPreset, DecisionUse } from "components/decision_model.slint";
+import { ProviderPresetGroup } from "provider_presets.slint";
+import { YDialog } from "components/y_dialog.slint";
+import { AccountList, ProviderGroup, AddChoice } from "components/minds_panel.slint";
+import { FreeAiCard } from "components/free_ai_card.slint";
+export { DecisionPreset, DecisionUse }
 
 // ── Settings sidebar category item ──
 export struct SettingsCategoryItem {
@@ -77,6 +85,12 @@ export struct HarnessRowData {
     memory: bool,
     can-install: bool,
     can-start: bool,
+    // The label of the harness's own setup — "Choose model" — or empty for none.
+    configure-label: string,
+    // "Provider: NVIDIA NIM · model (from your saved providers)", or "its own settings".
+    provider-line: string,
+    can-assign-provider: bool,
+    can-revert-provider: bool,
     docs: string,
 }
 
@@ -92,12 +106,53 @@ export struct AIModelData {
 }
 
 // ── Live AI status data ──
+// One mind and what it runs on (crates/yantrik-ui/src/runs_on): the same words the Minds panel and
+// the Harnesses rows use, from the same resolver.
+// One theme card: a place. The colours are the theme's own palette, read from its file by
+// wire/theme.rs, so the card cannot show a colour the theme does not have.
+export struct ThemeCardData {
+    id: string,
+    name: string,
+    description: string,
+    preview: image,
+    ground: color,
+    surface: color,
+    text: color,
+    accent: color,
+}
+
+export struct RunsOnRow {
+    name: string,       // "Yantrik Mind"
+    state: string,      // "Answering" | "Built in" | "Attached"
+    answering: bool,
+    runs-on: string,    // "Ollama Cloud · deepseek-v4.1-flash"
+    source: string,     // "its own settings · as it reported" | "set in /opt/yantrik/config.yaml"
+}
+
+// A provider the minds run on that is not saved here (runs_on::in_use_not_saved): listed so the
+// Providers section never says "none" while minds run on some. Add as provider fills the form;
+// the key is typed by the person, never copied from a mind's settings.
+export struct InUseRow {
+    label: string,      // "Ollama Cloud", "Custom endpoint · aig.mycluster.cyou"
+    used-by: string,    // "Used by Yantrik Mind, DeepSeek, OpenClaw, Pi"
+    where-set: string,  // "each mind keeps its own key in its own settings"
+    models: string,     // "deepseek-v4.1-flash, kimi-k3"
+    preset: string,     // the Add form's preset: "ollama-cloud", "custom"
+    base-url: string,   // known address, or empty
+    model: string,      // first model, for the form
+}
+
 export struct AIStatusData {
     provider-name: string,
     provider-type: string,
     model-name: string,
     model-tier: string,         // "Tiny", "Small", "Medium", "Large"
-    status: string,             // "connected", "disconnected", "fallback", "error"
+    // What asking the companion's endpoint found (crates/yantrik-ui/src/wire/ai_status.rs):
+    // "checking" | "connected" | "missing" (not one of the models it lists) | "refused"
+    // | "unreachable" | "error" (answered, not with a model list) | "unset" | "fallback"
+    status: string,
+    // The sentence under the name when the status is not "connected": what was found.
+    detail: string,
     latency-ms: int,
     tokens-per-sec: float,
     tokens-today: int,
@@ -128,6 +183,54 @@ component WallpaperChoice inherits Rectangle {
         text: root.label; color: Theme.text-primary; font-size: 12px;
         font-weight: root.selected ? 600 : 400; vertical-alignment: center; overflow: elide;
     }
+    focus := FocusScope {
+        key-pressed(e) => {
+            if (e.text == "\n" || e.text == " ") && !e.repeat { root.chosen(); return accept; }
+            return reject;
+        }
+    }
+    TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.chosen(); } }
+}
+
+component ThemeCard inherits Rectangle {
+    in property <ThemeCardData> theme;
+    in property <bool> selected;
+    callback chosen();
+    forward-focus: focus;
+    accessible-role: button;
+    accessible-label: root.theme.name + ". " + root.theme.description;
+    accessible-action-default => { root.chosen(); }
+    preferred-width: 360px;
+    min-width: 240px;
+    max-width: 380px;
+    border-radius: Theme.r-xl;
+    background: Theme.bg-card;
+    border-width: root.selected || focus.has-focus ? 2px : 1px;
+    border-color: root.selected || focus.has-focus ? Theme.text-primary : Theme.border-default;
+    // The place itself: its wallpaper, with the colours it brings in the corner. Ground, surface,
+    // text and accent, as filled discs: three grounds side by side were three near-blacks that
+    // read as empty rings, where the text and the accent are what tells two themes apart.
+    Rectangle {
+        x: 8px; y: 8px; width: parent.width - 16px; height: 104px;
+        border-radius: Theme.r-lg; clip: true; background: root.theme.ground;
+        Image { width: 100%; height: 100%; source: root.theme.preview; image-fit: cover; }
+        HorizontalLayout {
+            x: 10px; y: parent.height - 26px; spacing: 6px;
+            for swatch in [root.theme.ground, root.theme.surface, root.theme.text, root.theme.accent] : Rectangle {
+                width: 16px; height: 16px; border-radius: 8px; background: swatch;
+                border-width: 1px; border-color: Theme.glass-border-strong;
+            }
+        }
+    }
+    Text {
+        x: 16px; y: 122px; width: parent.width - 56px; height: 22px;
+        text: root.theme.name; color: Theme.text-primary; font-size: Theme.fs-title-2; font-weight: 600; overflow: elide;
+    }
+    Text {
+        x: 16px; y: 146px; width: parent.width - 32px; height: 18px;
+        text: root.theme.description; color: Theme.text-secondary; font-size: Theme.fs-caption; overflow: elide;
+    }
+    if root.selected : Icon { x: parent.width - 36px; y: 122px; commands: Icons.check; size: 20px; tint: Theme.text-primary; }
     focus := FocusScope {
         key-pressed(e) => {
             if (e.text == "\n" || e.text == " ") && !e.repeat { root.chosen(); return accept; }
@@ -203,6 +306,14 @@ component AccentChoice inherits Rectangle {
 }
 
 export component SettingsScreen inherits Rectangle {
+    // The window's own buttons, carried in this screen's AppHeader when the shell's WindowFrame
+    // hosts it maximized (the frame then drops its own bar: content-has-controls). Without them
+    // the screen wore two bars, the frame's "Files"/"Settings" row above the header's own.
+    in property <bool> show-window-controls: false;
+    in property <bool> maximized: true;
+    callback minimize();
+    callback toggle-maximize();
+    callback close-window();
     // Apply settings identity to every category and its child panels.
     init => { AppIdentity.id = "settings"; keys.focus(); }
 
@@ -227,13 +338,17 @@ export component SettingsScreen inherits Rectangle {
     in property <string> mind-mode: "ask";
     in property <string> mind-mode-label: "Ask";
     in property <string> mind-mode-means: "";
+    // Either bypass — `bypass` or `bypass_all` ("Full bypass") — lights the one Bypass button.
+    property <bool> mind-in-bypass: root.mind-mode == "bypass" || root.mind-mode == "bypass_all";
     callback mind-mode-chosen(string);
-    /// Bypass is not set from here. It routes to the status bar's menu, which is where the
+    /// Neither bypass is set from here. It routes to the status bar's menu, which is where the
     /// confirmation and the durations live — one place, so there is one thing to get right.
     callback mind-bypass-requested();
 
     // Security
     in property <int> auto-lock-secs: 300;
+    // False when the compositor gives no idle signal: no lock can come, so none is promised (#412).
+    in property <bool> auto-lock-available: true;
     in-out property <bool> incognito-mode: false;
     in-out property <bool> dnd-mode: false;
     callback toggle-incognito-mode();
@@ -266,6 +381,10 @@ export component SettingsScreen inherits Rectangle {
     // Appearance
     in-out property <bool> dark-mode: true;
     in-out property <string> accent-color: "cyan";
+    // The themes (places) to choose from, and the one in use.
+    in property <[ThemeCardData]> themes;
+    in-out property <string> theme-id: "lake";
+    callback choose-theme(string);
     callback toggle-dark-mode();
     in property <bool> agent-mode: false;
     callback set-agent-mode(bool);
@@ -315,15 +434,39 @@ export component SettingsScreen inherits Rectangle {
     in property <AIStatusData> ai-status;
     in property <[AIProviderData]> ai-providers: [];
     in property <[AIModelData]> available-models: [];
-    in property <string> provider-test-result: "";      // "success", "error: ...", "testing", ""
+    in-out property <string> provider-test-result: "";  // "success", "testing", "" or a sentence saying what failed
+    // Decision model (components/decision_model.slint)
+    in property <[DecisionPreset]> decision-presets: [];
+    in property <string> decision-provider: "";
+    in property <string> decision-endpoint: "";
+    in property <string> decision-model: "";
+    in property <string> decision-key-env: "";
+    in property <[DecisionUse]> decision-uses: [];
+    in property <string> decision-where: "";
+    in property <bool> decision-leaves-machine: false;
+    in property <string> decision-status: "";
+    in property <bool> decision-status-good: false;
+    callback decision-choose(string);
+    callback decision-save(string, string, string);
+    callback decision-test();
+    callback decision-toggle-use(string);
     in-out property <bool> provider-panel-open: false;
     in-out property <string> editing-provider-id: "";   // empty = new provider
     callback add-provider();
-    callback save-provider(string, string, string, string, string);  // name, type, url, key, auth
+    callback save-provider(string, string, string, string, string, string);  // name, type, url, key, auth, model
     callback delete-provider(string);
     callback test-provider(string);
-    callback test-new-provider(string, string, string);              // url, key, auth
+    callback connect-provider(string, string, string);              // preset, url, key: checks the key and lists models
+    callback provider-url-changed(string);                           // the URL field was edited: Rust says whether the host moved
+    in property <bool> provider-form-host-changed: false;           // editing, and the address is now on another host
+    callback provider-model-search(string);                          // filters provider-form-models
+    callback edit-provider(string);                                  // a row's Models: the panel on that provider
+    in property <[string]> provider-form-models: [];                 // the listed model ids, search applied
+    in property <int> provider-form-model-total: 0;                  // how many the provider listed
+    in-out property <string> provider-form-model: "";                // the model Save stores
+    in-out property <bool> provider-form-connected: false;           // Connect succeeded for this URL and key
     callback provider-preset-selected(string);                        // preset id → fills form
+    in property <[ProviderPresetGroup]> provider-presets: [];        // from the provider catalogue
     in-out property <string> provider-form-name: "";
     in-out property <string> provider-form-url: "";
     in-out property <string> selected-preset: "";  // tracks which preset button is highlighted
@@ -368,6 +511,23 @@ export component SettingsScreen inherits Rectangle {
     in-out property <string> budget-input: "";
     callback save-budget(string);
 
+    // ── What runs on what (top of category 1) ──
+    in property <[RunsOnRow]> runs-on-rows: [];
+    in property <string> runs-on-summary: "";
+    in property <[InUseRow]> in-use-providers: [];
+
+    // ── Accounts (category 4): the same accounts, and the same list, as the Minds panel ──
+    in property <[ProviderGroup]> account-groups: [];
+    in property <[AddChoice]> account-choices: [];
+    in property <[AddChoice]> account-key-choices: [];   // coding plans paid for with a key
+    in property <string> account-keys-line: "";          // "Keys in use: xAI, for the companion"
+    in property <string> account-status: "";
+    in-out property <bool> accounts-adding: false;
+    callback accounts-shown();                  // the page opened: read the accounts again
+    callback account-use(string);               // an account id
+    callback account-sign-in(string);           // an account id
+    callback account-add(string);               // a vendor id
+
     // ── Harnesses (category 8) ──
     in property <[HarnessData]> harnesses: [];
     // What the machine could offer, installed or not. Separate from `harnesses` above on
@@ -377,6 +537,17 @@ export component SettingsScreen inherits Rectangle {
     callback use-harness(string);
     callback install-harness(string);
     callback start-harness(string);
+    callback configure-harness(string);
+    // Giving a harness one of the saved providers (crates/yantrik-ui/src/provider_handoff):
+    // choose → the card says what will be written → Apply. Revert puts its own file back.
+    in-out property <string> assigning-harness: "";      // the row whose provider choice is open
+    in-out property <bool> handoff-card-open: false;
+    in property <string> handoff-card-title: "";
+    in property <string> handoff-card-body: "";
+    callback plan-provider(string, string);              // harness id, provider id → the card
+    callback apply-provider();
+    callback cancel-provider();
+    callback revert-provider(string);
     // Whether any row has a job running. Computed in Rust because Slint cannot reduce over a
     // model, and it is what stops the sweep below from animating on an idle machine.
     in property <bool> harness-busy: false;
@@ -460,6 +631,11 @@ export component SettingsScreen inherits Rectangle {
         height:root.height - 38px;spacing: 0px;
 
         AppHeader {
+            show-window-controls: root.show-window-controls;
+            maximized: root.maximized;
+            minimize => { root.minimize(); }
+            toggle-maximize => { root.toggle-maximize(); }
+            close-window => { root.close-window(); }
             app-id: "settings"; icon: Icons.settings; title: "Settings";
             subtitle: "Make Yantrik yours"; show-back: true;
             back => { root.back-pressed(); }
@@ -598,6 +774,17 @@ export component SettingsScreen inherits Rectangle {
 
                         Text { text: "Appearance"; color: Theme.text-primary; font-size: 28px; font-weight: 600; }
                         Text { text: "A workspace that feels like you. Native apps pick up appearance changes when reopened."; color: Theme.text-secondary; font-size: 13px; wrap:word-wrap; }
+                        // Themes: a place sets the colours, the accent and the wallpaper together,
+                        // and reaches the window frames, the terminal and the lock screen. The
+                        // light and dark choice, accent and wallpaper below still work on top.
+                        HorizontalLayout {
+                            spacing: 16px; height: 176px; alignment: start;
+                            for theme in root.themes : ThemeCard {
+                                theme: theme;
+                                selected: root.theme-id == theme.id;
+                                chosen => { root.theme-id = theme.id; root.choose-theme(theme.id); }
+                            }
+                        }
                         HorizontalLayout {
                             spacing: 16px; height: 164px;
                             ThemeChoice {
@@ -630,14 +817,16 @@ export component SettingsScreen inherits Rectangle {
                                     vertical-alignment: center;
                                 }
 
-                                // The dark-theme value of each AccentPreset, so the swatch is the
-                                // colour you get (theme.slint; these drifted once already).
+                                // The swatch is the preset's own token as it applies in this mode (light or dark), so it
+                                // is the colour you get.
+                                // The serialised ids stay "cyan" and "purple": saved settings and
+                                // the control surface already say them. No amber and no green:
+                                // those mean "needs you" and success, never every primary
+                                // (yantrik_app_runtime::theme::ACCENTS is the same three).
                                 for accent in [
-                                    {id:"cyan",label:"Cyan",color:#38d8cd},
-                                    {id:"amber",label:"Amber",color:#f2b73e},
-                                    {id:"purple",label:"Purple",color:#b98aef},
-                                    {id:"green",label:"Green",color:#5ede78},
-                                    {id:"pink",label:"Pink",color:#f27aa0}
+                                    {id:"cyan",label:"Soft blue",color:AccentPreset.resolved-0},
+                                    {id:"purple",label:"Violet",color:AccentPreset.resolved-2},
+                                    {id:"pink",label:"Pink",color:AccentPreset.resolved-4}
                                 ] : AccentChoice {swatch:accent.color;label:accent.label;selected:root.accent-color==accent.id;chosen=>{root.choose-accent(accent.id);}}
 
                             }
@@ -664,8 +853,9 @@ export component SettingsScreen inherits Rectangle {
                                 // Real wallpaper previews, sized to the available pane.
                                 wallpaper-grid := Rectangle {
                                     property <int> columns: max(1, floor(self.width / 140px));
-                                    height: ceil(8 / self.columns) * 114px;
+                                    height: ceil(9 / self.columns) * 114px;
                                     for preset[idx] in [
+                                        { id: "lake", label: "Lake", image: @image-url("wallpapers/previews/lake.png") },
                                         { id: "serenity", label: "Serenity", image: @image-url("wallpapers/previews/serenity.png") },
                                         { id: "first-light", label: "First light", image: @image-url("wallpapers/previews/first-light.png") },
                                         { id: "nightfall", label: "Nightfall", image: @image-url("wallpapers/previews/nightfall.png") },
@@ -718,7 +908,7 @@ export component SettingsScreen inherits Rectangle {
                                     }
 
                                     // Show active wallpaper label
-                                    if root.wallpaper-path != "" && root.wallpaper-path != "serenity" && root.wallpaper-path != "first-light" && root.wallpaper-path != "nightfall" && root.wallpaper-path != "aurora" && root.wallpaper-path != "sunset" && root.wallpaper-path != "ocean" && root.wallpaper-path != "nebula" : Text {
+                                    if root.wallpaper-path != "" && root.wallpaper-path != "lake" && root.wallpaper-path != "serenity" && root.wallpaper-path != "first-light" && root.wallpaper-path != "nightfall" && root.wallpaper-path != "aurora" && root.wallpaper-path != "sunset" && root.wallpaper-path != "ocean" && root.wallpaper-path != "nebula" : Text {
                                         text: root.wallpaper-path;
                                         color: Theme.text-dim;
                                         font-size: Theme.fs-micro;
@@ -868,22 +1058,113 @@ export component SettingsScreen inherits Rectangle {
                                 font-size: Theme.fs-body;
                             }
 
-                            // ── ACTIVE AI STATUS ──
+                            // ── WHAT RUNS ON WHAT ──
+                            // Every mind, what it runs on, and where that is set: the first thing
+                            // on this page, so nothing below can be read as the whole story.
+                            if root.runs-on-rows.length > 0 : VerticalLayout {
+                                spacing: Theme.sp-2;
+                                HorizontalLayout {
+                                    spacing: Theme.sp-2;
+                                    Rectangle { width: 3px; height: 14px; border-radius: 1.5px; background: Theme.accent; }
+                                    Text {
+                                        text: "WHAT RUNS ON WHAT";
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.fs-caption;
+                                        font-weight: 600;
+                                        letter-spacing: 3px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                Rectangle {
+                                    background: Theme.bg-card;
+                                    border-radius: Theme.r-lg;
+                                    border-width: 1px;
+                                    border-color: Theme.border-subtle;
+                                    height: map-layout.preferred-height;
+                                    map-layout := VerticalLayout {
+                                        padding: Theme.sp-4;
+                                        spacing: Theme.sp-3;
+                                        for r in root.runs-on-rows : HorizontalLayout {
+                                            spacing: Theme.sp-3;
+                                            VerticalLayout {
+                                                width: 200px;
+                                                spacing: 2px;
+                                                Text {
+                                                    text: r.name;
+                                                    color: Theme.text-primary;
+                                                    font-size: Theme.fs-body;
+                                                    font-weight: r.answering ? 700 : 600;
+                                                    overflow: elide;
+                                                }
+                                                Text {
+                                                    text: r.state;
+                                                    color: r.answering ? Theme.accent : Theme.text-dim;
+                                                    font-size: Theme.fs-caption;
+                                                    font-weight: r.answering ? 600 : 400;
+                                                }
+                                            }
+                                            VerticalLayout {
+                                                horizontal-stretch: 1;
+                                                spacing: 2px;
+                                                Text {
+                                                    text: r.runs-on;
+                                                    color: Theme.text-primary;
+                                                    font-size: Theme.fs-body;
+                                                    wrap: word-wrap;
+                                                }
+                                                Text {
+                                                    text: r.source;
+                                                    color: Theme.text-secondary;
+                                                    font-size: Theme.fs-caption;
+                                                    wrap: word-wrap;
+                                                }
+                                            }
+                                        }
+                                        Rectangle { height: 1px; background: Theme.border-subtle; }
+                                        Text {
+                                            text: root.runs-on-summary;
+                                            color: Theme.text-secondary;
+                                            font-size: Theme.fs-caption;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // ── FREE AI ACCOUNTS ──
+                            // The free tiers and the way to each, under the map that says what
+                            // runs now, so the card is never read as the whole story.
+                            VerticalLayout {
+                                spacing: Theme.sp-2;
+                                HorizontalLayout {
+                                    spacing: Theme.sp-2;
+                                    Rectangle { width: 3px; height: 14px; border-radius: 1.5px; background: Theme.accent; }
+                                    Text {
+                                        text: "FREE AI ACCOUNTS";
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.fs-caption;
+                                        font-weight: 600;
+                                        letter-spacing: 3px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                FreeAiCard { }
+                            }
+
+                            // ── THE BUILT-IN COMPANION'S STATUS ──
                             HorizontalLayout {
                                 spacing: Theme.sp-2;
+                                // A section mark, not a status light: the card below says the
+                                // state in words, and a coloured bar here said it in colour alone.
                                 Rectangle {
                                     width: 3px; height: 14px;
                                     border-radius: 1.5px;
-                                    background: root.ai-status.status == "connected" ? Theme.color-success
-                                              : root.ai-status.status == "fallback" ? Theme.amber
-                                              : Theme.color-emotional;
-                                    drop-shadow-blur: 6px;
-                                    drop-shadow-color: root.ai-status.status == "connected" ? Theme.color-success-dim
-                                                     : root.ai-status.status == "fallback" ? Theme.amber-glow
-                                                     : Theme.color-danger-dim;
+                                    background: Theme.border-strong;
                                 }
                                 Text {
-                                    text: "ACTIVE AI";
+                                    // What this card is about: the desktop's own AI. The minds that
+                                    // answer in the chat say what they run on in Harnesses.
+                                    text: "BUILT-IN COMPANION";
                                     color: Theme.text-secondary;
                                     font-size: Theme.fs-caption;
                                     font-weight: 600;
@@ -930,7 +1211,7 @@ export component SettingsScreen inherits Rectangle {
                                             spacing: 2px;
                                             horizontal-stretch: 1;
                                             Text {
-                                                text: root.ai-status.provider-name != "" ? root.ai-status.provider-name : "No provider";
+                                                text: root.ai-status.provider-name != "" ? root.ai-status.provider-name : "No model set up";
                                                 color: Theme.text-primary;
                                                 font-size: Theme.fs-headline;
                                                 font-weight: 600;
@@ -949,6 +1230,12 @@ export component SettingsScreen inherits Rectangle {
                                                     font-weight: 500;
                                                 }
                                             }
+                                            if root.ai-status.detail != "" : Text {
+                                                text: root.ai-status.detail;
+                                                color: Theme.text-secondary;
+                                                font-size: Theme.fs-caption;
+                                                wrap: word-wrap;
+                                            }
                                         }
                                         // Status badge
                                         Rectangle {
@@ -956,19 +1243,26 @@ export component SettingsScreen inherits Rectangle {
                                             height: 24px;
                                             border-radius: Theme.r-lg;
                                             background: root.ai-status.status == "connected" ? Theme.color-success-dim
-                                                      : root.ai-status.status == "fallback" ? Theme.tint-amber
+                                                      : root.ai-status.status == "fallback" || root.ai-status.status == "checking" ? Theme.tint-amber
+                                                      : root.ai-status.status == "unset" ? Theme.hover-fill
                                                       : Theme.color-danger-dim;
                                             border-width: 1px;
                                             border-color: root.ai-status.status == "connected" ? Theme.color-success-dim
-                                                        : root.ai-status.status == "fallback" ? Theme.amber-dim
+                                                        : root.ai-status.status == "fallback" || root.ai-status.status == "checking" ? Theme.amber-dim
+                                                        : root.ai-status.status == "unset" ? Theme.border-subtle
                                                         : Theme.color-danger-dim;
                                             status-txt := Text {
                                                 text: root.ai-status.status == "connected" ? "Connected"
+                                                    : root.ai-status.status == "checking" ? "Checking…"
+                                                    : root.ai-status.status == "missing" ? "Model not found"
+                                                    : root.ai-status.status == "refused" ? "Key refused"
+                                                    : root.ai-status.status == "unreachable" ? "Can't reach it"
+                                                    : root.ai-status.status == "unset" ? "Not set up"
                                                     : root.ai-status.status == "fallback" ? "Fallback"
-                                                    : root.ai-status.status == "disconnected" ? "Offline"
-                                                    : "Error";
+                                                    : "Unverified";
                                                 color: root.ai-status.status == "connected" ? Theme.color-success
-                                                     : root.ai-status.status == "fallback" ? Theme.amber
+                                                     : root.ai-status.status == "fallback" || root.ai-status.status == "checking" ? Theme.amber
+                                                     : root.ai-status.status == "unset" ? Theme.text-secondary
                                                      : Theme.color-emotional;
                                                 font-size: Theme.fs-caption;
                                                 font-weight: 600;
@@ -996,26 +1290,7 @@ export component SettingsScreen inherits Rectangle {
                                                 font-size: Theme.fs-body;
                                                 font-weight: 500;
                                             }
-                                            if root.ai-status.model-tier != "" : Rectangle {
-                                                width: tier-txt.preferred-width + 12px;
-                                                height: 20px;
-                                                border-radius: 10px;
-                                                background: root.ai-status.model-tier == "Large" ? AppIdentity.tint
-                                                          : root.ai-status.model-tier == "Medium" ? Theme.tint-cyan
-                                                          : root.ai-status.model-tier == "Small" ? Theme.tint-amber
-                                                          : Theme.border-subtle;
-                                                tier-txt := Text {
-                                                    text: root.ai-status.model-tier;
-                                                    color: root.ai-status.model-tier == "Large" ? AppIdentity.accent
-                                                         : root.ai-status.model-tier == "Medium" ? AppIdentity.accent
-                                                         : root.ai-status.model-tier == "Small" ? Theme.amber
-                                                         : Theme.text-secondary;
-                                                    font-size: Theme.fs-micro;
-                                                    font-weight: 600;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
-                                                }
-                                            }
+                                            if root.ai-status.model-tier != "" : ModelTierBadge { tier: root.ai-status.model-tier; }
                                         }
                                     }
 
@@ -1033,7 +1308,9 @@ export component SettingsScreen inherits Rectangle {
                                                 font-size: Theme.fs-caption;
                                             }
                                             Text {
-                                                text: root.ai-status.latency-ms >= 0 ? root.ai-status.latency-ms + "ms" : "—";
+                                                // The judgement in words too, not in the colour alone.
+                                                text: root.ai-status.latency-ms < 0 ? "—"
+                                                    : root.ai-status.latency-ms + "ms · " + (root.ai-status.latency-ms < 200 ? "fast" : root.ai-status.latency-ms < 500 ? "ok" : "slow");
                                                 color: root.ai-status.latency-ms >= 0 && root.ai-status.latency-ms < 200 ? Theme.color-success
                                                      : root.ai-status.latency-ms < 500 ? Theme.amber
                                                      : Theme.color-emotional;
@@ -1117,7 +1394,8 @@ export component SettingsScreen inherits Rectangle {
                                                 width: perm-tag.preferred-width + 16px;
                                                 height: 24px;
                                                 border-radius: Theme.r-lg;
-                                                background: root.tool-permission == "safe" ? Theme.tint-cyan
+                                                // Safe in the accent, not the minds' teal (colour system).
+                                                background: root.tool-permission == "safe" ? Theme.tint-accent
                                                     : (root.tool-permission == "standard" ? Theme.tint-amber
                                                     : Theme.color-danger-dim);
                                                 border-width: 1px;
@@ -1128,7 +1406,7 @@ export component SettingsScreen inherits Rectangle {
                                                     text: root.tool-permission == "safe" ? "Safe"
                                                         : (root.tool-permission == "standard" ? "Standard"
                                                         : "Sensitive");
-                                                    color: root.tool-permission == "safe" ? AppIdentity.accent
+                                                    color: root.tool-permission == "safe" ? Theme.accent
                                                         : (root.tool-permission == "standard" ? Theme.amber
                                                         : Theme.color-emotional);
                                                     font-size: Theme.fs-micro;
@@ -1145,8 +1423,9 @@ export component SettingsScreen inherits Rectangle {
                                     // Directly under the ceiling above it, and saying so, because
                                     // the pair is the whole policy: the ceiling is the wall no
                                     // mode can reach past, and the mode decides what happens
-                                    // below it. The same four choices as the status-bar chip; the
-                                    // chip is where the countdown lives, so Bypass sends you
+                                    // below it. The same choices as the status-bar chip, the two
+                                    // bypasses behind one button; the chip is where the countdown
+                                    // lives and where the two are told apart, so Bypass sends you
                                     // there rather than having a second confirmation here.
                                     Rectangle { height: 1px; background: Theme.border-subtle; }
 
@@ -1171,11 +1450,14 @@ export component SettingsScreen inherits Rectangle {
                                                 height: 28px;
                                                 horizontal-stretch: 1;
                                                 border-radius: Theme.r-sm;
-                                                background: root.mind-mode == choice.id
+                                                // Chosen: this mode, or — for the Bypass button — either bypass.
+                                                property <bool> on: root.mind-mode == choice.id
+                                                    || (choice.id == "bypass" && root.mind-in-bypass);
+                                                background: self.on
                                                     ? (choice.id == "bypass" ? Theme.color-danger-dim : Theme.tint-accent)
                                                     : (mode-ta.has-hover ? Theme.hover-fill : transparent);
                                                 border-width: 1px;
-                                                border-color: root.mind-mode == choice.id
+                                                border-color: self.on
                                                     ? (choice.id == "bypass" ? Theme.color-danger : Theme.accent-dim)
                                                     : Theme.border-subtle;
 
@@ -1190,13 +1472,14 @@ export component SettingsScreen inherits Rectangle {
                                                     }
                                                 }
                                                 Text {
-                                                    text: choice.id == "bypass" && root.mind-mode == "bypass"
+                                                    text: choice.id == "bypass" && root.mind-in-bypass
                                                         ? root.mind-mode-label : choice.label;
                                                     color: choice.id == "bypass" ? Theme.color-danger
-                                                        : root.mind-mode == choice.id ? AppIdentity.accent
+                                                        : parent.on ? AppIdentity.accent
                                                         : Theme.text-secondary;
                                                     font-size: Theme.fs-micro;
-                                                    font-weight: root.mind-mode == choice.id ? 700 : 500;
+                                                    font-weight: parent.on ? 700 : 500;
+                                                    overflow: elide;
                                                     horizontal-alignment: center;
                                                     vertical-alignment: center;
                                                 }
@@ -1213,8 +1496,11 @@ export component SettingsScreen inherits Rectangle {
                                             text: "No mode reaches past the tool permission above — "
                                                 + root.tool-permission
                                                 + ". That wall is enforced inside every app, and only you can move it. "
-                                                + "Bypass is time-boxed and is chosen from the mode chip in the status bar, "
-                                                + "where its countdown stays in front of you.";
+                                                + "Bypass (which still asks before anything an app marks as impossible to undo, "
+                                                + "such as a purchase or a calendar delete, and once per session before running "
+                                                + "commands) and Full bypass (which asks nothing) "
+                                                + "are time-boxed and are chosen from the mode chip in the status bar, where the "
+                                                + "countdown stays in front of you.";
                                             color: Theme.text-dim;
                                             font-size: Theme.fs-micro;
                                             wrap: word-wrap;
@@ -1252,6 +1538,7 @@ export component SettingsScreen inherits Rectangle {
                                         root.selected-preset = "";
                                         root.provider-form-name = "";
                                         root.provider-form-url = "";
+                                        root.add-provider();
                                     }
                                     add-btn-row := HorizontalLayout {
                                         spacing: Theme.sp-1;
@@ -1280,6 +1567,59 @@ export component SettingsScreen inherits Rectangle {
                                         }
                                     }
                                 }
+                            }
+
+                            // In use, not saved here: what the minds run on that Settings does not hold.
+                            if root.in-use-providers.length > 0 : Text {
+                                text: "IN USE, NOT SAVED HERE";
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-micro;
+                                font-weight: 600;
+                                letter-spacing: 0.8px;
+                            }
+                            for u in root.in-use-providers : Rectangle {
+                                background: Theme.bg-card;
+                                border-radius: Theme.r-lg;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                height: in-use-layout.preferred-height;
+                                in-use-layout := HorizontalLayout {
+                                    padding: Theme.sp-4;
+                                    spacing: Theme.sp-3;
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        spacing: 2px;
+                                        Text { text: u.label; color: Theme.text-primary; font-size: Theme.fs-body; font-weight: 600; wrap: word-wrap; }
+                                        Text { text: u.used-by; color: Theme.text-secondary; font-size: Theme.fs-caption; wrap: word-wrap; }
+                                        Text { text: u.where-set; color: Theme.text-dim; font-size: Theme.fs-caption; wrap: word-wrap; }
+                                        if u.models != "" : Text { text: "Models: " + u.models; color: Theme.text-dim; font-size: Theme.fs-caption; wrap: word-wrap; }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        YButton {
+                                            label: "Add as provider";
+                                            variant: 1;
+                                            clicked => {
+                                                root.provider-panel-open = true;
+                                                root.editing-provider-id = "";
+                                                root.selected-preset = u.preset;
+                                                root.provider-preset-selected(u.preset);
+                                                if u.base-url != "" { root.provider-form-url = u.base-url; }
+                                                root.provider-form-model = u.model;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if root.in-use-providers.length > 0 : Text {
+                                text: root.ai-providers.length == 0
+                                    ? "SAVED HERE · nothing yet. A saved provider can be used for the built-in companion and handed to harnesses."
+                                    : "SAVED HERE";
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-micro;
+                                font-weight: 600;
+                                letter-spacing: 0.8px;
+                                wrap: word-wrap;
                             }
 
                             // Provider list — data-driven
@@ -1319,6 +1659,16 @@ export component SettingsScreen inherits Rectangle {
                                             font-weight: 500;
                                             horizontal-stretch: 1;
                                         }
+                                        // The dot's state in words, so it is never colour alone.
+                                        Text {
+                                            text: provider.status == "connected" ? "Connected"
+                                                : provider.status == "testing" ? "Testing…"
+                                                : provider.status == "error" ? "Failed"
+                                                : "Not tested";
+                                            color: Theme.text-secondary;
+                                            font-size: Theme.fs-micro;
+                                            vertical-alignment: center;
+                                        }
                                         // Type badge
                                         Rectangle {
                                             width: ptype-txt.preferred-width + 12px;
@@ -1340,7 +1690,7 @@ export component SettingsScreen inherits Rectangle {
                                             border-radius: 10px;
                                             background: Theme.tint-accent;
                                             pri-txt := Text {
-                                                text: "Primary";
+                                                text: "Companion uses this";
                                                 color: Theme.accent;
                                                 font-size: Theme.fs-micro;
                                                 font-weight: 600;
@@ -1375,7 +1725,7 @@ export component SettingsScreen inherits Rectangle {
                                             horizontal-stretch: 1;
                                         }
                                         if provider.latency-ms >= 0 : Text {
-                                            text: provider.latency-ms + "ms";
+                                            text: provider.latency-ms + "ms · " + (provider.latency-ms < 200 ? "fast" : provider.latency-ms < 500 ? "ok" : "slow");
                                             color: provider.latency-ms < 200 ? Theme.color-success
                                                  : provider.latency-ms < 500 ? Theme.amber
                                                  : Theme.color-emotional;
@@ -1397,6 +1747,26 @@ export component SettingsScreen inherits Rectangle {
                                         spacing: Theme.sp-2;
                                         alignment: end;
 
+                                        // Models: re-list and change the saved model
+                                        TouchArea {
+                                            width: models-btn-txt.preferred-width + 16px;
+                                            height: 28px;
+                                            clicked => { root.edit-provider(provider.id); }
+                                            Rectangle {
+                                                border-radius: Theme.r-sm;
+                                                background: Theme.hover-fill;
+                                                border-width: 1px;
+                                                border-color: Theme.border-subtle;
+                                                models-btn-txt := Text {
+                                                    text: "Models";
+                                                    color: Theme.accent;
+                                                    font-size: Theme.fs-caption;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+
                                         // Test
                                         TouchArea {
                                             width: test-btn-txt.preferred-width + 16px;
@@ -1417,7 +1787,7 @@ export component SettingsScreen inherits Rectangle {
                                             }
                                         }
 
-                                        // Set Primary (if not already)
+                                        // Use for the companion (if not already)
                                         if !provider.is-primary : TouchArea {
                                             width: set-pri-txt.preferred-width + 16px;
                                             height: 28px;
@@ -1428,8 +1798,29 @@ export component SettingsScreen inherits Rectangle {
                                                 border-width: 1px;
                                                 border-color: Theme.border-subtle;
                                                 set-pri-txt := Text {
-                                                    text: "Set Primary";
+                                                    text: "Use for the companion";
                                                     color: Theme.accent;
+                                                    font-size: Theme.fs-caption;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+
+                                        // The chosen one hands the companion back to the machine's own
+                                        // address (config.yaml), which nothing here ever rewrites.
+                                        if provider.is-primary : TouchArea {
+                                            width: stop-txt.preferred-width + 16px;
+                                            height: 28px;
+                                            clicked => { root.set-primary-provider(""); }
+                                            Rectangle {
+                                                border-radius: Theme.r-sm;
+                                                background: Theme.hover-fill;
+                                                border-width: 1px;
+                                                border-color: Theme.border-subtle;
+                                                stop-txt := Text {
+                                                    text: "Stop using for the companion";
+                                                    color: Theme.text-secondary;
                                                     font-size: Theme.fs-caption;
                                                     horizontal-alignment: center;
                                                     vertical-alignment: center;
@@ -1480,8 +1871,9 @@ export component SettingsScreen inherits Rectangle {
                                 }
                             }
 
-                            // Empty state when no providers
-                            if root.ai-providers.length == 0 : Rectangle {
+                            // Empty state: only when nothing is saved AND nothing is in use. On VM 520 it
+                            // said "No AI providers configured" under the companion's own endpoint.
+                            if root.ai-providers.length == 0 && root.in-use-providers.length == 0 : Rectangle {
                                 background: Theme.bg-card;
                                 border-radius: Theme.r-lg;
                                 border-width: 1px;
@@ -1608,26 +2000,9 @@ export component SettingsScreen inherits Rectangle {
                                         }
 
                                         // Tier badge
-                                        if model.tier != "" : Rectangle {
-                                            width: mtier-txt.preferred-width + 12px;
-                                            height: 20px;
-                                            y: (parent.height - 20px) / 2;
-                                            border-radius: 10px;
-                                            background: model.tier == "Large" ? AppIdentity.tint
-                                                      : model.tier == "Medium" ? Theme.tint-cyan
-                                                      : model.tier == "Small" ? Theme.tint-amber
-                                                      : Theme.border-subtle;
-                                            mtier-txt := Text {
-                                                text: model.tier;
-                                                color: model.tier == "Large" ? AppIdentity.accent
-                                                     : model.tier == "Medium" ? AppIdentity.accent
-                                                     : model.tier == "Small" ? Theme.amber
-                                                     : Theme.text-secondary;
-                                                font-size: Theme.fs-micro;
-                                                font-weight: 600;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
+                                        if model.tier != "" : ModelTierBadge {
+                                            tier: model.tier;
+                                            y: (parent.height - self.height) / 2;
                                         }
                                     }
                                 }
@@ -1645,7 +2020,12 @@ export component SettingsScreen inherits Rectangle {
                                     padding-left: Theme.sp-4;
                                     padding-right: Theme.sp-4;
                                     Text {
-                                        text: "No models available. Add a provider and refresh.";
+                                        // This lists a saved provider's models. With none chosen for the
+                                        // companion, its model comes from config.yaml: say which, never "none".
+                                        text: root.ai-status.model-name != "" && root.ai-status.provider-type == "from config.yaml"
+                                            ? "The built-in companion uses " + root.ai-status.model-name + ", set in /opt/yantrik/config.yaml. Models are listed here for a provider you save and use for the companion."
+                                            : "No models listed yet. Save a provider, use it for the companion, and refresh.";
+                                        wrap: word-wrap;
                                         color: Theme.text-dim;
                                         font-size: Theme.fs-caption;
                                         horizontal-stretch: 1;
@@ -1698,7 +2078,7 @@ export component SettingsScreen inherits Rectangle {
                                             clicked => { root.toggle-auto-fallback(); }
                                             Rectangle {
                                                 border-radius: Theme.r-lg;
-                                                background: root.ai-status.using-fallback ? AppIdentity.accent : Theme.border-default;
+                                                background: root.ai-status.using-fallback ? Theme.accent : Theme.border-default;
                                                 border-width: 1px;
                                                 border-color: root.ai-status.using-fallback ? Theme.accent-dim : Theme.border-subtle;
                                                 // Toggle knob
@@ -1708,7 +2088,7 @@ export component SettingsScreen inherits Rectangle {
                                                     x: root.ai-status.using-fallback ? parent.width - 21px : 3px;
                                                     y: 3px;
                                                     border-radius: 9px;
-                                                    background: Theme.text-primary;
+                                                    background: root.ai-status.using-fallback ? Theme.text-on-accent : Theme.text-primary;
                                                     animate x { duration: Theme.dur-fast; easing: ease-in-out; }
                                                     animate background { duration: Theme.dur-fast; }
                                                 }
@@ -1717,12 +2097,46 @@ export component SettingsScreen inherits Rectangle {
                                     }
 
                                     Text {
-                                        text: "When the primary provider fails 3 times, automatically switch to the fallback provider.";
+                                        text: "When the provider the companion uses fails 3 times, switch the companion to the fallback provider.";
                                         color: Theme.text-dim;
                                         font-size: Theme.fs-caption;
                                         wrap: word-wrap;
                                     }
                                 }
+                            }
+
+                            // ── DECISION MODEL ──
+                            HorizontalLayout {
+                                spacing: Theme.sp-2;
+                                Rectangle {
+                                    width: 3px; height: 14px;
+                                    border-radius: 1.5px;
+                                    background: Theme.accent;
+                                }
+                                Text {
+                                    text: "DECISION MODEL";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.fs-caption;
+                                    font-weight: 600;
+                                    letter-spacing: 3px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            DecisionModelCard {
+                                presets: root.decision-presets;
+                                provider: root.decision-provider;
+                                endpoint: root.decision-endpoint;
+                                model: root.decision-model;
+                                key-env: root.decision-key-env;
+                                uses: root.decision-uses;
+                                where-note: root.decision-where;
+                                leaves-machine: root.decision-leaves-machine;
+                                status: root.decision-status;
+                                status-good: root.decision-status-good;
+                                choose(id) => { root.decision-choose(id); }
+                                save(e, m, k) => { root.decision-save(e, m, k); }
+                                test => { root.decision-test(); }
+                                toggle-use(id) => { root.decision-toggle-use(id); }
                             }
 
                             // ── TASK ROUTING (V60) ──
@@ -1983,13 +2397,24 @@ export component SettingsScreen inherits Rectangle {
                                                 background: root.privacy-preset == preset-item.value ? Theme.color-success-dim : Theme.hover-fill;
                                                 border-width: 1px;
                                                 border-color: root.privacy-preset == preset-item.value ? Theme.color-success-dim : Theme.border-subtle;
-                                                Text {
-                                                    text: preset-item.label;
-                                                    color: root.privacy-preset == preset-item.value ? Theme.color-success : Theme.text-secondary;
-                                                    font-size: Theme.fs-caption;
-                                                    font-weight: root.privacy-preset == preset-item.value ? 600 : 400;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
+                                                // The chosen one carries a check, not only a colour.
+                                                HorizontalLayout {
+                                                    alignment: center;
+                                                    spacing: 4px;
+                                                    if root.privacy-preset == preset-item.value : Icon {
+                                                        commands: Icons.check;
+                                                        size: 12px;
+                                                        tint: Theme.color-success;
+                                                        y: (parent.height - self.height) / 2;
+                                                    }
+                                                    Text {
+                                                        text: preset-item.label;
+                                                        color: root.privacy-preset == preset-item.value ? Theme.color-success : Theme.text-secondary;
+                                                        font-size: Theme.fs-caption;
+                                                        font-weight: root.privacy-preset == preset-item.value ? 600 : 400;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                    }
                                                 }
                                             }
                                         }
@@ -2054,7 +2479,7 @@ export component SettingsScreen inherits Rectangle {
                                             clicked => { root.privacy-cloud-confirm = !root.privacy-cloud-confirm; }
                                             Rectangle {
                                                 border-radius: Theme.r-lg;
-                                                background: root.privacy-cloud-confirm ? AppIdentity.accent : Theme.border-default;
+                                                background: root.privacy-cloud-confirm ? Theme.accent : Theme.border-default;
                                                 border-width: 1px;
                                                 border-color: root.privacy-cloud-confirm ? Theme.accent-dim : Theme.border-subtle;
                                                 Rectangle {
@@ -2062,7 +2487,7 @@ export component SettingsScreen inherits Rectangle {
                                                     x: root.privacy-cloud-confirm ? parent.width - 21px : 3px;
                                                     y: 3px;
                                                     border-radius: 9px;
-                                                    background: Theme.text-primary;
+                                                    background: root.privacy-cloud-confirm ? Theme.text-on-accent : Theme.text-primary;
                                                     animate x { duration: Theme.dur-fast; easing: ease-in-out; }
                                                 }
                                             }
@@ -2562,7 +2987,7 @@ export component SettingsScreen inherits Rectangle {
                         background: Theme.overlay-backdrop;
 
                         TouchArea {
-                            clicked => { root.provider-panel-open = false; }
+                            clicked => { root.provider-panel-open = false; root.editing-provider-id = ""; }
                         }
 
                         Rectangle {
@@ -2581,10 +3006,15 @@ export component SettingsScreen inherits Rectangle {
                             // Block clicks from propagating to backdrop
                             TouchArea {}
 
+                            // Scrolls when the panel is taller than the window. It had no viewport
+                            // height, so it never did — and with the catalogue's 39 presets the
+                            // form under the grid was off the bottom with no way to reach it.
                             Flickable {
                                 width: 100%;
                                 height: 100%;
+                                viewport-height: provider-panel-layout.preferred-height;
                             provider-panel-layout := VerticalLayout {
+                                width: parent.width;
                                 padding: Theme.sp-6;
                                 spacing: Theme.sp-4;
 
@@ -2596,174 +3026,92 @@ export component SettingsScreen inherits Rectangle {
                                     font-weight: 700;
                                 }
 
-                                // Provider presets grid
-                                Text {
-                                    text: "Choose a preset or configure manually:";
+                                // Two steps. First the provider, from the grid; once one is
+                                // chosen the grid folds to a line naming it, with Change, and the
+                                // form takes its place — nothing to scroll past to reach Connect.
+                                // Editing a saved provider starts at the second step: its preset
+                                // is chosen already.
+                                if root.selected-preset == "" : Text {
+                                    text: "Choose a provider, or Custom for any OpenAI-compatible address:";
                                     color: Theme.text-secondary;
                                     font-size: Theme.fs-caption;
+                                    wrap: word-wrap;
+                                }
+
+                                if root.selected-preset != "" : HorizontalLayout {
+                                    spacing: Theme.sp-2;
+                                    Rectangle {
+                                        height: 32px;
+                                        width: chosen-label.preferred-width + Theme.sp-6;
+                                        border-radius: Theme.r-md;
+                                        background: Theme.accent-dim;
+                                        border-width: 1px;
+                                        border-color: AppIdentity.accent;
+                                        chosen-label := Text {
+                                            text: root.selected-preset == "custom" ? "Custom"
+                                                : root.provider-form-name != "" ? root.provider-form-name
+                                                : root.selected-preset;
+                                            // Primary text on the tint: the accent on its own dim
+                                            // tint read as teal on teal.
+                                            color: Theme.text-primary;
+                                            font-size: Theme.fs-caption;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    if root.editing-provider-id == "" : TouchArea {
+                                        width: change-label.preferred-width + Theme.sp-4;
+                                        height: 32px;
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.selected-preset = "";
+                                            root.provider-form-connected = false;
+                                            root.provider-test-result = "";
+                                        }
+                                        change-label := Text {
+                                            text: "Change";
+                                            color: parent.has-hover ? AppIdentity.accent : Theme.text-secondary;
+                                            font-size: Theme.fs-caption;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    Rectangle { horizontal-stretch: 1; }
                                 }
 
                                 // Preset buttons — categorized grid
-                                VerticalLayout {
+                                if root.selected-preset == "" : VerticalLayout {
                                     spacing: Theme.sp-3;
 
-                                    // ── CLOUD ──
-                                    Text {
-                                        text: "CLOUD";
-                                        color: Theme.text-dim;
-                                        font-size: Theme.fs-micro;
-                                        font-weight: 600;
-                                        letter-spacing: 2px;
-                                    }
-                                    HorizontalLayout {
-                                        spacing: Theme.sp-2;
-                                        for p in [
-                                            { label: "OpenAI",    value: "openai" },
-                                            { label: "Anthropic", value: "anthropic" },
-                                            { label: "Google",    value: "gemini" },
-                                            { label: "DeepSeek",  value: "deepseek" },
-                                            { label: "Groq",      value: "groq" }
-                                        ] : TouchArea {
-                                            horizontal-stretch: 1;
-                                            height: 32px;
-                                            clicked => { root.selected-preset = p.value; root.provider-preset-selected(p.value); }
-                                            Rectangle {
-                                                border-radius: Theme.r-md;
-                                                background: root.selected-preset == p.value ? Theme.accent-dim : Theme.hover-fill;
-                                                border-width: 1px;
-                                                border-color: root.selected-preset == p.value ? AppIdentity.accent : Theme.border-subtle;
-                                                Text {
-                                                    text: p.label;
-                                                    color: root.selected-preset == p.value ? AppIdentity.accent : Theme.text-primary;
-                                                    font-size: Theme.fs-caption;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
-                                                }
-                                            }
+                                    // Groups and rows come from the provider catalogue (Rust),
+                                    // five cells to a row, short rows padded with blank cells.
+                                    for group in root.provider-presets : VerticalLayout {
+                                        spacing: Theme.sp-3;
+                                        Text {
+                                            text: group.title;
+                                            color: Theme.text-dim;
+                                            font-size: Theme.fs-micro;
+                                            font-weight: 600;
+                                            letter-spacing: 2px;
                                         }
-                                    }
-                                    HorizontalLayout {
-                                        spacing: Theme.sp-2;
-                                        for p in [
-                                            { label: "Mistral",     value: "mistral" },
-                                            { label: "xAI Grok",    value: "xai" },
-                                            { label: "Perplexity",  value: "perplexity" },
-                                            { label: "Cerebras",    value: "cerebras" },
-                                            { label: "SambaNova",   value: "sambanova" }
-                                        ] : TouchArea {
-                                            horizontal-stretch: 1;
-                                            height: 32px;
-                                            clicked => { root.selected-preset = p.value; root.provider-preset-selected(p.value); }
-                                            Rectangle {
-                                                border-radius: Theme.r-md;
-                                                background: root.selected-preset == p.value ? Theme.accent-dim : Theme.hover-fill;
-                                                border-width: 1px;
-                                                border-color: root.selected-preset == p.value ? AppIdentity.accent : Theme.border-subtle;
-                                                Text {
-                                                    text: p.label;
-                                                    color: root.selected-preset == p.value ? AppIdentity.accent : Theme.text-primary;
-                                                    font-size: Theme.fs-caption;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    HorizontalLayout {
-                                        spacing: Theme.sp-2;
-                                        for p in [
-                                            { label: "Qwen",    value: "qwen" },
-                                            { label: "MiniMax", value: "minimax" },
-                                            { label: "Kimi",    value: "kimi" },
-                                            { label: "Baidu",   value: "baidu" },
-                                            { label: "Zhipu GLM", value: "zhipu" }
-                                        ] : TouchArea {
-                                            horizontal-stretch: 1;
-                                            height: 32px;
-                                            clicked => { root.selected-preset = p.value; root.provider-preset-selected(p.value); }
-                                            Rectangle {
-                                                border-radius: Theme.r-md;
-                                                background: root.selected-preset == p.value ? Theme.accent-dim : Theme.hover-fill;
-                                                border-width: 1px;
-                                                border-color: root.selected-preset == p.value ? AppIdentity.accent : Theme.border-subtle;
-                                                Text {
-                                                    text: p.label;
-                                                    color: root.selected-preset == p.value ? AppIdentity.accent : Theme.text-primary;
-                                                    font-size: Theme.fs-caption;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // ── AGGREGATORS & BUDGET ──
-                                    Text {
-                                        text: "AGGREGATORS & BUDGET";
-                                        color: Theme.text-dim;
-                                        font-size: Theme.fs-micro;
-                                        font-weight: 600;
-                                        letter-spacing: 2px;
-                                    }
-                                    HorizontalLayout {
-                                        spacing: Theme.sp-2;
-                                        for p in [
-                                            { label: "OpenRouter",  value: "openrouter" },
-                                            { label: "Together",    value: "together" },
-                                            { label: "Fireworks",   value: "fireworks" },
-                                            { label: "HuggingFace", value: "huggingface" },
-                                            { label: "NanoGPT",     value: "nanogpt" }
-                                        ] : TouchArea {
-                                            horizontal-stretch: 1;
-                                            height: 32px;
-                                            clicked => { root.selected-preset = p.value; root.provider-preset-selected(p.value); }
-                                            Rectangle {
-                                                border-radius: Theme.r-md;
-                                                background: root.selected-preset == p.value ? Theme.accent-dim : Theme.hover-fill;
-                                                border-width: 1px;
-                                                border-color: root.selected-preset == p.value ? AppIdentity.accent : Theme.border-subtle;
-                                                Text {
-                                                    text: p.label;
-                                                    color: root.selected-preset == p.value ? AppIdentity.accent : Theme.text-primary;
-                                                    font-size: Theme.fs-caption;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // ── LOCAL INFERENCE ──
-                                    Text {
-                                        text: "LOCAL INFERENCE";
-                                        color: Theme.text-dim;
-                                        font-size: Theme.fs-micro;
-                                        font-weight: 600;
-                                        letter-spacing: 2px;
-                                    }
-                                    HorizontalLayout {
-                                        spacing: Theme.sp-2;
-                                        for p in [
-                                            { label: "Ollama",       value: "ollama" },
-                                            { label: "Ollama Cloud", value: "ollama-cloud" },
-                                            { label: "llama.cpp",    value: "llamacpp" },
-                                            { label: "LM Studio",    value: "lmstudio" },
-                                            { label: "vLLM",         value: "vllm" }
-                                        ] : TouchArea {
-                                            horizontal-stretch: 1;
-                                            height: 32px;
-                                            clicked => { root.selected-preset = p.value; root.provider-preset-selected(p.value); }
-                                            Rectangle {
-                                                border-radius: Theme.r-md;
-                                                background: root.selected-preset == p.value ? Theme.accent-dim : Theme.hover-fill;
-                                                border-width: 1px;
-                                                border-color: root.selected-preset == p.value ? AppIdentity.accent : Theme.border-subtle;
-                                                Text {
-                                                    text: p.label;
-                                                    color: root.selected-preset == p.value ? AppIdentity.accent : Theme.text-primary;
-                                                    font-size: Theme.fs-caption;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
+                                        for row in group.rows : HorizontalLayout {
+                                            spacing: Theme.sp-2;
+                                            for p in row.items : TouchArea {
+                                                horizontal-stretch: 1;
+                                                height: 32px;
+                                                enabled: p.id != "";
+                                                clicked => { root.selected-preset = p.id; root.provider-preset-selected(p.id); }
+                                                if p.id != "" : Rectangle {
+                                                    border-radius: Theme.r-md;
+                                                    background: root.selected-preset == p.id ? Theme.accent-dim : Theme.hover-fill;
+                                                    border-width: 1px;
+                                                    border-color: root.selected-preset == p.id ? AppIdentity.accent : Theme.border-subtle;
+                                                    Text {
+                                                        text: p.label;
+                                                        color: Theme.text-primary;
+                                                        font-size: Theme.fs-caption;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                    }
                                                 }
                                             }
                                         }
@@ -2838,6 +3186,7 @@ export component SettingsScreen inherits Rectangle {
                                                 color: Theme.text-primary;
                                                 font-size: Theme.fs-body;
                                                 vertical-alignment: center;
+                                                edited => { root.provider-form-connected = false; root.provider-test-result = ""; root.provider-url-changed(self.text); }
                                             }
                                         }
                                     }
@@ -2862,21 +3211,35 @@ export component SettingsScreen inherits Rectangle {
                                                 font-size: Theme.fs-body;
                                                 vertical-alignment: center;
                                                 input-type: password;
+                                                edited => { root.provider-form-connected = false; root.provider-test-result = ""; }
+                                            }
+                                            if prov-key-input.text == "" && root.editing-provider-id != "" : Text {
+                                                // A saved key stays with the address it was saved for: a new
+                                                // host has to be given its key, never handed the old one.
+                                                text: root.provider-form-host-changed
+                                                    ? "New address: enter its key. The saved key stays with the old one."
+                                                    : "Saved key kept unless you type a new one";
+                                                color: root.provider-form-host-changed ? Theme.amber : Theme.text-dim;
+                                                font-size: Theme.fs-caption;
+                                                vertical-alignment: center;
+                                                opacity: root.provider-form-host-changed ? 1.0 : 0.6;
                                             }
                                         }
                                     }
                                 }
 
-                                // Test result
+                                // Connect's answer: how many models, or what went wrong
                                 if root.provider-test-result != "" : Rectangle {
-                                    height: 28px;
+                                    height: result-txt.preferred-height + 12px;
                                     border-radius: Theme.r-sm;
                                     background: root.provider-test-result == "success" ? Theme.color-success-dim
                                               : root.provider-test-result == "testing" ? Theme.tint-amber
                                               : Theme.color-danger-dim;
-                                    Text {
-                                        text: root.provider-test-result == "success" ? "Connection successful"
-                                            : root.provider-test-result == "testing" ? "Testing connection..."
+                                    result-txt := Text {
+                                        x: Theme.sp-3;
+                                        width: parent.width - Theme.sp-6;
+                                        text: root.provider-test-result == "success" ? "Connected: " + root.provider-form-model-total + " models"
+                                            : root.provider-test-result == "testing" ? "Connecting and listing models..."
                                             : root.provider-test-result;
                                         color: root.provider-test-result == "success" ? Theme.color-success
                                              : root.provider-test-result == "testing" ? Theme.amber
@@ -2884,7 +3247,80 @@ export component SettingsScreen inherits Rectangle {
                                         font-size: Theme.fs-caption;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
+                                        wrap: word-wrap;
                                     }
+                                }
+
+                                // Model: picked from what the provider listed
+                                if root.provider-form-model-total > 0 : VerticalLayout {
+                                    spacing: Theme.sp-2;
+                                    HorizontalLayout {
+                                        spacing: Theme.sp-2;
+                                        Text {
+                                            text: "Model";
+                                            color: Theme.text-secondary;
+                                            font-size: Theme.fs-caption;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: root.provider-form-model;
+                                            color: AppIdentity.accent;
+                                            font-size: Theme.fs-caption;
+                                            font-weight: 600;
+                                            overflow: elide;
+                                            horizontal-stretch: 1;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    // Many models (OpenRouter lists hundreds): search them.
+                                    if root.provider-form-model-total > 8 : YInput {
+                                        mode: 1;
+                                        placeholder: "Search " + root.provider-form-model-total + " models";
+                                        edited(text) => { root.provider-model-search(text); }
+                                    }
+                                    if root.provider-form-models.length > 0 : Rectangle {
+                                        height: min(root.provider-form-models.length * 30px, 180px);
+                                        border-radius: Theme.r-md;
+                                        background: Theme.bg-input;
+                                        border-width: 1px;
+                                        border-color: Theme.border-subtle;
+                                        clip: true;
+                                        ListView {
+                                            for m in root.provider-form-models : TouchArea {
+                                                height: 30px;
+                                                clicked => { root.provider-form-model = m; }
+                                                Rectangle {
+                                                    background: root.provider-form-model == m ? Theme.accent-dim
+                                                              : parent.has-hover ? Theme.hover-fill : transparent;
+                                                    Text {
+                                                        x: Theme.sp-3;
+                                                        width: parent.width - Theme.sp-6;
+                                                        text: m;
+                                                        color: root.provider-form-model == m ? AppIdentity.accent : Theme.text-primary;
+                                                        font-size: Theme.fs-caption;
+                                                        vertical-alignment: center;
+                                                        overflow: elide;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if root.provider-form-models.length == 0 : Text {
+                                        text: "No listed model matches.";
+                                        color: Theme.text-dim;
+                                        font-size: Theme.fs-caption;
+                                    }
+                                }
+
+                                // Save works without Connect, but says what that means.
+                                if !root.provider-form-connected && root.provider-test-result == ""
+                                    && (prov-key-input.text != "" || root.provider-form-url != "") : Text {
+                                    text: prov-key-input.text != ""
+                                        ? "This key is untested. Connect checks it and lists the models to pick from."
+                                        : "Not connected yet. Connect lists the models to pick from.";
+                                    color: Theme.amber;
+                                    font-size: Theme.fs-caption;
+                                    wrap: word-wrap;
                                 }
 
                                 // Action buttons
@@ -2892,12 +3328,12 @@ export component SettingsScreen inherits Rectangle {
                                     spacing: Theme.sp-3;
                                     alignment: end;
 
-                                    // Test Connection
+                                    // Connect: check the key and list the models
                                     TouchArea {
                                         width: test-new-txt.preferred-width + 24px;
                                         height: 36px;
                                         clicked => {
-                                            root.test-new-provider(prov-url-input.text, prov-key-input.text, "bearer");
+                                            root.connect-provider(root.selected-preset, prov-url-input.text, prov-key-input.text);
                                         }
                                         Rectangle {
                                             border-radius: Theme.r-md;
@@ -2905,7 +3341,7 @@ export component SettingsScreen inherits Rectangle {
                                             border-width: 1px;
                                             border-color: Theme.border-subtle;
                                             test-new-txt := Text {
-                                                text: "Test Connection";
+                                                text: "Connect";
                                                 color: Theme.accent;
                                                 font-size: Theme.fs-body;
                                                 font-weight: 500;
@@ -2919,7 +3355,7 @@ export component SettingsScreen inherits Rectangle {
                                     TouchArea {
                                         width: cancel-txt.preferred-width + 24px;
                                         height: 36px;
-                                        clicked => { root.provider-panel-open = false; }
+                                        clicked => { root.provider-panel-open = false; root.editing-provider-id = ""; }
                                         Rectangle {
                                             border-radius: Theme.r-md;
                                             background: Theme.hover-fill;
@@ -2940,7 +3376,8 @@ export component SettingsScreen inherits Rectangle {
                                         width: save-txt.preferred-width + 24px;
                                         height: 36px;
                                         clicked => {
-                                            root.save-provider(prov-name-input.text, "custom", prov-url-input.text, prov-key-input.text, "bearer");
+                                            root.save-provider(prov-name-input.text, root.selected-preset == "" ? "custom" : root.selected-preset,
+                                                prov-url-input.text, prov-key-input.text, "bearer", root.provider-form-model);
                                             if(!root.save-error){root.provider-panel-open = false;}
                                         }
                                         Rectangle {
@@ -3005,7 +3442,7 @@ SettingRow{label:"Network manager";description:"Open the native app to inspect a
 
 SettingRow{label:"Incognito";description:"Pause new built-in companion memories for this session. Existing memories remain. Resets when the shell restarts.";value:root.incognito-mode?"On":"Off";activated=>{root.toggle-incognito-mode();}}
 SettingRow{label:"Do Not Disturb";description:"Mute shell notification interruptions. This preference stays after a restart.";value:root.dnd-mode?"On":"Off";activated=>{root.toggle-dnd-mode();}}
-SettingRow{label:"Shell idle screen";description:"Show the shell lock view after inactivity on the desktop. This does not lock other native windows.";value:root.auto-lock-secs==0?"Never":root.auto-lock-secs<60?"30 seconds":"\{root.auto-lock-secs/60} minutes";activated=>{root.cycle-auto-lock();}}
+SettingRow{label:"Lock when away";description:"Lock the screen after this long with no keyboard or mouse. An agent working does not count as you being here.";value:root.auto-lock-secs==0?"Never":!root.auto-lock-available?"Unavailable on this display":root.auto-lock-secs<60?"30 seconds":"\{root.auto-lock-secs/60} minutes";activated=>{root.cycle-auto-lock();}}
 SettingRow{label:"Permissions";description:"Review the shell's tool permissions and outstanding requests.";value:"Review";activated=>{root.navigate-to(28);}}
 
                         Rectangle{height:24px;}
@@ -3033,12 +3470,70 @@ SettingRow{label:"About this device";description:"Detailed information about thi
                 if root.active-category == 4 : Flickable {
                     width:100%;height:100%;viewport-width:self.width;viewport-height:page4.preferred-height;
                     page4:=VerticalLayout {padding:28px;spacing:18px;alignment:start;
-                        Text{text:"Accounts";color:Theme.text-primary;font-size:28px;font-weight:600;}
-                        Text{text:"Account integrations available in this build.";color:Theme.text-secondary;font-size:13px;wrap:word-wrap;}
-
-Text{text:"These connection adapters are not installed. No accounts are connected or synced from this page.";color:Theme.text-secondary;font-size:14px;wrap:word-wrap;}
-for account in ["Google","Spotify","Facebook","Instagram"] : SettingRow{label:account;description:"Account connection requires an integration adapter.";value:"Unavailable";interactive:false;}
-SettingRow{label:"AI providers";description:"Manage the model providers that are supported by this installation.";value:"Configure";activated=>{root.active-category=1;}}
+                        // Read again each time the page opens: a sign-in finished in a terminal
+                        // shows up without a restart.
+                        init => { root.accounts-shown(); }
+                        HorizontalLayout {
+                            spacing: Theme.sp-3;
+                            VerticalLayout {
+                                spacing: 6px;
+                                horizontal-stretch: 1;
+                                Text{text:"Accounts";color:Theme.text-primary;font-size:28px;font-weight:600;}
+                                Text{
+                                    text:"Subscriptions you sign in to with each vendor's own program: Claude Code, Codex, Gemini CLI. The vendor's program keeps the sign-in; this desktop never sees it. The account chosen here is the one that program starts with. The minds that answer in the chat do not run on these: they run on AI providers (keys and endpoints), set in each mind's own settings or under AI & Intelligence.";
+                                    color:Theme.text-secondary;font-size:13px;wrap:word-wrap;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: start;
+                                YButton {
+                                    label: root.accounts-adding ? "Done" : "Add account";
+                                    clicked => { root.accounts-adding = !root.accounts-adding; }
+                                }
+                            }
+                        }
+                        Rectangle {
+                            background:Theme.bg-card;border-radius:10px;border-width:1px;border-color:Theme.border-subtle;
+                            height: account-list.preferred-height + 32px;
+                            account-list := AccountList {
+                                x: 16px; y: 16px; width: parent.width - 32px;
+                                groups: root.account-groups;
+                                choices: root.account-choices;
+                                detailed: true;
+                                status: root.account-status;
+                                adding: root.accounts-adding;
+                                divided: root.accounts-adding;
+                                use-account(id) => { root.account-use(id); }
+                                sign-in(id) => { root.account-sign-in(id); }
+                                add(v) => { root.account-add(v); root.accounts-adding = false; }
+                            }
+                        }
+                        // Coding plans paid for with a key are AI providers, not accounts: offered
+                        // here, set up there, and never drawn as an account row.
+                        if root.accounts-adding && root.account-key-choices.length > 0 : VerticalLayout {
+                            spacing: 8px;
+                            Text{text:"CODING PLANS BY KEY · set up in AI providers";color:Theme.text-dim;font-size:Theme.fs-micro;font-weight:600;letter-spacing:0.8px;}
+                            Rectangle {
+                                background:Theme.bg-card;border-radius:10px;border-width:1px;border-color:Theme.border-subtle;
+                                height: key-list.preferred-height + 24px;
+                                key-list := AccountList {
+                                    x: 16px; y: 12px; width: parent.width - 32px;
+                                    choices: root.account-key-choices;
+                                    adding: true;
+                                    divided: false;
+                                    say-empty: false;
+                                    add(v) => { root.account-add(v); root.accounts-adding = false; }
+                                }
+                            }
+                        }
+                        SettingRow{
+                            label:"AI providers";
+                            description: root.account-keys-line != ""
+                                ? root.account-keys-line + ". Keys are managed there, and handed to harnesses from there; they are separate from these sign-ins."
+                                : "API keys and endpoints (OpenAI, NVIDIA NIM, Nous, a local Ollama and more), used by the desktop and handed to harnesses. They are separate from these sign-ins.";
+                            value:"Configure";activated=>{root.active-category=1;}
+                        }
+                        SettingRow{label:"Harnesses";description:"The minds that can answer in the chat, which one does, and what each runs on.";value:"Open";activated=>{root.active-category=8;}}
 
                         Rectangle{height:24px;}
                     }
@@ -3135,11 +3630,11 @@ SettingRow{label:"AI providers";description:"Manage the model providers that are
                                         // The state is a colour as well as a word: amber for
                                         // something the person has to do, red for something that
                                         // broke, accent for the mind that is talking.
-                                        background: h.active ? AppIdentity.accent
+                                        background: h.active ? Theme.accent
                                                   : root.harness-state-tint(h.state);
                                         pill-text := Text {
                                             text: h.state;
-                                            color: h.active ? Theme.bg-deep
+                                            color: h.active ? Theme.text-on-accent
                                                  : root.harness-state-color(h.state);
                                             font-size: Theme.fs-caption;
                                             font-weight: 500;
@@ -3165,6 +3660,42 @@ SettingRow{label:"AI providers";description:"Manage the model providers that are
                                     color: root.harness-state-color(h.state);
                                     font-size: Theme.fs-caption;
                                     wrap: word-wrap;
+                                }
+
+                                if h.provider-line != "" : Text {
+                                    text: h.provider-line;
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.fs-caption;
+                                }
+
+                                // Which saved provider: one button each. Nothing is written until
+                                // the card that follows is answered.
+                                if root.assigning-harness == h.id : VerticalLayout {
+                                    spacing: Theme.sp-2;
+                                    Text {
+                                        text: root.ai-providers.length == 0
+                                            ? "No saved providers yet. Add one under AI & Intelligence first."
+                                            : "Give " + h.name + " which provider?";
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.fs-caption;
+                                        wrap: word-wrap;
+                                    }
+                                    HorizontalLayout {
+                                        spacing: Theme.sp-2;
+                                        alignment: start;
+                                        for p in root.ai-providers : YButton {
+                                            label: p.name;
+                                            size: 0;
+                                            variant: 1;
+                                            clicked => { root.plan-provider(h.id, p.id); }
+                                        }
+                                        YButton {
+                                            label: "Cancel";
+                                            size: 0;
+                                            variant: 1;
+                                            clicked => { root.assigning-harness = ""; }
+                                        }
+                                    }
                                 }
 
                                 // Indeterminate on purpose. There is no way to know how far
@@ -3233,6 +3764,26 @@ SettingRow{label:"AI providers";description:"Manage the model providers that are
                                         variant: 1;
                                         clicked => { root.start-harness(h.id); }
                                     }
+                                    // The harness's own setup — its model, its sign-in — in a
+                                    // terminal. Its settings stay its own; this only opens them.
+                                    if h.configure-label != "" : YButton {
+                                        label: h.configure-label;
+                                        size: 0;
+                                        variant: 1;
+                                        clicked => { root.configure-harness(h.id); }
+                                    }
+                                    if h.can-assign-provider && root.assigning-harness != h.id : YButton {
+                                        label: "Use a provider";
+                                        size: 0;
+                                        variant: 1;
+                                        clicked => { root.assigning-harness = h.id; }
+                                    }
+                                    if h.can-revert-provider : YButton {
+                                        label: "Revert provider";
+                                        size: 0;
+                                        variant: 1;
+                                        clicked => { root.revert-provider(h.id); }
+                                    }
                                     // Attachment is still the only thing that lets a mind answer.
                                     // A "Use this" on a row that is not attached would be a
                                     // button that cannot work.
@@ -3282,6 +3833,17 @@ SettingRow{label:"AI providers";description:"Manage the model providers that are
                     }
                 }
 
+                // The card before a harness is given a provider: every file by path, never the key. After
+                // the pages, so it covers whichever one is showing (it is opened from Harnesses).
+                if root.handoff-card-open : YDialog {
+                    open: true;
+                    title: root.handoff-card-title;
+                    body: root.handoff-card-body;
+                    confirm-label: "Apply";
+                    confirmed => { root.apply-provider(); }
+                    cancelled => { root.cancel-provider(); }
+                }
+
                 if root.active-category == 7 : SkillStore {
                     width: 100%;
                     height: 100%;
@@ -3297,7 +3859,7 @@ SettingRow{label:"AI providers";description:"Manage the model providers that are
     Rectangle {x:0px;y:root.height - 38px;width:root.width;height:38px;background:Theme.bg-surface;
         HorizontalLayout {padding-left:18px;padding-right:12px;spacing:12px;
             Text{text:root.save-status;color:root.save-error?Theme.amber:Theme.text-dim;font-size:12px;overflow:elide;vertical-alignment:center;horizontal-stretch:1;}
-            if root.save-error && root.save-can-retry : YButton{label:"Retry save";variant:2;size:0;clicked=>{root.retry-save();}}
+            if root.save-error && root.save-can-retry : YButton{label:"Retry save";variant: 1;size:0;clicked=>{root.retry-save();}}
             Text{text:"Ctrl+F  Search";color:Theme.text-dim;font-size:11px;vertical-alignment:center;}
         }
     }

@@ -1,0 +1,216 @@
+// YSlider — the one slider: volume, brightness, anything with a level.
+//
+// Usage
+//   YSlider {
+//       label: "Volume";                   // the accessible name, read by screen readers and minds
+//       icon: Icons.music;                 // optional leading glyph (an Icons path, 20x20 grid)
+//       value: Audio.volume;               // the REAL level, 0..max
+//       max: 100;
+//       show-value: true; value-suffix: "%";
+//       changed(v) => { Audio.set-volume(v); }
+//   }
+//
+// `value` is an input, not something the slider owns: it draws what the machine says the level
+// is. While a drag is in progress the thumb follows the pointer (so it never lags the hand), and
+// the moment the drag ends it goes back to `value`, so a level the system clamped or refused is
+// shown as it is, not as it was asked for. The owner's `changed` handler writes the new level
+// back; `value <=> Audio.volume` does the same in one line.
+//
+// Input
+//   pointer   press anywhere on the track to jump there, then drag; the thumb centre lands under
+//             the pointer. Press/drag past either end clamps.
+//   wheel     one step per wheel click (touchpads accumulate, see YWheelArea). Scroll up = more.
+//   keyboard  Left/Down -step, Right/Up +step, PageDown/PageUp -/+ 10 steps, Home 0, End max.
+//             Tab reaches it; the ring shows for keyboard focus only, not after a click.
+// `changed(int)` fires only when the value would actually differ, always snapped to `step`.
+//
+// Geometry: one number decides everything. The thumb's centre travels from thumb/2 to
+// width - thumb/2, so `centre = thumb/2 + fraction * (width - thumb)`. The fill ends at that same
+// centre and the pointer maps back through the same formula; there is no second track to drift
+// out of line with the thumb (the Quick Settings sliders drew one, and were misaligned).
+//
+// States: rest, hover (halo), pressed/dragging (stronger halo), keyboard focus (ring), disabled
+// (dimmed, inert, no cursor). Accessible role slider with value, range and increment/decrement.
+import { Theme } from "theme.slint";
+import { Icon } from "icon.slint";
+import { YWheelArea } from "y_wheel.slint";
+
+export component YSlider inherits Rectangle {
+    in property <int> value: 0;
+    in property <int> max: 100;
+    in property <int> step: 1;
+    in property <bool> enabled: true;
+    in property <string> label: "";
+    in property <bool> show-value: false;
+    in property <string> value-suffix: "";
+    // An Icons path. Empty draws nothing and gives the track the room.
+    in property <string> icon: "";
+    callback changed(int);
+    // The slider has keyboard focus: for an owner that tracks where focus is.
+    out property <bool> focused: keys.has-focus;
+    // Put keyboard focus on the slider, for an owner that moves focus itself.
+    public function focus-slider() { keys.focus(); }
+    // Where the track and the thumb centre are, relative to this control: for an owner that has
+    // to line something up with the thumb, and for the preview check that the thumb is where the
+    // value says.
+    out property <length> track-x: root.icon != "" ? Theme.bar-icon-size + Theme.sp-3 : 0px;
+    out property <length> track-w: root.width - root.track-x - (root.show-value ? Theme.sp-3 + Theme.sp-8 : 0px);
+    out property <length> thumb-x: root.track-x + root.centre;
+
+    forward-focus: keys;
+    accessible-role: slider;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-value: root.shown;
+    accessible-value-minimum: 0;
+    accessible-value-maximum: root.max;
+    accessible-value-step: root.step;
+    accessible-action-increment => { root.nudge(1); }
+    accessible-action-decrement => { root.nudge(-1); }
+    accessible-action-set-value(v) => { root.commit(v.to-float()); }
+
+    // What is drawn: the pointer while dragging, otherwise the machine's level.
+    property <int> shown: area.pressed ? root.dragged : root.value;
+    property <int> dragged: root.value;
+    property <length> travel: root.track-w - Theme.slider-thumb;
+    property <float> fraction: root.max <= 0 ? 0 : Math.min(1, Math.max(0, root.shown / root.max));
+    property <length> centre: Theme.slider-thumb / 2 + root.fraction * root.travel;
+    // The ring is for the keyboard: set when focus arrives without a pointer press.
+    property <bool> pointer-focus: false;
+    property <bool> ring: keys.has-focus && !root.pointer-focus && root.enabled;
+    property <bool> hot: root.enabled && (area.has-hover || area.pressed);
+
+    height: Theme.h-regular;
+    min-width: Theme.touch-target * 2;
+    opacity: root.enabled ? 1.0 : 0.4;
+    animate opacity { duration: Theme.dur-fast; }
+
+    // Snap, clamp and report. Everything that can change the value goes through here.
+    function commit(raw: float) {
+        if (!root.enabled || root.max <= 0) { return; }
+        let s = Math.max(1, root.step);
+        let snapped = Math.round(raw / s) * s;
+        let next = Math.min(root.max, Math.max(0, snapped));
+        if (next != root.shown) {
+            root.dragged = next;
+            root.changed(next);
+        }
+    }
+    function nudge(steps: int) { root.commit(root.shown + steps * root.step); }
+    function from-pointer(x: length) {
+        root.commit(root.travel <= 0 ? 0 : (x - Theme.slider-thumb / 2) / root.travel * root.max);
+    }
+
+    keys := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            root.pointer-focus = false;
+            if (event.text == Key.LeftArrow || event.text == Key.DownArrow) { root.nudge(-1); return accept; }
+            if (event.text == Key.RightArrow || event.text == Key.UpArrow) { root.nudge(1); return accept; }
+            if (event.text == Key.PageDown) { root.nudge(-10); return accept; }
+            if (event.text == Key.PageUp) { root.nudge(10); return accept; }
+            if (event.text == Key.Home) { root.commit(0); return accept; }
+            if (event.text == Key.End) { root.commit(root.max); return accept; }
+            reject
+        }
+    }
+
+    // Laid out by hand from the three numbers above, not by a layout: the thumb, the fill and
+    // the pointer all have to agree to the pixel, and a layout would be a second opinion.
+    if root.icon != "" : Icon {
+        commands: root.icon;
+        size: Theme.bar-icon-size;
+        tint: Theme.text-secondary;
+        thickness: Theme.icon-stroke;
+        x: 0;
+        y: (root.height - self.height) / 2;
+    }
+
+    // The track area is the full control height, so the hit target is 32px tall even though
+    // the groove is 6px, and the thumb and its halo are never clipped.
+    area := YWheelArea {
+        x: root.track-x;
+        width: root.track-w;
+        height: root.height;
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                root.pointer-focus = true;
+                keys.focus();
+                root.dragged = root.value;
+                root.from-pointer(self.mouse-x);
+            }
+        }
+        moved => { if (self.pressed) { root.from-pointer(self.mouse-x); } }
+        wheel(steps) => { root.nudge(steps); }
+
+        // Groove
+        Rectangle {
+            x: 0;
+            y: (parent.height - Theme.slider-track-h) / 2;
+            width: parent.width;
+            height: Theme.slider-track-h;
+            border-radius: self.height / 2;
+            background: Theme.track-bg;
+        }
+        // Fill: ends at the thumb's centre, so the thumb covers the join.
+        Rectangle {
+            x: 0;
+            y: (parent.height - Theme.slider-track-h) / 2;
+            width: root.centre;
+            height: Theme.slider-track-h;
+            border-radius: self.height / 2;
+            background: Theme.accent;
+        }
+        // Halo: hover and drag feedback around the thumb.
+        Rectangle {
+            x: root.centre - self.width / 2;
+            y: (parent.height - self.height) / 2;
+            width: Theme.slider-halo;
+            height: Theme.slider-halo;
+            border-radius: self.height / 2;
+            background: area.pressed ? Theme.accent-glow-strong : root.hot ? Theme.accent-glow : transparent;
+            animate background { duration: Theme.dur-fast; }
+        }
+        // Keyboard focus ring, a clear 2px of the surface away from the thumb so it reads as a
+        // ring and not as a bigger thumb.
+        Rectangle {
+            x: root.centre - self.width / 2;
+            y: (parent.height - self.height) / 2;
+            width: Theme.slider-thumb + 2 * (Theme.focus-ring-width + Theme.focus-ring-width);
+            height: self.width;
+            border-radius: self.height / 2;
+            border-width: root.ring ? Theme.focus-ring-width : 0px;
+            border-color: Theme.focus-ring;
+        }
+        // Thumb
+        Rectangle {
+            x: root.centre - self.width / 2;
+            y: (parent.height - self.height) / 2;
+            width: Theme.slider-thumb;
+            height: Theme.slider-thumb;
+            border-radius: self.height / 2;
+            // The knob is the accent too, so the filled part and the thing you hold read as one.
+            background: Theme.accent;
+            border-width: Theme.hairline;
+            border-color: Theme.knob-border;
+            drop-shadow-blur: Theme.shadow-sm-blur;
+            drop-shadow-offset-y: Theme.shadow-sm-dy;
+            drop-shadow-color: Theme.overlay-shadow;
+        }
+    }
+
+    if root.show-value : Text {
+        // Wide enough for "100%" so the track does not change length while the number does.
+        x: root.width - self.width;
+        width: Theme.sp-8;
+        height: root.height;
+        text: root.shown + root.value-suffix;
+        color: Theme.text-secondary;
+        font-size: Theme.fs-caption;
+        font-weight: Theme.fw-body-strong;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+}

@@ -1,0 +1,11 @@
+# Starts the Director ten minutes after it last finished, so the live Mind always has its next
+# mission, and a mission that stopped (a card, a stuck turn) is tried again after a rest.
+[Unit]
+Description=Yantrik Live Director, every ten minutes after the last run
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=10min
+
+[Install]
+WantedBy=timers.target

@@ -1161,6 +1161,22 @@ fn path_arg(args: &serde_json::Value, name: &str) -> Result<PathBuf, String> {
     Ok(expanded(raw))
 }
 
+/// The presenter-view state a `present` mode word asks for. `fullscreen` is the natural word
+/// for slideshow mode and what a model guesses when asked to present the deck (issue #681), so
+/// it joins `on`; `exit` and `windowed` join `off`. The refusal lists every accepted word so a
+/// caller that guessed wrong sees the whole set in the error.
+fn presenting_mode(asked: &str, currently: bool) -> Result<bool, String> {
+    match asked {
+        "on" | "true" | "start" | "fullscreen" => Ok(true),
+        "off" | "false" | "stop" | "exit" | "windowed" => Ok(false),
+        "toggle" => Ok(!currently),
+        other => Err(format!(
+            "unknown mode `{other}`; use on, fullscreen, true, start, off, windowed, exit, \
+             false, stop or toggle"
+        )),
+    }
+}
+
 /// Publish this window on the bus.
 ///
 /// `presentation` is the id, which is what `crates/yantrik-ui/src/wire/dock.rs` routes both
@@ -1508,18 +1524,14 @@ fn publish_control(app: &PresentationApp, state: Shared) {
         let st = state.clone();
         surface = surface.action(
             Action::new("present", "Enter or leave the full-screen presenter view")
-                .arg(Param::text("mode").describe("on | off | toggle")),
+                .arg(
+                    Param::text("mode")
+                        .describe("on | fullscreen | true | start | off | windowed | exit | false | stop | toggle"),
+                ),
             move |args| {
                 answering(ui_for(), |ui| {
                     let asked = text_arg(args, "mode").unwrap_or_default().trim().to_lowercase();
-                    let wanted = match asked.as_str() {
-                        "on" | "true" | "start" => true,
-                        "off" | "false" | "stop" => false,
-                        "toggle" => !ui.get_is_presenting(),
-                        other => {
-                            return Err(format!("unknown mode `{other}`; use on, off or toggle"))
-                        }
-                    };
+                    let wanted = presenting_mode(&asked, ui.get_is_presenting())?;
                     // Through `go_to` so entering and leaving both commit the canvas; the
                     // presenter view reads the model, not the editor's properties.
                     let at = st.borrow().deck.current() as i64;
@@ -1558,4 +1570,41 @@ fn publish_control(app: &PresentationApp, state: Shared) {
     }
 
     surface.serve();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::presenting_mode;
+
+    #[test]
+    fn mode_words_set_the_presenter_view() {
+        // `fullscreen` is the word a model guesses for "present the deck" (issue #681);
+        // `exit` and `windowed` are its mirror for leaving.
+        assert_eq!(presenting_mode("fullscreen", false), Ok(true));
+        assert_eq!(presenting_mode("on", false), Ok(true));
+        assert_eq!(presenting_mode("exit", true), Ok(false));
+        assert_eq!(presenting_mode("windowed", true), Ok(false));
+        assert_eq!(presenting_mode("off", true), Ok(false));
+        assert_eq!(presenting_mode("toggle", true), Ok(false));
+        assert_eq!(presenting_mode("toggle", false), Ok(true));
+    }
+
+    #[test]
+    fn unknown_mode_refusal_lists_every_accepted_word() {
+        let err = presenting_mode("zoom", false).unwrap_err();
+        for word in [
+            "on",
+            "fullscreen",
+            "true",
+            "start",
+            "off",
+            "windowed",
+            "exit",
+            "false",
+            "stop",
+            "toggle",
+        ] {
+            assert!(err.contains(word), "refusal `{err}` omits `{word}`");
+        }
+    }
 }

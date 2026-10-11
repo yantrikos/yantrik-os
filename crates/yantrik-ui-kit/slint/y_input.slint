@@ -89,6 +89,15 @@ export component YInput inherits Rectangle {
                     accepted => { root.accepted(self.text); }
                 }
 
+                // Success is never the green border alone: a check says it too.
+                if root.has-success && !root.has-error : Icon {
+                    commands: Icons.check;
+                    size: 14px;
+                    thickness: 1.8px;
+                    tint: Theme.color-success;
+                    y: (parent.height - self.height) / 2;
+                }
+
                 if root.value != "" && root.mode != 2 : TouchArea {
                     enabled: !root.disabled;
                     width: 20px;

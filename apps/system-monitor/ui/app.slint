@@ -46,6 +46,7 @@ export component SystemMonitorApp inherits AppWindow {
 
     // CPU
     in property <float> cpu-usage <=> inner.cpu-usage;
+    in property <bool> cpu-measured <=> inner.cpu-measured;
     in property <string> cpu-model <=> inner.cpu-model;
     in property <string> cpu-frequency <=> inner.cpu-frequency;
     in property <string> load-avg-1 <=> inner.load-avg-1;
@@ -82,10 +83,15 @@ export component SystemMonitorApp inherits AppWindow {
     // What went wrong, for the person; the same string is in `describe` for the mind.
     in property <string> notice <=> inner.notice;
 
-    // Health
-    in property <string> health-status <=> inner.health-status;
-    in property <float> health-score <=> inner.health-score;
-    in property <string> health-summary <=> inner.health-summary;
+    // What the readings add up to: observed facts, and the limits they were checked against.
+    in property <string> status-lead <=> inner.status-lead;
+    in property <string> status-rest <=> inner.status-rest;
+    in property <string> status-thresholds <=> inner.status-thresholds;
+    in property <bool> status-needs-you <=> inner.status-needs-you;
+
+    // A reading taken off the UI thread is ready to draw. The sampler cannot touch the window
+    // from its own thread, so it wakes this and the window takes the reading from a channel.
+    callback readings-arrived();
 
     // AI Workloads
     in property <string> ai-model-name <=> inner.ai-model-name;

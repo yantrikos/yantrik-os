@@ -57,6 +57,13 @@ struct Inner {
     coalesced: u64,
     executed: u64,
     dropped_out_of_scope: u64,
+    /// Observations evicted from the back of the ring because it was full. Counted rather than
+    /// silent, so a reader can see how much the ring has overwritten without doing arithmetic on
+    /// `oldest`.
+    overwritten: u64,
+    /// Launches filtered as the OS's own chatter before they reached the ring. Counted, never
+    /// described, so the filter is visible rather than a silent hole.
+    dropped_noise: u64,
 }
 
 /// Shared, cloneable handle. Sources hold one, the RPC handler holds one.
@@ -109,6 +116,7 @@ impl Bus {
         if inner.ring.len() > CAPACITY {
             inner.ring.pop_front();
             inner.oldest += 1;
+            inner.overwritten += 1;
         }
         drop(inner);
         cv.notify_all();
@@ -121,6 +129,16 @@ impl Bus {
     pub fn note_out_of_scope(&self) {
         if let Ok(mut inner) = self.inner.0.lock() {
             inner.dropped_out_of_scope += 1;
+        }
+    }
+
+    /// Note that a launch was filtered as the OS's own chatter before it reached the ring.
+    ///
+    /// Counted, never described. The count is what makes the filter visible — a caller can see
+    /// how much the daemon is declining to record without learning anything about it.
+    pub fn note_noise(&self) {
+        if let Ok(mut inner) = self.inner.0.lock() {
+            inner.dropped_noise += 1;
         }
     }
 
@@ -160,6 +178,8 @@ impl Bus {
             coalesced: inner.coalesced,
             executed: inner.executed,
             dropped_out_of_scope: inner.dropped_out_of_scope,
+            overwritten: inner.overwritten,
+            dropped_noise: inner.dropped_noise,
             held: inner.ring.len() as u64,
             next_seq: inner.next_seq,
         }
@@ -205,6 +225,8 @@ pub struct Counts {
     pub coalesced: u64,
     pub executed: u64,
     pub dropped_out_of_scope: u64,
+    pub overwritten: u64,
+    pub dropped_noise: u64,
     pub held: u64,
     pub next_seq: u64,
 }
@@ -329,6 +351,28 @@ mod tests {
         assert!(page.observations.is_empty());
         assert!(started.elapsed() >= Duration::from_millis(100));
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn overwriting_the_ring_is_counted_in_the_snapshot() {
+        let bus = Bus::new();
+        for i in 0..(CAPACITY + 10) {
+            launch(&bus, &format!("p{i}"));
+        }
+        let counts = bus.counts();
+        assert_eq!(counts.overwritten, 10, "the evicted observations must be counted");
+        assert_eq!(counts.held, CAPACITY as u64);
+    }
+
+    #[test]
+    fn filtered_noise_is_counted_but_never_enters_the_ring() {
+        let bus = Bus::new();
+        bus.note_noise();
+        bus.note_noise();
+        let counts = bus.counts();
+        assert_eq!(counts.dropped_noise, 2);
+        // And nothing about them reached the ring.
+        assert_eq!(bus.since(0, Duration::ZERO).observations.len(), 0);
     }
 
     #[test]

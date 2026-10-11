@@ -31,13 +31,19 @@ mod token_stream;
 // LLM backend modules
 mod llm;
 
-// Provider registry (multi-provider management, secret storage, key validation)
+// Provider registry (multi-provider management, key validation)
 #[cfg(feature = "api-llm")]
 pub mod provider;
 
 // Hardware detection & AI recommendation engine
 #[cfg(feature = "api-llm")]
 pub mod hardware;
+
+// Judges: typed answers with probabilities from System One models (Jev, Kev, ...)
+pub mod judge;
+
+// Private per-user scratch and state directories — the replacement for fixed names in /tmp
+pub mod private_dir;
 
 // Voice modules
 pub mod stt;
@@ -86,7 +92,6 @@ pub use provider::{
     ProviderDescriptor, ProviderKind, AuthScheme, SetupTier, KNOWN_PROVIDERS,
     GenericOpenAIBackend, AnthropicBackend, GoogleGeminiBackend,
     ProviderHealth, HealthStatus, TaskType,
-    SecretStore, AutoSecretStore, KeyringSecretStore, EncryptedFileStore, SecretRef,
     KeyValidator, KeyValidationResult, KeyValidationError,
 };
 

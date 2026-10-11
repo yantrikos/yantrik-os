@@ -89,7 +89,7 @@ def clear() -> dict:
 ```
 
 It is `sensitive` because it throws the list away, and its description says it cannot be undone,
-which makes the dispatch ask the person about it in every mode but `bypass`
+which makes the dispatch ask the person about it in every mode but full bypass (`bypass_all`)
 ([Choosing a grade](grades.md)). When the caller is owed the *result* of slow work instead — an
 exit code, a finished export — return `Later(work)` from the handler: the reply waits for `work()`
 without holding the program up ([Designing a describe](describe.md#settles-later-or-answered-later)).
@@ -175,8 +175,11 @@ the test's own to pin the ceiling and the mode. From the template's tests:
         self.mode_is("auto")
         self.assertIn("its own description says it cannot be undone", self.refused("remove", index=0))
         self.assertEqual(len(self.program.tasks), 1, "nothing was removed")
-        # Bypass runs everything under the ceiling.
+        # Bypass still asks before what cannot be undone; full bypass runs everything under
+        # the ceiling.
         self.mode_is("bypass")
+        self.assertIn("its own description says it cannot be undone", self.refused("remove", index=0))
+        self.mode_is("bypass_all")
         self.assertEqual(self.act("remove", index=0)["result"],
                          {"removed": "Water the plants", "left": 0})
 ```

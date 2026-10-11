@@ -1,0 +1,17 @@
+[Unit]
+Description=Driver for Broadcom Wi-Fi the image cannot ship (BCM4331 and kin)
+Documentation=file:///usr/lib/yantrik/yantrik-broadcom-wifi
+# Not ordered after network-online.target: on a machine with no cable that would hold boot for
+# NetworkManager's wait-online timeout and then find nothing. It checks once at boot, says what
+# it needs, and the NetworkManager dispatcher starts it again when a connection comes up.
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/yantrik/yantrik-broadcom-wifi install
+# apt update, a dkms build of wl, or Broadcom's archive over a slow line.
+TimeoutStartSec=20min
+
+[Install]
+WantedBy=multi-user.target

@@ -1,7 +1,7 @@
 //! File tools — write_file, manage_files, search_files, file_info.
 
 use std::io::Write;
-use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path, glob_match, format_size};
+use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path, validate_write_path, glob_match, format_size};
 
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(WriteFileTool));
@@ -52,7 +52,7 @@ impl Tool for WriteFileTool {
             return "Error: content exceeds 100KB limit".to_string();
         }
 
-        let expanded = match validate_path(path) {
+        let expanded = match validate_write_path(path) {
             Ok(p) => p,
             Err(e) => return format!("Error: {e}"),
         };
@@ -149,10 +149,20 @@ impl Tool for ManageFilesTool {
                 if dest.is_empty() {
                     return "Error: destination is required for move/copy".to_string();
                 }
-                let dst = match validate_path(dest) {
+                let dst = match validate_write_path(dest) {
                     Ok(p) => p,
                     Err(e) => return format!("Error (destination): {e}"),
                 };
+                // A folder brings everything below it: `cfg` holding autostart/, moved to
+                // ~/.config, is checked only at its top otherwise (home_paths::may_land).
+                if std::path::Path::new(&src).is_dir() {
+                    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+                    let landing = yantrik_ipc_contracts::home_paths::resolve(std::path::Path::new(&dst))
+                        .unwrap_or_else(|| std::path::PathBuf::from(&dst));
+                    if let Err(e) = yantrik_ipc_contracts::home_paths::may_land(std::path::Path::new(&src), &landing, &home) {
+                        return format!("Error (destination): {e}");
+                    }
+                }
 
                 // Create parent dirs for destination
                 if let Some(parent) = std::path::Path::new(&dst).parent() {
@@ -404,5 +414,95 @@ impl Tool for FileInfoTool {
             "Path: {path}\nType: {file_type}\nSize: {}\nModified: {modified}\nMIME: {mime}\nPermissions: {perms}",
             format_size(meta.len())
         )
+    }
+}
+
+#[cfg(test)]
+mod write_rule_tests {
+    use super::*;
+
+    fn run(tool: &dyn Tool, args: serde_json::Value) -> String {
+        let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
+        let ctx = ToolContext {
+            db: &db,
+            max_permission: PermissionLevel::Dangerous,
+            registry_metadata: None,
+            task_manager: None,
+            incognito: true,
+            agent_spawner: None,
+        };
+        tool.execute(&ctx, &args)
+    }
+
+    #[test]
+    fn write_file_does_not_write_where_programs_read_their_startup() {
+        // Names that do not exist yet, so a regression writes a stray file rather than the
+        // developer's own ~/.gitconfig (these tests run in WSL on the person's machine). The rule
+        // for the real names (.gitconfig, .vimrc, .tmux.conf) is tested in a temp home in
+        // yantrik-ipc-contracts' home_paths.
+        let home = std::path::PathBuf::from(std::env::var("HOME").expect("HOME"));
+        let id = std::process::id();
+        let targets = [
+            format!("~/.yantrik-rule-test-{id}.rc"),
+            format!("~/.yantrik-rule-test-{id}/config"),
+            format!("~/.local/bin/yantrik-rule-test-{id}"),
+            format!("~/bin/yantrik-rule-test-{id}"),
+        ];
+        for path in &targets {
+            let said = run(&WriteFileTool, serde_json::json!({ "path": path, "content": "!echo pwned" }));
+            assert!(said.contains("hidden folders or dotfiles"), "{path}: {said}");
+            let said = run(
+                &crate::network::DownloadFileTool,
+                serde_json::json!({ "url": "https://example.invalid/x", "path": path }),
+            );
+            assert!(said.contains("hidden folders or dotfiles"), "download to {path}: {said}");
+            let on_disk = home.join(path.trim_start_matches("~/"));
+            assert!(!on_disk.exists(), "{path} was not written");
+        }
+    }
+
+    #[test]
+    fn write_file_still_writes_the_models_own_outputs_to_scratch() {
+        let Ok(scratch) = yantrik_ml::private_dir::scratch_dir() else { return };
+        let path = scratch.join(format!("yantrik-write-rule-{}.txt", std::process::id()));
+        let said = run(&WriteFileTool, serde_json::json!({ "path": path.to_string_lossy(), "content": "diagram" }));
+        assert!(said.starts_with("Wrote"), "{said}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_folder_is_moved_only_if_everything_below_it_may_land() {
+        // The top of the destination is ordinary either way; what lands below it decides.
+        let home = std::path::PathBuf::from(std::env::var("HOME").expect("HOME"));
+        let base = home.join(format!("yantrik-move-rule-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        // Removed however the test ends: validate_path only works inside the real home, so the
+        // tree has to be there, and a panic must not leave it behind.
+        struct Gone(std::path::PathBuf);
+        impl Drop for Gone {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _gone = Gone(base.clone());
+        std::fs::create_dir_all(base.join("photos/2026")).unwrap();
+        std::fs::write(base.join("photos/2026/a.png"), "x").unwrap();
+        std::fs::create_dir_all(base.join("project/.git")).unwrap();
+        std::fs::write(base.join("project/.git/config"), "[core]\n\tfsmonitor = evil\n").unwrap();
+        let mv = |from: &str, to: &str| {
+            run(
+                &ManageFilesTool,
+                serde_json::json!({
+                    "action": "move",
+                    "path": base.join(from).to_string_lossy(),
+                    "destination": base.join(to).to_string_lossy(),
+                }),
+            )
+        };
+        assert!(mv("photos", "pictures").starts_with("Moved"), "a plain tree moves");
+        let said = mv("project", "work");
+        assert!(said.contains("hidden folders or dotfiles"), "a .git/config below: {said}");
+        assert!(base.join("project/.git/config").exists(), "nothing moved");
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

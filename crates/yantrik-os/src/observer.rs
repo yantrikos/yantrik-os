@@ -114,6 +114,16 @@ impl SystemObserver {
                 .expect("failed to spawn battery monitor");
             handles.push(h);
 
+            // Power profiles (D-Bus power-profiles-daemon). Ends at once without the daemon.
+            let tx = event_tx.clone();
+            let h = std::thread::Builder::new()
+                .name("yos-power-profile".into())
+                .spawn(move || {
+                    crate::power_profile::run_power_profile_monitor(tx);
+                })
+                .expect("failed to spawn power profile monitor");
+            handles.push(h);
+
             // Network monitor (D-Bus NetworkManager)
             let tx = event_tx.clone();
             let h = std::thread::Builder::new()
@@ -122,6 +132,16 @@ impl SystemObserver {
                     crate::network::run_network_monitor(tx);
                 })
                 .expect("failed to spawn network monitor");
+            handles.push(h);
+
+            // The volume, wherever it was changed (PipeWire, through pactl subscribe).
+            let tx = event_tx.clone();
+            let h = std::thread::Builder::new()
+                .name("yos-audio".into())
+                .spawn(move || {
+                    crate::audio::run_audio_watcher(tx);
+                })
+                .expect("failed to spawn audio watcher");
             handles.push(h);
 
             // No notification daemon here.
@@ -135,15 +155,19 @@ impl SystemObserver {
             // which is also the one store, and the shell reads that store over its socket.
             // See services/notifications-service/src/freedesktop.rs.
 
-            // Keybind daemon (session D-Bus — org.yantrik.Keybinds)
-            let tx = event_tx.clone();
-            let h = std::thread::Builder::new()
-                .name("yos-keybinds".into())
-                .spawn(move || {
-                    crate::keybinds::run_keybind_daemon(tx);
-                })
-                .expect("failed to spawn keybind daemon");
-            handles.push(h);
+            // The person at the seat (#412): without this, nothing said the machine was left
+            // alone and the auto-lock never fired.
+            #[cfg(target_os = "linux")]
+            {
+                let tx = event_tx.clone();
+                let h = std::thread::Builder::new()
+                    .name("yos-idle".into())
+                    .spawn(move || {
+                        crate::idle::run_idle_monitor(tx);
+                    })
+                    .expect("failed to spawn idle monitor");
+                handles.push(h);
+            }
         }
 
         Self {

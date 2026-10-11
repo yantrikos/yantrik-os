@@ -4,7 +4,7 @@
 //! with uniqueness checking to prevent ambiguous edits.
 
 use serde_json::Value;
-use super::{Tool, ToolContext, PermissionLevel, validate_path};
+use super::{Tool, ToolContext, PermissionLevel, validate_write_path};
 
 pub fn register(reg: &mut super::ToolRegistry) {
     reg.register(Box::new(EditFileTool));
@@ -63,7 +63,7 @@ impl Tool for EditFileTool {
             return "Error: old_string and new_string are identical".to_string();
         }
 
-        let expanded = match validate_path(path) {
+        let expanded = match validate_write_path(path) {
             Ok(p) => p,
             Err(e) => return format!("Error: {e}"),
         };

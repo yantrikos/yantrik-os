@@ -1,0 +1,96 @@
+// BatteryPopover — what hangs under the bar's battery: the level, what it is doing, the time,
+// and the power profile.
+//
+// The profile choice is the daemon's, not ours: it is hidden when there is no
+// power-profiles-daemon (`power-profile` is ""), and Performance is hidden when the daemon does
+// not offer it, because a button the machine would refuse is a lie. The popover only asks;
+// `profile-chosen` goes to the owner, who sets it and then shows what the daemon says is in
+// effect.
+//
+// Brightness is the one slider the machine's backlight already has (`wire/backlight.rs`, story
+// 0.2): this binds to its level and its callback rather than reading the panel a second time. It
+// is drawn only when there is a backlight; a VM or a desktop monitor has none.
+import { Theme } from "theme.slint";
+import { Icons } from "../icon.slint";
+import { YSlider } from "../y_slider.slint";
+import { YPopover } from "../y_popover.slint";
+import { YButton } from "../y_button.slint";
+
+export component BatteryPopover inherits YPopover {
+    in property <int> level: 100;
+    in property <string> status-text: "";
+    in property <string> time-text: "";
+    // "" when there is no power-profiles-daemon.
+    in property <string> power-profile: "";
+    in property <bool> performance-offered: false;
+    callback profile-chosen(string);
+    in property <bool> brightness-available: false;
+    in property <int> brightness-level: 0;
+    callback brightness-changed(int);
+
+    label: "Battery";
+    content-spacing: Theme.sp-3;
+
+    HorizontalLayout {
+        spacing: Theme.sp-3;
+        alignment: start;
+
+        Text {
+            text: root.level + "%";
+            color: Theme.text-primary;
+            font-size: Theme.fs-display;
+            font-weight: Theme.fw-body-strong;
+            vertical-alignment: center;
+        }
+        VerticalLayout {
+            alignment: center;
+            if root.status-text != "" : Text {
+                text: root.status-text;
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+            }
+            if root.time-text != "" : Text {
+                text: root.time-text;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-caption;
+            }
+        }
+    }
+
+    if root.brightness-available : YSlider {
+        label: "Brightness";
+        icon: Icons.sun;
+        value: root.brightness-level;
+        show-value: true;
+        value-suffix: "%";
+        changed(v) => { root.brightness-changed(v); }
+    }
+
+    if root.power-profile != "" : VerticalLayout {
+        spacing: Theme.sp-2;
+
+        Text {
+            text: "Power profile";
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+        }
+        HorizontalLayout {
+            spacing: Theme.sp-2;
+            YButton {
+                label: "Power Saver";
+                variant: root.power-profile == "power-saver" ? 0 : 1;
+                clicked => { root.profile-chosen("power-saver"); }
+            }
+            YButton {
+                label: "Balanced";
+                variant: root.power-profile == "balanced" ? 0 : 1;
+                clicked => { root.profile-chosen("balanced"); }
+            }
+            if root.performance-offered : YButton {
+                label: "Performance";
+                variant: root.power-profile == "performance" ? 0 : 1;
+                clicked => { root.profile-chosen("performance"); }
+            }
+        }
+    }
+}

@@ -1,6 +1,6 @@
 //! Media tools — screenshot, audio_control, audio_info.
 
-use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path};
+use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_write_path};
 
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(ScreenshotTool));
@@ -40,7 +40,7 @@ impl Tool for ScreenshotTool {
             return "Error: save_path is required".to_string();
         }
 
-        let expanded = match validate_path(save_path) {
+        let expanded = match validate_write_path(save_path) {
             Ok(p) => p,
             Err(e) => return format!("Error: {e}"),
         };

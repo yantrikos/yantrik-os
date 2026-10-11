@@ -1,0 +1,41 @@
+# Yantrik Live: forward the instance's desktop video from the sealed segment to the relay.
+# On the gate VM (560). Installed by setup-forward.sh. The gate's firewall admits UDP 9000 only
+# from the live segment (deploy/live/gate-setup.sh).
+[Unit]
+Description=Yantrik Live forwarder (instance video to yantrikos.com)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+DynamicUser=yes
+# Root's file, handed to this service alone; the secrets never reach a unit file or the journal.
+LoadCredential=relay.env:/etc/yantrik-live/relay.env
+ExecStart=/usr/local/lib/yantrik-live/forward
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,28 @@
+// YReading — one measured value under its label: "Gateway" over "192.168.4.1".
+//
+// A value nobody could read says so: "not reported", in dim text. Network drew a bare "—" for
+// Speed, Subnet, Gateway and DNS on a working DHCP link, and a dash reads the same whether the
+// field is empty, zero or broken. The words name the cause (the source gave no answer) and the
+// dim keeps them from looking like a reading.
+//
+//     YReading { label: "Gateway"; value: iface.gateway; }
+//
+// Not a control: it takes no input.
+import { Theme } from "theme.slint";
+
+export component YReading inherits VerticalLayout {
+    in property <string> label;
+    /// Empty when the source did not report it.
+    in property <string> value;
+
+    spacing: 2px;
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.label + ": " + (root.value != "" ? root.value : "not reported");
+
+    Text { text: root.label; color: Theme.text-dim; font-size: Theme.fs-caption; }
+    Text {
+        text: root.value != "" ? root.value : "not reported";
+        color: root.value != "" ? Theme.text-secondary : Theme.text-dim;
+        font-size: Theme.fs-body;
+    }
+}

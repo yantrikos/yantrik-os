@@ -1,0 +1,35 @@
+// YWheelArea — a TouchArea that turns scrolling into whole steps. Kit-internal: YSlider and
+// YIndicator use it so the two never disagree about what one scroll means.
+//
+// A mouse wheel arrives as 60px per click, a touchpad as a stream of small pixel deltas. Acting
+// on every event makes a touchpad race through a slider's whole range in one swipe, and acting
+// on the sign alone makes a wheel and a pad feel different. So the deltas are added up and one
+// step is emitted per `notch` of travel: one wheel click is one step, one slow swipe a few.
+// The remainder carries to the next event, and reversing direction drops it, so a flick back
+// does not first have to pay off the way you came.
+//
+//   YWheelArea { wheel(steps) => { volume.nudge(steps); } }   // steps > 0: scrolled up
+export component YWheelArea inherits TouchArea {
+    in property <length> notch: 60px;
+    callback wheel(int);
+
+    property <length> carry: 0px;
+
+    scroll-event(event) => {
+        if (event.delta-y == 0px) { return reject; }
+        if ((event.delta-y > 0px && root.carry < 0px) || (event.delta-y < 0px && root.carry > 0px)) {
+            root.carry = 0px;
+        }
+        root.carry += event.delta-y;
+        if (root.carry >= root.notch) {
+            let n = Math.floor(root.carry / root.notch);
+            root.carry -= n * root.notch;
+            root.wheel(n);
+        } else if (root.carry <= -root.notch) {
+            let n = Math.ceil(root.carry / root.notch);
+            root.carry -= n * root.notch;
+            root.wheel(n);
+        }
+        accept
+    }
+}

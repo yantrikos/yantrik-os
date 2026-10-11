@@ -1,0 +1,16 @@
+# The live instance's Director (deploy/live/director/director.py): gives the Mind its long
+# missions on stream, as the person at the keyboard would. On VM 561 only. Installed by
+# setup-director.sh. It runs one mission to its end and exits; the timer starts it again, so a
+# finished mission hands over to the next one and a stopped one is retried after a rest.
+[Unit]
+Description=Yantrik Live Director (missions for the live Mind)
+After=yantrik-mind.service
+
+[Service]
+Type=oneshot
+User=yantrik
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=HOME=/home/yantrik
+ExecStart=/usr/bin/python3 /opt/yantrik-live/director/director.py
+NoNewPrivileges=yes
+PrivateTmp=yes

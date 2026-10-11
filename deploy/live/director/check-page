@@ -1,0 +1,35 @@
+#!/bin/sh
+# Load a page in headless Chromium and print the errors it throws, one per line. No output and
+# exit 0 means the page loaded clean; exit 1 means it threw; exit 2 means it could not be checked.
+#
+# One check for both sides of a live mission: the Mind runs it through its own terminal
+# (agent_run) to look at what it made, and the Director runs it after every turn so that a tick
+# in PLAN.md is held to the page actually working. Neither can open the page in the browser app:
+# the browser refuses file:// so a mind cannot read the person's files through it, and a session
+# that has read private state may not go to a new address, localhost included, since the mind
+# can start a server there that forwards anywhere. On 561 the Mind ticked all eight Starfall
+# steps over a game.js that did not parse (2 Oct 2026); nothing had ever loaded it.
+#
+# Usage: check-page FILE.html
+set -u
+page=${1:?usage: check-page FILE.html}
+case "$page" in /*) ;; *) page="$PWD/$page" ;; esac
+[ -f "$page" ] || { echo "no such page: $page"; exit 2; }
+command -v chromium >/dev/null || { echo "chromium is not installed, so the page cannot be checked"; exit 2; }
+
+# A throwaway profile: never the person's, and nothing left behind.
+profile=$(mktemp -d)
+trap 'rm -rf "$profile"' EXIT
+# The virtual-time budget runs the page's first 3 seconds of timers and animation frames, so an
+# error thrown by the game loop is caught as well as one thrown while the script parses.
+log=$(timeout 40 chromium --headless=new --disable-gpu --no-first-run --user-data-dir="$profile" \
+    --virtual-time-budget=3000 --enable-logging=stderr --v=0 --dump-dom "file://$page" 2>&1 >/dev/null)
+status=$?
+[ "$status" = 124 ] && { echo "the page did not finish loading in 40 seconds"; exit 2; }
+
+# Chromium writes console messages as `…:INFO:CONSOLE:<line>] "<message>", source: <url> (<line>)`.
+errors=$(printf '%s\n' "$log" | grep -E ':CONSOLE:[0-9]+\] "(Uncaught|Error|TypeError|ReferenceError|SyntaxError)' \
+    | sed -E 's/^.*:CONSOLE:[0-9]+\] //' | sed -E 's#file://[^ ]*/##' | cut -c1-240 | sort -u | head -10)
+[ -z "$errors" ] && exit 0
+printf '%s\n' "$errors"
+exit 1

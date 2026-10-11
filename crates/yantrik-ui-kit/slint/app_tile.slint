@@ -1,32 +1,51 @@
-// AppTile — an app's icon, as a solid tile in the app's own colour.
+// AppTile — an app's icon: its pre-rendered tile, the same picture wherever the app is drawn.
 //
 // The one place an app's colour is loud (desk-and-mind, "Colour per app"): the launcher, the
-// desktop's workspace row and the taskbar all draw an app through this, so a tile is the same
-// object on all three and only its size changes. Before this each surface drew its own — a
-// faint tint behind a coloured stroke — and at a glance they read as three grey squares with
-// a thread of colour in them. A solid tile with a white glyph is what an app icon looks like
-// on every desktop a person has used, and it is what lets the colour do its job: you find
-// Files by its blue before you have read the word.
+// desktop's workspace row, the dock and the window switcher all draw an app through this, so a
+// tile is the same object on each and only its size changes. You find Files by its blue before
+// you have read the word.
 //
-// The shape scales: the corner is a fraction of the size, not a token, because a 20px taskbar
-// tile and a 46px desktop tile have to be the same shape and one length cannot give both.
+// The art is drawn ahead of time (design/icons/generate.py): the app's hue as a top-lit gradient
+// on a squircle, a 1px highlight on the rim and a large filled glyph, rendered to PNGs at 32,
+// 48, 64, 96, 128 and 256px. It used to be drawn here, a flat tile with a 1.5px stroke glyph at
+// half its size, and Pranab set it beside a phone's home screen and asked for that crispness.
+// Neither half of it can be drawn at run time: a 32px dock tile on this OS's 1x display has no
+// spare pixel for a stroke to land between, and the software renderer drops a gradient's corner
+// radius (a square with a rounded rim, preview harness, 23 September), so the light that makes
+// an icon read as an object was never available to this file.
+//
+// The art is chosen by the size the tile is drawn at in PHYSICAL pixels, `size / 1phx`: the
+// smallest at or above it (AppIcons.art). A 32px tile is the 32px art pixel for pixel on a 1x
+// display and the 64px art on a 2x one, never a smaller picture stretched.
 //
 // Three cases, decided here once:
-//   * our app, known to AppColor: the solid tile, the glyph in the colour that reads on it;
-//   * an app with a real icon from the icon theme: a quiet surface tile with that image, since
-//     painting a third-party logo onto one of our colours would be claiming it;
-//   * anything else: the same quiet tile with the glyph in secondary grey — no colour, because
-//     we do not know what it is, and a guessed hue would imply a category.
-import { Theme, ThemeMode } from "theme.slint";
-import { AppColor } from "app_color.slint";
-import { Icon } from "icon.slint";
+//   * our app, known to AppColor: its art;
+//   * an app with a real icon from the icon theme — a third-party app, and Blender, whose own
+//     logo is the one people know it by: that image on the neutral plate, since painting a
+//     third-party logo onto one of our colours would be claiming it;
+//   * anything else: the neutral plate with the app's initial. No colour, because we do not know
+//     what it is and a guessed hue would imply a category; and not a generic window glyph,
+//     because a row of identical windows tells nobody which is which.
+//
+// The plate follows the theme, unlike the art: a pale card in the light theme, and a dim
+// graphite with a lighter rim in the dark one, where a pale tile flashed in the dock (#642).
+import { AppIcons } from "app_icons.slint";
+import { ThemeMode } from "theme.slint";
+
+/// The letter on an unknown app's tile. Slint cannot take a string apart, so each window that
+/// draws tiles answers this from Rust (`yantrik_ui_kit::app_tile::initial`); unanswered, the
+/// plate is drawn bare.
+export global AppInitial {
+    pure callback of(string) -> string;
+}
 
 export component AppTile inherits Rectangle {
     /// The shell's app id (the icon id: `files`, `email`, `sysmonitor` …).
     in property <string> app-id;
-    /// The glyph, as path commands from Icons (`Icons.app-or-window(id)` and friends).
+    /// The monochrome glyph (`Icons.app-or-window(id)` and friends). The tile no longer draws
+    /// it — the art comes from `app-id` — and keeps it so no caller has to change.
     in property <string> glyph;
-    /// A real icon image resolved from the icon theme; wins over the glyph when present.
+    /// A real icon image resolved from the icon theme, for an app there is no art for.
     in property <bool> has-icon: false;
     in property <image> icon;
     in property <length> size: 44px;
@@ -34,40 +53,47 @@ export component AppTile inherits Rectangle {
     /// Drawn quieter: the taskbar's windows that do not have focus.
     in property <bool> dimmed: false;
 
-    property <string> hue: AppColor.hue-for-app(root.app-id);
-    property <bool> coloured: root.hue != "" && !root.has-icon;
-    property <color> fill: root.hovered ? AppColor.tile-for-app(root.app-id).brighter(8%)
-                                        : AppColor.tile-for-app(root.app-id);
+    // Two properties, not one expression: Slint 1.17's Rust generator moves `app-id` into the
+    // call to has() and then reads it again for the comparison, which does not compile.
+    property <bool> known: AppIcons.has(root.app-id);
+    property <bool> blender: root.app-id == "blender";
+    property <bool> art: root.known && !(root.has-icon && root.blender);
+    property <int> px: ceil(root.size / 1phx);
+    // Whole pixels, so the theme's icon and the initial are not smeared across a pixel edge.
+    property <length> icon-size: round(root.size * 0.66 / 1px) * 1px;
 
     width: root.size;
     height: root.size;
-    border-radius: root.size * 0.26;
-    // Solid, not a gradient: the software renderer this OS runs on draws a gradient fill
-    // without its corner radius, so a gradient tile came out as a square with a rounded rim
-    // (photographed, preview harness, 23 September). The rim below does the lifting instead.
-    background: root.coloured ? root.fill
-        : root.hovered ? Theme.bg-elevated.brighter(6%) : Theme.bg-elevated;
-    // The hairline. On a coloured tile it is a light rim in the dark theme — the edge that
-    // catches the light — and a faint dark one in the light theme, where a white rim on a
-    // white page would vanish.
-    border-width: 1px;
-    border-color: root.coloured ? (ThemeMode.dark ? #ffffff30 : #00000024) : Theme.border-card;
     opacity: root.dimmed ? 0.7 : 1.0;
 
-    if root.has-icon : Image {
+    Image {
+        source: root.art ? AppIcons.art(root.app-id, root.px) : AppIcons.plate(root.px, ThemeMode.dark);
+        width: root.size;
+        height: root.size;
+    }
+    if !root.art && root.has-icon : Image {
         source: root.icon;
-        width: root.size * 0.66;
-        height: root.size * 0.66;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
+        width: root.icon-size;
+        height: root.icon-size;
+        x: round((parent.width - self.width) / 2 / 1px) * 1px;
+        y: round((parent.height - self.height) / 2 / 1px) * 1px;
         image-fit: contain;
     }
-    if !root.has-icon : Icon {
-        commands: root.glyph;
-        size: root.size * 0.54;
-        tint: root.coloured ? AppColor.on-tile(root.hue) : Theme.text-secondary;
-        thickness: root.size <= 24px ? 1.5px : root.size < 34px ? 1.8px : 2px;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
+    if !root.art && !root.has-icon : Text {
+        text: AppInitial.of(root.app-id);
+        color: AppIcons.plate-ink(ThemeMode.dark);
+        font-size: round(root.size * 0.46 / 1px) * 1px;
+        font-weight: 600;
+        width: root.size;
+        height: root.size;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    // Hover lifts the whole tile a step, inside its own outline.
+    if root.hovered : Image {
+        source: AppIcons.mask(root.px);
+        width: root.size;
+        height: root.size;
+        opacity: 0.14;
     }
 }

@@ -87,7 +87,7 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
             &w,
             "Yantrik",
             &what,
-            "It left a record on this machine. Open Report a problem to read it and decide whether to send it.",
+            "It left a record on this machine. Open Problems to read it and decide whether to send it.",
             1,
         );
         refresh(&w);

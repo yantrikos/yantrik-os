@@ -16,6 +16,9 @@ So the desktop has a mode now. The person sets it. The bridge reads it, per call
 
 ## The four modes
 
+*(Five since 28 September 2026: bypass is two levels, `bypass` and `bypass_all`. See [Two
+bypasses](#two-bypasses-28-september-2026) at the end; the tables below carry both.)*
+
 The machine ceiling (`tool_permission`) is untouched by all of this. It is the owner's hard wall,
 enforced inside every app's own runtime with a `CEILING:` refusal, and no mode moves it. A mode
 decides what happens to an action **at or below** it.
@@ -25,7 +28,8 @@ decides what happens to an action **at or below** it.
 | `plan` | read only. `os_describe`, `os_apps`, `os_perception`, `web_read` / `web_text` / `web_find` all work. Every `os_act` above `safe`, and `web_go` / `web_click` / `web_type`, is refused with a message that says the desktop is in plan mode, that nothing was changed, and that it should present what it WOULD do. |
 | `ask` (default) | ≤ `standard` runs; `sensitive` and above (≤ ceiling) raises a card. Exactly what shipped yesterday. |
 | `auto` | ≤ `sensitive` runs without asking; `dangerous` (if the ceiling allows it at all) raises a card. |
-| `bypass` | everything ≤ ceiling runs without asking. Time-boxed: 15 minutes / 1 hour / until the shell restarts, and never persisted. |
+| `bypass` | everything ≤ ceiling runs without asking — **except** anything an app marks as impossible to undo — its own published purpose says so, such as a purchase (`browser.commit`) or a calendar delete — which still raises a card, as in `auto`. Time-boxed: 15 minutes / 1 hour / until the shell restarts, and never persisted. |
+| `bypass_all` ("Full bypass") | everything ≤ ceiling runs without asking, what cannot be undone included — what `bypass` meant until 28 September 2026. Time-boxed and never persisted exactly as `bypass` is. |
 
 *(`auto` gained a second reason to ask later the same day: an action whose own published purpose
 says it cannot be undone. See [Auto was not asking about the thing the menu promised it
@@ -40,9 +44,11 @@ The full table, as `mind_mode::Modes::decide` implements it and
 | `ask` | run | run | **ask** | **ask** |
 | `auto` | run | run | run *(logged)* | **ask** |
 | `bypass` | run | run | run *(logged)* | run *(logged)* |
+| `bypass_all` | run | run | run *(logged)* | run *(logged)* |
 
-…for an action the app says nothing about undoing. For one whose published purpose says it
-cannot be undone, the `standard` and `sensitive` columns of `ask` and `auto` are **ask** as well;
+…for an action the app says nothing about undoing — where the two bypasses are the same row. For one whose published purpose says it
+cannot be undone, the `standard` and `sensitive` columns of `ask` and `auto` are **ask** as well,
+and so is every column above `safe` in `bypass` (only `bypass_all` runs them);
 the full second table is
 [below](#auto-was-not-asking-about-the-thing-the-menu-promised-it-would).
 
@@ -110,12 +116,15 @@ act: set_mind_mode(mode)  [safe, settles on return]
      this list. A request to loosen it is refused …
 ```
 
-Lowering is `bypass → auto → ask → plan`, by `Mode::permissiveness`. A request to raise is
+Lowering is `bypass_all → bypass → auto → ask → plan`, by `Mode::permissiveness`. A request to raise is
 refused with a message that names where a person does it — the chip in the status bar, or
 Settings → AI & Intelligence — because a mind told only "no" invents a way out: this whole feature
-exists downstream of a model telling somebody to set an environment variable. `bypass` cannot be
-entered from the socket at all, even from `bypass`, because it is the one mode that has to be
-chosen on a confirmation. `mind_mode_the_socket_can_lower_and_cannot_raise` tests both directions.
+exists downstream of a model telling somebody to set an environment variable. Neither bypass can
+be entered from the socket at all, even from `bypass`, because a bypass is the one kind of mode
+that has to be chosen on a confirmation. The one exception is a lowering: from `bypass_all` the
+socket may step down to `bypass`, which keeps the deadline the person chose
+(`Modes::lower_from_socket`). `mind_mode_the_socket_can_lower_and_cannot_raise` and
+`mind_mode_the_socket_enters_neither_bypass_but_may_step_full_bypass_down` test both directions.
 
 A mind putting *itself* into plan mode is useful and harmless — it is the mind saying "check my
 work before I touch anything" — which is why lowering is published rather than the whole thing
@@ -372,15 +381,46 @@ every row a fixed height:
 | *(with no session rules)* "See what it did without asking" (28px) | 324…352 | **(1098, 338)** |
 | *(with no session rules)* separator | 360 | — |
 | *(with no session rules)* "Apps it opens go … in Mind View / on my desktop" (28px, #239) | 369…397 | **(1098, 383)** |
+| *(with no session rules)* separator | 405 | — |
+| *(with no session rules)* **Private** (44px, 2026-09-29) | 414…458 | **(1098, 436)** |
 
-The Mind View row is last so that no row above it moved when it was added. It also moves down
-while the audit list is open, by that list's height.
+The Mind View row was last so that no row above it moved when it was added, and Private came
+after it for the same reason. Both move down while the audit list is open, by that list's height.
+
+**Private** is not a mode. While it is on, the Mind is off whatever the mode says: the mind door
+and every surface's dispatch refuse agents (`yantrik_ipc_transport::privacy`), the Lens sends
+nothing to an attached mind and offers "Leave Private mode →" instead, and the shell records
+nothing (companion incognito, clipboard, activity feed). It lasts until the person turns it off,
+through restarts (`~/.config/yantrik/privacy.json`). Like the modes, only a pointer changes it:
+`private_mode::person_set_private` is called from `control_approvals::wire` alone, and no action
+named for privacy may be published. The chip reads "Private" while it is on.
+
+What turning it on does (`private_mode::enforce`), after the security review of 29 September:
+every turn to every mind is refused by the harness host (the built-in companion included, and a
+refused turn is never delivered later); the agents that run as the person are frozen by the
+cgroup freezer (`private_freeze`: the harness manifests' units and `hermes-gateway`), their
+commands killed and the cards waiting on their behalf withdrawn; the companion's worker does
+nothing of its own accord (no thinking, focus tracking, recipes, recording) and its socket answers
+no one; the event log, clipboard, activity feed and screen watcher record nothing. The shell reads
+the file back before anything starts, and puts it back within two seconds if anything else
+changes it, telling the person.
+
+What it does not do, said plainly:
+- A harness the person started by hand, outside the desktop's units, is not frozen: the harness
+  socket refuses it, but its own shell and file tools are the person's.
+- Something running as the person can press the Private row with a synthetic pointer, as it can
+  any row of this menu. The agents that could are frozen while private.
+- The Mind's process keeps running, boxed in its own account; the desktop stops serving it, and
+  every door request answers PRIVATE. What it already remembers stays with it.
+- Apps keep their own records (browser history, notification history, documents).
 
 `x = 1098` is the horizontal centre of the content column (`940 + 316/2`); any `x` in 940…1256
 lands on the same row.
 
 With **n** session rules listed, everything from the second separator down shifts by
-`4 + 16 + 28n` px. For one rule:
+`4 + 16 + 28n` px. With none listed but a lowering of the mode having just cleared some, the
+section shows one 24px line instead ("Cleared when the mode was lowered: terminal.run"), and the
+rows shift exactly as they do for one rule. For one rule:
 
 | row | extent | click at |
 |---|---|---|
@@ -393,20 +433,32 @@ The ✕ is a 24px box at the right edge of the content column: `1256 − 24 = 12
 `x = 1244`.
 
 **The bypass confirmation** replaces the menu's contents inside the same panel, so it starts from
-the same `y = 48`:
+the same `y = 48`. Since 28 September 2026 it chooses which bypass as well as how long: two rows
+the shape of the mode rows, **Bypass** chosen whenever the confirmation opens, **Full bypass** a
+press away, then the paragraph, then the durations, which fire for whichever row is chosen:
 
 | row | extent | **click at** |
 |---|---|---|
-| "Stop asking me anything" (18px) | 48…66 | — |
-| the warning paragraph (64px) | 74…138 | — |
-| **15 minutes** (36px) | 146…182 | **(1098, 164)** |
-| **1 hour** (36px) | 190…226 | **(1098, 208)** |
-| **Until the shell restarts** (36px) | 234…270 | **(1098, 252)** |
-| **Cancel** (36px) | 278…314 | **(1098, 296)** |
+| "Stop asking me, for a while" (18px) | 48…66 | — |
+| **Bypass** — "Asks before what can't be undone; commands once." (44px) | 74…118 | **(1098, 96)** |
+| **Full bypass** — "Asks nothing, not even those." (44px) | 126…170 | **(1098, 148)** |
+| the warning paragraph (96px) | 178…274 | — |
+| **15 minutes** (36px) | 282…318 | **(1098, 300)** |
+| **1 hour** (36px) | 326…362 | **(1098, 344)** |
+| **Until the shell restarts** (36px) | 370…406 | **(1098, 388)** |
+| **Cancel** (36px) | 414…450 | **(1098, 432)** |
+
+**A double-click on Bypass enters nothing.** The menu's **Bypass** row is at 216…260, and the
+confirmation replaces the menu at the same place, so a second click there lands on whatever the
+confirmation has at that y. That is the paragraph (178…274) — no duration starts above 282 — and
+not the Full bypass row either, so a double-click neither enters a bypass nor changes which one is
+chosen. (Before the security review of 29 September the durations started at 250, and a
+double-click in the row's bottom ten pixels entered bypass for fifteen minutes.)
 
 **Enter confirms nothing.** Every control in the menu is a `TouchArea`, which takes no keyboard
 focus in Slint, exactly as the approval card's buttons are — so there is no default action and no
-key reaches anything. Entering bypass costs two deliberate pointer movements.
+key reaches anything. Entering bypass costs two deliberate pointer movements, and full bypass
+three: its row is never the one chosen when the confirmation opens.
 
 ### 0. Read the mode without looking at pixels
 
@@ -505,8 +557,9 @@ surface — driven through the bridge **must still raise a card**. Auto is not b
 ### 5. Bypass, and that it is unmistakable
 
 Chip → **Bypass** at `(1098, 238)`. The panel must swap to the confirmation, not to the mode:
-*"Stop asking me anything"*, the paragraph, three durations and Cancel. Press **15 minutes** at
-`(1098, 164)`.
+*"Stop asking me, for a while"*, the two bypass rows with **Bypass** chosen, the paragraph, three
+durations and Cancel. Press **15 minutes** at `(1098, 300)`. (For full bypass, press **Full
+bypass** at `(1098, 148)` first; the chip then reads `Full bypass 14m`.)
 
 Expect:
 
@@ -1143,3 +1196,213 @@ python3 tests/app-lints/run.py                                           # 0 new
 - **`request_approval`'s `purpose` argument is now partly decorative.** The published sentence is
   what decides. Leaving the argument is right — the shell path still needs it — but a caller
   reading the action's description cannot tell which one wins.
+
+## Two bypasses (28 September 2026)
+
+Pranab's decision, after the browser-design consult asked whether a commitment — the browser's
+`commit`, the press that places an order or sends a message — should hold even in bypass: **bypass
+becomes two levels.**
+
+| mode | runs unasked | asks |
+|---|---|---|
+| `bypass` | everything the machine ceiling allows | anything an app marks as impossible to undo — its own published purpose trips `gate::unrecoverable` — such as a purchase or a calendar delete: `browser.commit`, `calendar.delete_event`, `shell.read_screen`, and the deletes listed below. Only what an app marks: a send or a delete whose description says nothing about undoing runs unasked, as does `terminal.run` |
+| `bypass_all` ("Full bypass") | everything the machine ceiling allows, those included | nothing |
+
+The reasoning is the one the 21 September rule already made for `auto`: the one act a person
+handing a mind the keys for an hour most often still wants a say in is the one that cannot be taken
+back, and the grade ladder has no rung for that. So plain bypass asks about exactly those — as
+`auto` does, and with no session rule covering one, in any mode — and runs everything else,
+`dangerous` included. What bypass used to be is `bypass_all`, chosen on purpose on the same red
+confirmation.
+
+For an action whose published purpose says it cannot be undone, the second table now reads:
+
+| | `safe` | `standard` | `sensitive` | `dangerous` |
+|---|---|---|---|---|
+| `plan` | run | **refuse** | **refuse** | **refuse** |
+| `ask` | run | **ask** | **ask** | **ask** |
+| `auto` | run | **ask** | **ask** | **ask** |
+| `bypass` | run | **ask** | **ask** | **ask** |
+| `bypass_all` | run | run *(logged)* | run *(logged)* | run *(logged)* |
+
+The ladder stays monotonic — `plan` ⊂ `ask` ⊂ `auto` ⊂ `bypass` ⊂ `bypass_all`, at every grade,
+for both kinds of action — and the machine ceiling outranks both bypasses, unchanged.
+
+**The same in every copy of the table.** `gate::decide` (every app's dispatch, the Rust transport),
+`yantrik_surface.gate.decide` (the Python SDK, and so Blender and LibreOffice), the shell's
+`Modes::decide` and the MCP bridge's `decide` all draw the line in the same place:
+`Mode::asks_before_what_cannot_be_undone` is true for every mode but `bypass_all`. The shared
+vectors (`surface-vectors.json`, 800 decisions now; `mind-mode-vectors.json`) carry both bypasses,
+and the gate's own test checks that the two differ only where the app says an action cannot be
+undone.
+
+**Everything else about a bypass holds for both.** Both are time-boxed (15 minutes / 1 hour / until
+the shell restarts), never persisted — `to_store` writes the mode to fall back to, never a bypass,
+and neither is booted into — entered only by a person's pointer on the confirmation
+(`mind-bypass-chosen(kind, duration)`, wired in `control_approvals::wire` and nowhere else), shown
+red on the chip (`Bypass 43m`, `Full bypass 43m`, `Full bypass · no end`), audited the same way
+(the audit line carries `bypass_all` as its mode, and the "Bypass ended" count includes it), and
+announced by the same "Bypass ended" notification when either lapses. Moving from one to the other
+is one bypass: its window keeps its start and it still falls back to where it came from.
+`Mode::is_bypass` in the shell and `gate::is_bypass` / `gate::TIME_BOXED` in the transport are the
+one test for "a bypass of either kind". The file every app reads names the mode (`"mode":
+"bypass_all"`), because the apps enforce the difference.
+
+**From the socket.** `set_mind_mode` enters neither. It may step `bypass_all` down to `bypass` —
+the mind asking to be asked again before what cannot be undone — and that keeps the person's
+deadline rather than turning an hour into "until restart".
+
+**Full bypass only widens the desktop's own gate.** It reaches nothing outside it: not the Mind's
+own broker, not a phone's hold (a call held from a phone asks above its level in every mode, both
+bypasses included, and its refusal names the hold, not the mode), not the bridge's taint rule, and
+not `YOS_MCP_MAX_PERMISSION`, which can still only make things stricter.
+
+**Surfaces must be on an SDK with the two-level gate.** A surface built on an older SDK reads
+`bypass` as "ask nothing" — it lets plain bypass run what the app marks as impossible to undo — and
+reads `bypass_all` as `ask`, because that name is not one it knows.
+
+**What plain bypass asks about is only what an app declares.** The promise on the confirmation is
+the rule, word for word: "still asks if an app says it cannot be undone". So the security review of
+29 September had the real deletes say so in their published descriptions (grades unchanged):
+
+| action | grade | what its description now says |
+|---|---|---|
+| `container-manager.remove` | dangerous | "…It cannot be undone." |
+| `download-manager.cancel` | sensitive | "…Deleting it cannot be undone…" |
+| `snippet-manager.delete` | sensitive | "…There is no trash to take it out of: it cannot be undone." |
+| `network-manager.wifi_forget` | sensitive | "…It cannot be undone: joining it again needs the password again." |
+| `text-editor.discard` | sensitive | "…is gone and is not recoverable." (was "cannot be recovered", which no phrase matched) |
+| `shell.installer_install` | dangerous | "…What was on the disk is not recoverable." |
+| `shell.report_problem` | sensitive | "…Once sent it cannot be undone." |
+
+Audited and left as they are: the Trash moves (`files_delete`, `notes.trash`, `studio.delete`,
+`arcade.delete`), which say they can be brought back; `presentation.delete_slide`, which the deck's
+own undo reverses; `calendar.delete_own_event`, which exists so a caller may take its own event off
+unasked; the overwrites (`save` in LibreOffice, Blender, Document Editor and Presentation;
+`set_content`, `replace_all`), for the reason LibreOffice's README gives — the grade does the
+asking, and the words would take `auto` away; the process kills (`kill_process`, `agent_kill`,
+`stop_agent`); and `terminal.run`, `sensitive` and arbitrary, which is being raised with Pranab.
+Those already matching were `calendar.delete_event`, `browser.commit`, `shell.read_screen`,
+`network-manager.wifi_disconnect` / `wifi_radio`, and Blender's `new_scene` and `delete_object`.
+`cancel_recipe` says "cannot be resumed", which matches no phrase; it is steering a run, not
+destroying anything a person made, and is left as it is.
+
+### Tests
+
+| where | what |
+|---|---|
+| `crates/yantrik-ipc-transport/src/gate.rs` | bypass asks before what cannot be undone (the calendar delete and the browser commit), runs everything else, and no rule answers it; full bypass runs both; either bypass ends on time and never falls back to a bypass; the vectors carry five modes and the two bypasses differ only on the `unrecoverable` axis |
+| `crates/yantrik-ui/src/mind_mode.rs` | the two decision tables with a `bypass_all` row and bypass's writing cells asking; full bypass expires back and is announced; moving between the bypasses is one bypass; the socket enters neither bypass but may step full bypass down, keeping the deadline; neither is persisted or booted into; the chip names which bypass; the published file says `bypass_all` and the runtime's reader enforces it; the lapse count includes full bypass |
+| `sdk/python/tests/test_gate.py`, `tests/blender-core/test_dispatch.py`, templates | the Python gate mirrors the Rust table rule for rule; the templates' `remove` asks in bypass and runs in full bypass |
+| `deploy/yantrik-os/yos-mcp-selftest.py` | bypass asks about `calendar.delete_event` and `web_commit`, and full bypass runs them and writes them down as `bypass_all`; neither bypass passes the machine ceiling; the cap turns either bypass's run back into a question; neither switches off the taint rule; the vectors cover five modes |
+
+## Commands ask once (29 September 2026)
+
+Pranab's decision: **a command that can do anything asks once, then a session rule covers it.**
+The Terminal's `run` is `sensitive` and arbitrary — whatever the command does, it does as the
+person — and in `auto` and plain bypass it used to run with nobody asked. Asking about every
+command would be forty cards for a long job, which is the approval fatigue this whole design
+exists to avoid; asking about none of them is handing over the keyboard. So the gate gains a
+second input read from the app's own sentence: **open-ended**, the action runs whatever it is
+given.
+
+| mode | an open-ended action above `safe` |
+|---|---|
+| `plan` | refused, as plan refuses every write |
+| `ask`, `auto`, `bypass` | **asks**, even at `standard`; the card offers "Allow for this session", and with that rule the rest of the session's calls run unasked (logged as `rule`) |
+| `bypass_all` | runs unasked, written down |
+
+The difference from "cannot be undone" is the session rule: that one is never covered, this one
+is — a mind asks once per session to run commands, not once per command, and that is the whole
+point. **Where an action says both, cannot-be-undone wins**: it asks every time and no rule
+answers it (`approvals::may_offer_session_rule` does not offer one, and the table does not honour
+one). A `dangerous` open-ended action (Blender's `run_python`) is offered no standing yes either,
+as no `dangerous` action is. A call held from a phone asks as before, whatever the rules.
+
+**How an action says it.** Declared, not guessed: `Action::open_ended()` in Rust
+(`yantrik_ipc_contracts::control_surface`) and `open_ended=True` in the Python SDK append one exact
+sentence to the description — `OPEN_ENDED`, *"What it runs can do anything you can."* — and
+`gate::open_ended` looks for it (case aside). The reader of the description is told exactly what
+the gate enforces. `surface-vectors.json` publishes the sentence as `open_ended`, as it publishes
+`phrases`, and the bridge's copy is checked against it.
+
+**Where it is applied, and where not.**
+
+| action | grade | why |
+|---|---|---|
+| `terminal.run` | sensitive | a command line for the interactive shell |
+| `terminal.send_input` | sensitive | raw bytes to the shell; a line ending in `\n` at its prompt is a command |
+| `shell.agent_run` | sensitive | a command line in the agent's own terminal |
+| `shell.agent_input` | sensitive | typing into one of the agent's running commands, a shell among them |
+| `blender.run_python` | dangerous | arbitrary Python; it also says it is not recoverable, which wins |
+
+Not marked: `terminal.new_tab` and `terminal.open_directory` (they start a shell and run nothing
+they are given); `agent_job` and `agent_kill`; LibreOffice (no macro action is published);
+Container Manager (no exec is published); `run_recipe` and the agent-starting actions (they run a
+role or a recipe, not arbitrary input).
+
+**On every door.** `gate::decide` (every app's dispatch), the Python SDK's `gate.decide`, the
+shell's `Modes::decide` (through `mind_mode::Declared`, which `request_approval` fills from the
+published sentence or the caller's, either of which can only tighten) and the MCP bridge's `decide`
+draw the same line. The shell's own actions used to publish no description on the card's path
+(`published_detail` read the grade alone), so `agent_run` would have asked at the socket and run
+unasked on the card's path in `auto`; `control::published_description` closes that. The refusal
+says why and what to do: *"…its own description says what it runs can do anything you can, and
+this machine is in auto mode, which asks once before running anything like that — so it was not
+run. … Allowed for this session from the card, the calls after it run unasked until the shell
+restarts."*
+
+**What a session rule covers, and for how long.** A rule is per `(app, action)`: allowing
+`terminal.run` for the session lets every mind, child agent, recipe role and raw socket caller run
+any command through it — not only the one that asked. It lasts until the shell restarts, or until
+the mode is lowered: Pranab's rule is that a person tightening the mode must not leave looser
+standing answers behind, so any lowering — a person's, the socket's `set_mind_mode`, or a bypass
+running out — clears every session rule (`Modes::clear_rules_for_lowering`). The audit gets one
+line for it (`shell.clear_session_rules`, mode `lowered`, "cleared a session rule when the mode
+went down to Ask: terminal.run"), the mode menu one line where the rules were, and `describe
+shell` lists them under `mind_mode.session_rules_cleared`. Raising the mode keeps them. A bypass
+whose clock has run out has lowered the mode before any tick folds it back, so its rules are in
+force for no second after the deadline — in the shell (`Modes::rules_at`) and in every app, whose
+`gate::mode_from` drops the rules of a lapsed bypass from the file.
+
+**The card says so** (security review of #504). A mind that asked for `terminal.run` with its own
+purpose — "list /tmp" — got a card showing only that, and a session button that then allowed any
+command. The card now keeps the app's published sentence apart from the caller's words
+(`approvals::Asked::published`) and draws each in its own place under its own label: the app's
+first (the summary line and the paragraph, "says the app about the action"), then the caller's
+("says the caller about this call · nothing checks it"), bounded on its own at a few hundred
+characters with its own "show more", as one paragraph, with every phrase the card uses for the
+app's voice marked "(so the caller says)". The two are never joined: joined and cut together, a
+padded caller purpose pushed the app's sentence off the card and a forged "What files.move does, in
+the app's own words: harmless" line took its place (re-review of #504). It reads the red warning, the offer
+of "Allow for this session" and the rule check when it is pressed from the app's sentence (with the
+caller's, which can only add caution) — never from a caller's paraphrase, and never from a purpose
+cut to fit the card. So a caller that leaves "cannot be undone" out of its purpose is not offered,
+and cannot store, a standing yes for an irreversible action. The warning for an open-ended action:
+*"What it runs can do anything you can. Allowing it for the session lets any mind or caller on
+this desktop run any command through it, until the shell restarts or the mode is lowered."* The
+session button's own caption reads "covers every mind and caller, until restart or the mode is
+lowered". The bridge reads the whole description, not the line under the signature, and `yos`
+indents every line of one that runs to several. It splits `yos`'s text on the newline alone (not
+`splitlines()`, which also breaks on U+2028, U+2029 and `\x85`) and reads an action only from a
+line indented exactly `  act: `; `yos` prints app text — a summary, an argument's description, a
+state value — with no raw line break in it, so none can plant an `act:` line of its own. A rule
+added in the second after a bypass ran out stands: `person_add_rule` folds the lapse first.
+
+**The copy.** `Mode::meaning` for `auto` and `bypass` says "once per session before running
+commands"; the confirmation's Bypass row reads "Asks before what can't be undone; commands once."
+and its paragraph names both, inside the same fixed heights.
+
+### Tests
+
+| where | what |
+|---|---|
+| `crates/yantrik-ipc-contracts` | `.open_ended()` says the sentence once, at the end, and publishes it |
+| `crates/yantrik-ipc-transport/src/gate.rs` | an open-ended action asks in ask, auto and bypass at `standard` and `sensitive`, a rule covers it, full bypass runs it, plan refuses it, a read runs; cannot-be-undone wins; a held call asks whatever the rule; the vectors carry the axis (1600 decisions) and assert each of those cells |
+| `crates/yantrik-ui/src/mind_mode.rs`, `approvals.rs` | the same table through `Modes::decide`; the card offers the rule for a command and not for one that cannot be undone; `mind-mode-vectors.json` carries `open_ended` |
+| `sdk/python/tests/test_gate.py` | the Python gate rule for rule, and `Action(open_ended=True)` / `@surface.action(open_ended=True)` held to the Rust builder |
+| `deploy/yantrik-os/yos-mcp-selftest.py` | the bridge's table; `terminal.run` asks in bypass and runs in full bypass; `run_command` asks once in auto and runs under the session's rule; the sentence is the gate's |
+| `crates/yantrik-ui/src/approvals.rs` (#504 review) | the card shows the app's sentence whatever the caller wrote, warns what the session rule covers, and offers the rule — and allows it to be stored — from the app's sentence |
+| `crates/yantrik-ui/src/mind_mode.rs` (#504 review) | a person's, the socket's and a lapse's lowering each clear the rules and leave one line for the audit and the menu; raising keeps them; a lapsed bypass's rules answer nothing and are not published |
+| `gate.rs`, `gate.py` (#504 review) | `mode_from` drops the session rules of a bypass that has run out |
+| `yos-mcp-selftest.py`, `yos-selftest.py` (#504 review) | a three-line description is read whole and asks as open-ended; `yos` prints every line of a description at the purpose's indent |

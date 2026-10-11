@@ -6,15 +6,66 @@
 
 use serde::{Deserialize, Serialize};
 
+/// What the battery is doing, as a person would say it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum BatteryState {
+    Charging,
+    Discharging,
+    Full,
+    /// On a charger and not taking charge: a charge limit, or a battery held at its threshold.
+    /// Real on laptops that stop at 80%, and not the same as "full" or "charging".
+    PluggedNotCharging,
+    /// The source did not say. Shown without a verb rather than with a wrong one.
+    #[default]
+    Unknown,
+}
+
+impl BatteryState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BatteryState::Charging => "charging",
+            BatteryState::Discharging => "discharging",
+            BatteryState::Full => "full",
+            BatteryState::PluggedNotCharging => "plugged-not-charging",
+            BatteryState::Unknown => "unknown",
+        }
+    }
+
+    /// Whether a charger is attached and the battery is not running down.
+    pub fn on_charger(self) -> bool {
+        matches!(self, BatteryState::Charging | BatteryState::PluggedNotCharging)
+    }
+}
+
 /// A single system event observed by the SystemObserver.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SystemEvent {
     // ── Power ──
     BatteryChanged {
         level: u8,
+        /// A charger is attached and the battery is not running down: charging, or held where
+        /// it is. The alerts that ask the person to plug in read this. What the battery is
+        /// doing, for anything that says so in words or a glyph, is `state`.
         charging: bool,
         /// Estimated minutes until empty (if discharging).
         time_to_empty_mins: Option<u32>,
+        /// Estimated minutes until full (if charging). Only UPower knows it; the sysfs
+        /// fallback leaves it unknown rather than guess.
+        #[serde(default)]
+        time_to_full_mins: Option<u32>,
+        #[serde(default)]
+        state: BatteryState,
+    },
+
+    // ── Power profile (power-profiles-daemon) ──
+    /// The daemon's answer, sent when it first appears and whenever it changes. Never sent on
+    /// a machine without the daemon: no event means no profile choice to draw.
+    PowerProfileChanged {
+        /// `power-saver`, `balanced` or `performance`.
+        active: String,
+        /// What the daemon will accept. `performance` is absent on hardware that has no such
+        /// mode, so the choice is drawn from this list, not from the three names.
+        offered: Vec<String>,
     },
 
     // ── Network ──
@@ -23,6 +74,14 @@ pub enum SystemEvent {
         ssid: Option<String>,
         /// Signal strength 0-100.
         signal: Option<u8>,
+    },
+
+    // ── Sound ──
+    /// The default output's volume or mute changed, whoever changed it.
+    AudioChanged {
+        /// 0-100.
+        volume_pct: u8,
+        muted: bool,
     },
 
     // ── Notifications ──
@@ -86,13 +145,6 @@ pub enum SystemEvent {
         idle_seconds: u64,
     },
     UserResumed,
-
-    // ── Keybind ──
-    /// A global keybind was triggered via D-Bus (from labwc).
-    KeybindTriggered {
-        /// Action identifier, e.g. "open-lens", "lock-screen", "open-terminal".
-        action: String,
-    },
 }
 
 /// What kind of file system change occurred.
@@ -112,6 +164,10 @@ pub struct SystemSnapshot {
     pub battery_level: u8,
     pub battery_charging: bool,
     pub battery_time_to_empty_mins: Option<u32>,
+    pub battery_time_to_full_mins: Option<u32>,
+    pub battery_state: BatteryState,
+    /// `None` when there is no power-profiles-daemon: nothing to choose.
+    pub power_profile: Option<PowerProfileInfo>,
 
     // Network
     pub network_connected: bool,
@@ -139,6 +195,13 @@ pub struct SystemSnapshot {
     pub user_idle: bool,
 }
 
+/// What power-profiles-daemon reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PowerProfileInfo {
+    pub active: String,
+    pub offered: Vec<String>,
+}
+
 /// Basic info about a running process.
 #[derive(Debug, Clone)]
 pub struct ProcessInfo {
@@ -151,11 +214,16 @@ impl SystemSnapshot {
     /// Apply a system event to update the snapshot.
     pub fn apply(&mut self, event: &SystemEvent) {
         match event {
-            SystemEvent::BatteryChanged { level, charging, time_to_empty_mins } => {
+            SystemEvent::BatteryChanged { level, charging, time_to_empty_mins, time_to_full_mins, state } => {
                 self.battery_available = true;
+                self.battery_time_to_full_mins = *time_to_full_mins;
+                self.battery_state = *state;
                 self.battery_level = *level;
                 self.battery_charging = *charging;
                 self.battery_time_to_empty_mins = *time_to_empty_mins;
+            }
+            SystemEvent::PowerProfileChanged { active, offered } => {
+                self.power_profile = Some(PowerProfileInfo { active: active.clone(), offered: offered.clone() });
             }
             SystemEvent::NetworkChanged { connected, ssid, signal } => {
                 self.network_connected = *connected;

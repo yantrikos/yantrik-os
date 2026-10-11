@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Tricky Page</title></head>
+<body>
+<!-- A page that tries: an element named like the reader's registry, and one named like the
+     document's own title, which is what document.title reads on every world. -->
+<div id="__yb">not the reader</div>
+<img name="title" alt="">
+
+<h1>Tricks</h1>
+<!-- What a press did, where a test can read it: document.title cannot be set here, because the
+     <img name="title"> above shadows it — which is the point of that element. -->
+<p id="log">untouched</p>
+
+<!-- Rails: a link with an address that deletes, confirmed by a dialog with no commitment word. -->
+<a id="rails" href="/pages/other.html" data-method="delete"
+   onclick="event.preventDefault(); if (confirm('Are you sure?')) document.getElementById('log').textContent = 'RAILS DELETED';">Delete</a>
+
+<!-- A link that only goes to a form, and a link that is the order itself. -->
+<a href="/pages/other.html">submit</a>
+<a href="/pages/other.html" onclick="event.preventDefault(); document.getElementById('log').textContent = 'LINK ORDERED';">Place order</a>
+
+<!-- A clickable card whose middle is the Buy button. -->
+<div id="card" style="cursor:pointer; padding:30px; width:220px; border:1px solid #999">
+  <button id="buy" style="width:200px;height:60px" onclick="document.getElementById('log').textContent = 'CARD BOUGHT'">Buy now</button>
+</div>
+
+<!-- A chat composer: no form; Enter sends. -->
+<div id="composer">
+  <textarea id="msg" aria-label="Message" onkeydown="if (event.key === 'Enter') { event.preventDefault(); document.getElementById('log').textContent = 'MESSAGE SENT'; }"></textarea>
+  <button onclick="document.getElementById('log').textContent = 'MESSAGE SENT'">Send</button>
+</div>
+
+<!-- A button outside its form, tied to it with form= -->
+<form id="pay" onsubmit="event.preventDefault(); document.getElementById('log').textContent = 'PAID';"><input id="amount" aria-label="Amount"></form>
+<button type="submit" form="pay">Pay now</button>
+
+<!-- A list that acts when it changes. -->
+<select id="bulk" aria-label="Bulk action" onchange="if (this.value === 'del') document.getElementById('log').textContent = 'BULK DELETED';">
+  <option value="">Choose…</option><option value="del">Delete selected</option><option value="arch">Archive selected</option>
+</select>
+
+<button id="prompt" onclick="const v = prompt('Type DELETE to confirm'); if (v === 'DELETE') document.getElementById('log').textContent = 'PROMPT DELETED';">Wipe data</button>
+
+<button onclick="document.getElementById('log').textContent = 'REVIEW POSTED'">Post review</button>
+<button id="zwsp" onclick="document.getElementById('log').textContent = 'ZW BOUGHT'">B&#8203;uy</button>
+<input type="submit" form="pay">
+
+<!-- A commitment the words cannot see: "Continue" on a payment step. -->
+<section id="paystep"><h3>Payment</h3><p>Card ending 4242. By clicking Continue you will be charged $64.10.</p>
+  <button id="cont" onclick="document.getElementById('log').textContent = 'CHARGED'">Continue</button></section>
+<section><h3>Reading</h3><p>Chapter one of three.</p>
+  <button onclick="document.getElementById('log').textContent = 'NEXT CHAPTER'">Next chapter</button></section>
+</body></html>

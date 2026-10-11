@@ -1,0 +1,17 @@
+[package]
+name = "yantrik-ocr"
+version = "0.1.0"
+edition = "2021"
+description = "Text on a screen capture, line by line with where each line is: the desktop's eyes for windows that publish no accessibility tree"
+
+[[bin]]
+name = "yantrik-ocr"
+path = "src/main.rs"
+
+[dependencies]
+# Pinned together: ocrs 0.12 is built on rten 0.24, the last rten this workspace's Rust (1.92)
+# builds — rten 0.25 wants 1.94. The models are rten's format, shipped in share/ocr.
+ocrs = "=0.12.2"
+rten = "=0.24.0"
+image = { version = "0.25", default-features = false, features = ["png", "pnm"] }
+serde_json = "1"

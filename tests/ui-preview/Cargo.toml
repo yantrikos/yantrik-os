@@ -9,6 +9,10 @@ publish = false
 [dependencies]
 slint = { version = "=1.17.1", features = ["renderer-femtovg", "renderer-software"] }
 png = "0.18"
+# lock_wallpaper.rs (the production blur) is compiled in by path, and logs through it.
+tracing = "0.1"
+# ...and checks a picture's size with the helper it shares with yantrik-lock.
+yantrik-ui-kit = { path = "../../crates/yantrik-ui-kit" }
 
 [build-dependencies]
 slint-build = "=1.17.1"

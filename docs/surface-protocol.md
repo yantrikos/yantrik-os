@@ -376,10 +376,11 @@ with its outcome and the exact sentence. Every implementation replays the file i
   such line; quotes trimmed; a missing file or a value off the ladder is `sensitive`). Read per
   call.
 - The person's **mode**, from `mind-mode.json` beside the settings file, which the shell writes:
-  `{"mode": "plan|ask|auto|bypass", "previous": …, "bypass_expires_unix": <n>|null,
+  `{"mode": "plan|ask|auto|bypass|bypass_all", "previous": …, "bypass_expires_unix": <n>|null,
   "session_rules": [{"app": …, "action": …}], "shell_pid": <n>, "shell_start_ticks": <n>,
   "boot_id": "<uuid>"}`. A missing or unreadable file, or a mode it does not name, is `ask`. A
-  `bypass` whose `bypass_expires_unix` has passed is its `previous` mode (or `ask`). The last
+  `bypass` or `bypass_all` whose `bypass_expires_unix` has passed is its `previous` mode (or
+  `ask`, when that is missing or itself a bypass). The last
   three fields name the shell that wrote the file and the boot it wrote in — its pid, that
   pid's start time (field 22 of `/proc/<pid>/stat`, ticks since boot), and
   `/proc/sys/kernel/random/boot_id`, which the kernel picks fresh on every boot — and a file
@@ -398,10 +399,11 @@ with its outcome and the exact sentence. Every implementation replays the file i
    ``CEILING: <app>.<action> is graded `<grade>`, above this machine's `<ceiling>` ceiling (`tool_permission` in ~/.config/yantrik/settings.yaml), so it was not run. An action at that grade needs a person to authorise it directly — raise the ceiling in Settings if that is the intent.``
 3. A spent grant runs it.
 4. Each mode runs unasked up to a grade — `plan` `safe`, `ask` `standard`, `auto` `sensitive`,
-   `bypass` `dangerous` — but never less than **`standard`** on a socket (the *socket floor*: the
-   desktop's own processes call `standard` actions to work, and cannot yet be told from a mind,
-   #43). In every mode but `bypass`, an action that **cannot be undone** is asked about whatever
-   its grade above `safe`. Anything else runs.
+   `bypass` and `bypass_all` `dangerous` — but never less than **`standard`** on a socket (the
+   *socket floor*: the desktop's own processes call `standard` actions to work, and cannot yet be
+   told from a mind, #43). In every mode but `bypass_all` ("Full bypass"), an action that
+   **cannot be undone** is asked about whatever its grade above `safe` — `bypass` included, which
+   is the whole of the difference between the two. Anything else runs.
 5. A **session rule** for exactly this `app.action` runs it — unless it cannot be undone, and never
    in `plan` mode, which raises no card and so has no standing answers.
 6. Otherwise it is refused with `GRANT:`, in one of four sentences:

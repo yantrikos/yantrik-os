@@ -1,0 +1,447 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# yantrik-broadcom-wifi — a driver for the Broadcom Wi-Fi this image cannot carry
+# ═══════════════════════════════════════════════════════════════════════════════════════
+#
+# The Mac mini of late 2012 (and most Macs of 2010-2015) has a Broadcom BCM4331, PCI 14e4:4331.
+# No free firmware drives it, and nothing that does may ride in a published ISO:
+#
+#   wl (broadcom-sta-dkms, non-free): a binary blob that is linked into a kernel module on the
+#     machine. Debian ships only the source and dkms builds it per kernel; a wl.ko built here and
+#     put in the image would be a prebuilt mix of GPL kernel code and Broadcom's blob, which is
+#     exactly what Debian declines to distribute.
+#   b43 (in the kernel) needs Broadcom's firmware, which Broadcom does not let anyone
+#     redistribute. firmware-b43-installer (contrib) downloads Broadcom's own driver archive and
+#     cuts the firmware out of it, on the machine that will use it.
+#
+# So both happen here, on the machine, from Debian, once it is online. wl first, because it
+# runs the chip at 802.11n on 2.4 and 5 GHz; b43 tops out at 802.11g speeds. b43 is the fallback
+# when wl cannot be built (no headers for the running kernel on the mirror, or dkms fails), and
+# the choice can be forced with --driver.
+#
+# The two must never both claim the chip: wl blacklists b43, bcma and ssb, and b43 blacklists wl.
+#
+# Run by yantrik-broadcom-wifi.service at boot, and by the NetworkManager dispatcher when a
+# connection comes up while the chip is still waiting. What it is doing is in
+# /run/yantrik/wifi-driver.status, which the first-run screens read to tell the person.
+#
+# Usage:
+#   yantrik-broadcom-wifi [install] [--driver wl|b43] [--dry-run]
+#   yantrik-broadcom-wifi status
+#   yantrik-broadcom-wifi selftest
+set -u
+
+SYSFS="${YANTRIK_SYSFS:-/sys}"
+STATE_DIR="${YANTRIK_WIFI_STATE_DIR:-/var/lib/yantrik}"
+MODPROBE_CONF="${YANTRIK_WIFI_MODPROBE_CONF:-/etc/modprobe.d/yantrik-broadcom-wifi.conf}"
+FIRMWARE_DIR="${YANTRIK_WIFI_FIRMWARE_DIR:-/lib/firmware/b43}"
+LOCK_FILE="${YANTRIK_WIFI_LOCK:-/run/yantrik-broadcom-wifi.lock}"
+KERNEL="${YANTRIK_KERNEL:-$(uname -r)}"
+DRY_RUN=0
+REQUESTED=""
+# A dry run on a real machine must not tell its screens something untrue, so it writes no
+# status unless one is pointed at explicitly (the selftest does).
+if [ -n "${YANTRIK_WIFI_STATUS:-}" ]; then
+    STATUS_FILE="$YANTRIK_WIFI_STATUS"
+else
+    STATUS_FILE="/run/yantrik/wifi-driver.status"
+    STATUS_DEFAULT=1
+fi
+
+CHIP_DIR=""
+CHIP_NAME=""
+CHIP_DRIVERS=""
+DRIVER=""
+
+export DEBIAN_FRONTEND=noninteractive
+
+# The chips this handles: the ones neither the free brcmsmac nor brcmfmac drives. Name, then the
+# drivers that can, best first.
+chip_info() {
+    case "$1" in
+        14e4:4331) echo "BCM4331 wl b43" ;;   # Macs 2011-2013, Mac mini 6,x
+        14e4:432b) echo "BCM4322 wl b43" ;;   # Macs 2009-2010
+        14e4:4360|14e4:43a0) echo "BCM4360 wl" ;;   # Macs 2013-2015 (802.11ac; b43 cannot)
+        *) return 1 ;;
+    esac
+}
+
+log() { echo "yantrik-broadcom-wifi: $*"; }
+
+run() {
+    if [ "$DRY_RUN" = 1 ]; then
+        echo "would run: $*"
+        return 0
+    fi
+    "$@"
+}
+
+# One line per key, so a reader needs no parser: state, chip, driver, message.
+say() {
+    log "$1: $2"
+    if [ "$DRY_RUN" = 1 ] && [ "${STATUS_DEFAULT:-0}" = 1 ]; then
+        return 0
+    fi
+    local dir tmp
+    dir="$(dirname "$STATUS_FILE")"
+    mkdir -p "$dir" 2>/dev/null || return 0
+    tmp="$STATUS_FILE.tmp.$$"
+    {
+        printf 'state=%s\n' "$1"
+        printf 'chip=%s\n' "$CHIP_NAME"
+        printf 'driver=%s\n' "$DRIVER"
+        printf 'message=%s\n' "$2"
+    } > "$tmp" 2>/dev/null || return 0
+    chmod 0644 "$tmp"
+    mv -f "$tmp" "$STATUS_FILE"
+}
+
+# Write a file, or say what would be written.
+put() {
+    local path="$1" content="$2"
+    if [ "$DRY_RUN" = 1 ]; then
+        echo "would write $path:"
+        printf '%s\n' "$content" | sed 's/^/    /'
+        return 0
+    fi
+    mkdir -p "$(dirname "$path")"
+    printf '%s\n' "$content" > "$path"
+}
+
+detect() {
+    local d v id info
+    for d in "$SYSFS"/bus/pci/devices/*; do
+        { [ -r "$d/vendor" ] && [ -r "$d/device" ]; } || continue
+        v="$(cat "$d/vendor")"; id="$(cat "$d/device")"
+        v="${v#0x}"; id="${id#0x}"
+        if info="$(chip_info "$v:$id")"; then
+            CHIP_DIR="$d"
+            CHIP_NAME="${info%% *}"
+            CHIP_DRIVERS="${info#* }"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# The kernel driver bound to the chip now, if any.
+bound_driver() {
+    [ -e "$CHIP_DIR/driver" ] || return 1
+    basename "$(readlink -f "$CHIP_DIR/driver")"
+}
+
+# A wireless interface that belongs to this chip — not a USB dongle that happens to be plugged in.
+wifi_up() {
+    local n chip
+    chip="$(readlink -f "$CHIP_DIR")"
+    for n in "$SYSFS"/class/net/*; do
+        [ -d "$n/wireless" ] || [ -e "$n/phy80211" ] || continue
+        [ "$(readlink -f "$n/device")" = "$chip" ] && return 0
+    done
+    return 1
+}
+
+wait_wifi() {
+    local _
+    for _ in $(seq 1 "${1:-15}"); do
+        wifi_up && return 0
+        # Nothing was loaded on a dry run, so there is nothing to wait for.
+        [ "$DRY_RUN" = 1 ] && return 0
+        sleep 1
+    done
+    return 1
+}
+
+online() {
+    case "${YANTRIK_WIFI_ONLINE:-}" in
+        yes) return 0 ;;
+        no) return 1 ;;
+    esac
+    [ -n "$(ip route show default 2>/dev/null)" ]
+}
+
+headers_available() {
+    case "${YANTRIK_WIFI_HEADERS:-}" in
+        yes) return 0 ;;
+        no) return 1 ;;
+    esac
+    [ -e "/lib/modules/$KERNEL/build/Makefile" ] && return 0
+    local cand
+    cand="$(apt-cache policy "linux-headers-$KERNEL" 2>/dev/null | awk '/Candidate:/ { print $2 }')"
+    [ -n "$cand" ] && [ "$cand" != "(none)" ]
+}
+
+package_installed() {
+    case " ${YANTRIK_WIFI_INSTALLED:-} " in
+        *" $1 "*) return 0 ;;
+    esac
+    [ "$(dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null)" = "installed" ]
+}
+
+WL_CONF="# Written by yantrik-broadcom-wifi: this machine's Broadcom Wi-Fi runs on wl
+# (broadcom-sta-dkms). The free drivers below would claim the same chip and fight it.
+blacklist b43
+blacklist b43legacy
+blacklist bcma
+blacklist ssb
+blacklist brcmsmac"
+
+B43_CONF="# Written by yantrik-broadcom-wifi: this machine's Broadcom Wi-Fi runs on b43 with
+# firmware cut by firmware-b43-installer. wl must not claim it.
+blacklist wl"
+
+install_wl() {
+    DRIVER=wl
+    if ! headers_available; then
+        WHY="the mirror no longer carries headers for kernel $KERNEL, so wl could not be built"
+        return 1
+    fi
+    # dkms builds wl for the running kernel as broadcom-sta-dkms installs. linux-headers-amd64
+    # rides along so that a kernel update brings its headers and dkms rebuilds wl for it.
+    if ! run apt-get install -y broadcom-sta-dkms "linux-headers-$KERNEL" linux-headers-amd64; then
+        WHY="apt could not install broadcom-sta-dkms"
+        return 1
+    fi
+    if [ "$DRY_RUN" != 1 ] && ! modinfo -k "$KERNEL" wl >/dev/null 2>&1; then
+        WHY="dkms did not build wl for kernel $KERNEL"
+        return 1
+    fi
+    put "$MODPROBE_CONF" "$WL_CONF"
+    run modprobe -r b43 b43legacy bcma ssb brcmsmac 2>/dev/null || true
+    if ! run modprobe wl; then
+        WHY="wl was built but would not load"
+        return 1
+    fi
+    return 0
+}
+
+install_b43() {
+    DRIVER=b43
+    # broadcom-sta-dkms ships its own blacklist of b43 and bcma; it has to go entirely.
+    if package_installed broadcom-sta-dkms; then
+        run apt-get purge -y broadcom-sta-dkms || { WHY="could not remove broadcom-sta-dkms"; return 1; }
+        run modprobe -r wl 2>/dev/null || true
+    fi
+    # Its postinst downloads Broadcom's archive and cuts the firmware into /lib/firmware/b43.
+    if ! run apt-get install -y firmware-b43-installer; then
+        WHY="firmware-b43-installer could not download the firmware"
+        return 1
+    fi
+    if [ "$DRY_RUN" != 1 ] && ! ls "$FIRMWARE_DIR"/*.fw >/dev/null 2>&1; then
+        WHY="firmware-b43-installer left no firmware in $FIRMWARE_DIR"
+        return 1
+    fi
+    put "$MODPROBE_CONF" "$B43_CONF"
+    run modprobe -r b43 bcma 2>/dev/null || true
+    if ! run modprobe b43; then
+        WHY="b43 would not load"
+        return 1
+    fi
+    return 0
+}
+
+needs_network_message() {
+    echo "This computer's Wi-Fi ($CHIP_NAME) needs a driver that Yantrik OS is not allowed to ship. Connect an Ethernet cable: it installs by itself and Wi-Fi appears a minute later."
+}
+
+cmd_install() {
+    if ! detect; then
+        say absent "No Broadcom Wi-Fi here that needs a driver."
+        return 0
+    fi
+    log "found $CHIP_NAME at $(basename "$CHIP_DIR") (drivers: $CHIP_DRIVERS)"
+
+    # Done before, or a driver is already working: nothing to fetch. A marker with no interface
+    # yet gets a moment, since the module may still be loading at boot.
+    if wifi_up || { [ -f "$STATE_DIR/broadcom-wifi.driver" ] && wait_wifi 15; }; then
+        DRIVER="$(bound_driver || cat "$STATE_DIR/broadcom-wifi.driver" 2>/dev/null || true)"
+        say ready "$CHIP_NAME Wi-Fi is working (${DRIVER:-driver loaded})."
+        return 0
+    fi
+
+    if [ "$DRY_RUN" != 1 ] && [ "$(id -u)" != 0 ]; then
+        log "must run as root"
+        return 1
+    fi
+
+    if [ "$DRY_RUN" != 1 ]; then
+        exec 9>"$LOCK_FILE"
+        if ! flock -n 9; then
+            log "another run is already installing; leaving it to that one"
+            return 0
+        fi
+    fi
+
+    if ! online; then
+        say needs-network "$(needs_network_message)"
+        return 0
+    fi
+
+    say installing "Installing the $CHIP_NAME Wi-Fi driver from Debian. This takes a minute or two."
+    if ! run apt-get update; then
+        # A route but no mirror: as good as offline. The dispatcher tries again on the next change.
+        say needs-network "$(needs_network_message)"
+        return 0
+    fi
+
+    local order drv first_why=""
+    if [ -n "$REQUESTED" ]; then
+        case " $CHIP_DRIVERS " in
+            *" $REQUESTED "*) order="$REQUESTED" ;;
+            *) say failed "$CHIP_NAME cannot use $REQUESTED; it takes: $CHIP_DRIVERS."; return 1 ;;
+        esac
+    else
+        order="$CHIP_DRIVERS"
+    fi
+
+    for drv in $order; do
+        WHY=""
+        if "install_$drv" && wait_wifi 20; then
+            if [ "$DRY_RUN" != 1 ]; then
+                mkdir -p "$STATE_DIR"
+                echo "$drv" > "$STATE_DIR/broadcom-wifi.driver"
+            fi
+            if [ -n "$first_why" ]; then
+                say ready "$CHIP_NAME Wi-Fi works on the open $drv driver, at 802.11g speeds: $first_why."
+            else
+                say ready "$CHIP_NAME Wi-Fi is working ($drv)."
+            fi
+            return 0
+        fi
+        [ -n "$WHY" ] || WHY="$drv loaded but no wireless interface appeared"
+        log "$drv: $WHY"
+        [ -n "$first_why" ] || first_why="$WHY"
+    done
+
+    say failed "Could not give $CHIP_NAME a driver: $first_why. See: journalctl -u yantrik-broadcom-wifi"
+    return 1
+}
+
+cmd_status() {
+    if [ -r "$STATUS_FILE" ]; then
+        cat "$STATUS_FILE"
+    else
+        echo "state=unknown"
+    fi
+}
+
+# ── selftest: fake sysfs, dry runs, no apt, no root ──────────────────────────────────────
+cmd_selftest() {
+    local self tmp fails=0 out
+    self="$(readlink -f "$0")"
+    tmp="$(mktemp -d)"
+
+    fake_chip() { # dir vendor device
+        mkdir -p "$1"
+        echo "0x$2" > "$1/vendor"
+        echo "0x$3" > "$1/device"
+    }
+    check() { # name expected-substring haystack
+        case "$3" in
+            *"$2"*) echo "ok   $1" ;;
+            *) echo "FAIL $1: expected '$2' in:"; printf '%s\n' "$3" | sed 's/^/       /'; fails=$((fails + 1)) ;;
+        esac
+    }
+    refute() {
+        case "$3" in
+            *"$2"*) echo "FAIL $1: did not expect '$2' in:"; printf '%s\n' "$3" | sed 's/^/       /'; fails=$((fails + 1)) ;;
+            *) echo "ok   $1" ;;
+        esac
+    }
+    t() { # sysfs-root, then extra env assignments
+        local root="$1"; shift
+        env YANTRIK_SYSFS="$root" YANTRIK_WIFI_STATUS="$tmp/status" YANTRIK_WIFI_STATE_DIR="$tmp/state" \
+            YANTRIK_KERNEL=6.12.0-test-amd64 "$@" bash "$self" install --dry-run 2>&1
+    }
+
+    # A machine with no Broadcom chip: says so and touches nothing.
+    fake_chip "$tmp/none/bus/pci/devices/0000:00:02.0" 8086 0166
+    out="$(t "$tmp/none")"
+    check "no chip: absent" "absent:" "$out"
+    refute "no chip: no apt" "apt-get" "$out"
+    check "no chip: status file" "state=absent" "$(cat "$tmp/status")"
+
+    # BCM4331, offline: asks for Ethernet, installs nothing.
+    fake_chip "$tmp/mac/bus/pci/devices/0000:02:00.0" 14e4 4331
+    out="$(t "$tmp/mac" YANTRIK_WIFI_ONLINE=no)"
+    check "offline: needs network" "needs-network:" "$out"
+    check "offline: names the chip" "BCM4331" "$(cat "$tmp/status")"
+    check "offline: asks for Ethernet" "Ethernet" "$(cat "$tmp/status")"
+    refute "offline: no apt" "apt-get install" "$out"
+
+    # Online with headers: wl, with b43/bcma/ssb blacklisted.
+    out="$(t "$tmp/mac" YANTRIK_WIFI_ONLINE=yes YANTRIK_WIFI_HEADERS=yes)"
+    check "wl: apt update" "would run: apt-get update" "$out"
+    check "wl: dkms package and exact headers" "apt-get install -y broadcom-sta-dkms linux-headers-6.12.0-test-amd64 linux-headers-amd64" "$out"
+    check "wl: blacklists b43" "blacklist b43" "$out"
+    check "wl: blacklists bcma" "blacklist bcma" "$out"
+    check "wl: blacklists ssb" "blacklist ssb" "$out"
+    check "wl: loads wl" "would run: modprobe wl" "$out"
+    refute "wl: does not touch b43 firmware" "firmware-b43-installer" "$out"
+
+    # No headers on the mirror for this kernel: falls back to b43, which blacklists wl.
+    out="$(t "$tmp/mac" YANTRIK_WIFI_ONLINE=yes YANTRIK_WIFI_HEADERS=no)"
+    refute "fallback: no wl install" "broadcom-sta-dkms linux-headers" "$out"
+    check "fallback: b43 firmware" "apt-get install -y firmware-b43-installer" "$out"
+    check "fallback: blacklists wl" "blacklist wl" "$out"
+    check "fallback: says why" "headers for kernel 6.12.0-test-amd64" "$out"
+
+    # Switching an installed wl machine to b43 removes broadcom-sta-dkms, whose own blacklist
+    # would otherwise keep b43 from ever loading.
+    out="$(env YANTRIK_SYSFS="$tmp/mac" YANTRIK_WIFI_STATUS="$tmp/status" YANTRIK_WIFI_STATE_DIR="$tmp/state" \
+        YANTRIK_KERNEL=6.12.0-test-amd64 YANTRIK_WIFI_ONLINE=yes YANTRIK_WIFI_INSTALLED=broadcom-sta-dkms \
+        bash "$self" install --driver b43 --dry-run 2>&1)"
+    check "b43 forced: purges wl" "apt-get purge -y broadcom-sta-dkms" "$out"
+    check "b43 forced: b43 firmware" "firmware-b43-installer" "$out"
+
+    # BCM4360 has no b43 support: forcing it is refused, not attempted.
+    fake_chip "$tmp/ac/bus/pci/devices/0000:03:00.0" 14e4 43a0
+    out="$(env YANTRIK_SYSFS="$tmp/ac" YANTRIK_WIFI_STATUS="$tmp/status" YANTRIK_WIFI_STATE_DIR="$tmp/state" \
+        YANTRIK_WIFI_ONLINE=yes bash "$self" install --driver b43 --dry-run 2>&1)"
+    check "BCM4360: b43 refused" "cannot use b43" "$out"
+    refute "BCM4360: nothing installed" "apt-get install" "$out"
+
+    # Wi-Fi already working on this chip: ready, no apt — and a USB dongle does not count.
+    mkdir -p "$tmp/mac/class/net/wlan9/wireless" "$tmp/mac/devices/usb1"
+    ln -s "$tmp/mac/devices/usb1" "$tmp/mac/class/net/wlan9/device"
+    out="$(t "$tmp/mac" YANTRIK_WIFI_ONLINE=no)"
+    check "dongle ignored: still needs network" "needs-network:" "$out"
+    mkdir -p "$tmp/mac/class/net/wlp2s0/wireless"
+    ln -s "$tmp/mac/bus/pci/devices/0000:02:00.0" "$tmp/mac/class/net/wlp2s0/device"
+    mkdir -p "$tmp/mac/bus/drivers/wl"
+    ln -s "$tmp/mac/bus/drivers/wl" "$tmp/mac/bus/pci/devices/0000:02:00.0/driver"
+    out="$(t "$tmp/mac" YANTRIK_WIFI_ONLINE=yes)"
+    check "working: ready" "ready:" "$out"
+    check "working: names the driver" "driver=wl" "$(cat "$tmp/status")"
+    refute "working: no apt" "apt-get" "$out"
+
+    # A dry run without an explicit status path must not write the real one.
+    out="$(env YANTRIK_SYSFS="$tmp/none" bash "$self" install --dry-run 2>&1)"
+    check "dry run: still reports" "absent:" "$out"
+
+    rm -rf "$tmp"
+    if [ "$fails" -gt 0 ]; then
+        echo "$fails check(s) failed"
+        return 1
+    fi
+    echo "all checks passed"
+}
+
+cmd="install"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        install|status|selftest) cmd="$1" ;;
+        --dry-run) DRY_RUN=1 ;;
+        --driver) shift; REQUESTED="${1:-}" ;;
+        --driver=*) REQUESTED="${1#--driver=}" ;;
+        -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+        *) echo "unknown argument: $1" >&2; exit 2 ;;
+    esac
+    shift
+done
+case "$REQUESTED" in
+    ""|wl|b43) ;;
+    *) echo "--driver takes wl or b43, not '$REQUESTED'" >&2; exit 2 ;;
+esac
+
+"cmd_$cmd"

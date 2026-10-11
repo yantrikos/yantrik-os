@@ -283,6 +283,32 @@ impl ServiceHandler for EmailHandler {
         "email"
     }
 
+    /// The methods that change anything (send mail, delete or move it on the server, store an
+    /// account and its password) answer the desktop's own programs only (#161): the Email app, the
+    /// shell's companion and the `yantrik` CLI. `send_message` has no graded door at all, on
+    /// purpose: mail that has gone cannot be taken back.
+    fn handle_from(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        peer: Option<yantrik_service_sdk::PeerCred>,
+    ) -> Result<serde_json::Value, ServiceError> {
+        if matches!(
+            method,
+            method::SAVE_ACCOUNT
+                | method::OAUTH_BEGIN
+                | method::OAUTH_CANCEL
+                | method::SEND_MESSAGE
+                | method::MARK_READ
+                | method::MARK_STARRED
+                | method::MOVE_MESSAGE
+                | method::DELETE_MESSAGE
+        ) {
+            yantrik_service_sdk::desktop_programs_only(peer, method)?;
+        }
+        self.handle(method, params)
+    }
+
     fn handle(
         &self,
         method: &str,
@@ -1332,6 +1358,20 @@ fn imap_search(
 
 #[cfg(test)]
 mod tests {
+    /// #161: sending mail through the raw method answers only the desktop's own programs. This
+    /// test binary is none of them: refused, before any account or server is touched.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_raw_send_from_a_program_not_the_desktops_is_refused() {
+        use yantrik_service_sdk::ServiceHandler as _;
+        let peer = yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 };
+        let err = super::EmailHandler::new()
+            .handle_from(yantrik_ipc_contracts::email::method::SEND_MESSAGE, serde_json::json!({ "to": ["x@example.com"] }), Some(peer))
+            .unwrap_err();
+        assert_eq!(err.code, -32001, "{}", err.message);
+        assert!(err.message.starts_with("email.send_message answers the desktop's own programs"), "{}", err.message);
+    }
+
     use super::{extract_parts, flag_change, names_a_folder, plain_body};
     use yantrik_ipc_contracts::email::EmailAttachment;
 

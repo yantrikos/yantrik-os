@@ -54,7 +54,7 @@ if _LIB.is_dir() and str(_LIB) not in sys.path:
 
 from yantrik_harness import (  # noqa: E402
     AGENT_TOKEN_ENV, MAIN, Handler, Harness, PerConversation, Turn, end_process,
-    mind_directory, summary_line, tool_target,
+    mind_directory, program_path, summary_line, tool_target,
 )
 
 VERSION = "1.0"
@@ -151,8 +151,7 @@ class PiConfig:
     def environ(self) -> Dict[str, str]:
         env = dict(os.environ)
         env.update(self.env)
-        if self.path:
-            env["PATH"] = self.path + os.pathsep + env.get("PATH", "")
+        env["PATH"] = program_path(self.path, env.get("PATH", ""))
         if self.yos_mcp:
             env["YOS_MCP_BIN"] = self.yos_mcp
         return env

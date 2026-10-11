@@ -1,0 +1,26 @@
+#!/usr/bin/python3
+"""yantrik-browser — the browser as an app of this desktop (`app-browser`).
+
+Holds the one DevTools connection to the desktop's browser and answers app.describe / app.act
+on app-browser.sock, and at the mind door. Started by the desktop's service manager; it costs
+a socket and a thread while no browser is open, and connects when one is.
+"""
+
+import os
+import sys
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+for candidate in (
+    os.path.join(HERE, "..", "share", "browser"),              # a release: /opt/yantrik/bin → share/browser
+    HERE,                                                       # the source tree: apps/browser
+    os.path.join(HERE, "..", "..", "sdk", "python"),           # the source tree's SDK
+):
+    candidate = os.path.normpath(candidate)
+    if os.path.isdir(candidate) and candidate not in sys.path:
+        sys.path.insert(0, candidate)
+
+from yantrik_browser.service import build  # noqa: E402
+
+if __name__ == "__main__":
+    surface, _ = build()
+    surface.serve()

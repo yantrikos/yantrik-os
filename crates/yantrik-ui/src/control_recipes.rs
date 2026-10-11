@@ -69,7 +69,7 @@ pub fn actions(surface: ControlSurface, companion: CompanionHandle) -> ControlSu
                 return Err("`recipe` is empty".into());
             }
             let inputs = inputs_arg(args)?;
-            let leave = leave_for(&crate::control_agents::caller()?)?;
+            let leave = leave_for(&crate::control_agents::delegating_caller()?)?;
             let handle = start.clone();
             // The worker may be in the middle of an answer: wait for it off the UI thread.
             let work = move || {
@@ -173,6 +173,9 @@ fn request(
     refusal: &str,
 ) -> Result<serde_json::Value, String> {
     let want = args["recipe"].as_str().unwrap_or_default().trim();
+    // An agent answering the person's phone answers, pauses and resumes no recipe: the recipe's
+    // agents would carry on unheld.
+    crate::control_agents::refuse_from_phone(&crate::control_agents::caller()?)?;
     let view = resolve(want)?;
     if !allowed(&view) {
         return Err(format!("`{}` {refusal} — it is {}", view.name, view.status));
@@ -273,13 +276,14 @@ mod tests {
         assert_eq!(params, [("recipe", true), ("inputs", false)]);
         // Published as the object it is described as, so the dispatch's type check takes one.
         assert_eq!(spec.params[1].kind, "object");
-        let at = |mode: &str, granted: bool, ceiling: &str| Authority { ceiling: ceiling.into(), mode: Mode::named(mode), granted };
+        let at = |mode: &str, granted: bool, ceiling: &str| Authority { ceiling: ceiling.into(), mode: Mode::named(mode), granted, asks_above: None };
         let err = decide(&at("ask", false, "sensitive"), "shell", "run_recipe", spec.permission, &spec.description).unwrap_err();
         assert!(err.starts_with("GRANT:") && err.contains("graded `sensitive`"), "{err}");
         assert!(decide(&at("plan", false, "sensitive"), "shell", "run_recipe", spec.permission, &spec.description).is_err());
         assert!(decide(&at("ask", true, "sensitive"), "shell", "run_recipe", spec.permission, &spec.description).is_ok(), "the person's Allow");
         assert!(decide(&at("auto", false, "sensitive"), "shell", "run_recipe", spec.permission, &spec.description).is_ok());
         assert!(decide(&at("bypass", true, "standard"), "shell", "run_recipe", spec.permission, &spec.description).is_err(), "never above the ceiling");
+        assert!(decide(&at("bypass_all", true, "standard"), "shell", "run_recipe", spec.permission, &spec.description).is_err(), "not even in full bypass");
 
         let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/control_recipes.rs")).unwrap();
         let src = src.split("#[cfg(test)]").next().unwrap();

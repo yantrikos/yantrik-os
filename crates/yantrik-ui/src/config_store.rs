@@ -3,16 +3,12 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::{
     collections::HashMap,
     fs,
-    io::{Read, Write},
+    io::Read,
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Mutex, OnceLock,
-    },
+    sync::{Mutex, OnceLock},
 };
 const LIMIT: usize = 256 * 1024;
 static FILES: OnceLock<Mutex<HashMap<PathBuf, PreferenceFile>>> = OnceLock::new();
-static SERIAL: AtomicU64 = AtomicU64::new(0);
 pub struct PreferenceFile {
     path: PathBuf,
     baseline: Option<String>,
@@ -77,51 +73,27 @@ impl PreferenceFile {
                 );
             }
         }
-        let parent = self
-            .path
-            .parent()
-            .ok_or("Preferences have no parent directory")?;
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Cannot create preferences directory: {e}"))?;
-        let temp = parent.join(format!(
-            ".preferences-{}-{}.tmp",
-            std::process::id(),
-            SERIAL.fetch_add(1, Ordering::Relaxed)
-        ));
-        let mut temp_created = false;
-        let result = (|| {
-            let mut f = fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .mode(0o600)
-                .open(&temp)
-                .map_err(|e| e.to_string())?;
-            temp_created = true;
-            f.write_all(text.as_bytes())
-                .and_then(|_| f.sync_all())
-                .map_err(|e| e.to_string())?;
+        // Published through the one private-file writer (crate::private_file): a fresh 600 temp
+        // file, and the file created when there was none (never clobbering one that appeared)
+        // or renamed over the one that was read.
+        let publish = if self.baseline.is_some() {
+            crate::private_file::Publish::Replace
+        } else {
+            crate::private_file::Publish::CreateOnly
+        };
+        let (path, baseline) = (self.path.clone(), self.baseline.clone());
+        crate::private_file::write(&self.path, text.as_bytes(), publish, || {
             // Check again immediately before publication; this is normal conflict detection,
             // not a locking protocol with uncooperative external writers.
-            if read(&self.path)? != self.baseline {
+            if read(&path)? != baseline {
                 return Err(
                     "Preferences changed while saving; the external version was preserved.".into(),
                 );
             }
-            if self.baseline.is_some() {
-                fs::rename(&temp, &self.path).map_err(|e| e.to_string())?;
-            } else {
-                fs::hard_link(&temp, &self.path).map_err(|e| e.to_string())?;
-                fs::remove_file(&temp).map_err(|e| e.to_string())?;
-            }
-            self.baseline = Some(text);
-            fs::File::open(parent)
-                .and_then(|f| f.sync_all())
-                .map_err(|e| format!("File saved, but directory synchronization failed: {e}"))
-        })();
-        if temp_created {
-            let _ = fs::remove_file(temp);
-        }
-        result
+            Ok(())
+        })?;
+        self.baseline = Some(text);
+        Ok(())
     }
 }
 pub fn load(path: impl AsRef<Path>) -> Result<Option<String>, String> {
@@ -155,7 +127,7 @@ pub fn search_categories(query: &str) -> Vec<i32> {
         "ai intelligence provider model api endpoint routing budget usage privacy local cloud",
         "desktop workspace overview agent shortcuts keyboard windows",
         "network wifi wi-fi wireless ethernet wired ip address connection",
-        "accounts integrations google spotify facebook instagram connect sync",
+        "accounts sign in subscription claude codex gemini qwen xai plan login vendor",
         "privacy security incognito memory retention lock idle timeout notifications disturb dnd",
         "system about version devices packages updates monitor notifications",
         "skills extensions capabilities store installed",

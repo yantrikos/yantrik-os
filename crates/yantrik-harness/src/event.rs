@@ -15,6 +15,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::redact::Needle;
+
 /// The method a harness calls to report one event during a turn.
 pub const EVENT: &str = "harness.event";
 
@@ -116,13 +118,36 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cost_usd: Option<f64>,
     },
+    /// The agent asks the person something and waits (#25). The answer comes back on a later
+    /// poll as `answers: [{turn_id, request_id, answer}]`, once, to this run only: a second answer,
+    /// or one to a question this run never asked, is refused before it reaches the harness. Only
+    /// the answer bound to `request_id` counts; prose in the chat is never taken as one.
+    Request {
+        /// The harness's own id for the question, unique within the run.
+        request_id: String,
+        /// What to ask, as the person should read it.
+        prompt: String,
+        /// The answers to offer as buttons, when there is a fixed set ("Allow", "Deny").
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        options: Vec<String>,
+    },
+    /// After the person answered *Erase* to the agent's Keep/Erase question `request_id`, the
+    /// agent asks the shell to erase the same words from its own copies: the agent's pane
+    /// transcript and the run store. The words never travel: each needle is a digest and a length
+    /// (`crate::redact`). Applied only when the host's acceptance rule holds, and never sent on to
+    /// a reader as a `Chunk::Event`; see docs/harness.md.
+    Redact {
+        /// The Keep/Erase question this run asked, which the person answered *Erase*.
+        request_id: String,
+        needles: Vec<Needle>,
+    },
 }
 
 impl Event {
     /// Every `kind` this build reads. Anything else is a newer harness talking to an older
     /// desktop, and is ignored; one of these that does not parse is malformed, and is counted.
     pub const KINDS: &'static [&'static str] =
-        &["tool_start", "tool_output", "tool_end", "thinking", "status", "usage"];
+        &["tool_start", "tool_output", "tool_end", "thinking", "status", "usage", "request", "redact"];
 
     /// Read one event from the wire. `None` for a kind this build does not know, or one that is
     /// malformed: the caller logs it and carries on, and the turn is not failed over it.
@@ -139,6 +164,8 @@ impl Event {
             Event::Thinking { .. } => "thinking",
             Event::Status { .. } => "status",
             Event::Usage { .. } => "usage",
+            Event::Request { .. } => "request",
+            Event::Redact { .. } => "redact",
         }
     }
 
@@ -208,6 +235,8 @@ mod tests {
             Event::Thinking { delta: "d".into() },
             Event::Status { text: "t".into() },
             Event::Usage { model: String::new(), input_tokens: None, output_tokens: None, cost_usd: None },
+            Event::Request { request_id: "r".into(), prompt: "p".into(), options: vec![] },
+            Event::Redact { request_id: "r".into(), needles: vec![Needle::of("p")] },
         ];
         assert_eq!(every.len(), Event::KINDS.len());
         for event in every {

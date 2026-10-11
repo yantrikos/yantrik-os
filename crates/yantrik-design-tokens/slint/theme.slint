@@ -19,65 +19,73 @@ export global ThemeMode {
 }
 
 // Accent color presets — index selects which accent palette is active.
-// 0 = cyan (default), 1 = amber, 2 = purple, 3 = green, 4 = pink
+// 0 = soft blue (default), 2 = violet, 4 = pink. 1 and 3 are not presets.
+//
+// The accent is every primary and every ON, so it may not be a colour that already means
+// something (colour roles, design/minds-surfaces-spec-2026-10-02.md). Amber (1) and green (3)
+// were presets and were taken out: amber is "needs you" and green is success, and either as the
+// accent made every button say it. No preset may sit in the amber or the teal hue family; a test
+// holds that (crates/yantrik-ui-kit/src/colour_roles.rs).
+//
+// The survivors keep their old numbers, so an index already in a running window or saved by an
+// older build still means the same colour. Any index that is not 2 or 4 resolves to the soft
+// blue below, so a retired one cannot paint anything; the saved name is mapped back to a
+// preset in one place for the shell and every app (yantrik_app_runtime::theme::ACCENTS).
 //
 // Crisp, not louder (desk-and-mind, "bright and sharp"). Each preset keeps its hue and gains
 // saturation: the old cyan #4ecdc4 sat at 56% saturation, which on a near-black ground reads as
 // a pastel wash rather than an edge. The light-mode values stay dark enough to carry white text
-// on a primary button (the cyan is 5.5:1 against #ffffff, up from 5.2).
+// on a primary button (the soft blue is 5.5:1 against #ffffff).
 export global AccentPreset {
     in-out property <int> index: 0;
 
+    // The dark-theme value of each preset, once. The `resolved-` tokens below read these, and
+    // `accent` and the Settings swatches read those, so the picker cannot show one colour and
+    // apply another (it did, #583).
+    out property <color> swatch-0: #8fb4e3;
+    out property <color> swatch-2: #b98aef;
+    out property <color> swatch-4: #f27aa0;
+
+    // Each preset as it applies in the current mode. `accent` below and the Settings swatches
+    // both read these, so in light mode the picker shows the light value the shell paints, not
+    // the dark one (it showed #8fb4e3 while the shell applied #2b64a8).
+    out property <color> resolved-0: ThemeMode.dark ? swatch-0 : #2b64a8;   // soft blue, the system accent
+    out property <color> resolved-2: ThemeMode.dark ? swatch-2 : #7338b4;   // violet
+    out property <color> resolved-4: ThemeMode.dark ? swatch-4 : #bd3563;   // pink
+
     // Resolved accent colors — reactive to index + dark mode.
-    out property <color> accent:
-        index == 0 ? (ThemeMode.dark ? #38d8cd : #08747e)   // teal-cyan
-      : index == 1 ? (ThemeMode.dark ? #f2b73e : #8f6512)   // amber
-      : index == 2 ? (ThemeMode.dark ? #b98aef : #7338b4)   // purple
-      : index == 3 ? (ThemeMode.dark ? #5ede78 : #1f7d30)   // green
-      :               (ThemeMode.dark ? #f27aa0 : #bd3563);  // pink
+    out property <color> accent: index == 2 ? resolved-2 : index == 4 ? resolved-4 : resolved-0;
 
     out property <color> accent-light:
-        index == 0 ? (ThemeMode.dark ? #74e6de : #3aa9b4)
-      : index == 1 ? (ThemeMode.dark ? #f6cd75 : #b88838)
-      : index == 2 ? (ThemeMode.dark ? #d0a8f6 : #9060c8)
-      : index == 3 ? (ThemeMode.dark ? #8eeba2 : #48a858)
-      :               (ThemeMode.dark ? #f69cbb : #d06080);
+        index == 2 ? (ThemeMode.dark ? #d0a8f6 : #9060c8)
+      : index == 4 ? (ThemeMode.dark ? #f69cbb : #d06080)
+      :              (ThemeMode.dark ? #a9c5ec : #4a82c2);
 
     out property <color> accent-dim:
-        index == 0 ? (ThemeMode.dark ? #1fa89b : #80c8d0)
-      : index == 1 ? (ThemeMode.dark ? #a87c28 : #c8a860)
-      : index == 2 ? (ThemeMode.dark ? #7c4fae : #b090d0)
-      : index == 3 ? (ThemeMode.dark ? #33854a : #80c090)
-      :               (ThemeMode.dark ? #aa4570 : #d898b0);
+        index == 2 ? (ThemeMode.dark ? #7c4fae : #b090d0)
+      : index == 4 ? (ThemeMode.dark ? #aa4570 : #d898b0)
+      :              (ThemeMode.dark ? #6f95c4 : #9dbbe0);
 
     out property <color> accent-glow:
-        index == 0 ? (ThemeMode.dark ? #38d8cd40 : #08747e30)
-      : index == 1 ? (ThemeMode.dark ? #f2b73e40 : #8f651230)
-      : index == 2 ? (ThemeMode.dark ? #b98aef40 : #7338b430)
-      : index == 3 ? (ThemeMode.dark ? #5ede7840 : #1f7d3030)
-      :               (ThemeMode.dark ? #f27aa040 : #bd356330);
+        index == 2 ? (ThemeMode.dark ? #b98aef40 : #7338b430)
+      : index == 4 ? (ThemeMode.dark ? #f27aa040 : #bd356330)
+      :              (ThemeMode.dark ? #8fb4e340 : #2b64a830);
 
     out property <color> accent-glow-strong:
-        index == 0 ? (ThemeMode.dark ? #38d8cd70 : #08747e50)
-      : index == 1 ? (ThemeMode.dark ? #f2b73e70 : #8f651250)
-      : index == 2 ? (ThemeMode.dark ? #b98aef70 : #7338b450)
-      : index == 3 ? (ThemeMode.dark ? #5ede7870 : #1f7d3050)
-      :               (ThemeMode.dark ? #f27aa070 : #bd356350);
+        index == 2 ? (ThemeMode.dark ? #b98aef70 : #7338b450)
+      : index == 4 ? (ThemeMode.dark ? #f27aa070 : #bd356350)
+      :              (ThemeMode.dark ? #8fb4e370 : #2b64a850);
 
     out property <color> tint:
-        index == 0 ? (ThemeMode.dark ? #38d8cd1c : #08747e17)
-      : index == 1 ? (ThemeMode.dark ? #f2b73e1c : #8f651217)
-      : index == 2 ? (ThemeMode.dark ? #b98aef1c : #7338b417)
-      : index == 3 ? (ThemeMode.dark ? #5ede781c : #1f7d3017)
-      :               (ThemeMode.dark ? #f27aa01c : #bd356317);
+        index == 2 ? (ThemeMode.dark ? #b98aef1c : #7338b417)
+      : index == 4 ? (ThemeMode.dark ? #f27aa01c : #bd356317)
+      :              (ThemeMode.dark ? #8fb4e31c : #2b64a817);
 
     // Label for current accent (for settings display)
     out property <string> label:
-        index == 0 ? "Cyan"
-      : index == 1 ? "Amber"
-      : index == 2 ? "Purple"
-      : index == 3 ? "Green"
-      :              "Pink";
+        index == 2 ? "Violet"
+      : index == 4 ? "Pink"
+      :              "Soft blue";
 }
 
 // Community theme overrides — set from ~/.config/yantrik/theme-override.yaml.
@@ -94,7 +102,15 @@ export global ThemeOverrides {
     in-out property <color> text-primary-override: #f4f6fa;
     in-out property <color> text-secondary-override: #c0c8d6;
     in-out property <color> text-dim-override:     #95a1b4;
-    in-out property <color> accent-override:       #38d8cd;
+    in-out property <color> accent-override:       #8fb4e3;
+}
+
+// The person's "reduce motion" choice. Components that move something across the screen (a
+// popover arriving, an OSD sliding) read `Theme.dur-pop` and friends, which collapse to 0ms
+// while this is on; hover and focus colour fades are not motion in that sense and stay.
+// The shell sets it from the system setting; nothing here animates on a timer either way.
+export global MotionPrefs {
+    in-out property <bool> reduced: false;
 }
 
 // ─── Bright and sharp (design/desk-and-mind-2026-09-23.md, section 1) ─────
@@ -166,6 +182,11 @@ export global Theme {
     out property <color> glass-rail:    ThemeMode.dark ? #12151ca8 : #f4f5f8ef;
     out property <color> glass-border:  ThemeMode.dark ? #ffffff21 : #0000001a;
     out property <color> glass-border-strong: ThemeMode.dark ? #ffffff36 : #00000026;
+    // A label drawn straight on the wallpaper, with no card behind it: white in either theme,
+    // over a copy of itself 1px lower in 35% black. The wallpaper is a photograph, so no single
+    // ink contrasts with all of it; the shadow is what keeps white legible over its light parts.
+    out property <color> label-on-wallpaper: #ffffff;
+    out property <color> label-shadow:       #00000059;
 
     // ─── Amber palette ────────────────────────────────────────────
     out property <color> amber:             ThemeOverrides.enabled ? ThemeOverrides.amber-override
@@ -174,6 +195,13 @@ export global Theme {
     out property <color> amber-dim:         ThemeMode.dark ? #a07a50 : #c4a070;
     out property <color> amber-glow:        ThemeMode.dark ? #d4a57450 : #d4a57430;
     out property <color> amber-glow-strong: ThemeMode.dark ? #d4a574a0 : #d4a57460;
+
+    // ─── Mind teal ────────────────────────────────────────────────
+    // Marks a mind and its presence, and nothing else: not selection, not success, not the
+    // person's accent. Fixed, so a mind reads the same whichever accent preset is chosen
+    // (design/minds-surfaces-spec-2026-10-02.md, "Colour roles"). Amber, above, is the other
+    // half of the rule: a response from the person is pending.
+    out property <color> mind:              ThemeMode.dark ? #69c8bc : #1d7a70;
 
     // ─── Cyan palette ─────────────────────────────────────────────
     // The same crisp cyan as the default accent: most of what reads "cyan" here is the accent
@@ -203,9 +231,29 @@ export global Theme {
     out property <color> tint-accent:        AccentPreset.tint;
 
     // ─── Semantic status colors ───────────────────────────────────
-    out property <color> color-success:      ThemeMode.dark ? #26a69a : #2e7d32;
-    out property <color> color-success-dim:  ThemeMode.dark ? #26a69a28 : #2e7d3220;
+    // Success is green in both modes. The dark value was #26a69a, a teal, and teal is a mind's
+    // colour and nothing else's: a finished download read as a mind being present. Never by
+    // colour alone either; a success carries a check or a word beside the green.
+    out property <color> color-success:      ThemeMode.dark ? #3fb950 : #2e7d32;
+    out property <color> color-success-dim:  ThemeMode.dark ? #3fb95028 : #2e7d3220;
     out property <color> color-danger:       ThemeMode.dark ? #ef9a9a : #c62828;
+    // The destructive button's fill: the one red, for what cannot be undone (delete, erase,
+    // power off). A filled button, so it is a stronger red than color-danger, which is a text
+    // and badge colour. Its label is Theme.text-on-danger, below.
+    //
+    // It was #e5484d in both themes with a white label: 3.9:1, under the 4.5:1 every other
+    // label in the shell meets (sign-off, 5 October). The fix is the one the accent got (#634):
+    // the ink follows the mode. In dark mode the red stays as it was and the label is the deep
+    // ground, 4.8:1 or better; in light mode the red is the deeper #c62828 and the label white,
+    // 5.6:1 or better. Hover and pressed keep to the same side of the ink: lighter steps in
+    // dark, darker in light. A test holds every pair (crates/yantrik-ui-kit/src/colour_roles.rs).
+    out property <color> destructive:        ThemeMode.dark ? #e5484d : #c62828;
+    out property <color> destructive-hover:  ThemeMode.dark ? #ec6064 : #b71c1c;
+    out property <color> destructive-pressed: ThemeMode.dark ? #e85d62 : #a51d1d;
+    // The ink on any red fill: the destructive button above, and anything else that fills with
+    // color-danger behind a word or a glyph. The deep ground in dark mode, white in light — the
+    // same rule as text-on-accent, for the same reason: the dark-mode reds are light.
+    out property <color> text-on-danger: ThemeMode.dark ? Theme.bg-deep : #ffffff;
     out property <color> color-danger-dim:   ThemeMode.dark ? #ef9a9a28 : #c6282820;
     // The close button's hover fill, with white on it. Deliberately the same in both themes:
     // it is not a surface that adapts, it is the one colour in the OS that means "this
@@ -219,8 +267,14 @@ export global Theme {
     out property <color> color-purple:       ThemeMode.dark ? #b084e0 : #7840b0;
     out property <color> color-purple-dim:   ThemeMode.dark ? #b084e028 : #7840b020;
 
-    // Text on colored backgrounds (accent buttons, status badges)
-    out property <color> text-on-accent: ThemeMode.dark ? #101820 : #ffffff;
+    // The ink on an accent fill: every label, glyph, knob and count that sits on Theme.accent,
+    // and the one colour for it (never white, never text-primary, never bg-deep by hand). The
+    // dark accents are light (#8fb4e3, #b98aef), and white on them was 2.1:1 and 2.7:1, so in
+    // dark mode the ink is the theme's own deepest ground: it follows a theme's palette
+    // (nightfall.toml's #0a0d17) through bg-deep and is 7:1 or better on every preset. The
+    // light accents are dark (#2b64a8, #7338b4) and carry white at 5.4:1 or better. A test holds
+    // both, against every preset and every theme file (crates/yantrik-ui-kit/src/colour_roles.rs).
+    out property <color> text-on-accent: ThemeMode.dark ? Theme.bg-deep : #ffffff;
     out property <color> accent-button-hover: ThemeMode.dark ? Theme.accent-light : Theme.accent.darker(8%);
     out property <color> accent-button-pressed: ThemeMode.dark ? Theme.accent-dim : Theme.accent.darker(16%);
 
@@ -259,6 +313,12 @@ export global Theme {
     // surface it edges, so the surface has an outline in dark mode and a crisp rim in light
     // mode. New with bright-and-sharp.
     out property <color> border-card:       ThemeMode.dark ? #ffffff1f : #00000017;
+    // The solid charcoal of a panel that must read cleanly over any wallpaper: opaque, so
+    // nothing behind it shows through the text. The key cheat sheet is the first; a key cap is a
+    // small raised chip on it.
+    out property <color> panel-solid:       ThemeMode.dark ? #151a1e : #ffffff;
+    out property <color> keycap-fill:       ThemeMode.dark ? #1f262c : #eef1f5;
+    out property <color> keycap-border:     ThemeMode.dark ? #ffffff24 : #0000001f;
     out property <color> separator:         ThemeMode.dark ? #ffffff0e : #0000000f;
     out property <color> hover-fill:        ThemeMode.dark ? #ffffff0a : #0000000a;
     out property <color> hover-fill-strong: ThemeMode.dark ? #ffffff14 : #00000012;
@@ -291,6 +351,7 @@ export global Theme {
     out property <int>    fw-hero: 600;
     out property <length> fs-hero-sub: 17px;
     out property <int>    fw-hero-sub: 400;
+    out property <length> fs-page: 24px;         // A screen's own title: Agents, History
     out property <length> fs-display: 20px;      // Panel titles, major headers
     out property <int>    fw-display: 600;
     out property <length> fs-title-1: 18px;      // App titles, large section headers
@@ -307,6 +368,14 @@ export global Theme {
     out property <int>    fw-caption: 400;
     out property <length> fs-micro: 11px;        // Badges, fine detail
     out property <int>    fw-micro: 500;
+    // An app's name under its tile: the desktop's workspace, the launcher, the window switcher,
+    // a mind's desk and the dock's hover label, all drawn by AppLabel. It was 11-12px regular,
+    // much of it grey, and on a 1x screen with no GPU that read soft beside the tiles above it.
+    // lh-label is one line of it rounded up to whole pixels (Barlow's line box is 1.2em, 15.6px
+    // here), so whatever a layout stacks under a label still starts on a whole pixel.
+    out property <length> fs-label: 13px;
+    out property <int>    fw-label: 500;
+    out property <length> lh-label: 16px;
     out property <length> fs-mono: 13px;         // Terminal, code, IDs
 
     // ─── Spacing scale (8px base grid) ────────────────────────────
@@ -319,6 +388,14 @@ export global Theme {
     out property <length> sp-7: 32px;
     out property <length> sp-8: 40px;
     out property <length> sp-9: 48px;
+
+    // Half-steps between the spacing scale's rungs, for the few places a layout sits between two
+    // of them (a badge's inset, a row's gap). Prefer sp-1 to sp-9; reach for these only to keep
+    // an existing look.
+    out property <length> sp-half: 2px;
+    out property <length> sp-1h: 6px;
+    out property <length> sp-2h: 10px;
+    out property <length> sp-3h: 14px;
 
     // Touch targets
     out property <length> touch-target: 44px;
@@ -334,9 +411,9 @@ export global Theme {
     //   r-xl  16px   windows, the launcher, modals, the command palette
     //
     // The legacy names point into it rather than holding numbers of their own, so they can no
-    // longer drift from it. An app icon tile is not on the scale on purpose: its radius is a
-    // fraction of its size (AppTile), because a 20px taskbar tile and a 46px desktop tile have
-    // to be the same SHAPE, and one length cannot give both.
+    // longer drift from it. An app icon tile is not on the scale on purpose: it is a squircle
+    // drawn into its pre-rendered art (AppTile, design/icons/), because a 32px dock tile and a
+    // 48px desktop tile have to be the same SHAPE, and one length cannot give both.
     //
     // Standard radius scale
     out property <length> r-xs: 4px;
@@ -363,6 +440,13 @@ export global Theme {
     out property <duration> dur-fast: 120ms;
     out property <duration> dur-normal: 200ms;
     out property <duration> dur-slow: 300ms;
+    // A popover or other moving surface arriving: dur-fast, or nothing under reduce-motion.
+    out property <duration> dur-pop: MotionPrefs.reduced ? 0ms : root.dur-fast;
+    // How long the pointer rests on a bar indicator before its tooltip appears.
+    out property <duration> dur-tooltip: 600ms;
+    // The one curve for things that arrive: quick out of the blocks, long soft landing. Use it
+    // as `easing: Theme.ease-standard;` on any animate that moves or reveals something.
+    out property <easing> ease-standard: cubic-bezier(0.2, 0.0, 0.0, 1.0);
 
     // ─── Control height tokens ────────────────────────────────────
     out property <length> h-compact: 28px;
@@ -375,7 +459,7 @@ export global Theme {
     out property <length> h-app-header: 48px;
 
     // ─── Desktop layout sizes ─────────────────────────────────────
-    out property <length> status-bar-height: 32px;
+    out property <length> status-bar-height: 36px;
     /// The bar along the bottom of the screen.
     ///
     /// Written as a bare `40px` in fifteen places — the taskbar itself and every maximised
@@ -383,19 +467,236 @@ export global Theme {
     /// most: the Intent Lens ran the full height of the screen, so the taskbar covered its
     /// chat input and the status bar covered its header. A chrome dimension that is not a
     /// token is a dimension the next panel will forget to subtract.
-    out property <length> taskbar-height: 40px;
-    out property <length> dock-height: 64px;
-    out property <length> dock-icon-size: 32px;
-    out property <length> dock-item-size: 48px;   // Hit area per dock icon
+    ///
+    /// The grounded dock (design/minds-surfaces-spec §3) is this tall, flush with the bottom edge,
+    /// and config/labwc/rc.xml reserves exactly this much (`<margin bottom>`). Change one, change
+    /// both: the compositor keeps maximised windows above it by that number alone.
+    out property <length> taskbar-height: 48px;
     out property <length> orb-desktop-size: 80px;
+
+    // ─── The grounded dock (spec §3) ──────────────────────────────
+    // Sizes. 48px = 4px padding + a 40px button + 4px padding.
+    out property <length> dock-button: 40px;
+    out property <length> dock-pad: 4px;
+    out property <length> dock-gap: 4px;
+    out property <length> dock-icon: 32px;       // the tile inside a 40px button, drawn from the 32px art pixel for pixel (AppTile).
+                                                 // Spec §3 says "24px icons": a 24px tile left a 13px glyph, which read as a blob.
+    out property <length> dock-pager-w: 32px;
+    out property <length> dock-max-w: 880px;     // min(this, viewport - dock-side-margin)
+    out property <length> dock-side-margin: 32px;
+    out property <length> dock-marker-w: 12px;
+    out property <length> dock-marker-h: 3px;
+    out property <length> dock-dot: 6px;         // the needs-you dot on the mind button
+    out property <length> dock-list-w: 320px;
+    out property <length> dock-list-row: 56px;
+    out property <length> dock-list-max-h: 400px;
+    out property <length> dock-label-h: 28px;      // the hover label
+    out property <length> dock-list-head: 40px;    // the window list's header
+    out property <length> dock-numeral: 14px;      // the several-windows count plate
+    out property <length> dock-desk-strip: 12px;   // the show-desktop corner
+    out property <length> dock-divider-inset: 8px;
+    out property <length> dock-check: 16px;
+    out property <float> dock-mind-glyph-ratio: 0.6;
+    out property <length> dock-label-gap: 8px;   // a label or a list opens this far above the dock
+    // Delays, written out in grounded_dock.slint too: the idle-window test reads a Timer's rate from its
+    // text and cannot resolve a token.
+    out property <duration> dock-label-delay: 500ms;
+    out property <duration> dock-list-delay: 250ms;
+    // Colours (shared contract, 2 Oct). Neutral surfaces first; the only two hues in the dock are
+    // the mind's teal and the amber of "a person's response is pending".
+    out property <color> dock-bar:        ThemeMode.dark ? #101417 : #eef1f3;
+    out property <color> dock-border:     ThemeMode.dark ? #343B41 : #c9d0d5;
+    out property <color> dock-raised:     ThemeMode.dark ? #1E252B : #ffffff;       // focused / hovered button
+    out property <color> dock-raised-line: ThemeMode.dark ? #2C343B : #d5dbe0;
+    out property <color> dock-marker:     ThemeMode.dark ? #ffffff : #1b2126;       // running: static, white
+    out property <color> dock-popover:    ThemeMode.dark ? #151A1E : #ffffff;       // opaque panel for labels and the list
+    out property <color> mind-teal:       #69C8BC;   // minds and their presence, nothing else
+    out property <color> needs-you:       #E7B567;   // a person's response is pending, nothing else
+
+    // Lock screen (design/ui-overhaul-2026-10-01.md §1.6, PR 6.2)
+    //
+    // Always dark, in both modes: the lock sits on a darkened photograph, and near-black text on
+    // it (what `text-primary` becomes in light mode) would vanish. The scrim is what keeps the
+    // clock readable over any wallpaper, a person's own included, so it is a token and not a
+    // guess at one image.
+    out property <color> lock-scrim:        #080b0e8c;
+    out property <color> lock-ground:       #101417;   // no wallpaper: the dock's charcoal, solid
+    out property <color> lock-text:         #f2f4f5;
+    out property <color> lock-text-dim:     #b4bcc2;
+    out property <color> lock-field:        #101417e6;
+    out property <color> lock-field-line:   #4a535a;
+    out property <color> lock-action:       #151a1ee0;
+    out property <color> lock-action-hover: #1e252b;
+    out property <color> lock-error:        #f4a3a3;
+    out property <length> lock-field-width: 340px;
+    out property <length> lock-field-height: 52px;
+    out property <length> lock-avatar: 88px;
+    out property <length> lock-initial-size: 40px;
 
     // Intent Lens
     out property <length> lens-width: 640px;
     out property <length> lens-input-height: 48px;
     out property <length> lens-result-height: 44px;
 
-    // Chat side panel
-    out property <length> chat-panel-width: 380px;
+    // Chat side panel (Chat v2, design/minds-surfaces-spec-2026-10-02.md §1)
+    //
+    // 440px by default; the person can drag its left edge between the two bounds. The panel is
+    // opaque charcoal because it holds paragraphs and a decision, and anything showing through
+    // it makes both harder to read (design/ui-review-gpt6-astra-2026-10-02.md, rule 1).
+    out property <length> chat-panel-width: 440px;
+    out property <length> chat-panel-min: 380px;
+    out property <length> chat-panel-max: 560px;
+    out property <length> chat-panel-gap: 12px;
+    out property <length> chat-header-height: 64px;
+    out property <length> chat-strip-height: 48px;
+    out property <length> chat-radius: 16px;
+    // The panel, its bars and insets, its border, and the two colours with a meaning: teal is a
+    // mind (never a selection or a success), amber is "your answer is waiting" (nothing else).
+    out property <color> chat-panel:     ThemeMode.dark ? #151a1e : #f6f7f8;
+    out property <color> chat-bar:       ThemeMode.dark ? #101417 : #eceef0;
+    out property <color> chat-border:    ThemeMode.dark ? #343b41 : #cdd2d6;
+    out property <color> chat-text:      ThemeMode.dark ? #f2f4f5 : #151a1e;
+    out property <color> chat-text-2:    ThemeMode.dark ? #a8b0b6 : #4d565c;
+    out property <color> chat-mind:      ThemeMode.dark ? #69c8bc : #1f7f74;
+    out property <color> chat-needs-you: ThemeMode.dark ? #e7b567 : #9a6a14;
+    // A person's message: a light bubble with dark text, in either mode.
+    out property <color> chat-user-bubble: ThemeMode.dark ? #f2f4f5 : #20272c;
+    out property <color> chat-user-text:   ThemeMode.dark ? #151a1e : #f2f4f5;
+    out property <color> chat-raised:    ThemeMode.dark ? #1d2429 : #ffffff;
+    // The ground of a card that asks the person something, opaque over whatever screen is up
+    // (the approval card). The bar's ground in dark; the raised white in light, because on the
+    // light bar's grey the card's outline buttons read as filled grey keys — Decline looked filled
+    // in light and outlined in dark (sign-off, 5 October). The outline kind is transparent at
+    // rest; what it showed was this ground.
+    out property <color> chat-card:      ThemeMode.dark ? Theme.chat-bar : Theme.chat-raised;
+
+    // ─── Kit controls: slider, popover, toggle tile, bar indicator ─
+    // Sizes. Each is the one number the control draws with, so a later screen that has to line
+    // something up with a slider's thumb or a tile's edge reads it here instead of guessing.
+    //
+    // The glyph size for every icon that lives on the top/bottom bar (YIndicator).
+    out property <length> bar-icon-size: 18px;
+    // The attention dot on a bar indicator (a thing here needs a look).
+    out property <length> bar-dot: 7px;
+    // The top bar (render 01): an opaque #101417 strip, 36px tall, with a 1px neutral edge under it.
+    // The same two colours as the dock, because they are one family of chrome.
+    out property <color> bar-bg:     root.dock-bar;
+    out property <color> bar-border: root.dock-border;
+    // The gap between neighbours on the bar's right: indicators, the mode chip, Quick Settings.
+    out property <length> bar-gap: 8px;
+    // The Minds chip and the mode chip: 24px tall, a pill-ish corner, a 6px dot.
+    out property <length> bar-chip-h: 24px;
+    out property <length> bar-chip-radius: 6px;
+    out property <length> bar-chip-dot: 6px;
+    // Today (the clock's popover) is wider than a list popover: it holds a month.
+    out property <length> today-width: 380px;
+    out property <length> today-cell-h: 30px;
+    // A popover (Quick Settings, Sound, Network, Today) is this wide, and sits this far from
+    // what opened it and from the screen edge. The radius is the window/modal step of the scale.
+    out property <length> popover-width: 360px;
+    out property <length> popover-radius: root.r-xl;
+    out property <length> popover-gap: root.sp-2;
+    out property <length> popover-margin: root.sp-2;
+    // Slider: a 6px track under an 18px thumb. The halo is the soft ring that appears around the
+    // thumb on hover and while dragging; it is 5px proud of the thumb on every side.
+    out property <length> slider-track-h: 6px;
+    out property <length> slider-thumb: 18px;
+    out property <length> slider-halo: 28px;
+    // Toggle tile (Wi-Fi, Bluetooth, Night light ...).
+    out property <length> tile-h: 56px;
+    // On-screen display (volume, brightness, mic, Caps Lock): a 240x64 pill, centred, 80px above
+    // the dock (its window is placed there by rc.xml's windowRule, which wire/osd.rs checks). Opaque charcoal in both modes, because it floats over whatever is on screen,
+    // a photograph or a white document, and has to read the same on either.
+    out property <length> osd-w: 240px;
+    out property <length> osd-h: 64px;
+    out property <length> osd-gap: 80px;
+    // The level bar beside the percentage: a 4px track, thinner than a slider's, because nothing
+    // drags it.
+    out property <length> osd-track-h: 4px;
+    out property <color> osd-bg: #151a1e;
+    out property <color> osd-border: #ffffff1f;
+    out property <color> osd-text: #f4f6fa;
+    out property <color> osd-track: #ffffff26;
+    // Window overview (Super+Tab card): a cell's widest size and its height (12 + the 48px app
+    // tile + 8 + a 14px name + a 12px title + 12), the tile, the card's widest size (four cells
+    // across at 640), and the card widths below which it draws three and two columns.
+    out property <length> sw-cell-w: 144px;
+    out property <length> sw-cell-h: 116px;
+    out property <length> sw-tile: 48px;
+    out property <length> sw-card-max-w: 640px;
+    out property <length> sw-cols-3-below: 760px;
+    out property <length> sw-cols-2-below: 560px;
+    // Agents workroom (agents*.slint). The spec's numbers (design/minds-surfaces-spec-2026-10-02.md
+    // section 2) live here so a density or scale change reaches every screen of it at once.
+    // Marks: the mind's disc at four sizes.
+    out property <length> wr-mark-xs: 18px;
+    out property <length> wr-mark-s: 22px;
+    out property <length> wr-mark-m: 24px;
+    out property <length> wr-mark-l: 28px;
+    // The mind mark's inner dot, as a fraction of the mark.
+    out property <float>  wr-mark-core: 0.36;
+    out property <float>  wr-mark-ring-div: 12;     // the ring is size / this, at least the focus ring
+    out property <length> wr-glyph: 14px;           // small line icon beside text
+    out property <length> wr-fade-h: 14px;          // the "more below" fade under a scrolling list
+    out property <length> wr-dot-gap: 3px;          // gap between a run's progress dots; scrollbar width
+    // Nav: a mind's row, a section row, the indent of a mind's sub-rows, the count badge.
+    out property <length> wr-nav-row-h: 64px;
+    out property <length> wr-nav-item-h: 40px;
+    out property <length> wr-nav-indent: 52px;
+    out property <length> wr-badge-h: 20px;
+    // Decision shelf and desks.
+    out property <length> wr-shelf-card-h: 84px;
+    out property <length> wr-header-h: 44px;        // a desk's header; the screen's header row
+    out property <length> wr-row-h: 56px;
+    out property <length> wr-desk-min-w: 320px;
+    out property <length> wr-desk-h: 248px;
+    out property <length> wr-desk-task-h: 14px;     // the task line under a desk's name: 11px text, whole pixels
+    out property <length> wr-desk-preview-h: 104px;
+    out property <length> wr-desk-line-h: 48px;
+    out property <length> wr-desk-acts-h: 52px;
+    // Start-work sheet and task detail.
+    out property <length> wr-sheet-w: 480px;
+    out property <length> wr-detail-w: 440px;
+    out property <length> wr-task-field-h: 120px;
+    out property <length> wr-role-row-h: 50px;
+    out property <length> wr-roles-max-h: 200px;
+    out property <length> wr-btn-w: 120px;
+    out property <length> wr-btn-w-wide: 140px;
+    // One-pixel edge of a control, and the stroke weights an icon is drawn with (regular beside
+    // text, a touch heavier on a filled tile where it sits on the accent).
+    out property <length> hairline: 1px;
+    out property <length> icon-stroke: 1.6px;
+    out property <length> icon-stroke-bold: 1.7px;
+    // Three drop-shadow depths for things that float: a thumb, a tooltip, a popover.
+    out property <length> shadow-sm-blur: 3px;
+    out property <length> shadow-sm-dy: 1px;
+    out property <length> shadow-md-blur: 8px;
+    out property <length> shadow-md-dy: 2px;
+    out property <length> shadow-lg-blur: 24px;
+    out property <length> shadow-lg-dy: 6px;
+    // The keyboard-focus ring on a control that has no border of its own to thicken.
+    out property <length> focus-ring-width: 2px;
+    out property <color> focus-ring: ThemeMode.dark ? #f4f6fa : #0e1116;
+    // The groove behind a slider fill. Stronger than border-strong so an empty track still reads
+    // on a popover (bg-elevated) in both themes.
+    out property <color> track-bg: ThemeMode.dark ? #343b41 : #00000026;
+    // The slider thumb: the one near-white surface in the kit, so it reads as a thing you hold.
+    out property <color> knob: ThemeMode.dark ? #f4f6fa : #ffffff;
+    out property <color> knob-border: ThemeMode.dark ? #00000040 : #00000030;
+    // A toggle tile that is off, then a step lighter on hover and press (neutral steps, not new
+    // colours).
+    // (Pranab, 2 Oct: tiles disappeared into the panels.) An opaque tile one step lighter than
+    // the #151A1E panel it sits on, with its own 1px border, so it stands out from the panel.
+    out property <color> tile-off:         ThemeMode.dark ? #1e252b : #e6eaef;
+    out property <color> tile-off-hover:   ThemeMode.dark ? #262e35 : #dce1e7;
+    out property <color> tile-off-pressed: ThemeMode.dark ? #2d363e : #d2d8df;
+    out property <color> tile-border:      ThemeMode.dark ? #2c343b : #c5ccd4;
+    // A notice that informs and waits on nothing (YNoticeBar, tone 0): the same raised neutral
+    // surface and edge as a tile, and no hue -- red is for what failed, amber for what needs you.
+    out property <color> notice-surface:   root.tile-off;
+    out property <color> notice-line:      root.tile-border;
+    // Secondary button: transparent with this outline and a white label.
+    out property <color> outline-border:   ThemeMode.dark ? #4a535b : #8a949e;
 
     // ─── Result type colors ───────────────────────────────────────
     out property <color> color-do:        ThemeMode.dark ? #d4a574 : #8a6030;

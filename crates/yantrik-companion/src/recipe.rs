@@ -175,7 +175,19 @@ pub enum RecipeStep {
         /// What it should read first: the answers to weigh, the change to review.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context: Option<String>,
+        /// What the stage is called on the Recipes screen and in its agent's name, when its role
+        /// alone would not tell it from the stages beside it: three writers are "Writer (Voice
+        /// A)", "Writer (Voice B)", "Writer (Narrator)", not "Writer" three times (#194). May name
+        /// variables. None: the role's own name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
     },
+}
+
+/// A stage's `title`, filled in from `vars`, when it names one that resolves to something.
+pub fn stage_title(title: Option<&String>, vars: &std::collections::HashMap<String, serde_json::Value>) -> Option<String> {
+    let t = resolve_vars(title?, vars).trim().to_string();
+    (!t.is_empty() && !t.contains("{{")).then_some(t)
 }
 
 /// Output format for Render steps.

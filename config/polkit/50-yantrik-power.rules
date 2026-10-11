@@ -1,0 +1,18 @@
+// Yantrik OS: the desktop's user may suspend, restart and power off from any of their sessions,
+// without sudo (#397). The power menu calls `systemctl suspend|reboot|poweroff`. logind's own
+// default allows that only from the active seat session, and a shell restarted by an update is
+// in another session (VM 520: the shell in session 82, the seat's in session 1), so the menu
+// would ask for an administrator there. The desktop's user is in `sudo` on every install.
+polkit.addRule(function (action, subject) {
+    var power = [
+        "org.freedesktop.login1.suspend",
+        "org.freedesktop.login1.suspend-multiple-sessions",
+        "org.freedesktop.login1.reboot",
+        "org.freedesktop.login1.reboot-multiple-sessions",
+        "org.freedesktop.login1.power-off",
+        "org.freedesktop.login1.power-off-multiple-sessions"
+    ];
+    if (power.indexOf(action.id) >= 0 && subject.isInGroup("sudo")) {
+        return polkit.Result.YES;
+    }
+});

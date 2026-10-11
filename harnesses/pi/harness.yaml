@@ -17,15 +17,18 @@ requires:
   - binary: pi
     why: Pi itself, which npm installs per user
   - binary: node
-    why: Pi needs Node 22 or newer — Debian's Node 20 fails to start it
+    why: Pi needs Node 22.19 or newer — Debian's Node 20 fails to start it
   - file: yantrik_pi.py
     why: the harness script, staged beside this file
 
 install:
-  # Run as the person, with its output streamed into the row. `--ignore-scripts` because a
-  # global install has no business running an arbitrary postinstall on this machine.
-  command: npm install -g --ignore-scripts @earendil-works/pi-coding-agent
-  doing: fetching @earendil-works/pi-coding-agent
+  # Run as the person, with its output streamed into the row, into ~/.local — and Node first,
+  # pinned and checksummed, because the image ships none and `npm` alone was "not found" on
+  # every fresh machine. `--ignore-scripts` because a global install has no business running
+  # an arbitrary postinstall on this machine; Pi's bundle needs none. Pinned, and bumped by hand:
+  # an unpinned package is whatever was published last, run as the person.
+  command: sh {dir}/../lib/install/npm.sh @earendil-works/pi-coding-agent@0.99.1 pi 22.19 --ignore-scripts
+  doing: fetching Node from nodejs.org and @earendil-works/pi-coding-agent 0.99.1 from npm
 
 # Present, but a file only the person can write is not there yet: the row reads "Needs setup"
 # and names the path. It never reads what is in it.
