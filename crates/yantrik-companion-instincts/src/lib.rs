@@ -76,6 +76,16 @@ use yantrik_companion_core::types::{CompanionState, UrgeSpec};
 // Re-export Instinct trait from core
 pub use yantrik_companion_core::instincts::Instinct;
 
+/// The memories a cognition trigger was made from (its `source_rids`), for the urge it becomes:
+/// "Don't use this memory" excludes them from every later proactive message (#754).
+pub fn trigger_memory_ids(trigger: &serde_json::Value) -> Vec<String> {
+    trigger
+        .get("source_rids")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
 pub use activity_reflector::ActivityReflectorInstinct;
 pub use aftermath::AftermathInstinct;
 pub use automation::AutomationInstinct;

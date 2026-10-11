@@ -40,7 +40,31 @@ impl Instinct for FollowUpInstinct {
                     .with_cooldown(&format!("follow_up:{trigger_id}"))
                     .with_message(&format!("I was thinking about something from before — {reason}"))
                     .with_context(ctx)
+                    .from_memories(crate::trigger_memory_ids(trigger))
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The urge carries the memories its trigger was made from, so "Don't use this memory" can
+    /// exclude them (#754).
+    #[test]
+    fn a_follow_up_carries_the_memories_it_came_from() {
+        let mut state = crate::test_util::state_idle_for(None);
+        state.pending_triggers = vec![serde_json::json!({
+            "trigger_type": "decay_review",
+            "trigger_id": "t1",
+            "reason": "the move to Austin",
+            "source_rids": ["rid-1", "rid-2"],
+        })];
+        let urges = FollowUpInstinct.evaluate(&state);
+        assert_eq!(urges.len(), 1);
+        assert_eq!(urges[0].memory_ids, vec!["rid-1".to_string(), "rid-2".to_string()]);
+        assert!(!urges[0].safety);
+        assert!(crate::trigger_memory_ids(&serde_json::json!({})).is_empty());
     }
 }

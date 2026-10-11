@@ -3613,6 +3613,17 @@ impl CompanionService {
 
     /// Check proactive engine for messages to deliver. Called during think cycle.
     pub fn check_proactive(&mut self) {
+        // A safety signal is never throttled (#754): it goes before the quiet period and the
+        // trust gate below, which may otherwise hold everything.
+        let safety = {
+            let conn = self.db.conn();
+            self.proactive_engine.check_safety(&self.urge_queue, &conn)
+        };
+        if let Some(msg) = safety {
+            self.set_proactive_message(msg);
+            return;
+        }
+
         // V25: Silence policy — skip if in quiet period (frustration cooldown)
         if self.silence_policy.is_quiet_period() {
             tracing::debug!("Silence policy: quiet period active, skipping proactive check");
@@ -3692,16 +3703,31 @@ impl CompanionService {
         // Every proactive message says why it appeared and what kind it is (#754). A maker that
         // left them empty gets them from the message's first key, by fixed template.
         crate::proactive_backoff::stamp(&mut msg);
+        // "Don't use this memory" (#754): a message made from a memory the person excluded is
+        // never queued, whoever made it. A safety signal is never held back.
+        if !msg.safety
+            && crate::proactive_backoff::MemoryExclusions::any_excluded(&self.db.conn(), &msg.memory_ids)
+        {
+            tracing::info!(kind = %msg.kind, "Proactive message made from an excluded memory; not queued");
+            return;
+        }
         if let Some(why) = crate::proactive::must_not_be_said(&msg.text) {
             tracing::warn!(why, text = %msg.text.chars().take(40).collect::<String>(), "Proactive thought refused at the queue, not delivered");
             return;
         }
         if self.proactive_messages.len() >= MAX_PENDING {
-            if let Some(dropped) = self.proactive_messages.pop_front() {
+            // The oldest that is not a safety signal gives way (#754).
+            let at = self.proactive_messages.iter().position(|m| !m.safety).unwrap_or(0);
+            if let Some(dropped) = self.proactive_messages.remove(at) {
                 tracing::warn!(pending = MAX_PENDING, text = %dropped.text.chars().take(40).collect::<String>(), "Proactive queue full, oldest message dropped");
             }
         }
-        self.proactive_messages.push_back(msg);
+        // A safety signal is said first.
+        if msg.safety {
+            self.proactive_messages.push_front(msg);
+        } else {
+            self.proactive_messages.push_back(msg);
+        }
     }
 
     // ---- Natural Communication helpers ----
@@ -5830,6 +5856,76 @@ mod proactive_queue_tests {
             c.take_proactive_message().map(|m| m.text),
             Some("The nightly backup failed — the disk is almost full.".to_string())
         );
+    }
+
+    /// "Don't use this memory" (#754): a message made from an excluded memory never enters the
+    /// queue, whoever made it; a safety signal still does, and goes first.
+    #[test]
+    fn a_message_from_an_excluded_memory_never_enters_the_queue() {
+        let mut c = companion();
+        crate::proactive_backoff::MemoryExclusions::exclude(&c.db.conn(), &["mem-1".to_string()], 1.0);
+        let mut from_memory = msg("Your sister's surgery was today.");
+        from_memory.memory_ids = vec!["mem-1".into()];
+        c.set_proactive_message(from_memory.clone());
+        assert!(c.take_proactive_message().is_none());
+
+        c.set_proactive_message(msg("The nightly backup finished."));
+        let mut safety = from_memory;
+        safety.text = "A tornado warning is in effect where you are.".into();
+        safety.safety = true;
+        c.set_proactive_message(safety);
+        let first = c.take_proactive_message().expect("the safety signal is queued");
+        assert!(first.safety, "and said first");
+        assert_eq!(first.why, crate::proactive_backoff::SAFETY_WHY);
+    }
+
+    /// Safety is never throttled (#754): a safety urge is delivered with its kind off, inside the
+    /// engine's cooldown and with an urgency far below the threshold.
+    #[test]
+    fn a_safety_urge_is_delivered_with_its_kind_off() {
+        use crate::proactive_backoff::{KindBackoff, ProactiveKind};
+        let mut c = companion();
+        KindBackoff::stop(&c.db.conn(), ProactiveKind::Weather, now_ts());
+        let plain = crate::types::UrgeSpec::new("weather_watch", "Notable weather: rain", 0.9)
+            .with_cooldown("weather_watch:alert")
+            .with_message("Rain this afternoon.");
+        c.urge_queue.push(&c.db.conn(), &plain);
+        c.check_proactive();
+        assert!(c.take_proactive_message().is_none(), "the kind is off, so ordinary weather is held");
+
+        let danger = crate::types::UrgeSpec::new("weather_watch", "Notable weather: tornado", 0.1)
+            .with_cooldown("weather_watch:danger")
+            .with_message("A tornado warning is in effect where you are.")
+            .safety();
+        c.urge_queue.push(&c.db.conn(), &danger);
+        c.check_proactive();
+        let m = c.take_proactive_message().expect("a safety signal is never held");
+        assert!(m.safety);
+        assert_eq!(m.kind, "weather");
+        assert_eq!(m.why, crate::proactive_backoff::SAFETY_WHY);
+        assert!(crate::proactive_backoff::choices_for(&m).is_empty(), "and offers no Less of this");
+    }
+
+    /// An urge made from an excluded memory is never queued; one from another memory is, and
+    /// carries its memory ids.
+    #[test]
+    fn an_urge_carries_its_memories_and_honours_exclusions() {
+        let c = companion();
+        crate::proactive_backoff::MemoryExclusions::exclude(&c.db.conn(), &["mem-x".to_string()], 1.0);
+        let excluded = crate::types::UrgeSpec::new("follow_up", "Follow up: the move", 0.9)
+            .with_cooldown("follow_up:a")
+            .with_message("You mentioned the move.")
+            .from_memories(["mem-x"]);
+        assert!(c.urge_queue.push(&c.db.conn(), &excluded).is_none());
+        let kept = crate::types::UrgeSpec::new("follow_up", "Follow up: the trip", 0.9)
+            .with_cooldown("follow_up:b")
+            .with_message("You mentioned the trip.")
+            .from_memories(["mem-y"]);
+        assert!(c.urge_queue.push(&c.db.conn(), &kept).is_some());
+        let pending = c.urge_queue.get_pending(&c.db.conn(), 5);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].memory_ids, vec!["mem-y".to_string()]);
+        assert!(!pending[0].safety);
     }
 }
 

@@ -61,7 +61,8 @@ impl Instinct for SerendipityInstinct {
                     ))
                     .with_context(serde_json::json!({
                         "memory_text": memory_text,
-                    })),
+                    }))
+                    .from_memories(crate::trigger_memory_ids(t)),
                 )
             })
             .take(1) // Only one serendipity per cycle

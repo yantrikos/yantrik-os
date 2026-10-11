@@ -49,6 +49,14 @@ const ALERT_CONDITIONS: &[&str] = &[
     "flood",
 ];
 
+/// Conditions that put a person in danger, not merely in the rain: a message about one is a
+/// safety signal and is never throttled (#754).
+const DANGER_CONDITIONS: &[&str] = &["tornado", "hurricane", "blizzard", "flood"];
+
+fn is_dangerous(condition_lower: &str) -> bool {
+    DANGER_CONDITIONS.iter().any(|kw| condition_lower.contains(kw))
+}
+
 /// Temperature thresholds (Fahrenheit) that warrant a heads-up.
 const TEMP_HOT_F: f64 = 95.0;
 const TEMP_COLD_F: f64 = 32.0;
@@ -179,13 +187,15 @@ impl Instinct for WeatherWatchInstinct {
             serde_json::Value::String(weather.trim().to_string()),
         );
 
-        vec![UrgeSpec::new(
+        let spec = UrgeSpec::new(
             "weather_watch",
             &format!("Notable weather: {}", alert),
             0.55,
         )
         .with_cooldown("weather_watch:alert")
-        .with_context(serde_json::Value::Object(context))]
+        .with_context(serde_json::Value::Object(context));
+        // Weather that can hurt someone is a safety signal: no throttle holds it (#754).
+        vec![if is_dangerous(&condition_lower) { spec.safety() } else { spec }]
     }
 }
 
@@ -256,4 +266,18 @@ fn now_ts() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64()
+}
+
+#[cfg(test)]
+mod danger_tests {
+    use super::*;
+
+    /// Weather that can hurt someone is a safety signal; rain is not (#754).
+    #[test]
+    fn only_dangerous_weather_is_a_safety_signal() {
+        assert!(is_dangerous("tornado warning"));
+        assert!(is_dangerous("flood watch"));
+        assert!(!is_dangerous("light rain"));
+        assert!(!is_dangerous("windy"));
+    }
 }

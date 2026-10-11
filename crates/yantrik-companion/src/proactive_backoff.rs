@@ -12,6 +12,16 @@
 //! - [`BackoffLevel`] is how far a kind is backed off; [`decide_backoff`] is the pure rule the
 //!   automatic throttle follows, and [`KindBackoff`] keeps the levels in `proactive_kind_backoff`,
 //!   beside `proactive_deliveries`.
+//! - "Less of this" offers three choices (design/companion-who-cares-2026-10-11.md): **Not now**
+//!   (this one goes; it counts as dismissed, nothing more), **Stop this kind** (the kind goes to
+//!   off until the person asks, shown and reversible in Settings) and **Don't use this memory**
+//!   ([`MemoryExclusions`]: the memories the message was made from are never used for a proactive
+//!   message again; nothing is deleted, and Settings can undo it). A message made from no memory
+//!   does not offer the third.
+//! - A safety signal ([`crate::types::ProactiveMessage::safety`]) is never throttled, held or
+//!   backed off, and offers no choices. What the person asked for (Reminders, Watches, Tasks) is
+//!   never touched by the automatic throttle, and a backed-off message waits rather than being
+//!   dropped ([`gate`]).
 
 use rusqlite::{params, Connection};
 
@@ -99,17 +109,17 @@ impl ProactiveKind {
         }
     }
 
+    /// Things the person asked for: reminders they set, things they asked the mind to watch, work
+    /// they handed it. The automatic throttle never backs these off; only the person can.
+    pub fn is_asked_for(self) -> bool {
+        matches!(self, Self::Reminders | Self::Watches | Self::Tasks)
+    }
+
     /// The kind a source belongs to: an instinct name, or the first segment of a message's key
     /// ("recipe:…", "playbook:…", "task_queue:…", or an urge's cooldown key such as
     /// "open_loops:overdue"). Case and separators do not matter.
     pub fn from_source(source: &str) -> Self {
-        let head = source.split(':').next().unwrap_or("");
-        let norm: String = head
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric())
-            .map(|c| c.to_ascii_lowercase())
-            .collect();
-        match norm.as_str() {
+        match source_head(source).as_str() {
             "reminder" | "sched" | "scheduler" | "openloopsguardian" | "goalkeeper"
             | "morningbrief" | "commitment" | "openloops" => Self::Reminders,
             "emailwatch" | "email" => Self::Email,
@@ -164,24 +174,110 @@ pub fn why_text(kind: ProactiveKind, data: &serde_json::Value) -> String {
             Some(n) if n >= 2.0 => format!("Your computer raised {} alerts in five minutes.", n as u64),
             _ => "Your computer needs a look.".into(),
         },
-        ProactiveKind::Ideas => "It matches something you're interested in.".into(),
+        // The catch-all claims nothing about the person: what lands here may have nothing to do
+        // with their interests.
+        ProactiveKind::Ideas => "It's one of my own ideas, not something you asked for.".into(),
     }
 }
 
-/// What the shell says after "Less of this" is pressed. The shell has no Assistant section; the
-/// kinds are listed under AI & Intelligence, in its Assistant block, so that is where this points.
-pub const LESS_OF_THIS_ACK: &str =
-    "OK, fewer messages like this. Change it in Settings \u{2192} AI & Intelligence.";
+/// The source's name as [`ProactiveKind::from_source`] reads it: the first segment, letters and
+/// digits only, lower case.
+fn source_head(source: &str) -> String {
+    source
+        .split(':')
+        .next()
+        .unwrap_or("")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+/// The why for a message from this source: its own when the kind's would not be true of it,
+/// else the kind's ([`why_text`]). Same rule: fixed templates, numbers at most.
+pub fn why_for(source: &str, data: &serde_json::Value) -> String {
+    match source_head(source).as_str() {
+        "bondmilestone" => "The bond level just changed.".into(),
+        "humor" => "It's a light remark, not something you asked for.".into(),
+        "relationshipradar" => "It's about someone you've mentioned to me.".into(),
+        "devilsadvocate" => "It questions a view you've shared with me.".into(),
+        "moneymind" => "Money has come up in your interests or our talks.".into(),
+        _ => why_text(ProactiveKind::from_source(source), data),
+    }
+}
+
+/// Why a safety signal appeared. It has no kind to back off and offers no choices.
+pub const SAFETY_WHY: &str = "It may matter for your safety.";
+
+/// The three choices behind "Less of this", as the shell and notifications name them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Choice {
+    /// Dismiss this one. It counts as dismissed, and nothing more.
+    NotNow,
+    /// The kind goes to off until the person asks.
+    StopKind,
+    /// The memories this message was made from are not used for proactive messages again.
+    ForgetMemory,
+}
+
+impl Choice {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::NotNow => "not_now",
+            Self::StopKind => "stop_kind",
+            Self::ForgetMemory => "forget_memory",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        [Self::NotNow, Self::StopKind, Self::ForgetMemory].into_iter().find(|c| c.key() == key)
+    }
+
+    /// The button's words.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NotNow => "Not now",
+            Self::StopKind => "Stop this kind",
+            Self::ForgetMemory => "Don't use this memory",
+        }
+    }
+
+    /// What the shell says once it is pressed. Settings → AI & Intelligence lists the kinds and
+    /// the excluded memories, so that is where the way back is.
+    pub fn ack(self) -> &'static str {
+        match self {
+            Self::NotNow => "OK, not now.",
+            Self::StopKind => "OK, no more like this. Turn it back on in Settings \u{2192} AI & Intelligence.",
+            Self::ForgetMemory => {
+                "OK, I won't bring that memory up again. Undo it in Settings \u{2192} AI & Intelligence."
+            }
+        }
+    }
+}
+
+/// The choices a message offers: none for a safety signal; "Don't use this memory" only when it
+/// was made from a memory.
+pub fn choices_for(msg: &crate::types::ProactiveMessage) -> Vec<Choice> {
+    if msg.safety {
+        return Vec::new();
+    }
+    let mut choices = vec![Choice::NotNow, Choice::StopKind];
+    if !msg.memory_ids.is_empty() {
+        choices.push(Choice::ForgetMemory);
+    }
+    choices
+}
 
 /// Fill a message's kind and why when its maker left them empty: the kind from its first key,
-/// the why from the fixed template for that kind.
+/// the why from the fixed template for that source. A safety signal says so.
 pub fn stamp(msg: &mut crate::types::ProactiveMessage) {
-    let kind = ProactiveKind::from_key(&msg.kind).unwrap_or_else(|| {
-        ProactiveKind::from_source(msg.urge_ids.first().map(String::as_str).unwrap_or(""))
-    });
+    let source = msg.urge_ids.first().cloned().unwrap_or_default();
+    let kind = ProactiveKind::from_key(&msg.kind).unwrap_or_else(|| ProactiveKind::from_source(&source));
     msg.kind = kind.key().to_string();
-    if msg.why.trim().is_empty() {
-        msg.why = why_text(kind, &serde_json::Value::Null);
+    if msg.safety {
+        msg.why = SAFETY_WHY.to_string();
+    } else if msg.why.trim().is_empty() {
+        msg.why = if source.is_empty() { why_text(kind, &serde_json::Value::Null) } else { why_for(&source, &serde_json::Value::Null) };
     }
 }
 
@@ -337,13 +433,24 @@ impl Outcome {
 /// level last changed and within [`AUTO_RAISE_WINDOW_SECS`], newest first, `latest` included.
 /// An accepted message lowers the level one step. When the last [`AUTO_RAISE_AFTER`] were all
 /// dismissed or ignored, the level rises one step, but never past `Rarely` on its own.
-pub fn decide_backoff(current: BackoffLevel, latest: Outcome, recent: &[Outcome]) -> BackoffLevel {
+///
+/// A kind the person asked for ([`ProactiveKind::is_asked_for`]) is never raised: only the person
+/// backs those off.
+pub fn decide_backoff(
+    kind: ProactiveKind,
+    current: BackoffLevel,
+    latest: Outcome,
+    recent: &[Outcome],
+) -> BackoffLevel {
     if latest == Outcome::Accepted {
         // "Off until you ask" waits for the person, not for a lucky acceptance.
         if current == BackoffLevel::OffUntilAsked {
             return current;
         }
         return current.lowered();
+    }
+    if kind.is_asked_for() {
+        return current;
     }
     let streak = recent.len() >= AUTO_RAISE_AFTER
         && recent[..AUTO_RAISE_AFTER].iter().all(|o| *o != Outcome::Accepted);
@@ -368,6 +475,7 @@ impl KindBackoff {
                 since REAL NOT NULL
             );",
         );
+        MemoryExclusions::ensure_table(conn);
     }
 
     /// A kind's level and when it last changed (0 when it never has).
@@ -392,11 +500,10 @@ impl KindBackoff {
         );
     }
 
-    /// "Less of this": the person backs a kind off one level. Returns the new level.
-    pub fn less_of_this(conn: &Connection, kind: ProactiveKind, now: f64) -> BackoffLevel {
-        let level = Self::level(conn, kind).raised();
-        Self::set(conn, kind, level, now);
-        level
+    /// "Stop this kind": one press, and the kind is off until the person turns it back on in
+    /// Settings.
+    pub fn stop(conn: &Connection, kind: ProactiveKind, now: f64) {
+        Self::set(conn, kind, BackoffLevel::OffUntilAsked, now);
     }
 
     /// Settings puts a kind back to normal.
@@ -439,7 +546,7 @@ impl KindBackoff {
                 Ok(rows.flatten().filter_map(|s| Outcome::from_str(&s)).collect())
             })
             .unwrap_or_default();
-        let next = decide_backoff(current, outcome, &recent);
+        let next = decide_backoff(kind, current, outcome, &recent);
         if next != current {
             tracing::info!(kind = kind.key(), from = current.words(), to = next.words(), "Proactive kind backoff moved");
             Self::set(conn, kind, next, now);
@@ -470,6 +577,142 @@ impl KindBackoff {
             params![kind.key(), now],
         );
     }
+}
+
+// ── Don't use this memory ───────────────────────────────────────────────────
+
+/// Memories the person said not to use for proactive messages, kept in
+/// `proactive_memory_exclusions`. The memory itself is never touched: it is still remembered and
+/// still answers when the person asks. Only the mind's own messages leave it alone.
+pub struct MemoryExclusions;
+
+impl MemoryExclusions {
+    pub fn ensure_table(conn: &Connection) {
+        let _ = conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS proactive_memory_exclusions (
+                memory_id TEXT PRIMARY KEY,
+                since     REAL NOT NULL
+            );",
+        );
+    }
+
+    /// Exclude these memories from every later proactive message.
+    pub fn exclude(conn: &Connection, memory_ids: &[String], now: f64) {
+        for id in memory_ids.iter().filter(|id| !id.trim().is_empty()) {
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO proactive_memory_exclusions (memory_id, since) VALUES (?1, ?2)",
+                params![id, now],
+            );
+        }
+    }
+
+    /// Settings: let the mind use this memory again.
+    pub fn restore(conn: &Connection, memory_id: &str) {
+        let _ = conn.execute(
+            "DELETE FROM proactive_memory_exclusions WHERE memory_id = ?1",
+            params![memory_id],
+        );
+    }
+
+    pub fn is_excluded(conn: &Connection, memory_id: &str) -> bool {
+        conn.query_row(
+            "SELECT 1 FROM proactive_memory_exclusions WHERE memory_id = ?1",
+            params![memory_id],
+            |_| Ok(()),
+        )
+        .is_ok()
+    }
+
+    /// Whether any of these memories is excluded.
+    pub fn any_excluded(conn: &Connection, memory_ids: &[String]) -> bool {
+        memory_ids.iter().any(|id| Self::is_excluded(conn, id))
+    }
+
+    /// Every excluded memory, newest first.
+    pub fn all(conn: &Connection) -> Vec<String> {
+        conn.prepare("SELECT memory_id FROM proactive_memory_exclusions ORDER BY since DESC, memory_id")
+            .and_then(|mut stmt| {
+                let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+                Ok(rows.flatten().collect())
+            })
+            .unwrap_or_default()
+    }
+}
+
+// ── The delivery gate ───────────────────────────────────────────────────────
+
+/// What becomes of a queued proactive message at delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gate {
+    /// Say it now.
+    Deliver,
+    /// Not now: put it back in the queue and ask again later. Why, for the log.
+    Wait(&'static str),
+    /// Never: the person turned this off, or it waited past what it is worth. Why, for the log.
+    Drop(&'static str),
+}
+
+/// The rule every consumer of the proactive queue applies before it says anything (#754): the
+/// bridge, and the headless loop.
+///
+/// - A safety signal always goes.
+/// - A message made from a memory the person excluded never goes.
+/// - Do Not Disturb holds it ([`quiet_hold`]).
+/// - A kind that is off says nothing. A backed-off kind's message waits out its longer cooldown,
+///   as Do Not Disturb's does, and is dropped only when it outlives [`hold_lifetime_secs`].
+#[allow(clippy::too_many_arguments)]
+pub fn decide_gate(
+    safety: bool,
+    memory_excluded: bool,
+    dnd: bool,
+    kind: ProactiveKind,
+    level: BackoffLevel,
+    since_last_of_kind: f64,
+    base_cooldown_secs: f64,
+    generated_at: f64,
+    now: f64,
+) -> Gate {
+    if safety {
+        return Gate::Deliver;
+    }
+    if memory_excluded {
+        return Gate::Drop("made from a memory the person said not to use");
+    }
+    match quiet_hold(dnd, kind, generated_at, now) {
+        QuietHold::Deliver => {}
+        QuietHold::Wait => return Gate::Wait("do not disturb"),
+        QuietHold::Expire => return Gate::Drop("do not disturb outlasted it"),
+    }
+    match held_by_backoff(level, 1.0, 0.0, since_last_of_kind, base_cooldown_secs) {
+        None => Gate::Deliver,
+        Some(_) if level == BackoffLevel::OffUntilAsked => Gate::Drop("kind is off until the person asks"),
+        Some(_) if now - generated_at > hold_lifetime_secs(kind) => {
+            Gate::Drop("waited out its kind's backed-off cooldown past its lifetime")
+        }
+        Some(why) => Gate::Wait(why),
+    }
+}
+
+/// [`decide_gate`] for one queued message, reading the levels and exclusions from the database.
+pub fn gate(
+    conn: &Connection,
+    msg: &crate::types::ProactiveMessage,
+    dnd: bool,
+    base_cooldown_secs: f64,
+    now: f64,
+) -> Gate {
+    let kind = ProactiveKind::from_key(&msg.kind).unwrap_or(ProactiveKind::Ideas);
+    decide_gate(
+        msg.safety,
+        MemoryExclusions::any_excluded(conn, &msg.memory_ids),
+        dnd,
+        kind,
+        KindBackoff::level(conn, kind),
+        now - KindBackoff::last_delivered(conn, kind),
+        base_cooldown_secs,
+        msg.generated_at,
+        now,
+    )
 }
 
 /// Is a message of this kind held back right now? `None` when it may go, else why not (for the
@@ -591,18 +834,158 @@ mod tests {
     #[test]
     fn the_rule_raises_after_five_misses_and_lowers_on_an_acceptance() {
         use Outcome::*;
+        let k = ProactiveKind::CheckIns;
         let five = [Dismissed, Ignored, Dismissed, Dismissed, Ignored];
-        assert_eq!(decide_backoff(BackoffLevel::Normal, Dismissed, &five), BackoffLevel::LessOften);
-        assert_eq!(decide_backoff(BackoffLevel::Normal, Dismissed, &five[..4]), BackoffLevel::Normal);
+        assert_eq!(decide_backoff(k, BackoffLevel::Normal, Dismissed, &five), BackoffLevel::LessOften);
+        assert_eq!(decide_backoff(k, BackoffLevel::Normal, Dismissed, &five[..4]), BackoffLevel::Normal);
         let broken = [Dismissed, Ignored, Accepted, Dismissed, Ignored];
-        assert_eq!(decide_backoff(BackoffLevel::Normal, Dismissed, &broken), BackoffLevel::Normal);
+        assert_eq!(decide_backoff(k, BackoffLevel::Normal, Dismissed, &broken), BackoffLevel::Normal);
         // Never off on its own.
-        assert_eq!(decide_backoff(BackoffLevel::Rarely, Dismissed, &five), BackoffLevel::Rarely);
-        assert_eq!(decide_backoff(BackoffLevel::Rarely, Accepted, &[Accepted]), BackoffLevel::LessOften);
+        assert_eq!(decide_backoff(k, BackoffLevel::Rarely, Dismissed, &five), BackoffLevel::Rarely);
+        assert_eq!(decide_backoff(k, BackoffLevel::Rarely, Accepted, &[Accepted]), BackoffLevel::LessOften);
         assert_eq!(
-            decide_backoff(BackoffLevel::OffUntilAsked, Accepted, &[Accepted]),
+            decide_backoff(k, BackoffLevel::OffUntilAsked, Accepted, &[Accepted]),
             BackoffLevel::OffUntilAsked
         );
+    }
+
+    /// What the person asked for is never backed off by the automatic throttle: five ignored
+    /// reminders leave Reminders, Watches and Tasks at normal.
+    #[test]
+    fn the_throttle_never_touches_what_the_person_asked_for() {
+        use Outcome::*;
+        let five = [Ignored, Dismissed, Ignored, Ignored, Dismissed];
+        for kind in [ProactiveKind::Reminders, ProactiveKind::Watches, ProactiveKind::Tasks] {
+            assert!(kind.is_asked_for());
+            assert_eq!(decide_backoff(kind, BackoffLevel::Normal, Ignored, &five), BackoffLevel::Normal, "{kind:?}");
+        }
+        let conn = db();
+        let t = 1_800_000_000.0;
+        for i in 0..10 {
+            for kind in [ProactiveKind::Reminders, ProactiveKind::Watches, ProactiveKind::Tasks] {
+                assert_eq!(
+                    KindBackoff::record_outcome(&conn, kind, Outcome::Ignored, t + i as f64),
+                    BackoffLevel::Normal,
+                    "{kind:?}"
+                );
+            }
+        }
+        assert!(!ProactiveKind::Ideas.is_asked_for());
+    }
+
+    /// A backed-off message waits, as Do Not Disturb's does, instead of being thrown away; only a
+    /// kind the person stopped, or a message that outlived its kind's hold, is dropped.
+    #[test]
+    fn a_backed_off_message_waits_instead_of_being_dropped() {
+        let t = 1_800_000_000.0;
+        let base = 1800.0;
+        let gate = |kind, level, since: f64, age: f64| {
+            decide_gate(false, false, false, kind, level, since, base, t, t + age)
+        };
+        // A reminder whose kind the person set to "rarely", inside its 5-hour cooldown: it waits.
+        assert!(matches!(gate(ProactiveKind::Reminders, BackoffLevel::Rarely, 600.0, 60.0), Gate::Wait(_)));
+        // ...and still waits hours later, then goes once the cooldown has run.
+        assert!(matches!(gate(ProactiveKind::Reminders, BackoffLevel::Rarely, 4.0 * 3600.0, 4.0 * 3600.0), Gate::Wait(_)));
+        assert_eq!(gate(ProactiveKind::Reminders, BackoffLevel::Rarely, 6.0 * 3600.0, 6.0 * 3600.0), Gate::Deliver);
+        // A mind's own thought waits too, and expires only past its hold.
+        assert!(matches!(gate(ProactiveKind::Ideas, BackoffLevel::LessOften, 60.0, 60.0), Gate::Wait(_)));
+        assert!(matches!(gate(ProactiveKind::Ideas, BackoffLevel::LessOften, 60.0, 7200.0), Gate::Drop(_)));
+        // A kind the person stopped is dropped: that was their call.
+        assert!(matches!(gate(ProactiveKind::Ideas, BackoffLevel::OffUntilAsked, 1e9, 0.0), Gate::Drop(_)));
+        assert_eq!(gate(ProactiveKind::Ideas, BackoffLevel::Normal, 0.0, 0.0), Gate::Deliver);
+        // Do Not Disturb holds it the same way.
+        assert_eq!(
+            decide_gate(false, false, true, ProactiveKind::CheckIns, BackoffLevel::Normal, 1e9, base, t, t + 60.0),
+            Gate::Wait("do not disturb")
+        );
+    }
+
+    /// A safety signal passes with its kind at off, during Do Not Disturb, inside a cooldown and
+    /// with an excluded memory: nothing throttles it.
+    #[test]
+    fn a_safety_message_passes_with_its_kind_off() {
+        let conn = db();
+        let t = 1_800_000_000.0;
+        KindBackoff::stop(&conn, ProactiveKind::System, t);
+        KindBackoff::record_delivery(&conn, ProactiveKind::System, t);
+        MemoryExclusions::exclude(&conn, &["m1".to_string()], t);
+        let mut msg = crate::types::ProactiveMessage {
+            text: "Your disk is about to fill; unsaved work may be lost.".into(),
+            kind: "system".into(),
+            generated_at: t,
+            memory_ids: vec!["m1".into()],
+            ..Default::default()
+        };
+        assert!(matches!(gate(&conn, &msg, true, 1800.0, t + 1.0), Gate::Drop(_)), "not safety: held");
+        msg.safety = true;
+        assert_eq!(gate(&conn, &msg, true, 1800.0, t + 1.0), Gate::Deliver);
+        assert_eq!(
+            decide_gate(true, true, true, ProactiveKind::System, BackoffLevel::OffUntilAsked, 0.0, 1800.0, t, t),
+            Gate::Deliver
+        );
+        // It offers no choices and says why plainly.
+        assert!(choices_for(&msg).is_empty());
+        stamp(&mut msg);
+        assert_eq!(msg.why, SAFETY_WHY);
+    }
+
+    /// "Stop this kind" is one press to off, and Settings puts it back.
+    #[test]
+    fn stop_this_kind_is_one_press_and_reversible() {
+        let conn = db();
+        KindBackoff::stop(&conn, ProactiveKind::Patterns, 1.0);
+        assert_eq!(KindBackoff::level(&conn, ProactiveKind::Patterns), BackoffLevel::OffUntilAsked);
+        // An acceptance elsewhere never undoes it.
+        assert_eq!(
+            KindBackoff::record_outcome(&conn, ProactiveKind::Patterns, Outcome::Accepted, 2.0),
+            BackoffLevel::OffUntilAsked
+        );
+        KindBackoff::reset(&conn, ProactiveKind::Patterns, 3.0);
+        assert_eq!(KindBackoff::level(&conn, ProactiveKind::Patterns), BackoffLevel::Normal);
+    }
+
+    /// "Don't use this memory" excludes the memories a message was made from, never deletes them,
+    /// and Settings can undo it. A message made from no memory does not offer the choice.
+    #[test]
+    fn dont_use_this_memory_excludes_and_is_reversible() {
+        let conn = db();
+        let ids = vec!["mem-a".to_string(), "mem-b".to_string()];
+        MemoryExclusions::exclude(&conn, &ids, 1.0);
+        assert!(MemoryExclusions::any_excluded(&conn, &["mem-b".to_string()]));
+        assert!(!MemoryExclusions::any_excluded(&conn, &["mem-c".to_string()]));
+        assert!(!MemoryExclusions::any_excluded(&conn, &[]));
+        assert_eq!(MemoryExclusions::all(&conn).len(), 2);
+        let msg = crate::types::ProactiveMessage {
+            kind: "memory".into(),
+            memory_ids: vec!["mem-a".into()],
+            generated_at: 10.0,
+            ..Default::default()
+        };
+        assert!(matches!(gate(&conn, &msg, false, 1800.0, 10.0), Gate::Drop(_)));
+        assert_eq!(choices_for(&msg), vec![Choice::NotNow, Choice::StopKind, Choice::ForgetMemory]);
+        let plain = crate::types::ProactiveMessage { kind: "ideas".into(), ..Default::default() };
+        assert_eq!(choices_for(&plain), vec![Choice::NotNow, Choice::StopKind]);
+        MemoryExclusions::restore(&conn, "mem-a");
+        assert_eq!(gate(&conn, &msg, false, 1800.0, 10.0), Gate::Deliver);
+        for c in [Choice::NotNow, Choice::StopKind, Choice::ForgetMemory] {
+            assert_eq!(Choice::from_key(c.key()), Some(c));
+            assert!(!c.label().is_empty() && c.ack().ends_with('.'));
+        }
+    }
+
+    /// The instincts the catch-all used to explain as "something you're interested in" each say
+    /// their own true why, and the catch-all claims no interest.
+    #[test]
+    fn instincts_outside_the_kinds_get_their_own_true_why() {
+        let none = serde_json::Value::Null;
+        for source in ["BondMilestone", "Humor", "RelationshipRadar", "DevilsAdvocate", "MoneyMind", "money_mind:insight"] {
+            let why = why_for(source, &none);
+            assert!(!why.contains("interested"), "{source}: {why}");
+            assert_ne!(why, why_text(ProactiveKind::from_source(source), &none), "{source} has its own");
+            assert!(why.ends_with('.') && why.len() < 80, "{source}: {why}");
+        }
+        assert!(!why_text(ProactiveKind::Ideas, &none).contains("interested"));
+        assert_eq!(why_for("reminder", &none), "You asked me to remind you.");
     }
 
     #[test]
@@ -646,7 +1029,7 @@ mod tests {
     }
 
     #[test]
-    fn less_of_this_persists_across_a_restart() {
+    fn a_level_persists_across_a_restart() {
         let dir = std::env::temp_dir().join(format!("yantrik-backoff-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("mind.db");
@@ -654,15 +1037,14 @@ mod tests {
         {
             let conn = Connection::open(&path).unwrap();
             KindBackoff::ensure_table(&conn);
-            assert_eq!(
-                KindBackoff::less_of_this(&conn, ProactiveKind::Reminders, 1.0),
-                BackoffLevel::LessOften
-            );
+            KindBackoff::stop(&conn, ProactiveKind::Reminders, 1.0);
+            MemoryExclusions::exclude(&conn, &["m".to_string()], 1.0);
         }
         {
             let conn = Connection::open(&path).unwrap();
             KindBackoff::ensure_table(&conn);
-            assert_eq!(KindBackoff::level(&conn, ProactiveKind::Reminders), BackoffLevel::LessOften);
+            assert_eq!(KindBackoff::level(&conn, ProactiveKind::Reminders), BackoffLevel::OffUntilAsked);
+            assert!(MemoryExclusions::is_excluded(&conn, "m"));
             KindBackoff::reset(&conn, ProactiveKind::Reminders, 2.0);
             assert_eq!(KindBackoff::level(&conn, ProactiveKind::Reminders), BackoffLevel::Normal);
         }

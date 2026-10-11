@@ -45,6 +45,8 @@ pub fn run_think_cycle(service: &mut CompanionService) {
                 "reason": t.reason,
                 "urgency": t.urgency,
                 "context": t.context,
+                // The memories it came from, so "Don't use this memory" can exclude them (#754).
+                "source_rids": t.source_rids,
             })
         })
         .collect();
@@ -235,7 +237,16 @@ pub fn run_think_cycle(service: &mut CompanionService) {
         use crate::memory_lifecycle::MemoryLifecycle;
 
         // Check for unresolved contradictions and surface to user
-        let contradictions = MemoryLifecycle::unresolved_contradictions(&service.db.conn());
+        // A pair the person said not to use for proactive messages is never raised (#754).
+        let contradictions: Vec<_> = MemoryLifecycle::unresolved_contradictions(&service.db.conn())
+            .into_iter()
+            .filter(|c| {
+                !crate::proactive_backoff::MemoryExclusions::any_excluded(
+                    &service.db.conn(),
+                    &[c.memory_a.clone(), c.memory_b.clone()],
+                )
+            })
+            .collect();
         if !contradictions.is_empty() {
             // Build a message showing the first unresolved contradiction
             let c = &contradictions[0];
@@ -265,6 +276,7 @@ pub fn run_think_cycle(service: &mut CompanionService) {
                 urge_ids: Vec::new(),
                 generated_at: now_ts,
                 kind: crate::proactive_backoff::ProactiveKind::Memory.key().into(),
+                memory_ids: vec![c.memory_a.clone(), c.memory_b.clone()],
                 ..Default::default()
             });
             tracing::info!(
@@ -482,6 +494,9 @@ fn generate_proactive_message(
                 text: response_text,
                 urge_ids,
                 generated_at: now_ts(),
+                // The memories and safety marker of the urges it was made from (#754).
+                safety: urges.iter().any(|u| u.safety),
+                memory_ids: urges.iter().flat_map(|u| u.memory_ids.iter().cloned()).collect(),
                 ..Default::default()
             };
             service.set_proactive_message(msg);

@@ -46,6 +46,7 @@ impl Instinct for EmotionalAwarenessInstinct {
             urgency,
         )
         .with_cooldown("emotional_awareness:negative")
-        .with_context(ctx)]
+        .with_context(ctx)
+        .from_memories(crate::trigger_memory_ids(trigger))]
     }
 }

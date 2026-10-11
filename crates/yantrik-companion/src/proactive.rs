@@ -14,7 +14,7 @@ use rusqlite::Connection;
 
 use crate::bond::BondLevel;
 use crate::config::ProactiveConfig;
-use crate::proactive_backoff::{held_by_backoff, why_text, KindBackoff, ProactiveKind};
+use crate::proactive_backoff::{held_by_backoff, why_for, KindBackoff, MemoryExclusions, ProactiveKind, SAFETY_WHY};
 use crate::proactive_templates::TemplateEngine;
 use crate::types::{ProactiveMessage, Urge};
 use crate::urges::UrgeQueue;
@@ -104,6 +104,10 @@ impl ProactiveEngine {
         urge_queue: &UrgeQueue,
         conn: &Connection,
     ) -> Option<ProactiveMessage> {
+        // A safety signal goes before every gate below: none of them may hold it (#754).
+        if let Some(msg) = self.check_safety(urge_queue, conn) {
+            return Some(msg);
+        }
         if !self.config.enabled {
             tracing::info!("Proactive disabled");
             return None;
@@ -143,6 +147,13 @@ impl ProactiveEngine {
             return None;
         }
         let urge = pending.iter().find(|u| {
+            // "Don't use this memory" (#754): an urge made from an excluded memory is never said.
+            // It was queued before the person said so; it goes now, so it never blocks the rest.
+            if MemoryExclusions::any_excluded(conn, &u.memory_ids) {
+                urge_queue.expire(conn, &u.urge_id);
+                tracing::debug!(instinct = u.instinct_name, "Proactive check: urge made from an excluded memory dropped");
+                return false;
+            }
             let kind = ProactiveKind::from_source(&u.instinct_name);
             let level = KindBackoff::level(conn, kind);
             let since = now - KindBackoff::last_delivered(conn, kind);
@@ -232,14 +243,29 @@ impl ProactiveEngine {
             "Proactive message delivered"
         );
 
-        let kind = ProactiveKind::from_source(&urge.instinct_name);
-        Some(ProactiveMessage {
-            text,
-            urge_ids: vec![urge.urge_id],
-            generated_at: now,
-            kind: kind.key().into(),
-            why: why_text(kind, &urge.context),
-        })
+        Some(message_from_urge(urge, text, now))
+    }
+
+    /// A pending safety signal, if there is one, composed and taken at once. No cooldown, kind
+    /// level, question budget, quiet period or "proactive off" holds it: the design's one
+    /// exception to every throttle (companion-who-cares, behaviour 8; #754).
+    pub fn check_safety(&mut self, urge_queue: &UrgeQueue, conn: &Connection) -> Option<ProactiveMessage> {
+        let urge = urge_queue
+            .get_pending(conn, 50)
+            .into_iter()
+            .find(|u| u.safety && !(u.suggested_message.is_empty() && u.reason.is_empty()))?;
+        if !urge_queue.mark_delivered(conn, &urge.urge_id) {
+            return None;
+        }
+        let text = self.compose_message(&urge);
+        if text.is_empty() || must_not_be_said(&text).is_some() {
+            tracing::warn!(instinct = urge.instinct_name, "Safety signal had nothing sayable; not delivered");
+            return None;
+        }
+        let now = now_ts();
+        self.last_delivery_ts = now;
+        tracing::info!(instinct = urge.instinct_name, "Proactive safety signal delivered");
+        Some(message_from_urge(urge, text, now))
     }
 
     /// Compose a user-facing message from an urge.
@@ -275,6 +301,10 @@ impl ProactiveEngine {
         // Extract slots from urge context JSON
         if let Some(obj) = urge.context.as_object() {
             for (key, val) in obj {
+                // The urge's own markers (`_safety`, `_memory_ids`), never words to say.
+                if key.starts_with('_') {
+                    continue;
+                }
                 let s = match val {
                     serde_json::Value::String(s) => s.clone(),
                     serde_json::Value::Number(n) => n.to_string(),
@@ -712,6 +742,22 @@ fn tidy_spaces(text: &str) -> String {
         .join("\n")
         .trim()
         .to_string()
+}
+
+
+/// The message an urge becomes: its kind, a why true of its source, and the safety marker and
+/// memory ids it carried (#754).
+fn message_from_urge(urge: Urge, text: String, now: f64) -> ProactiveMessage {
+    let kind = ProactiveKind::from_source(&urge.instinct_name);
+    ProactiveMessage {
+        text,
+        urge_ids: vec![urge.urge_id],
+        generated_at: now,
+        kind: kind.key().into(),
+        why: if urge.safety { SAFETY_WHY.into() } else { why_for(&urge.instinct_name, &urge.context) },
+        safety: urge.safety,
+        memory_ids: urge.memory_ids,
+    }
 }
 
 #[cfg(test)]

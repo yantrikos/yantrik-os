@@ -39,6 +39,7 @@ impl Instinct for PatternSurfacingInstinct {
                 UrgeSpec::new("pattern_surfacing", &format!("Pattern noticed: {desc}"), urgency)
                     .with_cooldown(&cooldown)
                     .with_context(ctx)
+                    .from_memories(crate::trigger_memory_ids(trigger))
             })
             .collect()
     }

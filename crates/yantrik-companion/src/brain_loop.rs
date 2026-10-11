@@ -300,6 +300,8 @@ fn candidate_to_urge_spec(candidate: &BrainCandidate) -> UrgeSpec {
         category,
         guaranteed: false,
         autonomy: AutonomyTier::NotifySuggestion,
+        safety: false,
+        memory_ids: Vec::new(),
     }
 }
 

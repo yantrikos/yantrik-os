@@ -43,6 +43,7 @@ impl Instinct for ReminderInstinct {
                     .with_cooldown(&format!("reminder:{trigger_id}"))
                     .with_message(&format!("Reminder: {reason}"))
                     .with_context(ctx)
+                    .from_memories(crate::trigger_memory_ids(trigger))
             })
             .collect()
     }

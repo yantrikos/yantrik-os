@@ -50,6 +50,14 @@ impl UrgeQueue {
     pub fn push(&self, conn: &Connection, spec: &UrgeSpec) -> Option<String> {
         let now = now_ts();
 
+        // "Don't use this memory" (#754): an urge made from a memory the person excluded is never
+        // queued. A safety signal is never held back.
+        if !spec.safety && crate::proactive_backoff::MemoryExclusions::any_excluded(conn, &spec.memory_ids) {
+            tracing::debug!(instinct = spec.instinct_name, "Urge skipped: made from a memory the person excluded");
+            return None;
+        }
+        let context_json = serde_json::to_string(&stored_context(spec)).unwrap_or_default();
+
         // Check for existing urge with same cooldown_key
         if !spec.cooldown_key.is_empty() {
             let existing: Option<(String, f64, String)> = conn
@@ -87,14 +95,15 @@ impl UrgeQueue {
                         conn.execute(
                             "UPDATE urges SET status = 'pending', urgency = ?1, reason = ?2,
                              suggested_message = ?3, created_at = ?4, delivered_at = NULL,
-                             boost_count = 0
+                             boost_count = 0, context = ?6
                              WHERE urge_id = ?5",
                             params![
                                 spec.urgency,
                                 spec.reason,
                                 spec.suggested_message,
                                 now,
-                                urge_id
+                                urge_id,
+                                context_json
                             ],
                         )
                         .ok();
@@ -140,7 +149,6 @@ impl UrgeQueue {
         // Insert new urge
         let urge_id = uuid7::uuid7().to_string();
         let expires_at = now + self.config.expiry_hours * 3600.0;
-        let context_json = serde_json::to_string(&spec.context).unwrap_or_default();
 
         conn.execute(
             "INSERT INTO urges (urge_id, instinct_name, reason, urgency,
@@ -188,22 +196,7 @@ impl UrgeQueue {
 
         let urges: Vec<Urge> = stmt
             .query_map(params![limit as i64], |row| {
-                Ok(Urge {
-                    urge_id: row.get(0)?,
-                    instinct_name: row.get(1)?,
-                    reason: row.get(2)?,
-                    urgency: row.get(3)?,
-                    suggested_message: row.get::<_, String>(4)?,
-                    action: row.get(5)?,
-                    context: serde_json::from_str(&row.get::<_, String>(6).unwrap_or_default())
-                        .unwrap_or_default(),
-                    cooldown_key: row.get(7)?,
-                    status: row.get(8)?,
-                    created_at: row.get(9)?,
-                    delivered_at: row.get(10)?,
-                    expires_at: row.get(11)?,
-                    boost_count: row.get(12)?,
-                })
+                urge_from_row(row)
             })
             .expect("query pop_for_interaction")
             .filter_map(|r| r.ok())
@@ -219,6 +212,14 @@ impl UrgeQueue {
         }
 
         urges
+    }
+
+    /// Expire one pending urge, by id: it will never be said.
+    pub fn expire(&self, conn: &Connection, urge_id: &str) {
+        let _ = conn.execute(
+            "UPDATE urges SET status = 'expired' WHERE urge_id = ?1 AND status = 'pending'",
+            params![urge_id],
+        );
     }
 
     /// Mark one pending urge delivered, by id. True when it was pending.
@@ -245,22 +246,7 @@ impl UrgeQueue {
             .expect("prepare get_pending");
 
         stmt.query_map(params![limit as i64], |row| {
-            Ok(Urge {
-                urge_id: row.get(0)?,
-                instinct_name: row.get(1)?,
-                reason: row.get(2)?,
-                urgency: row.get(3)?,
-                suggested_message: row.get::<_, String>(4)?,
-                action: row.get(5)?,
-                context: serde_json::from_str(&row.get::<_, String>(6).unwrap_or_default())
-                    .unwrap_or_default(),
-                cooldown_key: row.get(7)?,
-                status: row.get(8)?,
-                created_at: row.get(9)?,
-                delivered_at: row.get(10)?,
-                expires_at: row.get(11)?,
-                boost_count: row.get(12)?,
-            })
+            urge_from_row(row)
         })
         .expect("query get_pending")
         .filter_map(|r| r.ok())
@@ -320,3 +306,56 @@ fn now_ts() -> f64 {
         .unwrap()
         .as_secs_f64()
 }
+
+/// Where an urge's safety marker and memory ids are kept: in its stored context, under keys no
+/// instinct writes (#754). The urges table has no columns for them, and the context already
+/// travels with the urge everywhere it goes.
+const SAFETY_KEY: &str = "_safety";
+const MEMORY_IDS_KEY: &str = "_memory_ids";
+
+/// The context an urge is stored with: its own, plus its safety marker and memory ids.
+fn stored_context(spec: &UrgeSpec) -> serde_json::Value {
+    let mut ctx = match &spec.context {
+        serde_json::Value::Null => serde_json::Value::Object(Default::default()),
+        other => other.clone(),
+    };
+    if let Some(obj) = ctx.as_object_mut() {
+        if spec.safety {
+            obj.insert(SAFETY_KEY.into(), serde_json::Value::Bool(true));
+        }
+        if !spec.memory_ids.is_empty() {
+            obj.insert(MEMORY_IDS_KEY.into(), serde_json::json!(spec.memory_ids));
+        }
+    }
+    ctx
+}
+
+/// An urge from its stored row, its safety marker and memory ids read back from its context.
+fn urge_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Urge> {
+    let context: serde_json::Value =
+        serde_json::from_str(&row.get::<_, String>(6).unwrap_or_default()).unwrap_or_default();
+    let safety = context.get(SAFETY_KEY).and_then(|v| v.as_bool()).unwrap_or(false);
+    let memory_ids = context
+        .get(MEMORY_IDS_KEY)
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    Ok(Urge {
+        urge_id: row.get(0)?,
+        instinct_name: row.get(1)?,
+        reason: row.get(2)?,
+        urgency: row.get(3)?,
+        suggested_message: row.get::<_, String>(4)?,
+        action: row.get(5)?,
+        context,
+        cooldown_key: row.get(7)?,
+        status: row.get(8)?,
+        created_at: row.get(9)?,
+        delivered_at: row.get(10)?,
+        expires_at: row.get(11)?,
+        boost_count: row.get(12)?,
+        safety,
+        memory_ids,
+    })
+}
+
