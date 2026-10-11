@@ -136,14 +136,10 @@ fn switch_to(shell: &slint::Weak<App>, title: &str, app_id: &str) {
     // The entry's label is not necessarily the compositor's exact title (our own Slint apps set
     // a title and no wayland app_id), so resolve the title the way `present_app` does before
     // asking. A title that matches nothing in the compositor is the failure, not the label.
-    let Some(resolved) = resolve(title, app_id, &crate::windows::shell_windows()) else {
-        tracing::warn!(
-            title = %title,
-            app_id = %app_id,
-            "no window matched that title; the taskbar and the compositor disagree"
-        );
-        return;
-    };
+    // A list that does not have it yet (a window that just opened, a retitle since the list was
+    // read) is no reason to give up: ask for the label as it stands, as before.
+    let resolved = resolve(title, app_id, &crate::windows::shell_windows())
+        .unwrap_or_else(|| title.to_string());
 
     // The id path first, as the switcher does: `toplevel_watch` names each window by its
     // protocol id, which cannot miss the way a title match can. Fall back to the title only
@@ -163,17 +159,18 @@ fn switch_to(shell: &slint::Weak<App>, title: &str, app_id: &str) {
     }
 }
 
-/// Resolve the title a click should ask the compositor for. The entry's label is what the taskbar
-/// showed, which may not be the compositor's exact string; when the caller has the row's `app_id`,
-/// the window list's title for that app is the one `wlrctl` will match. `None` when the list has
-/// no such window and there is no app id to look it up by.
+/// Resolve the title a click should ask the compositor for. An exact title wins, so a row for one
+/// of an app's several windows raises that window. Only when the label is not a title the list has
+/// (it may not be the compositor's exact string) does the row's `app_id` pick the app's window.
+/// `None` when neither finds one.
 fn resolve(title: &str, app_id: &str, windows: &[crate::windows::WindowEntry]) -> Option<String> {
-    if !app_id.is_empty() {
-        if let Some(w) = windows.iter().find(|w| w.app_id == app_id) {
-            return Some(w.title.clone());
-        }
+    if let Some(w) = windows.iter().find(|w| w.title == title) {
+        return Some(w.title.clone());
     }
-    windows.iter().find(|w| w.title == title).map(|w| w.title.clone())
+    if app_id.is_empty() {
+        return None;
+    }
+    windows.iter().find(|w| w.app_id == app_id).map(|w| w.title.clone())
 }
 
 /// Whether the taskbar entry titled `title` is one of the shell's own screens (`control::screen_entry`).
@@ -255,6 +252,28 @@ mod tests {
         );
         // A title the list does not have, with no app id, resolves to nothing.
         assert_eq!(resolve("No Such Window", "", &windows), None);
+    }
+
+    /// Two windows of one app: the row's exact title raises that window, never the app's first.
+    #[test]
+    fn resolve_keeps_the_rows_window_among_an_apps_several() {
+        let entry = |title: &str| crate::windows::WindowEntry {
+            title: title.into(),
+            app_id: "terminal".into(),
+            wayland_app_id: "".into(),
+            icon_char: "".into(),
+            subtitle: "".into(),
+        };
+        let windows = vec![entry("Terminal: logs"), entry("Terminal: build")];
+        assert_eq!(
+            resolve("Terminal: build", "terminal", &windows).as_deref(),
+            Some("Terminal: build")
+        );
+        // A label the list lacks still finds the app's window by its id.
+        assert_eq!(
+            resolve("Terminal", "terminal", &windows).as_deref(),
+            Some("Terminal: logs")
+        );
     }
 
     /// What the rows say: close wears the danger colour, the pin reads the way it will act, and
