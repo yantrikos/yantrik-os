@@ -98,6 +98,17 @@ class HermesStreamingTests(unittest.TestCase):
         enable(self.home)
         self.assertEqual(backup.read_text(), "do not touch\n")
 
+    def test_turned_back_off_by_the_person_stays_off(self):
+        self.cfg.write_text("streaming:\n  enabled: false\n")
+        enable(self.home)
+        self.assertIn("enabled: true", self.cfg.read_text())
+        # The person turns it off again; the next update must not turn it back on.
+        self.cfg.write_text("streaming:\n  enabled: false\n")
+        result = enable(self.home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "", "nothing changed, so nothing is said and no restart")
+        self.assertEqual(self.cfg.read_text(), "streaming:\n  enabled: false\n")
+
     def test_hermes_sh_calls_before_gateway_restart(self):
         text = HERMES_SH.read_text()
         self.assertIn("hermes-streaming.sh", text)

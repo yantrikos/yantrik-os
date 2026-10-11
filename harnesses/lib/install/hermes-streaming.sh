@@ -12,7 +12,9 @@
 #   * a top-level `streaming:` block whose `enabled:` is `false` -> `true`, nothing else touched;
 #   * no top-level `streaming:` block -> append `streaming:\n  enabled: true\n`;
 #   * already `true` -> change nothing and print nothing;
-#   * no config file -> return 0 silently (Hermes is not set up yet).
+#   * no config file -> return 0 silently (Hermes is not set up yet);
+#   * turned on by this once already (the backup is there) -> change nothing: the person may have
+#     turned it back off, and the updater runs this at every update.
 # Only the top-level `streaming:` key (column 0) is touched, never `display.streaming` or a
 # model-level `streaming`. Writes through a temp file in the same directory, keeps the mode, moves
 # it over, and keeps a one-time backup `config.yaml.before-streaming`. Prints one `say` line when
@@ -31,6 +33,10 @@ import os, re, stat, sys
 
 path = sys.argv[1]
 if not os.path.exists(path):
+    sys.exit(0)
+# Turned on once, by this, which kept the config as it was beside it. From then on the setting
+# is the person's: one they turned back off stays off, at every update and every Install.
+if os.path.exists(path + ".before-streaming"):
     sys.exit(0)
 
 with open(path) as f:
