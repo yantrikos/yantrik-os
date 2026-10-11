@@ -6,7 +6,7 @@
 // the minds' colour and nothing else's (colour system).
 
 import { Theme } from "theme.slint";
-import { YantrikMark } from "components/yantrik_mark.slint";
+import { YantrikMark, YantrikName } from "components/yantrik_mark.slint";
 
 export component LoginScreen inherits Rectangle {
     background: Theme.bg-deep;
@@ -136,14 +136,10 @@ export component LoginScreen inherits Rectangle {
 
         Rectangle { height: Theme.sp-2; }
 
-        // "Yantrik OS" branding
-        Text {
-            text: "Yantrik OS";
-            color: Theme.text-primary;
-            font-size: Theme.fs-headline;
-            font-weight: 300;
-            horizontal-alignment: center;
-            letter-spacing: 3px;
+        // The name, as the brand sets it (brand/yantrik-name.svg).
+        HorizontalLayout {
+            alignment: center;
+            YantrikName { cap-height: 20px; }
         }
 
         Rectangle { height: Theme.sp-1; }

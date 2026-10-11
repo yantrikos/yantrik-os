@@ -1,10 +1,16 @@
 //! The person's policy: where the mind may connect.
 //!
 //! Rules name a host (exactly, or `*.domain` for every name under it) and the ports it may be
-//! reached on, and say why. The whole policy is in one of two modes:
+//! reached on, and say why. The whole policy is in one of three modes, from the least strict:
 //!
-//! - **audit** — every destination is let through and counted, so a person can see where the mind
-//!   goes before deciding anything. Where every machine starts.
+//! - **audit** — every destination on the internet is let through and counted, so a person can see
+//!   where the mind goes before deciding anything. Where every machine starts.
+//! - **guarded** — "home network closed, internet open": every destination on the internet is let
+//!   through and counted as allowed, not watched; the local network (every prefix this machine is
+//!   on and its routers, whatever their range: `crate::local::place`), private ranges, loopback and
+//!   this machine are decided exactly as in enforce. The kernel refuses the mind DNS, as in
+//!   enforce: this proxy resolves. A rule still decides for the host it names: a tunnel-only rule
+//!   (`http: false`) refuses plain http to that host, which with no rule would be let through.
 //! - **enforce** — only what a rule allows; everything else is refused and becomes a proposal.
 //!
 //! Private mode refuses everything, whatever the policy says. (A rule has no mode of its own: in an
@@ -13,24 +19,66 @@
 //! Some addresses are never a destination, in any mode: loopback, link-local (the cloud metadata
 //! address is one), unspecified, multicast and broadcast. The mind reaches this machine through
 //! the mind door, and a name that resolves to 127.0.0.1 must not turn this proxy into a way past
-//! the loopback guards; neither is any address of this machine's own (`crate::local`). In
-//! enforce, an address on the local network is reached only by a rule that says `lan`; audit lets
-//! it through, marked, as it lets everything through.
+//! the loopback guards; neither is any address of this machine's own (`crate::local`). An address
+//! that is not the internet — the local network, and every private or special-use range in
+//! `crate::ranges` (CGNAT and Tailscale, NAT64, 6to4, Teredo, …) — is reached only by a rule that
+//! says `lan`, in every mode, audit included: the Mind leaves that classification to this proxy
+//! instead of resolving names itself.
 //!
 //! Nothing is looked up before it may be reached ([`Policy::before_resolve`]): with Private mode
-//! on, or in enforce without a rule, the name is refused unresolved — a lookup is itself a message
+//! on, or in enforce without a rule, the name is refused unresolved (guarded resolves it: where it
+//! leads decides) — a lookup is itself a message
 //! to whoever serves the name.
 
 use std::net::IpAddr;
 
+/// What this proxy promises about itself, one word each, printed by `yantrik-egress capabilities`
+/// for root to read (`yantrik-update mind-egress apply` puts it in
+/// /run/yantrik-mind-egress/mind-egress.json).
+/// `refuses-private-all-modes`: an address that is not the internet is refused without a `lan`
+/// rule in audit as well as enforce ([`Policy::decide`]; the test below holds it to that).
+/// `public-door`: a second listener, `EGRESS_PUBLIC_LISTEN` (127.0.0.1:7451), that never reaches
+/// the local network or a host a `lan` rule names (`crate::door`).
+pub const CAPABILITIES: &[&str] = &["refuses-private-all-modes", "public-door"];
+
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Declared from the least strict to the most, so `Ord` is strictness: audit < guarded < enforce.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
     #[default]
     Audit,
+    Guarded,
     Enforce,
+}
+
+impl Mode {
+    /// Every mode, the least strict first: the order the person chooses from.
+    pub const ALL: [Mode; 3] = [Mode::Audit, Mode::Guarded, Mode::Enforce];
+
+    /// The word the policy file, the control socket and the status file use.
+    pub fn word(self) -> &'static str {
+        match self {
+            Mode::Audit => "audit",
+            Mode::Guarded => "guarded",
+            Mode::Enforce => "enforce",
+        }
+    }
+
+    /// What the person is shown when choosing, in plain words.
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Audit => "Watch only: everything allowed and recorded",
+            Mode::Guarded => "Home network closed, internet open",
+            Mode::Enforce => "Only places I approve",
+        }
+    }
+
+    /// The one shown as Recommended.
+    pub fn recommended(self) -> bool {
+        self == Mode::Guarded
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,6 +94,14 @@ pub struct Rule {
     #[serde(default)]
     pub lan: bool,
     pub why: String,
+    /// Made by the updater from the person's or root's own configuration (`crate::seed`), not
+    /// written by the person. Re-seeding replaces these and never a rule of the person's.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub seeded: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl Rule {
@@ -89,7 +145,17 @@ pub enum Place {
     Forbidden,
 }
 
+/// Where `ip` leads. Never a destination: see the module's notes. Not the internet (`Lan`): the
+/// local network, and every other private or special-use range (`crate::ranges`: CGNAT and
+/// Tailscale's 100.64/10, the documentation and benchmark ranges, NAT64, 6to4, Teredo, …).
 pub fn place_of(ip: IpAddr) -> Place {
+    match base_place(ip) {
+        Place::Internet if crate::ranges::special(ip) => Place::Lan,
+        p => p,
+    }
+}
+
+fn base_place(ip: IpAddr) -> Place {
     match ip {
         IpAddr::V4(v4) => {
             let o = v4.octets();
@@ -167,7 +233,15 @@ impl Policy {
                 Verdict::Refuse(format!("{host} resolved to an address on the local network, which its rule does not allow."))
             }
             (mode, Some(_)) => Verdict::Allow { audit: mode == Mode::Audit },
+            // Not the internet, in audit and guarded too: only a rule that says `lan` reaches it.
+            // The Mind leaves this to the proxy when it is behind one, instead of resolving names.
+            (Mode::Audit | Mode::Guarded, None) if place == Place::Lan => Verdict::Refuse(format!(
+                "{host} is on the local network or a private address, which the mind reaches only by a rule that says so. \
+                 The person has been asked."
+            )),
             (Mode::Audit, None) => Verdict::Allow { audit: true },
+            // The internet, open: allowed and counted as allowed, not as watching.
+            (Mode::Guarded, None) => Verdict::Allow { audit: false },
             (Mode::Enforce, None) => Verdict::Refuse(format!(
                 "{host}:{port} is not a place the person has allowed the mind to connect. They have been asked; \
                  try again once they answer."
@@ -175,8 +249,34 @@ impl Policy {
         }
     }
 
-    /// Add a rule, replacing one for the same host and ports.
-    pub fn allow(&mut self, rule: Rule) -> Result<(), String> {
+    /// Replace the seeded rules with `rules` (`crate::seed`), leaving every rule of the person's as
+    /// it is. A seed the person's own `lan` rule already covers is not added. Answers what was.
+    pub fn seed(&mut self, rules: Vec<Rule>) -> Result<Vec<Rule>, String> {
+        if rules.len() > crate::seed::MOST {
+            return Err(format!("at most {} seeded rules", crate::seed::MOST));
+        }
+        for r in &rules {
+            valid(r)?;
+            if !r.lan {
+                return Err("a seeded rule says lan".into());
+            }
+        }
+        self.rules.retain(|r| !r.seeded);
+        let mut added = Vec::new();
+        for mut r in rules {
+            r.seeded = true;
+            let covered = self.rules.iter().any(|p| p.lan && p.host == r.host && r.ports.iter().all(|port| p.ports.contains(port)));
+            if !covered {
+                self.rules.push(r.clone());
+                added.push(r);
+            }
+        }
+        Ok(added)
+    }
+
+    /// Add a rule, replacing one for the same host and ports. The person's, never a seeded one.
+    pub fn allow(&mut self, mut rule: Rule) -> Result<(), String> {
+        rule.seeded = false;
         valid(&rule)?;
         self.rules.retain(|r| !(r.host == rule.host && r.ports == rule.ports));
         self.rules.push(rule);
@@ -190,34 +290,52 @@ impl Policy {
         before - self.rules.len()
     }
 
-    pub fn load(path: &std::path::Path) -> Policy {
-        let refuse_all = Policy { mode: Mode::Enforce, rules: Vec::new() };
+    /// The policy at `path`, as written. No file yet is a new machine, which starts by watching.
+    /// A file that is there and does not read (its mode, not text, not a policy, or a rule the
+    /// person could not have written) is an error, never taken for no policy. The proxy and the
+    /// kernel's direct set (`crate::direct`) read it through this one door.
+    pub fn read(path: &std::path::Path) -> Result<Policy, String> {
         match std::fs::read_to_string(path) {
-            Ok(text) => match serde_yaml::from_str::<Policy>(&text) {
-                Ok(p) if p.rules.iter().all(|r| valid(r).is_ok()) => p,
-                _ => {
-                    // A policy that is there and does not read is not half-used, and not opened
-                    // wide either — audit would let everything through. It refuses everything
-                    // until the person writes it again; the shell says so.
-                    tracing::error!(path = %path.display(), "the egress policy does not read; refusing everything until it is written again");
-                    refuse_all
+            Ok(text) => {
+                let mut p = serde_yaml::from_str::<Policy>(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+                // A rule written before `valid` refused a trailing dot is read without it: the
+                // name it meant, as `lan_hosts` already published it and the public door refuses
+                // it. Refusing the whole policy for it would refuse everything, and the next seed
+                // or allow would be saved over the person's rules.
+                for r in &mut p.rules {
+                    let trimmed = r.host.trim_end_matches('.');
+                    if trimmed.len() != r.host.len() {
+                        r.host = trimmed.to_string();
+                    }
                 }
-            },
-            // No policy yet: a new machine, which starts by watching. Only that: a policy that is
-            // there and cannot be read (its mode, not text) is not taken for no policy.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Policy::default(),
-            Err(e) => {
-                tracing::error!(path = %path.display(), error = %e, "the egress policy cannot be read; refusing everything");
-                refuse_all
+                match p.rules.iter().find_map(|r| valid(r).err()) {
+                    None => Ok(p),
+                    Some(e) => Err(format!("{}: {e}", path.display())),
+                }
             }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Policy::default()),
+            Err(e) => Err(format!("{}: {e}", path.display())),
         }
+    }
+
+    pub fn load(path: &std::path::Path) -> Policy {
+        Policy::read(path).unwrap_or_else(|e| {
+            // A policy that is there and does not read is not half-used, and not opened wide
+            // either — audit would let everything through. It refuses everything until the
+            // person writes it again; the shell says so.
+            tracing::error!(error = %e, "the egress policy does not read; refusing everything until it is written again");
+            Policy { mode: Mode::Enforce, rules: Vec::new() }
+        })
     }
 }
 
-/// A rule the person could have written: a host that is a name or `*.name`, and real ports.
+/// A rule the person could have written: a host that is a name or `*.name`, and real ports. A
+/// host is written one way only — lowercase, no trailing dot — the way a request's host is made
+/// (`crate::request`), so a rule and the request it names compare as text.
 pub fn valid(r: &Rule) -> Result<(), String> {
     let name = r.host.strip_prefix("*.").unwrap_or(&r.host);
     let ok = !name.is_empty()
+        && !name.ends_with('.')
         && name.len() <= 253
         && name.contains(['.', ':'])
         && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"-.:".contains(&b));
@@ -238,7 +356,7 @@ mod tests {
     use super::*;
 
     fn rule(host: &str, ports: &[u16]) -> Rule {
-        Rule { host: host.into(), ports: ports.to_vec(), http: false, lan: false, why: "because".into() }
+        Rule { host: host.into(), ports: ports.to_vec(), http: false, lan: false, why: "because".into(), seeded: false }
     }
 
     #[test]
@@ -266,9 +384,11 @@ mod tests {
     fn private_mode_and_forbidden_addresses_refuse_in_every_mode() {
         let mut p = Policy::default();
         p.allow(rule("anywhere.com", &[443])).unwrap();
-        for mode in [Mode::Audit, Mode::Enforce] {
+        for mode in Mode::ALL {
             p.mode = mode;
             assert!(matches!(p.decide("anywhere.com", 443, false, Place::Internet, true), Verdict::Refuse(_)));
+            assert!(matches!(p.decide("other.com", 443, false, Place::Internet, true), Verdict::Refuse(_)), "{mode:?}: no rule either");
+            assert!(matches!(p.before_resolve("other.com", 443, false, true), Some(Verdict::Refuse(_))), "{mode:?}: not even resolved");
             assert!(matches!(p.decide("anywhere.com", 443, false, Place::Forbidden, false), Verdict::Refuse(_)));
         }
     }
@@ -288,9 +408,138 @@ mod tests {
     }
 
     #[test]
+    fn audit_refuses_what_is_not_the_internet_without_a_lan_rule() {
+        let mut p = Policy::default();
+        for ip in ["192.168.4.42", "100.100.1.1", "2001:0:4136:e378::1", "2002:c0a8:42::1", "64:ff9b::808:808", "198.18.0.9"] {
+            let place = place_of(ip.parse().unwrap());
+            assert_eq!(place, Place::Lan, "{ip}");
+            assert!(matches!(p.decide(ip, 8888, true, place, false), Verdict::Refuse(_)), "audit, no rule: {ip} refused");
+        }
+        assert!(matches!(p.decide("searx.lan", 8888, true, Place::Lan, false), Verdict::Refuse(_)), "a name that resolves there too");
+        p.allow(rule("searx.lan", &[8888])).unwrap();
+        assert!(matches!(p.decide("searx.lan", 8888, false, Place::Lan, false), Verdict::Refuse(_)), "a rule without lan is not enough");
+        let mut r = rule("192.168.4.42", &[8888]);
+        r.lan = true;
+        r.http = true;
+        p.allow(r).unwrap();
+        assert_eq!(p.decide("192.168.4.42", 8888, true, Place::Lan, false), Verdict::Allow { audit: true }, "a lan rule reaches it");
+        assert!(matches!(p.decide("192.168.4.42", 22, false, Place::Lan, false), Verdict::Refuse(_)), "only on its ports");
+        assert_eq!(p.decide("example.com", 443, false, Place::Internet, false), Verdict::Allow { audit: true }, "the internet still audits");
+    }
+
+    #[test]
+    fn the_capability_it_prints_is_one_it_has() {
+        assert!(CAPABILITIES.contains(&"refuses-private-all-modes"));
+        for mode in Mode::ALL {
+            let p = Policy { mode, ..Policy::default() };
+            assert!(matches!(p.decide("10.0.0.7", 80, true, place_of("10.0.0.7".parse().unwrap()), false), Verdict::Refuse(_)), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn guarded_opens_the_internet_and_keeps_the_home_network_closed() {
+        let mut p = Policy { mode: Mode::Guarded, rules: vec![] };
+        assert_eq!(p.decide("example.com", 443, false, Place::Internet, false), Verdict::Allow { audit: false }, "allowed, not watched");
+        assert_eq!(p.decide("example.com", 80, true, Place::Internet, false), Verdict::Allow { audit: false }, "plain http too");
+        assert_eq!(p.before_resolve("example.com", 443, false, false), None, "resolved: where it leads decides");
+        for ip in ["192.168.4.42", "10.0.0.7", "100.100.1.1", "fd00::5", "198.18.0.9", "127.0.0.1", "::1", "169.254.169.254"] {
+            let place = place_of(ip.parse().unwrap());
+            assert_ne!(place, Place::Internet, "{ip}");
+            assert!(matches!(p.decide(ip, 8888, false, place, false), Verdict::Refuse(_)), "guarded, no rule: {ip} refused");
+        }
+        assert!(matches!(p.decide("searx.lan", 8888, false, Place::Lan, false), Verdict::Refuse(_)), "a name that resolves there");
+        assert!(matches!(p.decide("localhost", 11434, false, Place::Forbidden, false), Verdict::Refuse(_)), "this machine");
+        // A rule without lan does not open the home network; one that says lan does, on its ports.
+        p.allow(rule("192.168.4.42", &[8888])).unwrap();
+        assert!(matches!(p.decide("192.168.4.42", 8888, false, Place::Lan, false), Verdict::Refuse(_)));
+        let mut r = rule("192.168.4.42", &[8888]);
+        r.lan = true;
+        p.allow(r).unwrap();
+        assert_eq!(p.decide("192.168.4.42", 8888, false, Place::Lan, false), Verdict::Allow { audit: false });
+        assert!(matches!(p.decide("192.168.4.42", 22, false, Place::Lan, false), Verdict::Refuse(_)), "only its ports");
+        // A lan rule never opens loopback or this machine.
+        let mut r = rule("127.0.0.1", &[11434]);
+        r.lan = true;
+        p.allow(r).unwrap();
+        assert!(matches!(p.decide("127.0.0.1", 11434, false, Place::Forbidden, false), Verdict::Refuse(_)));
+    }
+
+    #[test]
+    fn guarded_sits_between_audit_and_enforce_and_decides_the_rest_as_enforce_does() {
+        assert!(Mode::Audit < Mode::Guarded && Mode::Guarded < Mode::Enforce);
+        assert_eq!(Mode::ALL.map(Mode::word), ["audit", "guarded", "enforce"]);
+        for m in Mode::ALL {
+            assert_eq!(serde_yaml::to_string(&m).unwrap().trim(), m.word());
+        }
+        let mut lan = rule("gpu.lan", &[11434]);
+        lan.lan = true;
+        let tunnel_only = rule("api.x.ai", &[443]);
+        let rules = vec![lan, tunnel_only];
+        let guarded = Policy { mode: Mode::Guarded, rules: rules.clone() };
+        let enforce = Policy { mode: Mode::Enforce, rules };
+        for (host, port, http, place) in [
+            ("gpu.lan", 11434, false, Place::Lan),
+            ("gpu.lan", 22, false, Place::Lan),
+            ("other.lan", 11434, false, Place::Lan),
+            ("10.0.0.7", 80, true, Place::Lan),
+            ("localhost", 80, false, Place::Forbidden),
+            ("api.x.ai", 443, false, Place::Internet),
+            ("api.x.ai", 443, true, Place::Internet),
+        ] {
+            let same = matches!(
+                (guarded.decide(host, port, http, place, false), enforce.decide(host, port, http, place, false)),
+                (Verdict::Allow { .. }, Verdict::Allow { .. }) | (Verdict::Refuse(_), Verdict::Refuse(_))
+            );
+            assert!(same, "{host}:{port} http={http} {place:?}");
+        }
+    }
+
+    #[test]
+    fn reseeding_replaces_seeded_rules_and_never_the_persons() {
+        let seed = |host: &str, port: u16| Rule { host: host.into(), ports: vec![port], http: true, lan: true, why: "seeded from config.yaml".into(), seeded: false };
+        let mut p = Policy::default();
+        p.allow(rule("api.x.ai", &[443])).unwrap();
+        let mut own_lan = rule("192.168.4.42", &[8888]);
+        own_lan.lan = true;
+        p.allow(own_lan).unwrap();
+        let added = p.seed(vec![seed("192.168.4.35", 11434), seed("192.168.4.42", 8888), seed("ha.local", 8123)]).unwrap();
+        assert_eq!(added.iter().map(|r| r.host.as_str()).collect::<Vec<_>>(), ["192.168.4.35", "ha.local"], "the person's own lan rule covers SearXNG");
+        assert!(added.iter().all(|r| r.seeded));
+        assert_eq!(p.rules.len(), 4);
+        // The source changed: the old seeds go, the person's stay.
+        p.seed(vec![seed("192.168.4.36", 11434)]).unwrap();
+        let hosts: Vec<(&str, bool)> = p.rules.iter().map(|r| (r.host.as_str(), r.seeded)).collect();
+        assert_eq!(hosts, [("api.x.ai", false), ("192.168.4.42", false), ("192.168.4.36", true)]);
+        // Nothing seeded any more: only the person's.
+        p.seed(vec![]).unwrap();
+        assert_eq!(p.rules.len(), 2);
+        assert!(p.rules.iter().all(|r| !r.seeded));
+        // The person allowing the same host and ports makes it theirs.
+        p.seed(vec![seed("192.168.4.36", 11434)]).unwrap();
+        let mut mine = seed("192.168.4.36", 11434);
+        mine.seeded = true;
+        p.allow(mine).unwrap();
+        p.seed(vec![]).unwrap();
+        assert!(p.rules.iter().any(|r| r.host == "192.168.4.36" && !r.seeded), "now the person's: a re-seed keeps it");
+        // Seeds say lan, read as rules, and there are not many.
+        let mut not_lan = seed("192.168.4.37", 80);
+        not_lan.lan = false;
+        assert!(p.seed(vec![not_lan]).is_err());
+        assert!(p.seed(vec![seed("*", 80)]).is_err());
+        assert!(p.seed((0..=crate::seed::MOST as u16).map(|i| seed("192.168.4.38", 1000 + i)).collect()).is_err());
+        // Saved and read back with the mark; a person's rule is written without it.
+        let text = serde_yaml::to_string(&p).unwrap();
+        assert!(!text.contains("seeded: false"));
+        assert_eq!(serde_yaml::from_str::<Policy>(&text).unwrap(), p);
+    }
+
+    #[test]
     fn nothing_is_looked_up_that_may_not_be_reached() {
         let mut p = Policy::default();
         assert!(matches!(p.before_resolve("x.example", 443, false, true), Some(Verdict::Refuse(_))), "private: not even resolved");
+        p.mode = Mode::Guarded;
+        assert!(matches!(p.before_resolve("x.example", 443, false, true), Some(Verdict::Refuse(_))), "private in guarded too");
+        p.mode = Mode::Audit;
         assert_eq!(p.before_resolve("x.example", 443, false, false), None, "audit resolves everything");
         p.mode = Mode::Enforce;
         assert!(matches!(p.before_resolve("x.example", 443, false, false), Some(Verdict::Refuse(_))), "enforce, no rule: unresolved");
@@ -327,7 +576,7 @@ mod tests {
 
     #[test]
     fn a_rule_the_person_could_not_have_meant_is_refused() {
-        for bad in ["", "*", "*.", "localhost", "a b.com", "Example.com", "x.com/path"] {
+        for bad in ["", "*", "*.", "localhost", "a b.com", "Example.com", "x.com/path", "x.com.", "*.x.com.", "x.com.."] {
             assert!(valid(&rule(bad, &[443])).is_err(), "{bad}");
         }
         assert!(valid(&rule("x.com", &[])).is_err());
@@ -351,5 +600,28 @@ mod tests {
         let got = Policy::load(&p);
         assert_eq!(got.mode, Mode::Enforce);
         assert_eq!(got.rules.len(), 1);
+    }
+
+    /// A policy written before `valid` refused a trailing dot is read with the dot taken off, not
+    /// refused whole: the name it meant, the one `lan_hosts` published and the public door refuses.
+    #[test]
+    fn a_rule_written_with_a_trailing_dot_before_is_read_without_it() {
+        let d = std::env::temp_dir().join(format!("yantrik-egress-dot-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("policy.yaml");
+        std::fs::write(
+            &p,
+            "mode: enforce\nrules:\n  - host: gpu.example.ts.net.\n    ports: [11434]\n    lan: true\n    why: the model\n  \
+             - host: '*.lab.example..'\n    ports: [80]\n    lan: true\n    why: the lab\n",
+        )
+        .unwrap();
+        let got = Policy::read(&p).unwrap();
+        assert_eq!(got.rules.iter().map(|r| r.host.as_str()).collect::<Vec<_>>(), ["gpu.example.ts.net", "*.lab.example"]);
+        assert_eq!(got.decide("gpu.example.ts.net", 11434, false, Place::Lan, false), Verdict::Allow { audit: false });
+        for host in [".", "*."] {
+            std::fs::write(&p, format!("rules:\n  - host: '{host}'\n    ports: [80]\n    why: nothing\n")).unwrap();
+            assert!(Policy::read(&p).is_err(), "{host} is still no host");
+        }
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

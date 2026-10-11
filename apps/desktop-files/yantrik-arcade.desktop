@@ -3,7 +3,7 @@ Type=Application
 Name=Arcade
 Comment=Build playable games from small JSON specs
 Exec=/opt/yantrik/bin/yantrik-arcade
-# One mark for now: brand/yantrik-mark.svg, installed as hicolor `yantrik`.
+# One mark for now: brand/yantrik-icon.svg, installed as hicolor `yantrik`.
 Icon=yantrik
 Categories=Game;
 Keywords=arcade;games;builder;

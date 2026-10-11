@@ -321,19 +321,40 @@ pub fn sanitize_response(response: &str) -> String {
 
     let mut result = response.to_string();
     for frag in SENSITIVE_FRAGMENTS {
-        // Case-insensitive replacement
-        let frag_lower = frag.to_lowercase();
-        let result_lower = result.to_lowercase();
-        while let Some(pos) = result_lower.find(&frag_lower) {
-            // Find end position accounting for char boundaries
-            let end = (pos + frag.len()).min(result.len());
-            let redact = "[REDACTED]";
-            result = format!("{}{}{}", &result[..pos], redact, &result[end..]);
-            break; // Re-scan from start since positions shifted
-        }
+        result = redact_every(&result, frag);
     }
 
     result
+}
+
+/// `text` with every case-insensitive occurrence of `frag` replaced by `[REDACTED]`.
+///
+/// This used to find a position in `text.to_lowercase()` and slice `text` with it, then stop
+/// after the first match: a fragment said twice leaked the second time, and a character whose
+/// lowercase is longer than itself (`İ` is 2 bytes, its lowercase 3) shifted the position off a
+/// character boundary, so the slice panicked. Matching on `text`'s own bytes, at character
+/// boundaries, needs no second string. The fragments are ASCII (a test holds them to it), so a
+/// match is all ASCII and ends on a boundary too.
+fn redact_every(text: &str, frag: &str) -> String {
+    let (hay, needle) = (text.as_bytes(), frag.as_bytes());
+    if needle.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut i = 0;
+    while i + needle.len() <= hay.len() {
+        if text.is_char_boundary(i) && hay[i..i + needle.len()].eq_ignore_ascii_case(needle) {
+            out.push_str(&text[copied..i]);
+            out.push_str("[REDACTED]");
+            i += needle.len();
+            copied = i;
+        } else {
+            i += 1;
+        }
+    }
+    out.push_str(&text[copied..]);
+    out
 }
 
 // ── Harmful command detection ──
@@ -660,6 +681,31 @@ mod tests {
         let sanitized = sanitize_response(leak);
         assert!(!sanitized.contains("CompanionService"));
         assert!(!sanitized.contains("max_context_tokens"));
+    }
+
+    #[test]
+    fn a_fragment_said_twice_is_redacted_both_times() {
+        let leak = "CompanionService started; companionservice owns the loop";
+        let sanitized = sanitize_response(leak);
+        assert!(!sanitized.to_lowercase().contains("companionservice"), "{sanitized}");
+        assert_eq!(sanitized.matches("[REDACTED]").count(), 2, "{sanitized}");
+    }
+
+    #[test]
+    fn a_character_whose_lowercase_is_longer_does_not_panic() {
+        // 'İ' is 2 bytes and lowercases to 3: positions found in a lowercased copy used to
+        // land inside a character of the original.
+        let leak = "İİİİ CompanionService İ and max_context_tokens";
+        let sanitized = sanitize_response(leak);
+        assert!(sanitized.starts_with("İİİİ [REDACTED] İ and [REDACTED]"), "{sanitized}");
+    }
+
+    #[test]
+    fn the_sensitive_fragments_are_ascii() {
+        // redact_every matches bytes case-insensitively for ASCII only.
+        for frag in SENSITIVE_FRAGMENTS {
+            assert!(frag.is_ascii(), "{frag:?} is not ASCII");
+        }
     }
 
     #[test]

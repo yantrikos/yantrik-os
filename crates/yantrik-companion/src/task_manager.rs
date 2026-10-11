@@ -6,7 +6,7 @@
 //! detect completions. SQLite table persists task metadata across restarts.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::process::{Child, Command, Stdio};
 
 use rusqlite::Connection;
@@ -316,23 +316,29 @@ impl TaskManager {
             return String::new();
         }
 
-        // For small files, just read all lines
-        if size < 8192 {
-            let reader = BufReader::new(file);
-            let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
-            let start = lines.len().saturating_sub(tail_lines);
-            return lines[start..].join("\n");
-        }
-
-        // For larger files, seek near the end
+        // A small file is read whole; a larger one only its last few kilobytes.
         let mut file = file;
-        let seek_pos = size.saturating_sub(4096);
+        let seek_pos = if size < 8192 {
+            0
+        } else {
+            size.saturating_sub(4096)
+        };
         if file.seek(SeekFrom::Start(seek_pos)).is_err() {
             return String::new();
         }
-        let reader = BufReader::new(file);
-        let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
-        // Skip the first partial line if we seeked into the middle
+
+        // The bytes are decoded in one go rather than line by line. A seek can land inside a
+        // multi-byte character, and `BufRead::lines` drops that whole line as undecodable, so the
+        // skip below threw away a second, complete line with the partial one. Decoding lossily
+        // leaves the broken character on the first line, which is the line being skipped, and a
+        // read error ends the read instead of failing again on every retry.
+        let mut chunk = Vec::new();
+        if file.read_to_end(&mut chunk).is_err() {
+            return String::new();
+        }
+        let text = String::from_utf8_lossy(&chunk);
+        let lines: Vec<&str> = text.lines().collect();
+        // The first line is partial whenever the read started inside the file.
         let skip = if seek_pos > 0 { 1 } else { 0 };
         let valid = &lines[skip.min(lines.len())..];
         let start = valid.len().saturating_sub(tail_lines);
@@ -396,5 +402,79 @@ fn format_duration(secs: f64) -> String {
         format!("{}m {}s", s / 60, s % 60)
     } else {
         format!("{}h {}m", s / 3600, (s % 3600) / 60)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TaskManager;
+    use std::io::Write;
+
+    /// A log big enough that the tail is read from `size - 4096`, with that cut landing inside a
+    /// multi-byte character of the third-to-last line. The two lines after the cut are complete,
+    /// so they are the last two lines of the log and both must come back: the old code dropped the
+    /// partial line as undecodable and then skipped a complete one on top of it.
+    #[test]
+    fn a_tail_cut_inside_a_character_loses_no_line() {
+        let mut content = String::new();
+        while content.len() + 1024 <= 8192 {
+            content.push_str(&"r".repeat(1023));
+            content.push('\n');
+        }
+        // The cut sits 4096 bytes from the end, so it falls inside the first of these three lines
+        // and, since they are made of 3-byte characters, inside a character.
+        content.push_str(&"字".repeat(1400));
+        content.push('\n');
+        content.push_str("second-to-last line: 日本語のテキスト\n");
+        let last_line = "last line: 日本語\n";
+        content.push_str(last_line);
+        let bytes = content.as_bytes();
+
+        // The assertions below are only worth anything if the read really starts mid-character.
+        let cut = bytes.len() - 4096;
+        assert!(bytes.len() >= 8192, "big enough to seek: {}", bytes.len());
+        assert!(
+            (bytes[cut] & 0xc0) == 0x80,
+            "the cut at {cut} must land inside a character, not on its first byte"
+        );
+
+        let last_two = format!("second-to-last line: 日本語のテキスト\n{}", last_line.trim_end());
+        assert_eq!(tail(&content, 2), last_two);
+        assert_eq!(tail(&content, 1), "last line: 日本語");
+    }
+
+    /// A log under the size where nothing is skipped, since all of it is read.
+    #[test]
+    fn a_small_log_tails_its_last_lines() {
+        let content = "one\ntwo\nthree\nfour\n";
+        assert_eq!(tail(content, 2), "three\nfour");
+        assert_eq!(tail(content, 99), content.trim_end());
+    }
+
+    /// An empty log has no tail, and a log with fewer lines than asked for returns all of them.
+    #[test]
+    fn an_empty_log_tails_to_nothing() {
+        assert_eq!(tail("", 5), "");
+        assert_eq!(tail("only\n", 5), "only");
+    }
+
+    /// Writes `content` where `read_output_tail` can read it back. Each call gets its own name:
+    /// the tests run in parallel and one log's content was landing in another's file.
+    fn tail(content: &str, tail_lines: usize) -> String {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "yantrik-task-tail-{}-{n}",
+            std::process::id()
+        ));
+        {
+            let mut file = std::fs::File::create(&path).unwrap();
+            file.write_all(content.as_bytes()).unwrap();
+            file.flush().unwrap();
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let got = TaskManager::read_output_tail(file, tail_lines);
+        let _ = std::fs::remove_file(&path);
+        got
     }
 }
