@@ -3,7 +3,7 @@ Type=Application
 Name=Snippets
 Comment=Code snippet manager with search
 Exec=/opt/yantrik/bin/yantrik-snippet-manager
-# One mark for now: brand/yantrik-mark.svg, installed as hicolor `yantrik`.
+# One mark for now: brand/yantrik-icon.svg, installed as hicolor `yantrik`.
 Icon=yantrik
 Categories=Development;Utility;
 Keywords=snippet;code;clipboard;

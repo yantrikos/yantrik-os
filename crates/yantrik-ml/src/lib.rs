@@ -31,7 +31,7 @@ mod token_stream;
 // LLM backend modules
 mod llm;
 
-// Provider registry (multi-provider management, secret storage, key validation)
+// Provider registry (multi-provider management, key validation)
 #[cfg(feature = "api-llm")]
 pub mod provider;
 
@@ -92,7 +92,6 @@ pub use provider::{
     ProviderDescriptor, ProviderKind, AuthScheme, SetupTier, KNOWN_PROVIDERS,
     GenericOpenAIBackend, AnthropicBackend, GoogleGeminiBackend,
     ProviderHealth, HealthStatus, TaskType,
-    SecretStore, AutoSecretStore, KeyringSecretStore, EncryptedFileStore, SecretRef,
     KeyValidator, KeyValidationResult, KeyValidationError,
 };
 

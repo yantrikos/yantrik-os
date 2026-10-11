@@ -885,7 +885,7 @@ fn waiting_on_you(agent: &Agent) -> Option<String> {
         None => format!("`{}`", agent.meta.id),
     };
     let asked = agent.turns.iter().rev().flat_map(|t| t.items.iter().rev()).find_map(|item| match item {
-        Item::Approval(a) if a.outcome == agents::ApprovalOutcome::Pending => Some(a.what.clone()),
+        Item::Approval(a) if a.outcome == agents::ApprovalOutcome::Pending => Some(a.what.as_str().to_string()),
         _ => None,
     });
     match asked {
@@ -962,13 +962,13 @@ fn first_answer(agent: &Agent) -> Option<Answered> {
         Item::Approval(a) => match a.outcome {
             agents::ApprovalOutcome::Expired => Some(format!(
                 "its card for {} went unanswered and expired, so its work is not what was asked",
-                a.what
+                a.what.as_str()
             )),
             agents::ApprovalOutcome::Withdrawn => {
-                Some(format!("its card for {} was taken back, so its work is not what was asked", a.what))
+                Some(format!("its card for {} was taken back, so its work is not what was asked", a.what.as_str()))
             }
             agents::ApprovalOutcome::Denied => {
-                Some(format!("the person denied its {}, so its work is not what was asked", a.what))
+                Some(format!("the person denied its {}, so its work is not what was asked", a.what.as_str()))
             }
             _ => None,
         },

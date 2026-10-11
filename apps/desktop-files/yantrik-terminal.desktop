@@ -3,7 +3,7 @@ Type=Application
 Name=Terminal
 Comment=Terminal emulator
 Exec=/opt/yantrik/bin/yantrik-terminal
-# One mark for now: brand/yantrik-mark.svg, installed as hicolor `yantrik`.
+# One mark for now: brand/yantrik-icon.svg, installed as hicolor `yantrik`.
 Icon=yantrik
 Categories=System;TerminalEmulator;
 Keywords=terminal;shell;command;

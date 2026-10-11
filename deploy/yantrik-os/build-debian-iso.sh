@@ -274,11 +274,12 @@ apt-get install -y -qq     swaybg     xdg-utils     espeak-ng
 # The first hour on a machine: the image had no text editor and no process viewer at all, so
 # the terminal could edit a file only through Python and list processes only through the
 # System Monitor app. nano is what yantrik-session exports as EDITOR, so `git commit`,
-# `crontab -e` and everything else that asks has something to open — the image ships no vi
-# either. htop complements, and does not replace, the app. No `|| true`: release-check
-# (tier ci) asserts both commands on the booted image, and yantrik-update reconciles them
-# on machines whose base system drifted from this list (#210).
-apt-get install -y -qq     nano     htop
+# `crontab -e` and everything else that asks has something to open. htop complements, and
+# does not replace, the app. vim-tiny: muscle memory and scripts call `vi`, and the
+# fresh-install audit found `command not found: vi` on the shipped image (#678).
+# No `|| true`: release-check (tier ci) asserts these commands on the booted image, and
+# yantrik-update reconciles them on machines whose base system drifted from this list (#210).
+apt-get install -y -qq     nano     htop     vim-tiny
 
 # ── A developer's baseline (#401) ──
 # git: the image used to install it only to build llama.cpp and then remove it, so a machine
@@ -398,7 +399,9 @@ for required in usr/lib/yantrik/yantrik-broadcom-wifi usr/lib/yantrik/yantrik-ma
                 etc/systemd/system/multi-user.target.wants/yantrik-broadcom-wifi.service \
                 etc/systemd/system/mbpfan.service.d/yantrik-apple.conf \
                 etc/NetworkManager/dispatcher.d/90-yantrik-broadcom-wifi; do
-    [ -e "$ROOTFS/$required" ] || fail "$required missing from the image"
+    # Inside the chroot: a unit's enable link is absolute, and from the host it would resolve
+    # against the build machine's /etc, not the image's.
+    sudo chroot "$ROOTFS" test -e "/$required" || fail "$required missing from the image"
 done
 sudo chroot "$ROOTFS" bash -n /usr/lib/yantrik/yantrik-broadcom-wifi \
     || fail "yantrik-broadcom-wifi does not parse"
@@ -692,7 +695,9 @@ else
     done
     [ -L "$ROOTFS/etc/systemd/user/default.target.wants/yantrik-mind.service" ] \
         || fail "yantrik-mind.service is not enabled in the image"
-    [ ! -e "$ROOTFS/etc/systemd/user/default.target.wants/yantrik-memory.service" ] \
+    # -L as well as -e: the enable link is absolute, so from the host -e alone never sees it.
+    { [ ! -e "$ROOTFS/etc/systemd/user/default.target.wants/yantrik-memory.service" ] \
+        && [ ! -L "$ROOTFS/etc/systemd/user/default.target.wants/yantrik-memory.service" ]; } \
         || fail "yantrik-memory.service is enabled — it would fight the mind for the memory file"
     ok "Yantrik Mind $(sed -n 's/^commit=//p' "$ROOTFS/opt/yantrik-mind/BUILD" 2>/dev/null) installed beside the OS, enabled for every user"
 fi

@@ -344,7 +344,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             "files_stat",
             "Whether a path in the person's home exists: `exists` true, false, or \"unknown\" with \
              a `reason` (not_found, not_allowed, outside, protected, broken_link, not_a_path); \
-             kind, size and modified (unix seconds) when it does. `~` is the person's home",
+             kind, size, modified and `changed` (unix seconds; changed is ctime, which cannot be set back), `real` (where it resolves) and `via_link` \
+             (whether a link took it there) when it does. `~` is the person's home",
         )
         .risk("safe")
         .arg(Param::text("path").describe("An absolute path or ~/…, e.g. ~/notes/today.txt")),

@@ -12,7 +12,8 @@
 //! 800×600, 1280×720 and 1280×800). Decline answers inside the window, above the dock, and inside
 //! the panel. Where the card had to scroll, Allow is disabled — a click on it grants nothing —
 //! until the card has been scrolled to its end, and then it answers. At 800×600 the corner card has
-//! to scroll. Then the vault prompt beside it, which must not lie over the card.
+//! to scroll. Then the vault prompt beside it, which must not lie over the card. Then the same card
+//! in an agent's pane (approval_pane_tests).
 use super::approval_tests::{button_top, card, diff_box, lines, message, save, scan, settle, RUN_RECIPE_SUMMARY};
 use super::*;
 use slint::platform::WindowEvent;
@@ -73,17 +74,17 @@ pub(crate) fn read_to_end(w: &MinimalSoftwareWindow, x: f32, y: f32, width: u32,
 
 /// Where a card's buttons are, and how its Allow behaved: (Decline's y, Allow's y, whether Allow
 /// had to wait for the end).
-struct Answered {
-    deny_y: f32,
-    allow_y: f32,
-    waited: bool,
+pub(crate) struct Answered {
+    pub(crate) deny_y: f32,
+    pub(crate) allow_y: f32,
+    pub(crate) waited: bool,
 }
 
 /// Find Decline by scanning its column from `bottom` up; press Allow on the same row. If that
 /// grants nothing, the card must have had to scroll: read it to its end and press again, which
 /// must grant. Panics with `place` in the message if Decline is not found inside `top..bottom`.
 #[allow(clippy::too_many_arguments)]
-fn answer(
+pub(crate) fn answer(
     w: &MinimalSoftwareWindow,
     place: &str,
     (deny_x, allow_x, read_x, read_y): (f32, f32, f32, f32),
@@ -233,11 +234,15 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str, width: u32, height: u32) -> 
         &|| lens.get_sessioned(),
     );
     assert!(in_lens.deny_y < reply_top && in_lens.allow_y < reply_top, "both above the reply box, inside the panel");
+    lens.hide()?;
+
+    // ── An agent's own pane, which scrolls itself ──
+    super::approval_pane_tests::run(w, output, width, height)?;
 
     println!(
         "PASS at {width}×{height}: the largest card a request may make keeps Decline and Allow inside the \
-         window above the dock (corner, Decline at {}{}) and inside the Lens panel (Decline at {}{}); \
-         a click on a waiting Allow granted nothing; the vault prompt lies over none of it",
+         window above the dock (corner, Decline at {}{}), inside the Lens panel (Decline at {}{}) and \
+         inside an agent's pane; a click on a waiting Allow granted nothing; the vault prompt lies over none of it",
         corner.deny_y,
         if corner.waited { ", Allow after reading to the end" } else { "" },
         in_lens.deny_y,

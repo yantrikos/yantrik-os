@@ -416,113 +416,16 @@ foot --server &
 AUTOSTART
 chmod +x "$LABWC_DIR/autostart"
 
-# labwc rc.xml — window rules, tiling, and key bindings
-cat > "$LABWC_DIR/rc.xml" <<'RCXML'
-<?xml version="1.0" encoding="UTF-8"?>
-<labwc_config>
-  <core>
-    <gap>4</gap>
-  </core>
-
-  <theme>
-    <name></name>
-    <titlebar>
-      <font name="DejaVu Sans" size="10" />
-    </titlebar>
-  </theme>
-
-  <keyboard>
-    <!-- ── Window switching ── -->
-    <keybind key="A-Tab">
-      <action name="NextWindow" />
-    </keybind>
-    <keybind key="A-F4">
-      <action name="Close" />
-    </keybind>
-
-    <!-- ── Terminal: Super+T ── -->
-    <keybind key="W-t">
-      <action name="Execute">
-        <command>foot</command>
-      </action>
-    </keybind>
-
-    <!-- ── Window tiling ── -->
-    <!-- Super+Left: snap to left half -->
-    <keybind key="W-Left">
-      <action name="MoveToEdge" direction="left" />
-      <action name="SnapToEdge" direction="left" />
-    </keybind>
-    <!-- Super+Right: snap to right half -->
-    <keybind key="W-Right">
-      <action name="MoveToEdge" direction="right" />
-      <action name="SnapToEdge" direction="right" />
-    </keybind>
-    <!-- Super+Up: maximize -->
-    <keybind key="W-Up">
-      <action name="Maximize" />
-    </keybind>
-    <!-- Super+Down: restore/unmaximize -->
-    <keybind key="W-Down">
-      <action name="UnMaximize" />
-    </keybind>
-
-    <!-- ── Quadrant tiling: Super+1/2/3/4 ── -->
-    <!-- Super+1: top-left quadrant -->
-    <keybind key="W-1">
-      <action name="MoveTo" x="0" y="0" />
-      <action name="ResizeTo" width="50%" height="50%" />
-    </keybind>
-    <!-- Super+2: top-right quadrant -->
-    <keybind key="W-2">
-      <action name="MoveTo" x="50%" y="0" />
-      <action name="ResizeTo" width="50%" height="50%" />
-    </keybind>
-    <!-- Super+3: bottom-left quadrant -->
-    <keybind key="W-3">
-      <action name="MoveTo" x="0" y="50%" />
-      <action name="ResizeTo" width="50%" height="50%" />
-    </keybind>
-    <!-- Super+4: bottom-right quadrant -->
-    <keybind key="W-4">
-      <action name="MoveTo" x="50%" y="50%" />
-      <action name="ResizeTo" width="50%" height="50%" />
-    </keybind>
-
-    <!-- ── Screenshot: PrtSc ── -->
-    <keybind key="Print">
-      <action name="Execute">
-        <command>sh -c 'mkdir -p ~/Pictures/Screenshots &amp;&amp; grim ~/Pictures/Screenshots/$(date +%Y%m%d_%H%M%S).png &amp;&amp; wl-copy &lt; ~/Pictures/Screenshots/$(ls -t ~/Pictures/Screenshots/ | head -1)'</command>
-      </action>
-    </keybind>
-    <!-- Shift+PrtSc: region select screenshot -->
-    <keybind key="S-Print">
-      <action name="Execute">
-        <command>sh -c 'mkdir -p ~/Pictures/Screenshots &amp;&amp; grim -g "$(slurp)" ~/Pictures/Screenshots/$(date +%Y%m%d_%H%M%S).png'</command>
-      </action>
-    </keybind>
-
-    <!-- ── Foot scrollback dump (for "fix this error") ──
-         Into the private dir the terminal tools read (yantrik_ml::private_dir::scratch_dir):
-         $XDG_RUNTIME_DIR/yantrik-scratch (not .../yantrik, the socket dir), else
-         ~/.cache/yantrik/tmp. Not /tmp, where anyone could leave a "fresh" dump for the agent to
-         act on. The old file is removed first so a link left at the name is not written through.
-         Keep in step with foot.ini below. -->
-    <keybind key="W-e">
-      <action name="Execute">
-        <command>sh -c 'd="$XDG_RUNTIME_DIR/yantrik-scratch"; test -d "$XDG_RUNTIME_DIR" || d="$HOME/.cache/yantrik/tmp"; mkdir -p "$d" &amp;&amp; chmod 700 "$d" &amp;&amp; rm -f "$d/yantrik-scrollback.txt" &amp;&amp; footclient --print-scrollback > "$d/yantrik-scrollback.txt" 2>/dev/null || true'</command>
-      </action>
-    </keybind>
-  </keyboard>
-
-  <windowRules>
-    <!-- Yantrik shell starts maximized (acts as desktop) -->
-    <windowRule identifier="yantrik-ui">
-      <action name="Maximize" />
-    </windowRule>
-  </windowRules>
-</labwc_config>
-RCXML
+# labwc rc.xml — the shipped one, config/labwc/rc.xml, which is where every key is bound (the
+# snap keys, the shell's own keys, the cheat sheet reads it). deploy-vbox.sh uploads it beside
+# this script; by hand, scp it as labwc-rc.xml next to deploy-stack.sh. This script kept its own
+# copy once, and it drifted: its Super+arrow still snapped to an edge after the real file moved on.
+RC_XML="${RC_XML:-$(dirname "$0")/labwc-rc.xml}"
+if [ ! -f "$RC_XML" ]; then
+    echo "ERROR: $RC_XML not found. Copy config/labwc/rc.xml there (or set RC_XML) and re-run."
+    exit 1
+fi
+install -m 644 "$RC_XML" "$LABWC_DIR/rc.xml"
 
 # Foot terminal configuration
 FOOT_DIR="/home/$YANTRIK_USER/.config/foot"
@@ -571,8 +474,8 @@ bright6=80d8e8     # bright cyan
 bright7=e0e0e8     # bright white
 
 [key-bindings]
-# Super+Shift+S: dump scrollback to file (for "fix this error" tool), in the same private dir as
-# the labwc W-e binding in rc.xml — the one the terminal tools read. `test`, not `[ ]`: a bracket
+# Super+Shift+S: dump scrollback to file (for "fix this error" tool), in the private dir the
+# terminal tools read (yantrik_ml::private_dir::scratch_dir). `test`, not `[ ]`: a bracket
 # inside the command would end foot's [...] argv early.
 pipe-scrollback=[sh -c 'd="$XDG_RUNTIME_DIR/yantrik-scratch"; test -d "$XDG_RUNTIME_DIR" || d="$HOME/.cache/yantrik/tmp"; mkdir -p "$d" && chmod 700 "$d" && rm -f "$d/yantrik-scrollback.txt" && cat > "$d/yantrik-scrollback.txt"']  Control+Shift+s
 FOOTINI
