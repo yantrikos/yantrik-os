@@ -181,6 +181,7 @@ impl ProactiveFeature for FocusFlow {
                             urgency: 0.5,
                             confidence: 0.9,
                             category: UrgeCategory::Focus,
+                            safety: false,
                         });
                     }
                 }

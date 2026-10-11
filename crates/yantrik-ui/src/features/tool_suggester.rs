@@ -74,6 +74,7 @@ impl ProactiveFeature for ToolSuggester {
                         urgency: 0.55,
                         confidence: 0.85,
                         category: UrgeCategory::Resource,
+                        safety: false,
                     });
                 }
             }
@@ -92,6 +93,7 @@ impl ProactiveFeature for ToolSuggester {
                         urgency: 0.5,
                         confidence: 0.9,
                         category: UrgeCategory::Resource,
+                        safety: false,
                     });
                 }
             }
@@ -110,6 +112,7 @@ impl ProactiveFeature for ToolSuggester {
                             urgency: 0.4,
                             confidence: 0.85,
                             category: UrgeCategory::FileManagement,
+                            safety: false,
                         });
                     } else if is_media(&lower) && self.should_fire("open_media") {
                         urges.push(Urge {
@@ -120,6 +123,7 @@ impl ProactiveFeature for ToolSuggester {
                             urgency: 0.3,
                             confidence: 0.7,
                             category: UrgeCategory::FileManagement,
+                            safety: false,
                         });
                     }
                 }
@@ -139,6 +143,7 @@ impl ProactiveFeature for ToolSuggester {
                         urgency: 0.45,
                         confidence: 0.8,
                         category: UrgeCategory::Resource,
+                        safety: false,
                     });
                 }
             }
@@ -158,6 +163,7 @@ impl ProactiveFeature for ToolSuggester {
                         urgency: 0.45,
                         confidence: 0.8,
                         category: UrgeCategory::Resource,
+                        safety: false,
                     });
                 }
             }
@@ -178,6 +184,7 @@ impl ProactiveFeature for ToolSuggester {
                         urgency: 0.5,
                         confidence: 0.85,
                         category: UrgeCategory::FileManagement,
+                        safety: false,
                     });
                 }
             }
@@ -208,6 +215,7 @@ impl ProactiveFeature for ToolSuggester {
                     urgency: 0.35,
                     confidence: 0.6,
                     category: UrgeCategory::Focus,
+                    safety: false,
                 });
             }
         }

@@ -91,6 +91,8 @@ impl ProactiveFeature for ResourceGuardian {
                             urgency: 0.95,
                             confidence: 1.0,
                             category: UrgeCategory::Resource,
+                            // Unsaved work is lost when it dies: an irreversible loss (#754).
+                            safety: true,
                         });
                     } else if *level <= self.battery_warning && self.should_fire("battery_warning") {
                         let body = match time_to_empty_mins {
@@ -111,6 +113,7 @@ impl ProactiveFeature for ResourceGuardian {
                             urgency: 0.7,
                             confidence: 1.0,
                             category: UrgeCategory::Resource,
+                            safety: false,
                         });
                     }
                 }
@@ -127,6 +130,7 @@ impl ProactiveFeature for ResourceGuardian {
                                 urgency: 0.3,
                                 confidence: 1.0,
                                 category: UrgeCategory::Celebration,
+                                safety: false,
                             });
                         }
                     }
@@ -162,6 +166,7 @@ impl ProactiveFeature for ResourceGuardian {
                             urgency: 0.6,
                             confidence: 0.8,
                             category: UrgeCategory::Resource,
+                            safety: false,
                         });
                         self.cpu_high_count = 0;
                     }
@@ -199,6 +204,7 @@ impl ProactiveFeature for ResourceGuardian {
                             urgency: 0.65,
                             confidence: 0.9,
                             category: UrgeCategory::Resource,
+                            safety: false,
                         });
                     }
                 }
@@ -222,6 +228,7 @@ impl ProactiveFeature for ResourceGuardian {
                             urgency: 0.75,
                             confidence: 1.0,
                             category: UrgeCategory::Resource,
+                            safety: false,
                         });
                     }
 
@@ -238,6 +245,7 @@ impl ProactiveFeature for ResourceGuardian {
                                 urgency: 0.25,
                                 confidence: 1.0,
                                 category: UrgeCategory::Celebration,
+                                safety: false,
                             });
                         }
                     }

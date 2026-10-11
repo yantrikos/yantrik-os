@@ -30,6 +30,9 @@ export struct MessageData {
     // for every other message.
     why: string,
     kind: string,
+    // The memories it was made from, comma-separated, for "Don't use this memory" (#754). ""
+    // when it came from no memory, and then that choice is not offered.
+    memory-ids: string,
 }
 
 export component MessageBubble inherits Rectangle {

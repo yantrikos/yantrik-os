@@ -149,8 +149,15 @@ pub enum CompanionCommand {
         domain: String,
         importance: f64,
     },
-    /// "Less of this" (#754): back a kind of proactive message off one level.
-    ProactiveLessOfThis { kind: String },
+    /// One of the three choices behind "Less of this" (#754), on a message of this kind made from
+    /// these memories.
+    ProactiveChoice {
+        choice: yantrik_companion::proactive_backoff::Choice,
+        kind: String,
+        memory_ids: Vec<String>,
+    },
+    /// Settings: let the mind use an excluded memory for proactive messages again (#754).
+    ProactiveMemoryRestore { memory_id: String },
     /// Settings: put a kind of proactive message back to normal (#754).
     ProactiveKindReset { kind: String },
     /// What became of a proactive card of this kind, for the per-kind throttle (#754).
@@ -832,9 +839,20 @@ impl CompanionBridge {
         });
     }
 
-    /// "Less of this" on a proactive message or card: back that kind off one level (#754).
-    pub fn proactive_less_of_this(&self, kind: String) {
-        let _ = self.cmd_tx.send(CompanionCommand::ProactiveLessOfThis { kind });
+    /// One of the three choices behind "Less of this" on a proactive message, card or
+    /// notification (#754).
+    pub fn proactive_choice(
+        &self,
+        choice: yantrik_companion::proactive_backoff::Choice,
+        kind: String,
+        memory_ids: Vec<String>,
+    ) {
+        let _ = self.cmd_tx.send(CompanionCommand::ProactiveChoice { choice, kind, memory_ids });
+    }
+
+    /// Settings: let the mind use this memory for proactive messages again (#754).
+    pub fn proactive_memory_restore(&self, memory_id: String) {
+        let _ = self.cmd_tx.send(CompanionCommand::ProactiveMemoryRestore { memory_id });
     }
 
     /// Put a kind of proactive message back to normal (#754).
@@ -1725,20 +1743,38 @@ fn worker_loop(
                 execute_suppression_logged = false;
                 tracing::info!("LLM reloaded successfully");
             }
-            Ok(CompanionCommand::ProactiveLessOfThis { kind }) => {
-                if let Some(kind) = yantrik_companion::proactive_backoff::ProactiveKind::from_key(&kind) {
-                    let level = yantrik_companion::proactive_backoff::KindBackoff::less_of_this(
-                        &companion.db.conn(),
-                        kind,
-                        now_secs(),
-                    );
-                    tracing::info!(kind = kind.key(), level = level.words(), "Less of this");
-                    // "Less of this" is the person's answer to that message. Left pending, their
-                    // next chat message would count as accepting it and undo the step at once.
-                    if last_proactive_kind == Some(kind) {
-                        last_proactive_kind = None;
+            Ok(CompanionCommand::ProactiveChoice { choice, kind, memory_ids }) => {
+                use yantrik_companion::proactive_backoff::{Choice, KindBackoff, MemoryExclusions, Outcome, ProactiveKind};
+                let kind = ProactiveKind::from_key(&kind);
+                {
+                    let conn = companion.db.conn();
+                    match choice {
+                        // Dismissed, and nothing more.
+                        Choice::NotNow => {
+                            if let Some(kind) = kind {
+                                KindBackoff::record_outcome(&conn, kind, Outcome::Dismissed, now_secs());
+                            }
+                        }
+                        Choice::StopKind => {
+                            if let Some(kind) = kind {
+                                KindBackoff::stop(&conn, kind, now_secs());
+                            }
+                        }
+                        // The memory stays; only the mind's own messages leave it alone.
+                        Choice::ForgetMemory => MemoryExclusions::exclude(&conn, &memory_ids, now_secs()),
                     }
                 }
+                tracing::info!(choice = choice.key(), kind = kind.map(|k| k.key()), memories = memory_ids.len(), "Less of this");
+                // The choice is the person's answer to that message. Left pending, their next
+                // chat message would count as accepting it and undo it at once.
+                if kind.is_some() && last_proactive_kind == kind {
+                    last_proactive_kind = None;
+                }
+                push_proactive_kinds(&companion, &ui_weak);
+            }
+            Ok(CompanionCommand::ProactiveMemoryRestore { memory_id }) => {
+                yantrik_companion::proactive_backoff::MemoryExclusions::restore(&companion.db.conn(), &memory_id);
+                tracing::info!("An excluded memory may be used again");
                 push_proactive_kinds(&companion, &ui_weak);
             }
             Ok(CompanionCommand::ProactiveKindReset { kind }) => {
@@ -1868,7 +1904,14 @@ fn worker_loop(
                     // Forward to Telegram
                     if companion.config.telegram.enabled && companion.config.telegram.forward_proactive {
                         let _ = yantrik_companion::telegram::send_message(
-                            &companion.config.telegram, notif,
+                            &companion.config.telegram,
+                            &yantrik_companion::proactive_backoff::with_why_line(
+                                notif,
+                                &yantrik_companion::proactive_backoff::why_text(
+                                    yantrik_companion::proactive_backoff::ProactiveKind::Tasks,
+                                    &serde_json::Value::Null,
+                                ),
+                            ),
                         );
                     }
                 }
@@ -1994,6 +2037,8 @@ fn worker_loop(
                                 "reason": t.reason,
                                 "urgency": t.urgency,
                                 "context": t.context,
+                                // The memories it came from, so "Don't use this memory" can exclude them (#754).
+                                "source_rids": t.source_rids,
                             })
                         })
                         .collect();
@@ -2113,10 +2158,11 @@ fn worker_loop(
 
                     // V15: Serendipity — surface a random older memory as a connection trigger
                     if companion.bond_level() >= yantrik_companion::types::BondLevel::Friend {
-                        if let Some(memory) = pick_serendipity_memory(&companion.db) {
+                        if let Some((rid, memory)) = pick_serendipity_memory(&companion.db) {
                             triggers.push(serde_json::json!({
                                 "trigger_type": "serendipity",
                                 "memory_text": memory,
+                                "source_rids": [rid],
                             }));
                         }
                     }
@@ -2444,10 +2490,10 @@ fn worker_loop(
                                 kind: yantrik_companion::proactive_backoff::ProactiveKind::from_source(&instinct_name)
                                     .key()
                                     .into(),
-                                why: yantrik_companion::proactive_backoff::why_text(
-                                    yantrik_companion::proactive_backoff::ProactiveKind::from_source(&instinct_name),
-                                    &exec_urge.context,
-                                ),
+                                why: yantrik_companion::proactive_backoff::why_for(&instinct_name, &exec_urge.context),
+                                // The urge's safety marker and the memories it was made from (#754).
+                                safety: exec_urge.safety,
+                                memory_ids: exec_urge.memory_ids.clone(),
                                 ..Default::default()
                             };
                             companion.set_proactive_message(msg);
@@ -2515,30 +2561,31 @@ fn worker_loop(
 
                     let gate_suppressed = matches!(gate_result, yantrik_companion::synthesis_gate::GateDecision::Suppress { .. });
 
-                    // Do Not Disturb holds the mind too, and a kind the person backed off waits
-                    // longer or says nothing (#754). Both are asked before anything is recorded
-                    // as sent.
+                    // Do Not Disturb holds the mind too, a kind the person backed off waits longer
+                    // or says nothing, and a memory they excluded is never used (#754). One rule,
+                    // shared with the headless loop; asked before anything is recorded as sent. A
+                    // backed-off message waits in the queue, as a Do Not Disturb one does. A safety
+                    // signal passes this and every throttle below.
                     let msg_kind = yantrik_companion::proactive_backoff::ProactiveKind::from_key(&msg.kind)
                         .unwrap_or(yantrik_companion::proactive_backoff::ProactiveKind::Ideas);
-                    let quiet = yantrik_companion::proactive_backoff::quiet_hold(
+                    let safety = msg.safety;
+                    let backoff_gate = yantrik_companion::proactive_backoff::gate(
+                        &companion.db.conn(),
+                        &msg,
                         crate::wire::settings::dnd_mode(),
-                        msg_kind,
-                        msg.generated_at,
+                        KIND_BASE_COOLDOWN_SECS,
                         now_ts,
                     );
-                    let backoff_held = {
-                        let conn = companion.db.conn();
-                        let level = yantrik_companion::proactive_backoff::KindBackoff::level(&conn, msg_kind);
-                        let since = now_ts - yantrik_companion::proactive_backoff::KindBackoff::last_delivered(&conn, msg_kind);
-                        yantrik_companion::proactive_backoff::held_by_backoff(level, 1.0, 0.0, since, KIND_BASE_COOLDOWN_SECS)
-                    };
-                    if let yantrik_companion::synthesis_gate::GateDecision::Suppress { ref reason } = gate_result {
+                    let gate_suppressed = gate_suppressed && !safety;
+                    if gate_suppressed {
+                        if let yantrik_companion::synthesis_gate::GateDecision::Suppress { ref reason } = gate_result {
                         tracing::info!(
                             reason = %reason,
                             text = msg.text,
                             "Synthesis Gate suppressed proactive message"
                         );
                         companion.record_suppressed_urge(&delivery_key, reason);
+                        }
                     }
 
                     // Machinery talking, a raw tool call, or idle thinking that found nothing —
@@ -2563,16 +2610,11 @@ fn worker_loop(
                             },
                             yantrik_os::EventSource::ProactiveEngine,
                         );
-                    } else if quiet != yantrik_companion::proactive_backoff::QuietHold::Deliver {
-                        if quiet == yantrik_companion::proactive_backoff::QuietHold::Wait {
-                            tracing::debug!(kind = msg_kind.key(), "Do Not Disturb: proactive message waits");
-                            companion.set_proactive_message(msg);
-                        } else {
-                            tracing::info!(kind = msg_kind.key(), "Do Not Disturb outlasted a proactive message; dropped");
-                            companion.record_suppressed_urge(&delivery_key, "do not disturb");
-                        }
-                    } else if let Some(why) = backoff_held {
-                        tracing::info!(kind = msg_kind.key(), why, "Proactive message held back by its kind's level");
+                    } else if let yantrik_companion::proactive_backoff::Gate::Wait(why) = backoff_gate {
+                        tracing::debug!(kind = msg_kind.key(), why, "Proactive message waits");
+                        companion.set_proactive_message(msg);
+                    } else if let yantrik_companion::proactive_backoff::Gate::Drop(why) = backoff_gate {
+                        tracing::info!(kind = msg_kind.key(), why, "Proactive message dropped");
                         companion.record_suppressed_urge(&delivery_key, why);
                         event_bus.emit(
                             yantrik_os::EventKind::ProactiveSuppressed {
@@ -2581,7 +2623,7 @@ fn worker_loop(
                             },
                             yantrik_os::EventSource::ProactiveEngine,
                         );
-                    } else if on_cooldown {
+                    } else if on_cooldown && !safety {
                         tracing::info!(
                             key = %delivery_key,
                             "Proactive message on per-key cooldown, skipping"
@@ -2603,7 +2645,7 @@ fn worker_loop(
                             },
                             yantrik_os::EventSource::ProactiveEngine,
                         );
-                    } else if interruptibility < 0.5 {
+                    } else if interruptibility < 0.5 && !safety {
                         tracing::info!(
                             interruptibility,
                             text = msg.text,
@@ -2619,6 +2661,14 @@ fn worker_loop(
                             },
                             yantrik_os::EventSource::ProactiveEngine,
                         );
+                    } else if matches!(
+                        crate::wire::notifications::route_proactive(
+                            crate::wire::notifications::situation_now()
+                        ),
+                        crate::wire::notifications::ProactiveDelivery::Hold
+                    ) && safety {
+                        // A safety signal is never dropped: it waits for the answer to finish.
+                        companion.set_proactive_message(msg);
                     } else if matches!(
                         crate::wire::notifications::route_proactive(
                             crate::wire::notifications::situation_now()
@@ -2668,18 +2718,23 @@ fn worker_loop(
                             last_cortex_fire_ts = now_ts;
                         }
 
-                        // The kind's own cooldown and the throttle's next lesson (#754).
-                        yantrik_companion::proactive_backoff::KindBackoff::record_delivery(
-                            &companion.db.conn(),
-                            msg_kind,
-                            now_ts,
-                        );
-                        last_proactive_kind = Some(msg_kind);
+                        // The kind's own cooldown and the throttle's next lesson (#754). A safety
+                        // signal teaches the throttle nothing and counts against no cooldown.
+                        if !safety {
+                            yantrik_companion::proactive_backoff::KindBackoff::record_delivery(
+                                &companion.db.conn(),
+                                msg_kind,
+                                now_ts,
+                            );
+                        }
+                        last_proactive_kind = (!safety).then_some(msg_kind);
 
                         let text = msg.text.clone();
-                        let notif_text = msg.text.clone();
+                        let notif_msg = msg.clone();
                         let why = msg.why.clone();
-                        let kind_key = msg_kind.key().to_string();
+                        // A safety signal offers no choices: no kind to stop.
+                        let kind_key = if safety { String::new() } else { msg_kind.key().to_string() };
+                        let memory_ids = msg.memory_ids.join(",");
                         let weak = ui_weak.clone();
                         // Where this goes depends on who is answering. The transcript belongs
                         // to the mind the person is talking to; when that is not this one, an
@@ -2687,8 +2742,7 @@ fn worker_loop(
                         // asked. See the section in `wire::notifications` — that is a fault
                         // somebody watched happen.
                         let route = crate::wire::notifications::deliver_proactive(
-                            &msg.text,
-                            &msg.why,
+                            &msg,
                             move |_lens_was_closed| {
                                 let _ = slint::invoke_from_event_loop(move || {
                                     if let Some(ui) = weak.upgrade() {
@@ -2705,6 +2759,7 @@ fn worker_loop(
                                             blocks: ModelRc::default(),
                                             why: SharedString::from(&why),
                                             kind: SharedString::from(&kind_key),
+                                            memory_ids: SharedString::from(&memory_ids),
                                         });
                                         // Raised only when the Lens is closed — re-checked here on
                                         // the UI thread, which is the one place that reading is
@@ -2715,8 +2770,7 @@ fn worker_loop(
                                         // reaches the Lens (issue #216).
                                         crate::wire::notifications::companion_thought(
                                             &ui,
-                                            &notif_text,
-                                            &why,
+                                            &notif_msg,
                                         );
                                     }
                                 });
@@ -2725,8 +2779,10 @@ fn worker_loop(
 
                         // Forward proactive messages to Telegram
                         if companion.config.telegram.enabled && companion.config.telegram.forward_proactive {
+                            // With its why, as every surface carries it (#754).
                             if let Err(e) = yantrik_companion::telegram::send_message(
-                                &companion.config.telegram, &msg.text,
+                                &companion.config.telegram,
+                                &yantrik_companion::proactive_backoff::with_why_line(&msg.text, &msg.why),
                             ) {
                                 tracing::warn!(error = %e, "Failed to forward proactive to Telegram");
                             }
@@ -3072,6 +3128,8 @@ fn push_proactive_kinds(companion: &CompanionService, ui_weak: &slint::Weak<App>
             )
         })
         .collect();
+    // The memories the person said not to use (#754), with the way back.
+    let excluded = yantrik_companion::proactive_backoff::MemoryExclusions::labelled(&companion.db.conn());
     let weak = ui_weak.clone();
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = weak.upgrade() {
@@ -3085,6 +3143,11 @@ fn push_proactive_kinds(companion: &CompanionService, ui_weak: &slint::Weak<App>
                 })
                 .collect();
             ui.set_proactive_kind_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+            let excluded: Vec<crate::ExcludedMemoryRow> = excluded
+                .into_iter()
+                .map(|(id, label)| crate::ExcludedMemoryRow { id: id.into(), label: label.into() })
+                .collect();
+            ui.set_proactive_excluded_memories(slint::ModelRc::new(slint::VecModel::from(excluded)));
         }
     });
 }
@@ -3425,7 +3488,8 @@ fn build_companion(config: CompanionConfig) -> Result<CompanionService, String> 
 /// Uses semantic recall with a broad query to find diverse user memories,
 /// then filters for older ones worth surfacing. Only fires ~10% of think
 /// cycles to avoid spam.
-fn pick_serendipity_memory(db: &yantrikdb_core::YantrikDB) -> Option<String> {
+/// The memory's id and text.
+fn pick_serendipity_memory(db: &yantrikdb_core::YantrikDB) -> Option<(String, String)> {
     // Only fire ~10% of think cycles to avoid spam
     let roll = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3463,7 +3527,7 @@ fn pick_serendipity_memory(db: &yantrikdb_core::YantrikDB) -> Option<String> {
         .subsec_nanos() as usize
         % candidates.len();
 
-    Some(candidates[idx].text.clone())
+    Some((candidates[idx].rid.clone(), candidates[idx].text.clone()))
 }
 
 #[cfg(test)]

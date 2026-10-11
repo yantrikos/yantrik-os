@@ -84,6 +84,7 @@ impl ProactiveFeature for ProcessSentinel {
                     urgency: 0.6,
                     confidence: 0.7,
                     category: UrgeCategory::Security,
+                    safety: true,
                 });
             } else if is_new {
                 // New but low CPU — just note it, no urge

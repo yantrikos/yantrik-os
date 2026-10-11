@@ -61,6 +61,9 @@ thread_local! {
     /// The system observer, for the same reason — see [`relay_to_features`].
     static OBSERVER: RefCell<Option<std::rc::Rc<yantrik_os::SystemObserver>>> =
         const { RefCell::new(None) };
+    /// The mind, for the choices on a proactive notification and its dismissal (#754).
+    static BRIDGE: RefCell<Option<std::sync::Arc<crate::bridge::CompanionBridge>>> =
+        const { RefCell::new(None) };
 }
 
 /// Read the mirror on the UI thread.
@@ -76,6 +79,7 @@ fn with_mirror<T>(f: impl FnOnce(&mut notifications::NotificationMirror) -> T) -
 pub fn wire(ui: &App, ctx: &AppContext) {
     MIRROR.with(|slot| *slot.borrow_mut() = Some(ctx.notification_store.clone()));
     OBSERVER.with(|slot| *slot.borrow_mut() = Some(ctx.observer.clone()));
+    BRIDGE.with(|slot| *slot.borrow_mut() = Some(ctx.bridge.clone()));
 
     wire_centre(ui);
     wire_toasts(ui);
@@ -140,6 +144,7 @@ fn wire_centre(ui: &App) {
     let weak = ui.as_weak();
     ui.on_notification_dismissed(move |id| {
         let id = id.to_string();
+        proactive_dismissed(&id);
         act("notifications.dismiss", serde_json::json!({ "id": id }));
         with_mirror(|m| m.dismiss_locally(&id));
         if let Some(ui) = weak.upgrade() {
@@ -301,6 +306,7 @@ fn wire_toasts(ui: &App) {
         // Closing a toast is closing the notification. It stays in the centre for a week — the
         // store keeps a dismissed notification — so nothing is destroyed by a stray click.
         if !id.starts_with("local:") {
+            proactive_dismissed(&id);
             act("notifications.dismiss", serde_json::json!({ "id": id }));
             with_mirror(|m| m.dismiss_locally(&id));
             resync(&ui);
@@ -360,7 +366,13 @@ fn invoke_action(weak: &slint::Weak<App>, id: &str, action_id: &str) {
         crate::wire::toast::remove(&ui, id);
         resync(&ui);
         if let Some((app, args)) = ours {
-            forward_to_app(&ui, &app, action_id, args);
+            // A choice behind "Less of this" on a proactive message is the mind's to keep, not
+            // an app's surface to call (#754).
+            if let Some(choice) = proactive_choice_from_action(&app, action_id) {
+                send_proactive_choice(choice, args.as_ref());
+            } else {
+                forward_to_app(&ui, &app, action_id, args);
+            }
         }
     }
     tracing::info!(id, action_id, "notification action pressed");
@@ -888,7 +900,7 @@ pub fn companion_said(ui: &App, title: &str, text: &str) {
     }
     // The text is the model's: filed as the companion's, labelled as a model's (security review of
     // #648, L3). It went out under "Yantrik" with nothing saying a model wrote it.
-    post_companion(CompanionPost::Result, title.to_string(), text.chars().take(200).collect());
+    post_companion(CompanionPost::Result, title.to_string(), text.chars().take(200).collect(), Vec::new());
 }
 
 /// The built-in companion said something *unprompted* while the Lens was closed, so the person
@@ -899,11 +911,11 @@ pub fn companion_said(ui: &App, title: &str, text: &str) {
 /// is not reached (issue #216, when the companion filed 35 chatty notifications in a day). A
 /// result the person *did* ask for — a finished task, an agent that completed — goes through
 /// `companion_said` instead and is never gated; news somebody is waiting on is not chatter.
-pub fn companion_thought(ui: &App, text: &str, why: &str) {
+pub fn companion_thought(ui: &App, msg: &yantrik_companion::types::ProactiveMessage) {
     if ui.get_lens_open() {
         return;
     }
-    notify_companion_thought(text, why);
+    notify_companion_thought(&msg.text, msg);
 }
 
 // ── Where a proactive message goes ──────────────────────────────────────────────────────────
@@ -1072,10 +1084,10 @@ pub fn route_result(s: ProactiveSituation) -> ProactiveDelivery {
 /// Slint model on the UI thread and this is called from the companion worker; the caller already
 /// knows how to make that hop. It runs only for [`ProactiveDelivery::Transcript`].
 pub fn deliver_proactive(
-    text: &str,
-    why: &str,
+    msg: &yantrik_companion::types::ProactiveMessage,
     push_to_transcript: impl FnOnce(bool),
 ) -> ProactiveDelivery {
+    let text = msg.text.as_str();
     let route = route_proactive(situation_now());
     match route {
         ProactiveDelivery::Hold => {
@@ -1089,7 +1101,7 @@ pub fn deliver_proactive(
         // not reached. Small talk, machinery and empty findings are dropped here rather than
         // filling the one interruptive channel with chatter.
         ProactiveDelivery::NotifyOnly => {
-            notify_companion_thought(text, why);
+            notify_companion_thought(text, msg);
         }
         // The Lens is ours: the thought is written into it either way, and the callback decides
         // whether it also raises a notification (see `companion_thought`).
@@ -1122,7 +1134,7 @@ fn deliver(
                  a notification and not part of the conversation"
             );
             let (title, body) = title_and_body(text);
-            post_companion(CompanionPost::Result, title, body);
+            post_companion(CompanionPost::Result, title, body, Vec::new());
         }
         ProactiveDelivery::Transcript { notify } => push_to_transcript(notify),
     }
@@ -1180,8 +1192,9 @@ fn companion_notification_text(text: &str) -> Option<String> {
 /// notification was filed. Both delivery routes — the notification-only route and the Lens-closed
 /// transcript route — come through here, so the rule and the cap are applied exactly once.
 ///
-/// `why` is the message's plain why (#754), from fixed templates; it is the body's last line.
-fn notify_companion_thought(text: &str, why: &str) -> bool {
+/// The message's plain why (#754), from fixed templates, is the body's last line, and the choices
+/// behind "Less of this" are its buttons ([`proactive_buttons`]).
+fn notify_companion_thought(text: &str, msg: &yantrik_companion::types::ProactiveMessage) -> bool {
     let Some(cleaned) = companion_notification_text(text) else {
         tracing::info!(
             text,
@@ -1197,7 +1210,7 @@ fn notify_companion_thought(text: &str, why: &str) -> bool {
         return false;
     }
     let (title, body) = title_and_body(&cleaned);
-    post_companion(CompanionPost::Reflection, title, with_why(body, why));
+    post_companion(CompanionPost::Reflection, title, with_why(body, &msg.why), proactive_buttons(msg));
     true
 }
 
@@ -1245,12 +1258,86 @@ fn with_why(body: String, why: &str) -> String {
     }
 }
 
-fn post_companion(kind: CompanionPost, title: String, body: String) {
-    notify::send(
-        notify::Notification::new("Yantrik Companion", title)
-            .body(labelled(kind, &body))
-            .urgency(Urgency::Low),
-    );
+fn post_companion(kind: CompanionPost, title: String, body: String, buttons: Vec<ProactiveButton>) {
+    let mut notification = notify::Notification::new(COMPANION_APP, title)
+        .body(labelled(kind, &body))
+        .urgency(Urgency::Low);
+    for button in buttons {
+        notification = notification.action_with(button.id, button.label, button.args);
+    }
+    notify::send(notification);
+}
+
+/// The sender every companion notification is filed under.
+const COMPANION_APP: &str = "Yantrik Companion";
+
+/// Prefix of a proactive notification's choice buttons; the rest is [`Choice::key`].
+///
+/// [`Choice::key`]: yantrik_companion::proactive_backoff::Choice::key
+const PROACTIVE_ACTION: &str = "proactive.";
+
+/// One button on a companion notification.
+#[derive(Debug, Clone, PartialEq)]
+struct ProactiveButton {
+    id: String,
+    label: &'static str,
+    args: serde_json::Value,
+}
+
+/// The choices behind "Less of this" as a proactive notification's buttons (#754): the same
+/// three as the Lens, carrying the message's kind and the memories it was made from. A safety
+/// signal has none, and a message made from no memory has no "Don't use this memory".
+fn proactive_buttons(msg: &yantrik_companion::types::ProactiveMessage) -> Vec<ProactiveButton> {
+    let args = serde_json::json!({ "kind": msg.kind, "memory_ids": msg.memory_ids });
+    yantrik_companion::proactive_backoff::choices_for(msg)
+        .into_iter()
+        .map(|choice| ProactiveButton {
+            id: format!("{PROACTIVE_ACTION}{}", choice.key()),
+            label: choice.label(),
+            args: args.clone(),
+        })
+        .collect()
+}
+
+/// The choice a button on one of the companion's notifications stands for, if it is one.
+fn proactive_choice_from_action(app: &str, action_id: &str) -> Option<yantrik_companion::proactive_backoff::Choice> {
+    if app != COMPANION_APP {
+        return None;
+    }
+    yantrik_companion::proactive_backoff::Choice::from_key(action_id.strip_prefix(PROACTIVE_ACTION)?)
+}
+
+/// Hand a choice to the mind, with the kind and memories its notification carried.
+fn send_proactive_choice(choice: yantrik_companion::proactive_backoff::Choice, args: Option<&serde_json::Value>) {
+    let kind = args.and_then(|a| a["kind"].as_str()).unwrap_or("").to_string();
+    let memory_ids = args
+        .and_then(|a| a["memory_ids"].as_array())
+        .map(|ids| ids.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    BRIDGE.with(|slot| {
+        if let Some(bridge) = slot.borrow().as_ref() {
+            bridge.proactive_choice(choice, kind, memory_ids);
+        }
+    });
+    tracing::info!(choice = choice.key(), "a choice on a proactive notification");
+}
+
+/// A proactive notification closed without a choice is "Not now": the mind's throttle hears it
+/// was dismissed, as it does for a whisper card's x (#754). Anything else closed is not its
+/// business.
+fn proactive_dismissed(id: &str) {
+    let not_now = format!("{PROACTIVE_ACTION}{}", yantrik_companion::proactive_backoff::Choice::NotNow.key());
+    let args = with_mirror(|m| {
+        m.get(id).and_then(|n| {
+            (n.app == COMPANION_APP && !n.dismissed)
+                .then(|| n.actions.iter().find(|a| a.id == not_now).map(|a| a.args.clone()))
+                .flatten()
+        })
+    })
+    .flatten();
+    if let Some(args) = args {
+        send_proactive_choice(yantrik_companion::proactive_backoff::Choice::NotNow, args.as_ref());
+    }
 }
 
 /// How much of a thought the body keeps. The store's bound is 2,000 (`MAX_BODY`); an unprompted
@@ -1399,6 +1486,33 @@ mod tests {
     }
 
     use super::*;
+
+    /// A proactive notification carries the same choices behind "Less of this" as the Lens, as
+    /// buttons the shell keeps for itself (#754): three when the message was made from a memory,
+    /// two when it was not, none for a safety signal. Each carries the kind and the memories.
+    #[test]
+    fn a_proactive_notification_offers_the_three_choices() {
+        use yantrik_companion::proactive_backoff::Choice;
+        let mut msg = yantrik_companion::types::ProactiveMessage {
+            text: "Your sister's surgery was today.".into(),
+            kind: "check_ins".into(),
+            memory_ids: vec!["mem-1".into()],
+            ..Default::default()
+        };
+        let buttons = proactive_buttons(&msg);
+        let labels: Vec<&str> = buttons.iter().map(|b| b.label).collect();
+        assert_eq!(labels, vec!["Not now", "Stop this kind", "Don't use this memory"]);
+        assert_eq!(buttons[2].args, serde_json::json!({"kind": "check_ins", "memory_ids": ["mem-1"]}));
+        for (b, choice) in buttons.iter().zip([Choice::NotNow, Choice::StopKind, Choice::ForgetMemory]) {
+            assert_eq!(proactive_choice_from_action(COMPANION_APP, &b.id), Some(choice));
+            assert_eq!(proactive_choice_from_action("Downloads", &b.id), None, "only the companion's own");
+        }
+        msg.memory_ids.clear();
+        assert_eq!(proactive_buttons(&msg).len(), 2, "no memory, no third choice");
+        msg.safety = true;
+        assert!(proactive_buttons(&msg).is_empty(), "a safety signal offers no Less of this");
+        assert_eq!(proactive_choice_from_action(COMPANION_APP, "open_folder"), None);
+    }
 
     fn situation(builtin: bool, in_flight: bool, lens: bool) -> ProactiveSituation {
         ProactiveSituation {

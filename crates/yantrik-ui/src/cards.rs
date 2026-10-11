@@ -114,12 +114,13 @@ impl CardManager {
             self.hint_count += 1;
             return;
         }
-        if dnd && scored.urge.category != features::UrgeCategory::Security {
+        // A safety signal (a security warning, a battery about to die) is decided before any
+        // backoff, and never throttled (#754).
+        let security = scored.urge.safety || scored.urge.category == features::UrgeCategory::Security;
+        if dnd && !security {
             self.hint_count += 1;
             return;
         }
-        // A security card is a safety signal: decided before any backoff, and never throttled.
-        let security = scored.urge.category == features::UrgeCategory::Security;
         let kind = if security { None } else { card_kind(&scored.urge.source) };
         let mut tier = scored.tier.clone();
         if let Some(kind) = kind {
@@ -188,18 +189,17 @@ impl CardManager {
         }
     }
 
-    /// "Less of this" on a card: its kind goes one level further back at once, and the card
-    /// stays a moment so its line can say what that did. Returns the kind, for the mind to keep.
-    pub fn less_of_this(&mut self, id: &str) -> Option<ProactiveKind> {
+    /// "Stop this kind" on a card: its kind is off at once, and the card stays a moment so its
+    /// line can say what that did. Returns the kind, for the mind to keep.
+    pub fn stop_kind(&mut self, id: &str) -> Option<ProactiveKind> {
         let now = Instant::now();
         let card = self.cards.iter_mut().find(|c| c.id == id)?;
         let kind = card.kind?;
         card.auto_dismiss_at = Some(now + ACK_LINGER);
         // Already answered: its fading out afterwards is not "ignored".
         card.kind = None;
-        let level = self.level(kind).raised();
         if let Ok(mut levels) = LEVELS.lock() {
-            levels.insert(kind, level);
+            levels.insert(kind, BackoffLevel::OffUntilAsked);
         }
         Some(kind)
     }
@@ -381,6 +381,7 @@ mod tests {
                 body: "body".into(),
                 urgency: 0.9,
                 confidence: 0.9,
+                safety: category == features::UrgeCategory::Security,
                 category,
             },
             pressure: 0.9,
@@ -414,28 +415,47 @@ mod tests {
         assert_eq!(mgr.cards.len(), 1);
     }
 
-    /// "Less of this" backs the kind off at once: the next card of that kind waits its longer
-    /// cooldown and no longer interrupts, and the pressed card is not counted as ignored.
+    /// "Stop this kind" turns the kind off at once: no more cards of it, and the pressed card is
+    /// not counted as ignored when it fades.
     #[test]
-    fn less_of_this_backs_the_kind_off() {
+    fn stop_this_kind_turns_the_kind_off() {
         let mut mgr = CardManager::new();
         let now = Instant::now();
         mgr.add_at(&urge("a", "tool_suggester", features::UrgeCategory::Focus, features::UrgeTier::Interrupt), false, now);
-        assert_eq!(mgr.less_of_this("a"), Some(ProactiveKind::Suggestions));
-        assert_eq!(mgr.level(ProactiveKind::Suggestions), BackoffLevel::LessOften);
+        assert_eq!(mgr.stop_kind("a"), Some(ProactiveKind::Suggestions));
+        assert_eq!(mgr.level(ProactiveKind::Suggestions), BackoffLevel::OffUntilAsked);
 
-        mgr.add_at(&urge("b", "clipboard_intelligence", features::UrgeCategory::Focus, features::UrgeTier::Interrupt), false, now + Duration::from_secs(60));
-        assert!(mgr.cards.iter().all(|c| c.id != "b"), "inside the backed-off cooldown");
-
-        let later = now + CARD_BASE_COOLDOWN.mul_f64(COOLDOWN_FACTOR_FOR_TEST) + Duration::from_secs(1);
-        mgr.add_at(&urge("c", "focus_flow", features::UrgeCategory::Focus, features::UrgeTier::Interrupt), false, later);
-        let c = mgr.cards.iter().find(|c| c.id == "c").expect("after the cooldown it shows");
-        assert_eq!(c.tier, features::UrgeTier::Whisper, "a backed-off kind never interrupts");
+        mgr.add_at(&urge("b", "clipboard_intelligence", features::UrgeCategory::Focus, features::UrgeTier::Interrupt), false, now + Duration::from_secs(86_400));
+        assert!(mgr.cards.iter().all(|c| c.id != "b"), "the kind is off");
 
         mgr.cards.iter_mut().for_each(|c| c.auto_dismiss_at = Some(now));
         mgr.tick();
-        let outcomes = mgr.take_outcomes();
-        assert_eq!(outcomes, vec![(ProactiveKind::Suggestions, Outcome::Ignored)], "only card c faded unanswered");
+        assert!(mgr.take_outcomes().is_empty(), "the pressed card faded answered, not ignored");
+        if let Ok(mut levels) = LEVELS.lock() {
+            levels.remove(&ProactiveKind::Suggestions);
+        }
+    }
+
+    /// A kind the throttle backed off waits its longer cooldown and no longer interrupts.
+    #[test]
+    fn a_backed_off_kind_waits_longer_and_never_interrupts() {
+        let mut mgr = CardManager::new();
+        let now = Instant::now();
+        // Patterns is used by no other test here; LEVELS is shared across the test threads.
+        if let Ok(mut levels) = LEVELS.lock() {
+            levels.insert(ProactiveKind::Patterns, BackoffLevel::LessOften);
+        }
+        mgr.add_at(&urge("a", "screen_watcher", features::UrgeCategory::Focus, features::UrgeTier::Interrupt), false, now);
+        mgr.add_at(&urge("b", "project_consciousness", features::UrgeCategory::Project, features::UrgeTier::Interrupt), false, now + Duration::from_secs(60));
+        assert!(mgr.cards.iter().all(|c| c.id != "b"), "inside the backed-off cooldown");
+        let later = now + CARD_BASE_COOLDOWN.mul_f64(COOLDOWN_FACTOR_FOR_TEST) + Duration::from_secs(1);
+        mgr.add_at(&urge("c", "project_consciousness", features::UrgeCategory::Project, features::UrgeTier::Interrupt), false, later);
+        if let Ok(mut levels) = LEVELS.lock() {
+            levels.remove(&ProactiveKind::Patterns);
+        }
+        let c = mgr.cards.iter().find(|c| c.id == "c").expect("after the cooldown it shows");
+        assert_eq!(c.tier, features::UrgeTier::Whisper, "a backed-off kind never interrupts");
+        assert_eq!(mgr.cards.iter().find(|c| c.id == "a").map(|c| c.tier.clone()), Some(features::UrgeTier::Whisper));
     }
 
     /// A security card is never throttled: not by its kind being off, nor by a cooldown, and it
@@ -460,10 +480,24 @@ mod tests {
         assert_eq!(c.tier, features::UrgeTier::Interrupt, "a security card still interrupts");
         assert_eq!(c.kind, None, "nothing to back off");
         assert_eq!(c.why, SECURITY_WHY);
-        assert_eq!(mgr.less_of_this("s1"), None);
+        assert_eq!(mgr.stop_kind("s1"), None);
         mgr.cards.iter_mut().for_each(|c| c.auto_dismiss_at = Some(now));
         mgr.tick();
         assert!(mgr.take_outcomes().is_empty());
+    }
+
+    /// A battery about to die is a safety signal: it shows during Do Not Disturb, interrupts,
+    /// and offers no "Less of this" (#754).
+    #[test]
+    fn a_battery_about_to_die_is_never_held() {
+        let mut mgr = CardManager::new();
+        let now = Instant::now();
+        let mut critical = urge("bc", "resource_guardian", features::UrgeCategory::Resource, features::UrgeTier::Interrupt);
+        critical.urge.safety = true;
+        mgr.add_at(&critical, true, now);
+        let c = mgr.cards.iter().find(|c| c.id == "bc").expect("shown through Do Not Disturb");
+        assert_eq!(c.kind, None);
+        assert_eq!(c.tier, features::UrgeTier::Interrupt);
     }
 
     const COOLDOWN_FACTOR_FOR_TEST: f64 = yantrik_companion::proactive_backoff::COOLDOWN_LESS_OFTEN;

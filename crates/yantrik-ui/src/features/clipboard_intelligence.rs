@@ -246,6 +246,7 @@ impl ProactiveFeature for ClipboardIntelligence {
                     urgency: 0.8,
                     confidence: 0.85,
                     category: UrgeCategory::Security,
+                    safety: true,
                 });
             }
 
@@ -267,6 +268,7 @@ impl ProactiveFeature for ClipboardIntelligence {
                             urgency: 0.6,
                             confidence: 0.8,
                             category: UrgeCategory::Security,
+                            safety: true,
                         });
                     }
                 }
@@ -292,6 +294,7 @@ impl ProactiveFeature for ClipboardIntelligence {
                     urgency: 0.35,
                     confidence: 0.9,
                     category: UrgeCategory::Focus,
+                    safety: false,
                 });
             }
         }

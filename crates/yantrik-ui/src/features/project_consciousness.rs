@@ -54,6 +54,7 @@ impl ProactiveFeature for ProjectConsciousness {
                             urgency: 0.2,
                             confidence: 0.8,
                             category: UrgeCategory::Project,
+                            safety: false,
                         };
                         self.active_project = Some(project);
                         return vec![urge];

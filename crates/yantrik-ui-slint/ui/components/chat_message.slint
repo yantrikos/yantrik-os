@@ -16,6 +16,23 @@ import { MessageData } from "message_bubble.slint";
 import { ToolCallCard } from "tool_call.slint";
 import { ChatPill } from "chat_parts.slint";
 
+// A quiet link under a message: "Less of this" and each of its choices (#754).
+component ChoiceLink inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+    width: link-text.preferred-width;
+    height: link-text.preferred-height;
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    link-text := Text {
+        text: root.label;
+        color: Theme.chat-text-2;
+        font-size: Theme.fs-caption;
+    }
+}
+
 export component ChatMessage inherits Rectangle {
     in property <MessageData> data;
     // The mind's name, printed at the start of a group of its replies.
@@ -26,15 +43,19 @@ export component ChatMessage inherits Rectangle {
     // The desktop's own offer, while private, to leave Private mode: the one link a reply still
     // carries, because it is the desktop speaking and not a run.
     callback open-run(string);
-    // "Less of this" on a message the mind said first: backs off that kind (#754).
-    callback less-of-this(string);
+    // One of the three choices behind "Less of this" on a message the mind said first (#754):
+    // the choice ("not_now" | "stop_kind" | "forget_memory"), the message's kind and the memories
+    // it was made from.
+    callback proactive-choice(string, string, string);
 
     property <bool> is-user: root.data.role == "user";
     property <bool> is-desktop: root.data.role == "desktop";
     property <bool> has-blocks: root.data.blocks.length > 0 && !root.data.is-streaming;
     property <bool> actions-open: false;
-    // Set once "Less of this" is pressed, so the line says what it did.
-    property <bool> backed-off: false;
+    // "Less of this" was pressed: its choices show.
+    property <bool> choices-open: false;
+    // What the chosen choice did, said in place of the why once one is pressed.
+    property <string> chosen: "";
 
     height: wrap.preferred-height;
     background: transparent;
@@ -105,32 +126,48 @@ export component ChatMessage inherits Rectangle {
                 }
 
                 // Why a message the mind said first appeared: one small secondary line under it,
-                // with the quiet control that backs that kind off (#754).
-                if root.data.why != "" && !root.data.is-streaming : HorizontalLayout {
+                // with the quiet "Less of this" and its three choices (#754). A safety signal has
+                // no kind, so it offers none; a message made from no memory offers two.
+                if root.data.why != "" && !root.data.is-streaming : VerticalLayout {
                     padding-top: Theme.sp-1;
-                    spacing: Theme.sp-2;
-                    Text {
-                        horizontal-stretch: 1;
-                        text: root.backed-off
-                            ? "OK, fewer messages like this. Change it in Settings \u{2192} AI & Intelligence."
-                            : root.data.why;
-                        color: Theme.chat-text-2;
-                        font-size: Theme.fs-caption;
-                        wrap: word-wrap;
-                    }
-                    if !root.backed-off && root.data.kind != "" : Rectangle {
-                        width: less-label.preferred-width;
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => {
-                                root.backed-off = true;
-                                root.less-of-this(root.data.kind);
-                            }
-                        }
-                        less-label := Text {
-                            text: "Less of this";
+                    spacing: Theme.sp-1;
+                    HorizontalLayout {
+                        spacing: Theme.sp-2;
+                        Text {
+                            horizontal-stretch: 1;
+                            text: root.chosen != "" ? root.chosen : root.data.why;
                             color: Theme.chat-text-2;
                             font-size: Theme.fs-caption;
+                            wrap: word-wrap;
+                        }
+                        if root.chosen == "" && !root.choices-open && root.data.kind != "" : ChoiceLink {
+                            label: "Less of this";
+                            clicked => { root.choices-open = true; }
+                        }
+                    }
+                    if root.chosen == "" && root.choices-open : HorizontalLayout {
+                        alignment: start;
+                        spacing: Theme.sp-3;
+                        ChoiceLink {
+                            label: "Not now";
+                            clicked => {
+                                root.chosen = "OK, not now.";
+                                root.proactive-choice("not_now", root.data.kind, root.data.memory-ids);
+                            }
+                        }
+                        ChoiceLink {
+                            label: "Stop this kind";
+                            clicked => {
+                                root.chosen = "OK, no more like this. Turn it back on in Settings \u{2192} AI & Intelligence.";
+                                root.proactive-choice("stop_kind", root.data.kind, root.data.memory-ids);
+                            }
+                        }
+                        if root.data.memory-ids != "" : ChoiceLink {
+                            label: "Don't use this memory";
+                            clicked => {
+                                root.chosen = "OK, I won't bring that memory up again. Undo it in Settings \u{2192} AI & Intelligence.";
+                                root.proactive-choice("forget_memory", root.data.kind, root.data.memory-ids);
+                            }
                         }
                     }
                 }

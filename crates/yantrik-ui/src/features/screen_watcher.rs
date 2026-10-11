@@ -77,6 +77,7 @@ impl ProactiveFeature for ScreenWatcher {
                     urgency: 0.25,
                     confidence: 0.6,
                     category: UrgeCategory::Vision,
+                    safety: false,
                 });
             }
         }

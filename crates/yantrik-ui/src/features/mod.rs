@@ -39,6 +39,10 @@ pub struct Urge {
     pub confidence: f32,
     /// Category for icon/color selection.
     pub category: UrgeCategory,
+    /// A safety signal (#754): a security warning, or a warning before an irreversible loss.
+    /// Set only by the feature that detects it. No backoff, cooldown or Do Not Disturb holds the
+    /// card, and it offers no "Less of this".
+    pub safety: bool,
 }
 
 /// Categories for urge rendering.

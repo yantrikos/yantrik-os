@@ -72,6 +72,7 @@ impl ProactiveFeature for NetworkWatcher {
                     urgency: 0.7,
                     confidence: 1.0,
                     category: UrgeCategory::Resource,
+                    safety: false,
                 });
             }
         }
@@ -87,6 +88,7 @@ impl ProactiveFeature for NetworkWatcher {
                 urgency: 0.35,
                 confidence: 1.0,
                 category: UrgeCategory::Celebration,
+                safety: false,
             });
         }
 
@@ -106,6 +108,7 @@ impl ProactiveFeature for NetworkWatcher {
                         urgency: 0.45,
                         confidence: 0.8,
                         category: UrgeCategory::Resource,
+                        safety: false,
                     });
                 }
             }
@@ -142,6 +145,7 @@ impl ProactiveFeature for NetworkWatcher {
                     urgency: 0.4,
                     confidence: 0.7,
                     category: UrgeCategory::Resource,
+                    safety: false,
                 }];
             }
         }

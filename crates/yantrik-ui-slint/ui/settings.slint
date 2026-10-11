@@ -130,6 +130,13 @@ export struct ProactiveKindRow {
     backed-off: bool,
 }
 
+// A memory the person said not to use for messages the mind starts (#754): its id, handed back
+// to undo it, and the start of its text.
+export struct ExcludedMemoryRow {
+    id: string,
+    label: string,
+}
+
 export struct RunsOnRow {
     name: string,       // "Yantrik Mind"
     state: string,      // "Answering" | "Built in" | "Attached"
@@ -525,6 +532,9 @@ export component SettingsScreen inherits Rectangle {
     // The kinds of message the mind says first, each with its level (#754).
     in property <[ProactiveKindRow]> proactive-kind-rows: [];
     callback proactive-kind-reset(string);
+    // Memories the mind will not start a message from, each with the way back (#754).
+    in property <[ExcludedMemoryRow]> proactive-excluded-memories: [];
+    callback proactive-memory-restore(string);
     in property <string> runs-on-summary: "";
     in property <[InUseRow]> in-use-providers: [];
 
@@ -1143,7 +1153,7 @@ export component SettingsScreen inherits Rectangle {
                                 }
                             }
 
-                            // ── ASSISTANT: MESSAGES IT STARTS ──
+                            // ── THE MIND: MESSAGES IT STARTS ──
                             // Every kind of message the mind says first, how often it may, and
                             // the way back to normal. "Less of this" on a message lands here (#754).
                             if root.proactive-kind-rows.length > 0 : VerticalLayout {
@@ -1152,7 +1162,7 @@ export component SettingsScreen inherits Rectangle {
                                     spacing: Theme.sp-2;
                                     Rectangle { width: 3px; height: 14px; border-radius: 1.5px; background: Theme.accent; }
                                     Text {
-                                        text: "ASSISTANT";
+                                        text: "MIND";
                                         color: Theme.text-secondary;
                                         font-size: Theme.fs-caption;
                                         font-weight: 600;
@@ -1161,7 +1171,7 @@ export component SettingsScreen inherits Rectangle {
                                     }
                                 }
                                 Text {
-                                    text: "Messages the assistant starts on its own. Press Less of this on one to see fewer like it.";
+                                    text: "Messages the mind starts on its own. Press Less of this on one to stop that kind or leave a memory out.";
                                     color: Theme.text-secondary;
                                     font-size: Theme.fs-caption;
                                     wrap: word-wrap;
@@ -1172,6 +1182,15 @@ export component SettingsScreen inherits Rectangle {
                                     value: k.backed-off ? "Back to normal" : "Normal";
                                     interactive: k.backed-off;
                                     activated => { root.proactive-kind-reset(k.kind); }
+                                }
+                                // "Don't use this memory": kept and still remembered, only never
+                                // the start of a message the mind says first.
+                                for m in root.proactive-excluded-memories : SettingRow {
+                                    label: m.label;
+                                    description: "Not used for messages the mind starts. The memory itself is kept.";
+                                    value: "Use again";
+                                    interactive: true;
+                                    activated => { root.proactive-memory-restore(m.id); }
                                 }
                             }
 

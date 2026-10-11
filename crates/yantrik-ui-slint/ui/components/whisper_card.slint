@@ -28,14 +28,18 @@ component WhisperCard inherits Rectangle {
 
     callback dismissed(string);
     callback action-clicked(string);
-    callback less-of-this(string);
+    // "Stop this kind", the second of the choices behind "Less of this" (#754). "Not now" is the
+    // dismiss. A card is never made from a memory, so it has no third choice.
+    callback stop-kind(string);
 
     property <bool> hovered: hover-area.has-hover;
-    // Set once "Less of this" is pressed, so the card says what it did.
+    // "Less of this" was pressed: its choices show.
+    property <bool> choices-open: false;
+    // "Stop this kind" was pressed, so the card says what it did.
     property <bool> backed-off: false;
 
     width: 300px;
-    height: hovered || backed-off ? 118px : 82px;
+    height: hovered || backed-off || choices-open ? 118px : (card.why != "" ? 82px : 64px);
     x: card.shown ? 0px : self.width + 20px;
     opacity: card.shown ? card.target-opacity : 0;
     border-radius: 16px;
@@ -94,10 +98,10 @@ component WhisperCard inherits Rectangle {
             overflow: elide;
         }
 
-        // Why it appeared: one small secondary line (#754). After "Less of this", what that did.
+        // Why it appeared: one small secondary line (#754). After "Stop this kind", what that did.
         if card.why != "" || root.backed-off : Text {
             text: root.backed-off
-                ? "OK, fewer messages like this. Change it in Settings \u{2192} AI & Intelligence."
+                ? "OK, no more like this. Turn it back on in Settings \u{2192} AI & Intelligence."
                 : card.why;
             color: Theme.text-dim;
             font-size: Theme.fs-micro;
@@ -125,18 +129,44 @@ component WhisperCard inherits Rectangle {
                 }
             }
 
-            // The quiet control beside the dismiss: backs this kind of card off.
-            if !root.backed-off && card.can-back-off : TouchArea {
+            // The quiet control beside the dismiss, and the choices it opens.
+            if !root.backed-off && !root.choices-open && card.can-back-off : TouchArea {
                 height: 16px;
                 width: less-text.preferred-width;
                 mouse-cursor: pointer;
-                clicked => {
-                    root.backed-off = true;
-                    root.less-of-this(card.id);
-                }
+                clicked => { root.choices-open = true; }
                 less-text := Text {
                     text: "Less of this";
                     color: root.hovered ? Theme.text-secondary : Theme.text-dim;
+                    font-size: Theme.fs-micro;
+                    vertical-alignment: center;
+                }
+            }
+            // Not now: this card goes, counted as dismissed and nothing more.
+            if !root.backed-off && root.choices-open : TouchArea {
+                height: 16px;
+                width: not-now-text.preferred-width;
+                mouse-cursor: pointer;
+                clicked => { root.dismissed(card.id); }
+                not-now-text := Text {
+                    text: "Not now";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-micro;
+                    vertical-alignment: center;
+                }
+            }
+            // Stop this kind: off until the person turns it back on in Settings.
+            if !root.backed-off && root.choices-open : TouchArea {
+                height: 16px;
+                width: stop-text.preferred-width;
+                mouse-cursor: pointer;
+                clicked => {
+                    root.backed-off = true;
+                    root.stop-kind(card.id);
+                }
+                stop-text := Text {
+                    text: "Stop this kind";
+                    color: Theme.text-secondary;
                     font-size: Theme.fs-micro;
                     vertical-alignment: center;
                 }
@@ -196,7 +226,7 @@ export component WhisperCardStack inherits Rectangle {
 
     callback card-dismissed(string);
     callback card-action(string);
-    callback card-less-of-this(string);
+    callback card-stop-kind(string);
 
     background: transparent;
     width: 300px;
@@ -209,7 +239,7 @@ export component WhisperCardStack inherits Rectangle {
             card: item;
             dismissed(id) => { root.card-dismissed(id); }
             action-clicked(id) => { root.card-action(id); }
-            less-of-this(id) => { root.card-less-of-this(id); }
+            stop-kind(id) => { root.card-stop-kind(id); }
         }
     }
 }

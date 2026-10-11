@@ -188,6 +188,7 @@ impl ProactiveFeature for ErrorCompanion {
                 urgency: 0.6,
                 confidence: 0.9,
                 category: UrgeCategory::Shell,
+                safety: false,
             });
         }
 

@@ -369,22 +369,36 @@ fn wire_whisper_cards(ui: &App, ctx: &AppContext) {
         }
     });
 
-    // "Less of this" on a whisper card: its kind backs off one level, kept by the mind (#754).
+    // "Stop this kind" on a whisper card: its kind is off until the person turns it back on in
+    // Settings, kept by the mind (#754). "Not now" is the card's dismiss, above.
     let mgr = card_mgr.clone();
     let br = bridge.clone();
     let ui_weak = ui.as_weak();
-    ui.on_whisper_card_less_of_this(move |id| {
+    ui.on_whisper_card_stop_kind(move |id| {
         let mut mgr = mgr.borrow_mut();
-        if let Some(kind) = mgr.less_of_this(id.as_str()) {
+        if let Some(kind) = mgr.stop_kind(id.as_str()) {
             cards::sync_whisper_ui(&mgr, &ui_weak);
-            br.proactive_less_of_this(kind.key().to_string());
+            br.proactive_choice(
+                yantrik_companion::proactive_backoff::Choice::StopKind,
+                kind.key().to_string(),
+                Vec::new(),
+            );
         }
     });
 
-    // "Less of this" under a message the mind said first: the same, by its kind (#754).
+    // A choice behind "Less of this" under a message the mind said first (#754).
     let br = bridge.clone();
-    ui.on_proactive_less_of_this(move |kind| {
-        br.proactive_less_of_this(kind.to_string());
+    ui.on_proactive_choice(move |choice, kind, memories| {
+        let Some(choice) = yantrik_companion::proactive_backoff::Choice::from_key(choice.as_str()) else {
+            return;
+        };
+        let memory_ids = memories
+            .split(',')
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(String::from)
+            .collect();
+        br.proactive_choice(choice, kind.to_string(), memory_ids);
     });
 
     // Action on a whisper card (dismiss + open Lens)

@@ -62,6 +62,7 @@ fn make_single_urge(
         urgency: adjusted,
         confidence,
         category: UrgeCategory::Notification,
+        safety: false,
     }
 }
 
@@ -95,6 +96,7 @@ fn make_grouped_urge(
         urgency: adjusted,
         confidence,
         category: UrgeCategory::Notification,
+        safety: false,
     }
 }
 
