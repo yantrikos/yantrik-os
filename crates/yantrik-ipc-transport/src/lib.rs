@@ -13,6 +13,8 @@ pub mod gate;
 pub mod mind_door;
 pub mod owner;
 pub mod peer_identity;
+/// Where a caller was started: desktop, terminal, ssh, timer, service, or unknown (#718).
+pub mod origin;
 /// A caller's words as one plain line: no control or bidi characters (#614).
 pub mod plain_text;
 /// Private mode: while it is on, no agent sees or does anything on this desktop.

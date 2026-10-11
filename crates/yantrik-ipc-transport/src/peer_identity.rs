@@ -426,11 +426,13 @@ fn facts(pid: i32) -> Option<(ProcessFacts, i32)> {
 
 // ── The text parsers ─────────────────────────────────────────────────
 
-/// What `/proc/<pid>/stat` says about lineage and age.
+/// What `/proc/<pid>/stat` says about lineage, age and the controlling terminal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StatFacts {
     pub ppid: i32,
     pub started: u64,
+    /// Field 7 of `/proc/<pid>/stat`: the controlling terminal, `0` when there is none.
+    pub tty_nr: i64,
 }
 
 /// Parse `/proc/<pid>/stat`, from the LAST `)`.
@@ -441,13 +443,14 @@ pub struct StatFacts {
 /// this wants are the parent pid and the start time, which is to say the two that decide which
 /// process the card is about.
 ///
-/// Numbering is the kernel's, one-based: state is 3, ppid is 4, starttime is 22. After the last
-/// `)` the first token is field 3, so field N is at index N-3.
+/// Numbering is the kernel's, one-based: state is 3, ppid is 4, tty_nr is 7, starttime is 22.
+/// After the last `)` the first token is field 3, so field N is at index N-3.
 pub fn parse_stat(text: &str) -> Option<StatFacts> {
     let tail = &text[text.rfind(')')? + 1..];
     let fields: Vec<&str> = tail.split_whitespace().collect();
     Some(StatFacts {
         ppid: fields.get(4 - 3)?.parse().ok()?,
+        tty_nr: fields.get(7 - 3)?.parse().ok()?,
         started: fields.get(22 - 3)?.parse().ok()?,
     })
 }
@@ -544,6 +547,7 @@ mod tests {
         let parsed = parse_stat(ordinary).expect("an ordinary stat line");
         assert_eq!(parsed.ppid, 1200);
         assert_eq!(parsed.started, 987654);
+        assert_eq!(parsed.tty_nr, 34816);
 
         // And the one that breaks every naive parser: the comm field is whatever the program
         // called itself, parentheses and spaces included, and the kernel does not escape it.
@@ -552,6 +556,7 @@ mod tests {
         let parsed = parse_stat(awkward).expect("a comm with spaces and parens");
         assert_eq!(parsed.ppid, 1200, "splitting from the left would have read `weird` here");
         assert_eq!(parsed.started, 987654);
+        assert_eq!(parsed.tty_nr, 34816);
     }
 
     #[test]
