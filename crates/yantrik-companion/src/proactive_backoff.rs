@@ -100,7 +100,8 @@ impl ProactiveKind {
     }
 
     /// The kind a source belongs to: an instinct name, or the first segment of a message's key
-    /// ("recipe:…", "playbook:…", "task_queue:…"). Case and separators do not matter.
+    /// ("recipe:…", "playbook:…", "task_queue:…", or an urge's cooldown key such as
+    /// "open_loops:overdue"). Case and separators do not matter.
     pub fn from_source(source: &str) -> Self {
         let head = source.split(':').next().unwrap_or("");
         let norm: String = head
@@ -110,19 +111,21 @@ impl ProactiveKind {
             .collect();
         match norm.as_str() {
             "reminder" | "sched" | "scheduler" | "openloopsguardian" | "goalkeeper"
-            | "morningbrief" | "commitment" => Self::Reminders,
+            | "morningbrief" | "commitment" | "openloops" => Self::Reminders,
             "emailwatch" | "email" => Self::Email,
-            "recipe" | "automation" | "smartupdates" | "dealwatch" | "watch" => Self::Watches,
+            "recipe" | "automation" | "auto" | "smartupdates" | "dealwatch" | "watch" => Self::Watches,
             "taskqueue" | "task" => Self::Tasks,
             "weatherwatch" | "weather" => Self::Weather,
             "checkin" | "healthpulse" | "energymap" | "nightowl" | "cognitiveload"
             | "emotionalawareness" | "aftermath" | "eveningreflection" | "silencereveal"
             | "followup" | "conversationalcallback" | "bondmilestone" | "debriefpartner"
-            | "userresumed" => Self::CheckIns,
-            "patternsurfacing" | "routine" | "activityreflector" | "predictiveworkflow"
-            | "selfawareness" | "patternbreaker" | "timecapture" | "screenwatcher"
+            | "userresumed" | "callback" => Self::CheckIns,
+            "patternsurfacing" | "pattern" | "routine" | "activityreflector" | "predictiveworkflow"
+            | "selfawareness" | "selfaware" | "patternbreaker" | "timecapture" | "screenwatcher"
             | "projectconsciousness" => Self::Patterns,
-            "conflictalerting" | "memoryweaver" | "memoryconflict" => Self::Memory,
+            "conflictalerting" | "conflictalert" | "memoryweaver" | "weaver" | "memoryconflict" => {
+                Self::Memory
+            }
             "playbook" | "toolsuggester" | "clipboardintelligence" | "focusflow" => Self::Suggestions,
             "system" | "resource" | "resourcecluster" | "resourcealert" | "resourceguardian"
             | "processsentinel" | "networkwatcher" | "errorcompanion" => Self::System,
@@ -560,6 +563,15 @@ mod tests {
         assert_eq!(ProactiveKind::from_source("check_in"), ProactiveKind::CheckIns);
         assert_eq!(ProactiveKind::from_source("playbook:p1"), ProactiveKind::Suggestions);
         assert_eq!(ProactiveKind::from_source("WonderSense"), ProactiveKind::Ideas);
+        // A message made from urges carries their cooldown keys, not the instinct's name; the
+        // stamp reads the kind from those, so they must land in the same kind.
+        assert_eq!(ProactiveKind::from_source("open_loops:overdue"), ProactiveKind::Reminders);
+        assert_eq!(ProactiveKind::from_source("auto:42"), ProactiveKind::Watches);
+        assert_eq!(ProactiveKind::from_source("callback:periodic"), ProactiveKind::CheckIns);
+        assert_eq!(ProactiveKind::from_source("pattern:weekly:x"), ProactiveKind::Patterns);
+        assert_eq!(ProactiveKind::from_source("self_aware:10_turns"), ProactiveKind::Patterns);
+        assert_eq!(ProactiveKind::from_source("conflict_alert"), ProactiveKind::Memory);
+        assert_eq!(ProactiveKind::from_source("weaver:digest"), ProactiveKind::Memory);
         for kind in ProactiveKind::ALL {
             assert_eq!(ProactiveKind::from_key(kind.key()), Some(kind));
         }
