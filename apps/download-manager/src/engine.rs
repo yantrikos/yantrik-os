@@ -610,7 +610,7 @@ impl Engine {
             Status::Paused | Status::Failed => {}
             other => return Err(format!("download {id} is {}, nothing to resume", other.as_str())),
         }
-        let have = std::fs::metadata(download.path()).map(|m| m.len()).unwrap_or(0);
+        let have = std::fs::symlink_metadata(download.path()).map(|m| m.len()).unwrap_or(0);
         if let Some(ctl) = self.control_for(id) {
             ctl.store(control::RUN, Ordering::Relaxed);
         }
@@ -834,10 +834,12 @@ impl Engine {
         // expression covers both.
         let total = body_len.map(|len| start_at + len);
 
+        // Never through a link: a link put where the download lands would send the bytes to
+        // wherever it points, past the rule that chose this place (agent_rule.rs).
         let file = if appending {
-            OpenOptions::new().append(true).open(&path)
+            no_follow(OpenOptions::new().append(true)).open(&path)
         } else {
-            File::create(&path)
+            no_follow(OpenOptions::new().write(true).create(true).truncate(true)).open(&path)
         };
         let mut file = match file {
             Ok(file) => file,
@@ -1347,6 +1349,16 @@ pub fn default_download_dir() -> PathBuf {
     Path::new(&home).join("Downloads")
 }
 
+/// Open options that refuse a path whose last part is a link (`O_NOFOLLOW`).
+fn no_follow(options: &mut OpenOptions) -> &mut OpenOptions {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    options
+}
+
 /// `~/x` means what it does in a shell; anything else is taken as given.
 pub fn expand_home(dir: &str) -> PathBuf {
     if let Some(rest) = dir.strip_prefix("~/").or_else(|| dir.strip_prefix("~\\")) {
@@ -1398,7 +1410,10 @@ pub fn filename_from_url(url: &str) -> String {
 /// Downloading over a file the person already has would be the one irreversible thing this app
 /// could do by accident, so it does not.
 pub fn unique_in(dir: &Path, name: &str) -> String {
-    if !dir.join(name).exists() {
+    // `symlink_metadata`, not `exists`: a link that points at nothing is not a free name. Taken
+    // as one, the transfer would write through it to wherever it points.
+    let taken = |n: &str| dir.join(n).symlink_metadata().is_ok();
+    if !taken(name) {
         return name.to_string();
     }
     let (stem, extension) = match name.rfind('.') {
@@ -1408,7 +1423,7 @@ pub fn unique_in(dir: &Path, name: &str) -> String {
     };
     for n in 1..10_000 {
         let candidate = format!("{stem} ({n}){extension}");
-        if !dir.join(&candidate).exists() {
+        if !taken(&candidate) {
             return candidate;
         }
     }
@@ -1592,6 +1607,22 @@ mod tests {
         assert_eq!(unique_in(&dir, "noext"), "noext (1)");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_is_never_a_free_name_and_a_download_never_writes_through_one() {
+        let dir = std::env::temp_dir().join(format!("yantrik-dl-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let elsewhere = dir.join("elsewhere.desktop");
+        std::os::unix::fs::symlink(&elsewhere, dir.join("a.desktop")).unwrap();
+        assert_eq!(unique_in(&dir, "a.desktop"), "a (1).desktop", "a dangling link is taken");
+        let refused = no_follow(OpenOptions::new().write(true).create(true).truncate(true))
+            .open(dir.join("a.desktop"));
+        assert!(refused.is_err(), "the open refuses a link");
+        assert!(!elsewhere.exists(), "nothing was written where the link points");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

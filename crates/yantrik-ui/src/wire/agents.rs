@@ -1229,7 +1229,10 @@ fn items_of_turns(
                 Item::Note(note) => {
                     out.push(AgentItemData { kind: "note".into(), key: key.into(), text: note.as_str().into(), ..Default::default() })
                 }
-                Item::Card(card) => out.push(card_of(card, key, open)),
+                Item::Card(card) => {
+                    let revealed = expanded.contains(&reveal_key(&key));
+                    out.push(card_of(card, key, open, revealed))
+                }
                 Item::Approval(approval) => out.push(approval_of(a, approval, key, pending)),
                 Item::Question(q) => out.push(question_of(q, key)),
             }
@@ -1285,7 +1288,9 @@ fn prose_of(key: &str, text: &str) -> Vec<AgentItemData> {
 
 const QUESTION_OPTIONS: usize = 6;
 const QUESTION_OPTION_CHARS: usize = 40;
-const QUESTION_CHARS: usize = 2000;
+/// The run store reads the same limit as what the person was shown of a question, when it checks
+/// that a `redact`'s words were quoted in it.
+const QUESTION_CHARS: usize = yantrik_harness::redact::QUESTION_CHARS;
 
 /// The questions the Lens's mind is waiting on, for the Lens to draw where approvals sit. Only
 /// the active mind's own conversation: another agent's question is answered in Agents.
@@ -1341,7 +1346,33 @@ fn lens_question(agent: &str, mind: &str, q: &crate::agents::model::Question) ->
                 .collect::<Vec<_>>(),
         )),
         asked: clock(q.asked).into(),
+        removes: erase_removes(q).into(),
     }
+}
+
+/// For a Keep/Erase question (one of its answers is exactly "Erase"): what pressing Erase lets a
+/// `redact` remove, as the shell parses the prompt the person sees — **every** one of its quoted
+/// spans of at least the needle minimum (each could be erased, so each is named; the prompt's
+/// 2000-character limit keeps the list short), each escaped so a control or bidi character cannot
+/// hide in it, one per line. Drawn on the card under the agent's words, so the person sees exactly
+/// what goes, whatever the quote marks look like; a list taller than the card allows scrolls, and
+/// Erase stays disabled until it has been scrolled to its end (`QuestionCard`). "" for any other
+/// question.
+fn erase_removes(q: &crate::agents::model::Question) -> String {
+    use yantrik_harness::redact::{canonical, quoted_texts, MIN_NEEDLE_CHARS};
+    if !q.options.iter().any(|o| o == "Erase") {
+        return String::new();
+    }
+    let spans: Vec<&str> =
+        quoted_texts(&q.prompt).into_iter().filter(|s| canonical(s).chars().count() >= MIN_NEEDLE_CHARS).collect();
+    if spans.is_empty() {
+        return "Erase removes nothing from this conversation".to_string();
+    }
+    let mut out = String::from("Erase removes:");
+    for span in &spans {
+        out.push_str(&format!("\n\u{201c}{}\u{201d}", crate::approval_wording::visible(span)));
+    }
+    out
 }
 
 /// `s` drawn in at most `n` characters.
@@ -1369,6 +1400,7 @@ fn question_of(q: &crate::agents::model::Question, key: String) -> AgentItemData
         answer: q.answer.as_str().into(),
         explain: q.closed.as_str().into(),
         asked: clock(q.asked).into(),
+        removes: erase_removes(q).into(),
         ..Default::default()
     }
 }
@@ -1377,8 +1409,10 @@ fn question_of(q: &crate::agents::model::Question, key: String) -> AgentItemData
 /// alone knows the run and refuses a second answer — and only then does the card settle; if the
 /// host could not deliver it, the card closes instead of claiming an answer that never arrived.
 /// Every refusal means the run is no longer asking, so the card says the one sentence a turn
-/// that ended unanswered says; the host's own words go to the log.
-pub fn answer_question(agent: &str, request: &str, answer: &str) {
+/// that ended unanswered says; the host's own words go to the log. `pressed`: the person pressed
+/// one of the offered answers rather than typing one — kept with the answer, because only a pressed
+/// *Erase* lets a mind's `redact` act.
+pub fn answer_question(agent: &str, request: &str, answer: &str, pressed: bool) {
     let answer = answer.trim();
     if answer.is_empty() {
         return;
@@ -1393,9 +1427,11 @@ pub fn answer_question(agent: &str, request: &str, answer: &str) {
             _ => None,
         })
     });
+    // Pressed, and one of the offered answers: a typed answer is never counted as pressed.
+    let by_option = pressed && full.is_some();
     let answer = full.as_deref().unwrap_or(answer);
     let Some(host) = super::harness::host() else { return };
-    match host.answer_for(&id, request, &serde_json::Value::String(answer.to_string())) {
+    match host.answer_for(&id, request, &serde_json::Value::String(answer.to_string()), by_option) {
         Ok(()) => {
             agents::store().question_answered(&id, request, answer);
         }
@@ -1419,12 +1455,13 @@ fn approval_of(a: &Agent, approval: &Approval, key: String, pending: &[crate::ap
     let card = match live {
         Some(card) => crate::ApprovalRequest { on_behalf: a.meta.on_behalf().into(), ..crate::control_approvals::row_for(card.clone()) },
         None => {
-            let (app, action) = approval.what.split_once('.').unwrap_or((approval.what.as_str(), ""));
+            let what = approval.what.as_str();
+            let (app, action) = what.split_once('.').unwrap_or((what, ""));
             let (decision, record) = match approval.outcome {
                 // Answered or taken back a moment ago, and not yet settled here: the approval
                 // store redraws on its own tick and this follows.
-                ApprovalOutcome::Pending => ("asked", format!("Asked you: {}", approval.what)),
-                outcome => (outcome.key(), approval.record.clone()),
+                ApprovalOutcome::Pending => ("asked", format!("Asked you: {what}")),
+                outcome => (outcome.key(), approval.record.as_str().to_string()),
             };
             ApprovalRequest {
                 id: approval.request.as_str().into(),
@@ -1446,8 +1483,20 @@ fn approval_of(a: &Agent, approval: &Approval, key: String, pending: &[crate::ap
     }
 }
 
+/// The key the pane's toggle uses to show a masked card as it was: the card's own key, marked.
+/// Only the person's pane holds these (they live with the cards the person opened); nothing a
+/// mind can read — `describe`, `read_agent`, the transcript — ever draws a card unmasked.
+fn reveal_key(key: &str) -> String {
+    format!("reveal:{key}")
+}
+
 /// One call, as the card draws it.
-fn card_of(c: &Card, key: String, open: bool) -> AgentItemData {
+fn card_of(c: &Card, key: String, open: bool, revealed: bool) -> AgentItemData {
+    // Drawn as shown: a call holding words the person had erased keeps them, and shows the marker,
+    // unless the person asked, in this pane, to see what was erased here.
+    let masked = c.mask.is_some();
+    let shown = if revealed { crate::agents::model::Shown::Plain(c) } else { c.shown() };
+    let c: &Card = &shown;
     let call = c.as_call();
     let has_output = !c.output.bytes.is_empty();
     let live = c.running() && has_output;
@@ -1559,6 +1608,9 @@ fn card_of(c: &Card, key: String, open: bool) -> AgentItemData {
         asked: Default::default(),
         block: Default::default(),
         styled: Default::default(),
+        masked,
+        revealed: masked && revealed,
+        removes: Default::default(),
     }
 }
 
@@ -1715,7 +1767,7 @@ fn forward_approvals(g: &AgentsState, shell: &slint::Weak<App>) {
     });
     // Only the person's click on a question card comes here; no control-surface action and no
     // harness call answers a run's question (#25).
-    g.on_answer_question(|agent, request, answer| answer_question(&agent, &request, &answer));
+    g.on_answer_question(|agent, request, answer, pressed| answer_question(&agent, &request, &answer, pressed));
 }
 
 /// Put one agent on the Agents screen: selected, under a tab that lists it, the screen shown.
@@ -1858,7 +1910,7 @@ impl Watch {
             if self.primed && !fresh.is_empty() {
                 let asked = fresh.iter().find_map(|request| {
                     a.turns.iter().rev().flat_map(|t| t.items.iter()).find_map(|item| match item {
-                        Item::Approval(ap) if &&ap.request == request => Some(ap.what.clone()),
+                        Item::Approval(ap) if &&ap.request == request => Some(ap.what.as_str().to_string()),
                         _ => None,
                     })
                 });
@@ -1978,7 +2030,10 @@ fn open_all(agent: &AgentId, key: &str) -> Result<(), String> {
         let a = s.agent(agent)?;
         let turn = a.turns.iter().find(|t| t.n == turn)?;
         match turn.items.get(index)? {
-            Item::Card(c) => Some((c.call.clone(), c.as_call().summary(), c.exit_code, c.output.all())),
+            Item::Card(c) => {
+                let c = c.shown();
+                Some((c.call.clone(), c.as_call().summary(), c.exit_code, c.output.all()))
+            }
             _ => None,
         }
     });
@@ -2135,7 +2190,7 @@ mod tests {
             card.output.push(Stream::Stdout, format!("line {n}\n").as_bytes());
         }
         // Running: the line, and the live tail under it.
-        let running = card_of(&card, "t1.0".into(), false);
+        let running = card_of(&card, "t1.0".into(), false, false);
         assert_eq!(running.call.status, "running");
         assert!(running.live);
         assert_eq!(running.output.lines().count(), LIVE_LINES);
@@ -2144,14 +2199,52 @@ mod tests {
         card.state = CallState::Ok;
         card.exit_code = Some(0);
         card.ended = Some(1);
-        let folded = card_of(&card, "t1.0".into(), false);
+        let folded = card_of(&card, "t1.0".into(), false, false);
         assert!(!folded.live);
         assert_eq!(folded.badge, "verified · exit 0");
         assert_eq!(folded.call.summary, r#"agent_run command="fdupes -r ~/Pictures""#);
         assert_eq!(folded.output, "");
-        let open = card_of(&card, "t1.0".into(), true);
+        let open = card_of(&card, "t1.0".into(), true, false);
         assert!(open.call.output.contains("line 0\n") && open.call.output.contains("line 19"));
         assert!(open.call.arguments.contains("fdupes"), "the arguments in full");
+    }
+
+    /// A card whose free text holds erased words is drawn with the marker, and says so; the person
+    /// can show it as it was, in the pane, with the card's own toggle — the reveal key lives with
+    /// the cards they opened, never in anything a mind reads.
+    #[test]
+    fn a_masked_card_is_drawn_masked_until_the_person_shows_it_as_it_was() {
+        use yantrik_harness::host::ShellErasure;
+        use yantrik_harness::redact::{Needle, MARKER};
+        let mut s = Store::new();
+        let pi = AgentId("pi:c-mask".into());
+        s.open_turn(&pi, "note it");
+        s.event(
+            &pi,
+            &crate::agents::Event::ToolStart {
+                call: "t1".into(),
+                name: "notes.write".into(),
+                target: "notes/sister.md".into(),
+                args: serde_json::json!({"text": "my sister is Priya"}),
+            },
+            Provenance::Reported,
+        );
+        let needles = [Needle::of("priya")];
+        s.redact(&pi, &ShellErasure { request_id: "forget", needles: &needles, places_in_runs: 0 });
+        let card = s.agent(&pi).unwrap().cards().next().unwrap().clone();
+
+        let masked = card_of(&card, "t1.0".into(), true, false);
+        assert!(masked.masked && !masked.revealed);
+        assert!(masked.call.arguments.contains(MARKER) && !masked.call.arguments.contains("Priya"), "{}", masked.call.arguments);
+        assert_eq!(masked.call.target, "notes/sister.md", "what was done is never hidden");
+        let shown = card_of(&card, "t1.0".into(), true, true);
+        assert!(shown.masked && shown.revealed);
+        assert!(shown.call.arguments.contains("Priya"));
+        assert_eq!(reveal_key("t1.0"), "reveal:t1.0");
+        // A card with nothing masked has nothing to show.
+        let plain = Card::new("j1", "agent_run", "", serde_json::json!({}), Provenance::Verified, 0);
+        let plain = card_of(&plain, "t1.1".into(), false, true);
+        assert!(!plain.masked && !plain.revealed);
     }
 
     fn pending_card(id: &str, agent: &str) -> crate::approvals::Card {
@@ -2302,6 +2395,35 @@ mod tests {
             row.lines().take(45).any(|l| l.contains("covers every mind and caller, until restart or the mode is lowered")),
             "the session row says whose sessions the rule covers, and until when, inside the row that mints it"
         );
+    }
+
+    /// A question to the person is never put in a notification, so the notification history —
+    /// kept by another process, where an erasure cannot follow — never holds its words.
+    #[test]
+    fn no_notification_carries_a_questions_words() {
+        let mut s = Store::new();
+        let mut watch = Watch::default();
+        assert!(watch.changes(&s, &[], 0).is_empty());
+        let pi = AgentId("pi:c-q1".into());
+        s.open_turn(&pi, "check my accounts");
+        s.event(
+            &pi,
+            &crate::agents::Event::Request {
+                request_id: "forget".into(),
+                prompt: "Forget the code Zanzibar-7741?".into(),
+                options: vec!["Keep".into(), "Erase".into()],
+            },
+            crate::agents::Provenance::Reported,
+        );
+        let mut told = watch.changes(&s, &[], 0);
+        s.question_answered(&pi, "forget", "Erase");
+        s.close_turn(&pi, true);
+        told.extend(watch.changes(&s, &[], 0));
+        assert!(!told.is_empty(), "the turn ending is told");
+        for notice in &told {
+            let n = format!("{:?}", notice.notification());
+            assert!(!n.contains("Zanzibar"), "{n}");
+        }
     }
 
     #[test]
@@ -2816,6 +2938,42 @@ mod first_prompt_attribution_tests {
         assert!(!slint.contains("text: \"you\";"), "and no longer hardcodes it for every prompt");
     }
 
+    /// A Keep/Erase card says, in the shell's words, exactly what Erase removes: the spans the
+    /// shell parsed, whatever the quote marks look like — the same on the pane's card and the Lens's.
+    #[test]
+    fn a_keep_erase_card_shows_what_erase_removes_as_the_shell_parsed_it() {
+        let ask = |prompt: &str, options: &[&str]| crate::agents::model::Question {
+            request: "forget".into(),
+            prompt: prompt.into(),
+            options: options.iter().map(|o| o.to_string()).collect(),
+            answer: String::new(),
+            closed: String::new(),
+            asked: 0,
+        };
+        let keep_erase = ["Keep", "Erase"];
+        let removes = |prompt: &str| erase_removes(&ask(prompt, &keep_erase));
+        assert_eq!(removes("Forget \"Priya\" and \u{201c}12 Elm Street\u{201d}?"), "Erase removes:\n\u{201c}Priya\u{201d}\n\u{201c}12 Elm Street\u{201d}");
+        // The reviewer's probes: only what visibly reads as quoted, or nothing.
+        assert_eq!(removes("Forget 27\" don't touch ~/Photos \"Priya\"?"), "Erase removes:\n\u{201c}Priya\u{201d}");
+        assert_eq!(removes("Forget \u{201d}Priya\u{201c} and \u{201d}x\u{201c}"), "Erase removes nothing from this conversation");
+        assert_eq!(removes("Forget \"\"Priya\" do not delete \"Elm\""), "Erase removes nothing from this conversation", "\"Elm\" is under four");
+        // Every span is named, however many: each one could be erased. A control or bidi
+        // character is drawn as an escape.
+        let many = removes("\"aaaa\" \"bbbb\" \"cccc\" \"dddd\" \"eeee\" \"ffff\"");
+        assert_eq!(many, "Erase removes:\n“aaaa”\n“bbbb”\n“cccc”\n“dddd”\n“eeee”\n“ffff”");
+        assert!(!many.contains("more"));
+        let spans: Vec<String> = (0..60).map(|i| format!("\"span {i:02}\"")).collect();
+        let all = removes(&spans.join(" "));
+        assert_eq!(all.lines().count(), 61, "the heading and all sixty");
+        assert!(all.ends_with("“span 59”"));
+        assert_eq!(removes("Forget \"Pri\u{202e}ya\"?"), "Erase removes:\n\u{201c}Pri<U+202E>ya\u{201d}");
+        // Not a Keep/Erase question: nothing to say.
+        assert_eq!(erase_removes(&ask("Forget \"Priya\"?", &["Yes", "No"])), "");
+        // The pane's card and the Lens's card carry the same line.
+        let q = ask("Forget \"Priya\"?", &keep_erase);
+        assert_eq!(question_of(&q, "t1.0".into()).removes, lens_question("hermes:main", "Hermes", &q).removes);
+    }
+
     #[test]
     fn the_lens_draws_its_minds_questions_held_to_the_same_limits_and_answers_them_the_one_way() {
         let q = crate::agents::model::Question {
@@ -2830,11 +2988,14 @@ mod first_prompt_attribution_tests {
         assert_eq!((card.agent.as_str(), card.mind.as_str(), card.request.as_str()), ("hermes:main", "Hermes", "r1"));
         assert_eq!(card.options.row_count(), QUESTION_OPTIONS);
         assert_eq!(card.prompt.chars().count(), QUESTION_CHARS);
+        // What the card shows before its ellipsis is exactly what a `redact` may quote from.
+        let shown = yantrik_harness::redact::question_shown(&q.prompt);
+        assert_eq!(card.prompt.as_str(), format!("{shown}…"));
 
         // The Lens's card answers through the Agents view's own callback, the one path to
         // `answer_for`; it has no answering of its own.
         let app = read("../yantrik-ui-slint/ui/app.slint");
-        assert!(app.contains("question-answer(agent, request, answer) => { AgentsState.answer-question(agent, request, answer); }"));
+        assert!(app.contains("question-answer(agent, request, answer, pressed) => { AgentsState.answer-question(agent, request, answer, pressed); }"));
         let desktop = read("../yantrik-ui-slint/ui/desktop.slint");
         assert!(desktop.contains("questions: root.questions;"), "the desktop screen hands the Lens its questions");
         let lens = read("../yantrik-ui-slint/ui/components/intent_lens.slint");
@@ -2871,14 +3032,37 @@ mod first_prompt_attribution_tests {
     /// harness protocol reaches it, so an agent cannot answer its own question.
     #[test]
     fn nothing_a_mind_can_call_answers_a_question() {
-        for file in ["src/control_agents.rs", "src/control.rs", "src/control_agent_terminal.rs", "src/control_approvals.rs"] {
-            let text = read(file);
+        // Every source file of the shell, not a list of the likely ones.
+        fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    sources(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        sources(&root.join("src"), &mut files);
+        assert!(files.len() > 50, "the walk found the sources");
+        let wire = root.join("src/wire/agents.rs");
+        for file in files {
+            let text = std::fs::read_to_string(&file).unwrap();
             let code = text.split("#[cfg(test)]").next().unwrap();
-            assert!(!code.contains(".answer_for(") && !code.contains("answer_question("), "{file} can answer a run's question");
+            for call in ["invoke_answer_question", "invoke_question_answer"] {
+                assert!(!code.contains(call), "{} answers a question for the person: {call}", file.display());
+            }
+            if file != wire {
+                assert!(!code.contains("answer_for(") && !code.contains("answer_question("), "{} can answer a run's question", file.display());
+            }
         }
         let wiring = read("src/wire/agents.rs");
         let wiring = wiring.split("#[cfg(test)]").next().unwrap();
         assert_eq!(wiring.matches("answer_for(").count(), 1, "one caller: the card's answer");
+        // Defined once, wired once (`g.on_answer_question(`), called once, from that callback.
+        assert_eq!(wiring.matches("answer_question(").count(), 3);
         assert!(wiring.contains("g.on_answer_question("));
     }
 }

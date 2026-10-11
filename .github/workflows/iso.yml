@@ -7,10 +7,14 @@ name: ISO
 # sequence — build, package, assemble, boot it and make it answer for itself, publish — run by
 # something that does not get tired, with a key that can only publish.
 #
-#   06:00 UTC, daily        -> nightly, and only if main moved since the last published one
+#   06:00 UTC, daily        -> built and boot-tested, NEVER published (only if main moved)
 #   tag  v*-beta*           -> beta
 #   tag  v* (anything else) -> stable
-#   push to an iso/** branch-> nightly, for trying an image before the change is on main
+#   push to an iso/** branch-> nightly: how a commit that passed the 7-task gate is published
+#
+# The public nightly is what real installs update from, so it carries only a commit that passed
+# the gate on the test machine (Pranab, 5 Oct 2026: "build only, never publish"). The daily run
+# still builds and boots main, so breakage shows the morning it lands; it just publishes nothing.
 #   run by hand             -> the channel you pick, publishing optional
 #
 # It used to build on every push to main. A merged pull request is not a release: fifteen of
@@ -86,7 +90,8 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             channel="${{ inputs.channel }}"; publish="${{ inputs.publish }}"
           elif [ "${{ github.event_name }}" = "schedule" ]; then
-            channel=nightly; publish=true
+            # Built and booted, never published: main has not passed the gate (see the top).
+            channel=nightly; publish=false
           elif [[ "$GITHUB_REF" == refs/tags/v*-beta* ]]; then
             channel=beta; publish=true
           elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then

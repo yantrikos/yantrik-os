@@ -1198,7 +1198,7 @@ export component IntentLens inherits Rectangle {
     in property <int> approvals-waiting: 0;
     /// Questions the mind this conversation is with asked and is waiting on (#25), oldest first.
     in property <[QuestionRequest]> questions: [];
-    callback question-answer(string, string, string);   // agent id, request id, answer
+    callback question-answer(string, string, string, bool);   // agent id, request id, answer, pressed
     // The run's row id (`mind:main#n`), from a work card's Details or Review changes, or an agent's
     // id from a resolved approval's "View action" — both land in the Agents screen. Also the
     // desktop's own offer, while private, to leave Private mode (`private:leave`).
@@ -2333,7 +2333,8 @@ export component IntentLens inherits Rectangle {
                         prompt: q.prompt;
                         options: q.options;
                         asked: q.asked;
-                        answered(a) => { root.question-answer(q.agent, q.request, a); }
+                        removes: q.removes;
+                        answered(a, pressed) => { root.question-answer(q.agent, q.request, a, pressed); }
                     }
                 }
 

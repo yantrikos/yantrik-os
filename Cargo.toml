@@ -49,6 +49,9 @@ members = [
     "crates/yantrik-file-follow",
     # The person's web search service: one setting, read by the shell, its tools and its harnesses.
     "crates/yantrik-web-search",
+    # Installing into a partition beside macOS or Windows without rewriting the table: what
+    # can be chosen, the plan, and the re-check before anything is written.
+    "crates/yantrik-install-target",
     "apps/notes",
     "apps/arcade",
     "apps/container-manager",
@@ -180,6 +183,7 @@ yantrik-service-sdk = { path = "crates/yantrik-service-sdk" }
 yantrik-surface = { path = "crates/yantrik-surface" }
 yantrik-app-runtime = { path = "crates/yantrik-app-runtime" }
 yantrik-file-follow = { path = "crates/yantrik-file-follow" }
+yantrik-install-target = { path = "crates/yantrik-install-target" }
 yantrik-manifest = { path = "crates/yantrik-manifest" }
 yantrik-version = { path = "crates/yantrik-version" }
 yantrik-chat = { path = "crates/yantrik-chat" }

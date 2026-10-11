@@ -30,6 +30,9 @@ use serde::{Deserialize, Serialize};
 use super::model::*;
 use crate::trail::ToolCall;
 
+mod erase;
+pub use erase::ErasurePlan;
+
 /// How many turns an agent keeps in memory. The oldest go first.
 pub const TURNS_KEPT: usize = 200;
 
@@ -60,6 +63,8 @@ pub struct Store {
     revision: u64,
     dirty: BTreeSet<AgentId>,
     removed: BTreeSet<AgentId>,
+    /// Files a stale save would have deleted, to delete on the next one (`mark_all_dirty`).
+    pending_deletes: Vec<PathBuf>,
     clock: Box<dyn Fn() -> u64 + Send>,
     /// How many agents it keeps before letting the oldest idle ones go: [`KEEP_AGENTS`].
     keep: usize,
@@ -84,6 +89,7 @@ impl Store {
             revision: 0,
             dirty: BTreeSet::new(),
             removed: BTreeSet::new(),
+            pending_deletes: Vec::new(),
             clock,
             keep: KEEP_AGENTS,
         }
@@ -170,6 +176,8 @@ impl Store {
                     usage: Usage::default(),
                     refused: 0,
                     refusals: Vec::new(),
+                    refusals_shown: None,
+                    erasures: Vec::new(),
                     approvals_asked: 0,
                     approvals_answered: 0,
                     pending_approvals: Vec::new(),
@@ -422,7 +430,7 @@ impl Store {
         let agent = &mut self.agents[i];
         let bytes = &bytes[..bytes.len().min(EVENT_CAP)];
         match find_card(agent, job, Provenance::Verified) {
-            Some(card) if card.running() => card.output.push(Stream::Terminal, bytes),
+            Some(card) if card.running() => card.push_output(Stream::Terminal, bytes),
             Some(_) => refuse(agent, format!("terminal bytes for `{job}` — the command had already ended")),
             None => {
                 let mut card = Card::new(job, "agent_run", "", serde_json::json!({}), Provenance::Verified, now);
@@ -798,10 +806,12 @@ impl Store {
             approvals_answered: agent.approvals_answered,
             usage: agent.usage.clone(),
             refused: agent.refused,
-            refusals: agent.refusals.clone(),
+            // As shown: a line holding words the person had erased is drawn masked.
+            refusals: agent.shown_refusals().to_vec(),
             ..Details::default()
         };
         for card in agent.cards() {
+            let card = card.shown();
             details.calls += 1;
             if card.state == CallState::Failed {
                 details.failed_calls += 1;
@@ -882,10 +892,11 @@ impl Store {
                         (answer, _) => format!("[asked the person] {} — answered: {answer}", q.prompt),
                     }),
                     Item::Approval(a) => out.push(match a.outcome {
-                        ApprovalOutcome::Pending => format!("[asked the person] {} — waiting for an answer", a.what),
-                        _ => format!("[asked the person] {} — {}", a.what, a.record),
+                        ApprovalOutcome::Pending => format!("[asked the person] {} — waiting for an answer", a.what.as_str()),
+                        _ => format!("[asked the person] {} — {}", a.what.as_str(), a.record.as_str()),
                     }),
                     Item::Card(card) => {
+                        let card = card.shown();
                         let how = match (card.state, card.exit_code) {
                             (CallState::Running, _) => "running".to_string(),
                             (_, Some(code)) => format!("{} · exit {code}", card.state.key()),
@@ -932,8 +943,25 @@ impl Store {
             .filter_map(|id| self.agent(id))
             .map(|agent| (file_for(dir, &agent.meta.id), serialize(agent)))
             .collect();
-        let deletes = removed.iter().map(|id| file_for(dir, id)).collect();
+        let mut deletes: Vec<PathBuf> = std::mem::take(&mut self.pending_deletes);
+        deletes.extend(removed.iter().map(|id| file_for(dir, id)));
+        // A file an agent is held under again is written, not deleted.
+        deletes.retain(|path| !self.agents.iter().any(|a| file_for(dir, &a.meta.id) == *path));
         (writes, deletes)
+    }
+
+    /// One agent's file and what it should hold now, for a write that cannot wait for the timer.
+    pub fn file_of(&self, dir: &Path, id: &AgentId) -> Option<(PathBuf, String)> {
+        self.agent(id).map(|agent| (file_for(dir, id), serialize(agent)))
+    }
+
+    /// Every agent is written again on the next save: what an older save had taken is stale.
+    /// `removed` are the files that save would have deleted; each is deleted on the next save
+    /// instead, unless an agent of that id is held again by then.
+    pub fn mark_all_dirty(&mut self, removed: &[PathBuf], dir: &Path) {
+        let ids: Vec<AgentId> = self.agents.iter().map(|a| a.meta.id.clone()).collect();
+        self.dirty.extend(ids);
+        self.pending_deletes.extend(removed.iter().filter(|path| !self.agents.iter().any(|a| file_for(dir, &a.meta.id) == **path)).cloned());
     }
 
     /// Write every change now. For tests and for shutdown; the shell's timer uses `take_dirty`.
@@ -1036,6 +1064,15 @@ fn clip_text(text: &str, max: usize) -> String {
         end -= 1;
     }
     format!("{}…", &flat[..end])
+}
+
+/// At most the last `max` bytes of `text`, cut on a character.
+fn tail_of(text: &str, max: usize) -> String {
+    let mut from = text.len().saturating_sub(max);
+    while !text.is_char_boundary(from) {
+        from += 1;
+    }
+    text[from..].to_string()
 }
 
 /// One event's text, cut at [`EVENT_CAP`] on a character.
@@ -1148,6 +1185,12 @@ fn find_card<'a>(agent: &'a mut Agent, call: &str, provenance: Provenance) -> Op
 /// can open into.
 fn refuse(agent: &mut Agent, line: String) {
     agent.refused += 1;
+    if let Some(shown) = agent.refusals_shown.as_mut() {
+        shown.push(line.clone());
+        if shown.len() > REFUSED_LINES {
+            shown.remove(0);
+        }
+    }
     agent.refusals.push(line);
     if agent.refusals.len() > REFUSED_LINES {
         agent.refusals.remove(0);
@@ -1164,6 +1207,7 @@ fn what_event(event: &Event) -> String {
         Event::Status { text } => format!("a status line ({})", clip_text(text, 40)),
         Event::Usage { .. } => "a usage report".to_string(),
         Event::Request { prompt, .. } => format!("a question ({})", clip_text(prompt, 40)),
+        Event::Redact { .. } => "a redaction".to_string(),
     }
 }
 
@@ -1207,7 +1251,7 @@ fn apply(agent: &mut Agent, event: &Event, provenance: Provenance, now: u64) -> 
         Event::ToolOutput { call, stream, delta } => {
             let delta = cap(delta);
             match find_card(agent, call, provenance) {
-                Some(card) if card.running() => card.output.push(*stream, delta.as_bytes()),
+                Some(card) if card.running() => card.push_output(*stream, delta.as_bytes()),
                 Some(_) => return Err(format!("output for `{call}` — its call had already ended")),
                 None => {
                     let mut card = Card::new(call, "(unknown call)", call, serde_json::Value::Null, provenance, now);
@@ -1270,6 +1314,9 @@ fn apply(agent: &mut Agent, event: &Event, provenance: Provenance, now: u64) -> 
             agent.status = cap(&format!("asks: {prompt}")).to_string();
             set_state(agent, State::WaitingForYou, now);
         }
+        // The host applies an erasure itself, through `Agents::redact`, and only once its rule
+        // held; one arriving here, from any feeder, is not one.
+        Event::Redact { .. } => return Err("a redaction — only the host applies one".to_string()),
         Event::Usage { model, input_tokens, output_tokens, cost_usd } => {
             let usage = &mut agent.usage;
             usage.reported = true;
@@ -1349,6 +1396,21 @@ pub fn write_all(dir: &Path, writes: &[(PathBuf, String)], deletes: &[PathBuf]) 
     Ok(())
 }
 
+/// Rewrite one session so that, once this returns, the disk holds the new contents and not the
+/// old: written beside, flushed, renamed over, and the directory flushed so the rename is kept.
+pub fn write_durably(dir: &Path, path: &Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::create_dir_all(dir)?;
+    let partial = path.with_extension("jsonl.partial");
+    {
+        let mut file = std::fs::File::create(&partial)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&partial, path)?;
+    std::fs::File::open(dir)?.sync_all()
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Line {
@@ -1383,6 +1445,10 @@ struct AgentRecord {
     refused: u32,
     #[serde(default)]
     refusals: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    refusals_shown: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    erasures: Vec<Erasure>,
     #[serde(default)]
     approvals_asked: u32,
     #[serde(default)]
@@ -1457,6 +1523,21 @@ struct ApprovalRecord {
 }
 
 #[derive(Serialize, Deserialize)]
+struct CardMaskRecord {
+    request: String,
+    #[serde(default)]
+    target: String,
+    #[serde(default)]
+    args: serde_json::Value,
+    #[serde(default)]
+    preview: String,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    output: String,
+}
+
+#[derive(Serialize, Deserialize)]
 struct CardRecord {
     call: String,
     name: String,
@@ -1484,6 +1565,8 @@ struct CardRecord {
     output_lines: u64,
     started: u64,
     ended: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mask: Option<CardMaskRecord>,
 }
 
 fn serialize(agent: &Agent) -> String {
@@ -1510,6 +1593,8 @@ fn serialize(agent: &Agent) -> String {
         },
         refused: agent.refused,
         refusals: agent.refusals.clone(),
+        refusals_shown: agent.refusals_shown.clone(),
+        erasures: agent.erasures.clone(),
         approvals_asked: agent.approvals_asked,
         approvals_answered: agent.approvals_answered,
         touched: agent.touched,
@@ -1559,6 +1644,14 @@ fn serialize(agent: &Agent) -> String {
                     output_lines: c.output.lines(),
                     started: c.started,
                     ended: c.ended,
+                    mask: c.mask.as_ref().map(|m| CardMaskRecord {
+                        request: m.request.clone(),
+                        target: m.target.clone(),
+                        args: m.args.clone(),
+                        preview: m.preview.clone(),
+                        summary: m.summary.clone(),
+                        output: tail_of(&m.output, PERSIST_BYTES),
+                    }),
                 }),
             })
             .collect();
@@ -1608,7 +1701,10 @@ fn parse(text: &str, now: u64) -> Option<Agent> {
             reported: record.usage.reported,
         },
         refused: record.refused,
+        // Only a list that still pairs with the lines it masks.
+        refusals_shown: record.refusals_shown.filter(|shown| shown.len() == record.refusals.len()),
         refusals: record.refusals,
+        erasures: record.erasures,
         approvals_asked: record.approvals_asked,
         approvals_answered: record.approvals_answered,
         pending_approvals: Vec::new(),
@@ -1672,6 +1768,16 @@ fn parse(text: &str, now: u64) -> Option<Agent> {
                     output: Output::restore(c.output_kind, &c.output, c.output_total, c.output_lines),
                     started: c.started,
                     ended: c.ended,
+                    mask: c.mask.map(|m| {
+                        Box::new(CardMask {
+                            request: m.request,
+                            target: m.target,
+                            args: m.args,
+                            preview: m.preview,
+                            summary: m.summary,
+                            output: m.output,
+                        })
+                    }),
                 }),
             })
             .collect();

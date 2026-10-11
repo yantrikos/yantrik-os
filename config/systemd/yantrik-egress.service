@@ -16,7 +16,12 @@ Type=simple
 User=yantrik-egress
 Group=yantrik-egress
 ExecStart=/opt/yantrik/bin/yantrik-egress
+# Two doors (design/mind-egress-2026-09-29.md): the endpoint door honours lan rules; the public
+# door, for anything fetched for someone else, never reaches the local network. The public door is
+# pinned: yantrik-egress refuses to start with EGRESS_PUBLIC_LISTEN set to anything else, because
+# the mind's kernel table and its status file name 7451 (EGRESS_PUBLIC_DOOR in yantrik-update).
 Environment=EGRESS_LISTEN=127.0.0.1:7450
+Environment=EGRESS_PUBLIC_LISTEN=127.0.0.1:7451
 Environment=EGRESS_STATE=/var/lib/yantrik-egress
 Environment=EGRESS_CONTROL=/run/yantrik-egress/control
 Environment=RUST_LOG=info

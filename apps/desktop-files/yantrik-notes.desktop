@@ -3,7 +3,7 @@ Type=Application
 Name=Notes
 Comment=AI-native markdown notes with semantic search
 Exec=/opt/yantrik/bin/yantrik-notes
-# One mark for now: brand/yantrik-mark.svg, installed as hicolor `yantrik`.
+# One mark for now: brand/yantrik-icon.svg, installed as hicolor `yantrik`.
 Icon=yantrik
 Categories=Office;TextEditor;
 Keywords=notes;markdown;write;
