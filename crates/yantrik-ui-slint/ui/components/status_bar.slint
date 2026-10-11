@@ -77,6 +77,9 @@ export component StatusBar inherits Rectangle {
     callback network-tapped();
 
     in property <bool> volume-available: false;
+    // The voice runtime is listening: a white mic on the bar, the same as any glyph there. Not
+    // amber, which means only that a person's answer is pending.
+    in property <bool> listening: false;
     in property <bool> volume-muted: false;
     in property <int> volume-level: 0;
     callback volume-changed(int);
@@ -162,6 +165,15 @@ export component StatusBar inherits Rectangle {
                 mode-label: root.mind-mode-label;
                 private-mode: root.private-mode;
                 clicked => { root.mind-mode-clicked(); }
+            }
+        }
+        if root.listening : BarSlot {
+            YIndicator {
+                icon: Icons.mic;
+                // Lit: the glyph in the bar's primary (white) text colour while the mic is open.
+                active: true;
+                tooltip: "Listening";
+                tooltip-above: false;
             }
         }
         if root.dnd-enabled : BarSlot {

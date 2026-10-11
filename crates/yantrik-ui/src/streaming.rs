@@ -129,6 +129,25 @@ pub fn offer(ui_weak: &slint::Weak<App>, asked: Option<&str>, said: &str, link: 
     }
 }
 
+/// What a person's bubble carries as its `run` when they spoke the words rather than typed them:
+/// the bubble draws a small "spoken" mark. A person's bubble never links to a run, so the field is
+/// free there, as it is for the desktop's offer to leave Private mode.
+pub const SPOKEN_MARK: &str = "spoken";
+
+/// Mark the person's latest bubble as spoken: the turn that just put it there came from the mic.
+pub fn mark_spoken(ui_weak: &slint::Weak<App>) {
+    let Some(ui) = ui_weak.upgrade() else { return };
+    let messages = ui.get_messages();
+    let Some(model) = messages.as_any().downcast_ref::<VecModel<MessageData>>() else { return };
+    let Some(row) = (0..model.row_count()).rev().find(|&i| model.row_data(i).is_some_and(|m| m.role == "user")) else {
+        return;
+    };
+    if let Some(mut bubble) = model.row_data(row) {
+        bubble.run = SPOKEN_MARK.into();
+        model.set_row_data(row, bubble);
+    }
+}
+
 /// Stream an answer into a bubble of its own, under a question already in the conversation.
 pub fn stream_answer(ui_weak: slint::Weak<App>, token_rx: crossbeam_channel::Receiver<String>, streams: &Streams) {
     let Some(row) = open_bubbles(&ui_weak, None) else {

@@ -196,7 +196,9 @@ pub struct Resume {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Origin {
     /// `lens` for the desk, else the channel: `telegram`, `signal`, `slack`, `discord`, `matrix`,
-    /// `irc`, `whatsapp`, `native`.
+    /// `irc`, `whatsapp`, `native`. `voice` is the desk too: the person spoke it at this machine
+    /// and the reply will be spoken back, so a mind should answer briefly and conversationally —
+    /// no tables, lists or code a voice cannot read.
     pub channel: String,
     /// Asked from away from the machine. While it is, the desktop holds the agent answering it to
     /// `standard`: what a stolen phone could ask for is less than what the person at the keyboard
@@ -218,6 +220,18 @@ impl Origin {
     /// The Lens, at the desk.
     pub fn desk() -> Origin {
         Origin { channel: "lens".into(), remote: false, person: String::new(), carries: vec!["text".into()], trust: "local".into() }
+    }
+
+    /// Spoken at the desk (Super+Space, or the Lens's mic): the reply is shown in the Lens and
+    /// spoken aloud.
+    pub fn voice() -> Origin {
+        Origin {
+            channel: "voice".into(),
+            remote: false,
+            person: String::new(),
+            carries: vec!["text".into(), "voice".into()],
+            trust: "local".into(),
+        }
     }
 }
 
@@ -377,6 +391,17 @@ mod tests {
         let old: Assignment = serde_json::from_str(r#"{"turn_id":2,"text":"x"}"#).unwrap();
         assert!(old.origin.is_none(), "a turn from an older desktop reads as saying nothing");
         assert!(!Origin::desk().remote);
+    }
+
+    /// A spoken turn says so: the channel is `voice`, and the reply may be carried as voice.
+    #[test]
+    fn a_spoken_turn_says_it_was_spoken() {
+        let wire = serde_json::to_value(Origin::voice()).unwrap();
+        assert_eq!(wire["channel"], "voice");
+        assert_eq!(wire["remote"], false, "spoken at the desk, not from away");
+        assert_eq!(wire["trust"], "local");
+        let carries: Vec<String> = serde_json::from_value(wire["carries"].clone()).unwrap();
+        assert!(carries.contains(&"voice".to_string()) && carries.contains(&"text".to_string()), "{carries:?}");
     }
 
     #[test]

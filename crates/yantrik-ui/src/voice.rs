@@ -4,11 +4,14 @@
 //! - Responds to push-to-talk activation (Super+Space)
 //! - Supports conversational follow mode (15s window after each exchange)
 //! - Implements barge-in (instant TTS stop when user speaks during playback)
-//! - Streams LLM response → sentence-split → TTS for low latency
-//! - Injects OS context (active app, selection, etc.) into each turn
+//! - Streams the reply → sentence-split → TTS for low latency
+//! - Puts OS context (active app, selection, etc.) in each turn's context
 //!
-//! All processing is local — Whisper STT on GPU, LLM via Ollama, system TTS.
-//! No internet required.
+//! What the person says goes to whichever mind the Lens talks to — the built-in, Hermes, Pi, any
+//! attached mind — through the Lens's own send path (`wire::chat::send_turn`), with
+//! `Origin::voice()`. The conversation is the Lens's: the spoken turn and its reply show there.
+//!
+//! Whisper STT and TTS run on this machine.
 //!
 //! LAZY INITIALIZATION: Models (Whisper, TTS) and audio devices are only loaded
 //! on first activation, not at boot. This avoids blocking the UI during startup
@@ -21,11 +24,34 @@ use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use yantrik_companion::config::VoiceConfig;
-use yantrik_companion::voice::{voice_profile_for_bond, SimpleVAD, VADEvent};
+use yantrik_companion::voice::{voice_profile_for_bond, SimpleVAD, VADEvent, VoiceProfile};
 use yantrik_ml::{TTSEngine, WhisperEngine};
 
 use crate::bridge::CompanionBridge;
+use crate::wire::chat::TurnStream;
 use crate::App;
+
+/// What a voice turn sends: the person's own words, and what the desk was showing as they said
+/// them, which goes in the turn's context and never in the words.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VoiceTurn {
+    pub text: String,
+    pub desk: String,
+    pub origin: yantrik_harness::protocol::Origin,
+}
+
+/// The turn for what Whisper heard.
+pub fn voice_turn(transcript: &str, os_context: &str) -> VoiceTurn {
+    VoiceTurn {
+        text: transcript.trim().to_string(),
+        desk: os_context.trim().to_string(),
+        origin: yantrik_harness::protocol::Origin::voice(),
+    }
+}
+
+/// Hands a voice turn to the Lens's send path on the UI thread and returns its reply; None when
+/// the shell could not take it.
+pub type SendTurn = Arc<dyn Fn(VoiceTurn) -> Option<TurnStream> + Send + Sync>;
 
 // ─── Voice mode state machine ───────────────────────────────────────────────
 
@@ -171,6 +197,7 @@ impl VoiceRuntime {
         bridge: Arc<CompanionBridge>,
         ui_weak: slint::Weak<App>,
         voice_config: VoiceConfig,
+        send: SendTurn,
     ) -> Self {
         let state = Arc::new(VoiceState::new());
         let state_clone = state.clone();
@@ -178,7 +205,7 @@ impl VoiceRuntime {
         let handle = std::thread::Builder::new()
             .name("voice-runtime".into())
             .spawn(move || {
-                if let Err(e) = voice_runtime_loop(bridge, ui_weak, voice_config, state_clone) {
+                if let Err(e) = voice_runtime_loop(bridge, ui_weak, voice_config, state_clone, send) {
                     tracing::error!("Voice runtime error: {e}");
                 }
             })
@@ -247,6 +274,24 @@ struct AudioPipeline {
     chunk_samples: usize,
 }
 
+/// The microphone, or why there is none. Asked once at start, without loading a model, so the
+/// Lens's mic button can say so before anyone presses it; and again by the pipeline.
+fn input_device() -> anyhow::Result<cpal::Device> {
+    cpal::default_host()
+        .default_input_device()
+        .ok_or_else(|| anyhow::anyhow!("no microphone found"))
+}
+
+/// Tell the Lens's mic button that voice cannot work here, and why.
+fn set_mic_unavailable(ui_weak: &slint::Weak<App>, why: String) {
+    let weak = ui_weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.set_voice_unavailable(why.into());
+        }
+    });
+}
+
 /// Try to initialize the audio pipeline. Returns None if audio hardware is unavailable.
 fn init_audio_pipeline(voice_config: &VoiceConfig) -> anyhow::Result<AudioPipeline> {
     // Load Whisper STT
@@ -276,10 +321,7 @@ fn init_audio_pipeline(voice_config: &VoiceConfig) -> anyhow::Result<AudioPipeli
     };
 
     // Set up microphone
-    let host = cpal::default_host();
-    let input_device = host
-        .default_input_device()
-        .ok_or_else(|| anyhow::anyhow!("no microphone found"))?;
+    let input_device = input_device()?;
 
     let input_config = input_device.default_input_config()?;
     let mic_sample_rate = input_config.sample_rate().0;
@@ -353,14 +395,21 @@ fn voice_runtime_loop(
     ui_weak: slint::Weak<App>,
     voice_config: VoiceConfig,
     state: Arc<VoiceState>,
+    send: SendTurn,
 ) -> anyhow::Result<()> {
     // ── LAZY: Don't load anything at boot. Just wait for activation. ──
     let mut pipeline: Option<AudioPipeline> = None;
     let mut vad: Option<SimpleVAD> = None;
     let mut speech_buffer: Vec<f32> = Vec::new();
-    let mut conversation_history: Vec<(String, String)> = Vec::new();
     let mut follow_mode_deadline: Option<Instant> = None;
     let mut init_failed = false; // Don't retry if audio init already failed
+
+    // No input device (a VM without audio): the mic button is drawn disabled and says why. Only
+    // the device is asked here; the models still load on first activation.
+    if let Err(e) = input_device() {
+        tracing::info!("Voice: {e}; the mic button is disabled");
+        set_mic_unavailable(&ui_weak, format!("Voice is unavailable: {e}."));
+    }
 
     tracing::info!("Voice runtime: idle (waiting for activation)");
 
@@ -398,6 +447,7 @@ fn voice_runtime_loop(
                                 let _ = slint::invoke_from_event_loop(move || {
                                     if let Some(ui) = weak.upgrade() {
                                         ui.set_voice_active(false);
+                                        ui.set_voice_unavailable(format!("{err_msg}.").into());
                                         ui.set_voice_response(err_msg.into());
                                     }
                                 });
@@ -471,7 +521,6 @@ fn voice_runtime_loop(
                             state.set_mode(VoiceMode::Idle);
                             follow_mode_deadline = None;
                             set_voice_ui_hidden(&ui_weak);
-                            conversation_history.clear();
                             tracing::info!("Voice: follow mode expired → idle");
                             continue;
                         }
@@ -550,26 +599,36 @@ fn voice_runtime_loop(
                         tracing::info!(text = %text, "Voice: transcribed");
                         set_voice_ui(&ui_weak, VoiceMode::Processing, &text, "");
 
-                        // ── Build context-enriched message ──
-                        let os_context = state.take_context();
-                        let conv_context = build_conversation_context(&conversation_history);
-                        let enriched_message = build_voice_message(&text, &os_context, &conv_context);
-
-                        // ── Send to LLM (streaming) ──
-                        let token_rx = bridge.send_message(enriched_message);
+                        // ── Send to the mind the Lens talks to (streaming) ──
+                        // The person's own words; what the desk was showing goes in the turn's
+                        // context. The Lens shows the turn and its reply as they arrive.
+                        let turn = voice_turn(&text, &state.take_context());
+                        let Some(reply) = send(turn) else {
+                            tracing::warn!("Voice: the shell did not take the turn");
+                            state.set_mode(VoiceMode::Idle);
+                            set_voice_ui_hidden(&ui_weak);
+                            continue;
+                        };
+                        let token_rx = &reply.tokens;
                         let mut response_text = String::new();
                         let mut sentences_spoken = 0usize;
                         let mut tts_buffer = String::new();
 
                         state.set_mode(VoiceMode::Speaking);
 
-                        // Get bond level for voice adaptation
-                        let bond_rx = bridge.request_bond_level();
-                        let bond_level = bond_rx
-                            .recv_timeout(Duration::from_secs(2))
-                            .unwrap_or(yantrik_companion::bond::BondLevel::Stranger);
-                        let profile = voice_profile_for_bond(&bond_level);
-                        let params = profile.to_voice_params();
+                        // The built-in's voice follows the bond; any other mind speaks in the
+                        // default voice.
+                        let builtin = crate::wire::harness::host()
+                            .map_or(true, |h| h.active_id() == crate::wire::harness::BUILTIN_ID);
+                        let params = if builtin {
+                            let bond_level = bridge
+                                .request_bond_level()
+                                .recv_timeout(Duration::from_secs(2))
+                                .unwrap_or(yantrik_companion::bond::BondLevel::Stranger);
+                            voice_profile_for_bond(&bond_level).to_voice_params()
+                        } else {
+                            VoiceProfile { rate: 1.0, pitch: 1.0, volume: 1.0 }.to_voice_params()
+                        };
 
                         // ── Stream response → sentence-split → TTS ──
                         let mut barged_in = false;
@@ -645,6 +704,11 @@ fn voice_runtime_loop(
                             }
                         }
 
+                        // The person spoke over the reply: the mind stops too, not only the voice.
+                        if barged_in {
+                            reply.interrupt();
+                        }
+
                         // Drain remaining tokens if barged in
                         if barged_in {
                             while let Ok(token) = token_rx.recv_timeout(Duration::from_millis(10))
@@ -656,12 +720,8 @@ fn voice_runtime_loop(
                             }
                         }
 
-                        // ── Update conversation history ──
+                        // The conversation itself is the Lens's; only the count is kept here.
                         if !response_text.is_empty() {
-                            conversation_history.push((text.clone(), response_text.clone()));
-                            if conversation_history.len() > 5 {
-                                conversation_history.remove(0);
-                            }
                             state.turn_count.fetch_add(1, Ordering::Relaxed);
                         }
 
@@ -725,42 +785,6 @@ fn find_sentence_break(text: &str) -> Option<usize> {
     None
 }
 
-// ─── Context building ───────────────────────────────────────────────────────
-
-fn build_conversation_context(history: &[(String, String)]) -> String {
-    if history.is_empty() {
-        return String::new();
-    }
-
-    let mut ctx = String::from("Recent conversation:\n");
-    for (user_msg, ai_msg) in history.iter().rev().take(3).rev() {
-        ctx.push_str(&format!("User: {user_msg}\nAssistant: {ai_msg}\n"));
-    }
-    ctx
-}
-
-fn build_voice_message(user_text: &str, os_context: &str, conv_context: &str) -> String {
-    let mut msg = String::new();
-
-    msg.push_str("[Voice interaction — respond concisely and conversationally. ");
-    msg.push_str("Keep responses short (1-3 sentences) unless the user asks for detail.]\n\n");
-
-    if !os_context.is_empty() {
-        msg.push_str("[Current OS context:\n");
-        msg.push_str(os_context);
-        msg.push_str("]\n\n");
-    }
-
-    if !conv_context.is_empty() {
-        msg.push_str("[");
-        msg.push_str(conv_context);
-        msg.push_str("]\n\n");
-    }
-
-    msg.push_str(user_text);
-    msg
-}
-
 // ─── UI updates ─────────────────────────────────────────────────────────────
 
 fn set_voice_ui(
@@ -821,35 +845,19 @@ fn resample(samples: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32> {
     }
 }
 
-// ─── Legacy compatibility ───────────────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Legacy VoiceSession for backwards compatibility.
-pub struct VoiceSession {
-    runtime: Option<VoiceRuntime>,
-}
-
-impl VoiceSession {
-    pub fn start(
-        bridge: Arc<CompanionBridge>,
-        ui_weak: slint::Weak<App>,
-        voice_config: VoiceConfig,
-    ) -> Self {
-        let runtime = VoiceRuntime::start(bridge, ui_weak, voice_config);
-        runtime.state.activate();
-        Self {
-            runtime: Some(runtime),
-        }
-    }
-
-    pub fn stop(&mut self) {
-        if let Some(mut rt) = self.runtime.take() {
-            rt.stop();
-        }
-    }
-}
-
-impl Drop for VoiceSession {
-    fn drop(&mut self) {
-        self.stop();
+    /// A spoken turn sends what the person said, not a prompt wrapped around it: the desk's state
+    /// rides beside the words, and the origin tells the mind it was spoken.
+    #[test]
+    fn a_voice_turn_sends_the_transcript_said_aloud() {
+        let turn = voice_turn(" what time is it ", "Active app: Terminal\nCompanion status: listening\n");
+        assert_eq!(turn.text, "what time is it");
+        assert!(!turn.text.contains("Voice interaction") && !turn.text.contains("Active app"), "{}", turn.text);
+        assert_eq!(turn.desk, "Active app: Terminal\nCompanion status: listening");
+        assert_eq!(turn.origin, yantrik_harness::protocol::Origin::voice());
+        assert_eq!(turn.origin.channel, "voice");
     }
 }
