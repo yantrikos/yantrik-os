@@ -2646,6 +2646,10 @@ fn worker_loop(
                             },
                             yantrik_os::EventSource::ProactiveEngine,
                         );
+                    } else if interruptibility < 0.5 && !safety && msg_kind.is_asked_for() {
+                        // What the person asked for (a reminder, a watch, a task) waits out deep
+                        // work rather than being dropped (#754).
+                        companion.set_proactive_message(msg);
                     } else if interruptibility < 0.5 && !safety {
                         tracing::info!(
                             interruptibility,
@@ -2667,8 +2671,9 @@ fn worker_loop(
                             crate::wire::notifications::situation_now()
                         ),
                         crate::wire::notifications::ProactiveDelivery::Hold
-                    ) && safety {
-                        // A safety signal is never dropped: it waits for the answer to finish.
+                    ) && (safety || msg_kind.is_asked_for()) {
+                        // A safety signal, or something the person asked for, is never dropped:
+                        // it waits for the answer to finish.
                         companion.set_proactive_message(msg);
                     } else if matches!(
                         crate::wire::notifications::route_proactive(
