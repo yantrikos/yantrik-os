@@ -382,7 +382,7 @@ static PATTERN_TEMPLATES: &[ProactiveTemplate] = &[
     ProactiveTemplate {
         instinct: "pattern_surfacing",
         min_bond: BondLevel::Friend,
-        text: "I've been noticing something: {pattern_description}.",
+        text: "The record shows a pattern: {pattern_description}.",
         bond_suffixes: &[
             (BondLevel::Confidant, "Just an observation, no judgement."),
             (BondLevel::PartnerInCrime, "Take it or leave it."),

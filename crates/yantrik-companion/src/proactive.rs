@@ -357,7 +357,7 @@ impl ProactiveEngine {
                 }
             }
             "pattern_surfacing" => {
-                format!("I've been noticing something: {}", reason)
+                format!("The record shows a pattern: {}", reason)
             }
             "conflict_alerting" | "memoryweaver" => {
                 // Internal housekeeping urges — only deliver if instinct provided
