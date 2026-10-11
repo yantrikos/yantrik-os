@@ -527,13 +527,15 @@ class Surface:
     view is the structured state. `aliases` are other names the surface answers to, linked
     beside its socket. `settings_path`, `mode_path` and `spend_grant` exist for tests: they
     pin the ceiling and mode files and stand in for the shell's grant store.
+    `spend_as_agent` spends a call's grant as the agent the call arrived as (#182); it is
+    off, and only right for a surface the shell itself launched — see `act` (#466).
     """
 
     describe_timeout = DESCRIBE_TIMEOUT
     act_timeout = ACT_TIMEOUT
 
     def __init__(self, app_id, summary=None, *, aliases=(), settings_path=None, mode_path=None,
-                 spend_grant=None, socket_path=None, ask_shell=None):
+                 spend_grant=None, socket_path=None, ask_shell=None, spend_as_agent=False):
         if not isinstance(app_id, str) or not app_id or any(
                 c.isspace() or c in "/\0" for c in app_id):
             raise ValueError("an app id is one word of text with no slash, like `hello` or "
@@ -550,6 +552,7 @@ class Surface:
         self._settings_path = settings_path
         self._mode_path = mode_path
         self._spend_grant = spend_grant
+        self._spend_as_agent = spend_as_agent
         # Stands in for the shell's `reach_of` in tests: (token, what) -> the reply object.
         self._ask_shell = ask_shell
         self._socket_path = socket_path
@@ -768,14 +771,16 @@ class Surface:
             refusal = (self._within_reach(held, spec, args) or check_arguments(spec, args))
             if refusal is not None:
                 raise wire.RpcError(wire.RPC_INVALID_PARAMS, refusal)
-            # Not forwarded as the calling agent (#182) — yet. The shell believes a forwarded
+            # Spent as no agent unless the surface opts in (#182). The shell believes a forwarded
             # `caller_pid` only from one of the desktop's own binaries (`spending_agent`), so from
             # a Python app the token would be checked against the app's own pid, "not believed",
-            # and every agent's grant would fail to spend. Spent as no agent, as it always was,
-            # until the shell can tell a surface it launched from anything else on the socket
-            # (#466). `gate.spend_params` already carries the agent for when it can.
+            # and every agent's grant would fail to spend. A surface the shell itself launched
+            # passes `spend_as_agent`: the pid the kernel stamps on its socket is the caller's,
+            # and the shell can tell what it launched from anything else (#466).
+            caller = (gate.CallingAgent(token, peer.pid if peer is not None else None)
+                      if self._spend_as_agent and token else None)
             refusal = authority.spend(grant, self.app_id, name, self._grade(spec), args,
-                                      self._spend_grant)
+                                      self._spend_grant, caller)
             if refusal is not None:
                 raise wire.RpcError(wire.RPC_INVALID_PARAMS, refusal)
 

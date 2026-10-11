@@ -504,8 +504,8 @@ def no_reach(token, what):
                                                   "result": {"reach": None, "known": True}}}
 
 
-def sysmon(shell):
-    s = Surface("system-monitor", spend_grant=shell, ask_shell=no_reach)
+def sysmon(shell, **kw):
+    s = Surface("system-monitor", spend_grant=shell, ask_shell=no_reach, **kw)
     seen = {}
 
     @s.action("kill_process", grade="dangerous")
@@ -594,7 +594,7 @@ class TestGrants(support.MachineCase):
 
     def test_the_grant_is_spent_against_the_arguments_without_the_agent_token(self):
         shell = Shell()
-        s, seen = sysmon(shell)
+        s, seen = sysmon(shell, spend_as_agent=True)
         with contextlib.redirect_stderr(io.StringIO()) as said:
             out = s.act({"action": "kill_process",
                          "args": {"pid": 42, "agent_token": "smuggled"},
@@ -607,8 +607,16 @@ class TestGrants(support.MachineCase):
                                         {"pid": 42})])
         self.assertEqual(seen["token"], "tok-1", "the token beside args reaches the handler")
         self.assertIsNone(agent_token(), "and is gone once the dispatch is over")
-        # Spent as no agent: the shell cannot yet believe an agent forwarded by a Python app (#466).
-        self.assertEqual(shell.callers, [None])
+        # Spent as the agent the call arrived as, since the surface opts in (#466): the token
+        # beside args, and no pid — this call arrived with no peer for the transport to stamp.
+        self.assertEqual(shell.callers, [gate.CallingAgent("tok-1", None)])
+
+    def test_a_surface_that_opts_in_still_spends_a_bare_call_as_no_agent(self):
+        self.machine.set_mode("bypass_all")
+        shell = Shell()
+        s, _ = sysmon(shell, spend_as_agent=True)
+        s.act({"action": "kill_process", "args": {"pid": 42}, "grant": "ok-1"})
+        self.assertEqual(shell.callers, [None], "the person's own call is let through as before")
 
     def test_a_token_inside_args_alone_is_removed_and_not_used(self):
         self.machine.set_mode("bypass_all")
