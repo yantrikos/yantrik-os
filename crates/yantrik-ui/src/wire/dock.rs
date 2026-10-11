@@ -1032,6 +1032,18 @@ pub(crate) fn session_env() -> Vec<(&'static str, String)> {
     if std::env::var_os("QT_QPA_PLATFORM").is_none() {
         env.push(("QT_QPA_PLATFORM", "wayland;xcb".to_string()));
     }
+    // The accessibility half of the same thought: make GTK, Qt and Chromium publish their widget
+    // trees over AT-SPI, so the a11y service's reader has something to read. Each is behind the
+    // same "already set wins" guard — a person who set their own modules keeps them.
+    if std::env::var_os("GTK_MODULES").is_none() {
+        env.push(("GTK_MODULES", "gail:atk-bridge".to_string()));
+    }
+    if std::env::var_os("NO_AT_BRIDGE").is_none() {
+        env.push(("NO_AT_BRIDGE", "0".to_string()));
+    }
+    if std::env::var_os("QT_LINUX_ACCESSIBILITY_ALWAYS_ON").is_none() {
+        env.push(("QT_LINUX_ACCESSIBILITY_ALWAYS_ON", "1".to_string()));
+    }
     // The account each vendor answers with, when the person chose one other than its first
     // (the Minds panel's "Use"): a Claude Code or Codex started from here uses that account.
     env.extend(crate::accounts::act::launch_env());
@@ -1827,6 +1839,30 @@ mod tests {
         let person = launch_command(std::path::Path::new("/usr/bin/blender"), &[], None, None);
         assert_ne!(env_of(&person, "DISPLAY"), Some(None), "the person's own launch is untouched");
         assert_eq!(env_of(&person, "WAYLAND_DISPLAY"), None);
+    }
+
+    /// The accessibility switches every launched app gets, so its widget tree is on the AT-SPI
+    /// bus before anything asks. Each is behind the same "already set wins" guard as the toolkit
+    /// hints: a person who set their own value keeps it.
+    #[test]
+    fn session_env_turns_on_accessibility_publishing() {
+        for key in ["GTK_MODULES", "NO_AT_BRIDGE", "QT_LINUX_ACCESSIBILITY_ALWAYS_ON"] {
+            std::env::remove_var(key);
+        }
+        let env = session_env();
+        let value_of = |key: &str| env.iter().find(|(k, _)| *k == key).map(|(_, v)| v.as_str());
+        assert_eq!(value_of("GTK_MODULES"), Some("gail:atk-bridge"));
+        assert_eq!(value_of("NO_AT_BRIDGE"), Some("0"));
+        assert_eq!(value_of("QT_LINUX_ACCESSIBILITY_ALWAYS_ON"), Some("1"));
+
+        // A person's own GTK_MODULES survives: the guard does not append to it.
+        std::env::set_var("GTK_MODULES", "my-own-module");
+        let env = session_env();
+        assert!(
+            !env.iter().any(|(k, _)| *k == "GTK_MODULES"),
+            "the person's GTK_MODULES must not be overridden: {env:?}"
+        );
+        std::env::remove_var("GTK_MODULES");
     }
 
     /// S3: a browser started for a mind is not the person's browser's second window.
