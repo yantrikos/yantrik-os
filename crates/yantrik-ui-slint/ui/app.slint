@@ -536,7 +536,7 @@ export component App inherits Window {
     // A taskbar entry pressed. Not `switch-window`: the entry of the window in front puts it
     // away, and nothing else that shows a window (the switcher, `yos act shell focus_window`)
     // may ever hide one instead.
-    callback taskbar-window-clicked(string);
+    callback taskbar-window-clicked(string, string);
 
     // The grounded dock's model (dock_model.rs): this page's worth of buttons is the dock's own
     // business, so Rust hands over ALL of them and the windows of every app in them.
@@ -3153,7 +3153,7 @@ export component App inherits Window {
                     }
                     root.app-grid-open = !root.app-grid-open;
                 }
-                activate-window(title) => { root.taskbar-window-clicked(title); }
+                activate-window(title, app-id) => { root.taskbar-window-clicked(title, app-id); }
                 // The entry's right-click menu (#232). Straight to Rust, which knows whether
                 // the window's app is pinned and answers with the rows; the menu itself is
                 // drawn at the end of this file, over everything.

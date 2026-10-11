@@ -214,7 +214,7 @@ export component GroundedDock inherits Rectangle {
 
     callback open-launcher();
     callback launch-app(string);
-    callback activate-window(string);
+    callback activate-window(string, string);
     callback open-companion();
     callback show-desktop();
     // A right-click, or the Menu key, on a running app's button: (title, app-id, x, y) of its
@@ -453,7 +453,7 @@ export component GroundedDock inherits Rectangle {
                         root.launch-app(b.app-id);
                     } else if (b.windows == 1) {
                         root.close-list();
-                        root.activate-window(b.title);
+                        root.activate-window(b.title, b.app-id);
                     } else if (root.list-shown && root.list-app == b.app-id) {
                         root.close-list();
                     } else {
@@ -664,7 +664,7 @@ export component GroundedDock inherits Rectangle {
                     background: rt.has-hover ? Theme.dock-raised : w.current ? Theme.dock-raised.with-alpha(0.5) : transparent;
                     accessible-role: button;
                     accessible-label: w.title;
-                    accessible-action-default => { root.close-list(); root.activate-window(w.title); }
+                    accessible-action-default => { root.close-list(); root.activate-window(w.title, w.app-id); }
 
                     HorizontalLayout {
                         padding-left: Theme.sp-3;
@@ -700,7 +700,7 @@ export component GroundedDock inherits Rectangle {
                         mouse-cursor: pointer;
                         // A row covers the panel's own hover area, so it keeps the list up itself.
                         changed has-hover => { root.over-row = self.has-hover; }
-                        clicked => { root.close-list(); root.activate-window(w.title); }
+                        clicked => { root.close-list(); root.activate-window(w.title, w.app-id); }
                     }
                 }
             }

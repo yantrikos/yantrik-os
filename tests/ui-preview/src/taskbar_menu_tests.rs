@@ -71,7 +71,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         // A left click on an entry is the taskbar's own callback, not `switch-window`: the entry
         // of the window in front puts it away, which nothing else that shows a window may do.
         let l = log.clone();
-        ui.on_taskbar_window_clicked(move |title| l.borrow_mut().push(format!("click:{title}")));
+        ui.on_taskbar_window_clicked(move |title, app_id| l.borrow_mut().push(format!("click:{title}:{app_id}")));
     }
     ui.show()?;
     w.set_size(slint::PhysicalSize::new(width, height));
@@ -155,7 +155,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     click(w, entry_x, taskbar_y);
     draw();
     assert!(
-        log.borrow().iter().any(|e| e == "click:Notes: Handover")
+        log.borrow().iter().any(|e| e == "click:Notes: Handover:notes")
             && !log.borrow().iter().any(|e| e.starts_with("switch:")),
         "a left click reaches the taskbar's own callback, for the window pressed: {:?}",
         log.borrow()
