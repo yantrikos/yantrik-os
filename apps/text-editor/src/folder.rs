@@ -12,10 +12,13 @@ use crate::{
 };
 use slint::{ComponentHandle, ModelRc, VecModel};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use yantrik_app_runtime::control::{agent_is_calling, Action};
 
 /// How many rows `describe.folder.rows` holds; `truncated` says when there were more.
 const DESCRIBE_ROWS: usize = 200;
+/// How long the filter waits after the last key before it walks the folder.
+const FILTER_PAUSE: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// Put the open folder's rows on screen, the tab in front's file selected.
 pub fn show(ui: &TextEditorApp, b: &mut Workbench) {
@@ -84,12 +87,20 @@ pub fn saved(b: &Workbench) -> Option<Saved> {
 /// "is not a file" for a folder that passes it, and only for one that passes it.
 fn may_list(path: &Path) -> Result<(), String> {
     agent_rule::may_read(path).or_else(|e| if e.ends_with(" is not a file") { Ok(()) } else { Err(e) })?;
+    let kept = "The folder that was open is still open.";
     if !path.is_dir() {
-        return Err(format!("{} is not a folder; `open` opens a file.", path.display()));
+        return Err(format!(
+            "Couldn't open {}: it isn't a folder. To open a file, use Open (Ctrl+O). {kept}",
+            path.display()
+        ));
     }
-    std::fs::read_dir(path)
-        .map(|_| ())
-        .map_err(|e| format!("{} can't be read: {e}", path.display()))
+    std::fs::read_dir(path).map(|_| ()).map_err(|e| match e.kind() {
+        std::io::ErrorKind::PermissionDenied => format!(
+            "Couldn't open {}: you don't have permission to read it. {kept}",
+            path.display()
+        ),
+        _ => format!("Couldn't open {}: {e}. {kept}", path.display()),
+    })
 }
 
 /// Open `path` as the project beside the tabs, or say why not.
@@ -126,12 +137,19 @@ pub fn describe(b: &Workbench) -> serde_json::Value {
     if agent_is_calling() && may_list(&project.root).is_err() {
         return serde_json::json!({ "root": crate::HIDDEN_TAB, "rows": [], "truncated": false });
     }
-    let entries: Vec<&Node> = b.rows.iter().filter(|n| !n.dim).collect();
+    // An agent is not told the names of the person's protected places, even inside a folder
+    // it may list.
+    let agent = agent_is_calling();
+    let entries: Vec<&Node> = b
+        .rows
+        .iter()
+        .filter(|n| !n.dim && !(agent && yantrik_ipc_contracts::home_paths::is_protected(&n.path)))
+        .collect();
     serde_json::json!({
         "root": project.root.display().to_string(),
         "filter": project.filter(),
         "rows": entries.iter().take(DESCRIBE_ROWS).map(|n| project.relative(&n.path, n.is_dir)).collect::<Vec<_>>(),
-        "truncated": entries.len() > DESCRIBE_ROWS || b.rows.iter().any(|n| n.dim && n.name.ends_with(" more")),
+        "truncated": entries.len() > DESCRIBE_ROWS || b.rows.iter().any(|n| n.dim && n.name.starts_with("… ")),
     })
 }
 
@@ -165,13 +183,19 @@ pub fn wire(ui: &TextEditorApp, s: &State) {
     });
     let weak = ui.as_weak();
     let state = s.clone();
+    // The filter walks the folder, so it waits for a pause in the typing rather than walking it
+    // again at every key.
+    let pause = Rc::new(slint::Timer::default());
     ui.on_tree_filtered(move |text| {
-        let Some(ui) = weak.upgrade() else { return };
-        let mut b = state.borrow_mut();
-        let Some(project) = b.folder.as_mut() else { return };
-        project.set_filter(&text);
-        ui.set_tree_current(-1);
-        show(&ui, &mut b);
+        let (weak, state) = (weak.clone(), state.clone());
+        pause.start(slint::TimerMode::SingleShot, FILTER_PAUSE, move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let mut b = state.borrow_mut();
+            let Some(project) = b.folder.as_mut() else { return };
+            project.set_filter(&text);
+            ui.set_tree_current(-1);
+            show(&ui, &mut b);
+        });
     });
     show(ui, &mut s.borrow_mut());
 }

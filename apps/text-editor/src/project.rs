@@ -26,6 +26,8 @@ const SKIPPED: [&str; 7] = [".git", "target", "node_modules", "__pycache__", ".v
 /// The dot-files worth seeing; every other hidden entry is left out.
 const SHOWN_HIDDEN: [&str; 2] = [".gitignore", ".env.example"];
 pub const CANT_READ: &str = "can't read this folder";
+/// The last row of a filter that stopped before it had looked everywhere.
+pub const NOT_SEARCHED: &str = "… some folders were not searched";
 
 /// One visible row. A `dim` row is a note about the folder at `path` ("… N more", or that it
 /// could not be read), not an entry in it.
@@ -158,14 +160,19 @@ impl Project {
     pub fn rows(&self) -> Vec<Node> {
         let mut out = Vec::new();
         let mut cut = 0;
+        let mut partial = false;
         if self.filter.is_empty() {
             self.walk(&self.root, 0, &mut out, &mut cut);
         } else {
             let mut scanned = 0;
-            self.find(&self.root, &self.filter.to_lowercase(), &mut out, &mut cut, &mut scanned);
+            let needle = self.filter.to_lowercase();
+            self.find(&self.root, &needle, &mut out, &mut cut, &mut scanned, &mut partial);
         }
         if cut > 0 {
             out.push(note(&self.root, 0, format!("… {cut} more")));
+        }
+        if partial {
+            out.push(note(&self.root, 0, NOT_SEARCHED.into()));
         }
         out
     }
@@ -201,15 +208,34 @@ impl Project {
         }
     }
 
-    fn find(&self, dir: &Path, needle: &str, out: &mut Vec<Node>, cut: &mut usize, scanned: &mut usize) {
+    /// Every file under `dir` whose name holds `needle`. What the caps leave out is never
+    /// silent: a matching file past a folder's 300 is counted in `cut`, and a folder past them,
+    /// or anything past the scan cap, marks the list `partial`.
+    fn find(
+        &self,
+        dir: &Path,
+        needle: &str,
+        out: &mut Vec<Node>,
+        cut: &mut usize,
+        scanned: &mut usize,
+        partial: &mut bool,
+    ) {
         let Ok(entries) = list(dir) else { return };
+        for (name, _, is_dir) in entries.iter().skip(PER_FOLDER) {
+            if *is_dir {
+                *partial = true;
+            } else if name.to_lowercase().contains(needle) {
+                *cut += 1;
+            }
+        }
         for (name, path, is_dir) in entries.into_iter().take(PER_FOLDER) {
             *scanned += 1;
             if *scanned > MAX_SCAN {
+                *partial = true;
                 return;
             }
             if is_dir {
-                self.find(&path, needle, out, cut, scanned);
+                self.find(&path, needle, out, cut, scanned, partial);
             } else if name.to_lowercase().contains(needle) {
                 if out.len() < MAX_ROWS {
                     let name = self.relative(&path, false);
@@ -368,6 +394,15 @@ mod tests {
         assert_eq!(rows[0].path, root.join("hermes/adapter.py"));
         project.set_filter("");
         assert_eq!(names(&project.rows()), ["hermes", "pi"]);
+        // A match past a folder's cap is counted, not dropped without a word.
+        for f in 0..PER_FOLDER {
+            fs::write(root.join(format!("pi/b{f:04}")), "").unwrap();
+        }
+        fs::write(root.join("pi/zz-adapter.txt"), "x").unwrap();
+        project.set_filter("adapter");
+        let rows = project.rows();
+        let last = rows.last().unwrap();
+        assert!(last.dim && last.name == "… 1 more", "{last:?}");
         fs::remove_dir_all(root).unwrap();
     }
 

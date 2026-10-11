@@ -22,7 +22,7 @@ pub(super) fn a_folder_opens_beside_the_tabs(
     // Something that is not a folder is refused with a sentence, and nothing opens.
     let refused = act_on(published, "open_folder", serde_json::json!({ "path": root.join("hermes/README.md") }))
         .expect_err("a file is not a folder");
-    assert!(refused.contains("is not a folder"), "{refused}");
+    assert!(refused.contains("isn't a folder"), "{refused}");
     assert!(!ui.get_folder_open());
 
     // 1. The tree shows the folders, the noise left out.
@@ -55,9 +55,11 @@ pub(super) fn a_folder_opens_beside_the_tabs(
 
     // 3. Filter `adapter`: hermes/adapter.py is listed.
     ui.invoke_tree_filtered("adapter".into());
+    wait(queue, window, || ui.get_tree_rows().row_count() == 1);
     let names: Vec<_> = ui.get_tree_rows().iter().map(|r| r.name.to_string()).collect();
     assert_eq!(names, ["hermes/adapter.py"]);
     ui.invoke_tree_filtered("".into());
+    wait(queue, window, || ui.get_tree_rows().row_count() > 1);
 
     // 4. `describe` shows folder.rows; the expanded folder is kept with the drafts.
     let folder = folder::describe(&s.borrow());
