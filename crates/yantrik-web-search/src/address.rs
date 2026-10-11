@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn plain_http_to_a_public_host_is_refused_and_says_why() {
-        for bad in ["http://search.example.com", "http://8.8.8.8:8888", "http://[2001:db8::1]:8888"] {
+        for bad in ["http://search.example.com", "http://8.8.8.8:8888", "http://[2606:4700::1111]:8888"] {
             let e = check(bad).unwrap_err();
             assert!(e.contains("clear text") && e.contains("https://"), "{bad}: {e}");
         }
