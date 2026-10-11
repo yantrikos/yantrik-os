@@ -291,6 +291,7 @@ export component StudioApp inherits AppWindow {
                             height: 108px;
                             background: row-touch.has-hover ? Theme.hover-fill : transparent;
                             row-touch := TouchArea {
+                                accessible-role: list-item; accessible-label: shot.prompt; accessible-action-default => { root.choose(i); }
                                 clicked => { root.choose(i); }
                                 HorizontalLayout {
                                     padding: 10px;

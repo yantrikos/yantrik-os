@@ -88,7 +88,7 @@ export component ArcadeApp inherits AppWindow {
                                     Text { text: row.title; color: Theme.text-primary; font-size: 13px; font-weight: 600; overflow: elide; }
                                     Text { text: row.detail; color: Theme.text-dim; font-size: 11px; overflow: elide; }
                                 }
-                                TouchArea { clicked => { root.pick-game(row.slug); } }
+                                TouchArea { accessible-role: list-item; accessible-label: row.title; accessible-action-default => { root.pick-game(row.slug); } clicked => { root.pick-game(row.slug); } }
                             }
                             if root.games.length == 0 : Text {
                                 text: "No games yet.\nWrite a spec, save it as a game,\nthen build it.";
@@ -110,7 +110,7 @@ export component ArcadeApp inherits AppWindow {
                                     Text { text: row.name; color: Theme.text-primary; font-size: 13px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
                                     Text { text: row.archetype; color: Theme.text-dim; font-size: 11px; vertical-alignment: center; }
                                 }
-                                TouchArea { clicked => { root.pick-character(row.slug); } }
+                                TouchArea { accessible-role: list-item; accessible-label: row.name; accessible-action-default => { root.pick-character(row.slug); } clicked => { root.pick-character(row.slug); } }
                             }
                             if root.characters.length == 0 : Text {
                                 text: "No characters yet.";
