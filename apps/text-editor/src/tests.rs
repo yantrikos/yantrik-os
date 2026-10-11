@@ -7,6 +7,7 @@ use slint::platform::{
 };
 use std::sync::Arc;
 use std::{collections::VecDeque, sync::Mutex, time::Instant};
+mod tree;
 mod whose;
 type Queue = Arc<Mutex<VecDeque<Box<dyn FnOnce() + Send>>>>;
 struct Proxy(Queue);
@@ -447,10 +448,11 @@ fn real_editor_keyboard_tabs_search_save_close_and_recovery() {
         &dir,
     );
     whose::tabs_know_who_opened_them(&ui, &s, &published, &dir);
+    tree::a_folder_opens_beside_the_tabs(&ui, &s, &queue, &window, &published, &dir);
 
     let mut b = s.borrow_mut();
     b.recovery_timer.stop();
-    let _ = b.jobs.send(Job::Shutdown(b.docs.clone()));
+    let _ = b.jobs.send(Job::Shutdown(b.docs.clone(), None));
     if let Some(w) = b.worker.take() {
         w.join().unwrap();
     }

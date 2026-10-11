@@ -1,0 +1,121 @@
+// YTree — a folder tree as a flat list of rows: the Editor's project panel (#731) first, and the
+// Files and Projects apps after it.
+//
+// The host owns the tree and flattens it: each row says how deep it is, whether it is a folder
+// and expanded, and which row is its parent, so the component needs no tree of its own and the
+// list stays virtual however long it is. A `dim` row is a note ("… 12 more", "can't read this
+// folder") that cannot be opened.
+//
+// Selection is the list row's: the selected surface and a 2px keyline on the left edge (see
+// YListItem), never the accent. The row the keyboard is on is drawn as a hovered row while the
+// tree has focus. Up and Down move, Right expands, Left collapses or goes to the parent, Enter
+// opens a file or toggles a folder.
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
+import { ListView } from "std-widgets.slint";
+
+export struct TreeRow {
+    name: string,
+    depth: int,
+    is-dir: bool,
+    expanded: bool,
+    selected: bool,
+    dim: bool,
+    // The index of the row's parent folder, -1 at the top: where Left goes.
+    parent: int,
+}
+
+export component YTree inherits FocusScope {
+    in property <[TreeRow]> rows;
+    in-out property <int> current: -1;
+    callback activated(int);
+    callback toggled(int);
+
+    property <length> row-height: 26px;
+    property <length> indent: 14px;
+
+    function open(i: int) {
+        if (i < 0 || i >= root.rows.length || root.rows[i].dim) { return; }
+        if (root.rows[i].is-dir) { root.toggled(i); } else { root.activated(i); }
+    }
+
+    // Keep the keyboard's row in sight.
+    changed current => {
+        if (root.current * root.row-height + list.viewport-y < 0) {
+            list.viewport-y = -root.current * root.row-height;
+        } else if ((root.current + 1) * root.row-height + list.viewport-y > list.visible-height) {
+            list.viewport-y = list.visible-height - (root.current + 1) * root.row-height;
+        }
+    }
+
+    key-pressed(event) => {
+        if (event.modifiers.control || event.modifiers.alt) { return reject; }
+        if (event.text == Key.UpArrow) { root.current = max(0, root.current - 1); return accept; }
+        if (event.text == Key.DownArrow) { root.current = min(root.rows.length - 1, root.current + 1); return accept; }
+        if (root.current < 0 || root.current >= root.rows.length) { return reject; }
+        if (event.text == Key.RightArrow) {
+            if (root.rows[root.current].is-dir && !root.rows[root.current].expanded) { root.toggled(root.current); }
+            else if (root.rows[root.current].is-dir && root.current + 1 < root.rows.length) { root.current += 1; }
+            return accept;
+        }
+        if (event.text == Key.LeftArrow) {
+            if (root.rows[root.current].is-dir && root.rows[root.current].expanded) { root.toggled(root.current); }
+            else if (root.rows[root.current].parent >= 0) { root.current = root.rows[root.current].parent; }
+            return accept;
+        }
+        if (event.text == Key.Return) { root.open(root.current); return accept; }
+        return reject;
+    }
+
+    list := ListView {
+        for row[i] in root.rows : Rectangle {
+            height: root.row-height;
+            border-radius: Theme.r-sm;
+            background: row.selected ? Theme.bg-selected
+                      : ta.has-hover || (root.has-focus && i == root.current) ? Theme.hover-fill
+                      : transparent;
+
+            // Selection bar, as YListItem draws it.
+            Rectangle {
+                x: 0; y: 5px;
+                width: 2px; height: parent.height - 10px;
+                border-radius: 1px;
+                background: row.selected ? Theme.focus-ring : transparent;
+            }
+
+            ta := TouchArea {
+                mouse-cursor: row.dim ? default : pointer;
+                clicked => {
+                    root.current = i;
+                    root.focus();
+                    root.open(i);
+                }
+            }
+
+            property <length> lead: 6px + row.depth * root.indent;
+            if row.is-dir : Icon {
+                x: parent.lead; y: (parent.height - self.height) / 2;
+                commands: row.expanded ? Icons.chevron-down : Icons.chevron-right;
+                size: 12px;
+                tint: Theme.text-dim;
+            }
+            if !row.dim : Icon {
+                x: parent.lead + 14px; y: (parent.height - self.height) / 2;
+                commands: row.is-dir ? Icons.folder : Icons.file;
+                size: 14px;
+                tint: row.selected ? Theme.text-primary : Theme.text-secondary;
+            }
+            Text {
+                x: parent.lead + (row.dim ? 14px : 34px);
+                width: max(0px, parent.width - self.x - 6px);
+                height: parent.height;
+                text: row.name;
+                color: row.dim ? Theme.text-dim : Theme.text-primary;
+                font-size: Theme.font-label;
+                font-weight: row.selected ? 500 : Theme.fw-body;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+    }
+}
