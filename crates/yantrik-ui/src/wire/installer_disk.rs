@@ -15,7 +15,8 @@ use super::installer::{chroot_cmd, run_cmd, sudo_write};
 
 /// Where the opened root appears, /dev/mapper/<this>, on every encrypted install.
 pub const CRYPT_NAME: &str = "yantrik-root";
-/// The root filesystem's label, encrypted or not: fstab finds the root by it.
+/// The root filesystem's label, encrypted or not. A name for people: fstab and GRUB find the
+/// root by its UUID, since a placeholder or another Yantrik disk may carry the same label.
 const ROOT_LABEL: &str = "YANTRIK";
 const BOOT_LABEL: &str = "YANTRIK_BOOT";
 const CRYPT_LABEL: &str = "YANTRIK_CRYPT";
@@ -73,6 +74,11 @@ pub struct Layout {
     pub luks_part: Option<String>,
     /// What the root filesystem is on: the partition, or /dev/mapper/yantrik-root.
     pub root_dev: String,
+    /// Installed into one partition beside other systems (wire/installer_partition.rs): the EFI
+    /// partition is theirs too, mounted and never formatted, and its fallback loader may be theirs.
+    pub in_partition: bool,
+    /// The disk keeps macOS, so the boot menu gets an entry for it.
+    pub keeps_macos: bool,
 }
 
 impl Layout {
@@ -121,14 +127,31 @@ pub fn prepare(
         std::thread::sleep(std::time::Duration::from_secs(2));
     }
 
-    let mut layout = Layout {
+    let layout = Layout {
         efi_part: plan.efi.map(|n| partition_name(disk, n)).unwrap_or_default(),
         boot_part: plan.boot.map(|n| partition_name(disk, n)),
         luks_part: None,
-        root_dev: root_part.clone(),
+        root_dev: root_part,
+        in_partition: false,
+        keeps_macos: false,
     };
+    make_filesystems(layout, encrypt, passphrase, progress)
+}
 
-    if !layout.efi_part.is_empty() {
+/// Make the filesystems on a partitioned disk: the EFI partition (only on a whole-disk install;
+/// installed into a partition it is other systems' too, and never formatted), /boot when there
+/// is one, the LUKS2 container when encrypting, and the root.
+pub fn make_filesystems(
+    mut layout: Layout,
+    encrypt: bool,
+    passphrase: &str,
+    progress: &dyn Fn(i32, &str),
+) -> Result<Layout, String> {
+    if encrypt && passphrase.is_empty() {
+        return Err("encrypting the disk needs a password, and none was given".into());
+    }
+    let root_part = layout.root_dev.clone();
+    if !layout.efi_part.is_empty() && !layout.in_partition {
         progress(10, "Formatting EFI partition (FAT32)...");
         run_cmd("mkfs.fat", &["-F32", &layout.efi_part])?;
     }
@@ -203,24 +226,29 @@ fn uuid_of(device: &str) -> Result<String, String> {
     Ok(uuid)
 }
 
-/// The installed system's /etc/fstab. The root by its label, the others by UUID: device names
-/// move between boots (a second disk, a USB stick), and a UUID does not.
-pub fn fstab_text(efi_uuid: Option<&str>, boot_uuid: Option<&str>) -> String {
-    let mut fstab = format!("LABEL={ROOT_LABEL}  /           ext4  defaults,noatime  0  1\n");
+/// The installed system's /etc/fstab, every line by UUID: device names move between boots (a
+/// second disk, a USB stick), and labels repeat (a YANTRIK placeholder, a second Yantrik disk).
+///
+/// An EFI partition shared with macOS or Windows (`shared_esp`) gets fsck pass 0: it is theirs
+/// too, and a Linux fsck.vfat "repairing" it at every boot is a write nobody asked for.
+pub fn fstab_text(root_uuid: &str, efi_uuid: Option<&str>, boot_uuid: Option<&str>, shared_esp: bool) -> String {
+    let mut fstab = format!("UUID={root_uuid}  /           ext4  defaults,noatime  0  1\n");
     if let Some(uuid) = boot_uuid {
         fstab.push_str(&format!("UUID={uuid}  /boot       ext4  defaults,noatime  0  2\n"));
     }
     if let Some(uuid) = efi_uuid {
-        fstab.push_str(&format!("UUID={uuid}  /boot/efi   vfat  umask=0077        0  2\n"));
+        let pass = if shared_esp { 0 } else { 2 };
+        fstab.push_str(&format!("UUID={uuid}  /boot/efi   vfat  umask=0077        0  {pass}\n"));
     }
     fstab
 }
 
 /// The installed system's /etc/crypttab: the root, opened with a passphrase asked for at boot
-/// (`none`), in the initramfs. No `discard`: it would tell the disk, and anyone reading it
-/// later, which blocks hold nothing.
-pub fn crypttab_text(luks_uuid: &str) -> String {
-    format!("{CRYPT_NAME} UUID={luks_uuid} none luks,initramfs\n")
+/// (`none`), in the initramfs, through the Yantrik keyscript when the disk carries it
+/// (installer_unlock.rs). No `discard`: it would tell the disk, and anyone reading it later,
+/// which blocks hold nothing.
+pub fn crypttab_text(luks_uuid: &str, has_keyscript: bool) -> String {
+    format!("{CRYPT_NAME} UUID={luks_uuid} none {}\n", super::installer_unlock::crypttab_options(has_keyscript))
 }
 
 /// Write fstab and, for an encrypted root, crypttab and the initramfs settings that make it ask.
@@ -230,14 +258,19 @@ pub fn write_system_files(layout: &Layout, mount_dir: &str) -> Result<(), String
         Some(boot) => Some(uuid_of(boot)?),
         None => None,
     };
+    let root_uuid = uuid_of(&layout.root_dev)?;
     sudo_write(
         &format!("{mount_dir}/etc/fstab"),
-        &fstab_text(efi_uuid.as_deref(), boot_uuid.as_deref()),
+        &fstab_text(&root_uuid, efi_uuid.as_deref(), boot_uuid.as_deref(), layout.in_partition),
     )?;
     let Some(luks) = &layout.luks_part else {
         return Ok(());
     };
-    sudo_write(&format!("{mount_dir}/etc/crypttab"), &crypttab_text(&uuid_of(luks)?))?;
+    let has_keyscript = super::installer_unlock::keyscript_installed(mount_dir);
+    if !has_keyscript {
+        tracing::warn!("Installer: no Yantrik keyscript on this image; cryptsetup's own prompt will ask at boot");
+    }
+    sudo_write(&format!("{mount_dir}/etc/crypttab"), &crypttab_text(&uuid_of(luks)?, has_keyscript))?;
     // Nothing else to write: cryptsetup-initramfs's own conf-hook turns on KEYMAP=y, so the
     // keymap in /etc/default/keyboard goes into the initramfs beside the unlock. Rewriting the
     // package's configuration files would only stop a later upgrade at a conffile prompt.
@@ -248,6 +281,8 @@ pub fn write_system_files(layout: &Layout, mount_dir: &str) -> Result<(), String
 /// Check that each initramfs on the installed /boot opens the root. Without it the machine
 /// installs, reboots, and stops at "cannot find root" with nothing asking for a passphrase.
 pub fn verify_initramfs(mount_dir: &str) -> Result<(), String> {
+    let names_keyscript = std::fs::read_to_string(format!("{mount_dir}/etc/crypttab"))
+        .is_ok_and(|t| t.contains(super::installer_unlock::KEYSCRIPT));
     let images: Vec<String> = std::fs::read_dir(format!("{mount_dir}/boot"))
         .map_err(|e| format!("reading the installed /boot: {e}"))?
         .filter_map(|e| e.ok())
@@ -263,6 +298,13 @@ pub fn verify_initramfs(mount_dir: &str) -> Result<(), String> {
             return Err(format!(
                 "{image} has no {missing}; the encrypted disk would not open at boot"
             ));
+        }
+        let prompt = super::installer_unlock::prompt_in(&listing, names_keyscript)
+            .map_err(|missing| format!("{image} has no {missing}; the encrypted disk would not open at boot"))?;
+        let marker = super::installer_unlock::marker_in(&listing);
+        tracing::info!(%image, ?prompt, marker, "Installer: how the installed system asks for the disk's password");
+        if names_keyscript && !marker {
+            tracing::warn!(%image, "Installer: no boot-unlock marker in the initramfs; the lock screen will ask after boot");
         }
     }
     Ok(())
@@ -354,20 +396,36 @@ mod tests {
     }
 
     #[test]
-    fn fstab_finds_everything_but_the_root_by_uuid() {
-        let text = fstab_text(Some("AB12-CD34"), Some("1111-boot"));
-        assert!(text.starts_with("LABEL=YANTRIK  /  "));
+    fn fstab_finds_everything_by_uuid() {
+        let text = fstab_text("2222-root", Some("AB12-CD34"), Some("1111-boot"), false);
+        assert!(text.starts_with("UUID=2222-root  /  "));
+        assert!(!text.contains("LABEL="), "a placeholder may carry the same label");
         assert!(text.contains("UUID=1111-boot  /boot  "));
-        assert!(text.contains("UUID=AB12-CD34  /boot/efi   vfat  umask=0077"));
+        assert!(text.contains("UUID=AB12-CD34  /boot/efi   vfat  umask=0077        0  2\n"));
         assert!(!text.contains("/dev/"), "no device names: they move between boots");
-        assert_eq!(fstab_text(None, None).lines().count(), 1);
+        assert_eq!(fstab_text("2222-root", None, None, false).lines().count(), 1);
+    }
+
+    #[test]
+    fn an_efi_partition_shared_with_macos_is_never_checked_at_boot() {
+        let text = fstab_text("2222-root", Some("67E3-17ED"), None, true);
+        assert!(text.contains("UUID=67E3-17ED  /boot/efi   vfat  umask=0077        0  0\n"), "{text}");
+        assert!(text.starts_with("UUID=2222-root  /           ext4  defaults,noatime  0  1\n"));
     }
 
     #[test]
     fn crypttab_asks_for_the_passphrase_in_the_initramfs() {
-        let line = crypttab_text("0f0e-uuid");
+        let line = crypttab_text("0f0e-uuid", false);
         let fields: Vec<&str> = line.split_whitespace().collect();
         assert_eq!(fields, ["yantrik-root", "UUID=0f0e-uuid", "none", "luks,initramfs"]);
+        assert!(!line.contains("discard"));
+        // With the Yantrik keyscript the key is still `none`: asked for, never a file.
+        let line = crypttab_text("0f0e-uuid", true);
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        assert_eq!(
+            fields,
+            ["yantrik-root", "UUID=0f0e-uuid", "none", "luks,initramfs,keyscript=/usr/lib/yantrik/boot-unlock/askpass"]
+        );
         assert!(!line.contains("discard"));
     }
 
