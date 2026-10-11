@@ -22,7 +22,9 @@
 //! when one is not. It now writes *through* the service — see `crate::calendar::sync`, which also
 //! says what that sync does not do.
 
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use super::{PermissionLevel, Tool, ToolContext, ToolRegistry};
 use crate::calendar::backend::{CalendarBackend, ServiceCalendar};
@@ -45,6 +47,7 @@ pub fn register(reg: &mut ToolRegistry, accounts: Vec<EmailAccountConfig>, cal_a
         accounts,
         preferred: cal_account,
         backend: Arc::new(ServiceCalendar),
+        creates: Mutex::new(VecDeque::new()),
     });
     reg.register(Box::new(CalendarTodayTool { cal: shared.clone() }));
     reg.register(Box::new(CalendarListEventsTool { cal: shared.clone() }));
@@ -53,16 +56,65 @@ pub fn register(reg: &mut ToolRegistry, accounts: Vec<EmailAccountConfig>, cal_a
     reg.register(Box::new(CalendarUpdateEventTool { cal: shared }));
 }
 
+/// How many `calendar_create_event` calls the companion may make inside [`CREATE_BURST_WINDOW`].
+/// Every stored event announces itself to the person through the notifications service, so a
+/// loop of creates is a loop of notifications. These numbers mirror the service's own cap on
+/// `calendar.add_event`; the companion's writes used to bypass it by going through the backend
+/// instead of the surface (#342).
+const CREATE_BURST_LIMIT: usize = 10;
+/// The window the cap counts over.
+const CREATE_BURST_WINDOW: Duration = Duration::from_secs(60);
+
 /// What every calendar tool needs: the store, and whatever Google account syncs with it.
 struct Calendars {
     accounts: Vec<EmailAccountConfig>,
     preferred: Option<String>,
     backend: Arc<dyn CalendarBackend>,
+    /// Recent `calendar_create_event` calls, oldest first.
+    creates: Mutex<VecDeque<Instant>>,
 }
 
 impl Calendars {
     fn google(&self) -> bool {
         sync::configured(&self.accounts)
+    }
+
+    /// Take a create slot at `now`: `Ok` while the companion is under the cap, `Err` with the
+    /// wait when it is not. Checked and recorded in one lock, so a caller racing itself cannot
+    /// take two slots at once. `now` is a parameter the way the service's `BurstGate::hit_at`
+    /// makes it one, so the window can be tested without waiting on it.
+    fn create_slot_at(&self, now: Instant) -> Result<(), String> {
+        let mut creates = self.creates.lock().unwrap_or_else(|e| e.into_inner());
+        while let Some(front) = creates.front() {
+            if now.saturating_duration_since(*front) > CREATE_BURST_WINDOW {
+                creates.pop_front();
+            } else {
+                break;
+            }
+        }
+        if creates.len() >= CREATE_BURST_LIMIT {
+            let retry = creates
+                .front()
+                .map(|oldest| {
+                    CREATE_BURST_WINDOW
+                        .saturating_sub(now.saturating_duration_since(*oldest))
+                        .as_secs()
+                        + 1
+                })
+                .unwrap_or(1);
+            return Err(format!(
+                "this companion added {CREATE_BURST_LIMIT} events in the last {window} seconds \
+                 and every stored event announces itself to the person: wait {retry} seconds \
+                 and add this one again",
+                window = CREATE_BURST_WINDOW.as_secs(),
+            ));
+        }
+        creates.push_back(now);
+        Ok(())
+    }
+
+    fn create_slot(&self) -> Result<(), String> {
+        self.create_slot_at(Instant::now())
     }
 
     fn token(&self) -> Result<String, String> {
@@ -585,6 +637,13 @@ impl CalendarCreateEventTool {
             Err(e) => return e,
         };
 
+        // The companion's own cap (#342), taken before the write so a refused create stores
+        // nothing — the service's surface caps its own `add_event`, but these writes go through
+        // the backend and never pass it.
+        if let Err(e) = self.cal.create_slot() {
+            return format!("The event was NOT created: {e}");
+        }
+
         // The service first, always. It owns the event, and its answer carries the id everything
         // else on this machine will name the event by.
         let stored = match self.cal.backend.create(&params) {
@@ -684,7 +743,10 @@ struct CalendarDeleteEventTool {
 
 impl Tool for CalendarDeleteEventTool {
     fn name(&self) -> &'static str { "calendar_delete_event" }
-    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    // #342: the event_id names any event in the store — the person's own, a Google-synced one,
+    // another caller's — and the service keeps delete off its surface entirely (#201), graded
+    // for a person to approve in the Calendar app's window. This door now matches that grade.
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Sensitive }
     fn category(&self) -> &'static str { "calendar" }
 
     fn definition(&self) -> serde_json::Value {
@@ -760,7 +822,10 @@ struct CalendarUpdateEventTool {
 
 impl Tool for CalendarUpdateEventTool {
     fn name(&self) -> &'static str { "calendar_update_event" }
-    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    // #342: grade by the worst the arguments allow (#332's rule) — the id names any event in
+    // the store. The service already grades `update_event` sensitive for the same reason; this
+    // door used to be the lower-graded way in.
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Sensitive }
     fn category(&self) -> &'static str { "calendar" }
 
     fn definition(&self) -> serde_json::Value {
@@ -1055,7 +1120,12 @@ mod tests {
 
     /// The tools over a given calendar, with no Google account configured.
     fn calendars(backend: Arc<dyn CalendarBackend>) -> Arc<Calendars> {
-        Arc::new(Calendars { accounts: Vec::new(), preferred: None, backend })
+        Arc::new(Calendars {
+            accounts: Vec::new(),
+            preferred: None,
+            backend,
+            creates: Mutex::new(VecDeque::new()),
+        })
     }
 
     fn create_args() -> serde_json::Value {
@@ -1352,5 +1422,57 @@ mod tests {
         assert_eq!(report.moved, 0);
         assert_eq!(report.failed.len(), 1);
         assert!(report.failed[0].contains("Sometime"), "{:?}", report.failed);
+    }
+
+    // ── The grade and the cap on the companion's own door (#342) ─────
+
+    #[test]
+    fn editing_and_deleting_an_event_are_graded_for_a_person_to_approve() {
+        // The event_id names any event in the store — the person's own, a Google-synced one,
+        // another caller's — and the service grades `update_event` sensitive and keeps
+        // `delete_event` off its surface for a person to approve. These tools used to be the
+        // lower-graded way in.
+        let cal = calendars(Arc::new(FakeCalendar::default()));
+        assert_eq!(
+            CalendarDeleteEventTool { cal: cal.clone() }.permission(),
+            PermissionLevel::Sensitive
+        );
+        assert_eq!(CalendarUpdateEventTool { cal }.permission(), PermissionLevel::Sensitive);
+    }
+
+    #[test]
+    fn the_eleventh_create_in_a_minute_is_refused_and_stores_nothing() {
+        // Every stored event announces itself to the person, so a loop of creates is a loop of
+        // notifications. The service caps its own `add_event` at ten a minute; these writes go
+        // through the backend and used to reach the store uncapped.
+        let backend = Arc::new(FakeCalendar::default());
+        let tool = CalendarCreateEventTool { cal: calendars(backend.clone()) };
+        for _ in 0..CREATE_BURST_LIMIT {
+            let answer = tool.run(&create_args());
+            assert!(answer.contains("ID: stored"), "{answer}");
+        }
+        let answer = tool.run(&create_args());
+        assert!(answer.starts_with("The event was NOT created"), "{answer}");
+        assert!(answer.contains("announces itself to the person"), "{answer}");
+        assert!(answer.contains("wait"), "{answer}");
+        assert_eq!(backend.count(), CREATE_BURST_LIMIT, "a refused create must store nothing");
+    }
+
+    #[test]
+    fn the_create_cap_opens_once_the_oldest_add_leaves_the_window() {
+        // The counting on constructed instants the way the service's BurstGate is tested, so no
+        // test waits on a real minute.
+        let cal = calendars(Arc::new(FakeCalendar::default()));
+        let t0 = Instant::now();
+        for i in 0..CREATE_BURST_LIMIT {
+            cal.create_slot_at(t0 + Duration::from_secs(i as u64)).unwrap();
+        }
+        let err = cal.create_slot_at(t0 + Duration::from_secs(10)).unwrap_err();
+        assert!(err.contains("wait 51 seconds"), "{err}");
+        // One second past the window on the oldest add: it has left and exactly one create fits
+        // — the next is refused again, because the second-oldest is still inside.
+        let slid = t0 + Duration::from_secs(CREATE_BURST_WINDOW.as_secs() + 1);
+        cal.create_slot_at(slid).unwrap();
+        assert!(cal.create_slot_at(slid).is_err());
     }
 }
