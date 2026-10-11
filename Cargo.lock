@@ -11482,6 +11482,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "yantrik-install-target"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "yantrik-ipc-contracts"
 version = "0.1.0"
 dependencies = [
@@ -11904,6 +11912,7 @@ dependencies = [
  "yantrik-chat",
  "yantrik-companion",
  "yantrik-harness",
+ "yantrik-install-target",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
  "yantrik-ml",
