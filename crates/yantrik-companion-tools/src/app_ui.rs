@@ -13,10 +13,12 @@
 //! An app that has not published a surface simply does not appear here; there is nothing to fall
 //! back to and nothing to apologise for. Use the vision tools for those, as before.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use yantrik_ipc_transport::gate;
-use yantrik_ipc_transport::SyncRpcClient;
+use yantrik_ipc_transport::{RpcError, SyncRpcClient};
 
 use super::{PermissionLevel, Tool, ToolContext, ToolRegistry};
 
@@ -146,20 +148,73 @@ pub(crate) struct Desk {
     pub(crate) dir: Option<std::path::PathBuf>,
     pub(crate) wait: Duration,
     pub(crate) poll: Duration,
+    clients: Mutex<HashMap<String, Arc<SyncRpcClient>>>,
 }
 
 impl Desk {
     pub(crate) fn session() -> Desk {
-        Desk { dir: None, wait: APPROVAL_WAIT, poll: APPROVAL_POLL }
+        Desk {
+            dir: None,
+            wait: APPROVAL_WAIT,
+            poll: APPROVAL_POLL,
+            clients: Mutex::new(HashMap::new()),
+        }
     }
 
-    fn client(&self, service: &str, timeout: Duration) -> SyncRpcClient {
+    /// A desk over a scratch socket directory, for tests.
+    pub(crate) fn at(dir: std::path::PathBuf, wait: Duration, poll: Duration) -> Desk {
+        Desk { dir: Some(dir), wait, poll, clients: Mutex::new(HashMap::new()) }
+    }
+
+    fn client(&self, service: &str, timeout: Duration) -> Arc<SyncRpcClient> {
+        let mut clients = self.clients.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(cached) = clients.get(service) {
+            return cached.clone();
+        }
         let address = match &self.dir {
             Some(dir) => dir.join(format!("{service}.sock")).to_string_lossy().to_string(),
             None => yantrik_ipc_transport::server::RpcServer::default_address(service),
         };
-        SyncRpcClient::new(&address).with_timeout(timeout)
+        let client = Arc::new(SyncRpcClient::new(&address).with_timeout(timeout));
+        clients.insert(service.to_string(), client.clone());
+        client
     }
+
+    /// Call a cached client, and if the failure looks like a dead socket rather than an app's
+    /// answer, drop the cache entry and retry once with a fresh client. An app that restarted
+    /// between two actions must not be answered from a dead socket forever.
+    fn call(
+        &self,
+        service: &str,
+        timeout: Duration,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, RpcError> {
+        let client = self.client(service, timeout);
+        match client.call(method, params.clone()) {
+            Err(e) if looks_like_transport(&e) => {
+                self.clients.lock().unwrap_or_else(|e| e.into_inner()).remove(service);
+                self.client(service, timeout).call(method, params)
+            }
+            other => other,
+        }
+    }
+}
+
+/// Whether an `RpcError` is a transport/connect failure rather than an app's own answer.
+///
+/// `SyncRpcClient` does not distinguish the two, so this is a heuristic: transport failures carry
+/// code -32000 and a message naming the connection, while an app's refusal (a `GRANT:` or any
+/// other application answer) arrives as a well-formed error response with a different code.
+fn looks_like_transport(e: &RpcError) -> bool {
+    e.code == -32000
+        && (e.message.starts_with("Connection failed")
+            || e.message.starts_with("Write error")
+            || e.message.starts_with("Read error")
+            || e.message.starts_with("Connection closed")
+            || e.message.starts_with("Service at")
+            || e.message.starts_with("Bad address")
+            || e.message.starts_with("Address resolved"))
 }
 
 /// `app.act`, and when the app refuses for want of a grant, the person's Allow and `app.act` again.
@@ -178,7 +233,7 @@ pub(crate) fn act_asking(
     if !expect.is_empty() {
         call["expect_revision"] = serde_json::Value::String(expect.to_string());
     }
-    let refusal = match desk.client(&format!("app-{app}"), ACT_TIMEOUT).call("app.act", call.clone()) {
+    let refusal = match desk.call(&format!("app-{app}"), ACT_TIMEOUT, "app.act", call.clone()) {
         Ok(reply) => return Ok(reply),
         Err(e) if !e.message.starts_with("GRANT:") => return Err(format!("{app}.{action} failed: {}", e.message)),
         Err(e) => e.message,
@@ -192,8 +247,9 @@ pub(crate) fn act_asking(
         .filter(|g| gate::grade(g).is_some())
         .unwrap_or("sensitive");
     let asked = desk
-        .client("app-shell", SHELL_TIMEOUT)
         .call(
+            "app-shell",
+            SHELL_TIMEOUT,
             "app.act",
             serde_json::json!({ "action": "request_approval", "args": {
                 "app": app, "action": action, "grade": grade, "args_json": args,
@@ -224,7 +280,9 @@ pub(crate) fn act_asking(
     while Instant::now() < deadline {
         std::thread::sleep(desk.poll.min(deadline.saturating_duration_since(Instant::now())));
         // A poll that fails is not an answer: the card is still up, so ask again.
-        let Ok(poll) = desk.client("app-shell", SHELL_TIMEOUT).call(
+        let Ok(poll) = desk.call(
+            "app-shell",
+            SHELL_TIMEOUT,
             "app.act",
             serde_json::json!({ "action": "approval_status", "args": { "request_id": request_id } }),
         ) else {
@@ -239,7 +297,7 @@ pub(crate) fn act_asking(
     match status.as_str() {
         "granted" => {
             call["grant"] = serde_json::Value::String(request_id);
-            desk.client(&format!("app-{app}"), ACT_TIMEOUT).call("app.act", call).map_err(|e| {
+            desk.call(&format!("app-{app}"), ACT_TIMEOUT, "app.act", call).map_err(|e| {
                 format!("The person allowed {app}.{action}, but it did not go through: {}", e.message)
             })
         }
@@ -823,6 +881,25 @@ pub(crate) mod tests {
     use super::*;
 
     #[test]
+    fn a_desk_caches_one_client_per_service() {
+        let desk = Desk::session();
+        let first = desk.client("app-notes", ACT_TIMEOUT);
+        let again = desk.client("app-notes", ACT_TIMEOUT);
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &again),
+            "the same service must reuse the same client"
+        );
+        assert_eq!(desk.clients.lock().unwrap().len(), 1);
+
+        let other = desk.client("app-shell", SHELL_TIMEOUT);
+        assert!(
+            !std::sync::Arc::ptr_eq(&first, &other),
+            "a different service is a different client"
+        );
+        assert_eq!(desk.clients.lock().unwrap().len(), 2);
+    }
+
+    #[test]
     fn a_dispatched_action_is_not_reported_as_a_finished_one() {
         // What a build looks like coming back. A model reading "notes.build → {job:83}" would
         // tell the user the build succeeded, having been told only that it started.
@@ -1003,7 +1080,7 @@ pub(crate) mod tests {
             }
             _ => serde_json::json!({"error": {"code": -32602, "message": "unknown action"}}),
         });
-        let desk = Desk { dir: Some(dir), wait: Duration::from_millis(600), poll: Duration::from_millis(20) };
+        let desk = Desk::at(dir, Duration::from_millis(600), Duration::from_millis(20));
         (desk, app, shell)
     }
 
