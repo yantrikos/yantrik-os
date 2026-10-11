@@ -357,6 +357,20 @@ write_files:
           3) log "WARNING: /opt/yantrik locked down without the updater; run 'sudo yantrik-update migrate-ownership' once" ;;
           *) log "ERROR: could not make /opt/yantrik root's; stopping"; exit 1 ;;
         esac
+
+        # ── Yantrik Mind's unit and the egress proxy (#713) ──────────────────────────────
+        # migrate-ownership arms these for the first boot only on a machine made in a chroot;
+        # this is the first boot, with systemd up, so the updater's own migrate-minds runs now:
+        # the mind's unit installed and on, and yantrik-egress started, with no step by hand.
+        # An image built with build-image.sh may have armed the one-shot already: started
+        # through systemd then, which never runs it twice at once.
+        if [ -e /etc/systemd/system/yantrik-minds-firstboot.service ]; then
+          systemctl start yantrik-minds-firstboot.service \
+            || log "WARNING: migrate-minds failed; run 'sudo yantrik-update migrate-minds' once"
+        else
+          /opt/yantrik/bin/yantrik-update migrate-minds \
+            || log "WARNING: migrate-minds failed; run 'sudo yantrik-update migrate-minds' once"
+        fi
       else
         log "no YANTRIK_RELEASE_URL set — desktop will start with nothing to run"
       fi
