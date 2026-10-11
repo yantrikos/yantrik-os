@@ -154,10 +154,9 @@ pub fn why_text(kind: ProactiveKind, data: &serde_json::Value) -> String {
         ProactiveKind::Watches => "You asked me to watch this.".into(),
         ProactiveKind::Tasks => "You asked me to do this in the background.".into(),
         ProactiveKind::Weather => "The weather where you are is changing.".into(),
-        ProactiveKind::CheckIns => match num("hours_since_interaction") {
-            Some(h) if h >= 1.0 => format!("We haven't talked in {} hours.", h.round() as u64),
-            _ => "I check in now and then.".into(),
-        },
+        // Never how long the person was away (companion-who-cares, behaviour 7): a check-in is
+        // about something they said, not about their absence.
+        ProactiveKind::CheckIns => "It follows up on something you told me.".into(),
         ProactiveKind::Patterns => "I noticed a pattern in your days.".into(),
         ProactiveKind::Memory => "Two things I remember disagree.".into(),
         ProactiveKind::Suggestions => "It might save you a step.".into(),
@@ -541,7 +540,8 @@ mod tests {
     fn the_why_lends_numbers_from_the_trigger() {
         assert_eq!(
             why_text(ProactiveKind::CheckIns, &serde_json::json!({"hours_since_interaction": 5.4})),
-            "We haven't talked in 5 hours."
+            "It follows up on something you told me.",
+            "a check-in never says how long the person was away"
         );
         assert_eq!(
             why_text(ProactiveKind::Reminders, &serde_json::json!({"count": 3})),
@@ -691,11 +691,11 @@ mod tests {
         assert_eq!(msg.why, "You asked me to watch this.");
         let mut kept = crate::types::ProactiveMessage {
             kind: "check_ins".into(),
-            why: "We haven't talked in 5 hours.".into(),
+            why: "You asked me to remind you.".into(),
             ..Default::default()
         };
         stamp(&mut kept);
-        assert_eq!(kept.why, "We haven't talked in 5 hours.");
+        assert_eq!(kept.why, "You asked me to remind you.");
     }
 
     #[test]
