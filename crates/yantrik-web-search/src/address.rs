@@ -97,7 +97,15 @@ pub fn check(raw: &str) -> Result<SearxUrl, String> {
         Some(url::Host::Ipv6(ip)) => place_of_ip(IpAddr::V6(ip)).ok_or_else(|| never(&host))?,
         None => return Err("The address needs a host name or an IP address.".into()),
     };
-    if http && place == Place::Internet {
+    // Plain http only to this machine or a private network's own ranges. The proxy's `Lan` is
+    // wider: it also holds every special-use range (Teredo 2001::/32, 240/4, the documentation
+    // ranges), and some of those carry traffic across the internet.
+    let private = match parsed.host() {
+        Some(url::Host::Ipv4(ip)) => private_ip(IpAddr::V4(ip)),
+        Some(url::Host::Ipv6(ip)) => private_ip(IpAddr::V6(ip)),
+        _ => false,
+    };
+    if http && !(place == Place::Loopback || private) {
         return Err(format!(
             "Use https:// for {host}. Plain http:// is only for this machine or your local network: \
              anywhere else your searches would cross the internet in clear text."
@@ -106,6 +114,22 @@ pub fn check(raw: &str) -> Result<SearxUrl, String> {
     let port = parsed.port_or_known_default().unwrap_or(if http { 80 } else { 443 });
     let url = parsed.as_str().trim_end_matches('/').to_string();
     Ok(SearxUrl { url, host, port, http, place })
+}
+
+/// An address on a private network's own ranges: 10/8, 172.16/12, 192.168/16, 100.64/10
+/// (carrier-grade NAT, as Tailscale uses) and fc00::/7, also inside an IPv4-mapped IPv6 address.
+fn private_ip(ip: IpAddr) -> bool {
+    let v4 = |v4: std::net::Ipv4Addr| {
+        let [a, b, ..] = v4.octets();
+        v4.is_private() || (a == 100 && (64..128).contains(&b))
+    };
+    match ip {
+        IpAddr::V4(ip) => v4(ip),
+        IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
+            Some(mapped) => v4(mapped),
+            None => (ip.segments()[0] & 0xfe00) == 0xfc00,
+        },
+    }
 }
 
 fn never(host: &str) -> String {
@@ -164,7 +188,17 @@ mod tests {
 
     #[test]
     fn plain_http_to_a_public_host_is_refused_and_says_why() {
-        for bad in ["http://search.example.com", "http://8.8.8.8:8888", "http://[2606:4700::1111]:8888"] {
+        for bad in [
+            "http://search.example.com",
+            "http://8.8.8.8:8888",
+            "http://[2606:4700::1111]:8888",
+            // Special-use ranges the proxy counts as local, but that are no private network:
+            // Teredo crosses the internet, and the documentation and reserved ranges are nobody's.
+            "http://[2001:0:4136:e378::1]:8888",
+            "http://[2001:db8::1]:8888",
+            "http://240.0.0.1:8888",
+            "http://198.51.100.7:8888",
+        ] {
             let e = check(bad).unwrap_err();
             assert!(e.contains("clear text") && e.contains("https://"), "{bad}: {e}");
         }
