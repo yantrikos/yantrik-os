@@ -1176,13 +1176,26 @@ fn spawn_launch(
 /// The command that starts one app: the person's session environment, or for Mind View the same
 /// with everything that names the person's session cleared and the seat's display set. Separate
 /// from [`launch`] so the environment a mind's app gets can be tested without starting anything.
+///
+/// With `scope`, the app is started through `systemd-run --user --scope` so it is born inside
+/// that unit instead of being moved into one after the fact (#736); `systemd-run` execs the app
+/// in place, so the environment and directory set here are the app's own.
 fn launch_command(
     path: &std::path::Path,
     args: &[&str],
     dir: Option<&std::path::Path>,
     seat: Option<&crate::mind_view::Seat>,
+    scope: Option<(&std::path::Path, &str)>,
 ) -> std::process::Command {
-    let mut command = std::process::Command::new(path);
+    let mut command = match scope {
+        Some((systemd_run, unit)) => {
+            let mut c = std::process::Command::new(systemd_run);
+            c.args(yantrik_shell_core::app_scope::systemd_run_args(unit));
+            c.arg(path);
+            c
+        }
+        None => std::process::Command::new(path),
+    };
     if let Some(dir) = dir {
         command.current_dir(dir);
     }
@@ -1204,6 +1217,56 @@ fn launch_command(
         seat.display().apply(&mut command);
     }
     command
+}
+
+/// The `systemd-run` binary and a fresh scope unit name for one launch of `app_id`, or `None` when
+/// the person's user manager cannot be asked for a scope (no systemd-run, no user session bus), in
+/// which case the app is launched bare, exactly as before #736.
+fn app_scope_for(app_id: &str) -> Option<(PathBuf, String)> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+    let bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some();
+    if !yantrik_shell_core::app_scope::user_manager_reachable(runtime.as_deref(), bus) {
+        return None;
+    }
+    let systemd_run = find_program("systemd-run")?;
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    Some((systemd_run, yantrik_shell_core::app_scope::unit_name(app_id, std::process::id(), seq)))
+}
+
+/// Look at the launch's scope once the app has had a moment to start, and if systemd reports it
+/// failed, take the app out of the running registry and clear the unit: a failed scope is never an
+/// open app in the dock (#736). Normally `systemd-run` does not exec the app at all when the scope
+/// cannot be made, so the reaper sees that exit first; this covers the scope failing afterwards.
+fn check_scope_after_start(app_id: String, pid: u32, unit: String) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(1_500));
+        let state = std::process::Command::new("systemctl")
+            .args(["--user", "show", "--property=ActiveState", "--value", &unit])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        if !yantrik_shell_core::app_scope::scope_counts_as_running(&state) {
+            tracing::warn!(app = %app_id, pid, %unit, state = state.trim(), "App scope failed; not counting it as open");
+            crate::running::mark_exited(&app_id, pid);
+            reset_failed_scopes(&unit, pid);
+        }
+    });
+}
+
+/// Clear the failed state of a launch's scope and of any `app-*-<pid>.scope` the app made itself.
+fn reset_failed_scopes(unit: &str, pid: u32) {
+    let _ = std::process::Command::new("systemctl")
+        .args(yantrik_shell_core::app_scope::reset_failed_args(unit, pid))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 /// Where a mind's browser keeps its profile in Mind View: not the person's.
@@ -1243,7 +1306,12 @@ fn launch(
     raise_on_handover: bool,
 ) {
     let path = resolve_app_binary(bin);
-    let mut command = launch_command(&path, args, dir, seat);
+    // Only the person's desktop launches get a scope: Mind View apps run against a nested seat
+    // with an environment of their own, and they were not where #736 was seen.
+    let scope = if seat.is_none() { app_scope_for(app_id) } else { None };
+    let mut command =
+        launch_command(&path, args, dir, seat, scope.as_ref().map(|(r, u)| (r.as_path(), u.as_str())));
+    let unit = scope.map(|(_, unit)| unit);
     match command
         // The shell is often started with SLINT_FULLSCREEN=1 (dev runs, kiosk sessions). A child
         // inherits the environment, and an app that inherits that variable opens fullscreen too.
@@ -1255,7 +1323,7 @@ fn launch(
     {
         Ok(mut child) => {
             let pid = child.id();
-            tracing::info!(app = app_id, bin, pid, path = %path.display(), "App launched");
+            tracing::info!(app = app_id, bin, pid, path = %path.display(), scope = ?unit, "App launched");
             // The shell now knows this window is open without asking the compositor. Recorded
             // before the reaper thread starts, so a describe that lands in the same instant sees
             // it.
@@ -1278,6 +1346,9 @@ fn launch(
             // "accepted: true" and an empty screen could both be true at once. What an exit means
             // is decided in `exit_verdict`, where the cases can be tested.
             crate::running::clear_launch_failure(&id);
+            if let Some(unit) = unit.clone() {
+                check_scope_after_start(id.clone(), pid, unit);
+            }
             let started = std::time::Instant::now();
             std::thread::spawn(move || {
                 // Whether this exit was a second copy handing over to a window already open,
@@ -1326,6 +1397,11 @@ fn launch(
                 crate::surfaces::app_exited(pid, second_copy);
                 crate::running::mark_exited(&id, pid);
                 crate::mind_view::mark_exited(pid);
+                // A scope that ended failed, ours or one the app made for this pid itself, would
+                // otherwise sit in `systemctl --user list-units --failed` until logout (#736).
+                if let Some(unit) = unit {
+                    reset_failed_scopes(&unit, pid);
+                }
             });
         }
         Err(e) => tracing::error!(app = app_id, bin, path = %path.display(), error = %e, "Failed to launch app"),
@@ -1819,12 +1895,12 @@ mod tests {
     #[test]
     fn a_minds_launch_command_never_carries_the_persons_display() {
         let seat = crate::mind_view::Seat { wayland: "wayland-1".into(), x11: None };
-        let command = launch_command(std::path::Path::new("/usr/bin/blender"), &["--python", "x"], None, Some(&seat));
+        let command = launch_command(std::path::Path::new("/usr/bin/blender"), &["--python", "x"], None, Some(&seat), None);
         assert_eq!(env_of(&command, "DISPLAY"), Some(None), "DISPLAY must be cleared for a mind");
         assert_eq!(env_of(&command, "WAYLAND_SOCKET"), Some(None));
         assert_eq!(env_of(&command, "WAYLAND_DISPLAY"), Some(Some("wayland-1".to_string())));
         assert_eq!(env_of(&command, "GDK_BACKEND"), Some(Some("wayland".to_string())));
-        let person = launch_command(std::path::Path::new("/usr/bin/blender"), &[], None, None);
+        let person = launch_command(std::path::Path::new("/usr/bin/blender"), &[], None, None, None);
         assert_ne!(env_of(&person, "DISPLAY"), Some(None), "the person's own launch is untouched");
         assert_eq!(env_of(&person, "WAYLAND_DISPLAY"), None);
     }
