@@ -287,6 +287,11 @@ jobs:
       - name: A shell that dies is started again
         run: sh deploy/yantrik-os/yantrik-shell selftest
 
+      # The person's git identity at login (#680): set when missing, never over one they have.
+      # A scratch HOME; no display needed.
+      - name: The session gives git an identity
+        run: sh deploy/yantrik-os/yantrik-session selftest
+
       # The services list the packaging scripts ship (#244), derived from the services' own
       # yantrik.toml manifests the way the shell finds them. deploy.sh's BUILD_ALL branch built
       # two services fewer than the default beside it, and publish-components.sh published

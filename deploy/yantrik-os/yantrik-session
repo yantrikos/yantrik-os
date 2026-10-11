@@ -16,6 +16,59 @@
 # else, and cloud-init no longer carries a copy to drift from.
 set -eu
 
+# ── Who commits (#680) ──────────────────────────────────────────────────────────────────
+# A fresh machine had no git identity, so every mind, editor and agent harness that commits as
+# the person died with "Please tell me who you are". Given here, at each login, so the first boot
+# of every kind of install has one: the person's full name as the installer or onboarding wrote it
+# into the account (useradd -c, chfn), else their login, and <login>@<host>.local. Only what is
+# missing is set; an identity the person (or a system-wide config) already has is never touched.
+# Usage: git_identity <login> <full name, may be empty> <host>
+git_identity() {
+  command -v git >/dev/null 2>&1 || return 0
+  gi_name="${2:-$1}"
+  case "$3" in
+    *.*) gi_email="$1@$3" ;;
+    *)   gi_email="$1@$3.local" ;;
+  esac
+  # From /, so a repository the session happens to start in does not count as the person's.
+  [ -n "$(cd / && git config --get user.name 2>/dev/null)" ] \
+    || git config --global user.name "$gi_name" || return 1
+  [ -n "$(cd / && git config --get user.email 2>/dev/null)" ] \
+    || git config --global user.email "$gi_email" || return 1
+}
+
+# Offline checks of git_identity against a scratch HOME: `yantrik-session selftest`.
+if [ "${1:-}" = selftest ]; then
+  st_root="$(mktemp -d)"
+  trap 'rm -rf "$st_root"' EXIT
+  st_fails=0
+  check() { # check <name> <expected> <actual>
+    if [ "$3" = "$2" ]; then echo "  ok   $1"; else
+      echo "  FAIL $1"; echo "       wanted: $2"; echo "       got:    $3"; st_fails=$((st_fails + 1)); fi
+  }
+  fresh() { rm -rf "${st_root:?}/home"; mkdir -p "$st_root/home"; }
+  get() { (cd / && HOME="$st_root/home" XDG_CONFIG_HOME="$st_root/home/.config" GIT_CONFIG_NOSYSTEM=1 git config --global --get "$1"); }
+  run() { HOME="$st_root/home" XDG_CONFIG_HOME="$st_root/home/.config" GIT_CONFIG_NOSYSTEM=1 git_identity "$@"; }
+  fresh; run asha "Asha Rao" yantrik
+  check "no identity: the person's full name" "Asha Rao" "$(get user.name)"
+  check "no identity: <login>@<host>.local" "asha@yantrik.local" "$(get user.email)"
+  fresh; run asha "" yantrik
+  check "no full name: the login" "asha" "$(get user.name)"
+  fresh; run asha "Asha Rao" box.example.org
+  check "a host with a domain is kept as it is" "asha@box.example.org" "$(get user.email)"
+  fresh; HOME="$st_root/home" git config --global user.name "Asha R."
+  HOME="$st_root/home" git config --global user.email "asha@work.example"
+  run asha "Asha Rao" yantrik
+  check "an existing name is never overwritten" "Asha R." "$(get user.name)"
+  check "an existing email is never overwritten" "asha@work.example" "$(get user.email)"
+  fresh; HOME="$st_root/home" git config --global user.email "asha@work.example"
+  run asha "Asha Rao" yantrik
+  check "only what is missing is set: the name" "Asha Rao" "$(get user.name)"
+  check "... and the email kept" "asha@work.example" "$(get user.email)"
+  [ "$st_fails" = 0 ] && { echo "all selftest checks passed"; exit 0; }
+  echo "$st_fails selftest check(s) failed"; exit 1
+fi
+
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 mkdir -p "$XDG_RUNTIME_DIR"
 
@@ -76,6 +129,11 @@ esac
 # `crontab -e` and every $EDITOR prompt fall back to vi, which no Yantrik image installs
 # either, and die. The `:-` so a person's own EDITOR, set above this session, still wins.
 export EDITOR="${EDITOR:-nano}"
+
+# The person's git identity (#680), before anything in the session can commit. A failure here
+# never stops the desktop.
+me="$(id -un)"
+git_identity "$me" "$(getent passwd "$me" 2>/dev/null | cut -d: -f5 | cut -d, -f1 || true)" "$(uname -n)" || true
 
 # ── The desktop's own chrome ────────────────────────────────────────────────────────────
 # For apps the answer is a themed frame rather than no frame. labwc reads its config from the

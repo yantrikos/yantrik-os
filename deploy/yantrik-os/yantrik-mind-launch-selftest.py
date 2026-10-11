@@ -84,6 +84,26 @@ class FillDefaults(unittest.TestCase):
         self.assertEqual(env["YM_MIND_NAME"], "Yantrik Mind")
 
 
+class GitEmail(unittest.TestCase):
+    """The Mind's commits have an address (#680), and never one over what was configured."""
+
+    def email(self, env, login="yantrik-mind", host="yantrik"):
+        launch.fill_git_email(env, login, host)
+        return env.get("EMAIL")
+
+    def test_a_host_without_a_domain_is_given_local(self):
+        self.assertEqual(self.email({}), "yantrik-mind@yantrik.local")
+
+    def test_a_host_with_a_domain_is_kept(self):
+        self.assertEqual(self.email({}, host="box.example.org"), "yantrik-mind@box.example.org")
+
+    def test_the_settings_win(self):
+        self.assertEqual(self.email({"EMAIL": "mind@example.org"}), "mind@example.org")
+
+    def test_no_login_is_no_guess(self):
+        self.assertIsNone(self.email({}, login=""))
+
+
 class Parse(unittest.TestCase):
     def test_settings_are_read_as_systemd_reads_an_environment_file(self):
         self.assertEqual(

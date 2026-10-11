@@ -23,6 +23,7 @@ The person is the machine's one account in the human uid range with a login shel
 rather than a guess. A value in the settings file always wins over either default.
 """
 import os
+import pwd
 import re
 import sys
 
@@ -83,6 +84,18 @@ def fill_defaults(env, passwd="/etc/passwd"):
             env["YM_OPERATOR"] = name
 
 
+def fill_git_email(env, login, host):
+    """Give the Mind's commits an address when nothing named one (#680).
+
+    The mind account has a name for git (its GECOS field) but no address: git guesses
+    <login>@<host>.(none) on a host with no domain and refuses to commit ("Please tell me who you
+    are"). EMAIL is git's last resort, read only when no user.email is configured, so an identity
+    the Mind sets in its own git config still wins, and so does one in its settings file.
+    """
+    if login and host and "EMAIL" not in env:
+        env["EMAIL"] = "%s@%s" % (login, host if "." in host else host + ".local")
+
+
 def main():
     if os.getuid() == 0:
         sys.exit("yantrik-mind-launch runs as the mind's own account, never as root")
@@ -99,6 +112,11 @@ def main():
                 for key, value in parse(f.read(1 << 20)).items():
                     os.environ.setdefault(key, value)
     fill_defaults(os.environ)
+    try:
+        login = pwd.getpwuid(os.getuid()).pw_name
+    except KeyError:
+        login = ""
+    fill_git_email(os.environ, login, os.uname().nodename)
     os.execv(MIND, [MIND] + sys.argv[1:])
 
 
