@@ -194,6 +194,23 @@ mod tests {
         assert!(status.contains(&format!("{top}px")), "and <margin top> the status bar's");
     }
 
+    /// A window dragged by hand is not new, maximized or tiled, so the <margin> alone never kept
+    /// it off the dock and the status bar. The shell's windowRule pins the shell above app
+    /// windows, so a dragged window lands under the dock rather than over it (#266).
+    #[test]
+    fn the_shell_window_is_pinned_above_app_windows() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let rc = std::fs::read_to_string(root.join("config/labwc/rc.xml")).unwrap();
+        let at = rc.find("title=\"Yantrik OS\"").expect("rc.xml has the shell's windowRule");
+        let rule = &rc[at..at + rc[at..].find("</windowRule>").unwrap()];
+        assert!(
+            rule.contains("<action name=\"ToggleAlwaysOnTop\" />"),
+            "the shell's windowRule must pin the shell above app windows, or a window dragged by \
+             hand lands over the dock and the status bar (the <margin> only covers new, maximized \
+             and tiled windows)"
+        );
+    }
+
     /// The attribute that avoids the rustc ICE sits on `mod windows;` itself, not on whatever
     /// module was added above it (#585 B1).
     #[test]

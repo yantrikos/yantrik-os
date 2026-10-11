@@ -59,8 +59,10 @@
 
     labwc documents <margin> for exactly this case ("a workaround for clients such as panels that
     do NOT support the wlr-layer-shell protocol"). New, maximized and tiled windows keep out of
-    these strips. The numbers are the real heights: Theme.status-bar-height is 36px
-    (crates/yantrik-design-tokens/slint/theme.slint) and the grounded dock is 48px
+    these strips, and a window dragged by hand never covers them either: the shell's windowRule
+    below pins the shell above app windows, so a dragged window lands under the dock and the
+    status bar rather than over them. The numbers are the real heights: Theme.status-bar-height
+    is 36px (crates/yantrik-design-tokens/slint/theme.slint) and the grounded dock is 48px
     (crates/yantrik-ui-slint/ui/components/grounded_dock.slint; Theme.taskbar-height). If either changes, change these.
 
     The proper fix is for the panel to speak layer-shell and declare its own exclusive zone; this
@@ -554,9 +556,12 @@
       <action name="MoveToEdge" direction="down" snapWindows="no" />
       <action name="MoveRelative" x="0" y="-80" />
     </windowRule>
-    <!-- The shell is the desktop itself: present on every workspace, never switched away from. -->
+    <!-- The shell is the desktop itself: present on every workspace, never switched away from,
+         and pinned above app windows so a window dragged by hand lands under the dock and the
+         status bar rather than over them. -->
     <windowRule title="Yantrik OS">
       <action name="ToggleOmnipresent" />
+      <action name="ToggleAlwaysOnTop" />
     </windowRule>
   </windowRules>
 </labwc_config>
