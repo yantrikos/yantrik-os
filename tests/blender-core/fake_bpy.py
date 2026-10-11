@@ -367,6 +367,18 @@ class _ObjectOps(_OpGroup):
 
 class _RenderOps(_OpGroup):
     def render(self, write_still=False):
+        # A real render reports progress on the main thread as it draws; the addon's
+        # render_progress handler pumps the bridge from inside those callbacks. The fake
+        # calls any registered handler a few times, and honours `render_seconds` so a test
+        # can observe a render that is still in flight.
+        import time as _time
+        seconds = getattr(self._fake, "render_seconds", 0.0)
+        handlers = getattr(self._fake.app.handlers, "render_progress", [])
+        for step in range(3):
+            for handler in list(handlers):
+                handler(self._fake.context.scene)
+            if seconds:
+                _time.sleep(seconds / 3.0)
         outcome = getattr(self._fake, "render_outcome", {"FINISHED"})
         if "FINISHED" in outcome and write_still:
             path = self._fake.context.scene.render.filepath
@@ -448,6 +460,14 @@ class FakeApp:
     def __init__(self, background):
         self.background = background
         self.timers = FakeTimers()
+        self.handlers = FakeHandlers()
+
+
+class FakeHandlers:
+    """`bpy.app.handlers`: the render_progress list the addon registers into."""
+
+    def __init__(self):
+        self.render_progress = []
 
 
 class FakeTimers:

@@ -316,10 +316,12 @@ class Scene:
                          "set_camera", "set_light", "import_model", "set_render", "run_python"})
     SETTLES = frozenset({"new_scene", "save", "open"})
 
-    def __init__(self, bpy_mod):
+    def __init__(self, bpy_mod, bridge=None):
         self.bpy = bpy_mod
+        self.bridge = bridge      # the main-thread queue; pumped from inside a render
         self.notice = ""          # the last app-level refusal; cleared on the next success
         self.last_render = None   # {path, seconds, bytes} of the last render this process did
+        self._rendering = False   # True while _do_render is in flight, so describe says so
         # Our own dirty flag, tracked per action. `bpy.data.is_dirty` is Blender's, but in
         # `blender -b` it is stuck True (verified: True at start, after save, after open, on
         # a second read), so it cannot answer "are there unsaved changes" headless. Where
@@ -379,6 +381,7 @@ class Scene:
             "last_render": self.last_render,
             "notice": self.notice,
             "background": bool(getattr(self.bpy.app, "background", False)),
+            "rendering": self._rendering,
         }
         return self._summary(state), state
 
@@ -833,15 +836,50 @@ class Scene:
             "samples": self._samples(final_engine),
         }
 
+    def _render_progress(self, scene):
+        """Blender's render_progress handler: pump the bridge so a describe (or a second
+        act) is answered while the render is still drawing. Runs on the main thread, inside
+        the render, so it must stay cheap and must never raise into Blender."""
+        if self.bridge is None:
+            return
+        try:
+            self.bridge.pump()
+        except Exception:
+            pass
+
+    def _register_render_progress(self):
+        handlers = getattr(self.bpy.app, "handlers", None)
+        if handlers is None:
+            return
+        try:
+            handlers.render_progress.append(self._render_progress)
+        except (AttributeError, TypeError):
+            pass
+
+    def _remove_render_progress(self):
+        handlers = getattr(self.bpy.app, "handlers", None)
+        if handlers is None:
+            return
+        try:
+            handlers.render_progress.remove(self._render_progress)
+        except (AttributeError, ValueError):
+            pass
+
     def _do_render(self, args):
         output = self._output_path(args.get("output"), "output", ".png")
         scene = self.bpy.context.scene
         scene.render.filepath = output
         started = time.monotonic()
+        self._rendering = True
         try:
-            outcome = self.bpy.ops.render.render(write_still=True)
-        except RuntimeError as e:
-            raise Refusal("Blender would not render: %s" % e)
+            self._register_render_progress()
+            try:
+                outcome = self.bpy.ops.render.render(write_still=True)
+            except RuntimeError as e:
+                raise Refusal("Blender would not render: %s" % e)
+        finally:
+            self._rendering = False
+            self._remove_render_progress()
         seconds = round(time.monotonic() - started, 2)
         if outcome is not None and "FINISHED" not in outcome:
             raise Refusal("the render did not finish (engine `%s`); nothing was written. "

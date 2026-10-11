@@ -428,6 +428,74 @@ class TestRender(unittest.TestCase):
         self.assertEqual(str(caught.exception),
                          "`output` must end in .png; `/tmp/frame.exr` does not")
 
+    def test_a_describe_is_answered_while_a_render_is_still_drawing(self):
+        # #95: a render owns Blender's main thread, so a describe queued behind it used to
+        # wait out its timeout and hear "app did not answer". The render_progress handler
+        # pumps the bridge from inside the render, so the describe is answered mid-render and
+        # the state says it is rendering.
+        import json
+        import threading
+        import time
+
+        from yantrik_blender.bridge import QueuedBridge
+        from yantrik_blender.surface import Surface
+
+        fake = fake_bpy.make_bpy()
+        fake.render_seconds = 1.0
+        bridge = QueuedBridge()
+        scene = Scene(fake, bridge)
+        mode = tempfile.NamedTemporaryFile("w", suffix="-mind-mode.json", delete=False)
+        mode.write(json.dumps({"mode": "bypass_all"}))
+        mode.close()
+        self.addCleanup(os.unlink, mode.name)
+        surface = Surface(scene, bridge, app_id="blender", mode_path=mode.name)
+
+        # A pump thread stands in for Blender's main thread: it picks the render up, and the
+        # render_progress handler pumps the same queue from inside the render.
+        stop = threading.Event()
+
+        def pump():
+            while not stop.is_set():
+                bridge.pump()
+                time.sleep(0.005)
+
+        pumper = threading.Thread(target=pump, daemon=True)
+        pumper.start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                out = os.path.join(tmp, "slow.png")
+                result = {}
+
+                def render():
+                    result["value"] = surface.act({"action": "render", "args": {"output": out}})
+
+                worker = threading.Thread(target=render)
+                worker.start()
+                # Wait until the render is actually in flight (the progress handler has run and
+                # the fake is sleeping), so the describe below is queued behind it, not before it.
+                for _ in range(500):
+                    if scene._rendering:
+                        break
+                    time.sleep(0.01)
+                self.assertTrue(scene._rendering, "the render never started")
+
+                described = surface.describe_json()
+                self.assertIn("rendering", described["state"])
+                self.assertTrue(described["state"]["rendering"])
+
+                worker.join(timeout=10)
+                self.assertFalse(worker.is_alive(), "the render never returned")
+                self.assertIn("path", result["value"]["result"])
+        finally:
+            stop.set()
+            bridge.wake()
+            pumper.join(timeout=5)
+
+        # Once the render is over the flag is cleared and the handler is gone.
+        _, state = scene.snapshot()
+        self.assertFalse(state["rendering"])
+        self.assertEqual(fake.app.handlers.render_progress, [])
+
 
 class TestScreenshot(unittest.TestCase):
     def test_a_background_blender_says_what_to_do_instead(self):

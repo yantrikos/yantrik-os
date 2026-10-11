@@ -124,7 +124,7 @@ class _Session:
         self.bpy = bpy_mod
         self.background = background
         self.bridge = QueuedBridge()
-        self.surface = Surface(Scene(bpy_mod), self.bridge, app_id=APP_ID)
+        self.surface = Surface(Scene(bpy_mod, self.bridge), self.bridge, app_id=APP_ID)
         self.server = None  # the wire.Server, once start() has bound app-blender.sock
         self.stopped = False
         self.splash_quieted = False
