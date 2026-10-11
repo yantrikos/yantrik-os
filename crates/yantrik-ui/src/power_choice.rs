@@ -76,6 +76,11 @@ pub(crate) fn choose(
     profile: &str,
 ) -> Result<impl FnOnce() -> Result<PowerProfiles, String> + Send + 'static, String> {
     use slint::ComponentHandle;
+    // A name the daemon does not have is a caller's mistake, answered to the caller: it marks
+    // nothing pending and raises no "did not change" notification at the person.
+    if !yantrik_os::power_profile::KNOWN.contains(&profile) {
+        return Err(format!("`{profile}` is not a power profile; use power-saver, balanced or performance"));
+    }
     begin(ui, profile)?;
     let weak = ui.as_weak();
     let profile = profile.to_string();

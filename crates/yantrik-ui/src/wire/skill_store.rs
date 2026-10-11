@@ -35,7 +35,10 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             Ok((new_state, auto_deps)) => {
                 tracing::info!(skill = %id, enabled = new_state, auto_deps = ?auto_deps, "Skill toggled")
             }
-            Err(why) => crate::toggle_truth::say_refused("The skill", &why),
+            Err(why) => {
+                let name = reg2.borrow().get(&id).map(|e| e.manifest.name.clone()).unwrap_or_else(|| id.clone());
+                crate::toggle_truth::say_refused(&format!("The skill {name}"), &why)
+            }
         }
 
         // Refresh UI

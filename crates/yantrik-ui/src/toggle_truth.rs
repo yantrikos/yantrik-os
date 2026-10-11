@@ -53,10 +53,15 @@ pub(crate) fn flip_saved(
 
 /// Said when a toggle did not change, so it is seen whatever screen is up — the Settings save
 /// line is only on Settings, and a tile is pressed from Quick Settings, Today and the bar.
+/// The person reads one plain sentence; the backend's own words (a daemon's read-back, a
+/// database error) go to the log, which is the proof underneath.
 pub(crate) fn say_refused(what: &str, why: &str) {
     tracing::warn!(%what, %why, "a toggle's backend refused the change");
-    crate::wire::notifications::setting_not_saved(&format!("{what} did not change"), why);
+    crate::wire::notifications::setting_not_saved(&format!("{what} did not change"), REFUSED_BODY);
 }
+
+/// The body of every "did not change" notification.
+pub(crate) const REFUSED_BODY: &str = "The system did not accept the change, so it is as it was.";
 
 #[cfg(test)]
 mod tests {
