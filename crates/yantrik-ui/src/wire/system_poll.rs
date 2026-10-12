@@ -533,6 +533,7 @@ mod tests {
             wayland_app_id: String::new(),
             icon_char: windows::icon_for_app("weather").into(),
             subtitle: String::new(),
+            seen_by_compositor: true,
         }
     }
 

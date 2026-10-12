@@ -35,6 +35,10 @@ pub struct WindowEntry {
     pub wayland_app_id: String,
     pub icon_char: String,
     pub subtitle: String,
+    /// Whether the compositor reported this window. False for a registry-only entry: the shell
+    /// launched the app but the compositor has not yet listed its window (or never will under
+    /// that name). Only a window the compositor saw can be asked to come forward.
+    pub seen_by_compositor: bool,
 }
 
 /// How long one reading of the compositor's window list is trusted.
@@ -178,6 +182,7 @@ fn merge_windows(
                     title: window.title,
                     wayland_app_id: window.wayland_app_id,
                     app_id,
+                    seen_by_compositor: true,
                 },
                 None => WindowEntry {
                     title: display_name(&app_id),
@@ -185,6 +190,7 @@ fn merge_windows(
                     subtitle: String::new(),
                     wayland_app_id: String::new(),
                     app_id,
+                    seen_by_compositor: false,
                 },
             }
         })
@@ -399,13 +405,23 @@ fn restore_args(title: &str) -> Vec<String> {
 /// verb to every toplevel the matchspec matches, and `close app_id:chromium` with two Chromium
 /// windows open would close both — the coin toss `window_to_close` exists to refuse.
 fn matchspecs(title: &str, open: &[WindowEntry]) -> Vec<String> {
+    let id = open
+        .iter()
+        .find(|w| w.title == title)
+        .map(|w| w.wayland_app_id.as_str())
+        .unwrap_or("");
+    matchspecs_with_app_id(title, id, open)
+}
+
+/// [`matchspecs`] when the caller already knows the compositor's app_id for the window, so the
+/// fallback is offered even when the title no longer matches any listed window (the list is up to
+/// nine seconds old and Chromium retitles itself on every tab).
+pub(crate) fn matchspecs_with_app_id(title: &str, wayland_app_id: &str, open: &[WindowEntry]) -> Vec<String> {
     let mut specs = vec![format!("title:{title}")];
-    if let Some(window) = open.iter().find(|w| w.title == title) {
-        let id = &window.wayland_app_id;
-        let alone = !id.is_empty() && open.iter().filter(|w| &w.wayland_app_id == id).count() == 1;
-        if alone {
-            specs.push(format!("app_id:{id}"));
-        }
+    let id = wayland_app_id;
+    let alone = !id.is_empty() && open.iter().filter(|w| &w.wayland_app_id == id).count() == 1;
+    if alone {
+        specs.push(format!("app_id:{id}"));
     }
     specs
 }
@@ -488,7 +504,18 @@ fn ask_compositor(commands: Vec<Vec<String>>) -> Result<(), String> {
 /// Bring the window called `title` to the front, restoring it first if it was minimized. Says
 /// whether the compositor had such a window.
 pub fn present(title: &str) -> bool {
-    let specs = matchspecs(title, &shell_windows());
+    present_with_app_id(title, "")
+}
+
+/// Bring the window called `title` to the front, restoring it first if it was minimized. Says
+/// whether the compositor had such a window.
+///
+/// `wayland_app_id` is the app_id the compositor has for the window, when the caller knows it:
+/// the title is tried first, and if it missed (Chromium retitles itself with every tab, and the
+/// list can be ~9 s old) the app_id is tried, but only when exactly one open window has it — the
+/// [`matchspecs`] rule.
+pub fn present_with_app_id(title: &str, wayland_app_id: &str) -> bool {
+    let specs = matchspecs_with_app_id(title, wayland_app_id, &shell_windows());
     if let Err(why) = run_first_matching(&specs.iter().map(|s| restore_command(s)).collect::<Vec<_>>()) {
         // Not a warning: the usual reason is that the window was never minimized, and the
         // matchspec simply matched nothing.
@@ -838,6 +865,7 @@ pub(crate) fn toplevel_entry(line: &str) -> WindowEntry {
         wayland_app_id: declared_id.to_string(),
         title,
         app_id,
+        seen_by_compositor: true,
     }
 }
 
