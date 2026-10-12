@@ -21,7 +21,7 @@ src="$1/harnesses" dest="$2" units="${3:-}"
 [ -d "$src" ] || { echo "no harnesses/ under $1" >&2; exit 1; }
 
 mkdir -p "$dest"
-for harness in lib deepseek pi openclaw; do
+for harness in lib deepseek pi openclaw mind; do
     [ -d "$src/$harness" ] || continue
     mkdir -p "$dest/$harness"
     cp -r "$src/$harness/." "$dest/$harness/"
@@ -34,12 +34,14 @@ find "$dest" -name __pycache__ -type d -prune -exec rm -rf {} +
 
 # The manifests are what Settings reads, and the installers are what its buttons run: a staging
 # that lost either is a page back to "not installed" with nothing to press. Asserted, not hoped.
-for harness in hermes deepseek pi openclaw; do
+for harness in hermes deepseek pi openclaw mind; do
     [ -f "$dest/$harness/harness.yaml" ] || { echo "$harness has no harness.yaml in $dest" >&2; exit 1; }
 done
-for script in common.sh npm.sh hermes.sh; do
+for script in common.sh npm.sh hermes.sh hermes_config.py openclaw.sh pi.sh deepseek.sh mind.sh revert.sh; do
     [ -f "$dest/lib/install/$script" ] || { echo "lib/install/$script did not stage" >&2; exit 1; }
 done
+# The three proofs every installer ends with, and the Settings row and onboarding call (#677).
+[ -f "$dest/lib/proofs.py" ] || { echo "lib/proofs.py did not stage" >&2; exit 1; }
 
 if [ -n "$units" ]; then
     mkdir -p "$units"

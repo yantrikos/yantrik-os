@@ -1,0 +1,24 @@
+# What the desktop can say about Yantrik Mind before it attaches (#677): without this the flagship
+# mind was not in Settings → Harnesses at all on a fresh install, only once it had attached.
+# See harnesses/pi/harness.yaml for why this file exists at all.
+id: mind
+name: Yantrik Mind
+detail: The flagship mind, with this machine's own YantrikDB memory
+docs: README.md
+
+# No `unit`: the Mind runs under its own account as a system service (yantrik-mind.service, set up
+# on the first boot by yantrik-update migrate-minds, #713 / PR #749), not as one of the person's
+# user units, so the row never offers to start it from here. Once it attaches it is offered for
+# Use like any other mind.
+
+requires:
+  - file: /opt/yantrik-mind/bin/yantrik-mind
+    why: the Mind itself, which the image carries beside the OS (/opt/yantrik-mind)
+  - file: ~/.local/state/yantrik/harnesses/mind/installed
+    why: written by Install once the Mind has attached to this desktop
+
+install:
+  # Nothing to fetch and nothing to configure: the Mind's own first-boot setup (#749) installs and
+  # starts its service. This checks it is running and attached, and says what to do if not.
+  command: sh {dir}/../lib/install/mind.sh
+  doing: checking that Yantrik Mind is running and attached

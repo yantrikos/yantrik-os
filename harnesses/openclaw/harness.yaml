@@ -13,6 +13,8 @@ requires:
     why: the harness is stdlib Python, and the image already carries it
   - file: yantrik_openclaw.py
     why: the harness script, staged beside this file
+  - file: ~/.local/state/yantrik/harnesses/openclaw/installed
+    why: written by Install once it can answer, remember in YantrikDB and reach the desktop
 
 install:
   # OpenClaw's own documented route, `npm install -g openclaw`, into ~/.local, with the
@@ -27,7 +29,8 @@ install:
   command: >-
     sh {dir}/../lib/install/npm.sh openclaw@2026.9.6 openclaw 24.16
     --allow-scripts=openclaw,koffi,protobufjs,@google/genai
-  doing: fetching Node from nodejs.org and openclaw 2026.9.6 from npm
+    && sh {dir}/../lib/install/openclaw.sh
+  doing: fetching Node and openclaw 2026.9.6, then YantrikDB memory and the desktop's tools
 
 configure:
   # OpenClaw's own onboarding: its model, keys and memory, which stay in ~/.openclaw.

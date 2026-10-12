@@ -1657,8 +1657,23 @@ impl CompanionService {
         }
     }
 
+    /// With no model chosen (the shipped config names none), every message is answered with one
+    /// plain sentence naming the fix, before anything else runs (the router's canned greetings
+    /// included): the person learns at once that nothing can think yet, and why.
+    fn not_set_up(&self, on_token: &mut dyn FnMut(&str)) -> Option<AgentResponse> {
+        if self.llm.backend_name() != yantrik_ml::not_set_up::BACKEND {
+            return None;
+        }
+        let message = yantrik_ml::not_set_up::NOT_SET_UP.to_string();
+        on_token(&message);
+        Some(AgentResponse { message, memories_recalled: 0, urges_delivered: vec![], tool_calls_made: vec![], offline_mode: false })
+    }
+
     /// The 9-step message pipeline.
     pub fn handle_message(&mut self, user_text: &str) -> AgentResponse {
+        if let Some(r) = self.not_set_up(&mut |_| {}) {
+            return r;
+        }
         // Step 0: SecurityGuard — check user input for injection
         if let Some(warning) = self.guard.check_input(user_text, &self.db) {
             return AgentResponse {
@@ -2601,6 +2616,9 @@ impl CompanionService {
         yantrik_companion_core::taint::begin_turn();
         if outside {
             yantrik_companion_core::taint::mark_outside("a program on the companion's socket");
+        }
+        if let Some(r) = self.not_set_up(&mut on_token) {
+            return r;
         }
 
         // Step 0: SecurityGuard — check user input for injection
