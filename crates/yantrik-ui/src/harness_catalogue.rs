@@ -948,6 +948,9 @@ setup:
             active,
             capabilities: Capabilities { streaming: true, tools: true, memory: false },
             pid: None,
+            shared: false,
+            takes_turns: true,
+            says_id: id.to_string(),
         }
     }
 
@@ -960,6 +963,9 @@ setup:
             active: true,
             capabilities: Capabilities { streaming: true, tools: true, memory: true },
             pid: None,
+            shared: false,
+            takes_turns: true,
+            says_id: "companion".to_string(),
         }
     }
 

@@ -22,7 +22,7 @@
 //! # A whole harness
 //!
 //! ```text
-//! attach  {id, name, conversations?}    → {session}
+//! attach  {id, name, conversations?}    → {session, as}
 //! loop:
 //!   poll  {session}                     → {turn_id, text, context, conversation, agent_token,
 //!                                          memory_credential?} | {}
@@ -38,6 +38,10 @@
 //! the same account, and from the process that attached or one it started. A harness that polls
 //! from a worker is fine; one that hands its session to an unrelated process is refused, and told
 //! to attach again.
+//!
+//! The reply also carries `as`: the key the desktop lists this attach under. For a plain attach it
+//! is the `id`; for a shared attach it is `<id>.<n>`, a key of its own beside the others under the
+//! same id.
 //!
 //! # Conversations
 //!
@@ -94,6 +98,10 @@ pub const MAX_EVENT_BYTES: usize = 64 * 1024;
 /// sentence that says so; the Lens's own conversation with the answering mind is never refused.
 pub const MAX_LIVE_AGENTS: usize = 6;
 
+/// How many shared attaches may be live under one id at once. A shared attach is keyed
+/// `<id>.<n>`; past this many the next is refused with a sentence naming the cap.
+pub const MAX_SHARED_PER_ID: usize = 4;
+
 /// How a tool call is written into an answer.
 ///
 /// [`CHUNK`] carries text and nothing else, on purpose: which tools a harness has and how it
@@ -117,6 +125,11 @@ pub const TRAIL_MARK: &str = "⚙️";
 /// evicted mid-answer. It only has to be shorter than a person's patience with a picker listing
 /// something that is no longer there.
 pub const PRESENCE_TIMEOUT_SECS: u64 = 90;
+
+/// The poll interval a presence-only harness should use. Documented, not enforced: a presence-only
+/// mind is seen but never handed a turn, so it polls only to stay listed. It must stay under
+/// [`PRESENCE_TIMEOUT_SECS`].
+pub const PRESENCE_POLL_SECS: u64 = 20;
 
 /// How long to wait after an empty poll before asking again.
 ///
@@ -173,6 +186,19 @@ pub struct Attach {
     /// re-opens the turns, and the harness carries on under the ids the reply maps them to.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resume: Vec<Resume>,
+    /// Attach beside any other attach under this id rather than replacing it. The host gives a
+    /// shared attach its own key, `<id>.<n>`, in the reply's `as`; every later call names it by
+    /// its session as before. A mind started in a terminal attaches shared.
+    #[serde(default)]
+    pub shared: bool,
+    /// Takes turns from the desktop. `false` is presence-only: the mind is seen, its acts carry
+    /// its token, and the desktop never queues a turn for it.
+    #[serde(default = "yes")]
+    pub takes_turns: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// One conversation a re-attaching harness still holds. See [`Attach::resume`].
@@ -387,6 +413,8 @@ mod tests {
             conversations: true,
             handover_context: true,
             resume: Vec::new(),
+            shared: false,
+            takes_turns: true,
         })
         .unwrap();
         let keys: Vec<&str> = json.as_object().unwrap().keys().map(|k| k.as_str()).collect();
@@ -462,6 +490,8 @@ mod tests {
             conversations: true,
             handover_context: false,
             resume: vec![resume.clone()],
+            shared: false,
+            takes_turns: true,
         })] {
             assert!(!printed.contains(token) && !printed.contains(&credential), "{printed}");
             assert!(printed.contains("<redacted>"), "it says one is there: {printed}");
