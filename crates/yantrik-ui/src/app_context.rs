@@ -313,6 +313,7 @@ impl AppContext {
 
         // Start multi-provider chat system (Discord, Matrix, IRC, Slack, Signal, etc.)
         // This also handles Telegram if configured, replacing the legacy poller.
+        let choice_bridge = bridge.clone();
         let _chat_handle = yantrik_companion::chat_bridge::start_chat(
             &chat_config_snapshot,
             // AI callback: the person's message to the mind answering, and its reply. The router
@@ -320,6 +321,12 @@ impl AppContext {
             Box::new(move |text: &str, context: &[String], policy: &yantrik_chat::policy::ConversationPolicy, asker: &yantrik_chat::router::Asker, outbox: &yantrik_chat::router::Outbox| {
                 // The mind answering, from the phone, answered later through the outbox; or an
                 // answer to a card on the phone, answered now. See `channels`.
+                // A reply of the choice words under a proactive message sent there is that choice
+                // (#756), answered now, as the buttons are at the desk.
+                if let Some((choice, kind, memory_ids)) = crate::channels::proactive_answer(text, &asker.provider) {
+                    choice_bridge.proactive_choice(choice, kind, memory_ids);
+                    return Some(choice.ack().to_string());
+                }
                 crate::channels::from_phone(text, context, policy.max_reply_length, asker, outbox)
             }),
             // Brain callback: record events for cross-platform memory

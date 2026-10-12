@@ -32,6 +32,8 @@ export component DesktopHome inherits Rectangle {
     callback launch(string);
     callback open-recent(string);
     callback configure-mind();
+    // A choice behind "Less of this" on a suggestion: (choice, urge-id, kind, memory-ids) (#756).
+    callback suggestion-choice(string, string, string, string);
 
     property <int> columns: max(2, min(6, floor((self.width - 48px) / 104px)));
     // The box says where its words go: it opens the chat with the mind that answers, and that
@@ -125,6 +127,7 @@ export component DesktopHome inherits Rectangle {
                 for u in root.urges : GlanceCard {
                     data: u;
                     tapped(msg) => { root.send-message(msg); }
+                    choice(c, id, kind, memories) => { root.suggestion-choice(c, id, kind, memories); }
                 }
             }
 

@@ -155,6 +155,9 @@ pub enum CompanionCommand {
         choice: yantrik_companion::proactive_backoff::Choice,
         kind: String,
         memory_ids: Vec<String>,
+        /// The pending urges the choice was made on (a suggestion on the agent-mode home), which
+        /// leave the list; empty for a message already said (#756).
+        urge_ids: Vec<String>,
     },
     /// Settings: let the mind use an excluded memory for proactive messages again (#754).
     ProactiveMemoryRestore { memory_id: String },
@@ -326,6 +329,8 @@ pub struct UrgeSnapshot {
     pub urgency: f64,
     pub suggested_message: String,
     pub created_at: f64,
+    /// The urge as the home lists it, why and choices included (#756).
+    pub urge: yantrik_companion::types::Urge,
 }
 
 /// Structured morning brief data for the desktop card.
@@ -333,6 +338,8 @@ pub struct UrgeSnapshot {
 pub struct MorningBriefSnapshot {
     pub greeting: String,
     pub sections: Vec<MorningBriefSectionData>,
+    /// The person stopped the daily brief ("Stop this kind"): neither half is delivered (#756).
+    pub stopped: bool,
 }
 
 /// A single section of the morning brief card.
@@ -847,7 +854,19 @@ impl CompanionBridge {
         kind: String,
         memory_ids: Vec<String>,
     ) {
-        let _ = self.cmd_tx.send(CompanionCommand::ProactiveChoice { choice, kind, memory_ids });
+        let _ = self.cmd_tx.send(CompanionCommand::ProactiveChoice { choice, kind, memory_ids, urge_ids: Vec::new() });
+    }
+
+    /// The same choice on a suggestion the agent-mode home lists, before it is said: the
+    /// suggestion leaves the list as well (#756).
+    pub fn suggestion_choice(
+        &self,
+        choice: yantrik_companion::proactive_backoff::Choice,
+        urge_id: String,
+        kind: String,
+        memory_ids: Vec<String>,
+    ) {
+        let _ = self.cmd_tx.send(CompanionCommand::ProactiveChoice { choice, kind, memory_ids, urge_ids: vec![urge_id] });
     }
 
     /// Settings: let the mind use this memory for proactive messages again (#754).
@@ -1697,18 +1716,26 @@ fn worker_loop(
                 let _ = reply_tx.send(companion.bond_level());
             }
             Ok(CompanionCommand::GetPendingUrges { reply_tx }) => {
-                let urges = companion.urge_queue.get_pending(&companion.db.conn(), 10);
-                let snapshots: Vec<UrgeSnapshot> = urges
-                    .into_iter()
-                    .map(|u| UrgeSnapshot {
-                        urge_id: u.urge_id,
-                        instinct_name: u.instinct_name,
-                        reason: u.reason,
-                        urgency: u.urgency,
-                        suggested_message: u.suggested_message,
-                        created_at: u.created_at,
-                    })
-                    .collect();
+                // The same list as `push_urges`: nothing the person stopped or excluded (#756).
+                let snapshots: Vec<UrgeSnapshot> = {
+                    let conn = companion.db.conn();
+                    companion
+                        .urge_queue
+                        .get_pending(&conn, 50)
+                        .into_iter()
+                        .filter(|u| !yantrik_companion::proactive_backoff::withheld(&conn, u))
+                        .take(10)
+                        .map(|u| UrgeSnapshot {
+                            urge_id: u.urge_id.clone(),
+                            instinct_name: u.instinct_name.clone(),
+                            reason: u.reason.clone(),
+                            urgency: u.urgency,
+                            suggested_message: u.suggested_message.clone(),
+                            created_at: u.created_at,
+                            urge: u,
+                        })
+                        .collect()
+                };
                 let _ = reply_tx.send(snapshots);
             }
             Ok(CompanionCommand::SetIncognitoMode { enabled }) => {
@@ -1743,7 +1770,7 @@ fn worker_loop(
                 execute_suppression_logged = false;
                 tracing::info!("LLM reloaded successfully");
             }
-            Ok(CompanionCommand::ProactiveChoice { choice, kind, memory_ids }) => {
+            Ok(CompanionCommand::ProactiveChoice { choice, kind, memory_ids, urge_ids }) => {
                 use yantrik_companion::proactive_backoff::{Choice, KindBackoff, MemoryExclusions, Outcome, ProactiveKind};
                 let kind = ProactiveKind::from_key(&kind);
                 {
@@ -1763,7 +1790,12 @@ fn worker_loop(
                         // The memory stays; only the mind's own messages leave it alone.
                         Choice::ForgetMemory => MemoryExclusions::exclude(&conn, &memory_ids, now_secs()),
                     }
+                    // A suggestion answered on the home is not said later (#756).
+                    for id in &urge_ids {
+                        companion.urge_queue.expire(&conn, id);
+                    }
                 }
+                push_urges(&companion, &ui_weak);
                 tracing::info!(choice = choice.key(), kind = kind.map(|k| k.key()), memories = memory_ids.len(), "Less of this");
                 // The choice is the person's answer to that message. Left pending, their next
                 // chat message would count as accepting it and undo it at once.
@@ -1903,16 +1935,27 @@ fn worker_loop(
                     });
                     // Forward to Telegram
                     if companion.config.telegram.enabled && companion.config.telegram.forward_proactive {
-                        let _ = yantrik_companion::telegram::send_message(
+                        use yantrik_companion::proactive_backoff::{Choice, ProactiveKind};
+                        // With its why, and its choices as reply words where replies are read (#756).
+                        let choices = if crate::channels::reads_telegram_replies() {
+                            vec![Choice::NotNow, Choice::StopKind]
+                        } else {
+                            Vec::new()
+                        };
+                        let sent = yantrik_companion::telegram::send_message(
                             &companion.config.telegram,
-                            &yantrik_companion::proactive_backoff::with_why_line(
+                            &yantrik_companion::proactive_backoff::with_why_and_reply_words(
                                 notif,
                                 &yantrik_companion::proactive_backoff::why_text(
-                                    yantrik_companion::proactive_backoff::ProactiveKind::Tasks,
+                                    ProactiveKind::Tasks,
                                     &serde_json::Value::Null,
                                 ),
+                                &choices,
                             ),
                         );
+                        if sent.is_ok() {
+                            crate::channels::proactive_sent(ProactiveKind::Tasks.key(), &[], &choices);
+                        }
                     }
                 }
                 let task_summary = companion.active_tasks_summary();
@@ -2657,8 +2700,7 @@ fn worker_loop(
                             "Suppressing proactive message (deep work mode)"
                         );
                         companion.record_suppressed_urge(&delivery_key, "deep work mode");
-                        // V25: Record suppression as "ignored" for silence policy learning
-                        companion.record_proactive_outcome(&delivery_key, yantrik_companion::silence_policy::InterventionOutcome::Ignored);
+                        // Never shown, so it teaches nothing: not "ignored" (#756).
                         event_bus.emit(
                             yantrik_os::EventKind::ProactiveSuppressed {
                                 reason: "deep work mode".into(),
@@ -2785,12 +2827,19 @@ fn worker_loop(
 
                         // Forward proactive messages to Telegram
                         if companion.config.telegram.enabled && companion.config.telegram.forward_proactive {
-                            // With its why, as every surface carries it (#754).
-                            if let Err(e) = yantrik_companion::telegram::send_message(
+                            // With its why, as every surface carries it (#754), and its choices as
+                            // reply words where replies are read: Telegram has no buttons (#756).
+                            let choices = if crate::channels::reads_telegram_replies() {
+                                yantrik_companion::proactive_backoff::choices_for(&msg)
+                            } else {
+                                Vec::new()
+                            };
+                            match yantrik_companion::telegram::send_message(
                                 &companion.config.telegram,
-                                &yantrik_companion::proactive_backoff::with_why_line(&msg.text, &msg.why),
+                                &yantrik_companion::proactive_backoff::with_why_and_reply_words(&msg.text, &msg.why, &choices),
                             ) {
-                                tracing::warn!(error = %e, "Failed to forward proactive to Telegram");
+                                Ok(_) => crate::channels::proactive_sent(msg_kind.key(), &msg.memory_ids, &choices),
+                                Err(e) => tracing::warn!(error = %e, "Failed to forward proactive to Telegram"),
                             }
                         }
 
@@ -2830,24 +2879,16 @@ fn worker_loop(
                     );
                 }
 
-                // Adaptive User Model: check for ignored proactive messages (2h timeout)
+                // Adaptive User Model: stop waiting for an answer after 2h. No answer is not a
+                // "no": the person may be away or never have seen it, so it teaches nothing —
+                // not the user model, the silence policy or the kind's throttle (#756).
                 {
                     let m = companion.user_model.inner_pending_ts();
                     if let Some(sent_ts) = m {
                         if now_ts - sent_ts > 2.0 * 3600.0 {
-                            companion.user_model.on_proactive_ignored(now_ts);
-                            // V25: Record as "ignored" in silence policy
-                            companion.record_proactive_outcome("proactive", yantrik_companion::silence_policy::InterventionOutcome::Ignored);
-                            if let Some(kind) = last_proactive_kind.take() {
-                                yantrik_companion::proactive_backoff::KindBackoff::record_outcome(
-                                    &companion.db.conn(),
-                                    kind,
-                                    yantrik_companion::proactive_backoff::Outcome::Ignored,
-                                    now_ts,
-                                );
-                                push_proactive_kinds(&companion, &ui_weak);
-                            }
-                            tracing::info!("UserModel: proactive message expired (2h without response)");
+                            companion.user_model.forget_unanswered_proactive();
+                            last_proactive_kind = None;
+                            tracing::info!("UserModel: stopped waiting for an answer (2h); nothing learned");
                         }
                     }
                 }
@@ -3059,8 +3100,13 @@ fn worker_loop(
                     })
                     .collect();
 
+                let stopped = yantrik_companion::proactive_backoff::KindBackoff::level(
+                    &companion.db.conn(),
+                    yantrik_companion::proactive_backoff::ProactiveKind::DailyBrief,
+                ) == yantrik_companion::proactive_backoff::BackoffLevel::OffUntilAsked;
                 let snapshot = if sections.is_empty() {
                     MorningBriefSnapshot {
+                        stopped,
                         greeting,
                         sections: vec![MorningBriefSectionData {
                             icon: "☀".into(),
@@ -3071,7 +3117,7 @@ fn worker_loop(
                         }],
                     }
                 } else {
-                    MorningBriefSnapshot { greeting, sections }
+                    MorningBriefSnapshot { greeting, sections, stopped }
                 };
 
                 let _ = reply_tx.send(snapshot);
@@ -3223,25 +3269,24 @@ fn push_bond(companion: &CompanionService, ui_weak: &slint::Weak<App>) {
 }
 
 /// Push pending urges to the Slint UI thread.
+///
+/// A suggestion of a kind the person stopped, or made from a memory they excluded, is not listed
+/// at all; every listed one carries its plain why and the choices behind "Less of this" (#756).
 fn push_urges(companion: &CompanionService, ui_weak: &slint::Weak<App>) {
-    let urges = companion.urge_queue.get_pending(&companion.db.conn(), 10);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs_f64();
-
-    let cards: Vec<UrgeCardData> = urges
-        .iter()
-        .map(|u| UrgeCardData {
-            urge_id: u.urge_id.clone().into(),
-            instinct_name: u.instinct_name.clone().into(),
-            reason: u.reason.clone().into(),
-            urgency: u.urgency as f32,
-            suggested_message: u.suggested_message.clone().into(),
-            time_ago: format_time_ago(now - u.created_at).into(),
-            border_color: instinct_color(&u.instinct_name),
-        })
-        .collect();
+    let cards: Vec<UrgeCardData> = {
+        let conn = companion.db.conn();
+        let urges = companion.urge_queue.get_pending(&conn, 50);
+        urges
+            .iter()
+            .filter(|u| !yantrik_companion::proactive_backoff::withheld(&conn, u))
+            .take(10)
+            .map(|u| urge_card(u, now))
+            .collect()
+    };
 
     let weak = ui_weak.clone();
     let _ = slint::invoke_from_event_loop(move || {
@@ -3249,6 +3294,25 @@ fn push_urges(companion: &CompanionService, ui_weak: &slint::Weak<App>) {
             ui.set_urges(ModelRc::new(VecModel::from(cards)));
         }
     });
+}
+
+/// One pending urge as the agent-mode home lists it: what it would say, why, and its choices.
+pub fn urge_card(u: &yantrik_companion::types::Urge, now: f64) -> UrgeCardData {
+    use yantrik_companion::proactive_backoff::{choices_for, urge_preview};
+    let preview = urge_preview(u);
+    UrgeCardData {
+        urge_id: u.urge_id.clone().into(),
+        instinct_name: u.instinct_name.clone().into(),
+        reason: u.reason.clone().into(),
+        urgency: u.urgency as f32,
+        suggested_message: u.suggested_message.clone().into(),
+        time_ago: format_time_ago(now - u.created_at).into(),
+        border_color: instinct_color(&u.instinct_name),
+        offers_choices: !choices_for(&preview).is_empty(),
+        kind: preview.kind.into(),
+        why: preview.why.into(),
+        memory_ids: preview.memory_ids.join(",").into(),
+    }
 }
 
 /// Map instinct names to Firelight theme colors.
@@ -3785,5 +3849,44 @@ mod assistant_offline_notice_tests {
             src.contains("if !execute_suppression_logged"),
             "the EXECUTE suppression line is gated: once per outage, not once per think cycle (#30)"
         );
+    }
+}
+
+#[cfg(test)]
+mod home_suggestion_tests {
+    fn urge(name: &str, memory_ids: &[&str], safety: bool) -> yantrik_companion::types::Urge {
+        yantrik_companion::types::Urge {
+            urge_id: format!("u-{name}"),
+            instinct_name: name.into(),
+            reason: "Follow up: the trip".into(),
+            urgency: 0.6,
+            suggested_message: "How did the trip go?".into(),
+            action: None,
+            context: serde_json::json!({}),
+            cooldown_key: String::new(),
+            status: "pending".into(),
+            created_at: 100.0,
+            delivered_at: None,
+            expires_at: None,
+            boost_count: 0,
+            safety,
+            memory_ids: memory_ids.iter().map(|m| m.to_string()).collect(),
+        }
+    }
+
+    /// Every suggestion the agent-mode home lists carries its plain why and the choices behind
+    /// "Less of this", with the kind and memories they act on; a safety one offers none (#756).
+    #[test]
+    fn a_home_suggestion_carries_its_why_and_choices() {
+        let card = super::urge_card(&urge("follow_up", &["mem-1", "mem-2"], false), 160.0);
+        assert!(!card.why.is_empty());
+        assert_eq!(card.kind.as_str(), "check_ins");
+        assert_eq!(card.memory_ids.as_str(), "mem-1,mem-2");
+        assert!(card.offers_choices);
+        let plain = super::urge_card(&urge("curiosity", &[], false), 160.0);
+        assert!(plain.offers_choices && plain.memory_ids.is_empty() && !plain.why.is_empty());
+        let danger = super::urge_card(&urge("weather_watch", &[], true), 160.0);
+        assert!(!danger.offers_choices);
+        assert_eq!(danger.why.as_str(), yantrik_companion::proactive_backoff::SAFETY_WHY);
     }
 }

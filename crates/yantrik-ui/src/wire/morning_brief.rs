@@ -30,7 +30,7 @@ use crate::{App, BriefSection};
 /// Wire the morning brief card on the desktop.
 pub fn wire(ui: &App, ctx: &AppContext) {
     wire_brief_card(ui, ctx);
-    wire_brief_dismiss(ui);
+    wire_brief_dismiss(ui, ctx);
     wire_brief_section_action(ui, ctx);
 }
 
@@ -132,32 +132,14 @@ fn wire_brief_card(ui: &App, ctx: &AppContext) {
             return;
         }
 
-        // The card first: it is answered straight from companion state, so it is already in
-        // the command queue ahead of the LLM round below and comes back at once.
+        // The card first: it is answered straight from companion state, so it comes back at
+        // once, and it says whether the person stopped the daily brief. Only then the
+        // conversational half: a stopped brief sends neither (#756).
         let reply_rx = bridge.request_morning_brief();
         let weak = ui_weak.clone();
+        let bridge = bridge.clone();
+        let user_name = user_name.clone();
 
-        // Then the conversational half. This is the expensive one — an LLM round that calls
-        // tools, minutes long, during which the single-threaded companion answers nothing
-        // else — which is why it is behind the same once-a-day claim as the card rather than
-        // on its own unguarded timer in `wire::timers`, where it used to be.
-        //
-        // The prompt carries the time because there is no morning window: the model is told
-        // what hour it is rather than being told it is morning, the same correction the card's
-        // greeting already got.
-        tracing::info!("Composing the day's brief");
-        let prompt = format!(
-            "You just started up. It is {time}. Compose the day's first brief for {user_name}. \
-             Use your tools to check email, calendar, weather, system status, \
-             and recall recent topics of interest. Skip any sources that fail \
-             or that {user_name} has asked you not to include. \
-             Keep it natural and concise — a few flowing sentences, no bullet points.",
-            time = crate::app_context::current_time_hhmm(),
-        );
-        // Fire-and-forget: the response flows through the normal notification path.
-        let _rx = bridge.send_message(prompt);
-
-        // Poll for the reply (brief should arrive almost instantly — no LLM call)
         let poll_timer = Timer::default();
         let poll_timer_slot: Rc<RefCell<Option<Timer>>> = Rc::new(RefCell::new(None));
         let slot = poll_timer_slot.clone();
@@ -176,13 +158,36 @@ fn wire_brief_card(ui: &App, ctx: &AppContext) {
             }
 
             if let Ok(snapshot) = reply_rx.try_recv() {
-                populate_brief_card(&weak, &snapshot);
-                // Auto-dismiss after 5 minutes
-                schedule_auto_dismiss(weak.clone());
-                // Stop polling
                 if let Some(t) = slot.borrow_mut().take() {
                     t.stop();
                 }
+                if snapshot.stopped {
+                    tracing::info!("Morning brief not delivered: the person stopped the daily brief");
+                    return;
+                }
+                populate_brief_card(&weak, &snapshot);
+                // A card that fades on its own teaches nothing (#756).
+                schedule_auto_dismiss(weak.clone());
+
+                // Then the conversational half. This is the expensive one — an LLM round that
+                // calls tools, minutes long, during which the single-threaded companion answers
+                // nothing else — which is why it is behind the same once-a-day claim as the card
+                // rather than on its own unguarded timer in `wire::timers`, where it used to be.
+                //
+                // The prompt carries the time because there is no morning window: the model is
+                // told what hour it is rather than being told it is morning, the same correction
+                // the card's greeting already got.
+                tracing::info!("Composing the day's brief");
+                let prompt = format!(
+                    "You just started up. It is {time}. Compose the day's first brief for {user_name}. \
+                     Use your tools to check email, calendar, weather, system status, \
+                     and recall recent topics of interest. Skip any sources that fail \
+                     or that {user_name} has asked you not to include. \
+                     Keep it natural and concise — a few flowing sentences, no bullet points.",
+                    time = crate::app_context::current_time_hhmm(),
+                );
+                // Fire-and-forget: the response flows through the normal notification path.
+                let _rx = bridge.send_message(prompt);
             }
         });
         *poll_timer_slot.borrow_mut() = Some(poll_timer);
@@ -209,6 +214,7 @@ fn populate_brief_card(ui_weak: &slint::Weak<App>, snapshot: &MorningBriefSnapsh
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = weak.upgrade() {
             ui.set_morning_brief_greeting(SharedString::from(&greeting));
+            ui.set_morning_brief_why(SharedString::from(DAILY_BRIEF_WHY.as_str()));
             ui.set_morning_brief_sections(ModelRc::new(VecModel::from(sections)));
             ui.set_morning_brief_visible(true);
             tracing::info!("Morning brief card displayed");
@@ -228,15 +234,35 @@ fn schedule_auto_dismiss(ui_weak: slint::Weak<App>) {
     std::mem::forget(timer);
 }
 
-/// Wire the dismiss callback — hides the card.
-fn wire_brief_dismiss(ui: &App) {
-    let ui_weak = ui.as_weak();
-    ui.on_morning_brief_dismissed(move || {
-        if let Some(ui) = ui_weak.upgrade() {
-            ui.set_morning_brief_visible(false);
-            tracing::info!("Morning brief card dismissed by user");
+/// Why the brief appeared, as the card says it (#756).
+static DAILY_BRIEF_WHY: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    yantrik_companion::proactive_backoff::why_text(
+        yantrik_companion::proactive_backoff::ProactiveKind::DailyBrief,
+        &serde_json::Value::Null,
+    )
+});
+
+/// Wire the card's choices. The x and "Not now" are the person dismissing it, "Not now" to the
+/// mind's throttle; "Stop this kind" turns the daily brief off until they turn it back on in
+/// Settings. The card fading after five minutes is neither (#756).
+fn wire_brief_dismiss(ui: &App, ctx: &AppContext) {
+    use yantrik_companion::proactive_backoff::{Choice, ProactiveKind};
+    for (choice, on_ui) in [(Choice::NotNow, true), (Choice::StopKind, false)] {
+        let ui_weak = ui.as_weak();
+        let bridge = ctx.bridge.clone();
+        let handler = move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_morning_brief_visible(false);
+            }
+            bridge.proactive_choice(choice, ProactiveKind::DailyBrief.key().to_string(), Vec::new());
+            tracing::info!(choice = choice.key(), "Morning brief card answered by the person");
+        };
+        if on_ui {
+            ui.on_morning_brief_dismissed(handler);
+        } else {
+            ui.on_morning_brief_stop_kind(handler);
         }
-    });
+    }
 }
 
 /// Wire section action callbacks — navigate to relevant app screens.

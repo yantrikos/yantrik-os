@@ -100,8 +100,15 @@ export component MorningBriefCard inherits Rectangle {
     in property <string> greeting: "Good morning!";
     in property <[BriefSection]> sections: [];
     in property <bool> show-card: false;
+    // Why the brief appeared, in plain words (#756).
+    in property <string> why;
+    // The x and "Not now" are the person dismissing it; "Stop this kind" turns the daily brief
+    // off until they turn it back on in Settings. It is made from no one memory, so it offers no
+    // "Don't use this memory".
     callback dismissed();
+    callback stop-kind();
     callback section-action(string);
+    property <bool> choices-open: false;
 
     width: 380px;
     min-height: 0px;
@@ -187,17 +194,54 @@ export component MorningBriefCard inherits Rectangle {
             section-clicked(id) => { root.section-action(id); }
         }
 
-        // Footer
+        // Footer: why it is here, and the choices behind "Less of this".
         HorizontalLayout {
-            height: 24px;
+            min-height: 24px;
             padding-left: 12px;
+            spacing: 12px;
 
             Text {
-                text: "Have a great day.";
+                horizontal-stretch: 1;
+                text: root.why != "" ? root.why : "Have a great day.";
                 color: Theme.text-dim;
                 font-size: Theme.fs-micro;
                 vertical-alignment: center;
+                wrap: word-wrap;
                 letter-spacing: 0.5px;
+            }
+
+            if !root.choices-open : TouchArea {
+                width: less-text.preferred-width;
+                mouse-cursor: pointer;
+                clicked => { root.choices-open = true; }
+                less-text := Text {
+                    text: "Less of this";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-micro;
+                    vertical-alignment: center;
+                }
+            }
+            if root.choices-open : TouchArea {
+                width: not-now-text.preferred-width;
+                mouse-cursor: pointer;
+                clicked => { root.dismissed(); }
+                not-now-text := Text {
+                    text: "Not now";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-micro;
+                    vertical-alignment: center;
+                }
+            }
+            if root.choices-open : TouchArea {
+                width: stop-text.preferred-width;
+                mouse-cursor: pointer;
+                clicked => { root.stop-kind(); }
+                stop-text := Text {
+                    text: "Stop this kind";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-micro;
+                    vertical-alignment: center;
+                }
             }
         }
     }

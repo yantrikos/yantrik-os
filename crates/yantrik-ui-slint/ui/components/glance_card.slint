@@ -2,6 +2,7 @@
 // Left border glow indicates the instinct type.
 
 import { Theme } from "theme.slint";
+import { ChoiceLink } from "chat_message.slint";
 
 export struct UrgeCardData {
     urge-id: string,
@@ -11,11 +12,21 @@ export struct UrgeCardData {
     suggested-message: string,
     time-ago: string,
     border-color: color,
+    // The kind's key, its plain why, and the memories it was made from (comma-separated), as the
+    // message would carry them (#756).
+    kind: string,
+    why: string,
+    memory-ids: string,
+    // False for a safety signal: nothing to back off.
+    offers-choices: bool,
 }
 
 export component GlanceCard inherits Rectangle {
     in property <UrgeCardData> data;
     callback tapped(string); // passes suggested-message
+    // One of the three choices behind "Less of this": (choice, urge-id, kind, memory-ids).
+    callback choice(string, string, string, string);
+    property <bool> choices-open: false;
 
     min-height: 64px;
     border-radius: Theme.radius-card;
@@ -69,6 +80,14 @@ export component GlanceCard inherits Rectangle {
                 overflow: elide;
             }
 
+            // Why the mind wants to say this, in plain words.
+            if data.why != "" : Text {
+                text: data.why;
+                color: Theme.text-dim;
+                font-size: Theme.fs-caption;
+                wrap: word-wrap;
+            }
+
             HorizontalLayout {
                 spacing: 8px;
 
@@ -92,6 +111,28 @@ export component GlanceCard inherits Rectangle {
                     color: Theme.text-dim;
                     font-size: Theme.font-small;
                     vertical-alignment: center;
+                }
+
+                if data.offers-choices && data.kind != "" && !root.choices-open : ChoiceLink {
+                    label: "Less of this";
+                    clicked => { root.choices-open = true; }
+                }
+            }
+
+            if data.offers-choices && root.choices-open : HorizontalLayout {
+                alignment: start;
+                spacing: 12px;
+                ChoiceLink {
+                    label: "Not now";
+                    clicked => { root.choice("not_now", data.urge-id, data.kind, data.memory-ids); }
+                }
+                ChoiceLink {
+                    label: "Stop this kind";
+                    clicked => { root.choice("stop_kind", data.urge-id, data.kind, data.memory-ids); }
+                }
+                if data.memory-ids != "" : ChoiceLink {
+                    label: "Don't use this memory";
+                    clicked => { root.choice("forget_memory", data.urge-id, data.kind, data.memory-ids); }
                 }
             }
         }

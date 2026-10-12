@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use slint::{Model, ModelRc, VecModel};
-use yantrik_companion::proactive_backoff::{why_text, BackoffLevel, Outcome, ProactiveKind};
+use yantrik_companion::proactive_backoff::{why_text, BackoffLevel, ProactiveKind};
 
 use super::{App, WhisperCardItem};
 use crate::features;
@@ -67,8 +67,6 @@ pub struct CardManager {
     hint_count: i32,
     /// When a card of each kind was last shown, for a backed-off kind's cooldown.
     last_shown: HashMap<ProactiveKind, Instant>,
-    /// Outcomes not yet handed to the mind's throttle: cards that faded unanswered.
-    outcomes: Vec<(ProactiveKind, Outcome)>,
 }
 
 struct ActiveCard {
@@ -95,7 +93,6 @@ impl CardManager {
             max_visible: 3,
             hint_count: 0,
             last_shown: HashMap::new(),
-            outcomes: Vec::new(),
         }
     }
 
@@ -216,30 +213,15 @@ impl CardManager {
             .unwrap_or(BackoffLevel::Normal)
     }
 
-    /// Outcomes for the mind's throttle since the last call: cards that faded unanswered.
-    pub fn take_outcomes(&mut self) -> Vec<(ProactiveKind, Outcome)> {
-        std::mem::take(&mut self.outcomes)
-    }
-
     /// Tick: auto-dismiss expired cards. Returns true if anything changed.
+    ///
+    /// A card that fades on its own tells the mind nothing: the person may have been away, or
+    /// never seen it. Only an explicit "Not now" or the card's close counts (#756).
     pub fn tick(&mut self) -> bool {
         let now = std::time::Instant::now();
         let before = self.cards.len();
 
-        let outcomes = &mut self.outcomes;
-        self.cards.retain(|c| {
-            if let Some(deadline) = c.auto_dismiss_at {
-                let keep = now < deadline;
-                if !keep {
-                    if let Some(kind) = c.kind {
-                        outcomes.push((kind, Outcome::Ignored));
-                    }
-                }
-                keep
-            } else {
-                true
-            }
-        });
+        self.cards.retain(|c| c.auto_dismiss_at.map_or(true, |deadline| now < deadline));
 
         // Mark new cards as shown
         let mut changed = self.cards.len() != before;
@@ -295,81 +277,6 @@ pub fn sync_whisper_ui(mgr: &CardManager, ui_weak: &slint::Weak<App>) {
         ui.set_whisper_cards(ModelRc::new(VecModel::from(items)));
         ui.set_whisper_hint_count(hint);
     }
-}
-
-/// Push scored urges as Quiet Queue cards (legacy GlanceCard system).
-#[allow(dead_code)]
-pub fn push_queue_cards(ui_weak: &slint::Weak<App>, scored: &[features::ScoredUrge]) {
-    let cards: Vec<super::UrgeCardData> = scored
-        .iter()
-        .filter(|s| s.tier == features::UrgeTier::Queue)
-        .map(|s| {
-            let color = match s.urge.category {
-                features::UrgeCategory::Resource => {
-                    slint::Color::from_rgb_u8(0xD4, 0xA5, 0x74)
-                }
-                features::UrgeCategory::Security => {
-                    slint::Color::from_rgb_u8(0xE8, 0x6B, 0x6B)
-                }
-                features::UrgeCategory::FileManagement => {
-                    slint::Color::from_rgb_u8(0x5A, 0xC8, 0xD4)
-                }
-                features::UrgeCategory::Focus => {
-                    slint::Color::from_rgb_u8(0xC4, 0x8B, 0xD4)
-                }
-                features::UrgeCategory::Celebration => {
-                    slint::Color::from_rgb_u8(0x8B, 0xE8, 0x6B)
-                }
-                features::UrgeCategory::Shell => {
-                    slint::Color::from_rgb_u8(0xE8, 0x7B, 0x4B)
-                }
-                features::UrgeCategory::Notification => {
-                    slint::Color::from_rgb_u8(0x66, 0xB3, 0xEB)
-                }
-                features::UrgeCategory::Vision => {
-                    slint::Color::from_rgb_u8(0x5A, 0xD9, 0xF2)
-                }
-                features::UrgeCategory::Project => {
-                    slint::Color::from_rgb_u8(0xF2, 0xBF, 0x4D)
-                }
-            };
-
-            super::UrgeCardData {
-                urge_id: s.urge.id.clone().into(),
-                instinct_name: s.urge.source.clone().into(),
-                reason: s.urge.body.clone().into(),
-                urgency: s.pressure,
-                suggested_message: s.urge.title.clone().into(),
-                time_ago: "just now".into(),
-                border_color: color,
-            }
-        })
-        .collect();
-
-    if cards.is_empty() {
-        return;
-    }
-
-    let weak = ui_weak.clone();
-    let _ = slint::invoke_from_event_loop(move || {
-        if let Some(ui) = weak.upgrade() {
-            let existing = ui.get_urges();
-            let model = existing
-                .as_any()
-                .downcast_ref::<VecModel<super::UrgeCardData>>();
-
-            if let Some(model) = model {
-                for card in cards {
-                    model.push(card);
-                }
-                ui.set_pending_count(model.row_count() as i32);
-            } else {
-                let count = cards.len();
-                ui.set_urges(ModelRc::new(VecModel::from(cards)));
-                ui.set_pending_count(count as i32);
-            }
-        }
-    });
 }
 
 #[cfg(test)]
@@ -432,12 +339,24 @@ mod tests {
         mgr.add_at(&urge("b", "clipboard_intelligence", features::UrgeCategory::Focus, features::UrgeTier::Interrupt), false, now + Duration::from_secs(86_400));
         assert!(mgr.cards.iter().all(|c| c.id != "b"), "the kind is off");
 
-        mgr.cards.iter_mut().for_each(|c| c.auto_dismiss_at = Some(now));
-        mgr.tick();
-        assert!(mgr.take_outcomes().is_empty(), "the pressed card faded answered, not ignored");
         if let Ok(mut levels) = LEVELS.lock() {
             levels.remove(&ProactiveKind::Suggestions);
         }
+    }
+
+    /// A card that fades on its own is not a "Not now": the person may have been away or never
+    /// seen it, so the card manager has nothing to hand the mind's throttle and the kind keeps its
+    /// level. Only the card's x or "Not now" counts (#756).
+    #[test]
+    fn a_card_that_fades_on_its_own_changes_nothing() {
+        let mut mgr = CardManager::new();
+        let now = Instant::now();
+        mgr.add_at(&urge("f", "network_watcher", features::UrgeCategory::Resource, features::UrgeTier::Whisper), false, now);
+        assert_eq!(mgr.cards.len(), 1);
+        mgr.cards.iter_mut().for_each(|c| c.auto_dismiss_at = Some(now));
+        assert!(mgr.tick(), "it faded");
+        assert!(mgr.cards.is_empty());
+        assert_eq!(mgr.level(ProactiveKind::System), BackoffLevel::Normal);
     }
 
     /// A kind the throttle backed off waits its longer cooldown and no longer interrupts.
@@ -485,9 +404,6 @@ mod tests {
         assert_eq!(c.kind, None, "nothing to back off");
         assert_eq!(c.why, SECURITY_WHY);
         assert_eq!(mgr.stop_kind("s1"), None);
-        mgr.cards.iter_mut().for_each(|c| c.auto_dismiss_at = Some(now));
-        mgr.tick();
-        assert!(mgr.take_outcomes().is_empty());
     }
 
     /// A battery about to die is a safety signal: it shows during Do Not Disturb, interrupts,

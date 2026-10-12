@@ -122,6 +122,57 @@ fn approvals_on(provider: &str) -> bool {
     trust_of(provider) == "e2e" || APPROVALS_ON.get().is_some_and(|on| on.iter().any(|p| p == provider))
 }
 
+// ── The choices on a proactive message sent to the phone (#756) ────────────────────────────
+
+/// The proactive message last sent to Telegram, so a reply of its choice words answers it.
+struct SentProactive {
+    kind: String,
+    memory_ids: Vec<String>,
+    choices: Vec<yantrik_companion::proactive_backoff::Choice>,
+    until: Instant,
+}
+
+static PROACTIVE_SENT: Mutex<Option<SentProactive>> = Mutex::new(None);
+
+/// How long a reply of the choice words still answers the message sent.
+const PROACTIVE_REPLY_WINDOW: Duration = Duration::from_secs(12 * 3600);
+
+/// Whether a reply on Telegram is read at all: only while the channels run. Without them a
+/// message offers no reply words, since nothing would hear the reply.
+pub fn reads_telegram_replies() -> bool {
+    OUTBOX.get().is_some()
+}
+
+/// A proactive message was sent to Telegram with these choices as reply words.
+pub fn proactive_sent(kind: &str, memory_ids: &[String], choices: &[yantrik_companion::proactive_backoff::Choice]) {
+    *PROACTIVE_SENT.lock().unwrap_or_else(|e| e.into_inner()) = (!choices.is_empty()).then(|| SentProactive {
+        kind: kind.to_string(),
+        memory_ids: memory_ids.to_vec(),
+        choices: choices.to_vec(),
+        until: Instant::now() + PROACTIVE_REPLY_WINDOW,
+    });
+}
+
+/// A reply on Telegram that is exactly one of the choices the last proactive message there
+/// offered: the choice, with the kind and memories it applies to. Answered once. `None` for
+/// anything else, which goes to the mind as usual.
+pub fn proactive_answer(
+    text: &str,
+    provider: &str,
+) -> Option<(yantrik_companion::proactive_backoff::Choice, String, Vec<String>)> {
+    if provider != "telegram" {
+        return None;
+    }
+    let choice = yantrik_companion::proactive_backoff::reply_choice(text)?;
+    let mut sent = PROACTIVE_SENT.lock().unwrap_or_else(|e| e.into_inner());
+    let offered = sent.as_ref().is_some_and(|s| s.until > Instant::now() && s.choices.contains(&choice));
+    if !offered {
+        return None;
+    }
+    let s = sent.take()?;
+    Some((choice, s.kind, s.memory_ids))
+}
+
 /// The person wrote on a channel. An answer to a card is answered at once; anything else goes to
 /// the mind answering, on a thread of its own, and its answer is sent when it comes.
 pub fn from_phone(
@@ -589,6 +640,30 @@ mod tests {
     fn a_code_is_six_digits_from_the_kernel() {
         let code = fresh_code().expect("urandom");
         assert!(code.len() == 6 && code.chars().all(|c| c.is_ascii_digit()), "{code}");
+    }
+
+    /// A reply of a choice's words answers the proactive message last sent to Telegram, once,
+    /// and only a choice it offered; other words and other channels go to the mind (#756).
+    #[test]
+    fn a_reply_of_the_choice_words_answers_the_message_once() {
+        use yantrik_companion::proactive_backoff::Choice;
+        proactive_sent("check_ins", &[], &[Choice::NotNow, Choice::StopKind]);
+        assert!(proactive_answer("don't use this memory", "telegram").is_none(), "not offered");
+        assert!(proactive_answer("stop this kind", "signal").is_none(), "only where it was sent");
+        assert!(proactive_answer("stop this kind, please, and also", "telegram").is_none());
+        assert_eq!(
+            proactive_answer("Stop this kind.", "telegram"),
+            Some((Choice::StopKind, "check_ins".to_string(), Vec::new()))
+        );
+        assert!(proactive_answer("stop this kind", "telegram").is_none(), "answered once");
+        proactive_sent("memory", &["m1".to_string()], &[Choice::NotNow, Choice::StopKind, Choice::ForgetMemory]);
+        assert_eq!(
+            proactive_answer("don't use this memory", "telegram"),
+            Some((Choice::ForgetMemory, "memory".to_string(), vec!["m1".to_string()]))
+        );
+        // A safety signal offers no choices: nothing to answer.
+        proactive_sent("weather", &[], &[]);
+        assert!(proactive_answer("not now", "telegram").is_none());
     }
 
     #[test]

@@ -55,15 +55,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
 
                             let cards: Vec<UrgeCardData> = urges
                                 .iter()
-                                .map(|u| UrgeCardData {
-                                    urge_id: u.urge_id.clone().into(),
-                                    instinct_name: u.instinct_name.clone().into(),
-                                    reason: u.reason.clone().into(),
-                                    urgency: u.urgency as f32,
-                                    suggested_message: u.suggested_message.clone().into(),
-                                    time_ago: bridge::format_time_ago(now - u.created_at).into(),
-                                    border_color: bridge::instinct_color(&u.instinct_name),
-                                })
+                                .map(|u| bridge::urge_card(&u.urge, now))
                                 .collect();
 
                             ui.set_pending_count(cards.len() as i32);

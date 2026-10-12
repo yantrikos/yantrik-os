@@ -438,7 +438,9 @@ export component App inherits Window {
     in property <bool> morning-brief-visible: false;
     in property <string> morning-brief-greeting: "Good morning!";
     in property <[BriefSection]> morning-brief-sections: [];
+    in property <string> morning-brief-why;
     callback morning-brief-dismissed();
+    callback morning-brief-stop-kind();
     callback morning-brief-section-action(string);
 
     // Fired when one of the bar's panels opens: "quick-settings", "power-menu", "clipboard" or
@@ -1421,6 +1423,9 @@ export component App inherits Window {
     // its kind, and the memories it was made from, comma-separated).
     callback whisper-card-stop-kind(string);
     callback proactive-choice(string, string, string);
+    // The same three choices on a suggestion the agent-mode home lists: (choice, urge id, kind,
+    // memories) (#756).
+    callback suggestion-choice(string, string, string, string);
     callback whisper-card-action(string);
     callback whisper-hint-clicked();
 
@@ -1774,13 +1779,16 @@ export component App inherits Window {
             whisper-card-dismissed(id) => { root.whisper-card-dismissed(id); }
             whisper-card-stop-kind(id) => { root.whisper-card-stop-kind(id); }
             proactive-choice(choice, kind, memories) => { root.proactive-choice(choice, kind, memories); }
+            suggestion-choice(c, id, kind, memories) => { root.suggestion-choice(c, id, kind, memories); }
             whisper-card-action(id) => { root.whisper-card-action(id); }
             whisper-hint-clicked => { root.whisper-hint-clicked(); }
             // Morning Brief
             morning-brief-visible: root.morning-brief-visible;
             morning-brief-greeting: root.morning-brief-greeting;
             morning-brief-sections: root.morning-brief-sections;
+            morning-brief-why: root.morning-brief-why;
             morning-brief-dismissed => { root.morning-brief-dismissed(); }
+            morning-brief-stop-kind => { root.morning-brief-stop-kind(); }
             morning-brief-section-action(id) => { root.morning-brief-section-action(id); }
             power-action(action) => { root.power-action(action); }
             // App grid

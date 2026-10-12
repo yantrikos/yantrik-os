@@ -401,6 +401,21 @@ fn wire_whisper_cards(ui: &App, ctx: &AppContext) {
         br.proactive_choice(choice, kind.to_string(), memory_ids);
     });
 
+    // The same choices on a suggestion the agent-mode home lists (#756).
+    let br = bridge.clone();
+    ui.on_suggestion_choice(move |choice, urge_id, kind, memories| {
+        let Some(choice) = yantrik_companion::proactive_backoff::Choice::from_key(choice.as_str()) else {
+            return;
+        };
+        let memory_ids = memories
+            .split(',')
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(String::from)
+            .collect();
+        br.suggestion_choice(choice, urge_id.to_string(), kind.to_string(), memory_ids);
+    });
+
     // Action on a whisper card (dismiss + open Lens)
     let mgr = card_mgr.clone();
     let br = bridge.clone();

@@ -17,7 +17,7 @@ import { ToolCallCard } from "tool_call.slint";
 import { ChatPill } from "chat_parts.slint";
 
 // A quiet link under a message: "Less of this" and each of its choices (#754).
-component ChoiceLink inherits Rectangle {
+export component ChoiceLink inherits Rectangle {
     in property <string> label;
     callback clicked();
     width: link-text.preferred-width;

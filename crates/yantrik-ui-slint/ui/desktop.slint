@@ -104,6 +104,8 @@ export component DesktopScreen inherits Rectangle {
     callback question-answer(string, string, string, bool);
     callback open-run(string);
     callback proactive-choice(string, string, string);
+    // A choice behind "Less of this" on an agent-mode home suggestion (#756).
+    callback suggestion-choice(string, string, string, string);
     callback approval-allow(string);
     /// The same grant plus a standing rule for that (app, action) — see mind_mode.rs.
     callback approval-allow-session(string);
@@ -142,7 +144,9 @@ export component DesktopScreen inherits Rectangle {
     in property <bool> morning-brief-visible: false;
     in property <string> morning-brief-greeting: "Good morning!";
     in property <[BriefSection]> morning-brief-sections: [];
+    in property <string> morning-brief-why;
     callback morning-brief-dismissed();
+    callback morning-brief-stop-kind();
     callback morning-brief-section-action(string);
 
     // Quick Settings, the power menu and the clipboard panel are not here: they are the shell's
@@ -371,6 +375,7 @@ export component DesktopScreen inherits Rectangle {
             all-apps => { root.app-grid-open = true; }
             launch(id) => { root.launch-app(id); }
             open-recent(id) => { root.lens-result-selected(id); }
+            suggestion-choice(c, id, kind, memories) => { root.suggestion-choice(c, id, kind, memories); }
             configure-mind => {
                 if root.companion-online {
                     root.lens-open = true;
@@ -628,7 +633,9 @@ export component DesktopScreen inherits Rectangle {
         show-card: root.morning-brief-visible;
         greeting: root.morning-brief-greeting;
         sections: root.morning-brief-sections;
+        why: root.morning-brief-why;
         dismissed => { root.morning-brief-dismissed(); }
+        stop-kind => { root.morning-brief-stop-kind(); }
         section-action(id) => { root.morning-brief-section-action(id); }
     }
 
