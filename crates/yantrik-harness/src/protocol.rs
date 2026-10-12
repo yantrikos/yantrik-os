@@ -28,6 +28,10 @@
 //!                                          memory_credential?} | {}
 //!                                         (+ cancelled: [turn_id], ended: [conversation])
 //!   …if no turn_id: wait POLL_INTERVAL_MS and poll again
+//!   open  {session, conversation?, text?} → {turn_id, conversation, agent_token}
+//!                                         …instead of poll, when the person typed into your own
+//!                                          terminal: you answer it, and the desktop only learns
+//!                                          a turn exists, owns its id, and can grade the agent
 //!   chunk {session, turn_id, delta}     → {}          … as many as you like
 //!   event {session, turn_id, event}     → {}          … optional: what the agent is doing
 //!   complete {session, turn_id}         → {}
@@ -74,6 +78,11 @@ use serde::{Deserialize, Serialize};
 pub const ATTACH: &str = "harness.attach";
 /// Ask for a turn. Answers immediately: the turn if one is waiting, `{}` if none is.
 pub const POLL: &str = "harness.poll";
+/// Open a turn you are answering yourself — the person typed into your own terminal, not the
+/// desktop. Answers with the `turn_id`, `conversation` and `agent_token` to answer it under, so
+/// the desktop learns a turn exists, owns its id, and can grade the agent. Unlike [`POLL`] this
+/// queues nothing: nobody polls this turn, you are already on it.
+pub const OPEN: &str = "harness.open";
 /// Part of an answer, as soon as it exists.
 pub const CHUNK: &str = "harness.chunk";
 /// This turn is finished.
@@ -87,7 +96,7 @@ pub const DETACH: &str = "harness.detach";
 pub use crate::event::EVENT;
 
 /// Every method this service answers, for the error when something else is called.
-pub const METHODS: &[&str] = &[ATTACH, POLL, CHUNK, EVENT, COMPLETE, FAIL, DETACH];
+pub const METHODS: &[&str] = &[ATTACH, POLL, OPEN, CHUNK, EVENT, COMPLETE, FAIL, DETACH];
 
 /// The most one [`EVENT`] may weigh, as JSON. A command's output travels as many small
 /// `tool_output` events, not one large one; an event past this is refused and counted, and the

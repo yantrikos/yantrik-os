@@ -51,7 +51,7 @@
 //!   of its end, once — and never the record of what happened. See `host::erase`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -103,6 +103,10 @@ struct Flight {
     /// Where its chunks go. `None` once the desktop has stopped waiting for it — the person
     /// stopped the agent, or nobody is listening — though the harness has not closed it yet.
     tx: Option<Sender<Chunk>>,
+    /// The other end of that channel, held only by a turn nobody reads — one the harness opened
+    /// to answer in its own terminal (#725). Held so every send succeeds, and drained by
+    /// [`Flight::post`] so nothing queues up for a reader that will never come.
+    drain: Option<Receiver<Chunk>>,
     /// When the desktop stopped waiting.
     abandoned: Option<Instant>,
     /// Why the desktop stopped waiting, for the one log line a drop gets.
@@ -164,12 +168,34 @@ impl Flight {
         Flight {
             conversation,
             tx: Some(tx),
+            drain: None,
             abandoned: None,
             gone: Gone::NoListener,
             drop_logged: false,
             late: String::new(),
             calls: HashMap::new(),
         }
+    }
+
+    /// A turn the harness opened to answer in its own terminal (#725): recorded in the run store
+    /// and counted like any other, but forwarded to nobody — the person is reading it in the
+    /// harness, not in the desktop. So the receiver is kept here, and whatever arrives is thrown
+    /// away by [`Flight::post`]; the harness is never told to stop, which is right, since it is
+    /// mid-answer and no one asked it to.
+    fn unwatched(conversation: String, tx: Sender<Chunk>, drain: Receiver<Chunk>) -> Flight {
+        Flight { drain: Some(drain), ..Flight::new(conversation, tx) }
+    }
+
+    /// Hand one thing to whoever is waiting for this turn, and report whether they took it.
+    /// A turn with no reader takes its own chunks back, so it neither queues them nor reports a
+    /// listener that never existed.
+    fn post(&mut self, chunk: Chunk) -> bool {
+        let Some(tx) = &self.tx else { return false };
+        let sent = tx.send(chunk).is_ok();
+        if let Some(rx) = &self.drain {
+            while rx.try_recv().is_ok() {}
+        }
+        sent
     }
 
     /// Whether the next turn in this conversation still has to wait for this one.
@@ -1498,6 +1524,7 @@ impl Host {
         match method {
             protocol::ATTACH => self.attach(params, peer_pid, peer_uid),
             protocol::POLL => self.poll(params, peer),
+            protocol::OPEN => self.open(params, peer),
             protocol::CHUNK => self.chunk(params, peer),
             protocol::EVENT => self.event(params, peer),
             protocol::COMPLETE => self.finish(params, peer, None),
@@ -1947,6 +1974,74 @@ impl Host {
         Ok(reply)
     }
 
+    /// Open a turn the harness is answering in its own terminal, and mint what it answers under.
+    ///
+    /// The person typed into the harness rather than into the desktop, so nothing was queued and
+    /// nobody will poll this turn. It is made to exist anyway — as a run owned by this session,
+    /// under an agent — so the Agents screen can say a turn is in flight that the desktop never
+    /// handed over, and the run store can grade what the agent's tool calls did under it. The
+    /// answer itself goes to the person in the harness's terminal: the desktop records it and
+    /// shows it nowhere.
+    ///
+    /// No memory credential goes with it: those are decided by the desktop's grant policy for a
+    /// turn it queued itself, and a turn the harness opened on its own gets none until the desktop
+    /// grants one. `text` — what the person typed — is accepted and set aside: the run store keeps
+    /// no prompt for a turn, and the desktop's chat panel is the desktop's business.
+    fn open(&self, params: &serde_json::Value, peer: Peer) -> Result<serde_json::Value, String> {
+        let conversation = params["conversation"].as_str().unwrap_or(AgentId::MAIN).to_string();
+        let mut state = self.lock();
+        self.reap(&mut state);
+        let st = &mut *state;
+        let harness = Self::touch(&mut st.attached, params, peer, &*self.descends)?;
+        // One turn at a time on a conversation, exactly as the desktop's own turns keep it: a
+        // second opened turn would put two flights under one agent, and the Agents screen could
+        // not say which it was showing. The harness is mid-answer in its terminal, so this only
+        // fires when it opens a second before closing the first — a harness bug, said plainly.
+        if harness
+            .in_flight
+            .values()
+            .any(|f| f.conversation == conversation && f.holds_conversation())
+        {
+            let agent = AgentId::new(&harness.announced.id, &conversation);
+            return Err(format!(
+                "`{agent}` is already answering a turn; close it before opening another"
+            ));
+        }
+        // The same agent the desktop would have talked to: `<harness>:main` is always there to be
+        // answered under, and any other conversation has to have been started.
+        if !harness.agents.contains_key(&conversation) {
+            if conversation != AgentId::MAIN {
+                let agent = AgentId::new(&harness.announced.id, &conversation);
+                return Err(format!(
+                    "there is no agent `{agent}` any more: it was stopped, or `{}` restarted \
+                     since it began",
+                    harness.announced.id
+                ));
+            }
+            harness.agents.insert(conversation.clone(), Agent::new(mint_token()?));
+        }
+        let live = harness.agents.get_mut(&conversation).expect("present or just made");
+        live.turns += 1;
+        let agent_token = live.token.clone();
+
+        let turn_id = st.next_turn;
+        st.next_turn += 1;
+        // Nobody in the desktop is reading this one, so the flight keeps the other end of its own
+        // channel and drops what arrives. It is still a flight: it is what `complete` settles the
+        // run against, what keeps the conversation busy while the harness works, and what a
+        // `stop` takes to tell the harness to stop.
+        let (tx, rx) = mpsc::channel();
+        harness.in_flight.insert(turn_id, Flight::unwatched(conversation.clone(), tx, rx));
+        // A run owned by this session, exactly as a turn handed over by poll becomes one.
+        let (who, session) = (harness.announced.id.clone(), harness.session.clone());
+        self.record("start", turn_id, |s| s.start(turn_id, &who, &conversation, &session));
+        Ok(serde_json::json!({
+            "turn_id": turn_id,
+            "conversation": conversation,
+            "agent_token": agent_token,
+        }))
+    }
+
     fn chunk(&self, params: &serde_json::Value, peer: Peer) -> Result<serde_json::Value, String> {
         let turn_id = params["turn_id"].as_u64().ok_or("`turn_id` must be a number")?;
         let delta = params["delta"].as_str().unwrap_or_default().to_string();
@@ -1955,7 +2050,7 @@ impl Host {
         let Some(flight) = harness.in_flight.get_mut(&turn_id) else {
             return Err(harness.not_in_flight(turn_id));
         };
-        let Some(tx) = &flight.tx else {
+        if flight.tx.is_none() {
             // Stopped, or nobody is listening: the harness should stop working on it. Its next
             // call on this turn — this one — is where it learns that.
             flight.log_drop(&harness.announced.id, turn_id);
@@ -1971,7 +2066,7 @@ impl Host {
             return Ok(serde_json::json!({}));
         }
         self.record("text", turn_id, |s| s.append(turn_id, "text", &serde_json::json!({ "delta": delta })));
-        if tx.send(Chunk::Text(delta.clone())).is_err() {
+        if !flight.post(Chunk::Text(delta.clone())) {
             // The panel stopped listening — the person closed it or asked something else. This
             // chunk is the first thing it missed.
             flight.abandon(None);
@@ -2047,8 +2142,7 @@ impl Host {
                 // never written into.
                 Some(flight) if flight.tx.is_some() => {
                     self.record("notice", turn_id, |s| s.append(turn_id, "notice", raw));
-                    let tx = flight.tx.as_ref().expect("checked above");
-                    if tx.send(Chunk::Event(event)).is_err() {
+                    if !flight.post(Chunk::Event(event)) {
                         flight.abandon(None);
                         flight.log_drop(&who, turn_id);
                         return Ok(serde_json::json!({ "dropped": true }));
@@ -2103,8 +2197,7 @@ impl Host {
         } else {
             self.record("event", turn_id, |s| s.append(turn_id, "event", raw));
         }
-        let tx = flight.tx.as_ref().expect("checked above");
-        if tx.send(Chunk::Event(event)).is_err() {
+        if !flight.post(Chunk::Event(event)) {
             flight.abandon(None);
             flight.log_drop(&who, turn_id);
             return Ok(serde_json::json!({ "dropped": true }));
@@ -4057,6 +4150,114 @@ mod tests {
         complete(&host, &session, run);
         assert_eq!(crate::collect(answer).unwrap(), "hi");
         assert!(host.run_store().is_none());
+    }
+
+    // ── A turn the harness opened itself (#725): the person typed in its terminal ─────────────
+
+    /// The harness opens a turn it is answering in its own terminal — the person typed there, not
+    /// into the desktop, so nothing was queued and nobody will poll.
+    fn open_turn(host: &Host, session: &str, conversation: Option<&str>) -> serde_json::Value {
+        let mut params = json!({ "session": session, "text": "what's the weather" });
+        if let Some(c) = conversation {
+            params["conversation"] = json!(c);
+        }
+        host.handle(protocol::OPEN, &params).unwrap()
+    }
+
+    /// The whole point of #725: a turn the harness answers in its own terminal still becomes a run
+    /// the desktop owns, owns the id of, and can grade — even though no reader ever polls it and
+    /// the answer is shown nowhere in the desktop.
+    #[test]
+    fn a_turn_the_harness_opened_itself_is_a_run_the_desktop_owns() {
+        let (host, store) = host_with_runs();
+        let session = attach_many(&host, "pi");
+
+        let reply = open_turn(&host, &session, None);
+        let run = reply["turn_id"].as_u64().expect("a turn id the desktop minted");
+        assert_eq!(reply["conversation"], "main");
+        let token = reply["agent_token"].as_str().unwrap();
+        assert_eq!(
+            host.agent_for_token(token).map(|(id, _)| id),
+            Some(AgentId::new("pi", AgentId::MAIN)),
+            "the token answers under the same agent the desktop would have talked to"
+        );
+
+        // Nobody is on the other end, and yet the harness is never refused nor told to stop: its
+        // chunks and events are recorded and dropped, not dropped-with-a-message.
+        let chunked = host
+            .handle(protocol::CHUNK, &json!({ "session": session, "turn_id": run, "delta": "Sunny." }))
+            .unwrap();
+        assert_eq!(chunked, json!({}), "an opened turn is never reported dropped: the harness is mid-answer");
+        event(&host, &session, run, start("c1")).unwrap();
+        event(&host, &session, run, end("c1")).unwrap();
+        complete(&host, &session, run);
+
+        let info = store.run(run).unwrap().expect("the turn is a run");
+        assert_eq!(
+            (info.harness.as_str(), info.conversation.as_str(), info.owner.as_str()),
+            ("pi", "main", session.as_str()),
+            "a run owned by this session, under pi:main"
+        );
+        assert_eq!(info.state, RunState::Done);
+        assert_eq!(kinds(&store, run), vec!["state", "text", "event", "event", "state"]);
+    }
+
+    /// The other half of #725: while the harness answers in its own terminal, the Agents screen
+    /// says a turn is in flight — the bug was that it showed nothing, because the desktop never
+    /// handed a turn over.
+    #[test]
+    fn a_turn_the_harness_opened_shows_the_agent_in_flight() {
+        let host = host_with_nothing();
+        let session = attach_many(&host, "pi");
+        let agent = AgentId::new("pi", AgentId::MAIN);
+        let state = || host.agents().into_iter().find(|a| a.id == agent).map(|a| a.state);
+
+        assert_eq!(state(), None, "pi:main is not an agent until a turn makes it one");
+        let run = open_turn(&host, &session, None)["turn_id"].as_u64().unwrap();
+        assert_eq!(state(), Some(AgentState::Thinking), "the desktop knows a turn is in flight");
+        event(&host, &session, run, start("t1")).unwrap();
+        assert_eq!(
+            state(),
+            Some(AgentState::RunningTool { call: "t1".into(), name: "os_act".into() }),
+            "and what its tool is doing under it"
+        );
+        complete(&host, &session, run);
+        assert_eq!(state(), Some(AgentState::Idle), "closed like any other turn");
+    }
+
+    /// An opened turn keeps the conversation busy and counts as a turn, so the harness can open
+    /// the next one only once it has closed this one — the same one-at-a-time the desktop's own
+    /// turns keep, and the reason a second open while the first runs is refused.
+    #[test]
+    fn an_opened_turn_holds_its_conversation_until_the_harness_closes_it() {
+        let host = host_with_nothing();
+        let session = attach_many(&host, "pi");
+        let run = open_turn(&host, &session, None)["turn_id"].as_u64().unwrap();
+
+        let busy = host
+            .handle(protocol::OPEN, &json!({ "session": session, "conversation": "main" }))
+            .err()
+            .expect("one turn at a time on a conversation");
+        assert!(busy.contains("already"), "{busy}");
+
+        complete(&host, &session, run);
+        let next = open_turn(&host, &session, None);
+        assert_ne!(next["turn_id"], json!(run), "the next turn the harness opens gets its own id");
+    }
+
+    /// Opening is not a way to conjure an agent: `<harness>:main` is always there to answer under,
+    /// but any other conversation has to have been started, exactly as `send_to` insists.
+    #[test]
+    fn opening_a_turn_only_answers_under_an_agent_that_exists() {
+        let host = host_with_nothing();
+        let session = attach_many(&host, "pi");
+        let err = host
+            .handle(protocol::OPEN, &json!({ "session": session, "conversation": "gone" }))
+            .err()
+            .expect("no `pi:gone` was ever started");
+        assert!(err.contains("pi:gone"), "{err}");
+        // main is always there to be answered under, and needs no start_agent first.
+        assert!(open_turn(&host, &session, None).get("turn_id").is_some());
     }
 
     // ── Questions and answers (#25): exactly once, to the run that asked ─────────────────────
