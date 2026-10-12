@@ -720,9 +720,21 @@ impl CompanionBridge {
         self.send_message_from(text, false)
     }
 
+    /// `send_message_from`, also saying whether a model produced the turn (`true`) or the
+    /// offline responder served it (`false`), sent just before `__DONE__`. Nothing arrives on it
+    /// when the turn panicked. The first run's first success reads it (wire/onboarding.rs).
+    pub fn send_message_reporting(&self, text: String, remote: bool) -> (Receiver<String>, Receiver<bool>) {
+        let (model_tx, model_rx) = crossbeam_channel::bounded(1);
+        (self.send_with(text, remote, Some(model_tx)), model_rx)
+    }
+
     /// `send_message`, saying whether the person asked it from away from the machine: a remote
     /// turn's tools are held to `Safe`.
     pub fn send_message_from(&self, text: String, remote: bool) -> Receiver<String> {
+        self.send_with(text, remote, None)
+    }
+
+    fn send_with(&self, text: String, remote: bool, model: Option<Sender<bool>>) -> Receiver<String> {
         let (token_tx, token_rx) = crossbeam_channel::unbounded();
         if self
             .cmd_tx
@@ -730,7 +742,7 @@ impl CompanionBridge {
                 text,
                 token_tx: token_tx.clone(),
                 job: None,
-                model: None,
+                model,
                 remote,
                 outside: false,
             })
@@ -1414,8 +1426,10 @@ fn worker_loop(
                         // Tell a caller blocked in `ask` whether a model answered this turn,
                         // while the fact is still the one being stored: it must not take the
                         // offline responder's canned text away as the model's words.
+                        // Nor the not-set-up sentence, a guard warning or a router reply:
+                        // no model produced those, so they prove nothing.
                         if let Some(tx) = &model {
-                            let _ = tx.send(ok);
+                            let _ = tx.send(ok && !response.without_model);
                         }
                         if ok {
                             execute_suppression_logged = false;

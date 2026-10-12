@@ -74,36 +74,58 @@ pub fn vault_value(bridge: &CompanionBridge, id: &str) -> Option<String> {
 
 /// Read the accounts again and ask each for its models, off the UI thread.
 pub fn refresh(bridge: Arc<CompanionBridge>) {
-    {
-        let mut busy = REFRESHING.lock().unwrap_or_else(|e| e.into_inner());
-        if *busy {
+    if !claim() {
+        return;
+    }
+    let _ = std::thread::Builder::new().name("ai-accounts".into()).spawn(move || rebuild(&bridge));
+}
+
+/// [`refresh`], waited for: an account added a moment ago is in the catalogue when this returns,
+/// so it can be picked from (the first run's model step). A refresh already running is waited
+/// out first, since it may have read the accounts before the new one was saved. Off the UI thread.
+pub fn refresh_now(bridge: &CompanionBridge) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while !claim() {
+        if std::time::Instant::now() > deadline {
             return;
         }
-        *busy = true;
+        std::thread::sleep(Duration::from_millis(100));
     }
-    let _ = std::thread::Builder::new().name("ai-accounts".into()).spawn(move || {
-        let saved = ProviderStore::load().entries;
-        // Which free tiers have their values kept: asked of the vault now, since the card's own
-        // read may not have come back yet at start.
-        let (mut kept, off) = crate::wire::free_ai::kept_and_off();
-        if let Ok(Reply::Tails(tails)) = bridge.provider_keys(Op::Tails, VAULT_TIMEOUT) {
-            kept = tails.into_keys().collect();
-        }
-        let list = account::accounts(&saved, FREE_TIERS, &kept, &off);
-        *ACCOUNTS.write().unwrap_or_else(|e| e.into_inner()) = list.clone();
-        let vault = |id: &str| vault_value(&bridge, id);
-        let built: Vec<AccountModels> = list.iter().map(|a| list_one(a, &saved, &vault)).collect();
-        let catalogue = Catalogue { accounts: built, at: chrono::Utc::now().timestamp() };
-        if let Err(e) = store::save(&store::path(), &catalogue) {
-            tracing::warn!(error = %e, "the model catalogue was not cached");
-        }
-        tracing::info!(accounts = catalogue.accounts.len(), models = catalogue.models().count(), "AI accounts listed");
-        *CATALOGUE.write().unwrap_or_else(|e| e.into_inner()) = Some(catalogue);
-        *REFRESHING.lock().unwrap_or_else(|e| e.into_inner()) = false;
-        for f in LISTENERS.lock().unwrap_or_else(|e| e.into_inner()).iter() {
-            f();
-        }
-    });
+    rebuild(bridge);
+}
+
+/// Take the one refresh slot; false when a refresh is already running.
+fn claim() -> bool {
+    let mut busy = REFRESHING.lock().unwrap_or_else(|e| e.into_inner());
+    if *busy {
+        return false;
+    }
+    *busy = true;
+    true
+}
+
+fn rebuild(bridge: &CompanionBridge) {
+    let saved = ProviderStore::load().entries;
+    // Which free tiers have their values kept: asked of the vault now, since the card's own
+    // read may not have come back yet at start.
+    let (mut kept, off) = crate::wire::free_ai::kept_and_off();
+    if let Ok(Reply::Tails(tails)) = bridge.provider_keys(Op::Tails, VAULT_TIMEOUT) {
+        kept = tails.into_keys().collect();
+    }
+    let list = account::accounts(&saved, FREE_TIERS, &kept, &off);
+    *ACCOUNTS.write().unwrap_or_else(|e| e.into_inner()) = list.clone();
+    let vault = |id: &str| vault_value(bridge, id);
+    let built: Vec<AccountModels> = list.iter().map(|a| list_one(a, &saved, &vault)).collect();
+    let catalogue = Catalogue { accounts: built, at: chrono::Utc::now().timestamp() };
+    if let Err(e) = store::save(&store::path(), &catalogue) {
+        tracing::warn!(error = %e, "the model catalogue was not cached");
+    }
+    tracing::info!(accounts = catalogue.accounts.len(), models = catalogue.models().count(), "AI accounts listed");
+    *CATALOGUE.write().unwrap_or_else(|e| e.into_inner()) = Some(catalogue);
+    *REFRESHING.lock().unwrap_or_else(|e| e.into_inner()) = false;
+    for f in LISTENERS.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+        f();
+    }
 }
 
 fn list_one(a: &Account, saved: &[crate::wire::settings::ProviderStoreEntry], vault: &dyn Fn(&str) -> Option<String>) -> AccountModels {

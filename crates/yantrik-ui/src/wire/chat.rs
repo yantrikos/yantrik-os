@@ -76,10 +76,11 @@ fn builtin_turn(
         Some(h) => crate::agents::handover::with_handover(h, text),
         None => text.to_string(),
     };
-    let answer = bridge.send_message(sent);
+    let (answer, by_model) = bridge.send_message_reporting(sent, false);
     let (tx, rx) = crossbeam_channel::unbounded::<String>();
     let bridge = bridge.clone();
     let asked = text.to_string();
+    let weak = ui_weak.clone();
     std::thread::spawn(move || {
         // Answered means the worker finished the turn (`__DONE__`) without putting its own
         // failure text in place of an answer. A `__REPLACE__` on its own is ordinary — tool
@@ -87,6 +88,8 @@ fn builtin_turn(
         let mut done = false;
         let mut failed = false;
         let mut replace_next = false;
+        // What the person sees as the reply, so an empty one is not counted as an answer.
+        let mut said = String::new();
         while let Ok(token) = answer.recv() {
             let end = token == "__DONE__";
             if token == "__REPLACE__" {
@@ -95,6 +98,10 @@ fn builtin_turn(
                 if replace_next && token == crate::bridge::TURN_FAILED_REPLY {
                     failed = true;
                 }
+                if replace_next {
+                    said.clear();
+                }
+                said.push_str(&token);
                 replace_next = false;
             }
             if tx.send(token).is_err() {
@@ -108,6 +115,17 @@ fn builtin_turn(
         if done && !failed {
             bridge.score_conversation_turn(asked);
         }
+        // The first run's first success is a model's words, not the not-set-up reply.
+        // A guard warning or a router reply is not a model's either (`without_model`), and
+        // only the not-set-up reply itself means nothing is set up.
+        let outcome = match by_model.try_recv() {
+            Ok(true) if done && !failed && !said.trim().is_empty() => Ok(()),
+            Ok(false) if said.trim() == yantrik_ml::not_set_up::NOT_SET_UP.trim() => {
+                Err(super::onboarding::NOT_SET_UP_SENTENCE.to_string())
+            }
+            _ => Err(super::onboarding::NO_ANSWER_SENTENCE.to_string()),
+        };
+        super::onboarding::first_chat_ended(&weak, outcome);
     });
     match handover {
         Some(h) => {
@@ -145,6 +163,7 @@ fn dispatch(
     // an idle user and unprompted messages landed in the middle of somebody else's answer.
     // This is the one join every typed message passes through, so this is where the clock goes.
     super::notifications::note_user_message();
+    super::onboarding::first_chat_asked(ui_weak, text);
 
     // A word to a recipe — the answer to its question, or "pause the digest" — goes where the
     // Recipes screen's presses go, whichever mind is answering: the worker's `recipe_view::apply`.
@@ -235,10 +254,13 @@ fn dispatch(
     let (tx, rx) = crossbeam_channel::unbounded::<String>();
     let bridge = bridge.clone();
     let asked = text.to_string();
+    let weak = ui_weak.clone();
     std::thread::spawn(move || {
         // Whether the mind answered, as opposed to giving up. A turn that ended in an error is
         // not a conversation: the person spoke and was not talked to.
         let mut answered = true;
+        // Whether any words came back at all: the first run's first success needs some.
+        let mut said = false;
         // Whether the reply has been told which run it started. The work card is drawn under the
         // reply that started the run, so the link goes on as soon as the first call is on record,
         // not when the answer ends: a card that appeared only afterwards would arrive after the
@@ -248,7 +270,10 @@ fn dispatch(
         // loop ends on recv() failing rather than on a sentinel.
         while let Ok(chunk) = answer.recv() {
             let sent = match chunk {
-                yantrik_harness::Chunk::Text(t) => tx.send(t),
+                yantrik_harness::Chunk::Text(t) => {
+                    said |= !t.trim().is_empty();
+                    tx.send(t)
+                }
                 // Said, not swallowed. A stream that simply stopped would look identical to a
                 // harness that had finished, and the person would be left with half an answer
                 // and no reason.
@@ -294,6 +319,10 @@ fn dispatch(
         if answered {
             bridge.score_conversation_turn(asked);
         }
+        super::onboarding::first_chat_ended(
+            &weak,
+            if answered && said { Ok(()) } else { Err(super::onboarding::NO_ANSWER_SENTENCE.to_string()) },
+        );
     });
     let mind = host.list().into_iter().find(|e| e.id == active).map(|e| e.name).unwrap_or_else(|| active.clone());
     let desktop: Vec<String> =

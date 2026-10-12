@@ -57,17 +57,14 @@ const STEP_ALIASES: &[(&str, &str)] = &[
     ("install", "review"),
 ];
 
-/// The first-boot onboarding's phases (onboarding.slint), for describing it. It has no actions
-/// on the surface; these are only so `step` says something better than a number.
+/// The first run's screens (onboarding_first_run.slint, `fr-step`), for describing it. It has no
+/// actions on the surface; these are only so `step` says something better than a number.
 const ONBOARDING_STEPS: &[(&str, i32)] = &[
-    ("identity", 3),
-    ("interests", 4),
-    ("location", 5),
-    ("hardware", 6),
-    ("ai-mode", 7),
-    ("ai-provider", 8),
-    ("ai-test", 9),
-    ("ready", 10),
+    ("welcome", 1),
+    ("who-thinks", 2),
+    ("sharing", 3),
+    ("checks", 4),
+    ("minds", 5),
 ];
 
 /// What the wizard is showing, in words.
@@ -83,15 +80,11 @@ pub fn step_name(installer_mode: bool, phase: i32) -> &'static str {
                 .unwrap_or("unknown"),
         };
     }
-    match phase {
-        0 | 1 => "waking",
-        2 => "greeting",
-        other => ONBOARDING_STEPS
-            .iter()
-            .find(|(_, id)| *id == other)
-            .map(|(name, _)| *name)
-            .unwrap_or("unknown"),
-    }
+    ONBOARDING_STEPS
+        .iter()
+        .find(|(_, id)| *id == phase)
+        .map(|(name, _)| *name)
+        .unwrap_or("unknown")
 }
 
 /// The installer step a caller asked for by name, aliases included.
@@ -299,8 +292,8 @@ impl Form {
 /// driving the machine and, on this path, written to a transcript; a password that reaches a
 /// transcript is a password that has to be changed.
 pub fn state(ui: &App) -> serde_json::Value {
-    let phase = ui.get_onboard_phase();
     let installer = ui.get_onboard_installer_mode();
+    let phase = if installer { ui.get_onboard_phase() } else { ui.get_fr_step() };
     let pw = ui.get_onboard_input_password();
     let pw2 = ui.get_onboard_input_password_confirm();
 
@@ -345,12 +338,6 @@ pub fn state(ui: &App) -> serde_json::Value {
             "runtime_ok": ui.get_onboard_ai_hw_runtime_ok(),
             "recommends": ui.get_onboard_ai_hw_recommend().to_string(),
         },
-        "ai_test": {
-            "status": ui.get_onboard_ai_test_status().to_string(),
-            "model": ui.get_onboard_ai_test_model().to_string(),
-            "latency_ms": ui.get_onboard_ai_test_latency_ms(),
-            "privacy": ui.get_onboard_ai_test_privacy().to_string(),
-        },
         "installing": ui.get_onboard_installing(),
         "progress": ui.get_onboard_install_progress(),
         "status": ui.get_onboard_install_status().to_string(),
@@ -370,8 +357,8 @@ pub fn state(ui: &App) -> serde_json::Value {
 /// The line worth reading first when the machine is sitting in the wizard.
 pub fn summary(ui: &App) -> String {
     let installer = ui.get_onboard_installer_mode();
-    let step = step_name(installer, ui.get_onboard_phase());
     if !installer {
+        let step = step_name(false, ui.get_fr_step());
         return format!("Yantrik — first-run setup, on the {step} step");
     }
     // Finished is checked first. The flag and the phase are set by different threads a beat
@@ -391,6 +378,7 @@ pub fn summary(ui: &App) -> String {
             ui.get_onboard_install_status()
         );
     }
+    let step = step_name(true, ui.get_onboard_phase());
     match blocked_by(ui) {
         Some(why) => format!("Yantrik installer — on the {step} step, not ready to install: {why}"),
         None => format!(
@@ -685,13 +673,13 @@ mod tests {
     }
 
     #[test]
-    fn the_first_boot_onboarding_keeps_its_names() {
-        assert_eq!(step_name(false, 0), "waking");
-        assert_eq!(step_name(false, 2), "greeting");
-        assert_eq!(step_name(false, 3), "identity");
-        assert_eq!(step_name(false, 4), "interests");
-        assert_eq!(step_name(false, 8), "ai-provider");
-        assert_eq!(step_name(false, 10), "ready");
+    fn the_first_run_keeps_its_names() {
+        assert_eq!(step_name(false, 1), "welcome");
+        assert_eq!(step_name(false, 2), "who-thinks");
+        assert_eq!(step_name(false, 3), "sharing");
+        assert_eq!(step_name(false, 4), "checks");
+        assert_eq!(step_name(false, 5), "minds");
+        assert_eq!(step_name(false, 9), "unknown");
     }
 
     #[test]

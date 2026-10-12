@@ -113,11 +113,91 @@ export component ChatHeader inherits Rectangle {
 // in the composer and stops: nothing is sent until the person sends it.
 export component ChatEmpty inherits Rectangle {
     in property <string> mind-name;
+    // The first run's first success (design/experience-final-2026-10-10.md, 3:45): one
+    // question, one suggestion to tap, and Type · Talk, in place of the three starters.
+    in property <bool> first-run: false;
     callback starter(string);
+    callback type-chosen();
+    callback talk-chosen();
 
     background: transparent;
 
-    VerticalLayout {
+    if root.first-run : VerticalLayout {
+        alignment: center;
+        padding: Theme.sp-6;
+        spacing: Theme.sp-3;
+        Text {
+            text: "What would you like help with?";
+            color: Theme.chat-text;
+            font-size: Theme.fs-title-1;
+            font-weight: 600;
+            wrap: word-wrap;
+        }
+        suggestion := Rectangle {
+            height: sug-text.preferred-height + 20px;
+            border-radius: Theme.r-md;
+            background: sug-ta.has-hover ? Theme.hover-fill : transparent;
+            border-width: sug-fs.has-focus ? Theme.focus-ring-width : 1px;
+            border-color: sug-fs.has-focus ? Theme.focus-ring : Theme.chat-border;
+            accessible-role: button;
+            accessible-label: sug-text.text;
+            accessible-action-default => { root.starter(sug-text.text); }
+            sug-fs := FocusScope {
+                init => { self.focus(); }
+                key-pressed(event) => {
+                    if (event.text == "\n" || event.text == " ") { root.starter(sug-text.text); return accept; }
+                    reject
+                }
+            }
+            sug-ta := TouchArea { mouse-cursor: pointer; clicked => { root.starter(sug-text.text); } }
+            sug-text := Text {
+                x: Theme.sp-4;
+                width: parent.width - 2 * Theme.sp-4;
+                text: "Make a note reminding me to call Sam";
+                color: Theme.chat-text;
+                font-size: Theme.fs-title-2;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+        HorizontalLayout {
+            alignment: start;
+            spacing: Theme.sp-2;
+            for choice[i] in ["Type", "Talk"] : Rectangle {
+                width: ch-text.preferred-width + 2 * Theme.sp-4;
+                height: ch-text.preferred-height + 14px;
+                border-radius: Theme.r-md;
+                background: ch-ta.has-hover ? Theme.hover-fill : transparent;
+                border-width: ch-fs.has-focus ? Theme.focus-ring-width : 1px;
+                border-color: ch-fs.has-focus ? Theme.focus-ring : Theme.chat-border;
+                accessible-role: button;
+                accessible-label: choice;
+                accessible-action-default => { if i == 0 { root.type-chosen(); } else { root.talk-chosen(); } }
+                ch-fs := FocusScope {
+                    key-pressed(event) => {
+                        if (event.text == "\n" || event.text == " ") {
+                            if i == 0 { root.type-chosen(); } else { root.talk-chosen(); }
+                            return accept;
+                        }
+                        reject
+                    }
+                }
+                ch-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { if i == 0 { root.type-chosen(); } else { root.talk-chosen(); } }
+                }
+                ch-text := Text {
+                    text: choice;
+                    color: Theme.chat-text;
+                    font-size: Theme.fs-title-2;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+
+    if !root.first-run : VerticalLayout {
         alignment: center;
         padding: Theme.sp-6;
         spacing: Theme.sp-3;
