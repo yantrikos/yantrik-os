@@ -86,13 +86,13 @@ class Recorder:
 
 
 def recording_turn(text: str, context: Optional[str] = None, conversation: str = "main",
-                   agent_token: str = ""):
+                   agent_token: str = "", options: Optional[dict] = None):
     """A real `Turn` — trail framing and all — writing into a list."""
     from yantrik_harness import Turn
 
     recorder = Recorder()
     return Turn(recorder, "s1", 1, text, context, conversation=conversation,
-                agent_token=agent_token), recorder
+                agent_token=agent_token, options=options), recorder
 
 
 def said(recorder: Recorder) -> str:
@@ -153,7 +153,7 @@ class FakeDesktop:
     # ── what a test drives ──────────────────────────────────────────────
 
     def ask(self, text: str, context: Optional[str] = None, conversation: Optional[str] = None,
-            agent_token: Optional[str] = None) -> int:
+            agent_token: Optional[str] = None, options: Optional[dict] = None) -> int:
         """Type something into the panel. Returns the turn id it will be handed out as."""
         with self.lock:
             turn_id = self._next_turn
@@ -165,6 +165,8 @@ class FakeDesktop:
                 turn["conversation"] = conversation
             if agent_token is not None:
                 turn["agent_token"] = agent_token
+            if options is not None:
+                turn["options"] = options
             self.queue.append(turn)
             self.deltas[turn_id] = []
             self.events[turn_id] = []

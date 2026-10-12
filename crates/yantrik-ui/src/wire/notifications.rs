@@ -309,6 +309,16 @@ fn wire_toasts(ui: &App) {
 
     let weak = ui.as_weak();
     ui.on_toast_action(move |id, action_id| {
+        // "<Harness> now uses your model · Undo": the shell's own, never stored.
+        if let Some(harness) = id.strip_prefix(crate::wire::harness_provider::WIRED_TOAST) {
+            if action_id == "undo" {
+                crate::wire::harness_provider::undo_wired(harness);
+            }
+            if let Some(ui) = weak.upgrade() {
+                crate::wire::toast::remove(&ui, &id);
+            }
+            return;
+        }
         invoke_action(&weak, &id.to_string(), &action_id.to_string());
     });
 }

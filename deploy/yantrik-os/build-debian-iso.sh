@@ -718,6 +718,32 @@ fi
 sudo sh "$SCRIPT_DIR/stage-harnesses.sh" "$PROJECT_ROOT" "$ROOTFS/opt/yantrik/share/harnesses"     "$ROOTFS/etc/systemd/user"     || fail "the harnesses did not stage — Settings would not know which minds this image ships"
 ok "Harnesses staged at /opt/yantrik/share/harnesses, units in /etc/systemd/user (not enabled)"
 
+# ── YantrikDB, every mind's memory (#677) ──
+#
+# From the release bundle, which bakes it (bake-memory.sh, called by build-release.sh): the same
+# tree an update installs, so a machine set up from this image and one set up by update have the
+# same memory. /opt/yantrik/memory, root-owned and outside share/. What is in it, and why, is in
+# bake-memory.sh.
+[ -d "$UNPACK/memory" ] \
+    || fail "release tarball carries no memory/ — every harness install would stop at \"no yantrikdb-mcp\" (build it with build-release.sh, which bakes it)"
+sh "$SCRIPT_DIR/bake-memory.sh" --check "$UNPACK/memory" \
+    || fail "the release tarball's memory/ is missing a file a harness install reads"
+IMAGE_PY=$(sudo chroot "$ROOTFS" python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])') \
+    || fail "the image has no python3 to run yantrikdb-mcp on"
+BUNDLE_PY=$(sed -n 's/^image-python=//p' "$UNPACK/memory/VERSIONS")
+[ "$IMAGE_PY" = "$BUNDLE_PY" ] \
+    || fail "the bundle's yantrikdb-mcp is for Python $BUNDLE_PY and this image has $IMAGE_PY; rebuild the bundle with YANTRIK_IMAGE_PYTHON=$IMAGE_PY"
+sudo rm -rf "$ROOTFS/opt/yantrik/memory"
+sudo mkdir -p "$ROOTFS/opt/yantrik/memory"
+sudo cp -a "$UNPACK/memory/." "$ROOTFS/opt/yantrik/memory/"
+sudo chown -R root:root "$ROOTFS/opt/yantrik/memory"
+sudo chmod -R go-w "$ROOTFS/opt/yantrik/memory"
+sudo chmod 755 "$ROOTFS/opt/yantrik/memory/bin/yantrikdb-mcp"
+# Asserted, not hoped: each harness's Install fails on a machine without these.
+sudo chroot "$ROOTFS" /usr/bin/python3 -I -c 'import sys; sys.path.insert(0, "/opt/yantrik/memory/mcp"); import yantrikdb, yantrikdb_mcp' \
+    || fail "yantrikdb-mcp does not import on the image's Python"
+ok "YantrikDB at /opt/yantrik/memory ($(sudo du -sh "$ROOTFS/opt/yantrik/memory" | cut -f1)), from the release bundle: $(head -n 2 "$UNPACK/memory/VERSIONS" | tr '\n' ' ')"
+
 # ── The mind, beside the OS ──
 #
 # Installed and enabled, never configured: the OS holds no model, endpoint or key for
@@ -918,7 +944,7 @@ HOST=releases.yantrikos.com
 SCHEME=https
 UPDATECONF
 
-ok "Default config installed from config-default.yaml (loopback model endpoint, no name, no key)"
+ok "Default config installed from config-default.yaml (no model chosen, no name, no key)"
 ok "Update channel: $UPDATE_CHANNEL via https://releases.yantrikos.com"
 
 # ═══════════════════════════════════════════════════════════════
@@ -1248,7 +1274,7 @@ After=network.target
 Type=simple
 User=yantrik
 ExecStart=/usr/local/bin/llama-server \
-    --model /opt/yantrik/models/llm/yantrik-4b.gguf \
+    --model /opt/yantrik/models/llm/yantrik-4b.gguf --alias qwen3.5-4b \
     --host 127.0.0.1 --port 8341 \
     --ctx-size 4096 --threads 2 --no-mmap
 Restart=on-failure
@@ -1262,6 +1288,54 @@ LLAMA_SVC
     sudo chroot "$ROOTFS" systemctl enable llama-server 2>/dev/null || true
 
     ok "llama-server configured (systemd, port 8341)"
+
+    # The model on this computer, as an AI account, the private lane and the pick — only when the
+    # GGUF and the server are really in the image. The config ships naming no model (a name
+    # nothing serves is a fake), so this is the one place a local model gets named, and it is
+    # named for what it is: "On this computer (Qwen 3.5 4B)", served as `qwen3.5-4b` (--alias
+    # above), never "yantrik-4b". LOCAL_ACCOUNT_ID is the AI accounts slug of the name
+    # (ai_accounts::account::slug; a test in crates/yantrik-ui holds the two together).
+    LOCAL_ACCOUNT_NAME="On this computer (Qwen 3.5 4B)"
+    LOCAL_ACCOUNT_ID="on-this-computer-qwen-3-5-4b"
+    LOCAL_MODEL="qwen3.5-4b"
+    if [ -s "$ROOTFS/opt/yantrik/models/llm/yantrik-4b.gguf" ] && [ -x "$ROOTFS/usr/local/bin/llama-server" ]; then
+        sudo sed -i \
+            -e "s|^  api_base_url: \"\"|  api_base_url: \"http://127.0.0.1:8341/v1\"|" \
+            -e "s|^  api_model: \"\"|  api_model: \"$LOCAL_MODEL\"|" \
+            "$ROOTFS/opt/yantrik/config.yaml"
+        grep -q "api_model: \"$LOCAL_MODEL\"" "$ROOTFS/opt/yantrik/config.yaml" \
+            || fail "config.yaml did not take the local model (its llm section changed shape?)"
+        for HOME_DIR in "$ROOTFS/etc/skel" "$ROOTFS/home/yantrik"; do
+            sudo mkdir -p "$HOME_DIR/.config/yantrik"
+            sudo tee "$HOME_DIR/.config/yantrik/providers.yaml" > /dev/null <<PROVIDERS
+entries:
+- id: local-llm
+  name: "$LOCAL_ACCOUNT_NAME"
+  provider_type: llamacpp
+  base_url: http://127.0.0.1:8341/v1
+  auth_type: none
+  is_primary: true
+  is_fallback: false
+  model: $LOCAL_MODEL
+PROVIDERS
+            sudo tee "$HOME_DIR/.config/yantrik/ai-accounts.json" > /dev/null <<ACCOUNTS
+{
+  "sharing": {},
+  "lane": "$LOCAL_ACCOUNT_ID/$LOCAL_MODEL"
+}
+ACCOUNTS
+            sudo tee "$HOME_DIR/.config/yantrik/picker.json" > /dev/null <<PICKER
+{
+  "model": "$LOCAL_ACCOUNT_ID/$LOCAL_MODEL"
+}
+PICKER
+            sudo chmod 600 "$HOME_DIR/.config/yantrik/providers.yaml" "$HOME_DIR/.config/yantrik/ai-accounts.json" "$HOME_DIR/.config/yantrik/picker.json"
+        done
+        sudo chown -R 1000:1000 "$ROOTFS/home/yantrik/.config/yantrik"
+        ok "$LOCAL_ACCOUNT_NAME: an AI account, the private lane and the pick"
+    else
+        info "No local model in the image: none is named, and the desktop reads Not set up"
+    fi
 else
     info "Skipping LLM server (no offline model)"
 fi

@@ -78,7 +78,7 @@ No. Sending it with the person's consent is right. The gateway's job is to follo
 - **Private mode** stays what it is, the person's explicit "nothing leaves this machine": local only, for every call.
 - **Changeable at any time** in Settings → AI accounts, per account: Share, Private lane, or Off.
 
-#675's Pi and DeepSeek item is settled by this. Every harness token is marked as carrying private context, because every mind has YantrikDB memory, and the person's preference above decides where the calls go.
+#675's Pi and DeepSeek item is settled by this. Every harness token is marked as carrying private context, because every mind has YantrikDB memory, and the person's preference above decides where the calls go. The mark describes what a mind's calls carry; it is not consent. Consent is the person's per-account choice in the gateway. **The Yantrik Mind is never wired at install:** it is offered the gateway only by "Use Yantrik models" on its card, and the private context it then sends is consent delegated by that pick to the gateway's per-account choice (yantrik-mind E.PROV2: loopback only, its own provider, never its local private lane; yantrik-mind-72, 11 Oct).
 
 ## Decisions for Pranab
 

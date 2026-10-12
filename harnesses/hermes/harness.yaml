@@ -15,6 +15,8 @@ requires:
     why: Hermes itself, which brings its own model, keys and memory
   - file: ~/.hermes/plugins/yantrik/plugin.yaml
     why: the desktop plugin, copied into your Hermes install and enabled there
+  - file: ~/.local/state/yantrik/harnesses/hermes/installed
+    why: written by Install once it can answer, remember in YantrikDB and reach the desktop
 
 install:
   # Hermes itself when it is not here — by Hermes's own installer, into ~/.hermes, no root —
@@ -22,7 +24,9 @@ install:
   # copied the plugin failed on every fresh machine with "hermes: not found". `{dir}` is
   # wherever this manifest was read from, so it works from the image and from a checkout.
   command: sh {dir}/../lib/install/hermes.sh {dir}
-  doing: installing Hermes from github.com/NousResearch/hermes-agent, then its desktop plugin
+  # Then YantrikDB as its memory from the image, the desktop platform allowlisted to the owner
+  # and held to the desktop's tools, and the three proofs (#677).
+  doing: installing Hermes from github.com/NousResearch/hermes-agent, its desktop plugin and YantrikDB memory
 
 configure:
   # Hermes's own model picker, in a terminal: every provider Hermes knows (NVIDIA NIM,
