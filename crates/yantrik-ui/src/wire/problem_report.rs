@@ -80,8 +80,8 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
         }
         seen = Some(path);
         let what = match problem.kind.as_str() {
-            "panic" | "crash" => format!("{} crashed", problem.program),
-            _ => format!("{} reported a failure", problem.program),
+            "panic" | "crash" => format!("{} crashed", program_name(&problem.program)),
+            _ => format!("{} reported a failure", program_name(&problem.program)),
         };
         super::toast::local(
             &w,
@@ -154,7 +154,21 @@ pub(crate) fn title_of(p: &Problem) -> String {
         "crash" => "crashed",
         _ => "failed",
     };
-    format!("{} {verb}", p.program)
+    format!("{} {verb}", program_name(&p.program))
+}
+
+/// The program as a person names it: "/usr/bin/blender" is "Blender". A path is not a name, and
+/// the full one is still in the record the detail pane shows, one press away. A bare name the
+/// desktop already uses ("yantrik-arcade") is left as it is.
+fn program_name(program: &str) -> String {
+    let Some((_, base)) = program.trim_end_matches('/').rsplit_once('/') else {
+        return program.to_string();
+    };
+    let mut chars = base.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => program.to_string(),
+    }
 }
 
 /// Local clock time for today, the date otherwise. Unix seconds in, a short string out.
@@ -303,6 +317,8 @@ mod tests {
         assert_eq!(title_of(&problem("panic", "yantrik-studio")), "yantrik-studio panicked");
         assert_eq!(title_of(&problem("crash", "yantrik-arcade")), "yantrik-arcade crashed");
         assert_eq!(title_of(&problem("failure", "yantrik-ui")), "yantrik-ui failed");
+        // Punch list, 12 Oct 2026: "/usr/bin/blender crashed" on the Problems screen.
+        assert_eq!(title_of(&problem("crash", "/usr/bin/blender")), "Blender crashed");
     }
 
     #[test]

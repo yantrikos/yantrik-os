@@ -108,7 +108,7 @@ pub(crate) fn assign(harness: &str, provider: &str) -> Result<String, String> {
     };
     if let Some(shown) = shown {
         if shown != plan.sentence(&home) {
-            return Err("The provider or the harness changed after the approval card was shown; nothing was written. Ask again to see what it would do now.".into());
+            return Err("The provider or the mind changed after the approval card was shown; nothing was written. Ask again to see what it would do now.".into());
         }
     }
     let card = plan.card(&home);
@@ -148,7 +148,7 @@ pub(crate) fn wire(ui: &App) {
             };
             let outcome = plan(&harness, &provider).and_then(|p| {
                 if p.card(&home()) != shown {
-                    return Err("The provider or the harness's file changed since the card was shown; nothing was written. Choose again to see what it would do now.".to_string());
+                    return Err("The provider or the mind's settings file changed since the card was shown; nothing was written. Choose again to see what it would do now.".to_string());
                 }
                 provider_handoff::apply(&home(), &p).map(|_| ())
             });

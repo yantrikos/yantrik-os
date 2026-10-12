@@ -65,6 +65,7 @@ pub(crate) fn publish(ui: &App) {
             answering: r.answering,
             runs_on: r.runs_on().into(),
             source: r.source().into(),
+            source_path: r.source_path().into(),
         })
         .collect();
     if let Some(m) = crate::models::changed(ui.get_runs_on_rows(), model) {
@@ -79,6 +80,7 @@ pub(crate) fn publish(ui: &App) {
             label: u.label.into(),
             used_by: format!("Used by {}", u.used_by.join(", ")).into(),
             where_set: u.where_set.into(),
+            where_path: u.where_path.into(),
             models: u.models.join(", ").into(),
             preset: u.preset.into(),
             base_url: u.base_url.into(),

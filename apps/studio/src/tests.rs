@@ -1669,6 +1669,9 @@ fn the_window_shows_the_queue_the_gallery_and_the_record_of_the_chosen_picture()
     assert!(ui.get_facts().contains("No backend is configured"), "{}", ui.get_facts());
     assert!(ui.get_facts().contains("graded `standard`"), "{}", ui.get_facts());
     assert_eq!(ui.get_output_folder(), engine::display(&found.gallery));
+    // The main view names the place; the path is only under Details (punch list, 12 Oct 2026).
+    assert_eq!(ui.get_output_place(), engine::place(&found.gallery));
+    assert!(!ui.get_status().contains(engine::display(&found.gallery).as_str()), "{}", ui.get_status());
     assert_eq!(ui.get_notice(), "");
     assert!(ui.get_status().contains("Nothing yet"), "{}", ui.get_status());
     assert!(!ui.get_busy());

@@ -5,6 +5,7 @@ import { AppIdentity } from "app_color.slint";
 import { AppHeader } from "app_header.slint";
 import { YButton } from "y_button.slint";
 import { Icons } from "icon.slint";
+import { YDetails } from "components/y_details.slint";
 import { ScrollView, TextEdit, LineEdit } from "std-widgets.slint";
 export { ThemeMode, AccentPreset }
 
@@ -128,8 +129,12 @@ export component ArcadeApp inherits AppWindow {
                 VerticalLayout {
                     padding: 16px; spacing: 10px;
                     Text {
-                        text: "SPEC — a character or a game, as JSON";
+                        text: "DESCRIBE A CHARACTER OR A GAME";
                         color: Theme.text-dim; font-size: 10px; font-weight: 600; letter-spacing: 1.6px; height: 16px;
+                    }
+                    // The format is the expert's fact, so it is under Details (punch list, 12 Oct 2026).
+                    YDetails {
+                        text: "The box below holds the spec as JSON, exactly what Arcade saves and reads back. New character and New game fill in a starting one to edit.";
                     }
                     TextEdit {
                         text <=> root.spec-text;

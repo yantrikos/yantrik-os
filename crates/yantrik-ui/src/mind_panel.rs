@@ -548,8 +548,9 @@ pub fn build(input: &Inputs) -> Panel {
     };
 
     let (memory, memory_known) = match input.memory_count {
-        Some(n) => (format!("YantrikDB · {} {}", thousands(n), if n == 1 { "memory" } else { "memories" }), true),
-        None => ("YantrikDB · count not known yet".to_string(), false),
+        // The store's name ("YantrikDB") is an internal word; the count is what a person reads.
+        Some(n) => (format!("{} {}", thousands(n), if n == 1 { "memory" } else { "memories" }), true),
+        None => ("Count not known yet".to_string(), false),
     };
     let minds = match &input.minds {
         None => "not known yet".to_string(),
@@ -905,12 +906,12 @@ mod tests {
         assert_eq!(panel.now.mind, "unknown");
         assert_eq!(panel.now.minds, "not known yet");
         assert!(!panel.now.memory_known);
-        assert_eq!(panel.now.memory, "YantrikDB · count not known yet", "not \"0 memories\"");
+        assert_eq!(panel.now.memory, "Count not known yet", "not \"0 memories\"");
         assert!(!panel.now.recipes_known, "no read from the companion yet: recipes are not known, not none");
         assert_eq!(panel.now.project, "", "no project detected is drawn as such by the panel, not invented");
 
         let known = build(&input());
-        assert_eq!(known.now.memory, "YantrikDB · 1,234 memories");
+        assert_eq!(known.now.memory, "1,234 memories");
         assert_eq!(known.now.minds, "3 minds · 2 keep memory");
         assert!(known.now.recipes_known);
 
@@ -918,7 +919,7 @@ mod tests {
         one.memory_count = Some(1);
         one.minds = Some(MindsSeen { answering: None, count: 1, keep_memory: 1 });
         let panel = build(&one);
-        assert_eq!(panel.now.memory, "YantrikDB · 1 memory");
+        assert_eq!(panel.now.memory, "1 memory");
         assert_eq!(panel.now.minds, "1 mind · 1 keeps memory");
         assert_eq!(panel.now.mind, "no mind");
         assert_eq!(panel.now.model, "nothing is answering");

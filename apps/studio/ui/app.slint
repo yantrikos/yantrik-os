@@ -18,6 +18,7 @@ import { YButton, YIconButton } from "y_button.slint";
 import { YInput } from "y_input.slint";
 import { Icon, Icons } from "icon.slint";
 import { ListView, ScrollView } from "std-widgets.slint";
+import { YDetails } from "components/y_details.slint";
 
 export { ThemeMode, AccentPreset }
 
@@ -62,7 +63,10 @@ export component StudioApp inherits AppWindow {
     // ── What the app is pointed at ──
     in property <string> backend-line: "Reading your configuration…";
     in property <string> facts;
+    // The gallery's path, shown only under Details, and the same place in words for the main view:
+    // "the Studio folder in your Pictures folder".
     in property <string> output-folder;
+    in property <string> output-place;
     in property <string> notice;
     in property <string> status;
     in property <bool> busy;
@@ -341,13 +345,6 @@ export component StudioApp inherits AppWindow {
                                             font-size: 11px;
                                             overflow: elide;
                                         }
-                                        Text {
-                                            text: shot.path;
-                                            color: Theme.text-dim;
-                                            font-size: 10px;
-                                            font-family: Theme.font-mono;
-                                            overflow: elide;
-                                        }
                                     }
 
                                     HorizontalLayout {
@@ -421,7 +418,7 @@ export component StudioApp inherits AppWindow {
                         Rectangle { height: 1px; background: Theme.separator; }
 
                         Text {
-                            text: "OUTPUT FOLDER";
+                            text: "WHERE THEY ARE SAVED";
                             color: Theme.text-dim;
                             font-size: 10px;
                             font-weight: 600;
@@ -429,12 +426,12 @@ export component StudioApp inherits AppWindow {
                             height: 16px;
                         }
                         Text {
-                            text: root.output-folder;
-                            color: Theme.text-dim;
-                            font-size: 11px;
-                            font-family: Theme.font-mono;
+                            text: root.output-place == "" ? "" : "In " + root.output-place + ".";
+                            color: Theme.text-secondary;
+                            font-size: 12px;
                             wrap: word-wrap;
                         }
+                        YDetails { text: root.output-folder; }
                         YButton {
                             label: "Open the folder";
                             variant: 2;
@@ -454,7 +451,7 @@ export component StudioApp inherits AppWindow {
                         }
                         Text {
                             text: root.detail == ""
-                                ? "Choose a picture from the gallery and its record is read back here, from the small JSON file saved beside it."
+                                ? "Choose a picture from the gallery and its record is read back here, from the small record file saved beside it."
                                 : root.detail;
                             color: root.detail == "" ? Theme.text-dim : Theme.text-secondary;
                             font-size: 12px;

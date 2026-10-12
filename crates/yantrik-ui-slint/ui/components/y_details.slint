@@ -1,0 +1,42 @@
+// "Details": one press from the plain sentence to the expert's facts beside it.
+//
+// The plain vocabulary (design/experience-final-2026-10-10.md, "One vocabulary for everyone")
+// keeps file paths, internal words and raw errors out of the main view; they appear only in here,
+// so a newcomer never meets them and an expert who is helping reaches them in one press.
+// tests/plain_vocabulary.rs allows the internal words only inside a YDetails element.
+import { Theme } from "theme.slint";
+
+export component YDetails inherits VerticalLayout {
+    // What opens: a path, an identifier, the raw error. Mono and selectable-looking on purpose.
+    in property <string> text;
+    in property <string> label: "Details";
+    in-out property <bool> open: false;
+    spacing: 2px;
+    alignment: start;
+
+    HorizontalLayout {
+        alignment: start;
+        TouchArea {
+            width: link.preferred-width + Theme.sp-2;
+            height: link.preferred-height;
+            mouse-cursor: pointer;
+            accessible-role: button;
+            accessible-label: root.open ? "Hide details" : "Show details";
+            clicked => { root.open = !root.open; }
+            link := Text {
+                x: 0;
+                text: root.open ? "Hide details" : root.label;
+                color: parent.has-hover ? Theme.text-secondary : Theme.text-dim;
+                font-size: Theme.fs-micro;
+                vertical-alignment: center;
+            }
+        }
+    }
+    if root.open : Text {
+        text: root.text;
+        color: Theme.text-dim;
+        font-size: Theme.fs-micro;
+        font-family: Theme.font-mono;
+        wrap: word-wrap;
+    }
+}

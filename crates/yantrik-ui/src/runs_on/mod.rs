@@ -150,6 +150,12 @@ fn forwards_elsewhere(provider: &ProviderRef, kind: &str, model: Option<&str>) -
     None
 }
 
+/// The machine's own settings file. A path, so it is shown only under Details; the main view
+/// says [`CONFIG_PLACE`] instead.
+pub const CONFIG_FILE: &str = "/opt/yantrik/config.yaml";
+/// The settings file in words a person reads.
+pub const CONFIG_PLACE: &str = "set in Yantrik's settings file";
+
 /// Where a mind's provider is set.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SetIn {
@@ -207,10 +213,11 @@ impl RunsOn {
     }
 
     /// Where it is set, and how the desktop knows: "its own settings · as it reported";
-    /// "/opt/yantrik/config.yaml"; "your saved provider “AIG”".
+    /// "set in Yantrik's settings file"; "your saved provider “AIG”". Never a path: that is
+    /// [`RunsOn::source_path`], for Details.
     pub fn source(&self) -> String {
         let place = match &self.set_in {
-            SetIn::ConfigYaml => "set in /opt/yantrik/config.yaml".to_string(),
+            SetIn::ConfigYaml => CONFIG_PLACE.to_string(),
             SetIn::SavedProvider(name) => format!("your saved provider \u{201c}{name}\u{201d}"),
             SetIn::OwnSettings => "its own settings".to_string(),
             SetIn::Nowhere => "add a provider under Providers".to_string(),
@@ -219,6 +226,14 @@ impl RunsOn {
             format!("{place} \u{b7} as it reported")
         } else {
             place
+        }
+    }
+
+    /// The file behind [`RunsOn::source`], for Details: the settings file's path, or "".
+    pub fn source_path(&self) -> String {
+        match self.set_in {
+            SetIn::ConfigYaml => CONFIG_FILE.to_string(),
+            _ => String::new(),
         }
     }
 
@@ -373,9 +388,11 @@ pub struct InUse {
     pub models: Vec<String>,
     /// The minds that run on it.
     pub used_by: Vec<String>,
-    /// Where it is set: "set in /opt/yantrik/config.yaml · used by the built-in companion", or
+    /// Where it is set: "set in Yantrik's settings file · used by the built-in companion", or
     /// "each mind keeps its own key in its own settings".
     pub where_set: String,
+    /// The file behind `where_set`, for Details, or "" when no file of the desktop's holds it.
+    pub where_path: String,
     /// What Add as provider fills in: the catalogue preset ("custom" for an address it does not
     /// know), the address when the desktop knows it, and the first model. Never a key.
     pub preset: String,
@@ -406,6 +423,7 @@ pub fn in_use_not_saved(rows: &[RunsOn], companion: Option<&CompanionFact>, save
                     models: Vec::new(),
                     used_by: Vec::new(),
                     where_set: String::new(),
+                    where_path: String::new(),
                     preset,
                     base_url,
                     model: String::new(),
@@ -434,11 +452,12 @@ pub fn in_use_not_saved(rows: &[RunsOn], companion: Option<&CompanionFact>, save
             e.model = e.models.first().cloned().unwrap_or_default();
             let others = e.used_by.len() - usize::from(has_config);
             e.where_set = match (has_config, others) {
-                (true, 0) => "set in /opt/yantrik/config.yaml \u{b7} used by the built-in companion".to_string(),
-                (true, _) => "set in /opt/yantrik/config.yaml for the built-in companion; the other minds keep their own key in their own settings".to_string(),
+                (true, 0) => format!("{CONFIG_PLACE} \u{b7} used by the built-in companion"),
+                (true, _) => format!("{CONFIG_PLACE} for the built-in companion; the other minds keep their own key in their own settings"),
                 (false, 1) => "kept in that mind's own settings, with its own key".to_string(),
                 (false, _) => "each mind keeps its own key in its own settings".to_string(),
             };
+            e.where_path = if has_config { CONFIG_FILE.to_string() } else { String::new() };
             e
         })
         .collect();

@@ -1049,6 +1049,32 @@ pub fn display(path: &Path) -> String {
     }
 }
 
+/// A folder as a person names it, for the main view: "the Studio folder in your Pictures folder".
+/// The path itself goes under Details (design/experience-final-2026-10-10.md, punch list of
+/// 12 Oct 2026: "~/Pictures/Studio/..." on every row, the record pane and the status bar).
+pub fn place(path: &Path) -> String {
+    let home = gallery::home();
+    let named = |rest: &Path| rest.components().map(|c| c.as_os_str().to_string_lossy().to_string()).collect::<Vec<_>>().join(" › ");
+    if let Ok(rest) = path.strip_prefix(home.join("Pictures")) {
+        return match named(rest) {
+            n if n.is_empty() => "your Pictures folder".to_string(),
+            n => format!("the {n} folder in your Pictures folder"),
+        };
+    }
+    if !home.as_os_str().is_empty() {
+        if let Ok(rest) = path.strip_prefix(&home) {
+            return match named(rest) {
+                n if n.is_empty() => "your home folder".to_string(),
+                n => format!("the {n} folder in your home folder"),
+            };
+        }
+    }
+    match file_name(path) {
+        n if n.is_empty() => display(path),
+        n => format!("the {n} folder"),
+    }
+}
+
 fn short_prompt(prompt: &str) -> String {
     let flat = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
     let quoted = format!("“{flat}”");

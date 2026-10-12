@@ -214,9 +214,11 @@ component StageDot inherits Rectangle {
 }
 
 // One stage on the row: its mark, and its name under it.
+// As wide as its name: a fixed 84px cut "Scribe · pl" and "Researcher · de" mid-word (punch list,
+// 12 Oct 2026), and the row already scrolls sideways when the stages outgrow the card.
 component StageChip inherits Rectangle {
     in property <RecipeStageData> stage;
-    width: 84px;
+    width: max(84px, stage-label.preferred-width + 10px);
     height: 52px;
     VerticalLayout {
         spacing: 5px;
@@ -225,7 +227,7 @@ component StageChip inherits Rectangle {
             alignment: center;
             StageDot { state: root.stage.state; kind: root.stage.kind; number: root.stage.number; }
         }
-        Text {
+        stage-label := Text {
             text: root.stage.label;
             color: root.stage.state == "current" ? Theme.text-primary
                 : root.stage.state == "failed" ? Theme.color-danger
@@ -235,7 +237,6 @@ component StageChip inherits Rectangle {
             font-size: Theme.fs-micro;
             font-weight: root.stage.state == "current" || root.stage.state == "waiting" ? 600 : 400;
             horizontal-alignment: center;
-            overflow: elide;
         }
     }
 }

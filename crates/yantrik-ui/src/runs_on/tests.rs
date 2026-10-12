@@ -33,7 +33,7 @@ fn vm_520_every_mind_says_what_it_runs_on_and_where_that_is_set() {
     let got: Vec<(String, &str, String, String)> = rows.iter().map(|r| (r.name.clone(), r.state(), r.runs_on(), r.source())).collect();
     let want = [
         ("Yantrik Mind", "Answering", "Ollama Cloud \u{b7} deepseek-v4.1-flash", "its own settings \u{b7} as it reported"),
-        ("Yantrik Companion", "Built in", "Custom endpoint \u{b7} aig.mycluster.cyou \u{b7} qwen3.8:27b", "set in /opt/yantrik/config.yaml"),
+        ("Yantrik Companion", "Built in", "Custom endpoint \u{b7} aig.mycluster.cyou \u{b7} qwen3.8:27b", "set in Yantrik's settings file"),
         ("DeepSeek", "Attached", "Ollama Cloud \u{b7} deepseek-v4.1-flash", "its own settings \u{b7} as it reported"),
         ("Hermes Agent", "Attached", "provider not reported \u{b7} deepseek-v4.1-flash", "its own settings \u{b7} as it reported"),
         ("OpenClaw", "Attached", "Ollama Cloud \u{b7} kimi-k3", "its own settings \u{b7} as it reported"),
@@ -125,7 +125,8 @@ fn vm_520_the_providers_in_use_are_listed_though_none_is_saved() {
     let aig = &in_use[1];
     assert_eq!(aig.label, "Custom endpoint \u{b7} aig.mycluster.cyou");
     assert_eq!(aig.used_by, ["Yantrik Companion"]);
-    assert_eq!(aig.where_set, "set in /opt/yantrik/config.yaml \u{b7} used by the built-in companion");
+    assert_eq!(aig.where_set, "set in Yantrik's settings file \u{b7} used by the built-in companion");
+    assert_eq!(aig.where_path, "/opt/yantrik/config.yaml", "the path is still one press away, under Details");
     assert_eq!(
         (aig.preset.as_str(), aig.base_url.as_str(), aig.model.as_str()),
         ("custom", "https://aig.mycluster.cyou/v1", "qwen3.8:27b")

@@ -319,6 +319,7 @@ fn paint(ui: &StudioApp, engine: &Engine, chosen: &Chosen) {
     ui.set_generate_label(generate_label(&snapshot).into());
     ui.set_facts(facts_block(&snapshot).into());
     ui.set_output_folder(engine::display(&snapshot.places.gallery).into());
+    ui.set_output_place(engine::place(&snapshot.places.gallery).into());
     ui.set_notice(snapshot.notice.clone().into());
     ui.set_status(status_line(&snapshot).into());
     ui.set_busy(!snapshot.jobs.is_empty());
@@ -430,7 +431,7 @@ fn status_line(snapshot: &Snapshot) -> String {
             1 => "1 picture".to_string(),
             n => format!("{n} pictures"),
         },
-        engine::display(&snapshot.places.gallery)
+        engine::place(&snapshot.places.gallery)
     )
 }
 

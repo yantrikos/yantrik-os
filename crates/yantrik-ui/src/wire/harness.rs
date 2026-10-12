@@ -362,7 +362,7 @@ pub fn catalogue_for_describe() -> serde_json::Value {
 fn manifest(id: &str) -> Result<Manifest, String> {
     harness_catalogue::read_manifests(&harness_catalogue::roots())
         .remove(id)
-        .ok_or_else(|| format!("nothing on this machine describes a harness called `{id}`"))
+        .ok_or_else(|| format!("nothing on this machine describes a mind called `{id}`"))
 }
 
 /// The same two jobs the buttons start, for the shell's control surface.

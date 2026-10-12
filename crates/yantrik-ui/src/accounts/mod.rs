@@ -210,7 +210,7 @@ pub fn rows(f: &Facts) -> Vec<Group> {
             };
             let mut meters = seen.meters.clone();
             if seen.signed_in {
-                meters.push(Meter::count("Today", format!("{} tokens", tokens(seen.tokens_today))));
+                meters.push(Meter::count("Today", usage(seen.tokens_today)));
             }
             let note = match state {
                 State::Missing => format!("{} is not installed here", vendor.name),
@@ -295,14 +295,32 @@ pub fn keys_line(f: &Facts) -> String {
     }
 }
 
-/// The header: "2.4M tokens today", or nothing when nothing was counted.
+/// The header: "About 1.8M words read and written today", or nothing when nothing was counted.
 pub fn today_line(groups: &[Group]) -> String {
     let total: u64 = groups.iter().flat_map(|g| &g.rows).map(|r| r.tokens_today).sum();
     if total == 0 {
         String::new()
     } else {
-        format!("{} tokens today", tokens(total))
+        format!("About {} words read and written today", tokens(words(total)))
     }
+}
+
+/// Today's use of one account in words a person reads: "Not used yet", "about 900K words".
+///
+/// "Tokens" is an internal word (design/experience-final-2026-10-10.md, "One vocabulary for
+/// everyone"); a token is about three quarters of an English word, so the count is said as words
+/// and marked "about". The exact count stays in [`Row::tokens_today`].
+pub fn usage(tokens_today: u64) -> String {
+    if tokens_today == 0 {
+        "Not used yet".to_string()
+    } else {
+        format!("about {} words", tokens(words(tokens_today)))
+    }
+}
+
+/// Roughly how many words a token count is: three quarters, never zero for a nonzero count.
+fn words(tokens: u64) -> u64 {
+    (tokens.saturating_mul(3) / 4).max(1)
 }
 
 /// 950 → `950`, 12_400 → `12.4K`, 2_400_000 → `2.4M`.
@@ -415,12 +433,12 @@ mod tests {
         assert_eq!(claude[0].state, State::Ready);
         assert_eq!(claude[1].label, "Account 2");
         assert_eq!(claude[1].state, State::Active);
-        assert_eq!(claude[1].meters.last().unwrap().value, "1.2M tokens");
+        assert_eq!(claude[1].meters.last().unwrap().value, "about 900K words");
         let codex = &g[1].rows[0];
         assert_eq!(codex.state, State::Active);
         assert_eq!(codex.note, "Weekly is used up · back in 4d 8h");
         assert_eq!(g[2].rows[0].state, State::SignIn, "gemini is installed and not signed in");
-        assert_eq!(today_line(&g), "2.4M tokens today");
+        assert_eq!(today_line(&g), "About 1.8M words read and written today");
     }
 
     #[test]
@@ -500,6 +518,8 @@ mod tests {
         assert_eq!(tokens(12_400), "12.4K");
         assert_eq!(tokens(2_000_000), "2M");
         assert_eq!(tokens(2_400_000), "2.4M");
+        assert_eq!(usage(0), "Not used yet", "not \"0 tokens\"");
+        assert_eq!(usage(12_400), "about 9.3K words");
         assert_eq!(left(30), "1m");
         assert_eq!(left(4 * 3600 + 42 * 60), "4h 42m");
         assert_eq!(left(4 * 86_400 + 12 * 3600), "4d 12h");

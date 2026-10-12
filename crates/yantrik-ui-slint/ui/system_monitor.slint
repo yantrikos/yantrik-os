@@ -170,7 +170,7 @@ export component SystemMonitor inherits Rectangle {
     property <bool> ai-has-measurements: root.ai-model-name != "" || root.ai-tokens-per-sec > 0.0
         || root.ai-tokens-today > 0 || root.ai-provider-latency-ms >= 0 || root.ai-request-active;
     out property <string> ai-no-source-text: root.ai-has-measurements ? ""
-        : "Nothing measured: no source on this machine reports model or token activity.";
+        : "Nothing measured: nothing on this machine reports how much its AI is being used.";
 
     // ── Geometry mirrored out for the ui-preview checks (#220) ──
     //
@@ -984,12 +984,13 @@ export component SystemMonitor inherits Rectangle {
                                 spacing: 2px;
                                 horizontal-stretch: 1;
                                 Text {
-                                    text: "Tokens/sec";
+                                    text: "Reply speed";
                                     color: Theme.text-dim;
                                     font-size: Theme.fs-micro;
                                 }
                                 Text {
-                                    text: root.ai-tokens-per-sec > 0.0 ? round(root.ai-tokens-per-sec) + " t/s" : "—";
+                                    // Said in words: a token is about three quarters of one.
+                                    text: root.ai-tokens-per-sec > 0.0 ? round(root.ai-tokens-per-sec * 0.75) + " words/s" : "—";
                                     color: Theme.text-primary;
                                     font-size: Theme.fs-headline;
                                     font-weight: 600;
@@ -1006,7 +1007,7 @@ export component SystemMonitor inherits Rectangle {
                                     font-size: Theme.fs-micro;
                                 }
                                 Text {
-                                    text: root.ai-tokens-today > 0 ? root.ai-tokens-today + "" : "—";
+                                    text: root.ai-tokens-today > 0 ? "about " + round(root.ai-tokens-today * 0.75) + " words" : "—";
                                     color: Theme.text-primary;
                                     font-size: Theme.fs-headline;
                                     font-weight: 600;
