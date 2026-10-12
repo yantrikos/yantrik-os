@@ -20,6 +20,9 @@ pub mod capability;
 mod chat_template;
 pub mod chat_templates;
 
+// Compact tool-schema compiler for small models (always compiled)
+pub mod compact_tools;
+
 // Candle-specific modules (gated behind candle-llm / candle-stt features)
 #[cfg(feature = "candle-llm")]
 mod embedder;
@@ -64,7 +67,7 @@ pub use capability::{ModelCapabilityProfile, ModelFamily, ModelTier, ToolCallMod
 
 // ── Chat template exports ────────────────────────────────────────────
 
-pub use chat_template::{extract_text_content, format_chat, format_tools, parse_tool_calls};
+pub use chat_template::{extract_text_content, format_chat, format_tools, format_tools_compact, parse_tool_calls};
 #[cfg(feature = "candle-llm")]
 pub use chat_template::Qwen2Tokens;
 pub use chat_templates::{ChatTemplate, template_for_family};
@@ -81,7 +84,7 @@ pub use llm::ClaudeCliLLM;
 pub use llm::LlamaCppLLM;
 #[cfg(feature = "cognitive-kernel")]
 pub use llm::CognitiveKernelLLM;
-pub use llm::{CognitiveRouter, RouteDecision, PlanShape};
+pub use llm::{CognitiveRouter, RouteDecision, PlanShape, RouteExplanation, RouteLayer};
 pub use llm::{FallbackLLM, FallbackConfig};
 
 // ── Provider registry exports ──────────────────────────────────────

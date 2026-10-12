@@ -1208,6 +1208,7 @@ fn what_event(event: &Event) -> String {
         Event::Usage { .. } => "a usage report".to_string(),
         Event::Request { prompt, .. } => format!("a question ({})", clip_text(prompt, 40)),
         Event::Redact { .. } => "a redaction".to_string(),
+        Event::Notice { text } => format!("a notice ({})", clip_text(text, 40)),
     }
 }
 
@@ -1296,6 +1297,9 @@ fn apply(agent: &mut Agent, event: &Event, provenance: Provenance, now: u64) -> 
             append(&mut turn.items, cap(delta), true);
         }
         Event::Status { text } => agent.status = cap(text).to_string(),
+        // A notice (#396) the host passed on because a turn was listening: shown as the agent's
+        // line, like a status. One with no turn behind it never reaches here (`Host::event`).
+        Event::Notice { text } => agent.status = cap(text).to_string(),
         // The agent asked the person something (#25): it waits, and says what it asked. The
         // question itself is kept by the host's run store, which alone takes the answer.
         Event::Request { request_id, prompt, options } => {

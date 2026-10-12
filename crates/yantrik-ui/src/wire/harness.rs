@@ -746,9 +746,18 @@ fn first_party_claim_refused(
 ) -> Option<String> {
     if method != yantrik_harness::protocol::ATTACH
         || params["id"].as_str() != Some(crate::memory_grants::FIRST_PARTY_MIND)
-        || !door_served
-        || uid.is_some_and(is_mind)
     {
+        return None;
+    }
+    // The Mind never attaches shared, so a shared `mind` is always an impostor, whatever the uid
+    // and whether or not the door is served.
+    if params["shared"].as_bool() == Some(true) {
+        return Some(format!(
+            "`{}` is the id of the person's own Yantrik Mind, which never attaches shared; attach under a different id",
+            crate::memory_grants::FIRST_PARTY_MIND
+        ));
+    }
+    if !door_served || uid.is_some_and(is_mind) {
         return None;
     }
     Some(format!(
@@ -838,6 +847,14 @@ mod tests {
 
         // No door, as before the account migration: the Mind runs as the person and attaches so.
         assert_eq!(refused(&attach("mind"), Some(1000), false), None);
+
+        // A shared `mind` is always an impostor: the Mind never attaches shared, so it is refused
+        // from the person's uid and from the mind uid, with the door served and not served.
+        let shared = |id: &str| serde_json::json!({ "id": id, "name": "Yantrik Mind", "shared": true });
+        for (uid, door) in [(Some(1000), true), (Some(990), true), (Some(1000), false), (Some(990), false)] {
+            let why = refused(&shared("mind"), uid, door).expect("a shared mind is refused");
+            assert!(why.contains("never attaches shared"), "{why}");
+        }
     }
 
     /// The socket hands the host the account the kernel named at accept, beside the pid, and the

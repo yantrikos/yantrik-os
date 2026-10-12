@@ -1,0 +1,20 @@
+[package]
+name = "yantrik-install-target"
+version = "0.1.0"
+edition = "2021"
+description = "Installing Yantrik OS into one partition or one run of free space, beside macOS or Windows, without rewriting the partition table"
+
+[lib]
+path = "src/lib.rs"
+
+# The text installer (deploy/yantrik-os/yantrik-install.sh) and the loop-device check
+# (crates/yantrik-install-target/tests/loop-device-check.sh) drive the same planner through this.
+[[bin]]
+name = "yantrik-install-target"
+path = "src/bin/yantrik-install-target.rs"
+
+[dependencies]
+serde_json = { workspace = true }
+# The digest recorded beside a \EFI\BOOT\BOOTX64.EFI Yantrik wrote; the text installer checks it
+# with sha256sum.
+sha2 = { workspace = true }

@@ -432,6 +432,15 @@ mod tests {
     }
 
     #[test]
+    fn a_dotted_key_carries_no_memory_by_default() {
+        let is_mind = |uid: u32| uid == 990;
+        let mut store = Store::default();
+        store.minds.insert("hermes".into(), Grants { recall_ordinary: true, ..Grants::default() });
+        // A shared key `hermes.1` is not the id the grants name; it earns nothing by default.
+        assert!(!carries_memory(Some(&store), "hermes.1", Some(1000), is_mind));
+    }
+
+    #[test]
     fn a_credential_is_carried_only_by_a_mind_the_grants_give_something() {
         let is_mind = |uid: u32| uid == 990;
         let store = Store::default();

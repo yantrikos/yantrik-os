@@ -1,18 +1,16 @@
 //! RelationshipRadar instinct — "The people in your life matter — I help you show up for them."
 //!
-//! Social graph intelligence. Builds awareness of the people in the user's life
-//! by tracking mentions of friends, family, colleagues, and significant others.
-//! Notices when someone hasn't been mentioned in a while and gently suggests
-//! reaching out. Tracks important dates (birthdays, anniversaries) and surfaces
-//! them before they pass.
+//! Follows through on what the person said about the people in their life: dates they
+//! mentioned (birthdays, a sister's surgery on Thursday) and things they said they'd do (call,
+//! send, visit). It surfaces them before they pass and offers practical help.
 //!
-//! The philosophy is never pushy — just a gentle "hey, you haven't mentioned Alex
-//! in a while, might be worth checking in." The user decides whether to act.
+//! #755: it never hunts for guilt, never tells the person how long since they mentioned someone,
+//! and never infers how a relationship is going. The user decides whether to act.
 //! At its best, RelationshipRadar helps users be the friend/family member they
 //! want to be, without the cognitive load of tracking it all themselves.
 //!
-//! Example output: "You haven't mentioned Alex in about 3 weeks. Last time you
-//! talked about their new job — might be worth checking in."
+//! Example output: "On 2 Oct you said Alex starts the new job on Monday. Want a reminder
+//! to send a note that morning?"
 
 use std::sync::Mutex;
 
@@ -81,21 +79,22 @@ impl Instinct for RelationshipRadarInstinct {
                 "EXECUTE Step 1: Call date_calc to get today's date, day of week, and current time.\n\
                  Step 2: Use recall with query \"friend family people names birthday anniversary \
                  mom dad sister brother wife husband gift present\" to find people in {user}'s life.\n\
-                 Step 3: Use recall with query \"forgot birthday missed call should call need to visit\" \
-                 to find relationship guilt or obligations.\n\
+                 Step 3: Use recall with query \"promised to call send visit going to\" \
+                 to find things {user} said they would do for someone.\n\
                  \n\
-                 PRIORITIZE: Missed obligations > upcoming dates this week > dormant relationships.\n\
-                 If something stands out, compose a warm 1-2 sentence nudge with a specific suggestion \
-                 (gift idea, reminder to call). Never pushy or guilt-tripping.\n\
+                 PRIORITIZE: dates coming up this week > things {user} said they'd do.\n\
+                 If something stands out, say what {user} mentioned and when, in 1-2 sentences, and offer \
+                 one practical thing (a reminder, a gift idea, a draft). Never mention how long since they \
+                 talked about someone, never guess how a relationship is going, never guilt.\n\
                  If nothing stands out, just say \"No relationship radar today.\"",
             ),
             _ => format!(
                 "EXECUTE Check on {user}'s relationships. \
-                 Recall the people in their life — family, friends, colleagues — and any upcoming dates, \
-                 missed obligations, or promises to reach out. \
-                 Prioritize: missed birthdays/calls > upcoming dates this week > dormant relationships. \
-                 If something stands out, compose a warm 1-2 sentence nudge with a specific suggestion \
-                 (like a gift idea or a reminder to call). Never be pushy or guilt-tripping. \
+                 Recall upcoming dates {user} mentioned for people in their life, and things they said \
+                 they would do for someone. Prioritize dates coming up this week. \
+                 If something stands out, say what they mentioned and when, in 1-2 sentences, and offer \
+                 one practical thing (like a reminder or a gift idea). Never mention how long since they \
+                 talked about someone, never guess how a relationship is going, never guilt. \
                  If nothing stands out, just say \"No relationship radar today.\"",
             ),
         };

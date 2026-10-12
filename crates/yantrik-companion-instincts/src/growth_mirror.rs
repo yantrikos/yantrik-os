@@ -13,10 +13,13 @@
 //! Examples of what it might surface:
 //! - "You went from asking basic Rust questions to discussing lifetime
 //!    elision strategies in about three weeks."
-//! - "Three weeks ago you were stressed about the deadline, but this week
-//!    your messages are focused and confident. Something shifted."
-//! - "You've mentioned fishing 12 times this month vs 3 last month. It's
-//!    becoming more than a hobby."
+//! - "You've shipped four releases of the parser since 3 Sep; the first one
+//!    took a month."
+//!
+//! It reports skills and work, with dates and counts from the record — never
+//! the person's moods, confidence or character (#755: notice, never diagnose;
+//! evidence, never testimony). It also absorbs legacy_builder: a "bigger
+//! picture" line is the same observation zoomed out, held to the same rule.
 //!
 //! Design choices:
 //! - **Bond-gated** (0.2+): Don't reflect growth to strangers — it feels
@@ -125,10 +128,10 @@ impl Instinct for GrowthMirrorInstinct {
                  \n\
                  Step 3: Compare the two result sets. Look for:\n\
                  - Skill progression (beginner questions → advanced discussions)\n\
-                 - Confidence changes (hesitant → decisive, stressed → calm)\n\
                  - Expanding interests (new topics appearing over time)\n\
                  - Deepening expertise (surface-level → nuanced understanding)\n\
-                 - Behavioral shifts (reactive → proactive, scattered → focused)\n\
+                 - Work finished over time (what got built or shipped, and since when)\n\
+                 Never comment on moods, confidence, stress or character.\n\
                  \n\
                  Step 4: Find ONE specific, evidence-based growth observation. \
                  Then deliver it in 2-3 sentences that:\n\
@@ -143,8 +146,9 @@ impl Instinct for GrowthMirrorInstinct {
                  - Don't be sycophantic. A real friend notices real things, not everything.\n\
                  - If no clear growth pattern emerges from the data, respond with \
                  just \"No growth mirror today.\" — that's fine. Don't force it.\n\
-                 - Tone: like a perceptive friend who noticed something interesting, \
-                 not a life coach giving a pep talk.",
+                 - Give dates or counts for both ends of the change. Never quote private or \
+                 painful things back.\n\
+                 - Tone: plain and specific, not a life coach giving a pep talk.",
             ),
             ModelTier::Tiny => format!("EXECUTE SKIP"),
             _ => format!(

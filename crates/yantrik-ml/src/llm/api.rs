@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 
 use crate::chat_template;
 use crate::chat_templates;
-use crate::capability::ModelFamily;
+use crate::capability::{ModelFamily, ModelTier};
 use crate::llm::strip_think_tags;
 use crate::traits::LLMBackend;
 use crate::types::{ApiToolCall, ApiToolCallFunction, ChatMessage, GenerationConfig, LLMResponse, ToolCall};
@@ -25,6 +25,8 @@ pub struct ApiLLM {
     is_ollama: bool,
     /// Model family for family-aware template selection.
     family: ModelFamily,
+    /// Capability tier, decides full-JSON vs compact tool definitions.
+    tier: ModelTier,
 }
 
 /// A guess at whether a URL is an Ollama, for callers that were not told.
@@ -67,11 +69,13 @@ impl ApiLLM {
         let base_url: String = base_url.into();
         let model: String = model.into();
         let family = ModelFamily::from_model_name(&model);
+        let tier = ModelTier::from_model_name(&model);
         Self {
             base_url,
             api_key,
             is_ollama,
             family,
+            tier,
             model,
         }
     }
@@ -461,7 +465,7 @@ impl ApiLLM {
         tools: &[serde_json::Value],
     ) -> Vec<ChatMessage> {
         let template = self.template();
-        let tool_block = template.format_tools(tools);
+        let tool_block = template.format_tools_compact(tools, self.tier);
         if tool_block.is_empty() {
             return messages.to_vec();
         }

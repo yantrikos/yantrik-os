@@ -25,7 +25,7 @@ pub use self::claude_cli::ClaudeCliLLM;
 pub use self::llamacpp::LlamaCppLLM;
 #[cfg(feature = "cognitive-kernel")]
 pub use self::cognitive_kernel::CognitiveKernelLLM;
-pub use self::cognitive_router::{CognitiveRouter, RouteDecision, PlanShape};
+pub use self::cognitive_router::{CognitiveRouter, RouteDecision, PlanShape, RouteExplanation, RouteLayer};
 pub use self::fallback::{FallbackLLM, FallbackConfig};
 
 /// Backward-compatible alias for `CandleLLM`.

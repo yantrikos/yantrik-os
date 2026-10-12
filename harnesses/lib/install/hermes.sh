@@ -13,6 +13,7 @@
 # loads the plugin and so what attaches to the desktop.
 set -eu
 . "$(dirname "$0")/common.sh"
+. "$(dirname "$0")/hermes-launcher.sh"
 
 [ $# -eq 1 ] || fail "usage: hermes.sh PLUGIN_DIR"
 plugin=$1
@@ -42,7 +43,11 @@ if ! command -v hermes >/dev/null 2>&1; then
         --skip-browser --skip-computer-use </dev/null \
         || fail "Hermes's own installer stopped; its last lines are above"
     command -v hermes >/dev/null 2>&1 || fail "Hermes installed, but there is no hermes in ~/.local/bin"
+    heal_hermes_launcher "$HOME" || fail "Hermes's launcher still points into /tmp"
+    rm -rf "$tmp"; trap - EXIT
+    hermes --version >/dev/null 2>&1 || fail "Hermes installed, but hermes will not run"
 fi
+heal_hermes_launcher "$HOME" || fail "Hermes's launcher still points into /tmp"
 say "$(hermes --version 2>/dev/null | head -n 1 || echo Hermes) is here"
 
 say "copying the desktop plugin into ~/.hermes"

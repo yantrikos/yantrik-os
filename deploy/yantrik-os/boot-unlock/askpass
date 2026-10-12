@@ -1,0 +1,45 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# askpass — the keyscript that asks for the disk's password at boot (crypttab keyscript=)
+# ═══════════════════════════════════════════════════════════════════════════════════════
+#
+# cryptsetup's initramfs runs this once per try, with its standard output piped straight into
+# `cryptsetup open --key-file=-`. Whatever the person types goes from plymouth or the console to
+# that pipe and nowhere else: it is never put in a variable, a file, an argument or a log.
+#
+# The Yantrik screen first (plymouth, when it is showing). If it is not running, or asking
+# through it fails for any reason, plymouth is put away and cryptsetup's own console prompt asks
+# instead, with the same words. There is always a prompt.
+#
+# Before asking, it leaves `asked` in /run/yantrik-unlock (root's, 0700): a person was asked in
+# this boot. The local-bottom script turns that into the one-shot `typed` marker only once the
+# root is open, and only when nothing but this keyscript could have opened it (local-bottom).
+#
+# The person's account name and the keyboard layout are drawn by the theme (initramfs-hook).
+
+HINT="Type your password to start Yantrik OS"
+AGAIN="That password did not open the disk. $HINT"
+RUN_DIR="${YANTRIK_UNLOCK_RUN:-/run/yantrik-unlock}"
+CONSOLE_ASKPASS="${YANTRIK_CONSOLE_ASKPASS:-/lib/cryptsetup/askpass}"
+
+prompt="$HINT"
+case "${CRYPTTAB_TRIED:-0}" in
+    0|"") ;;
+    *) prompt="$AGAIN" ;;
+esac
+
+# The marker never holds anything typed: only that a person was asked, and when.
+(
+    umask 077
+    mkdir -p "$RUN_DIR" && chmod 0700 "$RUN_DIR" && : > "$RUN_DIR/asked"
+) 2>/dev/null
+
+if command -v plymouth >/dev/null 2>&1 && plymouth --ping 2>/dev/null; then
+    if plymouth ask-for-password --prompt="$prompt"; then
+        exit 0
+    fi
+    # The graphical screen failed. Out of the way, so the text prompt below is seen.
+    plymouth quit 2>/dev/null
+fi
+
+exec "$CONSOLE_ASKPASS" "$prompt: "

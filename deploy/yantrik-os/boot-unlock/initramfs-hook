@@ -1,0 +1,113 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# yantrik-unlock (initramfs-tools hook) — the pre-boot unlock screen, in the initramfs
+# ═══════════════════════════════════════════════════════════════════════════════════════
+#
+# Only for a root whose crypttab names Yantrik's keyscript (askpass); anything else is left as
+# cryptsetup and plymouth make it. Then:
+#
+#   - the keyscript, and cryptsetup's console prompt it falls back to;
+#   - the Yantrik plymouth theme, with the person's name and keyboard layout written into it,
+#     the plugins it draws with, a font, and the XKB data plymouth reads the layout with;
+#   - plymouthd.conf naming it. When any of that is missing, plymouthd.conf names the `details`
+#     theme instead: plain text, the same prompt and words, and nothing that can fail to draw.
+#
+# The keymap itself is console-setup's (cryptsetup's conf-hook turns KEYMAP=y on), so the
+# console prompt reads the keys the way the person's keyboard is laid out either way.
+PREREQ="plymouth cryptroot"
+prereqs() { echo "$PREREQ"; }
+case "${1:-}" in prereqs) prereqs; exit 0 ;; esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+KEYSCRIPT=/usr/lib/yantrik/boot-unlock/askpass
+CONF=/etc/yantrik/boot-unlock.conf
+THEMES=/usr/share/plymouth/themes
+THEME=yantrik
+
+grep -qsE "^[^#]*keyscript=$KEYSCRIPT(,|[[:space:]]|\$)" /etc/crypttab || exit 0
+
+copy_exec "$KEYSCRIPT"
+[ -x /lib/cryptsetup/askpass ] && copy_exec /lib/cryptsetup/askpass
+
+# Text: what plymouth falls back to by itself, and what this hook chooses when the graphical
+# theme cannot be complete.
+use_text() {
+    echo "W: yantrik-unlock: $1; the disk's password is asked in text" >&2
+    mkdir -p "$DESTDIR/etc/plymouth"
+    printf '[Daemon]\nTheme=details\n' > "$DESTDIR/etc/plymouth/plymouthd.conf"
+    exit 0
+}
+
+# plymouth itself, whatever its own hook decided: it leaves itself out when no theme was chosen.
+# No plymouth on this system at all, and the keyscript asks in text.
+[ -x /usr/sbin/plymouthd ] && [ -x /usr/bin/plymouth ] || exit 0
+copy_exec /usr/bin/plymouth
+copy_exec /usr/sbin/plymouthd
+[ -x /usr/libexec/plymouth/plymouthd-fd-escrow ] && copy_exec /usr/libexec/plymouth/plymouthd-fd-escrow
+for t in details text; do
+    [ -d "$THEMES/$t" ] && mkdir -p "$DESTDIR$THEMES" && cp -a "$THEMES/$t" "$DESTDIR$THEMES/"
+done
+plugins="$(plymouth --get-splash-plugin-path 2>/dev/null)"
+plugins="${plugins%/}"
+# The text themes' plugins first: they are what plymouth falls back to, and what use_text names.
+for p in details.so text.so; do
+    [ -n "$plugins" ] && [ -f "$plugins/$p" ] && copy_exec "$plugins/$p"
+done
+for r in drm.so frame-buffer.so; do
+    [ -n "$plugins" ] && [ -f "$plugins/renderers/$r" ] && copy_exec "$plugins/renderers/$r"
+done
+[ -n "$plugins" ] && [ -f "$plugins/script.so" ] || use_text "plymouth has no script plugin"
+label=""
+for l in label-pango.so label.so label-freetype.so; do
+    [ -f "$plugins/$l" ] && { label="$l"; break; }
+done
+[ -n "$label" ] || use_text "plymouth has no label plugin to write with"
+[ -f "$THEMES/$THEME/$THEME.script" ] && [ -f "$THEMES/$THEME/$THEME.plymouth" ] \
+    || use_text "the Yantrik theme is not installed"
+font=""
+for f in /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf /usr/share/fonts/TTF/DejaVuSans.ttf; do
+    [ -f "$f" ] && { font="$f"; break; }
+done
+[ -n "$font" ] || use_text "no font to write with"
+
+# The name under which the person signs in, and their layout, as plain text for the theme.
+user="$(sed -n 's/^user=\([a-z_][a-z0-9_-]*\)$/\1/p' "$CONF" 2>/dev/null | head -n1)"
+name=""
+[ -n "$user" ] && name="$(getent passwd "$user" | cut -d: -f5 | cut -d, -f1)"
+[ -n "$name" ] || name="$user"
+layout="$(sed -n 's/^XKBLAYOUT="\{0,1\}\([A-Za-z0-9_,-]*\)"\{0,1\}$/\1/p' "/etc/default/keyboard" 2>/dev/null | head -n1)"
+
+# Into a plymouth string literal: no quotes, backslashes or control characters, and short.
+literal() {
+    printf '%s' "$1" | tr -d '"\\' | tr -d '\000-\037\177' | cut -c1-48
+}
+
+mkdir -p "$DESTDIR$THEMES/$THEME"
+cp -a "$THEMES/$THEME/." "$DESTDIR$THEMES/$THEME/"
+sed -i \
+    -e "s|^name_text = \"\";.*|name_text = \"$(literal "$name" | sed 's/[|&]/\\&/g')\";|" \
+    -e "s|^layout_text = \"\";.*|layout_text = \"$(literal "$layout" | sed 's/[|&]/\\&/g')\";|" \
+    "$DESTDIR$THEMES/$THEME/$THEME.script"
+ln -sfn "$THEMES/$THEME/$THEME.plymouth" "$DESTDIR$THEMES/default.plymouth"
+copy_exec "$plugins/script.so"
+copy_exec "$plugins/$label"
+
+# A font, and a fontconfig that finds it.
+mkdir -p "$DESTDIR$(dirname "$font")" "$DESTDIR/etc/fonts/conf.d" "$DESTDIR/var/cache/fontconfig"
+cp -a "$font" "$DESTDIR$font"
+[ -f /etc/fonts/fonts.conf ] && cp -a /etc/fonts/fonts.conf "$DESTDIR/etc/fonts/"
+command -v fc-cache >/dev/null 2>&1 && fc-cache -s -y "$DESTDIR" >/dev/null 2>&1
+
+# plymouth reads the layout from /etc/default/keyboard and, when it can, the keys through XKB.
+# Without the XKB data it reads the console, which console-setup's keymap already lays out.
+if [ -f "/etc/default/keyboard" ]; then
+    mkdir -p "$DESTDIR/etc/default"
+    cp -a "/etc/default/keyboard" "$DESTDIR/etc/default/keyboard"
+fi
+[ -d /usr/share/X11/xkb ] && mkdir -p "$DESTDIR/usr/share/X11" \
+    && cp -a /usr/share/X11/xkb "$DESTDIR/usr/share/X11/"
+
+mkdir -p "$DESTDIR/etc/plymouth"
+printf '[Daemon]\nTheme=%s\n' "$THEME" > "$DESTDIR/etc/plymouth/plymouthd.conf"
+exit 0
