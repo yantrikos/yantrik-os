@@ -382,6 +382,54 @@ class TestNotAnswering(support.MachineCase):
             message = self.refusal(call, code=wire.RPC_TRANSPORT_ERROR)
             self.assertEqual(message, support.render("app did not answer within {}s", seconds))
 
+    def test_an_app_tied_up_doing_something_it_can_report_on_is_still_described(self):
+        # The default `busy_answer` is the timeout above. An app whose thread is tied up with
+        # work it can describe — a render, an export — overrides it, and a caller sees a busy
+        # app instead of a dead one.
+        class Busy(Surface):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.holding = None
+
+            def run_on_app_thread(self, fn, timeout):
+                if self.holding is not None:
+                    raise NotAnswered()
+                return fn()
+
+            def busy_answer(self):
+                if self.holding is None:
+                    return None
+                return "%s, exporting" % self.app_id, {"exporting": self.holding}
+
+        s = Busy("busy", summary="Notes — 1 note")
+
+        @s.view
+        def state():
+            return {"open": "Kernel asks"}
+
+        @s.action("export")
+        def export() -> dict:
+            """Export the notes."""
+            return {}
+
+        s.holding = "notes.zip"
+        described = s.describe_json()
+        self.assertEqual(described["summary"], "busy, exporting")
+        self.assertEqual(described["state"], {"exporting": "notes.zip"},
+                         "the state as of the last moment it was safe to read, not the one it "
+                         "cannot reach now")
+        self.assertEqual(described["revision"],
+                         wire.revision(described["summary"], described["state"]),
+                         "the revision of the state it is actually giving back")
+        self.assertEqual([a["name"] for a in described["actions"]], ["export"],
+                         "still says what it offers")
+
+        # Only the caller that asked for nothing may be answered this way. An act has to keep
+        # failing: a state beside it would read as "done", and nothing ran.
+        self.assertEqual(self.refusal(lambda: s.act({"action": "export"}),
+                                      code=wire.RPC_TRANSPORT_ERROR),
+                         support.render("app did not answer within {}s", 30))
+
     def test_the_default_lock_times_out_behind_a_long_act(self):
         s = Surface("busy")
         s.describe_timeout = 0.2

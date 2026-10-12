@@ -214,6 +214,8 @@ impl Flight {
                 }
             },
             Event::Thinking { .. } | Event::Status { .. } | Event::Usage { .. } | Event::Request { .. } => Ok(()),
+            // Taken before a turn's stream is looked at (`Host::event`); never one of its events.
+            Event::Notice { .. } => Err("a `notice` is not part of a turn's stream".to_string()),
             // Taken before a turn's stream is looked at (`Host::redact`); never one of its events.
             Event::Redact { .. } => Err("a `redact` is not part of a turn's stream".to_string()),
         }
@@ -1851,22 +1853,6 @@ impl Host {
         }
         let counts = &mut st.events;
 
-        let Some(flight) = harness.in_flight.get_mut(&turn_id) else {
-            if harness.finished.contains(&turn_id) {
-                counts.late += 1;
-                tracing::debug!(harness = %who, turn = turn_id, "event after the turn was closed; dropped");
-                return Ok(refused(format!(
-                    "turn {turn_id} is finished; events after complete or fail are dropped"
-                )));
-            }
-            return Err(harness.not_in_flight(turn_id));
-        };
-        if flight.tx.is_none() {
-            counts.late += 1;
-            flight.log_drop(&who, turn_id);
-            return Ok(serde_json::json!({ "dropped": true }));
-        }
-
         let size = serde_json::to_string(raw).map(|s| s.len()).unwrap_or(usize::MAX);
         if size > protocol::MAX_EVENT_BYTES {
             counts.oversized += 1;
@@ -1897,6 +1883,53 @@ impl Host {
                 return Ok(refused(format!("a malformed `{kind}` event: {e}")));
             }
         };
+
+        // A notice is not part of a turn's stream: it may come with no turn in flight at all
+        // (#396). It is taken, not dropped, but only forwarded to a reader when a turn is
+        // listening; otherwise it is logged and answered as kept.
+        if let Event::Notice { text } = &event {
+            if text.trim().is_empty() {
+                counts.malformed += 1;
+                tracing::warn!(harness = %who, turn = turn_id, "notice with empty `text`; refused");
+                return Ok(refused("a `notice` needs `text`".to_string()));
+            }
+            match harness.in_flight.get_mut(&turn_id) {
+                // Recorded in a run only when the turn is this harness's own: turn ids are the
+                // host's, so one named by any other harness's session (the Mind's included) is
+                // never written into.
+                Some(flight) if flight.tx.is_some() => {
+                    self.record("notice", turn_id, |s| s.append(turn_id, "notice", raw));
+                    let tx = flight.tx.as_ref().expect("checked above");
+                    if tx.send(Chunk::Event(event)).is_err() {
+                        flight.abandon(None);
+                        flight.log_drop(&who, turn_id);
+                        return Ok(serde_json::json!({ "dropped": true }));
+                    }
+                }
+                _ => {
+                    tracing::info!(harness = %who, turn = turn_id, "notice with no turn in flight; kept");
+                }
+            }
+            counts.accepted += 1;
+            return Ok(serde_json::json!({ "kept": true }));
+        }
+
+        let Some(flight) = harness.in_flight.get_mut(&turn_id) else {
+            if harness.finished.contains(&turn_id) {
+                counts.late += 1;
+                tracing::debug!(harness = %who, turn = turn_id, "event after the turn was closed; dropped");
+                return Ok(refused(format!(
+                    "turn {turn_id} is finished; events after complete or fail are dropped"
+                )));
+            }
+            return Err(harness.not_in_flight(turn_id));
+        };
+        if flight.tx.is_none() {
+            counts.late += 1;
+            flight.log_drop(&who, turn_id);
+            return Ok(serde_json::json!({ "dropped": true }));
+        }
+
         if event.call().is_some_and(|call| call.trim().is_empty()) {
             counts.malformed += 1;
             tracing::warn!(harness = %who, turn = turn_id, kind, "tool event with an empty `call`; refused");
@@ -2725,6 +2758,16 @@ mod tests {
         // Queued, not polled: the harness does not hold it, so it cannot speak for it.
         let err = event(&host, &session, 1, start("t1")).unwrap_err();
         assert!(err.contains("not one this harness was given"), "{err}");
+    }
+
+    #[test]
+    fn a_notice_is_kept_even_with_no_turn_in_flight() {
+        let host = host_with_nothing();
+        let session = attach(&host, "mind");
+        // A turn id the harness was never handed: a notice has no turn behind it (#396).
+        let reply = event(&host, &session, 0, json!({ "kind": "notice", "text": "download finished" }))
+            .expect("a notice is taken, not refused");
+        assert_eq!(reply, json!({ "kept": true }), "{reply}");
     }
 
     #[test]
@@ -3760,6 +3803,19 @@ mod tests {
         assert_eq!(kinds(&store, run), vec!["state", "text", "event", "event", "state"]);
         let text = &store.events(run, 1, 1).unwrap().events[0];
         assert_eq!(text.payload["delta"].as_str().unwrap().len(), 900, "a message longer than the 600-character summary is kept whole");
+    }
+
+    #[test]
+    fn a_notice_is_never_written_into_another_harness_s_run() {
+        let (host, store) = host_with_runs();
+        let (session, _, run, _answer) = turn_in_flight(&host);
+        let other = attach(&host, "mind");
+        let reply = event(&host, &other, run, json!({ "kind": "notice", "text": "not yours" })).unwrap();
+        assert_eq!(reply, json!({ "kept": true }), "{reply}");
+        assert!(!kinds(&store, run).contains(&"notice".to_string()), "{:?}", kinds(&store, run));
+        // Its own turn's notice is kept in its run.
+        event(&host, &session, run, json!({ "kind": "notice", "text": "mine" })).unwrap();
+        assert!(kinds(&store, run).contains(&"notice".to_string()), "{:?}", kinds(&store, run));
     }
 
     #[test]

@@ -131,6 +131,10 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         options: Vec<String>,
     },
+    /// Something the harness says to the person with no turn behind it: a background job
+    /// finished, a watch fired, a download completed (#396). It is not part of a turn's stream,
+    /// so it is accepted even when no turn is in flight.
+    Notice { text: String },
     /// After the person answered *Erase* to the agent's Keep/Erase question `request_id`, the
     /// agent asks the shell to erase the same words from its own copies: the agent's pane
     /// transcript and the run store. The words never travel: each needle is a digest and a length
@@ -147,7 +151,7 @@ impl Event {
     /// Every `kind` this build reads. Anything else is a newer harness talking to an older
     /// desktop, and is ignored; one of these that does not parse is malformed, and is counted.
     pub const KINDS: &'static [&'static str] =
-        &["tool_start", "tool_output", "tool_end", "thinking", "status", "usage", "request", "redact"];
+        &["tool_start", "tool_output", "tool_end", "thinking", "status", "usage", "request", "redact", "notice"];
 
     /// Read one event from the wire. `None` for a kind this build does not know, or one that is
     /// malformed: the caller logs it and carries on, and the turn is not failed over it.
@@ -166,6 +170,7 @@ impl Event {
             Event::Usage { .. } => "usage",
             Event::Request { .. } => "request",
             Event::Redact { .. } => "redact",
+            Event::Notice { .. } => "notice",
         }
     }
 
@@ -237,6 +242,7 @@ mod tests {
             Event::Usage { model: String::new(), input_tokens: None, output_tokens: None, cost_usd: None },
             Event::Request { request_id: "r".into(), prompt: "p".into(), options: vec![] },
             Event::Redact { request_id: "r".into(), needles: vec![Needle::of("p")] },
+            Event::Notice { text: "done".into() },
         ];
         assert_eq!(every.len(), Event::KINDS.len());
         for event in every {

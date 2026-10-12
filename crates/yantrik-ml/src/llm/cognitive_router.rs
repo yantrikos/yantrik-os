@@ -410,6 +410,46 @@ pub enum RouteDecision {
     NeedsLLM,
 }
 
+/// Which routing layer produced a decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteLayer {
+    /// Greeting / farewell / thanks — handled directly.
+    Conversation,
+    /// Keyword-rule fast path (math, time, units, disambiguation).
+    Keyword,
+    /// Recipe template matched by embedding similarity.
+    Recipe,
+    /// Tool matched by embedding similarity.
+    Tool,
+    /// Nothing cleared the threshold — needs a real LLM.
+    NeedsLLM,
+}
+
+/// Why the router chose a decision: the layer, the candidates and the scores.
+#[derive(Debug, Clone)]
+pub struct RouteExplanation {
+    /// The query that was routed (original casing).
+    pub query: String,
+    /// The layer that produced the decision.
+    pub layer: RouteLayer,
+    /// The decision itself.
+    pub decision: RouteDecision,
+    /// Best tool by embedding similarity (name, score).
+    pub best_tool: Option<(String, f32)>,
+    /// Best recipe by embedding similarity (id, name, score).
+    pub best_recipe: Option<(String, String, f32)>,
+    /// Top-N tools by cosine similarity, descending.
+    pub tool_top: Vec<(String, f32)>,
+    /// Top-N recipes by cosine similarity, descending (id, score).
+    pub recipe_top: Vec<(String, f32)>,
+    /// Detected execution shape of the query.
+    pub plan_shape: PlanShape,
+    /// The threshold used to decide tool/recipe vs NeedsLLM.
+    pub similarity_threshold: f32,
+    /// Wall-clock time for the whole call, in milliseconds.
+    pub elapsed_ms: u128,
+}
+
 // ── Dynamic tool entry ────────────────────────────────────────────────
 
 /// A tool registered with the router.
@@ -641,13 +681,85 @@ impl CognitiveRouter {
 
     /// Route a user query to a tool or decide it needs an LLM.
     pub fn route(&self, query: &str) -> RouteDecision {
+        self.route_explain_inner(query, 0).decision
+    }
+
+    /// Route a query and explain why: the layer, the candidates and the scores.
+    ///
+    /// Reaches the same verdict as [`route`](Self::route) for the same query,
+    /// sharing the same scoring code, and additionally reports the top-N
+    /// tool/recipe candidates, the plan shape and the threshold.
+    pub fn explain_route(&self, query: &str, top_n: usize) -> RouteExplanation {
+        self.route_explain_inner(query, top_n)
+    }
+
+    /// Top-N tool and recipe candidates by cosine similarity (descending),
+    /// with the composite boost applied to recipes. Used to fill the
+    /// explanation even when a keyword rule short-circuits the decision.
+    /// `route()` asks for none (`top_n == 0`) and pays nothing: no embedding on the keyword fast
+    /// path, no second scoring pass on the embedding path.
+    fn top_candidates(&self, query: &str, top_n: usize) -> (Vec<(String, f32)>, Vec<(String, f32)>) {
+        if top_n == 0 {
+            return (Vec::new(), Vec::new());
+        }
+        let query_emb = match self.embedder.embed(query) {
+            Ok(emb) => emb,
+            Err(_) => return (Vec::new(), Vec::new()),
+        };
+        self.top_from(&query_emb, detect_plan_shape(&query.to_lowercase()), top_n)
+    }
+
+    /// The top-N lists for an embedding already made.
+    fn top_from(&self, query_emb: &[f32], shape: PlanShape, top_n: usize) -> (Vec<(String, f32)>, Vec<(String, f32)>) {
+        if top_n == 0 {
+            return (Vec::new(), Vec::new());
+        }
+        let mut tool_top: Vec<(String, f32)> = Vec::new();
+        if let Ok(tools) = self.tools.lock() {
+            for tool in tools.iter() {
+                let sim = cosine_similarity(query_emb, &tool.embedding);
+                tool_top.push((tool.name.clone(), sim));
+            }
+        }
+        tool_top.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        tool_top.truncate(top_n);
+
+        let mut recipe_top: Vec<(String, f32)> = Vec::new();
+        if let Ok(recipes) = self.recipes.lock() {
+            for recipe in recipes.iter() {
+                let mut sim = cosine_similarity(query_emb, &recipe.embedding);
+                if shape == PlanShape::Composite {
+                    sim *= self.recipe_composite_boost;
+                }
+                recipe_top.push((recipe.id.clone(), sim));
+            }
+        }
+        recipe_top.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        recipe_top.truncate(top_n);
+
+        (tool_top, recipe_top)
+    }
+
+    /// Shared scoring for [`route`](Self::route) and [`explain_route`](Self::explain_route).
+    fn route_explain_inner(&self, query: &str, top_n: usize) -> RouteExplanation {
         let t0 = Instant::now();
         let q = query.to_lowercase();
 
         // ── Layer 0: Conversation detection ──
         if let Some(resp) = Self::check_conversation(&q) {
             tracing::debug!(ms = t0.elapsed().as_millis(), "Router: conversation");
-            return RouteDecision::Conversation { response: resp };
+            return RouteExplanation {
+                query: query.to_string(),
+                layer: RouteLayer::Conversation,
+                decision: RouteDecision::Conversation { response: resp },
+                best_tool: None,
+                best_recipe: None,
+                tool_top: Vec::new(),
+                recipe_top: Vec::new(),
+                plan_shape: detect_plan_shape(&q),
+                similarity_threshold: self.similarity_threshold,
+                elapsed_ms: t0.elapsed().as_millis(),
+            };
         }
 
         // ── Layer 0.5: Keyword rules (math, time, units, disambiguation) ──
@@ -656,10 +768,25 @@ impl CognitiveRouter {
                 tool = tool_name, ms = t0.elapsed().as_millis(),
                 "Router: keyword match"
             );
-            return RouteDecision::Tool {
-                name: tool_name.to_string(),
-                score: 1.0, // keyword match = maximum confidence
-                response: String::new(),
+            // Still report the embedding candidates so the explanation shows
+            // what the embedding layer would have scored, even though the
+            // keyword rule short-circuited the decision.
+            let (tool_top, recipe_top) = self.top_candidates(query, top_n);
+            return RouteExplanation {
+                query: query.to_string(),
+                layer: RouteLayer::Keyword,
+                decision: RouteDecision::Tool {
+                    name: tool_name.to_string(),
+                    score: 1.0, // keyword match = maximum confidence
+                    response: String::new(),
+                },
+                best_tool: None,
+                best_recipe: None,
+                tool_top,
+                recipe_top,
+                plan_shape: detect_plan_shape(&q),
+                similarity_threshold: self.similarity_threshold,
+                elapsed_ms: t0.elapsed().as_millis(),
             };
         }
 
@@ -668,7 +795,18 @@ impl CognitiveRouter {
             Ok(emb) => emb,
             Err(e) => {
                 tracing::warn!(err = %e, "Failed to embed query");
-                return RouteDecision::NeedsLLM;
+                return RouteExplanation {
+                    query: query.to_string(),
+                    layer: RouteLayer::NeedsLLM,
+                    decision: RouteDecision::NeedsLLM,
+                    best_tool: None,
+                    best_recipe: None,
+                    tool_top: Vec::new(),
+                    recipe_top: Vec::new(),
+                    plan_shape: detect_plan_shape(&q),
+                    similarity_threshold: self.similarity_threshold,
+                    elapsed_ms: t0.elapsed().as_millis(),
+                };
             }
         };
 
@@ -706,33 +844,58 @@ impl CognitiveRouter {
             None
         };
 
+        // Top-N candidates for the explanation; none when route() asks.
+        let (tool_top, recipe_top) = self.top_from(&query_emb, shape, top_n);
+
         // Pick the best candidate across tools and recipes
         let tool_score = best_tool.as_ref().map(|(_, s)| *s).unwrap_or(0.0);
         let recipe_score = best_recipe.as_ref().map(|(_, _, s)| *s).unwrap_or(0.0);
 
         // Recipe wins if it scores higher AND above threshold
         if recipe_score > tool_score && recipe_score >= self.similarity_threshold {
-            let (id, name, score) = best_recipe.unwrap();
+            let (id, name, score) = best_recipe.clone().unwrap();
             tracing::debug!(
                 recipe_id = %id, recipe_name = %name, score,
                 shape = ?shape, ms = t0.elapsed().as_millis(),
                 "Router: recipe match"
             );
-            return RouteDecision::Recipe { id, name, score };
+            return RouteExplanation {
+                query: query.to_string(),
+                layer: RouteLayer::Recipe,
+                decision: RouteDecision::Recipe { id, name, score },
+                best_tool,
+                best_recipe,
+                tool_top,
+                recipe_top,
+                plan_shape: shape,
+                similarity_threshold: self.similarity_threshold,
+                elapsed_ms: t0.elapsed().as_millis(),
+            };
         }
 
         // Tool match
-        if let Some((name, score)) = best_tool {
+        if let Some((name, score)) = best_tool.clone() {
             if score >= self.similarity_threshold {
                 tracing::debug!(
                     tool = %name, score,
                     shape = ?shape, ms = t0.elapsed().as_millis(),
                     "Router: embedding match"
                 );
-                return RouteDecision::Tool {
-                    name,
-                    score,
-                    response: String::new(),
+                return RouteExplanation {
+                    query: query.to_string(),
+                    layer: RouteLayer::Tool,
+                    decision: RouteDecision::Tool {
+                        name,
+                        score,
+                        response: String::new(),
+                    },
+                    best_tool,
+                    best_recipe,
+                    tool_top,
+                    recipe_top,
+                    plan_shape: shape,
+                    similarity_threshold: self.similarity_threshold,
+                    elapsed_ms: t0.elapsed().as_millis(),
                 };
             }
         }
@@ -742,7 +905,18 @@ impl CognitiveRouter {
             shape = ?shape, ms = t0.elapsed().as_millis(),
             "Router: needs LLM"
         );
-        RouteDecision::NeedsLLM
+        RouteExplanation {
+            query: query.to_string(),
+            layer: RouteLayer::NeedsLLM,
+            decision: RouteDecision::NeedsLLM,
+            best_tool,
+            best_recipe,
+            tool_top,
+            recipe_top,
+            plan_shape: shape,
+            similarity_threshold: self.similarity_threshold,
+            elapsed_ms: t0.elapsed().as_millis(),
+        }
     }
 
     /// Route and return top-N candidates with scores (for debugging / UI display).
@@ -1146,4 +1320,101 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm_a == 0.0 || norm_b == 0.0 { 0.0 } else { dot / (norm_a * norm_b) }
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Deterministic fake embedder: a byte histogram over a fixed 256-dim
+    /// vector, so no model is loaded in tests and similar text scores higher.
+    struct FakeEmbedder;
+
+    impl Embedder for FakeEmbedder {
+        fn embed(&self, text: &str) -> std::result::Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>> {
+            let mut v = vec![0.0f32; 256];
+            for b in text.bytes() {
+                v[b as usize] += 1.0;
+            }
+            Ok(v)
+        }
+
+        fn dim(&self) -> usize {
+            256
+        }
+    }
+
+    fn router() -> CognitiveRouter {
+        CognitiveRouter::new(Box::new(FakeEmbedder))
+    }
+
+    #[test]
+    fn explain_keyword_rule_reports_keyword_layer() {
+        let r = router();
+        r.register_tool("calculate", "arithmetic", "test");
+        let exp = r.explain_route("what is 2 + 2", 5);
+        assert_eq!(exp.layer, RouteLayer::Keyword);
+        match &exp.decision {
+            RouteDecision::Tool { name, score, .. } => {
+                assert_eq!(name, "calculate");
+                assert_eq!(*score, 1.0);
+            }
+            other => panic!("expected Tool decision, got {other:?}"),
+        }
+        assert!(!exp.tool_top.is_empty());
+    }
+
+    #[test]
+    fn explain_tool_match_names_best_tool() {
+        let r = router();
+        r.register_tool("alpha", "first tool", "test");
+        r.register_tool("beta", "second tool", "test");
+        // Embed the query with the same fake so one tool scores above threshold.
+        let exp = r.explain_route("alpha first tool", 5);
+        assert_eq!(exp.layer, RouteLayer::Tool);
+        match &exp.decision {
+            RouteDecision::Tool { name, .. } => assert_eq!(name, "alpha"),
+            other => panic!("expected Tool decision, got {other:?}"),
+        }
+        assert_eq!(exp.best_tool.as_ref().map(|(n, _)| n.as_str()), Some("alpha"));
+    }
+
+    #[test]
+    fn explain_no_tools_reports_needs_llm_and_threshold() {
+        let r = router();
+        let exp = r.explain_route("some creative writing prompt", 5);
+        assert_eq!(exp.layer, RouteLayer::NeedsLLM);
+        assert!(matches!(exp.decision, RouteDecision::NeedsLLM));
+        assert_eq!(exp.similarity_threshold, 0.35);
+    }
+
+    #[test]
+    fn explain_route_agrees_with_route() {
+        let r = router();
+        r.register_tool("alpha", "first tool", "test");
+        r.register_tool("beta", "second tool", "test");
+
+        for query in ["what is 2 + 2", "alpha first tool", "some creative writing prompt"] {
+            let exp = r.explain_route(query, 5);
+            let decision = r.route(query);
+            match (&exp.decision, &decision) {
+                (RouteDecision::Tool { name: a, score: sa, .. }, RouteDecision::Tool { name: b, score: sb, .. }) => {
+                    assert_eq!(a, b);
+                    assert_eq!(sa, sb);
+                }
+                (RouteDecision::Recipe { id: a, name: na, score: sa }, RouteDecision::Recipe { id: b, name: nb, score: sb }) => {
+                    assert_eq!(a, b);
+                    assert_eq!(na, nb);
+                    assert_eq!(sa, sb);
+                }
+                (RouteDecision::Conversation { response: a }, RouteDecision::Conversation { response: b }) => {
+                    assert_eq!(a, b);
+                }
+                (RouteDecision::NeedsLLM, RouteDecision::NeedsLLM) => {}
+                (a, b) => panic!("mismatch: explain={a:?} route={b:?}"),
+            }
+        }
+    }
 }

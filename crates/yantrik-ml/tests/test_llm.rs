@@ -168,3 +168,59 @@ fn test_llm_tool_calling() {
     // Just verify the response is non-empty and parsing doesn't crash.
     assert!(!response.text.is_empty());
 }
+
+/// A tool definition the size of a real one: long description, JSON Schema
+/// noise, and a required parameter the model cannot do without.
+fn weather_tool() -> serde_json::Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get the current weather for a location. Results are in the user's units and reflect the live conditions at the nearest station.",
+            "parameters": {
+                "type": "object",
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "additionalProperties": false,
+                "properties": {
+                    "location": {
+                        "type": "string",
+                        "description": "City name, e.g. Tokyo"
+                    },
+                    "units": {
+                        "type": "string",
+                        "enum": ["metric", "imperial"],
+                        "description": "Temperature units"
+                    }
+                },
+                "required": ["location"]
+            }
+        }
+    })
+}
+
+#[test]
+fn test_small_tier_compacts_tools_and_large_keeps_json() {
+    use yantrik_ml::capability::ModelTier;
+
+    let defs = vec![weather_tool()];
+    let full = yantrik_ml::format_tools(&defs);
+
+    for tier in [ModelTier::Tiny, ModelTier::Small] {
+        let compact = yantrik_ml::format_tools_compact(&defs, tier);
+        assert!(compact.contains("get_weather"), "{tier:?}: tool name must survive");
+        assert!(compact.contains("location*("), "{tier:?}: required param must be named and marked");
+        assert!(!compact.contains("additionalProperties"), "{tier:?}: schema noise leaked");
+        assert!(!compact.contains("$schema"), "{tier:?}: schema noise leaked");
+        assert!(!compact.contains("live conditions"), "{tier:?}: description should be cut to one sentence");
+        assert!(compact.len() < full.len(), "{tier:?}: {} chars vs full {}", compact.len(), full.len());
+    }
+
+    // Medium/Large keep the full schema, byte-identical to `format_tools`.
+    for tier in [ModelTier::Medium, ModelTier::Large] {
+        assert_eq!(
+            yantrik_ml::format_tools_compact(&defs, tier),
+            full,
+            "{tier:?} must keep the full JSON schema"
+        );
+    }
+}

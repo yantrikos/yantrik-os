@@ -10,6 +10,8 @@
 //! {content}<|im_end|>
 //! ```
 
+use crate::chat_templates::ChatTemplate;
+
 pub use crate::types::{ChatMessage, ToolCall};
 
 /// Format chat messages into Qwen2.5 ChatML prompt.
@@ -33,26 +35,18 @@ pub fn format_chat(messages: &[ChatMessage]) -> String {
 /// as a standard tool definition block. Uses the first real tool name in
 /// the example to prevent small models from copying a placeholder literally.
 pub fn format_tools(tools: &[serde_json::Value]) -> String {
-    if tools.is_empty() {
-        return String::new();
-    }
+    crate::chat_templates::qwen::QwenTemplate.format_tools(tools)
+}
 
-    // Use first real tool name so small models don't copy a placeholder literally
-    let example_name = tools.first()
-        .and_then(|t| t.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()))
-        .or_else(|| tools.first().and_then(|t| t.get("name")).and_then(|n| n.as_str()))
-        .unwrap_or("memory_recall");
-
-    let mut s = String::from("\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n");
-    for tool in tools {
-        s.push_str(&serde_json::to_string(tool).unwrap_or_default());
-        s.push('\n');
-    }
-    s.push_str(&format!(
-        "</tools>\n\nTo call a tool, output a JSON object inside <tool_call></tool_call> XML tags. The \"name\" field MUST be one of the tool names listed above. Example:\n<tool_call>\n{{\"name\": \"{}\", \"arguments\": {{}}}}\n</tool_call>",
-        example_name
-    ));
-    s
+/// [`format_tools`] for a model of a given capability tier.
+///
+/// Tiny/Small get each tool compiled to compact plain text; Medium/Large get
+/// the full JSON schema, byte-identical to [`format_tools`].
+pub fn format_tools_compact(
+    tools: &[serde_json::Value],
+    tier: crate::capability::ModelTier,
+) -> String {
+    crate::chat_templates::qwen::QwenTemplate.format_tools_compact(tools, tier)
 }
 
 /// Parse tool calls from model output.
