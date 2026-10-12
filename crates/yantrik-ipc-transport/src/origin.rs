@@ -7,7 +7,7 @@
 //! started over ssh and one the desktop launched all look alike. This module classifies the
 //! origin from the same `/proc` facts the walk already reads, plus a few it does not: the
 //! controlling tty, the cgroup unit, and — only when the chain already says ssh — the
-//! `SSH_CONNECTION` address out of the process's environment.
+//! `SSH_CONNECTION` address out of the environment of the process sshd started.
 //!
 //! # What it can and cannot establish
 //!
@@ -118,6 +118,12 @@ fn is_ssh(facts: &ProcessFacts) -> bool {
     if name == "sshd" || name == "sshd-session" {
         return true;
     }
+    // argv0 is the process's own to write, so it is only consulted when the exe link was
+    // unreadable: sshd's session process is not dumpable, while an ordinary same-user process
+    // that renamed itself `sshd:` still shows its real binary and is not taken at its word.
+    if !facts.exe.is_empty() {
+        return false;
+    }
     let argv0 = facts.short_cmdline.split_whitespace().next().unwrap_or("");
     let argv0 = argv0.strip_suffix(':').unwrap_or(argv0);
     argv0 == "sshd" || argv0 == "sshd-session"
@@ -135,21 +141,30 @@ fn is_session_manager(unit: &str) -> bool {
 }
 
 /// Classify a [`Program`] by reading `/proc` for the one process still likely to be alive.
+///
+/// Every extra read is bound to the process the walk recorded: the start time must match the
+/// one in the chain both before and after, so a pid reused since the walk yields `Unknown`
+/// rather than another process's tty or unit.
 #[cfg(target_os = "linux")]
 pub fn origin_of(program: &Program) -> Origin {
-    let Some(pid) = program.recognisable.as_ref().or(program.direct.as_ref()).map(|f| f.pid) else {
+    let Some(found) = program.recognisable.as_ref().or(program.direct.as_ref()) else {
         return Origin::Unknown;
     };
-    let Some(facts) = read_facts(pid) else {
+    let Some((stat, cgroup_unit)) = bound_to(found, read_cgroup_unit) else {
         return Origin::Unknown;
     };
-    let ssh = program.chain.iter().any(is_ssh);
-    let ssh_from = if ssh { read_ssh_from(pid) } else { None };
-    let origin_facts = OriginFacts {
-        tty_nr: Some(facts.tty_nr),
-        cgroup_unit: read_cgroup_unit(pid),
-        ssh_from,
-    };
+    // The address comes from the process sshd itself started (the entry just below sshd in the
+    // chain), not from the caller: a later command in the session can export any
+    // `SSH_CONNECTION` it likes, but cannot rewrite its login shell's environment.
+    let ssh_from = program
+        .chain
+        .iter()
+        .position(is_ssh)
+        .and_then(|i| i.checked_sub(1))
+        .and_then(|i| program.chain.get(i))
+        .and_then(|leader| bound_to(leader, read_ssh_from))
+        .and_then(|(_, from)| from);
+    let origin_facts = OriginFacts { tty_nr: Some(stat.tty_nr), cgroup_unit, ssh_from };
     classify(&program.chain, &origin_facts, timer_exists)
 }
 
@@ -160,18 +175,25 @@ pub fn origin_of(program: &Program) -> Origin {
     Origin::Unknown
 }
 
-/// One process's stat facts, or `None` if it moved underneath the read.
+/// Run `read` against the process the walk recorded, or `None` if that process is gone.
 ///
-/// The same before-and-after `stat` discipline as `peer_identity::facts`: if the start time
-/// moved, the pid was reused and nothing read in between belongs to one process.
+/// The same before-and-after `stat` discipline as `peer_identity::facts`, with one more check:
+/// both start times must equal the one recorded in the chain, so a pid reused since the walk —
+/// or during this read — is never mistaken for the caller.
 #[cfg(target_os = "linux")]
-fn read_facts(pid: i32) -> Option<StatFacts> {
-    let before = crate::peer_identity::parse_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)?;
-    let after = crate::peer_identity::parse_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)?;
-    if before.started != after.started {
+fn bound_to<T>(recorded: &ProcessFacts, read: impl FnOnce(i32) -> T) -> Option<(StatFacts, T)> {
+    let pid = recorded.pid;
+    let stat = || crate::peer_identity::parse_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?);
+    let before = stat()?;
+    if before.started != recorded.started {
         return None;
     }
-    Some(before)
+    let value = read(pid);
+    let after = stat()?;
+    if after.started != recorded.started {
+        return None;
+    }
+    Some((before, value))
 }
 
 /// The deepest cgroup v2 path component ending in `.service`, or `None`.
@@ -388,5 +410,26 @@ mod tests {
         classify(&chain, &unit("app.slice/a/b.service"), &probe);
         assert!(asked.borrow().is_empty(), "a stem with / or .. must be refused before the closure: {:?}", asked.borrow());
     }
-}
 
+    #[test]
+    fn a_same_user_process_calling_itself_sshd_is_not_ssh() {
+        // A readable exe means the process is dumpable, so it is not sshd's session process:
+        // its argv0 is its own to write and is not believed.
+        let chain = vec![
+            facts(1, "/usr/bin/python3.11", "python3 yos act shell x"),
+            facts(2, "/home/u/fake", "sshd-session: yantrik@pts/0"),
+        ];
+        assert_eq!(classify(&chain, &no_tty(), never_timer), Origin::Unknown);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_read_is_refused_when_the_start_time_is_not_the_recorded_one() {
+        let me = crate::peer_identity::walk(std::process::id() as i32).remove(0);
+        assert!(bound_to(&me, |_| ()).is_some(), "the live process with its own start time");
+        let reused = ProcessFacts { started: me.started + 1, ..me };
+        assert!(bound_to(&reused, |_| ()).is_none(), "a reused pid must read as gone");
+        let program = Program { direct: Some(reused.clone()), recognisable: None, chain: vec![reused], via_shell: false };
+        assert_eq!(origin_of(&program), Origin::Unknown);
+    }
+}
