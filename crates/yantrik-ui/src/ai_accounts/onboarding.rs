@@ -12,7 +12,7 @@
 // Called by the onboarding screens, which are built on a branch stacked on this one.
 #![allow(dead_code)]
 
-use super::consent;
+use super::{consent, mirror};
 use super::models::CatalogueModel;
 
 /// The pick for every mind, `<account>/<model>` (an id from the catalogue): what `"model":
@@ -32,9 +32,11 @@ pub fn share_line(provider: &str) -> String {
 
 /// The box under [`share_line`]: checked, every account with no choice of its own is Share;
 /// unchecked, Off (a call carrying personal things is then answered by the private lane, or
-/// refused with the fix named).
+/// refused with the fix named). The Yantrik Mind is sent the result ([`mirror`]).
 pub fn agree_to_share(checked: bool) -> Result<(), String> {
-    consent::agree_at_onboarding(&consent::path(), checked)
+    consent::agree_at_onboarding(&consent::path(), checked)?;
+    mirror::changed();
+    Ok(())
 }
 
 /// The models on this computer or the local network that can keep personal things here.
@@ -45,7 +47,7 @@ pub fn private_lane_choices() -> Vec<CatalogueModel> {
 
 /// "Keep personal things on this computer instead": `model` (one of [`private_lane_choices`])
 /// becomes the private lane, and every account the person has not chosen for otherwise keeps
-/// personal things on it.
+/// personal things on it. The Yantrik Mind is sent the result ([`mirror`]).
 pub fn keep_personal_things_on(model: &str) -> Result<(), String> {
     if !private_lane_choices().iter().any(|m| m.id == model) {
         return Err(format!("{model} is not on this computer or your network"));
@@ -57,6 +59,7 @@ pub fn keep_personal_things_on(model: &str) -> Result<(), String> {
         c.default = Some(consent::Sharing::Lane);
         consent::save(&path, &c)?;
     }
+    mirror::changed();
     Ok(())
 }
 

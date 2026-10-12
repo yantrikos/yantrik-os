@@ -168,8 +168,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         if a.local || (a.trains_on_prompts && sharing == Sharing::Share) {
             return;
         }
-        if let Err(e) = consent::set(&consent::path(), &a.id, sharing) {
-            tracing::warn!(error = %e, "the private-context choice was not saved");
+        match consent::set(&consent::path(), &a.id, sharing) {
+            Ok(()) => ai_accounts::mirror::changed(),
+            Err(e) => tracing::warn!(error = %e, "the private-context choice was not saved"),
         }
         render(&ui);
     });
@@ -178,8 +179,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let Some(ui) = weak.upgrade() else { return };
         let local = model.split_once('/').is_some_and(|(acc, _)| ai_accounts::accounts().iter().any(|a| a.id == acc && a.local));
         if local {
-            if let Err(e) = consent::set_lane(&consent::path(), Some(&model)) {
-                tracing::warn!(error = %e, "the private lane was not saved");
+            match consent::set_lane(&consent::path(), Some(&model)) {
+                Ok(()) => ai_accounts::mirror::changed(),
+                Err(e) => tracing::warn!(error = %e, "the private lane was not saved"),
             }
         }
         render(&ui);

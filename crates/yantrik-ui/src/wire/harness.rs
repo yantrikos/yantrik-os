@@ -723,6 +723,14 @@ impl yantrik_ipc_transport::server::ServiceHandler for HarnessService {
             Some(why) => Err(why),
             None => self.host.handle_from(method, &params, pid, uid),
         };
+        // The person's own Mind attached (an impostor under its id was refused above, where the
+        // door is served): it is sent the person's sharing, every attach (consent-mirror spec).
+        if answer.is_ok()
+            && method == yantrik_harness::protocol::ATTACH
+            && params["id"].as_str() == Some(crate::memory_grants::FIRST_PARTY_MIND)
+        {
+            crate::ai_accounts::mirror::mind_attached();
+        }
         answer.map_err(|message| yantrik_ipc_contracts::email::ServiceError { code: -32000, message })
     }
 }

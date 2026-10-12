@@ -54,22 +54,45 @@ fn socket() -> Option<PathBuf> {
 
 /// `POST /provider` on the memory socket with `body`. `Ok` on a 2xx; otherwise a sentence.
 pub(crate) fn post(body: &str) -> Result<(), String> {
-    let path = socket().ok_or("The Mind's memory socket is not there: start the Mind, then try again")?;
-    let mut s = std::os::unix::net::UnixStream::connect(&path).map_err(|e| format!("could not reach the Mind: {e}"))?;
+    match post_to("/provider", body) {
+        Ok(_) => {
+            tracing::info!("the Mind took the provider setting");
+            Ok(())
+        }
+        Err(Refused::Status(status)) => {
+            Err(format!("The Mind did not take it (HTTP {status}): it may not take Yantrik models this way yet"))
+        }
+        Err(Refused::Unreachable(why)) => Err(why),
+    }
+}
+
+/// Why the Mind did not take a POST.
+#[derive(Debug)]
+pub(crate) enum Refused {
+    /// No socket, or it could not be reached: nothing was said to the Mind.
+    Unreachable(String),
+    /// The Mind answered with this non-2xx status.
+    Status(u16),
+}
+
+/// `POST <route>` on the person's memory socket (`/provider`, and `/consent` from
+/// `ai_accounts::mirror`): the reply's body on a 2xx.
+pub(crate) fn post_to(route: &str, body: &str) -> Result<String, Refused> {
+    let path = socket().ok_or_else(|| Refused::Unreachable("The Mind's memory socket is not there: start the Mind, then try again".into()))?;
+    let mut s = std::os::unix::net::UnixStream::connect(&path).map_err(|e| Refused::Unreachable(format!("could not reach the Mind: {e}")))?;
     let _ = s.set_read_timeout(Some(Duration::from_secs(10)));
     let request = format!(
-        "POST /provider HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "POST {route} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
-    s.write_all(request.as_bytes()).map_err(|e| format!("could not reach the Mind: {e}"))?;
+    s.write_all(request.as_bytes()).map_err(|e| Refused::Unreachable(format!("could not reach the Mind: {e}")))?;
     let mut answer = String::new();
     let _ = s.take(64 * 1024).read_to_string(&mut answer);
     let status: u16 = answer.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
     if (200..300).contains(&status) {
-        tracing::info!("the Mind took the provider setting");
-        Ok(())
+        Ok(answer.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default())
     } else {
-        Err(format!("The Mind did not take it (HTTP {status}): it may not take Yantrik models this way yet"))
+        Err(Refused::Status(status))
     }
 }
 

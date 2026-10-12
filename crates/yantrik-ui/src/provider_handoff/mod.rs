@@ -32,7 +32,7 @@
 mod companion;
 mod deepseek;
 mod hermes;
-mod mind;
+pub(crate) mod mind;
 mod openclaw;
 mod pi;
 

@@ -7,6 +7,7 @@
 //! - `keys`: an account's key and address at the moment of use (the vault, or the saved entry).
 //! - `store`: the catalogue in memory and its cache file, which holds no key.
 //! - `consent`: where the person's private context goes, per account: Share, Private lane or Off.
+//! - `mirror`: the person's sharing, sent to the Yantrik Mind (`POST /consent`).
 //! - `onboarding`: what the first-run AI step calls (the pick, sharing, the private lane, wiring).
 //!
 //! Keys stay where they are kept — the vault for the free tiers, the saved provider's entry for
@@ -16,6 +17,7 @@
 pub mod account;
 pub mod consent;
 pub mod keys;
+pub mod mirror;
 pub mod models;
 pub mod onboarding;
 pub mod store;
@@ -23,6 +25,7 @@ pub mod store;
 #[cfg(test)]
 mod tests;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -37,6 +40,8 @@ use crate::wire::settings::ProviderStore;
 
 static CATALOGUE: RwLock<Option<Catalogue>> = RwLock::new(None);
 static ACCOUNTS: RwLock<Vec<Account>> = RwLock::new(Vec::new());
+/// Whether [`ACCOUNTS`] has been read at least once since the shell started.
+static LISTED: AtomicBool = AtomicBool::new(false);
 static LISTENERS: Mutex<Vec<Box<dyn Fn() + Send + Sync>>> = Mutex::new(Vec::new());
 /// One refresh at a time; a second asked for while one runs is folded into it.
 static REFRESHING: Mutex<bool> = Mutex::new(false);
@@ -56,6 +61,11 @@ pub fn catalogue() -> Catalogue {
 /// The accounts as last read. No keys.
 pub fn accounts() -> Vec<Account> {
     ACCOUNTS.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Whether the accounts have been read yet (before then [`accounts`] is empty, not "none").
+pub fn listed() -> bool {
+    LISTED.load(Ordering::SeqCst)
 }
 
 /// Called after every rebuild, on the refresh thread.
@@ -91,6 +101,7 @@ pub fn refresh(bridge: Arc<CompanionBridge>) {
         }
         let list = account::accounts(&saved, FREE_TIERS, &kept, &off);
         *ACCOUNTS.write().unwrap_or_else(|e| e.into_inner()) = list.clone();
+        LISTED.store(true, Ordering::SeqCst);
         let vault = |id: &str| vault_value(&bridge, id);
         let built: Vec<AccountModels> = list.iter().map(|a| list_one(a, &saved, &vault)).collect();
         let catalogue = Catalogue { accounts: built, at: chrono::Utc::now().timestamp() };
