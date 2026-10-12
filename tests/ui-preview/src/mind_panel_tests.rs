@@ -155,6 +155,14 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     save(&settle(), output, width, height)?;
     assert!(ui.global::<MindPanelState>().get_desktop_expanded(), "open on the desktop by default");
 
+    // Details: the model's id, the ceiling's word and each action's raw name and status, under
+    // the sentences (UI punch list, 12 October). Opened and closed again by the same control.
+    click(w, 1227., 140.);
+    draw();
+    save(&settle(), &path("details"), width, height)?;
+    click(w, 1227., 140.);
+    draw();
+
     // #184: the mode menu, as `show_mind_audit` leaves it, belongs to the screen it was opened
     // over — a screen change, whatever made it, puts it away with its sub-panels.
     ui.set_mind_menu_confirming(false);
