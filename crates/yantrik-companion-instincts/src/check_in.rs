@@ -1,6 +1,10 @@
-//! Check-in instinct — urges companion to reach out when idle.
+//! Check-in instinct — a return summary when there is something concrete to report.
 //!
-//! Uses EXECUTE to produce contextual check-ins rather than generic greetings.
+//! Idleness alone is never a reason to speak (#755): a message whose only reason is that the
+//! person has been away exists to bring them back. The check-in fires after an absence only when
+//! the record holds a concrete reason — an overdue commitment, a message waiting for a reply, or
+//! something that happened and hasn't been mentioned — and it carries that reason with it. It
+//! never mentions how long the person was gone.
 
 use crate::Instinct;
 use yantrik_companion_core::types::{CompanionState, ModelTier, UrgeSpec};
@@ -34,6 +38,11 @@ impl Instinct for CheckInInstinct {
             return vec![];
         }
 
+        // No concrete reason from the record, no check-in.
+        let Some(reason) = concrete_reason(state) else {
+            return vec![];
+        };
+
         // Urgency: starts at 0.3, caps at 0.5 — check-ins are low priority
         let excess_ratio = ((hours_since - self.hours_threshold) / self.hours_threshold).min(1.0);
         let urgency = 0.3 + excess_ratio * 0.2;
@@ -42,20 +51,20 @@ impl Instinct for CheckInInstinct {
         let execute_msg = match state.model_tier {
             ModelTier::Large => format!(
                 "EXECUTE Step 1: Call date_calc to get today's date, day of week, and current time.\n\
-                 Step 2: Use recall with query \"working on tomorrow presentation deadline race plan\" \
-                 to find what {user} was recently doing or has coming up.\n\
+                 Step 2: Use recall with query \"{reason}\" for the details.\n\
                  \n\
-                 {user} hasn't been around for {hours_since:.0} hours. Send a brief, natural check-in (1-2 sentences) \
-                 that is ANTICIPATORY — reference something coming up or in progress.\n\
-                 Do NOT send a generic greeting. Reference SPECIFIC context from memory.\n\
-                 If you can't recall anything specific, just say nothing.",
+                 The reason to speak, from the record: {reason}.\n\
+                 Tell {user} plainly what is waiting or what changed, in 1-2 sentences, and offer one \
+                 concrete next step. Do NOT greet without content. Do NOT mention how long {user} was away. \
+                 Do NOT say you missed them or wondered about them.\n\
+                 If the reason no longer holds, reply exactly \"Nothing to surface right now.\"",
             ),
             _ => format!(
-                "EXECUTE {user} hasn't been around for {hours_since:.0} hours. \
-                 Recall what they were recently working on or have coming up. \
-                 Send a brief, natural check-in (1-2 sentences) that references something specific — \
-                 like how a presentation went, whether they're ready for tomorrow, or if they got a workout in. \
-                 Do NOT send a generic greeting. If you can't recall anything specific, say nothing.",
+                "EXECUTE Task: Tell {user} what is waiting for them.\n\
+                 Input: reason={reason}.\n\
+                 Rule: Say only what the reason states. Do not greet without content. Do not mention how long they were away.\n\
+                 Fallback: \"Nothing to surface right now.\"\n\
+                 Output: 1-2 sentences.",
             ),
         };
 
@@ -67,8 +76,30 @@ impl Instinct for CheckInInstinct {
         .with_cooldown("check_in")
         .with_context(serde_json::json!({
             "hours_since_interaction": (hours_since * 10.0).round() / 10.0,
+            "reason": reason,
         }))]
     }
+}
+
+/// A concrete reason, from the record, to say something after an absence — or `None`.
+fn concrete_reason(state: &CompanionState) -> Option<String> {
+    if state.overdue_commitment_count > 0 {
+        let n = state.overdue_commitment_count;
+        return Some(format!("{n} overdue commitment{}", if n == 1 { "" } else { "s" }));
+    }
+    if state.pending_attention_count > 0 {
+        let n = state.pending_attention_count;
+        return Some(format!(
+            "{n} message{} waiting for a reply",
+            if n == 1 { "" } else { "s" }
+        ));
+    }
+    state
+        .recent_events
+        .iter()
+        .rev()
+        .find(|(_, _, reflected)| !reflected)
+        .map(|(desc, _, _)| format!("recorded while away: {desc}"))
 }
 
 #[cfg(test)]
@@ -86,12 +117,24 @@ mod tests {
     }
 
     #[test]
-    fn a_real_two_day_absence_still_checks_in() {
+    fn idleness_alone_is_not_a_reason_to_speak() {
         let instinct = CheckInInstinct::new(2.0);
-        let urges = instinct.evaluate(&state_idle_for(Some(2.0 * 86400.0)));
+        // Two days away with nothing in the record: a message now would exist only to bring the
+        // person back (#755).
+        assert!(instinct.evaluate(&state_idle_for(Some(2.0 * 86400.0))).is_empty());
+    }
+
+    #[test]
+    fn a_real_absence_with_something_waiting_checks_in_and_says_why() {
+        let instinct = CheckInInstinct::new(2.0);
+        let mut state = state_idle_for(Some(2.0 * 86400.0));
+        state.overdue_commitment_count = 1;
+        let urges = instinct.evaluate(&state);
         assert_eq!(urges.len(), 1);
         assert_eq!(urges[0].instinct_name, "check_in");
+        assert_eq!(urges[0].context["reason"], "1 overdue commitment");
         let hours = urges[0].context["hours_since_interaction"].as_f64().unwrap();
         assert!((hours - 48.0).abs() < 0.1, "two days is 48 hours, got {hours}");
+        assert!(!urges[0].reason.contains("hasn't been around"), "{}", urges[0].reason);
     }
 }

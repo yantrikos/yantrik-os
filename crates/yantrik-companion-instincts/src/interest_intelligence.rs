@@ -1,8 +1,9 @@
 //! Interest Intelligence instinct — the core human-first proactive engine.
 //!
-//! Unlike generic curiosity (which cycles through categories), this instinct
-//! understands WHAT the user loves and maps each interest to specific,
-//! actionable research strategies.
+//! Unlike generic curiosity (which cycled through categories, and was merged here in #755),
+//! this instinct understands WHAT the user loves and maps each interest to specific,
+//! actionable research strategies. It runs on its own interval, never because the person has
+//! been away: research started by an absence is a message whose purpose is to bring them back.
 //!
 //! Examples:
 //!   "likes fishing" → check fishing reports near area, weather windows, best spots

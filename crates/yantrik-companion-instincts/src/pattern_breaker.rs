@@ -70,16 +70,14 @@ impl Instinct for PatternBreakerInstinct {
              to search {user}'s memory for recurring patterns. Look for: \
              - The same complaint appearing multiple times \
              - Projects started and stopped repeatedly \
-             - The same procrastination or avoidance behavior \
-             - Recurring frustrations with the same root cause \
-             - Cycles of enthusiasm followed by abandonment \
+             - Recurring friction with the same root cause (the same build failing, the same tool fighting them) \
+             Never characterise the person (no 'procrastination', 'avoidance', or 'abandonment') and never \
+             count how often they said they would do something. Show the count from the record, not a verdict. \
              If you find a pattern, observe it without judging: \
              - \"This is the 4th time you've started and stopped this project. The pattern seems to be \
                losing momentum around week 2. Want to try a different structure?\" \
-             - \"You've mentioned being frustrated with X three times this month. The common thread \
-               seems to be Y. Have you considered addressing Y directly?\" \
-             - \"I notice you keep saying you'll do X 'tomorrow.' You've said that 5 times now. \
-               What if we picked a specific day and I reminded you?\" \
+             - \"The deploy script has failed three times this month, each time on the same \
+               missing env var. Want me to add a check for it?\" \
              Frame observations as data, not criticism. Offer structural solutions (systems, triggers, \
              accountability) rather than willpower-based advice. \
              If no clear patterns emerge, respond with \"No pattern breaker today.\" exactly.",

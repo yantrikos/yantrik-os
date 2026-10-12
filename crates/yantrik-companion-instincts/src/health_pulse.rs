@@ -1,4 +1,8 @@
-//! HealthPulse instinct — "Your body is trying to tell you something — I'm listening."
+//! HealthPulse instinct — health context the person gave, put to use.
+//!
+//! #755: it uses only what the person said about their own health, never infers illness, stress
+//! or mood, and speaks only when it connects to something concrete (an upcoming event, a plan
+//! they made). It never comments on how they seem or on their hours.
 //!
 //! Notices health-related mentions in conversation history (tired, headache, stress,
 //! sleep, exercise, pain, energy). Tracks patterns over weeks and researches the
@@ -9,9 +13,8 @@
 //! is to help the user connect the dots between their habits and how they feel, backed
 //! by peer-reviewed science rather than folk wisdom.
 //!
-//! Example output: "You've mentioned being tired 3 times this week, always after late
-//! nights. Sleep researchers found that each hour of delayed sleep reduces next-day
-//! cognitive performance by 25% — it's the adenosine buildup in your prefrontal cortex."
+//! Example output: "On Monday you said your knee was sore, and the 10k you signed up for is
+//! Saturday. Want me to find a two-day taper?"
 
 use std::sync::Mutex;
 
@@ -91,19 +94,19 @@ impl Instinct for HealthPulseInstinct {
                  hours night sore exhausted burnout not sleeping\" \
                  to find {user}'s health-related mentions and patterns.\n\
                  \n\
-                 BE ANTICIPATORY: If they're sleeping 5 hours and have a big event coming, warn them. \
-                 If stressed AND training hard, suggest recovery. Connect caffeine + insomnia dots.\n\
-                 Give a SPECIFIC, ACTIONABLE suggestion — not just science facts.\n\
-                 Deliver ONE specific insight in 2-3 caring sentences.\n\
+                 Use ONLY what {user} said about their own health. Never infer illness, stress, or mood.\n\
+                 Speak only if it connects to something concrete coming up (an event, a plan they made), \
+                 and say when they mentioned it. Give ONE specific, practical suggestion in 1-2 plain sentences.\n\
+                 Never comment on how they seem or on the hours they keep.\n\
                  If no health patterns found, just say \"No health pulse today.\"\n\
                  Call browser_cleanup when done.",
             ),
             _ => format!(
                 "EXECUTE Check on {user}'s health patterns. \
                  Recall their mentions of sleep, energy, stress, exercise, pain, and tiredness. \
-                 Look for patterns — recurring complaints, lifestyle issues, upcoming commitments at risk. \
-                 If you spot something actionable (like poor sleep before a big event, or overtraining), \
-                 deliver ONE specific insight in 2-3 caring sentences with a concrete suggestion. \
+                 Use only what they said themselves; never infer illness, stress, or mood. \
+                 Speak only if it connects to something concrete coming up (like a race they told you about), \
+                 and say when they mentioned it. One practical suggestion, 1-2 plain sentences. \
                  If no health patterns found, just say \"No health pulse today.\" \
                  Clean up the browser when done.",
             ),
