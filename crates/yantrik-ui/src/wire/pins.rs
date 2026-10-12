@@ -135,6 +135,7 @@ pub fn publish(ui: &App, installed: &[DesktopEntry]) {
 
     let tr = ui.global::<Tr>();
     let wins = crate::windows::list_windows_throttled();
+    let starting = crate::windows::starting_apps();
 
     let items: Vec<DockItem> = super::settings::pinned_apps()
         .iter()
@@ -169,6 +170,7 @@ pub fn publish(ui: &App, installed: &[DesktopEntry]) {
                 has_icon: icon.is_some(),
                 icon: icon.unwrap_or_default(),
                 is_running: wins.iter().any(|w| w.app_id == *id),
+                is_starting: starting.iter().any(|s| s == id),
             }
         })
         .collect();

@@ -233,9 +233,17 @@ mod tests {
     #[test]
     fn a_minds_apps_stay_off_the_dock() {
         let src = include_str!("../windows.rs");
-        let f = &src[src.find("pub fn shell_windows").unwrap()..];
-        let f = &f[..f.find("\n}\n").unwrap()];
-        assert!(f.contains("mind_view::app_pids()") && f.contains("launched.retain(|app| !in_mind_view.contains(&app.pid))"), "shell_windows drops the apps a mind opened:\n{f}");
+        let body = |name: &str| {
+            let f = &src[src.find(name).unwrap()..];
+            f[..f.find("\n}\n").unwrap()].to_string()
+        };
+        // Through the one helper `starting_apps` shares, so the dock's "Starting…" agrees.
+        let f = body("pub fn shell_windows");
+        assert!(f.contains("launched_on_desktop()"), "shell_windows reads the desktop's launches:\n{f}");
+        let f = body("fn launched_on_desktop");
+        assert!(f.contains("mind_view::app_pids()") && f.contains("not_in_mind_view("), "launched_on_desktop drops the apps a mind opened:\n{f}");
+        let f = body("fn not_in_mind_view");
+        assert!(f.contains("launched.retain(|app| !in_mind_view.contains(&app.pid))"), "{f}");
         // And the dock reads only that list.
             }
 

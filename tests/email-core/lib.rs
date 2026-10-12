@@ -384,6 +384,41 @@ mod tests {
         assert_eq!(state::folder_summary("Drafts", &counts, None), "Email — Drafts, 0 unread of 0");
     }
 
+    // ── While Email is starting ──────────────────────────────────────
+    //
+    // The window comes up before the mail service has answered (`startup`). Until it has, the
+    // header holds its defaults, 0 of 0, and `describe` said "Email — INBOX, 0 unread of 0" for a
+    // mailbox nobody had read yet: the false empty folder above, in a new place.
+
+    #[test]
+    fn while_starting_describe_says_starting_and_has_no_account_answer() {
+        let starting = MailState::Starting;
+        assert_eq!(starting.service_word(), "starting");
+        assert_eq!(starting.has_account(), None);
+        assert!(starting.summary().contains("starting"), "{}", starting.summary());
+    }
+
+    #[test]
+    fn while_connecting_the_counts_are_not_known_and_the_line_names_the_account() {
+        let counts = Counted::connecting();
+        assert!(counts.is_connecting());
+        assert_eq!(counts.known(), None, "connecting is not an empty folder");
+        let line = state::connecting_summary("you@example.com");
+        assert_eq!(line, "Email — connecting to you@example.com");
+        assert!(!line.contains("0 unread of 0"));
+        // A folder the server would not count is not the first look still out.
+        assert!(!Counted::of(&listed(), "Archive", 0, 0).is_connecting());
+    }
+
+    #[test]
+    fn an_action_while_starting_is_told_to_wait_not_that_the_service_failed() {
+        let said = MailState::Starting.why_no_mailbox();
+        assert_eq!(said, "Email is still starting; try again in a moment");
+        assert!(!said.contains("could not be reached"));
+        let down = MailState::Unreachable { reason: "no socket".into() }.why_no_mailbox();
+        assert_eq!(down, "the mail service could not be reached: no socket");
+    }
+
     #[test]
     fn counts_that_were_never_read_stay_unread_after_a_change() {
         // A message in an uncounted folder was read. One fewer than "not known" is still not

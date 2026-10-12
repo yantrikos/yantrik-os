@@ -107,7 +107,8 @@ export component EmailClient inherits Rectangle {
 
     // Account setup state
     in property <bool> has-account: false;
-    // "up" or "unreachable" — whether the mail service answered at all.
+    // "up" or "unreachable" — whether the mail service answered at all — or "starting": the
+    // window is up and the first look at the service is still out, on a worker.
     //
     // This screen had two states and needed three. A service that was never started answered
     // nothing, the app read nothing as no account, and the first thing anyone saw of Mail was a
@@ -274,6 +275,7 @@ export component EmailClient inherits Rectangle {
             icon: Icons.mail;
             title: "Email";
             subtitle: root.service-state == "unreachable" ? "Mail service unreachable"
+                : root.service-state == "starting" ? "Starting\u{2026}"
                 : root.setup-open ? "Add another account"
                 : "No account yet";
         }
@@ -349,7 +351,35 @@ export component EmailClient inherits Rectangle {
                 }
             }
 
-            if root.service-state != "unreachable" : HorizontalLayout {
+            // ── The first look is still out ──
+            //
+            // The window comes up before the mail service has answered, so this is what the
+            // first second of Email looks like: not a form (no account is known yet) and not a
+            // failure (nothing has failed).
+            if root.service-state == "starting" : HorizontalLayout {
+                alignment: center;
+
+                VerticalLayout {
+                    spacing: 12px;
+                    alignment: center;
+
+                    Icon {
+                        commands: Icons.refresh;
+                        size: 32px;
+                        tint: Theme.text-dim;
+                        thickness: 1.6px;
+                        x: (parent.width - self.width) / 2;
+                    }
+                    Text {
+                        text: root.email-sync-status;
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-title-2;
+                        horizontal-alignment: center;
+                    }
+                }
+            }
+
+            if root.service-state != "unreachable" && root.service-state != "starting" : HorizontalLayout {
                 alignment: center;
 
                 Rectangle {

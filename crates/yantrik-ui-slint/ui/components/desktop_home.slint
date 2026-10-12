@@ -184,8 +184,9 @@ export component DesktopHome inherits Rectangle {
                                         hovered: pin-touch.has-hover;
                                     }
                                 }
-                                AppLabel { text: item.label; }
-                                Rectangle { width: 12px; height: 3px; x: (parent.width - self.width) / 2; border-radius: 1.5px; background: item.is-running ? Theme.accent : transparent; }
+                                // "Starting…" between the launch and the window (see DockItem.is-starting), marked amber.
+                                AppLabel { text: item.is-starting ? "Starting\u{2026}" : item.label; }
+                                Rectangle { width: 12px; height: 3px; x: (parent.width - self.width) / 2; border-radius: 1.5px; background: item.is-starting ? Theme.amber : item.is-running ? Theme.accent : transparent; }
                             }
                         }
                     }

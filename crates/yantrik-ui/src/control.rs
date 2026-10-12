@@ -491,14 +491,20 @@ pub fn publish(
             // launches and exits, not by which screen is up, so it is right everywhere.
             // Held as a list, not just as the published array: the summary below asks it which
             // apps are standing open, because a window answers for its service's name.
+            // An app launched and not windowed yet says so (`starting`), as the dock does.
             let windows = crate::windows::shell_windows();
+            let starting = crate::windows::starting_apps();
             let open: Vec<serde_json::Value> = windows
                 .iter()
                 .map(|w| {
-                    serde_json::json!({
+                    let mut entry = serde_json::json!({
                         "title": w.title,
                         "app": w.app_id,
-                    })
+                    });
+                    if starting.contains(&w.app_id) {
+                        entry["starting"] = true.into();
+                    }
+                    entry
                 })
                 .collect();
 
