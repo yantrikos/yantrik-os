@@ -6,7 +6,7 @@
 //! Refactored from the original `api.rs` into a configurable, provider-agnostic backend.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
+use std::io::BufReader;
 
 use anyhow::{Context, Result};
 
@@ -109,14 +109,32 @@ fn error_host(url: &str) -> String {
     if host.is_empty() { "the provider".to_string() } else { host.to_string() }
 }
 
-/// A provider's error body, short enough to say what went wrong: the key masked first, then cut,
-/// so a key echoed across the cut cannot leave its head behind.
-fn error_excerpt(body: &str, key: Option<&str>) -> String {
-    let masked = match key.filter(|k| k.len() >= 8) {
-        Some(k) => body.replace(k, "<key>"),
-        None => body.to_string(),
-    };
-    masked.chars().take(200).collect()
+/// What an error body says, as one line of at most 300 characters: `error.message`, `error`, or
+/// `message` from JSON, else the text itself. It reaches logs and a person, so control characters
+/// are dropped, the token after any `Bearer` is hidden, and so is each of `secrets` (this backend's
+/// own key and header values) should the server echo one back. Redaction runs before the cut, so a
+/// secret is never left half-shown.
+pub(crate) fn server_said(body: &str, secrets: &[String]) -> String {
+    let v: Option<serde_json::Value> = serde_json::from_str(body.trim()).ok();
+    let picked = v.as_ref().and_then(|v| {
+        v["error"]["message"].as_str().or_else(|| v["error"].as_str()).or_else(|| v["message"].as_str()).map(str::to_string)
+    });
+    let text = picked.unwrap_or_else(|| body.to_string());
+    let mut words: Vec<String> = text
+        .split_whitespace()
+        .map(|w| w.chars().filter(|c| !c.is_control()).collect::<String>())
+        .filter(|w| !w.is_empty())
+        .collect();
+    for i in 1..words.len() {
+        if words[i - 1].eq_ignore_ascii_case("bearer") {
+            words[i] = "[redacted]".to_string();
+        }
+    }
+    let mut one = words.join(" ");
+    for s in secrets.iter().map(|s| s.trim()).filter(|s| s.len() >= 8) {
+        one = one.replace(s, "[redacted]");
+    }
+    one.chars().take(300).collect()
 }
 
 impl GenericOpenAIBackend {
@@ -257,6 +275,55 @@ impl GenericOpenAIBackend {
         )
     }
 
+    /// The agent the two chat request paths use: a non-2xx answer is read, not thrown, so its
+    /// status and rate-limit headers (and the server's own words) reach the caller.
+    fn build_chat_agent(&self) -> ureq::Agent {
+        ureq::Agent::new_with_config(
+            ureq::config::Config::builder()
+                .timeout_global(Some(std::time::Duration::from_secs(300)))
+                .http_status_as_error(false)
+                .build()
+        )
+    }
+
+    /// A non-2xx answer as an error that keeps what the server said. It begins `http status: N`
+    /// exactly as ureq's own error did, so every matcher of that text keeps working; then
+    /// ` from {host}` (the host the OS has always named), ` (retry after X)` when the server sent
+    /// Retry-After, and `: <its words>`. A 429 that means "your weekly allowance is spent" and one
+    /// that means "slow down" were the same three words before, and the caller waited a minute on
+    /// each.
+    fn status_error(&self, resp: ureq::http::Response<ureq::Body>, host: &str) -> anyhow::Error {
+        use std::io::Read as _;
+        let code = resp.status().as_u16();
+        let retry = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.trim().chars().take(40).collect::<String>())
+            .filter(|v| !v.is_empty());
+        let mut raw = Vec::new();
+        let _ = resp.into_body().into_reader().take(4096).read_to_end(&mut raw);
+        let said = server_said(&String::from_utf8_lossy(&raw), &self.secrets());
+        let mut msg = format!("http status: {code} from {host}");
+        if let Some(r) = retry {
+            msg.push_str(&format!(" (retry after {r})"));
+        }
+        if !said.is_empty() {
+            msg.push_str(": ");
+            msg.push_str(&said);
+        }
+        anyhow::anyhow!(msg)
+    }
+
+    /// The values this backend sends that must never be shown: its key and its extra header values.
+    fn secrets(&self) -> Vec<String> {
+        self.api_key
+            .iter()
+            .cloned()
+            .chain(self.presets.extra_headers.iter().map(|(_, v)| v.clone()))
+            .collect()
+    }
+
     /// Build auth and extra headers as a vec of (key, value) pairs.
     fn auth_headers(&self) -> Vec<(String, String)> {
         let mut headers = Vec::new();
@@ -335,12 +402,13 @@ impl GenericOpenAIBackend {
         let tool_count = body.get("tools").and_then(|t| t.as_array()).map(|a| a.len()).unwrap_or(0);
         tracing::debug!(body_bytes = body_str.len(), tools = tool_count, url = %url, "GenericOpenAI Ollama request");
 
-        let agent = self.build_agent();
+        let agent = self.build_chat_agent();
         let mut req = agent.post(&url).header("Content-Type", "application/json");
         for (k, v) in self.auth_headers() {
             req = req.header(&k, &v);
         }
 
+        let host = error_host(&url);
         let resp = req
             .send(body_str.as_bytes())
             .map_err(|e| {
@@ -348,6 +416,9 @@ impl GenericOpenAIBackend {
                 e
             })
             .context("Ollama API request failed")?;
+        if !(200..300).contains(&resp.status().as_u16()) {
+            return Err(self.status_error(resp, &host).context(format!("Ollama API request to {host} failed")));
+        }
 
         Ok(resp.into_body())
     }
@@ -377,6 +448,7 @@ impl GenericOpenAIBackend {
 
         Ok(LLMResponse {
             text,
+            thinking: String::new(),
             prompt_tokens: prompt_eval_count,
             completion_tokens: eval_count,
             tool_calls,
@@ -395,13 +467,24 @@ impl GenericOpenAIBackend {
         let body = self.build_ollama_body(messages, config, tools, true);
         let resp_body = self.send_ollama_request(&body)?;
 
-        let reader = BufReader::new(resp_body.into_reader());
+        Self::parse_ollama_stream(BufReader::new(resp_body.into_reader()), on_token)
+    }
+
+    /// The Ollama stream loop as a function over any reader, so a transcript can drive it.
+    pub(crate) fn parse_ollama_stream<R: std::io::BufRead>(
+        reader: R,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<LLMResponse> {
         let mut full_text = String::new();
+        // Reasoning arrives in its own `thinking` field, not as <think> tags in the content, so it
+        // is invisible to any tag-splitting the caller does. Keep it, as the plain path does.
+        let mut thinking = String::new();
         let mut stop_reason = "stop".to_string();
         let mut eval_count = 0usize;
         let mut api_tool_calls = Vec::new();
 
         for line_result in reader.lines() {
+            crate::call_cancel::check()?;
             let line: String = line_result.context("reading Ollama stream line")?;
             if line.trim().is_empty() { continue; }
 
@@ -415,6 +498,9 @@ impl GenericOpenAIBackend {
                     on_token(content);
                     full_text.push_str(content);
                 }
+            }
+            if let Some(t) = chunk["message"]["thinking"].as_str() {
+                thinking.push_str(t);
             }
 
             let tc = Self::parse_api_tool_calls(&chunk["message"]);
@@ -436,6 +522,7 @@ impl GenericOpenAIBackend {
 
         Ok(LLMResponse {
             text: full_text,
+            thinking: thinking.trim().to_string(),
             prompt_tokens: 0,
             completion_tokens: eval_count,
             tool_calls,
@@ -530,11 +617,7 @@ impl GenericOpenAIBackend {
             *sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(ResponseMeta { status, headers });
         }
         if !(200..300).contains(&status) {
-            let mut body = resp.into_body();
-            let text = body.read_to_string().unwrap_or_default();
-            // A provider's error can echo what it was sent: the key is masked, and the rest is cut
-            // short enough to say what went wrong without carrying the conversation into a log.
-            anyhow::bail!("HTTP {status} from {host}: {}", error_excerpt(&text, self.api_key.as_deref()));
+            return Err(self.status_error(resp, &host).context(format!("OpenAI-compatible API request to {host} failed")));
         }
 
         Ok(resp.into_body())
@@ -566,6 +649,7 @@ impl GenericOpenAIBackend {
 
         Ok(LLMResponse {
             text,
+            thinking: String::new(),
             prompt_tokens,
             completion_tokens,
             tool_calls,
@@ -584,7 +668,14 @@ impl GenericOpenAIBackend {
         let body = self.build_openai_body(messages, config, tools, true);
         let resp_body = self.send_openai_request(&body)?;
 
-        let reader = BufReader::new(resp_body.into_reader());
+        Self::parse_openai_stream(BufReader::new(resp_body.into_reader()), on_token)
+    }
+
+    /// The OpenAI stream loop as a function over any reader, so a transcript can drive it.
+    pub(crate) fn parse_openai_stream<R: std::io::BufRead>(
+        reader: R,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<LLMResponse> {
         let mut full_text = String::new();
         let mut stop_reason = "stop".to_string();
         let mut tc_ids: HashMap<usize, String> = HashMap::new();
@@ -592,6 +683,7 @@ impl GenericOpenAIBackend {
         let mut tc_args: HashMap<usize, String> = HashMap::new();
 
         for line_result in reader.lines() {
+            crate::call_cancel::check()?;
             let line: String = line_result.context("reading SSE line")?;
             let data = match line.strip_prefix("data: ") {
                 Some(d) => d,
@@ -656,6 +748,7 @@ impl GenericOpenAIBackend {
 
         Ok(LLMResponse {
             text: full_text,
+            thinking: String::new(),
             prompt_tokens: 0,
             completion_tokens: 0,
             tool_calls,
@@ -843,7 +936,7 @@ mod tests {
 
 #[cfg(test)]
 mod error_text_tests {
-    use super::{error_excerpt, error_host};
+    use super::{error_host, server_said};
 
     #[test]
     fn an_error_names_the_host_and_never_the_key() {
@@ -851,11 +944,201 @@ mod error_text_tests {
         assert_eq!(error_host("https://user:secret@llm.example.com:8443/v1/chat?key=abc"), "llm.example.com:8443");
         assert_eq!(error_host("not a url"), "the provider");
         let key = "gsk_0123456789abcdefghijklmnopqrstuvwxyz";
-        // Echoed so that it straddles the 200th character: masked before the cut, none of it stays.
-        let body = format!("{}{key}{}", "x".repeat(190), "y".repeat(50));
-        let excerpt = error_excerpt(&body, Some(key));
-        assert!(!excerpt.contains("gsk_0123"), "{excerpt}");
-        assert!(excerpt.contains("<key>"));
-        assert!(excerpt.chars().count() <= 200);
+        // Echoed so that it straddles the 300th character: masked before the cut, none of it stays.
+        let body = format!("{}{key}{}", "x".repeat(290), "y".repeat(50));
+        let said = server_said(&body, &[key.to_string()]);
+        assert!(!said.contains("gsk_0123"), "{said}");
+        assert!(said.contains("[redacted]"));
+        assert!(said.chars().count() <= 300);
+    }
+
+    #[test]
+    fn an_error_body_is_one_line_redacted_and_capped() {
+        // Newlines and control characters collapse to one line; the key and a Bearer token are
+        // hidden; the result is capped at 300 characters.
+        let key = "sk-live-TOPSECRET-1234";
+        let body = format!(
+            "{{\"error\":{{\"message\":\"Incorrect API key: {key}.\\nSent Authorization: Bearer abc.def.ghi\\u001b[31mred\\u001b[0m\"}}}}"
+        );
+        let said = server_said(&body, &[key.to_string()]);
+        assert!(!said.contains('\n'), "{said:?}");
+        assert!(!said.chars().any(|c| c.is_control()), "{said:?}");
+        assert!(!said.contains("TOPSECRET") && !said.contains("abc.def.ghi"), "{said}");
+        assert!(said.contains("Bearer [redacted]"), "{said}");
+        assert!(said.chars().count() <= 300, "{said}");
+    }
+}
+
+/// A cancelled stream stops between lines, and an unset or absent flag changes nothing.
+#[cfg(test)]
+mod cancel_tests {
+    use super::GenericOpenAIBackend;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    /// A server that does not stop writing: one content chunk per line, ten thousand lines (a
+    /// bound, so a missing check fails the test instead of hanging it).
+    struct Endless(usize);
+
+    impl std::io::Read for Endless {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.0 >= 10_000 {
+                return Ok(0);
+            }
+            self.0 += 1;
+            let line = b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"w \"}}]}\n";
+            let n = line.len().min(buf.len());
+            buf[..n].copy_from_slice(&line[..n]);
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn a_cancelled_stream_stops_within_one_line() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let _g = crate::call_cancel::install_cancel(Some(flag.clone()));
+        let mut tokens = 0usize;
+        let r = GenericOpenAIBackend::parse_openai_stream(std::io::BufReader::new(Endless(0)), &mut |_| {
+            tokens += 1;
+            if tokens == 3 {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+        let e = r.expect_err("the stream must end by being cancelled, not by running out");
+        assert!(format!("{e:#}").contains("cancelled"), "{e:#}");
+        assert_eq!(tokens, 3, "no line was read after the flag was set");
+    }
+
+    /// The streamed Ollama path returns what the plain one does: the reasoning from its own field,
+    /// the words, and a native tool call.
+    #[test]
+    fn the_ollama_stream_keeps_its_thinking_and_its_tool_call() {
+        let lines = [
+            r#"{"message":{"role":"assistant","content":"","thinking":"The person wants "}}"#,
+            r#"{"message":{"role":"assistant","content":"","thinking":"dinner ideas."}}"#,
+            r#"{"message":{"role":"assistant","content":"Let me look."}}"#,
+            r#"{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","function":{"name":"recall","arguments":{"query":"food"}}}]}}"#,
+            r#"{"message":{"role":"assistant","content":""},"done":true,"eval_count":9,"prompt_eval_count":40}"#,
+        ];
+        let body = lines.join("\n");
+        let mut seen = String::new();
+        let r = GenericOpenAIBackend::parse_ollama_stream(std::io::BufReader::new(body.as_bytes()), &mut |t| seen.push_str(t))
+            .expect("parses");
+        assert_eq!(r.thinking, "The person wants dinner ideas.");
+        assert_eq!((seen.as_str(), r.text.as_str()), ("Let me look.", "Let me look."));
+        assert_eq!(r.tool_calls.len(), 1, "{:?}", r.tool_calls);
+        assert_eq!(r.tool_calls[0].name, "recall");
+        assert_eq!((r.prompt_tokens, r.completion_tokens), (0, 9));
+    }
+
+    #[test]
+    fn an_installed_flag_that_is_never_set_changes_nothing() {
+        let _g = crate::call_cancel::install_cancel(Some(Arc::new(AtomicBool::new(false))));
+        let sse = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi \"}}]}\n\
+                   data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"there\"}}]}\n\
+                   data: [DONE]\n";
+        let mut seen = String::new();
+        let r = GenericOpenAIBackend::parse_openai_stream(std::io::BufReader::new(sse.as_bytes()), &mut |t| seen.push_str(t))
+            .expect("parses");
+        assert_eq!((seen.as_str(), r.text.as_str()), ("hi there", "hi there"));
+    }
+}
+
+/// An error status keeps what the server said, behind the same prefix.
+#[cfg(test)]
+mod status_body_tests {
+    use super::GenericOpenAIBackend;
+    use crate::traits::LLMBackend;
+    use crate::types::{ChatMessage, GenerationConfig};
+    use std::io::{BufRead, BufReader, Read, Write};
+
+    /// What Ollama Cloud answered once the account's weekly allowance was spent.
+    const OLLAMA_WEEKLY: &str = r#"{"error":{"message":"You reached your Pro weekly limit. Max is $100/month for $300 of usage, with no 5-hour or weekly caps: https://ollama.com/settings/billing (ref: 144bb863-fdc4-4827-83f0-b72167486392)","type":"api_error","param":null,"code":null}}"#;
+
+    /// One answer from a local server: `status`, extra header lines, `body`.
+    fn serve_once(status: &'static str, headers: &'static str, body: String) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut len = 0usize;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap();
+                }
+                if line.trim().is_empty() {
+                    break;
+                }
+            }
+            let mut sink = vec![0u8; len];
+            let _ = reader.read_exact(&mut sink);
+            let _ = write!(stream, "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        });
+        format!("http://127.0.0.1:{port}/v1")
+    }
+
+    fn chat_err(base: String, ollama: bool) -> String {
+        let b = if ollama {
+            GenericOpenAIBackend::for_provider("ollama", base.trim_end_matches("/v1"), None, "m")
+        } else {
+            GenericOpenAIBackend::for_provider("openai", base, Some("k".into()), "m")
+        };
+        format!("{:#}", b.chat(&[ChatMessage::user("hi")], &GenerationConfig::default(), None).unwrap_err())
+    }
+
+    #[test]
+    fn a_429_keeps_the_prefix_and_says_why() {
+        let e = chat_err(serve_once("429 Too Many Requests", "Content-Type: application/json\r\n", OLLAMA_WEEKLY.into()), false);
+        assert!(e.contains("http status: 429 from 127.0.0.1:"), "{e}");
+        assert!(e.contains("You reached your Pro weekly limit."), "{e}");
+        assert!(e.starts_with("OpenAI-compatible API request to 127.0.0.1:"), "the context is kept: {e}");
+        let e = chat_err(serve_once("429 Too Many Requests", "", OLLAMA_WEEKLY.into()), true);
+        assert!(e.contains("http status: 429 from 127.0.0.1:"), "the native Ollama path too: {e}");
+        assert!(e.contains("You reached your Pro weekly limit."), "{e}");
+    }
+
+    #[test]
+    fn a_retry_after_is_kept_and_an_html_page_is_one_bounded_line() {
+        let e = chat_err(serve_once("429 Too Many Requests", "Retry-After: 120\r\n", r#"{"error":"slow down"}"#.into()), false);
+        assert!(e.contains("http status: 429 from 127.0.0.1:"), "{e}");
+        assert!(e.contains("(retry after 120): slow down"), "{e}");
+        let page = format!("<html>\n<body>\n{}</body></html>", "Bad gateway. ".repeat(80));
+        let e = chat_err(serve_once("502 Bad Gateway", "Content-Type: text/html\r\n", page), false);
+        let said = e.split("http status: 502 from ").nth(1).expect("the prefix");
+        let said = said.split(": ").nth(1).expect("the host then the message");
+        assert!(!said.contains('\n') && said.chars().count() <= 300, "{said}");
+    }
+
+    /// A server that echoes the key, a Bearer header or a terminal escape: none of it is shown.
+    #[test]
+    fn an_echoed_key_a_bearer_token_and_control_characters_are_not_shown() {
+        let body = r#"{"error":{"message":"Incorrect API key provided: sk-live-TOPSECRET-1234. Sent Authorization: Bearer abc.def.ghi \u001b[31mred\u001b[0m"}}"#;
+        let base = serve_once("401 Unauthorized", "Content-Type: application/json\r\n", body.into());
+        let b = GenericOpenAIBackend::for_provider("openai", base, Some("sk-live-TOPSECRET-1234".into()), "m");
+        let e = format!("{:#}", b.chat(&[ChatMessage::user("hi")], &GenerationConfig::default(), None).unwrap_err());
+        assert!(e.contains("http status: 401 from 127.0.0.1:"), "{e}");
+        assert!(e.contains("Incorrect API key provided: [redacted]"), "{e}");
+        assert!(!e.contains("TOPSECRET") && !e.contains("abc.def.ghi"), "{e}");
+        assert!(!e.chars().any(|c| c.is_control()), "{e:?}");
+        assert!(e.contains("Bearer [redacted]") && e.contains("[31mred"), "{e}");
+    }
+
+    /// A key that would straddle the 300-character cut is hidden whole, not half.
+    #[test]
+    fn a_key_at_the_cut_is_hidden_whole() {
+        let key = "sk-0123456789abcdef".to_string();
+        let said = super::server_said(&format!("{} {key}", "x".repeat(290)), &[key]);
+        assert!(!said.contains("sk-01"), "{said}");
+        assert!(said.chars().count() <= 300);
+    }
+
+    #[test]
+    fn a_success_is_unchanged() {
+        let base = serve_once("200 OK", "Content-Type: application/json\r\n", r#"{"choices":[{"message":{"content":"hello"},"finish_reason":"stop"}]}"#.into());
+        let b = GenericOpenAIBackend::for_provider("openai", base, Some("k".into()), "m");
+        assert_eq!(b.chat(&[ChatMessage::user("hi")], &GenerationConfig::default(), None).unwrap().text, "hello");
     }
 }
