@@ -1,0 +1,448 @@
+// The one picker for every mind (#673): [Mind ▾] [Model ▾] [Effort ▾] [📎], in the Lens composer
+// and the mind panel's header.
+//
+// It draws and asks; it decides nothing. Every row, every reason a model cannot be used and every
+// word of the status are made in Rust (crates/yantrik-ui/src/picker), and every callback carries
+// an id or a path and nothing else. Two clicks switch the mind (the chip, then a mind) and two
+// switch the model (the chip, then a model); the search field is focused when the model menu
+// opens, so typing narrows it at once.
+//
+// Menus open upward by default (the composer sits at the bottom of the Lens); `upward: false`
+// opens them below (the mind panel's header).
+
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
+
+// A mind: attached ones can be chosen; the others say what they need, and choosing one opens the
+// place that sets it up.
+export struct PickerMind {
+    id: string,
+    name: string,
+    words: string,      // "answering", "attached", "not installed", "ready to start"
+    selectable: bool,
+    current: bool,
+}
+
+// A row of the model menu: a group header ("Recent", "Ollama Cloud"), a model, or a note.
+export struct PickerModel {
+    kind: string,       // "header" · "model" · "note"
+    id: string,         // "<account>/<model>" for a model
+    name: string,
+    detail: string,     // "thinks · sees images · 131K"
+    disabled: bool,
+    reason: string,     // why it cannot be used by this mind, when disabled
+    current: bool,
+}
+
+// A file: one handed over (a chip), or a row of the attach browser.
+export struct PickerFile {
+    path: string,
+    name: string,
+    detail: string,     // "12 KB", "folder"
+    folder: bool,
+}
+
+component Chip inherits Rectangle {
+    in property <string> label;
+    in property <string> a11y;
+    in property <bool> enabled: true;
+    in property <bool> chevron: true;
+    in property <string> icon: "";
+    in property <length> max-label: 150px;
+    callback clicked();
+
+    height: 28px;
+    width: row.preferred-width;
+    border-radius: 14px;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+    background: ta.has-hover && root.enabled ? Theme.hover-fill : transparent;
+    opacity: root.enabled ? 1 : 0.55;
+    accessible-role: button;
+    accessible-label: root.a11y;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    row := HorizontalLayout {
+        padding-left: root.label == "" ? 7px : 10px;
+        padding-right: root.chevron ? 8px : (root.label == "" ? 7px : 10px);
+        spacing: 4px;
+        if root.icon != "" : Icon {
+            commands: root.icon;
+            size: 14px;
+            y: (parent.height - self.height) / 2;
+            tint: Theme.text-secondary;
+        }
+        if root.label != "" : Text {
+            text: root.label;
+            color: Theme.text-primary;
+            font-size: Theme.fs-caption;
+            font-weight: 500;
+            vertical-alignment: center;
+            overflow: elide;
+            max-width: root.max-label;
+        }
+        if root.chevron : Icon {
+            commands: Icons.chevron-down;
+            size: 12px;
+            y: (parent.height - self.height) / 2;
+            tint: Theme.text-dim;
+        }
+    }
+}
+
+component Menu inherits Rectangle {
+    background: Theme.bg-elevated;
+    border-width: 1px;
+    border-color: Theme.border-strong;
+    border-radius: Theme.r-lg;
+    clip: true;
+}
+
+component MenuRow inherits Rectangle {
+    in property <string> title;
+    in property <string> detail;
+    in property <bool> disabled;
+    in property <bool> current;
+    callback clicked();
+    height: col.preferred-height;
+    border-radius: Theme.r-sm;
+    background: rt.has-hover && !root.disabled ? Theme.hover-fill-strong : transparent;
+    accessible-role: button;
+    accessible-label: root.title + (root.detail != "" ? ". " + root.detail : "");
+    accessible-enabled: !root.disabled;
+    accessible-action-default => { if (!root.disabled) { root.clicked(); } }
+    rt := TouchArea {
+        enabled: !root.disabled;
+        mouse-cursor: root.disabled ? default : pointer;
+        clicked => { root.clicked(); }
+    }
+    col := HorizontalLayout {
+        padding: 6px;
+        padding-left: 10px;
+        spacing: 8px;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 1px;
+            Text {
+                text: root.title;
+                color: root.disabled ? Theme.text-dim : Theme.text-primary;
+                font-size: Theme.fs-body;
+                overflow: elide;
+            }
+            if root.detail != "" : Text {
+                text: root.detail;
+                color: root.disabled ? Theme.text-dim : Theme.text-secondary;
+                font-size: Theme.fs-caption;
+                wrap: word-wrap;
+            }
+        }
+        if root.current : Icon {
+            commands: Icons.check;
+            size: 14px;
+            y: (parent.height - self.height) / 2;
+            tint: Theme.accent;
+        }
+    }
+}
+
+export component ModelPicker inherits Rectangle {
+    in property <[PickerMind]> minds;
+    in property <string> mind-label;
+    in property <[PickerModel]> models;
+    // "gpt-oss-120b · Groq", or "its own models" for a mind that keeps its own.
+    in property <string> model-label;
+    in property <bool> model-enabled: true;
+    // The levels this model is offered at; empty: no Effort chip.
+    in property <[string]> efforts;
+    in property <string> effort;
+    in property <string> browse-path;
+    in property <[PickerFile]> browse-entries;
+    // "connected · gpt-oss-120b", "not set up", "key missing", "unreachable", "checking"; and the
+    // one press that fixes it ("Set up", "Add key", "Try again"), or "".
+    in property <string> status-words;
+    in property <string> status-state;
+    in property <string> fix-label;
+    in property <bool> show-status: true;
+    in property <bool> upward: true;
+    // Narrow places (the mind panel): shorter chip labels.
+    in property <bool> compact: false;
+    in property <length> menu-width: 320px;
+
+    callback choose-mind(string);
+    callback choose-model(string);
+    callback choose-effort(string);
+    callback search(string);
+    callback browse(string);
+    callback attach(string);
+    callback fix();
+    // A menu was opened ("mind", "model", "effort", "attach"): Rust refreshes what it shows.
+    callback opened(string);
+
+    height: 28px;
+    width: row.preferred-width;
+
+    row := HorizontalLayout {
+        spacing: 6px;
+        mind-chip := Chip {
+            label: root.mind-label;
+            max-label: root.compact ? 72px : 150px;
+            a11y: "Mind: " + root.mind-label + ". Choose who answers.";
+            clicked => { root.opened("mind"); mind-menu.show(); }
+        }
+        model-chip := Chip {
+            label: root.model-label;
+            enabled: root.model-enabled;
+            max-label: root.compact ? 96px : 190px;
+            a11y: "Model: " + root.model-label + ". Choose the model.";
+            clicked => { root.opened("model"); model-menu.show(); }
+        }
+        if root.efforts.length > 0 : effort-chip := Chip {
+            label: root.effort != "" ? root.effort : "effort";
+            a11y: "Effort: " + root.effort + ". How hard the model thinks.";
+            clicked => { root.opened("effort"); effort-menu.show(); }
+        }
+        Chip {
+            label: "";
+            icon: Icons.paperclip;
+            chevron: false;
+            a11y: "Attach a file";
+            clicked => { root.opened("attach"); root.browse(root.browse-path); attach-menu.show(); }
+        }
+        if root.show-status && root.status-words != "" : HorizontalLayout {
+            spacing: 6px;
+            padding-left: 4px;
+            Rectangle {
+                width: 7px;
+                height: 7px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 3.5px;
+                background: root.status-state == "connected" ? Theme.color-success
+                    : root.status-state == "checking" || root.status-state == "own" ? Theme.text-dim
+                    : Theme.amber;
+            }
+            Text {
+                text: root.status-words;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-caption;
+                vertical-alignment: center;
+                overflow: elide;
+                max-width: 200px;
+            }
+            if root.fix-label != "" : Chip {
+                label: root.fix-label;
+                chevron: false;
+                a11y: root.fix-label + ": " + root.status-words;
+                clicked => { root.fix(); }
+            }
+        }
+    }
+
+    mind-menu := PopupWindow {
+        x: 0;
+        y: root.upward ? -self.height - 6px : root.height + 6px;
+        width: 260px;
+        height: min(360px, mind-list.preferred-height);
+        close-policy: close-on-click-outside;
+        Menu {
+            Flickable {
+                viewport-height: mind-list.preferred-height;
+                mind-list := VerticalLayout {
+                    padding: 6px;
+                    for m in root.minds : MenuRow {
+                        title: m.name;
+                        detail: m.words;
+                        current: m.current;
+                        clicked => { root.choose-mind(m.id); mind-menu.close(); }
+                    }
+                    if root.minds.length == 0 : Text {
+                        text: "No minds yet.";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-caption;
+                    }
+                }
+            }
+        }
+    }
+
+    model-menu := PopupWindow {
+        x: 0;
+        y: root.upward ? -self.height - 6px : root.height + 6px;
+        width: root.menu-width;
+        height: 420px;
+        close-policy: close-on-click-outside;
+        Menu {
+            VerticalLayout {
+                padding: 6px;
+                spacing: 4px;
+                Rectangle {
+                    height: 30px;
+                    border-radius: Theme.r-sm;
+                    background: Theme.hover-fill;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 6px;
+                        Icon { commands: Icons.search; size: 14px; y: (parent.height - self.height) / 2; tint: Theme.text-dim; }
+                        // Made fresh each time the menu opens: empty, and taking the keys at once.
+                        search-input := TextInput {
+                            init => { self.focus(); }
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-body;
+                            vertical-alignment: center;
+                            single-line: true;
+                            accessible-role: text-input;
+                            accessible-label: "Search models";
+                            edited => { root.search(self.text); }
+                        }
+                    }
+                }
+                Flickable {
+                    vertical-stretch: 1;
+                    viewport-height: model-list.preferred-height;
+                    model-list := VerticalLayout {
+                        for m in root.models : VerticalLayout {
+                            if m.kind == "header" : Text {
+                                text: m.name;
+                                color: Theme.text-dim;
+                                font-size: Theme.fs-micro;
+                                font-weight: 600;
+                                letter-spacing: 1px;
+                                height: 24px;
+                                vertical-alignment: bottom;
+                            }
+                            if m.kind == "note" : Text {
+                                text: m.name;
+                                color: Theme.text-secondary;
+                                font-size: Theme.fs-caption;
+                                wrap: word-wrap;
+                            }
+                            if m.kind == "model" : MenuRow {
+                                title: m.name;
+                                detail: m.disabled ? m.reason : m.detail;
+                                disabled: m.disabled;
+                                current: m.current;
+                                clicked => { root.choose-model(m.id); model-menu.close(); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    effort-menu := PopupWindow {
+        x: 0;
+        y: root.upward ? -self.height - 6px : root.height + 6px;
+        width: 180px;
+        height: effort-list.preferred-height;
+        close-policy: close-on-click-outside;
+        Menu {
+            effort-list := VerticalLayout {
+                padding: 6px;
+                Text { text: "HOW HARD IT THINKS"; color: Theme.text-dim; font-size: Theme.fs-micro; height: 20px; }
+                for e in root.efforts : MenuRow {
+                    title: e;
+                    current: e == root.effort;
+                    clicked => { root.choose-effort(e); effort-menu.close(); }
+                }
+            }
+        }
+    }
+
+    attach-menu := PopupWindow {
+        x: 0;
+        y: root.upward ? -self.height - 6px : root.height + 6px;
+        width: root.menu-width;
+        height: 380px;
+        close-policy: close-on-click-outside;
+        Menu {
+            VerticalLayout {
+                padding: 6px;
+                spacing: 4px;
+                HorizontalLayout {
+                    spacing: 6px;
+                    height: 28px;
+                    Chip {
+                        label: "Up";
+                        chevron: false;
+                        a11y: "The folder above";
+                        clicked => { root.browse(root.browse-path + "/.."); }
+                    }
+                    Text {
+                        text: root.browse-path;
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-caption;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                }
+                Text {
+                    text: "Hand a file to the mind, or drop one on the ask bar.";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-caption;
+                }
+                Flickable {
+                    vertical-stretch: 1;
+                    viewport-height: browse-list.preferred-height;
+                    browse-list := VerticalLayout {
+                        for f in root.browse-entries : MenuRow {
+                            title: f.folder ? f.name + "/" : f.name;
+                            detail: f.detail;
+                            clicked => {
+                                if (f.folder) {
+                                    root.browse(f.path);
+                                } else {
+                                    root.attach(f.path);
+                                    attach-menu.close();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The files handed over with the next message, above the words: each with its name and a ×.
+export component AttachmentChips inherits Rectangle {
+    in property <[PickerFile]> files;
+    callback remove(string);
+    height: root.files.length > 0 ? 28px : 0px;
+    visible: root.files.length > 0;
+    HorizontalLayout {
+        spacing: 6px;
+        alignment: start;
+        for f in root.files : Rectangle {
+            height: 26px;
+            width: chip.preferred-width;
+            border-radius: 13px;
+            background: Theme.hover-fill;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+            chip := HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 4px;
+                spacing: 4px;
+                Icon { commands: Icons.paperclip; size: 12px; y: (parent.height - self.height) / 2; tint: Theme.text-secondary; }
+                Text { text: f.name; color: Theme.text-primary; font-size: Theme.fs-caption; vertical-alignment: center; overflow: elide; max-width: 160px; }
+                Text { text: f.detail; color: Theme.text-dim; font-size: Theme.fs-caption; vertical-alignment: center; }
+                x-ta := TouchArea {
+                    width: 18px;
+                    mouse-cursor: pointer;
+                    accessible-role: button;
+                    accessible-label: "Remove " + f.name;
+                    clicked => { root.remove(f.path); }
+                    Icon { commands: Icons.close; size: 10px; x: 4px; y: (parent.height - self.height) / 2; tint: x-ta.has-hover ? Theme.text-primary : Theme.text-dim; }
+                }
+            }
+        }
+    }
+}

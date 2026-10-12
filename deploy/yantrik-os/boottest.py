@@ -238,6 +238,28 @@ check("the updater is pointed at the public host over https",
 name = ask("grep -E '^user_name' /opt/yantrik/config.yaml")
 check("the config greets nobody in particular", '"User"' in name or "User" in name, name)
 
+# YantrikDB as every mind's memory (#677), with no network: the guest has none. DeepSeek is the
+# harness that needs nothing fetched (its program ships in the image), so it is installed the way
+# the Settings row installs it, against a model endpoint that is not there ("model: its own" is
+# not a failure). Its install ends with the three proofs: the memory one writes, recalls and
+# deletes a note through the baked yantrikdb-mcp, and the desktop one waits for the attach. Then
+# a fact remembered by one process is recalled by another, so it is the file that remembers.
+memory = ask("export XDG_RUNTIME_DIR=/run/user/1000; mkdir -p ~/.config/yantrik; "
+             "printf '%s\\n' '{\"base_url\": \"http://127.0.0.1:9/v1\", \"model\": \"boot-test\"}' "
+             "> ~/.config/yantrik/deepseek.json; chmod 600 ~/.config/yantrik/deepseek.json; "
+             "timeout 300 sh /opt/yantrik/share/harnesses/lib/install/deepseek.sh > /tmp/deepseek-install.txt 2>&1; "
+             "echo install-exit=$?; tail -n 6 /tmp/deepseek-install.txt; grep -o '\"memory\": *\"[a-z]*\"' ~/.config/yantrik/deepseek.json; "
+             "test -f ~/.local/state/yantrik/harnesses/deepseek/installed && echo proved",
+             timeout=360)
+check("a harness installed offline has YantrikDB as its memory and passes all three proofs",
+      "install-exit=0" in memory and "YantrikDB" in memory and "recalled" in memory
+      and '"memory": "yantrikdb"' in memory and "proved" in memory, memory)
+fact = ask("python3 /opt/yantrik/share/harnesses/lib/proofs.py deepseek --remember 'The boot test kettle is blue'; "
+           "python3 /opt/yantrik/share/harnesses/lib/proofs.py deepseek --recall 'boot test kettle is blue'",
+           timeout=180)
+check("a fact one process remembered is recalled by another",
+      '"remembered": true' in fact and '"recalled": true' in fact, fact)
+
 report = {"iso": os.path.basename(iso), "kvm": kvm, "boot_seconds": boot_seconds,
           "total_seconds": round(time.time() - t0), "checks": checks,
           "passed": all(c["passed"] for c in checks)}

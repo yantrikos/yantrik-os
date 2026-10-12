@@ -72,11 +72,13 @@ pub struct Turn {
     /// Where the turn came from: the Lens at the desk, or a channel on the person's phone.
     /// `None` for a turn the desktop does not say (a harness that predates it sees no difference).
     pub origin: Option<protocol::Origin>,
+    /// What the person chose for this turn in the picker: model, effort, handed-over files.
+    pub options: Option<protocol::TurnOptions>,
 }
 
 impl Turn {
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), context: None, origin: None }
+        Self { text: text.into(), context: None, origin: None, options: None }
     }
 
     pub fn with_context(mut self, context: impl Into<String>) -> Self {
@@ -90,6 +92,11 @@ impl Turn {
     }
 
     /// Whether the person asked this from away from the machine.
+    pub fn with_options(mut self, options: protocol::TurnOptions) -> Self {
+        self.options = Some(options);
+        self
+    }
+
     pub fn is_remote(&self) -> bool {
         self.origin.as_ref().is_some_and(|o| o.remote)
     }

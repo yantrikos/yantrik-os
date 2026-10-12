@@ -190,6 +190,17 @@ sh "$SCRIPT_DIR/stage-harnesses.sh" "$PROJECT_ROOT" "$ROOT/share/harnesses" >/de
   || fail "the harnesses did not stage — an update would remove every harness from the machine"
 echo "   + harnesses (share/harnesses: manifests, harness scripts, installers)"
 
+# YantrikDB, every mind's memory (#677): the same tree the ISO ships at /opt/yantrik/memory, so a
+# machine that gets this build by update can install a harness too. Without it in the bundle,
+# VM 520 on build 1448 (updated, not imaged) had no /opt/yantrik/memory and every harness install
+# stopped at "this image has no yantrikdb-mcp". Its own directory, not share/: the updater mirrors
+# share/ as the desktop's files and this as root's, and the ISO copies it from this bundle.
+sh "$SCRIPT_DIR/bake-memory.sh" "$ROOT/memory" >/dev/null \
+  || fail "YantrikDB did not bake (bake-memory.sh) — every harness install would stop at \"no yantrikdb-mcp\""
+sh "$SCRIPT_DIR/bake-memory.sh" --check "$ROOT/memory" \
+  || fail "the bundle's memory/ is missing a file a harness install reads"
+echo "   + memory (YantrikDB for every mind: $(du -sh "$ROOT/memory" | cut -f1), $(sed -n 's/^image-python=//p' "$ROOT/memory/VERSIONS") python)"
+
 # The updater ships in the image so a machine can update itself. It is a script, not a
 # compiled binary, so binary discovery does not find it either — and a machine that cannot
 # pull the next build is a machine that gets hand-patched over ssh forever.

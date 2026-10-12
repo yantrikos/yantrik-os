@@ -1,0 +1,57 @@
+// What the picker shows and what pressing it asks, shared by the Lens composer and the mind panel
+// so both are one picker (crates/yantrik-ui/src/picker). Rust fills it; the two places bind it.
+
+import { ModelPicker, PickerMind, PickerModel, PickerFile } from "model_picker.slint";
+
+export global PickerState {
+    in-out property <[PickerMind]> minds;
+    in-out property <string> mind-label;
+    in-out property <[PickerModel]> models;
+    in-out property <string> model-label;
+    in-out property <bool> model-enabled: true;
+    in-out property <[string]> efforts;
+    in-out property <string> effort;
+    // Handed over with the next message.
+    in-out property <[PickerFile]> files;
+    in-out property <string> browse-path;
+    in-out property <[PickerFile]> browse-entries;
+    in-out property <string> status-words;
+    in-out property <string> status-state;
+    in-out property <string> fix-label;
+    // A file is being dragged over the window: the ask bar says it will take it.
+    in-out property <bool> drop-hover;
+
+    callback choose-mind(string);
+    callback choose-model(string);
+    callback choose-effort(string);
+    callback search(string);
+    callback browse(string);
+    callback attach(string);
+    callback remove-file(string);
+    callback fix();
+    callback opened(string);
+}
+
+// The kit's picker, bound to the shell's state.
+export component BoundPicker inherits ModelPicker {
+    minds: PickerState.minds;
+    mind-label: PickerState.mind-label;
+    models: PickerState.models;
+    model-label: PickerState.model-label;
+    model-enabled: PickerState.model-enabled;
+    efforts: PickerState.efforts;
+    effort: PickerState.effort;
+    browse-path: PickerState.browse-path;
+    browse-entries: PickerState.browse-entries;
+    status-words: PickerState.status-words;
+    status-state: PickerState.status-state;
+    fix-label: PickerState.fix-label;
+    choose-mind(id) => { PickerState.choose-mind(id); }
+    choose-model(id) => { PickerState.choose-model(id); }
+    choose-effort(e) => { PickerState.choose-effort(e); }
+    search(q) => { PickerState.search(q); }
+    browse(p) => { PickerState.browse(p); }
+    attach(p) => { PickerState.attach(p); }
+    fix => { PickerState.fix(); }
+    opened(which) => { PickerState.opened(which); }
+}
