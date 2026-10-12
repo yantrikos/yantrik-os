@@ -11,6 +11,10 @@ export component ChatHeader inherits Rectangle {
     in property <string> mind-name;
     // "Built-in mind" or "Attached mind": what the shell knows about where the mind runs.
     in property <string> identity;
+    // How the last turn ended, as the durable completion chip says it: the state key and the
+    // words. Both "" while the turn is open or there is no turn.
+    in property <string> outcome-state: "";
+    in property <string> outcome: "";
     in property <bool> can-new-chat: false;
     in property <bool> can-open-in-agents: false;
     callback mind-clicked();
@@ -69,6 +73,14 @@ export component ChatHeader inherits Rectangle {
                     color: Theme.chat-text-2;
                     font-size: Theme.fs-caption;
                     overflow: elide;
+                }
+                if root.outcome != "" : Text {
+                    text: root.outcome;
+                    color: root.outcome-state == "failed" ? Theme.color-danger : Theme.chat-text-2;
+                    font-size: Theme.fs-caption;
+                    overflow: elide;
+                    accessible-role: text;
+                    accessible-label: root.outcome;
                 }
             }
         }
