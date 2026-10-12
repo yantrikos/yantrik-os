@@ -5,6 +5,8 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crate::toplevel_watch::{self, TopWindow};
+
 /// The title the shell's own window carries, from `title:` in yantrik-ui-slint/ui/app.slint.
 ///
 /// Kept here so the one place that has to exclude it says why, rather than a bare string buried
@@ -370,21 +372,6 @@ fn toplevel_args(verb: &str, title: &str) -> Vec<String> {
     toplevel_command(verb, &format!("title:{title}"))
 }
 
-/// The command line that brings a MINIMIZED window back onto the screen.
-///
-/// A minimized window cannot take focus while it is still minimized, and wlrctl has no
-/// "unminimize" verb — `maximize` is what brings it back. `state:minimized` narrows it to windows
-/// that are actually minimized, so presenting a visible window does not resize it.
-fn restore_command(matchspec: &str) -> Vec<String> {
-    let mut args = toplevel_command("maximize", matchspec);
-    args.push("state:minimized".to_string());
-    args
-}
-
-fn restore_args(title: &str) -> Vec<String> {
-    restore_command(&format!("title:{title}"))
-}
-
 /// Every matchspec that names the window called `title`, most precise first.
 ///
 /// `title:` first, which is exact and so cannot touch a second window by mistake. Then, for a
@@ -413,6 +400,69 @@ fn matchspecs(title: &str, open: &[WindowEntry]) -> Vec<String> {
 /// One `wlrctl toplevel <verb>` command line per matchspec, in the order to try them.
 fn commands_for(verb: &str, specs: &[String]) -> Vec<Vec<String>> {
     specs.iter().map(|spec| toplevel_command(verb, spec)).collect()
+}
+
+/// One step of bringing a window back and putting it in front.
+///
+/// Steps rather than command lines, because the good way to restore a window is not a `wlrctl`
+/// command at all — see [`Restore::Unminimize`].
+#[derive(Debug, PartialEq)]
+enum Restore {
+    /// Undo this window's minimized state. The compositor puts it back at the size it had, which
+    /// is the point: `wlrctl` has no un-minimize verb, and the `maximize … state:minimized` line
+    /// this replaces (#265) brought every window back filling the screen.
+    Unminimize(u64),
+    /// Raise and focus this window. Harmless when the compositor already shows it normally.
+    Activate(u64),
+    /// A `wlrctl toplevel …` command line, for a window the stream does not name.
+    Wlrctl(Vec<String>),
+}
+
+/// How to bring `title` back and put it in front, given what the compositor's stream knows.
+///
+/// A window the stream has is restored by its id, which keeps its size. Only when the stream is
+/// not being followed, or has not seen this title yet, does this fall back to `wlrctl` — and then
+/// to `focus` alone, never to a verb that resizes.
+fn restore_plan(title: &str, specs: &[String], stream: Option<&[TopWindow]>) -> Vec<Restore> {
+    if let Some(id) = stream.and_then(|w| toplevel_watch::id_titled(w, title)) {
+        return vec![Restore::Unminimize(id), Restore::Activate(id)];
+    }
+    commands_for("focus", specs).into_iter().map(Restore::Wlrctl).collect()
+}
+
+/// Carry out a restore plan, handing any `wlrctl` command lines to `via_wlrctl` to run — a caller
+/// on the UI thread must give them to a worker rather than wait for a process here (see
+/// [`ask_compositor`]).
+///
+/// Not being able to un-minimize is not a failure: the usual reason is that the window was never
+/// minimized. The answer is whether the window came forward.
+fn run_plan(
+    plan: &[Restore],
+    title: &str,
+    via_wlrctl: impl FnOnce(Vec<Vec<String>>) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut commands = Vec::new();
+    let mut outcome = Ok(());
+    for step in plan {
+        match step {
+            Restore::Unminimize(id) => {
+                if !toplevel_watch::unminimize(*id) {
+                    tracing::debug!(window = %title, "nothing to un-minimize before focusing");
+                }
+            }
+            Restore::Activate(id) => {
+                if !toplevel_watch::activate(*id) {
+                    outcome = Err("the compositor would not activate the window".to_string());
+                }
+            }
+            Restore::Wlrctl(args) => commands.push(args.clone()),
+        }
+    }
+    if commands.is_empty() {
+        outcome
+    } else {
+        via_wlrctl(commands)
+    }
 }
 
 /// Run one `wlrctl` command. `Err` is for a wlrctl that could not run at all — a missing binary
@@ -487,14 +537,14 @@ fn ask_compositor(commands: Vec<Vec<String>>) -> Result<(), String> {
 
 /// Bring the window called `title` to the front, restoring it first if it was minimized. Says
 /// whether the compositor had such a window.
+///
+/// Restoring goes through the compositor's toplevel handle, not through `wlrctl`, because the only
+/// `wlrctl` verb that used to undo a minimize was `maximize` and a window that was a normal size
+/// before it went down came back filling the screen (#265).
 pub fn present(title: &str) -> bool {
     let specs = matchspecs(title, &shell_windows());
-    if let Err(why) = run_first_matching(&specs.iter().map(|s| restore_command(s)).collect::<Vec<_>>()) {
-        // Not a warning: the usual reason is that the window was never minimized, and the
-        // matchspec simply matched nothing.
-        tracing::debug!(window = %title, reason = %why, "nothing to un-minimize before focusing");
-    }
-    match run_first_matching(&commands_for("focus", &specs)) {
+    let plan = restore_plan(title, &specs, toplevel_watch::windows().as_deref());
+    match run_plan(&plan, title, ask_compositor) {
         Ok(()) => true,
         Err(why) => {
             tracing::warn!(window = %title, reason = %why, "could not bring a window forward");
@@ -532,10 +582,12 @@ pub fn present_app(app_id: &str) -> bool {
 /// minimised by anything would otherwise stay down with every card in it (second review of the
 /// card fix). Not finding a minimised shell is the usual case and not an error.
 pub fn raise_shell() -> Result<(), String> {
-    if let Err(why) = ask_compositor(vec![restore_args(SHELL_WINDOW_TITLE)]) {
-        tracing::debug!(reason = %why, "nothing to un-minimize before raising the shell");
-    }
-    ask_compositor(vec![toplevel_args("focus", SHELL_WINDOW_TITLE)])
+    let plan = restore_plan(
+        SHELL_WINDOW_TITLE,
+        &[format!("title:{SHELL_WINDOW_TITLE}")],
+        toplevel_watch::windows().as_deref(),
+    );
+    run_plan(&plan, SHELL_WINDOW_TITLE, ask_compositor)
 }
 
 /// Ask the window called `title` to close, the way pressing its × does.
@@ -562,8 +614,8 @@ pub fn minimise(title: &str) -> Result<(), String> {
 /// its app or the compositor's own binding (Super+Up, config/labwc/rc.xml) says otherwise.
 /// Callers that would like a Maximise/Restore toggle cannot have one honestly, because
 /// `toplevel list` does not carry the state to read the toggle back from. On a minimized
-/// window `maximize` is also what brings it back (see `restore_command`), so this doubles
-/// as restore-and-fill.
+/// window `maximize` brings it back too, as a side effect — which is why this stays for the
+/// Maximise row and is no part of restoring a window (#265).
 pub fn maximise(title: &str) -> Result<(), String> {
     ask_compositor(commands_for("maximize", &matchspecs(title, &shell_windows())))
 }
@@ -1335,14 +1387,57 @@ mod tests {
             ["toplevel", "close", "title:Notes: Handover"],
             "a colon in the title belongs to the title; wlrctl splits the matchspec on the first"
         );
-        assert_eq!(
-            restore_args("System Monitor"),
-            ["toplevel", "maximize", "title:System Monitor", "state:minimized"],
-            "only windows that ARE minimized, or presenting a visible window resizes it"
-        );
         // One argument each, so a title with a space travels as a title with a space. There is no
         // shell between us and wlrctl and there must not be a quoting scheme pretending there is.
         assert_eq!(toplevel_args("focus", "Yantrik OS").len(), 3);
+    }
+
+    /// A window in the compositor's stream, as [`restore_plan`] reads it.
+    fn top(id: u64, title: &str) -> TopWindow {
+        TopWindow { id, title: title.to_string(), app_id: String::new() }
+    }
+
+    /// Bringing a window back must never resize it (#265).
+    ///
+    /// `present` and `raise_shell` are the only two things that restore a window and both build
+    /// their steps in [`restore_plan`], so pinning the plan pins both of them. The command line
+    /// this replaces was `toplevel maximize title:X state:minimized`, which did un-minimize the
+    /// window — by maximizing it, so a Notes window opened at a normal size came back filling the
+    /// screen.
+    #[test]
+    fn restoring_a_window_never_maximises_it() {
+        let specs = vec!["title:Notes".to_string()];
+
+        // The stream names the window: it comes back by its id, and no command line is run.
+        let shown = restore_plan("Notes", &specs, Some(&[top(7, "Notes")][..]));
+        assert_eq!(shown, vec![Restore::Unminimize(7), Restore::Activate(7)]);
+
+        // The fallback, for a stream that is not being followed at all.
+        let down = restore_plan("Notes", &specs, None);
+        assert_eq!(
+            down,
+            vec![Restore::Wlrctl(vec![
+                "toplevel".to_string(),
+                "focus".to_string(),
+                "title:Notes".to_string()
+            ])],
+            "a window the stream does not name is still not a window to resize"
+        );
+
+        // Followed, but this title has not appeared in it yet.
+        let unseen = restore_plan("Notes", &specs, Some(&[top(9, "Notes 2")][..]));
+        assert_eq!(unseen, down, "`Notes 2` is not `Notes`, and must not be raised for it");
+
+        for plan in [shown, down, unseen] {
+            for step in plan {
+                if let Restore::Wlrctl(args) = step {
+                    assert!(
+                        !args.iter().any(|a| a.contains("maximize")),
+                        "restoring a window may not maximize it: {args:?}"
+                    );
+                }
+            }
+        }
     }
 
     /// wlrctl spells it `minimize`. This desktop's action is `minimise_window`, and the two
@@ -1356,9 +1451,10 @@ mod tests {
     }
 
     /// The same rendezvous for the taskbar menu's Maximise row (#232) and the `maximise_window`
-    /// action beside `minimise_window`. No `state:` on the end, unlike [`restore_args`]: this
-    /// maximizes whatever window answers to the title, minimized or not — and there is no
-    /// unmaximize command line to pin here, because wlrctl 0.2.2 has no such verb.
+    /// action beside `minimise_window`. No `state:` on the end: this maximizes whatever window
+    /// answers to the title, minimized or not, which is exactly why restoring does not go through
+    /// it (#265). There is no unmaximize command line to pin here, because wlrctl 0.2.2 has no
+    /// such verb.
     #[test]
     fn maximise_asks_the_compositor_to_maximize() {
         assert_eq!(
