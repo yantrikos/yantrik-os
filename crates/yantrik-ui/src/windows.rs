@@ -20,6 +20,20 @@ pub(crate) const SHELL_WINDOW_TITLE: &str = "Yantrik OS";
 /// front" must never offer or name it.
 pub(crate) const OSD_WINDOW_TITLE: &str = "Yantrik OSD";
 
+/// The Lens's own window (wire/lens_window.rs, #733), from `title:` in lens_window.slint and the
+/// windowRule that keeps it on top in config/labwc/rc.xml. A title, not an app_id: Slint 1.17 has
+/// one Wayland app_id for the whole process (`slint::set_xdg_app_id`), so an `identifier` rule
+/// could not tell this window from the shell's own.
+pub(crate) const LENS_WINDOW_TITLE: &str = "yantrik-lens";
+
+/// Whether `title` is one of the shell's own furniture windows: the Lens and the on-screen
+/// display. They are the shell's, never an app's and never a mind's, so the window list, the
+/// taskbar, Alt+Tab, `describe shell` and "which window is in front" never offer or name them.
+/// The shell's main window is not furniture: it is the desktop, and a caller may name it.
+pub(crate) fn is_shell_furniture(title: &str) -> bool {
+    title == OSD_WINDOW_TITLE || title == LENS_WINDOW_TITLE
+}
+
 /// A running window on the desktop.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowEntry {
@@ -574,9 +588,11 @@ pub fn present_app(app_id: &str) -> bool {
 /// The shell is an ordinary toplevel to labwc — see the `<margin>` note in config/labwc/rc.xml,
 /// which exists because the status bar and dock are a fullscreen window rather than a layer-shell
 /// panel — so it gets in front the same way any other window does, and it cannot raise itself
-/// under Wayland. Every surface that puts something in front of a person needs this:
-/// `control_approvals` already asks for it when a card goes up, `open_lens` when the ask bar
-/// opens, and `show_screen` because a screen nobody can see has not been shown.
+/// under Wayland. Every surface that puts something of the shell's window in front of a person
+/// needs this: `control_approvals` asks for it when a card goes up in the corner, and
+/// `show_screen` because a screen nobody can see has not been shown. The Lens does not: it is a
+/// window of its own, kept on top by the compositor (wire/lens_window.rs, #733), and raising the
+/// fullscreen shell to show it put every app behind the desktop.
 ///
 /// Restored first, as [`present`] does, because a minimised window cannot take focus: a shell
 /// minimised by anything would otherwise stay down with every card in it (second review of the
@@ -746,7 +762,7 @@ fn wlrctl_windows() -> Vec<WindowEntry> {
         // desktop's own "open windows" list both offered to switch you to the desktop you are
         // already looking at.
         .filter(|line| split_toplevel_line(line).0 != SHELL_WINDOW_TITLE)
-        .filter(|line| split_toplevel_line(line).0 != OSD_WINDOW_TITLE)
+        .filter(|line| !is_shell_furniture(&split_toplevel_line(line).0))
         .map(toplevel_entry)
         .collect()
 }
@@ -815,7 +831,7 @@ fn activation(text: &str) -> Activation {
         // The person is looking at the desktop, or one of its screens. No app window is in front.
         return Activation::Shell;
     }
-    if title.is_empty() || title == OSD_WINDOW_TITLE {
+    if title.is_empty() || is_shell_furniture(&title) {
         return Activation::Unknown;
     }
     Activation::Window(title)
@@ -1232,6 +1248,19 @@ mod tests {
         assert_eq!(activation(": Terminal"), Activation::Window("Terminal".into()));
         assert_eq!(activation(""), Activation::Unknown);
         assert_eq!(activation(": Editor\n: Terminal\n"), Activation::Unknown);
+    }
+
+    /// The Lens's window and the on-screen display are the shell's furniture (#733): never the
+    /// window in front, so never a window to hand the keyboard back to, and never an app. The
+    /// shell's own window is not furniture: it is the desktop, and a caller may name it.
+    #[test]
+    fn the_shells_furniture_is_never_an_app_or_the_window_in_front() {
+        for title in [LENS_WINDOW_TITLE, OSD_WINDOW_TITLE] {
+            assert!(is_shell_furniture(title));
+            assert_eq!(activation(&format!(": {title}")), Activation::Unknown, "{title} in front is not knowable");
+        }
+        assert!(!is_shell_furniture(SHELL_WINDOW_TITLE));
+        assert!(!is_shell_furniture("Notes"));
     }
 
     /// A program's app_id is its binary's name, give or take a distribution's suffix.

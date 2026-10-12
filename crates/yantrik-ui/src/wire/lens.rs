@@ -418,14 +418,10 @@ fn wire_open_close(ui: &App, ctx: &AppContext) {
     ui.on_open_lens(move || {
         tracing::debug!("Lens opened");
         if let Some(ui) = ui_weak_open.upgrade() {
-            // The chat is part of the shell's own window, behind any app in front of it: from
-            // the Editor, the taskbar's Chat button opened a Lens nobody could see (#241, the
-            // same as the Apps button in #219). Bring the shell forward when it opens.
-            if ui.get_lens_open() {
-                if let Err(why) = crate::windows::raise_shell() {
-                    tracing::warn!(%why, "The chat opened, but the shell could not be brought in front of the window over it");
-                }
-            }
+            // Nothing is raised here. The Lens is a window of its own, kept above the others by the
+            // compositor, and wire/lens_window.rs shows it when `lens-open` turns true, from
+            // whichever opener (#733). It used to be drawn inside the shell's fullscreen window,
+            // so this raised that window over every app and the person's work vanished.
             // An empty Lens is one the shell has just started under: put the conversation back
             // from the saved session before anything else looks at it (#246).
             crate::lens_history::restore_if_empty(&ui);

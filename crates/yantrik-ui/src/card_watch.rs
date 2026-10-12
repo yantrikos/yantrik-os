@@ -1,6 +1,9 @@
 //! An approval card is never left behind another window.
 //!
-//! A card is drawn inside the shell's own window: the Mind panel, the Lens. When a card rises,
+//! A card is drawn inside the shell's own window (the Mind panel, the top-right corner) or in the
+//! Lens's window (#733), which the compositor keeps above every other while it is up, so a card
+//! there needs none of what follows and the Lens's window is never a reason to raise the
+//! fullscreen shell over the person's work ([`lens_holds_the_card`]). When a card rises,
 //! `control_approvals` raises the shell. But anything that takes focus afterwards covers it again:
 //! a mind opening its next app into Mind View, a script, the person. On the live instance a
 //! mind's `agent_run` card sat behind Mind View, maximised over the whole shell. The person at the
@@ -69,6 +72,34 @@ static WAITING_IDS: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 /// Which card is drawn where a person would press, and for which pane: see [`card_on_screen`].
 static ON_SCREEN: Mutex<Option<Drawn>> = Mutex::new(None);
 static SHELL_UI: OnceLock<slint::Weak<App>> = OnceLock::new();
+/// Whether the card in front is the Lens's own (control_approvals), and whether the Lens's window
+/// is up in its conversation (wire/lens_window.rs). Together: the card is in a window nothing can
+/// cover.
+static CARD_IN_LENS: AtomicBool = AtomicBool::new(false);
+static LENS_UP: AtomicBool = AtomicBool::new(false);
+
+/// The approvals store's word on whether the card in front is one the Lens hosts.
+pub fn card_in_lens(hosted: bool) {
+    CARD_IN_LENS.store(hosted, Ordering::Relaxed);
+}
+
+/// The Lens's window's word on whether it is up, in the conversation that draws its cards.
+pub fn lens_up(up: bool) {
+    LENS_UP.store(up, Ordering::Relaxed);
+}
+
+/// Whether the card waiting is drawn in the Lens's window while that window is up. It is kept
+/// above every other window by the compositor (the windowRule in config/labwc/rc.xml), so no
+/// focus change can cover it, and raising the fullscreen shell "for" it would only put the
+/// person's work behind the desktop: the bug #733 removes.
+pub fn lens_holds_the_card() -> bool {
+    holds(CARD_IN_LENS.load(Ordering::Relaxed), LENS_UP.load(Ordering::Relaxed))
+}
+
+/// Pure, for the tests.
+fn holds(card_in_lens: bool, lens_up: bool) -> bool {
+    card_in_lens && lens_up
+}
 
 /// Give this module the shell's window, so a raise can put the keyboard somewhere neutral.
 pub fn attach(ui: slint::Weak<App>) {
@@ -190,7 +221,7 @@ pub fn just_raised() -> bool {
 
 /// The compositor says another toplevel now has focus. Called from `toplevel_watch`'s thread.
 pub fn front_changed(title: &str) {
-    if !WAITING.load(Ordering::Relaxed) {
+    if !WAITING.load(Ordering::Relaxed) || lens_holds_the_card() {
         return;
     }
     let since = LAST.lock().ok().and_then(|l| l.map(|at| at.elapsed()));
@@ -246,7 +277,7 @@ fn raise(title: &str) {
     std::thread::spawn(|| {
         // The card may have been answered while this was being decided. Raising now would take
         // the screen back from the window the hand-back just returned it to.
-        if !WAITING.load(Ordering::Relaxed) {
+        if !WAITING.load(Ordering::Relaxed) || lens_holds_the_card() {
             return;
         }
         match crate::windows::raise_shell() {
@@ -293,6 +324,16 @@ mod tests {
     fn a_window_taking_focus_over_a_waiting_card_brings_the_shell_back() {
         assert_eq!(decide(true, "Mind View", 1, None, 0), Decision::Raise);
         assert_eq!(decide(true, "Notes", 1, Some(Duration::from_secs(3)), 2), Decision::Raise);
+    }
+
+    /// The Lens's own mind asked, and the Lens is up beside Notes (#733): the card is in a window
+    /// the compositor keeps on top, so Notes taking focus is left alone. Either half missing — the
+    /// card is the corner's, or the Lens is closed — and the card is in the shell's window again.
+    #[test]
+    fn a_card_in_the_open_lens_is_never_a_reason_to_raise_the_shell() {
+        assert!(holds(true, true));
+        assert!(!holds(false, true), "a card the Lens does not host is the corner's");
+        assert!(!holds(true, false), "with the Lens closed its card is drawn in the corner");
     }
 
     #[test]

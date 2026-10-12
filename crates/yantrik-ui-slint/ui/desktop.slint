@@ -1,6 +1,6 @@
 // Desktop screen — the AI-native desktop experience.
 // Clean canvas: particle field + greeting + bottom-center orb.
-// Intent Lens overlays when invoked.
+// The Intent Lens opens in a window of its own beside it (lens_window.slint).
 // No clutter. The AI is alive, not widgetized.
 //
 // Layout:
@@ -18,7 +18,7 @@
 //   │▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁│ ← dock glow trigger
 //   └─────────────────────────────────────┘
 //
-//   Intent Lens: overlays center-screen when Super pressed
+//   Intent Lens: its own window on the right (lens_window.slint, #733)
 
 import { Theme, ThemeMode } from "theme.slint";
 import { ParticleField } from "components/particle_field.slint";
@@ -27,10 +27,7 @@ import { DockButton } from "components/grounded_dock.slint";
 import { StatusBar } from "components/status_bar.slint";
 import { DockItem } from "components/app_dock.slint";
 import { Icon, Icons } from "components/icon.slint";
-import { IntentLens, LensResult, ApprovalRequest } from "components/intent_lens.slint";
-import { WorkCardData } from "components/work_card.slint";
-import { QuestionRequest } from "components/question_card.slint";
-import { MessageData } from "components/message_bubble.slint";
+import { LensResult } from "components/intent_lens.slint";
 import { UrgeCardData } from "components/glance_card.slint";
 import { WhisperCardStack, WhisperCardItem } from "components/whisper_card.slint";
 import { AppGrid, AppGridItem } from "components/app_grid.slint";
@@ -81,51 +78,10 @@ export component DesktopScreen inherits Rectangle {
     // Project Consciousness
     in property <string> active-project: "";
 
-    // Intent Lens state
+    // The Lens. It is a window of its own now (lens_window.slint, #733), so this screen only
+    // opens it — the ask bar and the recents — and lists the recents it offers.
     in-out property <bool> lens-open: false;
-    /// What is typed in the Lens. Carried up to the App so the shell's control surface can
-    /// prefill the ask bar and report back what is actually in it.
-    in-out property <string> lens-input-text: "";
-    in property <[LensResult]> lens-results: [];
-    in property <bool> lens-chat-mode: false;
-    in property <[LensResult]> lens-suggestions: [];
     in property <[LensResult]> lens-recents: [];
-
-    // Chat state (for lens chat mode)
-    in property <[MessageData]> messages: [];
-    in property <bool> is-generating: false;
-
-    // What a mind has asked the person to allow. Drawn in the Lens's conversation; the App
-    // draws the same list over whatever screen is up when the Lens is not showing it.
-    in property <[ApprovalRequest]> approvals: [];
-    in property <int> approvals-waiting: 0;
-    /// The Lens's mind's own questions (#25).
-    in property <[QuestionRequest]> questions: [];
-    callback question-answer(string, string, string, bool);
-    callback open-run(string);
-    callback approval-allow(string);
-    /// The same grant plus a standing rule for that (app, action) — see mind_mode.rs.
-    callback approval-allow-session(string);
-    callback approval-deny(string);
-
-    // The Lens's "open in Agents": whether the conversation is an agent's, and the press.
-    in property <bool> lens-can-open-in-agents: false;
-    callback lens-open-in-agents();
-    callback lens-open-history();
-    callback lens-new-chat();
-
-    // Chat v2: the work cards of the runs this chat started, the strip's run and counts, the mode
-    // chip's label and the header's identity line. Filled from the Agents store and the mind mode.
-    in property <[WorkCardData]> lens-work-cards: [];
-    in property <WorkCardData> lens-strip;
-    in property <int> lens-live-runs: 0;
-    in property <int> lens-waiting-runs: 0;
-    in property <string> lens-mode-label: "Ask";
-    in property <string> lens-identity: "";
-    // Where the composer's words go, or "" when that is not known (app.slint says where from).
-    in property <string> lens-destination: "";
-    callback lens-mode-clicked();
-    callback lens-view-desk(string);
 
     // Urges (for quiet queue)
     in property <[UrgeCardData]> urges: [];
@@ -192,7 +148,6 @@ export component DesktopScreen inherits Rectangle {
 
     // Callbacks
     callback send-message(string);
-    callback mic-pressed();
     callback launch-app(string);
 
     // The desktop's right-click menu.
@@ -211,11 +166,8 @@ export component DesktopScreen inherits Rectangle {
     property <length> desktop-menu-x: 0;
     property <length> desktop-menu-y: 0;
     callback navigate-to(int);
-    callback lens-query(string);
-    callback lens-submit(string);
     callback lens-result-selected(string);
     callback open-lens();
-    callback close-lens();
 
     background: Theme.bg-deep;
     clip: true;
@@ -627,56 +579,6 @@ export component DesktopScreen inherits Rectangle {
         sections: root.morning-brief-sections;
         dismissed => { root.morning-brief-dismissed(); }
         section-action(id) => { root.morning-brief-section-action(id); }
-    }
-
-    // ── Layer 3: Intent Lens overlay ──
-    IntentLens {
-        is-open: root.lens-open;
-        input-text <=> root.lens-input-text;
-        is-thinking: root.is-thinking;
-        results: root.lens-results;
-        companion-status: root.companion-status;
-        companion-online: root.companion-online;
-        chat-mode: root.lens-chat-mode;
-        // So the conversation header says who is answering — the same name the status bar
-        // chip and the machine rail carry, rather than a generic "Conversation".
-        mind-name: root.active-harness-name;
-        can-open-in-agents: root.lens-can-open-in-agents;
-        open-in-agents => { root.lens-open-in-agents(); }
-        open-history => { root.lens-open-history(); }
-        new-chat => { root.lens-new-chat(); }
-        work-cards: root.lens-work-cards;
-        strip: root.lens-strip;
-        live-runs: root.lens-live-runs;
-        waiting-runs: root.lens-waiting-runs;
-        mode-label: root.lens-mode-label;
-        identity: root.lens-identity;
-        destination: root.lens-destination;
-        mode-clicked => { root.lens-mode-clicked(); }
-        mind-clicked => { root.active-mind-clicked(); }
-        view-desk(run) => { root.lens-view-desk(run); }
-        messages: root.messages;
-        is-generating: root.is-generating;
-        suggestions: root.lens-suggestions;
-        recents: root.lens-recents;
-        approvals: root.approvals;
-        approvals-waiting: root.approvals-waiting;
-
-        approval-allow(id) => { root.approval-allow(id); }
-        approval-allow-session(id) => { root.approval-allow-session(id); }
-        approval-deny(id) => { root.approval-deny(id); }
-        questions: root.questions;
-        question-answer(agent, request, answer, pressed) => { root.question-answer(agent, request, answer, pressed); }
-        open-run(run) => { root.open-run(run); }
-        query-changed(text) => { root.lens-query(text); }
-        submit-query(text) => { root.lens-submit(text); }
-        result-selected(id) => { root.lens-result-selected(id); }
-        close-lens => {
-            root.lens-open = false;
-            root.close-lens();
-        }
-        send-message(text) => { root.send-message(text); }
-        mic-pressed => { root.mic-pressed(); }
     }
 
     // Last in the file so it draws over the icons, the orb and the taskbar. A menu that opened

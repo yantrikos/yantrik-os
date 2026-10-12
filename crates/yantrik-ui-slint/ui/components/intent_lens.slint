@@ -1226,10 +1226,16 @@ export component IntentLens inherits Rectangle {
     // "View desk": bring Mind View, the mind's own desk, in front.
     callback view-desk(string);
     // The panel's width: 440px until the person drags its left edge, then between 380 and 560.
-    // It is kept for this session only.
+    // It is kept for this session only. Not in the Lens's own window, whose width the compositor
+    // fixes (`resizable: false` there, lens_window.slint).
     in-out property <length> panel-width: Theme.chat-panel-width;
+    in property <bool> resizable: true;
+    // What lies over this component's top and bottom edges: the status bar and the dock when it
+    // fills the display, nothing in the Lens's own window, which already stops short of both.
+    in property <length> top-inset: Theme.status-bar-height;
+    in property <length> bottom-inset: Theme.taskbar-height;
     // The panel's own height, between the two bars and inside its margins.
-    out property <length> panel-height: root.height - Theme.status-bar-height - Theme.taskbar-height
+    out property <length> panel-height: root.height - root.top-inset - root.bottom-inset
         - 2 * Theme.chat-panel-gap;
     // What the transcript is doing, for `describe` and for the preview checks (the transcript is
     // inside the chat-mode block, whose ids cannot be named from out here): following the newest
@@ -1356,7 +1362,7 @@ export component IntentLens inherits Rectangle {
     // purpose; it simply never subtracted the chrome it was underneath.
     Rectangle {
         x: root.is-open ? root.width - root.panel-width - Theme.chat-panel-gap : root.width;
-        y: Theme.status-bar-height + Theme.chat-panel-gap;
+        y: root.top-inset + Theme.chat-panel-gap;
         width: root.panel-width;
         height: root.panel-height;
         border-radius: Theme.chat-radius;
@@ -2372,7 +2378,7 @@ export component IntentLens inherits Rectangle {
         // as it grows, so the drag is measured against the pointer's place on the screen, not
         // against the handle it is dragging: measured against the handle, every step would
         // change what the next one was measured from and the edge would shudder.
-        if root.chat-mode : resize-handle := TouchArea {
+        if root.chat-mode && root.resizable : resize-handle := TouchArea {
             x: 0;
             width: 8px;
             height: parent.height;
