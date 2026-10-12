@@ -9,6 +9,8 @@
 //! `model/parsers/nemotron3nano.go`.
 
 use super::ChatTemplate;
+use crate::capability::ModelTier;
+use crate::compact_tools::{first_sentence, ordered_params, ToolBudget};
 use crate::types::{ChatMessage, ToolCall};
 
 pub struct NemotronTemplate;
@@ -59,18 +61,22 @@ impl NemotronTemplate {
     }
 }
 
-impl ChatTemplate for NemotronTemplate {
-    fn format_tools(&self, tools: &[serde_json::Value]) -> String {
-        if tools.is_empty() {
-            return String::new();
-        }
-
+impl NemotronTemplate {
+    /// Render the tool block. `budget` selects the compact form: descriptions
+    /// cut to their first sentence, parameters required-first and capped. The
+    /// XML element names are identical either way — the model-side parser and
+    /// the trained template expect them.
+    fn render(tools: &[serde_json::Value], budget: Option<ToolBudget>) -> String {
         let mut s = String::from("\n\n# Tools\n\nYou have access to the following functions:\n\n<tools>");
 
         for tool in tools {
             let func = tool.get("function").unwrap_or(tool);
             let name = func.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
             let desc = func.get("description").and_then(|d| d.as_str()).unwrap_or("");
+            let desc = match budget {
+                Some(b) => first_sentence(desc, b.desc_chars),
+                None => desc.trim().to_string(),
+            };
 
             s.push_str("\n<function>\n<name>");
             s.push_str(name);
@@ -78,14 +84,25 @@ impl ChatTemplate for NemotronTemplate {
 
             if !desc.is_empty() {
                 s.push_str("\n<description>");
-                s.push_str(desc.trim());
+                s.push_str(&desc);
                 s.push_str("</description>");
             }
 
             s.push_str("\n<parameters>");
             if let Some(params) = func.get("parameters") {
                 if let Some(props) = params.get("properties").and_then(|p| p.as_object()) {
-                    for (param_name, param_fields) in props {
+                    let ordered: Vec<(&String, &serde_json::Value)> = match budget {
+                        Some(b) => {
+                            let required: Vec<&str> = params
+                                .get("required")
+                                .and_then(|r| r.as_array())
+                                .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                                .unwrap_or_default();
+                            ordered_params(props, &required, b.max_params)
+                        }
+                        None => props.iter().collect(),
+                    };
+                    for (param_name, param_fields) in ordered {
                         s.push_str("\n<parameter>");
                         s.push_str("\n<name>");
                         s.push_str(param_name);
@@ -98,9 +115,15 @@ impl ChatTemplate for NemotronTemplate {
                         }
 
                         if let Some(pdesc) = param_fields.get("description").and_then(|d| d.as_str()) {
-                            s.push_str("\n<description>");
-                            s.push_str(pdesc.trim());
-                            s.push_str("</description>");
+                            let pdesc = match budget {
+                                Some(b) => first_sentence(pdesc, b.param_desc_chars),
+                                None => pdesc.trim().to_string(),
+                            };
+                            if !pdesc.is_empty() {
+                                s.push_str("\n<description>");
+                                s.push_str(&pdesc);
+                                s.push_str("</description>");
+                            }
                         }
 
                         s.push_str("\n</parameter>");
@@ -140,6 +163,22 @@ impl ChatTemplate for NemotronTemplate {
         );
 
         s
+    }
+}
+
+impl ChatTemplate for NemotronTemplate {
+    fn format_tools(&self, tools: &[serde_json::Value]) -> String {
+        if tools.is_empty() {
+            return String::new();
+        }
+        NemotronTemplate::render(tools, None)
+    }
+
+    fn format_tools_compact(&self, tools: &[serde_json::Value], tier: ModelTier) -> String {
+        if tools.is_empty() || !ToolBudget::is_compact(tier) {
+            return self.format_tools(tools);
+        }
+        NemotronTemplate::render(tools, Some(ToolBudget::for_tier(tier)))
     }
 
     fn parse_tool_calls(&self, text: &str) -> Vec<ToolCall> {

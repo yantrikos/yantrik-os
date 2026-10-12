@@ -4,6 +4,7 @@
 //! Tool calling uses text-based JSON format similar to Qwen.
 
 use super::ChatTemplate;
+use crate::capability::ModelTier;
 use crate::types::{ChatMessage, ToolCall};
 use super::qwen::QwenTemplate;
 
@@ -12,6 +13,10 @@ pub struct GemmaTemplate;
 impl ChatTemplate for GemmaTemplate {
     fn format_tools(&self, tools: &[serde_json::Value]) -> String {
         QwenTemplate.format_tools(tools)
+    }
+
+    fn format_tools_compact(&self, tools: &[serde_json::Value], tier: ModelTier) -> String {
+        QwenTemplate.format_tools_compact(tools, tier)
     }
 
     fn parse_tool_calls(&self, text: &str) -> Vec<ToolCall> {
