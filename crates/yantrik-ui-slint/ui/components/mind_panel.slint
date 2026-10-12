@@ -596,8 +596,11 @@ component MindCard inherits Rectangle {
             padding-top: 3px;
             padding-bottom: 3px;
             spacing: 1px;
+            // A horizontal layout does not ask a wrapping text how tall it is at its width, so the
+            // row is told: as tall as the sentence wraps to.
             HorizontalLayout {
                 spacing: 8px;
+                height: Math.max(16px, act-text.preferred-height);
                 VerticalLayout {
                     padding-top: 3px;
                     alignment: start;
@@ -608,7 +611,7 @@ component MindCard inherits Rectangle {
                         tint: act.outcome == "ok" ? Theme.color-success : act.outcome == "failed" ? Theme.color-danger : Theme.text-dim;
                     }
                 }
-                Text {
+                act-text := Text {
                     text: act.what;
                     color: act.outcome == "failed" ? Theme.color-danger : Theme.text-primary;
                     font-size: Theme.fs-caption;

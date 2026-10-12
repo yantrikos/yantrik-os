@@ -169,10 +169,11 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     draw();
 
     // An agent's row opens that agent in the Agents screen. Swept down the Working section's rows
-    // only, and stopped the moment the shell leaves the desktop.
+    // only, and stopped the moment the shell leaves the desktop. They start lower than they did:
+    // the status line wraps and the ceiling is a sentence of its own (UI punch list, 12 October).
     let x = 1110.;
-    let mut y = 296.;
-    while y < 420. && ui.get_current_screen() == 1 {
+    let mut y = 340.;
+    while y < 470. && ui.get_current_screen() == 1 {
         click(w, x, y);
         draw();
         y += 4.;
