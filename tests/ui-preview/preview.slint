@@ -1036,3 +1036,110 @@ export component PickerProbe inherits Window {
         opened(w) => { root.opened-count += 1; }
     }
 }
+
+// The first run (onboarding_first_run.slint), screen by screen, and the chat's first success.
+// src/first_run_tests.rs plays the shell: it answers each callback the way wire/onboarding.rs
+// does, with fixture cards and rows, and drives real key events.
+import { FirstRunScreen, FirstRunProvider, FirstRunModel, FirstRunCheck, FirstRunMind } from "onboarding_first_run.slint";
+import { TextScale } from "theme.slint";
+export { FirstRunProvider, FirstRunModel, FirstRunCheck, FirstRunMind }
+export component FirstRunProbe inherits Window {
+    width: 1280px;
+    height: 800px;
+    default-font-family: Theme.font-ui;
+    background: Theme.bg-deep;
+    in property <bool> light: false;
+    changed light => { ThemeMode.dark = !root.light; }
+    in-out property <float> scale: 1.0;
+    changed scale => { TextScale.factor = root.scale; }
+    out property <float> scale-now: TextScale.factor;
+    in-out property <int> step <=> screen.step;
+    in property <bool> installer-chose;
+    in property <bool> ask-name;
+    in-out property <string> person-name <=> screen.person-name;
+    in-out property <string> named;
+    in property <[FirstRunModel]> models;
+    in-out property <string> chosen-model <=> screen.chosen-model;
+    in-out property <string> picked;
+    in-out property <int> retries;
+    in property <[FirstRunProvider]> featured;
+    in property <[FirstRunProvider]> every-provider;
+    in-out property <string> chosen-id <=> screen.chosen-id;
+    in-out property <string> chosen-name <=> screen.chosen-name;
+    in-out property <string> connect-mode <=> screen.connect-mode;
+    in-out property <string> key-input <=> screen.key-input;
+    in-out property <bool> show-every <=> screen.show-every;
+    in property <string> connect-status;
+    in property <string> connect-words;
+    in property <string> chosen-key-placeholder;
+    in property <bool> chosen-key-help;
+    in-out property <bool> share <=> screen.share;
+    in-out property <bool> private-lane <=> screen.private-lane;
+    in-out property <bool> show-shared <=> screen.show-shared;
+    in property <[string]> shared-items;
+    in property <string> private-lane-words;
+    in property <[FirstRunMind]> minds;
+    in property <bool> checks-done;
+    callback choose-provider(string);
+    in-out property <string> spoken;
+    in-out property <string> submitted;
+    in-out property <string> sharing;
+    in-out property <int> check-starts;
+    in-out property <int> finishes;
+    screen := FirstRunScreen {
+        width: 100%; height: 100%;
+        installer-chose: root.installer-chose;
+        ask-name: root.ask-name;
+        name-given(n) => { root.named = n; }
+        models: root.models;
+        pick-model(m) => { root.picked = m; root.chosen-model = m; }
+        retry-pick => { root.retries += 1; }
+        featured: root.featured;
+        every-provider: root.every-provider;
+        connect-status: root.connect-status;
+        connect-words: root.connect-words;
+        chosen-key-placeholder: root.chosen-key-placeholder;
+        chosen-key-help: root.chosen-key-help;
+        shared-items: root.shared-items;
+        private-lane-words: root.private-lane-words;
+        minds: root.minds;
+        checks-done: root.checks-done;
+        read-aloud(t) => { root.spoken = t; }
+        choose-provider(id) => { root.choose-provider(id); }
+        submit-key(id, key) => { root.submitted = id + ":" + key; }
+        sharing-chosen(m) => { root.sharing = m; }
+        start-checks => { root.check-starts += 1; }
+        finished => { root.finishes += 1; }
+    }
+}
+
+export component FirstRunChatProbe inherits Window {
+    width: 1280px;
+    height: 800px;
+    default-font-family: Theme.font-ui;
+    background: Theme.bg-deep;
+    in property <bool> light: false;
+    changed light => { ThemeMode.dark = !root.light; }
+    in property <[MessageData]> messages;
+    in property <bool> generating: false;
+    in property <string> outcome: "";
+    in property <string> failure: "";
+    in-out property <int> retries;
+    in-out property <int> talks;
+    in-out property <int> dones;
+    IntentLens {
+        width: 100%;
+        height: 100%;
+        is-open: true;
+        chat-mode: true;
+        mind-name: "Yantrik Mind";
+        messages: root.messages;
+        is-generating: root.generating;
+        first-run: true;
+        first-run-outcome: root.outcome;
+        first-run-failure: root.failure;
+        mic-pressed => { root.talks += 1; }
+        first-run-done => { root.dones += 1; }
+        first-run-retry => { root.retries += 1; }
+    }
+}

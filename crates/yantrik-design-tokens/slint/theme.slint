@@ -113,6 +113,15 @@ export global MotionPrefs {
     in-out property <bool> reduced: false;
 }
 
+// The person's "Make text bigger" (the first run's first screen, design/experience-final-
+// 2026-10-10.md). Every `fs-` size in Theme below is multiplied by it, so the whole shell
+// follows the choice, live: 1.0 is the scale as drawn, and the first run offers 1.25 and 1.5.
+// The shell sets it at every start from the saved choice (wire/onboarding.rs). A screen that
+// sizes its text in plain pixels rather than with an `fs-` token does not follow it.
+export global TextScale {
+    in-out property <float> factor: 1.0;
+}
+
 // ─── Bright and sharp (design/desk-and-mind-2026-09-23.md, section 1) ─────
 //
 // The desktop read muddy: grey text on grey cards on a grey ground, each step a few percent
@@ -347,36 +356,36 @@ export global Theme {
     // scale topped out at 20px, which is a panel title, so there was no size available for
     // "say one thing, large, and nothing else near it" — and a desktop whose largest text is
     // the same size as a section header has no focal point at all.
-    out property <length> fs-hero: 44px;
+    out property <length> fs-hero: 44px * TextScale.factor;
     out property <int>    fw-hero: 600;
-    out property <length> fs-hero-sub: 17px;
+    out property <length> fs-hero-sub: 17px * TextScale.factor;
     out property <int>    fw-hero-sub: 400;
-    out property <length> fs-page: 24px;         // A screen's own title: Agents, History
-    out property <length> fs-display: 20px;      // Panel titles, major headers
+    out property <length> fs-page: 24px * TextScale.factor;         // A screen's own title: Agents, History
+    out property <length> fs-display: 20px * TextScale.factor;      // Panel titles, major headers
     out property <int>    fw-display: 600;
-    out property <length> fs-title-1: 18px;      // App titles, large section headers
+    out property <length> fs-title-1: 18px * TextScale.factor;      // App titles, large section headers
     out property <int>    fw-title-1: 600;
-    out property <length> fs-title-2: 16px;      // Sub-section headers
+    out property <length> fs-title-2: 16px * TextScale.factor;      // Sub-section headers
     out property <int>    fw-title-2: 600;
-    out property <length> fs-headline: 15px;     // Toolbar titles, emphasized text
+    out property <length> fs-headline: 15px * TextScale.factor;     // Toolbar titles, emphasized text
     out property <int>    fw-headline: 600;
-    out property <length> fs-body: 14px;         // Primary UI text
+    out property <length> fs-body: 14px * TextScale.factor;         // Primary UI text
     out property <int>    fw-body: 400;
-    out property <length> fs-body-strong: 14px;  // Emphasized body text, buttons
+    out property <length> fs-body-strong: 14px * TextScale.factor;  // Emphasized body text, buttons
     out property <int>    fw-body-strong: 500;
-    out property <length> fs-caption: 12px;      // Status bar, metadata, timestamps
+    out property <length> fs-caption: 12px * TextScale.factor;      // Status bar, metadata, timestamps
     out property <int>    fw-caption: 400;
-    out property <length> fs-micro: 11px;        // Badges, fine detail
+    out property <length> fs-micro: 11px * TextScale.factor;        // Badges, fine detail
     out property <int>    fw-micro: 500;
     // An app's name under its tile: the desktop's workspace, the launcher, the window switcher,
     // a mind's desk and the dock's hover label, all drawn by AppLabel. It was 11-12px regular,
     // much of it grey, and on a 1x screen with no GPU that read soft beside the tiles above it.
     // lh-label is one line of it rounded up to whole pixels (Barlow's line box is 1.2em, 15.6px
     // here), so whatever a layout stacks under a label still starts on a whole pixel.
-    out property <length> fs-label: 13px;
+    out property <length> fs-label: 13px * TextScale.factor;
     out property <int>    fw-label: 500;
-    out property <length> lh-label: 16px;
-    out property <length> fs-mono: 13px;         // Terminal, code, IDs
+    out property <length> lh-label: 16px * TextScale.factor;
+    out property <length> fs-mono: 13px * TextScale.factor;         // Terminal, code, IDs
 
     // ─── Spacing scale (8px base grid) ────────────────────────────
     out property <length> sp-1: 4px;
