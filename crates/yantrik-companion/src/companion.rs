@@ -5928,6 +5928,23 @@ mod proactive_queue_tests {
         assert!(pending.iter().any(|u| u.safety), "still waiting to be said as itself");
     }
 
+    /// A chat turn never takes an urge of a kind the person stopped into its context: "Stop
+    /// this kind" holds in conversation too, and the urge stays pending, not used up (#756).
+    #[test]
+    fn a_chat_turn_never_brings_up_a_stopped_kind() {
+        use crate::proactive_backoff::{KindBackoff, ProactiveKind};
+        let c = companion();
+        let spec = crate::types::UrgeSpec::new("curiosity", "an idea", 0.6)
+            .with_cooldown("curiosity:stopped")
+            .with_message("An idea.");
+        c.urge_queue.push(&c.db.conn(), &spec).expect("queued");
+        KindBackoff::stop(&c.db.conn(), ProactiveKind::from_source("curiosity"), now_ts());
+        assert!(c.urge_queue.pop_for_interaction(&c.db.conn(), 10).is_empty());
+        assert_eq!(c.urge_queue.get_pending(&c.db.conn(), 10).len(), 1, "kept, never deleted");
+        KindBackoff::reset(&c.db.conn(), ProactiveKind::from_source("curiosity"), now_ts());
+        assert_eq!(c.urge_queue.pop_for_interaction(&c.db.conn(), 10).len(), 1);
+    }
+
     /// An urge made from an excluded memory is never queued; one from another memory is, and
     /// carries its memory ids.
     #[test]

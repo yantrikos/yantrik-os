@@ -232,6 +232,12 @@ impl UserModel {
         m.last_user_ts = now_ts;
     }
 
+    /// Stop waiting for an answer to the last proactive message without learning anything from
+    /// the silence: the person may be away, or never have seen it (#756: never punish absence).
+    pub fn forget_unanswered_proactive(&self) {
+        self.inner.lock().unwrap().pending_proactive = None;
+    }
+
     /// Called when a proactive message expires without response.
     /// Typically after ~2h of silence following a proactive send.
     pub fn on_proactive_ignored(&self, now_ts: f64) {
@@ -630,6 +636,22 @@ mod tests {
         let eng = model.engagement();
         // Should be lower than cold start
         assert!(eng < 0.67, "Engagement should decrease after ignore, got {}", eng);
+    }
+
+    /// Two hours without an answer teaches nothing: the person may be away (#756).
+    #[test]
+    fn an_unanswered_message_teaches_nothing() {
+        let model = UserModel::new();
+        let now = 1700000000.0;
+        let (eng, backoff) = (model.engagement(), model.backoff_multiplier());
+        for i in 0..3 {
+            let t = now + (i as f64) * 3600.0;
+            model.on_proactive_sent("Humor", "Social", t);
+            model.forget_unanswered_proactive();
+        }
+        assert_eq!(model.inner_pending_ts(), None);
+        assert_eq!(model.engagement(), eng);
+        assert_eq!(model.backoff_multiplier(), backoff);
     }
 
     #[test]

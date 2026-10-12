@@ -202,8 +202,9 @@ impl UrgeQueue {
             .expect("query pop_for_interaction")
             .filter_map(|r| r.ok())
             // Not into a chat's context either: a safety urge is said as itself (above, by the
-            // query), and an urge from a memory the person excluded is not used (#754).
-            .filter(|u| !crate::proactive_backoff::MemoryExclusions::any_excluded(conn, &u.memory_ids))
+            // query), and an urge of a kind the person stopped, or from a memory they excluded,
+            // is not used (#754, #756).
+            .filter(|u| !crate::proactive_backoff::withheld(conn, u))
             .collect();
 
         // Mark as delivered
