@@ -100,6 +100,9 @@ pub(crate) fn delete_card() -> ApprovalRequest {
         what: "Deletes: id: sweep-demo-not-real".into(),
         exactly: "id: sweep-demo-not-real".into(),
         undo: "Undo: not possible, the app says so".into(),
+        target_rows: Default::default(),
+        target_missing: "".into(),
+        confirm_blocked: false,
         discrepancies: lines(&[]),
         app: "calendar".into(),
         action: "delete_event".into(),
@@ -117,6 +120,39 @@ pub(crate) fn delete_card() -> ApprovalRequest {
         age_text: "Expires in 2 min, then declined".into(),
         decided_at: "".into(),
         session: false,
+    }
+}
+
+/// calendar.delete_event with its target named by the calendar (`app.name_target`): "Deletes:
+/// Dentist", the rows under it, the raw id only in the argument box under Details, and the button
+/// saying the series goes because the event repeats.
+pub(crate) fn resolved_delete_card() -> ApprovalRequest {
+    ApprovalRequest {
+        id: "appr-review-named".into(),
+        confirm_label: "Delete series".into(),
+        what: "Deletes: Dentist".into(),
+        exactly: "".into(),
+        target_rows: lines(&[
+            "When: Fri 25 Sep 2026, 13:00\u{2013}14:00 (local time, UTC+01:00)",
+            "Calendar: on this computer",
+            "Occurrences: the whole series: it repeats weekly, and every occurrence is deleted",
+        ]),
+        args: lines(&["id: 01a0c718-3931-7342-b9c7-8de36140ddb0"]),
+        ..delete_card()
+    }
+}
+
+/// The same action for an id the calendar does not hold: the target could not be named, so the
+/// card says so and the confirm is disabled — Decline only.
+pub(crate) fn unresolved_delete_card() -> ApprovalRequest {
+    ApprovalRequest {
+        id: "appr-review-unnamed".into(),
+        what: "Deletes: id: no-such-event".into(),
+        exactly: "id: no-such-event".into(),
+        target_missing: "Target details unavailable \u{00b7} the app could not say what this would delete".into(),
+        confirm_blocked: true,
+        args: lines(&["id: no-such-event"]),
+        ..delete_card()
     }
 }
 

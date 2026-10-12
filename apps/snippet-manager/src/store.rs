@@ -317,6 +317,22 @@ impl Store {
         store
     }
 
+    /// The store as it is on disk now, for a read that must change nothing: `None` when there is
+    /// nothing readable, rather than [`Store::load`]'s setting a broken file aside. The approval
+    /// card's name for a snippet is read this way (`main.rs`, `delete`).
+    pub fn peek(path: PathBuf) -> Option<Self> {
+        let raw = read_capped(&path, MAX_FILE).ok()??;
+        let state = decode(&raw).ok()?;
+        Some(Self {
+            path,
+            snippets: state.snippets,
+            collections: state.collections,
+            next_id: state.next_id,
+            next_collection: state.next_collection,
+            notice: String::new(),
+        })
+    }
+
     /// Open the store in its usual place.
     pub fn open() -> Self {
         Self::load(state_path(&dir()))

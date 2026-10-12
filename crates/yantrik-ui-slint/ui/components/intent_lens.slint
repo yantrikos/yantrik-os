@@ -121,6 +121,16 @@ export struct ApprovalRequest {
     what: string,
     exactly: string,
     undo: string,
+    // What the target is beyond its name, in the APP's words from `app.name_target` — "When: Fri
+    // 25 Sep 2026, 13:00–14:00 (local time, UTC+01:00)", "Calendar: …", "Occurrences: …" — one
+    // pinned elided line each, escaped in the shell. Empty unless the app named the target; then
+    // `what` reads "Deletes: <its name>" and the raw id is under Details only.
+    target-rows: [string],
+    // "Target details unavailable · the app could not say what this would delete": a destructive
+    // card whose target the app could not name. Drawn in red above the buttons; the confirm is
+    // then disabled (`confirm-blocked`) and the store refuses the grant whatever presses it.
+    target-missing: string,
+    confirm-blocked: bool,
     // Graded dangerous, or the app says it cannot be undone: the affirmative button is the kit's
     // filled red and says the action (sign-off item 1). The same reading as `warning`.
     destructive: bool,
@@ -358,6 +368,9 @@ export component ApprovalCard inherits Rectangle {
         // `approval-allow` / `on_approval_allow` in the shell: nothing else on the card, and
         // nothing a caller sends, can press it.
         property <bool> allow-ready: !self.overflowing || root.read-id == root.data.id;
+        // Allow (and the standing yes) answer only when the request has been in view AND the app
+        // could name what a destructive call acts on. Decline always answers.
+        property <bool> can-allow: self.allow-ready && !root.data.confirm-blocked;
         // A new request in this card starts at its top, however far the last one was scrolled.
         property <string> card-id: root.data.id;
         changed card-id => { above-flick.viewport-y = 0px; }
@@ -764,7 +777,7 @@ export component ApprovalCard inherits Rectangle {
                 // What a handle in the arguments names, in the words of the app that owns it (#54).
                 if root.data.target != "" : Text {
                     width: parent.width;
-                    text: "The name of the target is the app's own, from its describe; the grant binds to the arguments, not to the name.";
+                    text: "The name of the target is the app's own, read from the app; the grant binds to the arguments, not to the name.";
                     color: Theme.text-secondary;
                     font-size: root.details-type;
                     wrap: word-wrap;
@@ -797,16 +810,40 @@ export component ApprovalCard inherits Rectangle {
             changes := VerticalLayout {
                 spacing: Theme.sp-1;
 
+                // Naming a target, it wraps: "Deletes: thesis · ~/tmp/…" cut at the card's edge hid
+                // the one part that said which thesis (security review of #652, M1). The name is
+                // bounded in the shell (120 escaped characters, its name before its path), and a
+                // name cut even there keeps every bound argument under "Exactly:" below. Naming
+                // nothing, it is one line, and "Exactly:" carries all of it whenever it is cut.
                 what-line := Text {
+                    width: parent.width;
                     text: root.data.what;
                     color: Theme.text-primary;
                     font-size: Theme.fs-body;
-                    wrap: no-wrap;
+                    wrap: root.data.target != "" || root.data.target-rows.length > 0 ? word-wrap : no-wrap;
                     overflow: elide;
                     visible: root.data.what != "";
                     height: root.data.what != "" ? self.preferred-height : 0px;
                 }
-                if root.data.exactly != "" && (root.data.target != "" || what-line.preferred-width > what-line.width) : Text {
+                // The rest of what the app named the target as, each wrapped whole: nothing the
+                // card names is cut at its edge, and the section scrolls, holding Allow back,
+                // when they do not all fit.
+                for line in root.data.target-rows : Text {
+                    width: parent.width;
+                    text: line;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-body;
+                    wrap: word-wrap;
+                }
+                if root.data.target-missing != "" : Text {
+                    width: parent.width;
+                    text: root.data.target-missing;
+                    color: Theme.color-danger;
+                    font-size: Theme.fs-body;
+                    wrap: word-wrap;
+                }
+                if root.data.exactly != "" && (root.data.target != "" || root.data.target-rows.length > 0
+                    || what-line.preferred-width > what-line.width) : Text {
                     width: parent.width;
                     text: "Exactly: " + root.data.exactly;
                     color: Theme.text-primary;
@@ -896,8 +933,9 @@ export component ApprovalCard inherits Rectangle {
                     label: root.data.confirm-label != "" ? root.data.confirm-label : "Allow once";
                     variant: root.data.destructive ? 3 : 0;
                     pointer-only: true;
-                    disabled: !card.allow-ready;
-                    tooltip: card.allow-ready ? "" : "Scroll to read the whole request first";
+                    disabled: !card.can-allow;
+                    tooltip: root.data.confirm-blocked ? "The app could not say what this would act on"
+                        : card.allow-ready ? "" : "Scroll to read the whole request first";
                     horizontal-stretch: 1;
                     clicked => { root.allow(); }
                 }
@@ -931,16 +969,16 @@ export component ApprovalCard inherits Rectangle {
                 Rectangle {
                     height: 30px;
                     border-radius: Theme.r-md;
-                    background: session-ta.has-hover && card.allow-ready ? Theme.hover-fill : transparent;
+                    background: session-ta.has-hover && card.can-allow ? Theme.hover-fill : transparent;
                     border-width: 1px;
                     border-color: Theme.border-subtle;
-                    opacity: card.allow-ready ? 1.0 : 0.45;
+                    opacity: card.can-allow ? 1.0 : 0.45;
 
                     // A standing yes is a yes: held back with Allow until the whole request has
                     // been in view.
                     session-ta := TouchArea {
-                        enabled: card.allow-ready;
-                        mouse-cursor: card.allow-ready ? pointer : default;
+                        enabled: card.can-allow;
+                        mouse-cursor: card.can-allow ? pointer : default;
                         clicked => { root.allow-session(); }
                     }
                     Text {
