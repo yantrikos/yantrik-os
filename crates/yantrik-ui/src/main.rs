@@ -124,6 +124,8 @@ mod mind_mode;
 mod never_ask;
 /// The right edge of every screen: the answering mind, what is at work, what it did.
 mod mind_panel;
+mod mind_panel_words;
+mod memory_plain;
 /// A desktop of the mind's own, inside one window: where the apps a mind opens are drawn (#239).
 mod mind_view;
 /// Whether the window a launch promised appeared, and where: `open_app`'s answer reads it back.

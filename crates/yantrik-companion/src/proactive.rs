@@ -500,7 +500,63 @@ pub fn judge_proactive(text: &str) -> NotificationVerdict {
     if !is_actionable(text) {
         return NotificationVerdict::LensOnly;
     }
-    NotificationVerdict::Notify(clean_for_person(text))
+    // Evidence, never testimony (design/companion-who-cares-2026-10-11.md): a sentence in which
+    // the mind claims a feeling is dropped, and so is a bare greeting that would otherwise become
+    // the card's whole title. UI punch list, 12 October: a card titled "Hey." ended "I like that".
+    let plain = without_claimed_feelings(text);
+    if plain.trim().is_empty() {
+        return NotificationVerdict::Refuse("nothing but a claimed feeling");
+    }
+    NotificationVerdict::Notify(clean_for_person(&plain))
+}
+
+/// Phrases in which the mind claims a feeling of its own. Matched case-insensitively, with
+/// typographic apostrophes folded, inside one sentence; the sentence is dropped, not the message.
+/// The source scan in `yantrik-companion-instincts/tests/instinct_copy_guard.rs` bans the same
+/// claims in written copy; this is the same rule for what a model writes at run time.
+pub const CLAIMED_FEELINGS: &[&str] = &[
+    "i like that", "i like it", "i love that", "i love it", "i like keeping", "i like seeing",
+    "i love seeing", "i'm glad", "i am glad", "i'm so glad", "i'm proud", "i am proud",
+    "makes me happy", "made me happy", "made my day", "i feel ", "i felt ", "i'm excited",
+    "i am excited", "i was worried", "i worry about you", "worried about you", "missed you",
+    "i care about you", "i enjoy", "warms my",
+];
+
+/// Openings that are only a greeting: "Hey.", "Hi there!", "Good morning, Pranab." Dropped when
+/// something follows them, because the card's title is the first sentence.
+const GREETING_ONLY: &[&str] = &["hey", "hi", "hello", "hi there", "hey there", "good morning", "good afternoon", "good evening", "morning"];
+
+/// The text without the sentences that claim a feeling, and without a greeting-only first
+/// sentence when anything is left after it.
+pub fn without_claimed_feelings(text: &str) -> String {
+    let mut sentences: Vec<&str> = Vec::new();
+    let mut start = 0;
+    for (i, c) in text.char_indices() {
+        if matches!(c, '.' | '!' | '?' | '\n') {
+            let end = i + c.len_utf8();
+            // Keep "3.5" and "v4.1" whole: a full stop ends a sentence only before a space or the end.
+            if c == '.' && text[end..].chars().next().is_some_and(|n| !n.is_whitespace()) {
+                continue;
+            }
+            sentences.push(&text[start..end]);
+            start = end;
+        }
+    }
+    if start < text.len() {
+        sentences.push(&text[start..]);
+    }
+    let claims = |s: &str| {
+        let lower = s.to_lowercase().replace(['\u{2019}', '\u{2018}'], "'");
+        CLAIMED_FEELINGS.iter().any(|p| lower.contains(p))
+    };
+    let kept: Vec<&str> = sentences.into_iter().filter(|s| !claims(s)).collect();
+    let is_greeting = |s: &str| {
+        let words = s.trim().trim_end_matches(['.', '!', ',', '\u{2014}', '-']).trim().to_lowercase();
+        GREETING_ONLY.iter().any(|g| words == *g || words.strip_prefix(g).is_some_and(|rest| rest.starts_with([' ', ','])
+            && rest.trim_start_matches([' ', ',']).split_whitespace().count() <= 1))
+    };
+    let skip = usize::from(kept.len() > 1 && is_greeting(kept[0]) && kept[1..].iter().any(|s| !s.trim().is_empty()));
+    kept[skip..].concat().trim().to_string()
 }
 
 /// The [`NotificationVerdict::Refuse`] case on its own, for the gates that drop a message
@@ -700,6 +756,26 @@ fn tidy_spaces(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_proactive_card_never_claims_a_feeling() {
+        // UI punch list, 12 October: a card titled "Hey." whose body ended "I like that".
+        let card = "Hey. You're up before the sun \u{2014} your 9:00 meeting is in two hours. I like that.";
+        let NotificationVerdict::Notify(said) = judge_proactive(card) else { panic!("still actionable") };
+        assert_eq!(said, "You're up before the sun \u{2014} your 9:00 meeting is in two hours.");
+        for claim in CLAIMED_FEELINGS {
+            assert!(!said.to_lowercase().contains(claim), "{claim}");
+        }
+        // Typographic apostrophes, and a message that was nothing but a feeling.
+        assert_eq!(without_claimed_feelings("Backup done. I\u{2019}m glad it worked."), "Backup done.");
+        assert_eq!(judge_proactive("Heads up: I love that."), NotificationVerdict::Refuse("nothing but a claimed feeling"));
+        // Version numbers stay whole, and a sentence that only mentions liking is kept.
+        assert_eq!(without_claimed_feelings("Qwen 3.5 finished the task you asked for."), "Qwen 3.5 finished the task you asked for.");
+        assert_eq!(without_claimed_feelings("You said you like tea. Reminder: buy tea."), "You said you like tea. Reminder: buy tea.");
+        // A greeting alone is never a card's whole title, but a greeting is kept when it is all there is.
+        assert_eq!(without_claimed_feelings("Good morning, Pranab. Your meeting starts at 9."), "Your meeting starts at 9.");
+        assert_eq!(without_claimed_feelings("Hey."), "Hey.");
+    }
 
     #[test]
     fn a_tool_error_is_never_said_out_loud() {

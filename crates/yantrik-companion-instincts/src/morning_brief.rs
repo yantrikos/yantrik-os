@@ -60,7 +60,8 @@ impl Instinct for MorningBriefInstinct {
                 "EXECUTE Deliver {}'s morning brief. Call get_weather, calendar_today, \
              email_check, and system_info. Then compose a concise daily briefing \
              with weather, today's events, unread emails, and system status. \
-             Be warm and natural — this is {} starting their day.",
+             Be warm and natural — this is {} starting their day. Say what you found; \
+             do not claim feelings of your own.",
             state.config_user_name, state.config_user_name
             ),
             ModelTier::Tiny => format!(

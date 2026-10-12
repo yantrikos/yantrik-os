@@ -370,9 +370,12 @@ pub struct Act {
 /// One row of Recent actions.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ActLine {
+    /// The whole sentence: "Updated an event in Calendar." (`mind_panel_words::act_words`).
     pub what: String,
     pub when: String,
     pub outcome: String,
+    /// The proof, for Details: "calendar.update_event · ok".
+    pub detail: String,
 }
 
 /// The last `count` acts, newest first. THE source of Recent actions: today the mind audit — what
@@ -423,17 +426,25 @@ fn parse_audit_line(line: &str) -> Option<Act> {
     })
 }
 
-/// The rows: `app.action`, how long ago, and how it went.
+/// The rows: what was done, as a sentence, how long ago, and how it went; `app.action` and the
+/// status as recorded under Details. The shell's own actions are said from the description its
+/// surface publishes; another app's, which is in another process, from the action's name.
 pub fn act_lines(acts: &[Act], now: u64, count: usize) -> Vec<ActLine> {
     let mut sorted: Vec<&Act> = acts.iter().collect();
     sorted.sort_by(|a, b| b.unix.cmp(&a.unix));
     sorted
         .into_iter()
         .take(count)
-        .map(|a| ActLine {
-            what: format!("{}.{}", a.app, a.action),
-            when: ago(now, a.unix),
-            outcome: if a.outcome.trim().is_empty() { "not reported".into() } else { a.outcome.trim().to_string() },
+        .map(|a| {
+            let description =
+                (a.app == "shell").then(|| yantrik_app_runtime::control::published_description(&a.action)).flatten();
+            let words = crate::mind_panel_words::act_words(&a.app, &a.action, &a.outcome, description.as_deref());
+            ActLine {
+                what: words.sentence,
+                when: ago(now, a.unix),
+                outcome: if a.outcome.trim().is_empty() { "not reported".into() } else { a.outcome.trim().to_string() },
+                detail: words.detail,
+            }
         })
         .collect()
 }
@@ -482,6 +493,9 @@ pub struct Now {
     pub builtin: bool,
     pub model: String,
     pub model_named: bool,
+    /// What `model` was made from, as the mind or the configuration spelled it: the panel's
+    /// Details, never its face. Empty when nothing named a model.
+    pub model_id: String,
     pub state: String,
     pub project: String,
     pub memory: String,
@@ -547,9 +561,18 @@ pub fn build(input: &Inputs) -> Panel {
         },
     };
 
+    // A model is said by its plain name (UI punch list, 12 October: "attached ·
+    // ollama-cloud:deeps…" on every screen); the id it was made from goes under Details.
+    let (model, model_id) = if model_named {
+        let plain = crate::mind_panel_words::plain_model_name(&model);
+        if plain.is_empty() { (model, String::new()) } else { (plain, model) }
+    } else {
+        (model, String::new())
+    };
+
     let (memory, memory_known) = match input.memory_count {
-        Some(n) => (format!("YantrikDB · {} {}", thousands(n), if n == 1 { "memory" } else { "memories" }), true),
-        None => ("YantrikDB · count not known yet".to_string(), false),
+        Some(n) => (format!("{} {} kept", thousands(n), if n == 1 { "memory" } else { "memories" }), true),
+        None => ("count not known yet".to_string(), false),
     };
     let minds = match &input.minds {
         None => "not known yet".to_string(),
@@ -572,6 +595,7 @@ pub fn build(input: &Inputs) -> Panel {
             builtin,
             model,
             model_named,
+            model_id,
             state,
             project: input.project.trim().to_string(),
             memory,
@@ -645,6 +669,7 @@ pub fn describe_of(choice: Choice, screen: i32, focus_mode: bool, now: &Now, rec
         "focus_mode_holds_it_collapsed": screen == DESKTOP_SCREEN && focus_mode && choice.desktop,
         "mind": if now.known { serde_json::json!(now.mind) } else { serde_json::Value::Null },
         "model": if now.known { serde_json::json!(now.model) } else { serde_json::Value::Null },
+        "model_id": if now.known && !now.model_id.is_empty() { serde_json::json!(now.model_id) } else { serde_json::Value::Null },
         "at_work": now.running,
         "needs_you": now.needs_you,
         "recipes_in_flight": if now.recipes_known { serde_json::json!(recipes) } else { serde_json::Value::Null },
@@ -674,6 +699,7 @@ pub fn for_describe(ui: &App) -> serde_json::Value {
         known: now.known,
         mind: now.mind.to_string(),
         model: now.model.to_string(),
+        model_id: now.model_id.to_string(),
         running: now.running.max(0) as usize,
         needs_you: now.needs_you.max(0) as usize,
         recipes_known: now.recipes_known,
@@ -773,6 +799,7 @@ fn publish(ui: &App, panel: &Panel) {
         builtin: n.builtin,
         model: n.model.as_str().into(),
         model_named: n.model_named,
+        model_id: n.model_id.as_str().into(),
         state: n.state.as_str().into(),
         project: n.project.as_str().into(),
         memory: n.memory.as_str().into(),
@@ -819,7 +846,12 @@ fn publish(ui: &App, panel: &Panel) {
     let acts: Vec<MindPanelAct> = panel
         .acts
         .iter()
-        .map(|a| MindPanelAct { what: a.what.as_str().into(), when: a.when.as_str().into(), outcome: a.outcome.as_str().into() })
+        .map(|a| MindPanelAct {
+            what: a.what.as_str().into(),
+            when: a.when.as_str().into(),
+            outcome: a.outcome.as_str().into(),
+            detail: a.detail.as_str().into(),
+        })
         .collect();
     if let Some(model) = crate::models::changed(g.get_acts(), acts) {
         g.set_acts(model);
@@ -867,7 +899,8 @@ mod tests {
         let panel = build(&input());
         assert_eq!(panel.now.mind, "Yantrik Companion");
         assert!(panel.now.builtin);
-        assert_eq!(panel.now.model, "qwen3.5:9b", "the built-in runs on the shell's configured model");
+        assert_eq!(panel.now.model, "Qwen 3.5 9B", "the built-in runs on the shell's configured model, by its plain name");
+        assert_eq!(panel.now.model_id, "qwen3.5:9b", "and the id is kept for Details");
         assert!(panel.now.model_named);
         assert_eq!(panel.now.state, "ready");
         assert_eq!(panel.now.initial, "Y");
@@ -877,7 +910,7 @@ mod tests {
         hermes.minds.as_mut().unwrap().answering =
             Some(Mind { name: "hermes".into(), builtin: false, detail: Some("gpt-6 on node1".into()) });
         let panel = build(&hermes);
-        assert_eq!(panel.now.model, "gpt-6 on node1");
+        assert_eq!(panel.now.model, "gpt-6 on node1", "a mind's own sentence is its words, not an id");
         assert_eq!(panel.now.state, "attached");
         assert_eq!(panel.now.initial, "H");
 
@@ -886,7 +919,14 @@ mod tests {
         let panel = build(&hermes);
         assert_eq!(panel.now.model, "model not reported");
         assert!(!panel.now.model_named);
-        assert!(!panel.now.model.contains("qwen"), "the shell's setting is not the attached mind's model");
+        assert!(!panel.now.model.to_lowercase().contains("qwen"), "the shell's setting is not the attached mind's model");
+        assert_eq!(panel.now.model_id, "");
+
+        // The punch list's status line, 12 October: the raw id never reaches the face.
+        hermes.minds.as_mut().unwrap().answering.as_mut().unwrap().detail = Some("ollama-cloud:deepseek-v4-flash".into());
+        let panel = build(&hermes);
+        assert_eq!(panel.now.model, "DeepSeek V4 Flash, on Ollama Cloud");
+        assert_eq!(panel.now.model_id, "ollama-cloud:deepseek-v4-flash");
 
         // Writing a reply, whoever is answering.
         hermes.generating = true;
@@ -905,12 +945,12 @@ mod tests {
         assert_eq!(panel.now.mind, "unknown");
         assert_eq!(panel.now.minds, "not known yet");
         assert!(!panel.now.memory_known);
-        assert_eq!(panel.now.memory, "YantrikDB · count not known yet", "not \"0 memories\"");
+        assert_eq!(panel.now.memory, "count not known yet", "not \"0 memories\"");
         assert!(!panel.now.recipes_known, "no read from the companion yet: recipes are not known, not none");
         assert_eq!(panel.now.project, "", "no project detected is drawn as such by the panel, not invented");
 
         let known = build(&input());
-        assert_eq!(known.now.memory, "YantrikDB · 1,234 memories");
+        assert_eq!(known.now.memory, "1,234 memories kept");
         assert_eq!(known.now.minds, "3 minds · 2 keep memory");
         assert!(known.now.recipes_known);
 
@@ -918,7 +958,7 @@ mod tests {
         one.memory_count = Some(1);
         one.minds = Some(MindsSeen { answering: None, count: 1, keep_memory: 1 });
         let panel = build(&one);
-        assert_eq!(panel.now.memory, "YantrikDB · 1 memory");
+        assert_eq!(panel.now.memory, "1 memory kept");
         assert_eq!(panel.now.minds, "1 mind · 1 keeps memory");
         assert_eq!(panel.now.mind, "no mind");
         assert_eq!(panel.now.model, "nothing is answering");
@@ -1046,16 +1086,23 @@ mod tests {
             now,
             ACT_ROWS,
         );
-        let rows: Vec<(&str, &str, &str)> = lines.iter().map(|l| (l.what.as_str(), l.when.as_str(), l.outcome.as_str())).collect();
+        let rows: Vec<(&str, &str, &str)> = lines.iter().map(|l| (l.detail.as_str(), l.when.as_str(), l.outcome.as_str())).collect();
         assert_eq!(
             rows,
             [
-                ("calendar.add_event", "just now", "not reported"),
-                ("files.copy", "1m ago", "ok"),
-                ("files.move", "4m ago", "failed"),
-                ("notes.create", "2h ago", "ok"),
+                ("calendar.add_event · not reported", "just now", "not reported"),
+                ("files.copy · ok", "1m ago", "ok"),
+                ("files.move · failed", "4m ago", "failed"),
+                ("notes.create · ok", "2h ago", "ok"),
             ]
         );
+        // Each row is a sentence; the raw action name is only under Details (UI punch list).
+        assert_eq!(lines[1].what, "Copied something in Files.");
+        assert!(lines[2].what.starts_with("Tried to move something in Files, but it did not work."), "{}", lines[2].what);
+        for l in &lines {
+            let raw = l.detail.split(" \u{b7} ").next().unwrap();
+            assert!(!l.what.contains(raw) && !l.what.contains('_'), "no raw name on the face: {}", l.what);
+        }
         assert_eq!(ago(now, now + 30), "just now", "a clock that disagrees is not a negative age");
         assert_eq!(ago(now, now - 200_000), "2d ago");
     }

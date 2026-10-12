@@ -466,15 +466,20 @@ fn wire_memory_search(ui: &App, ctx: &AppContext) {
 
                     let items: Vec<MemoryItem> = results
                         .iter()
-                        .map(|r| MemoryItem {
+                        .map(|r| {
+                            // A line the machine wrote in its own codes is said plainly; the
+                            // stored line goes under the row's Details, untouched.
+                            let (text, detail) = crate::memory_plain::plain(&r.text);
+                            MemoryItem {
                             rid: r.rid.clone().into(),
-                            text: r.text.clone().into(),
+                            text: text.into(),
+                            detail: detail.into(),
                             memory_type: r.memory_type.clone().into(),
                             importance: r.importance as f32,
                             valence: r.valence as f32,
                             score: r.score as f32,
                             time_ago: bridge::format_time_ago(now - r.created_at).into(),
-                        })
+                        }})
                         .collect();
                     ui.set_memory_results(ModelRc::new(VecModel::from(items)));
                     ui.set_is_searching_memories(false);

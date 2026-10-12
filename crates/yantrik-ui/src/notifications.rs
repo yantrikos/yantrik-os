@@ -284,8 +284,8 @@ pub fn to_slint_data(n: &Notification) -> crate::NotificationData {
         urgency: urgency_int(n.urgency),
         time_ago: crate::bridge::format_time_ago(seconds_since(&n.created_at)).into(),
         is_read: n.read,
-        sender_line: sender_line(n).into(),
-        sender_short: crate::notification_sender::sender_summary(n).into(),
+        sender_line: crate::notification_sender::sender_details(n, &sender_line(n)).into(),
+        sender_short: crate::notification_sender::sender_face(n).into(),
         is_group_header: false,
         group_name: name.into(),
         group_icon: first_letter(&n.app),
@@ -329,7 +329,7 @@ fn turn_group_row(run: &crate::notification_groups::Run, open: bool) -> crate::N
         sender_line: slint::SharedString::default(),
         // Every card in a run passed the same test (the desktop itself), so the newest one's
         // line speaks for the run.
-        sender_short: first.map(|n| crate::notification_sender::sender_summary(n)).unwrap_or_default().into(),
+        sender_short: first.map(|n| crate::notification_sender::sender_face(n)).unwrap_or_default().into(),
         is_group_header: false,
         group_name: slint::SharedString::default(),
         group_icon: slint::SharedString::default(),

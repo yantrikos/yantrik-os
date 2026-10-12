@@ -10,6 +10,9 @@ import { ListView } from "std-widgets.slint";
 export struct MemoryItem {
     rid: string,
     text: string,
+    // The stored line when `text` is a plain sentence made from it (a security event's code,
+    // memory_plain.rs); empty otherwise. Shown under the row's Details.
+    detail: string,
     memory-type: string,  // "episodic", "semantic", "procedural"
     importance: float,
     valence: float,
@@ -102,7 +105,9 @@ export component MemoryBrowser inherits Rectangle {
         ListView {
             vertical-stretch: 1;
 
-            for mem[idx] in results : Rectangle {
+            for mem[idx] in results : mem-row := Rectangle {
+                // The row's Details, opened from its own control (`mem.detail`).
+                property <bool> details-open: false;
                 background: Theme.bg-card;
                 border-radius: Theme.radius-card;
                 height: mem-layout.preferred-height;
@@ -180,6 +185,30 @@ export component MemoryBrowser inherits Rectangle {
                         font-size: Theme.font-body;
                         wrap: word-wrap;
                         overflow: elide;
+                    }
+
+                    // The stored line behind a plain sentence, one press away (UI punch list,
+                    // 12 October: "Security event [information_leak]: llm_response — …").
+                    if mem.detail != "" : details-ta := TouchArea {
+                        height: 18px;
+                        mouse-cursor: pointer;
+                        accessible-role: button;
+                        accessible-label: mem-row.details-open ? "Hide details" : "Show details";
+                        clicked => { mem-row.details-open = !mem-row.details-open; }
+                        VerticalLayout {
+                            Text {
+                                text: mem-row.details-open ? "Hide details" : "Details";
+                                color: details-ta.has-hover ? Theme.text-secondary : Theme.text-dim;
+                                font-size: Theme.fs-micro;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    if mem.detail != "" && mem-row.details-open : Text {
+                        text: mem.detail;
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-micro;
+                        wrap: word-wrap;
                     }
 
                     // Score (if search result)

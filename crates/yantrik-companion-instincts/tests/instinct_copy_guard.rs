@@ -29,7 +29,20 @@ const BANNED_PHRASES: &[&str] = &[
     "don't leave",
     "you haven't talked to me",
     "we're in this together",
+    // UI punch list, 12 October: a proactive card ended "I like that".
+    "i like that",
+    "i love that",
+    "i like keeping",
+    "i worry about you",
+    "makes me happy",
+    "don't ghost me",
+    "not being needy",
+    "bug you until",
 ];
+
+/// Written copy outside this crate that goes out under the same rule: the companion's proactive
+/// and nudge templates. #757 curated the instincts; these two files were the path it missed.
+const COMPANION_TEMPLATES: &[&str] = &["proactive_templates.rs", "nudge_templates.rs"];
 
 fn instinct_sources() -> Vec<(String, String)> {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -42,6 +55,11 @@ fn instinct_sources() -> Vec<(String, String)> {
             (path.file_name().unwrap().to_string_lossy().into_owned(), text)
         })
         .collect();
+    let companion = Path::new(env!("CARGO_MANIFEST_DIR")).join("../yantrik-companion/src");
+    for name in COMPANION_TEMPLATES {
+        let text = fs::read_to_string(companion.join(name)).expect("a companion template is readable");
+        files.push((format!("yantrik-companion/{name}"), text));
+    }
     files.sort();
     files
 }
@@ -77,7 +95,7 @@ fn the_guard_catches_what_it_bans() {
     let line = normalise("I realize I genuinely care about what happens to you. You\u{2019}re stuck with me now.");
     assert!(BANNED_PHRASES.iter().any(|p| line.contains(p)));
     // Variants of the same claims, with a typographic apostrophe.
-    for line in ["I\u{2019}ve missed you.", "I\u{2019}ve been thinking about you all day."] {
+    for line in ["I\u{2019}ve missed you.", "I\u{2019}ve been thinking about you all day.", "You\u{2019}re up early. I like that."] {
         let line = normalise(line);
         assert!(BANNED_PHRASES.iter().any(|p| line.contains(p)), "{line}");
     }

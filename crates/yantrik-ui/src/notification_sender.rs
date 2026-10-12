@@ -86,6 +86,31 @@ pub fn sender_summary(n: &Notification) -> String {
     }
 }
 
+/// What the card itself shows about its sender: nothing when the desktop sent it, because that
+/// line ("Source process confirmed: yantrik-ui") names a process, which is a Details word (UI
+/// punch list, 12 October). The line is kept, under the card's Details control ([`sender_details`]).
+/// Every other sender keeps its short line on the card's face: that is the defence (#114).
+pub fn sender_face(n: &Notification) -> String {
+    if is_desktop_line(n) { String::new() } else { sender_summary(n) }
+}
+
+/// What the card's Details control opens: the short line, when the face did not show it, then the
+/// full line (`notifications::sender_line`).
+pub fn sender_details(n: &Notification, full: &str) -> String {
+    if !is_desktop_line(n) {
+        return full.to_string();
+    }
+    let short = sender_summary(n);
+    if full.is_empty() { short } else { format!("{short}. {full}") }
+}
+
+/// The card would draw the desktop's own line.
+fn is_desktop_line(n: &Notification) -> bool {
+    n.sender
+        .as_ref()
+        .is_some_and(|s| s.pid != 0 && s.desktop && !s.verified.starts_with(FROM_TERMINAL))
+}
+
 /// What a notification with no sender record is said to be.
 fn no_record(n: &Notification) -> &'static str {
     match n.source {
@@ -262,6 +287,21 @@ mod tests {
         assert_eq!(sender_summary(&n), "Source process confirmed: yantrik-ui");
         let n = note(None, "yantrik-ui config.yaml (pid 7)", 7, "/opt/yantrik/bin/yantrik-ui (deleted)", true);
         assert_eq!(sender_summary(&n), "Source process confirmed: yantrik-ui");
+    }
+
+    #[test]
+    fn the_desktop_s_own_line_is_under_details_and_everyone_else_s_stays_on_the_face() {
+        // UI punch list, 12 October: "Source process confirmed: yantrik-ui" on every card's face.
+        let n = note(Some("Yantrik"), "yantrik-ui config.yaml (pid 189858)", 189858, SHELL, true);
+        assert_eq!(sender_face(&n), "", "the desktop's card shows no process on its face");
+        let details = sender_details(&n, "verified by this machine: yantrik-ui config.yaml (pid 189858)");
+        assert!(details.starts_with("Source process confirmed: yantrik-ui. "), "{details}");
+        // A bridge under the shell, a script and an unverified caller keep their line on the face.
+        let bridge = note(Some("Yantrik"), "yantrik-ui config.yaml (pid 7456)", 7456, SHELL, false);
+        assert_eq!(sender_face(&bridge), sender_summary(&bridge));
+        assert_eq!(sender_details(&bridge, "full"), "full");
+        let unverified = note(Some("Yantrik"), "could not be identified", 0, "", true);
+        assert_eq!(sender_face(&unverified), sender_summary(&unverified));
     }
 
     #[test]

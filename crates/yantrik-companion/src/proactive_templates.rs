@@ -255,8 +255,6 @@ static CHECK_IN_TEMPLATES: &[ProactiveTemplate] = &[
         min_bond: BondLevel::Friend,
         text: "Hey {user}, haven't heard from you in a bit. Everything good?",
         bond_suffixes: &[
-            (BondLevel::Confidant, "Not being needy, just checking."),
-            (BondLevel::PartnerInCrime, "Don't ghost me."),
         ],
     },
     ProactiveTemplate {
@@ -264,7 +262,6 @@ static CHECK_IN_TEMPLATES: &[ProactiveTemplate] = &[
         min_bond: BondLevel::Confidant,
         text: "{user}, you've been quiet. Just making sure you're alright.",
         bond_suffixes: &[
-            (BondLevel::PartnerInCrime, "You know I'll bug you until you respond."),
         ],
     },
 ];
@@ -431,7 +428,7 @@ static ROUTINE_TEMPLATES: &[ProactiveTemplate] = &[
         min_bond: BondLevel::Friend,
         text: "Your usual {window} routine: {routine_summary}.",
         bond_suffixes: &[
-            (BondLevel::Confidant, "Creatures of habit, both of us."),
+            (BondLevel::Confidant, "Same as most days."),
             (BondLevel::PartnerInCrime, "I've got the playbook memorized."),
         ],
     },
@@ -454,7 +451,7 @@ static COGNITIVE_LOAD_TEMPLATES: &[ProactiveTemplate] = &[
         text: "You've been going hard for a while. Maybe a short break?",
         bond_suffixes: &[
             (BondLevel::Friend, "Even machines need cooldown."),
-            (BondLevel::Confidant, "I worry about you sometimes."),
+            (BondLevel::Confidant, "The work will keep for ten minutes."),
             (BondLevel::PartnerInCrime, "Step away. That's an order."),
         ],
     },
@@ -478,7 +475,7 @@ static SMART_UPDATES_TEMPLATES: &[ProactiveTemplate] = &[
         text: "While you were away, I {maintenance_summary}.",
         bond_suffixes: &[
             (BondLevel::Friend, "Everything's in order."),
-            (BondLevel::Confidant, "I like keeping things tidy."),
+            (BondLevel::Confidant, "Nothing else needs doing."),
             (BondLevel::PartnerInCrime, "You can thank me later."),
         ],
     },

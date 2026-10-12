@@ -49,11 +49,14 @@ fn fill(ui: &App) {
         mind: "Yantrik Companion".into(),
         initial: "Y".into(),
         builtin: true,
-        model: "qwen3.5:9b".into(),
+        // What `mind_panel_words::plain_model_name` makes of the punch list's
+        // "ollama-cloud:deepseek-v4-flash": the plain name on the face, the id under Details.
+        model: "DeepSeek V4 Flash, on Ollama Cloud".into(),
         model_named: true,
+        model_id: "ollama-cloud:deepseek-v4-flash".into(),
         state: "ready".into(),
         project: "".into(),
-        memory: "YantrikDB · 1,234 memories".into(),
+        memory: "1,234 memories kept".into(),
         memory_known: true,
         minds: "3 minds · 2 keep memory".into(),
         running: 2,
@@ -81,11 +84,22 @@ fn fill(ui: &App) {
         step: "step 2 of 3 · running web_search".into(),
         status: "running".into(),
     }])));
-    let act = |what: &str, when: &str, outcome: &str| MindPanelAct { what: what.into(), when: when.into(), outcome: outcome.into() };
+    // The punch list's rows (12 October), as `mind_panel_words::act_words` says them.
+    let act = |what: &str, when: &str, outcome: &str, detail: &str| MindPanelAct {
+        what: what.into(),
+        when: when.into(),
+        outcome: outcome.into(),
+        detail: detail.into(),
+    };
     g.set_acts(ModelRc::new(VecModel::from(vec![
-        act("files.move", "4m ago", "ok"),
-        act("notes.create", "12m ago", "ok"),
-        act("calendar.add_event", "1h ago", "failed"),
+        act("Updated an event in Calendar.", "4m ago", "ok", "calendar.update_event · ok"),
+        act("Rendered something in Blender.", "12m ago", "ok", "blender.render · ok"),
+        act(
+            "Tried to run something in Terminal, but it did not work. Ask the mind what went wrong, or try it yourself.",
+            "6d ago",
+            "failed",
+            "terminal.run · failed",
+        ),
     ])));
 }
 
@@ -248,7 +262,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         initial: "?".into(),
         model: "unknown".into(),
         state: "unknown".into(),
-        memory: "YantrikDB · count not known yet".into(),
+        memory: "count not known yet".into(),
         minds: "not known yet".into(),
         services: "none registered".into(),
         ..Default::default()
