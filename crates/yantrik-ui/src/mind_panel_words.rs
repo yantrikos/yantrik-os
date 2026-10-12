@@ -151,7 +151,7 @@ pub fn act_words(app: &str, action: &str, outcome: &str, description: Option<&st
 /// open with a verb.
 pub fn clause(description: &str) -> Option<String> {
     let text = one_line(description);
-    let end = [": ", "; ", ". ", " - ", " \u{2014} ", " (", ", "]
+    let end = [": ", "; ", ". ", " - ", " \u{2014} ", " ("]
         .iter()
         .filter_map(|sep| text.find(sep))
         .min()
@@ -161,17 +161,32 @@ pub fn clause(description: &str) -> Option<String> {
     let plain = !first.is_empty()
         && first.len() <= 80
         && !first.contains(['`', '_', '{', '<', '/', '#'])
-        && !NOT_VERBS.contains(&verb.as_str())
-        && verb.chars().all(|c| c.is_ascii_alphabetic());
+        && is_verb(&verb);
     plain.then(|| first.to_string())
 }
 
-/// First words that are not an instruction, so a description opening with one is not made a
-/// sentence by conjugating it.
-const NOT_VERBS: &[&str] = &[
-    "the", "a", "an", "whether", "what", "which", "how", "this", "that", "one", "every", "all", "same",
-    "only", "like", "as", "for", "with", "from", "it", "its", "your", "used", "shell", "deprecated",
+/// Verbs this module conjugates: the irregular ones below and these. A description or an action
+/// name that does not open with one is not made a sentence by guessing at its first word ("Asked
+/// by…" would become "Askeded", `chat_view` "Chated a view").
+const REGULAR: &[&str] = &[
+    "accept", "add", "answer", "apply", "approve", "archive", "ask", "assign", "attach", "cancel",
+    "change", "check", "clear", "click", "close", "configure", "confirm", "connect", "convert", "copy",
+    "create", "crop", "decide", "delete", "deny", "disable", "disconnect", "download", "edit", "empty",
+    "enable", "enter", "export", "fetch", "fill", "flag", "focus", "follow", "forward", "generate",
+    "import", "install", "kill", "launch", "list", "load", "lock", "loosen", "mark", "maximise",
+    "maximize", "merge", "minimise", "minimize", "move", "mute", "name", "open", "paste", "pause",
+    "pick", "play", "post", "power", "press", "print", "publish", "reboot", "record", "refresh",
+    "reject", "release", "reload", "remove", "rename", "render", "reply", "report", "request",
+    "restart", "restore", "resume", "return", "revert", "rotate", "save", "schedule", "scroll",
+    "search", "select", "share", "sort", "start", "suspend", "switch", "sync", "tidy", "tighten",
+    "toggle", "trash", "type", "uninstall", "unlock", "unmute", "update", "upload", "use", "verify",
+    "view", "wait", "watch", "turn", "erase", "fold", "unfold", "hibernate",
 ];
+
+fn is_verb(word: &str) -> bool {
+    let w = word.to_ascii_lowercase();
+    REGULAR.contains(&w.as_str()) || IRREGULAR.iter().any(|(v, _)| *v == w)
+}
 
 /// An imperative made from an action's name: `run` in Terminal → "run something in Terminal",
 /// `update_event` in Calendar → "update an event in Calendar".
@@ -179,8 +194,13 @@ fn from_name(app: &str, action: &str) -> String {
     let words: Vec<String> = action.split(['_', '-', '.']).filter(|w| !w.is_empty()).map(str::to_ascii_lowercase).collect();
     let place = app_name(app);
     let Some((verb, rest)) = words.split_first() else {
-        return format!("do something in {place}");
+        return format!("use {place}");
     };
+    let on = if app.trim().is_empty() || app == "shell" { "on the desktop".to_string() } else { format!("in {place}") };
+    if !is_verb(verb) {
+        // A name that does not open with a verb ("chat_view", "reach_of"): said as what was used.
+        return format!("use {} {on}", words.join(" "));
+    }
     let object = if rest.is_empty() {
         "something".to_string()
     } else {
@@ -188,11 +208,7 @@ fn from_name(app: &str, action: &str) -> String {
         let article = if thing.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
         format!("{article} {thing}")
     };
-    if app.trim().is_empty() || app == "shell" {
-        format!("{verb} {object} on the desktop")
-    } else {
-        format!("{verb} {object} in {place}")
-    }
+    format!("{verb} {object} {on}")
 }
 
 /// An app's id as a name: "system-monitor" → "System Monitor".
@@ -204,11 +220,24 @@ fn app_name(app: &str) -> String {
 /// The imperative's first word in the past: "Set the volume" → "Set the volume", "Run a command"
 /// → "Ran a command", "Update an event" → "Updated an event".
 pub fn past(imperative: &str) -> String {
-    let (verb, rest) = imperative.split_once(' ').unwrap_or((imperative, ""));
-    let lower = verb.to_ascii_lowercase();
-    let done = IRREGULAR.iter().find(|(v, _)| *v == lower).map(|(_, p)| p.to_string()).unwrap_or_else(|| regular_past(&lower));
-    let done = capital(&done);
-    if rest.is_empty() { done } else { format!("{done} {rest}") }
+    // "Mute or unmute the speaker" → "Muted or unmuted the speaker": a verb joined to the first
+    // by "or", "and" or a comma is in the past too.
+    let mut out: Vec<String> = Vec::new();
+    let mut joined = true;
+    for (i, w) in imperative.split(' ').enumerate() {
+        let bare = w.trim_end_matches(',');
+        let next = if i == 0 || (joined && is_verb(bare)) {
+            let lower = bare.to_ascii_lowercase();
+            let p = IRREGULAR.iter().find(|(v, _)| *v == lower).map(|(_, p)| p.to_string()).unwrap_or_else(|| regular_past(&lower));
+            let p = if i == 0 { capital(&p) } else { p };
+            format!("{p}{}", &w[bare.len()..])
+        } else {
+            w.to_string()
+        };
+        joined = matches!(bare, "or" | "and") || w.ends_with(',');
+        out.push(next);
+    }
+    out.join(" ")
 }
 
 const IRREGULAR: &[(&str, &str)] = &[
@@ -222,7 +251,8 @@ const IRREGULAR: &[(&str, &str)] = &[
     ("stop", "stopped"), ("drop", "dropped"), ("plan", "planned"), ("pin", "pinned"), ("unpin", "unpinned"),
     ("tag", "tagged"), ("log", "logged"), ("snap", "snapped"), ("zip", "zipped"), ("unzip", "unzipped"),
     ("submit", "submitted"), ("commit", "committed"), ("admit", "admitted"), ("drag", "dragged"), ("scan", "scanned"),
-    ("ping", "pinged"), ("wake", "woke"), ("forget", "forgot"),
+    ("ping", "pinged"), ("wake", "woke"), ("forget", "forgot"), ("rescan", "rescanned"),
+    ("shop", "shopped"), ("ship", "shipped"), ("strip", "stripped"), ("trim", "trimmed"),
 ];
 
 fn regular_past(verb: &str) -> String {
@@ -306,6 +336,11 @@ mod tests {
         assert_eq!(pictures.sentence, "Tried to choose where pictures are made, but it did not work. Ask the mind what went wrong, or try it yourself.");
         // A description that does not open as a plain instruction is not conjugated.
         assert_eq!(act_words("shell", "open_lens", "ok", Some("The `lens` overlay, opened")).sentence, "Opened a lens on the desktop.");
+        assert_eq!(act_words("shell", "memory_validate", "ok", Some("Asked by the person's memory server")).sentence, "Used memory validate on the desktop.");
+        assert_eq!(past("Mute or unmute the machine's default speaker"), "Muted or unmuted the machine's default speaker");
+        assert_eq!(past("Download, verify and install a newer build"), "Downloaded, verified and installed a newer build");
+        assert_eq!(past("Switch between dark and light"), "Switched between dark and light");
+        assert_eq!(past("Rescan the installed applications"), "Rescanned the installed applications");
     }
 
     /// Every action the shell publishes, through its own description: each gets a sentence a
