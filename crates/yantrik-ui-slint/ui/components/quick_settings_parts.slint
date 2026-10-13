@@ -18,6 +18,7 @@ export component QsTile inherits Rectangle {
     in property <string> description;
     in property <bool> on: false;
     in property <bool> split: false;
+    in property <bool> enabled: true;
     callback toggled();
     callback details-requested();
     callback focus-arrived(int);
@@ -35,6 +36,7 @@ export component QsTile inherits Rectangle {
         description: root.description;
         on: root.on;
         split: root.split;
+        enabled: root.enabled;
         // The arrow keys move between tiles here; the chevron is reached with Tab.
         right-opens-details: false;
         toggled => { root.toggled(); }

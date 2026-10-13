@@ -386,12 +386,15 @@ export component ApprovalLensProbe inherits Window {
     in-out property <int> allowed: 0;
     in-out property <int> sessioned: 0;
     in-out property <int> denied: 0;
+    // What the reply box sent, so a scene can show its keys reached something.
+    in-out property <string> sent;
     IntentLens {
         width: 100%;
         height: 100%;
         is-open: true;
         chat-mode: true;
         mind-name: "pi";
+        send-message(text) => { root.sent = text; }
         messages: root.messages;
         approvals: root.approvals;
         approvals-waiting: root.approvals-waiting;

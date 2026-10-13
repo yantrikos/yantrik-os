@@ -53,6 +53,7 @@ mod control_overlays;
 mod control_switcher;
 mod alt_tab;
 mod window_name;
+mod power_choice;
 mod power_status;
 mod control_network;
 mod control_power;
@@ -140,6 +141,11 @@ mod cheat_sheet;
 // Every key the screens advertise is bound in rc.xml, and every binding names a real action (tests only).
 #[cfg(test)]
 mod rc_keys;
+// What each rc.xml binding runs is an action labwc or the shell has (tests only).
+#[cfg(test)]
+mod rc_actions;
+// A toggle shows what its backend confirmed, or stays and says why.
+mod toggle_truth;
 mod notifications;
 // The short "Sent by … · verified" line on a notification card.
 mod notification_sender;

@@ -62,6 +62,7 @@ export component ShellOverlays inherits Rectangle {
     in property <string> battery-time-text: "";
     in property <string> power-profile: "";
     in property <bool> power-performance-offered: false;
+    in property <string> power-profile-pending: "";
     callback set-power-profile(string);
     // Network popover: hangs from the bar's network mark. Its content is `NetworkState`, which
     // the shell fills from NetworkManager; only where it hangs and whether it is open are the
@@ -155,6 +156,7 @@ export component ShellOverlays inherits Rectangle {
         dark-on: root.dark-on;
         power-profile: root.power-profile;
         power-performance-offered: root.power-performance-offered;
+        power-profile-pending: root.power-profile-pending;
         toggle-dnd => { root.toggle-dnd-mode(); }
         toggle-dark => { root.toggle-dark(); }
         power-profile-chosen(p) => { root.set-power-profile(p); }
@@ -188,6 +190,7 @@ export component ShellOverlays inherits Rectangle {
         time-text: root.battery-time-text;
         power-profile: root.power-profile;
         performance-offered: root.power-performance-offered;
+        profile-pending: root.power-profile-pending;
         profile-chosen(p) => { root.set-power-profile(p); }
         brightness-available: root.brightness-available;
         brightness-level: root.brightness-level;

@@ -475,3 +475,7 @@ mod tests {
         *RAISED_AT.lock().unwrap() = None;
     }
 }
+
+#[cfg(test)]
+#[path = "card_watch_precedence_tests.rs"]
+mod precedence_tests;

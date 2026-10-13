@@ -153,6 +153,24 @@ the session row answers too, and that the card leads with the description's firs
 cargo run --manifest-path tests/ui-preview/Cargo.toml --profile fast -- target/approval-card.png 1280 800 verify-approval-card
 ```
 
+The acceptance checks the outside design review asked for, beside it:
+
+- `verify-approval-pointer-only`: Enter, Return and Space as the very first keys on a new card,
+  and then round the whole Tab chain, press neither button.
+- `verify-approval-fit`: on a card that has to scroll, Decline answers at the same place one
+  wheel turn in and at the end of the scroll.
+- `verify-approval-expired`: after the card expires, a double click where Allow, Decline and the
+  session row were, and Enter, answer nothing.
+- `verify-approval-precedence`: the whole shell with a card in its corner, and each of the shell's
+  own overlays (Quick Settings, Today, power menu, clipboard, cheat sheet, battery and network
+  popovers, window switcher, Lens, mode menu, Minds panel) opened over it in turn: the card stays drawn whole on top and
+  Decline answers. The card's place is read from the shell (`approval-corner-x`), so the check
+  follows it when the mind panel moves it. Not in CI; run it by hand. Other apps' windows are the
+  compositor's: `card_watch`'s unit tests cover the shell's side, which decides on the focused
+  window's title alone and never sees whether it is maximised, fullscreen or always on top, and
+  brings the shell back at most 5 times (`MAX_RAISES`) per waiting card — a sixth window taking
+  focus stays over the card, and the taskbar's Chat button says a card waits.
+
 ## Review stills (light theme and Nightfall)
 
 `review-still <name>` renders one still for a design review, in a theme a test VM cannot be
