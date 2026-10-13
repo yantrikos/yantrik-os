@@ -133,8 +133,20 @@ pub fn reasoning_for(provider_type: &str, model: &str) -> Reasoning {
         }
         // DeepSeek's reasoner always thinks and has no knob; R1 elsewhere is the same.
         "deepseek" => Reasoning::None,
+        // A server the person runs (their own endpoint, llama.cpp, vLLM, LM Studio, LocalAI): gpt-oss
+        // takes `reasoning_effort`, and a Qwen3-family template reads `chat_template_kwargs`. Hosted
+        // services are left out on purpose: Groq and others answer an unknown body field with a 400.
+        "custom" | "llamacpp" | "vllm" | "lmstudio" | "localai" => {
+            if f.contains("gpt-oss") {
+                Reasoning::OpenAiEffort
+            } else if f.contains("qwen3") {
+                Reasoning::ChatTemplateThinking
+            } else {
+                Reasoning::None
+            }
+        }
         // Any other OpenAI-compatible host: only gpt-oss is known to take the knob there (Groq,
-        // Cerebras, OVH, Cloudflare, vLLM all serve it with `reasoning_effort`).
+        // Cerebras, OVH, Cloudflare all serve it with `reasoning_effort`).
         _ => {
             if f.contains("gpt-oss") {
                 Reasoning::OpenAiEffort
@@ -209,6 +221,13 @@ mod tests {
     fn hosts_name_the_knob_their_own_way() {
         assert_eq!(caps_for("openrouter", "openai/gpt-oss-120b:free", None, None).reasoning, Reasoning::OpenRouter);
         assert_eq!(caps_for("groq", "openai/gpt-oss-120b", None, None).reasoning, Reasoning::OpenAiEffort);
+        // A Qwen3 on a server the person runs takes the template switch; the same model on a hosted
+        // service is sent nothing, since an unknown field there is a 400.
+        assert_eq!(caps_for("custom", "qwen3.5:27b", None, None).reasoning, Reasoning::ChatTemplateThinking);
+        assert_eq!(caps_for("llamacpp", "Qwen3-30B-A3B", None, None).reasoning, Reasoning::ChatTemplateThinking);
+        assert_eq!(caps_for("groq", "qwen/qwen3-32b", None, None).reasoning, Reasoning::None);
+        assert_eq!(caps_for("custom", "openai/gpt-oss-20b", None, None).reasoning, Reasoning::OpenAiEffort);
+        assert_eq!(caps_for("custom", "llama-3.3-70b", None, None).reasoning, Reasoning::None);
         assert_eq!(caps_for("gemini", "gemini-3.8-flash", None, None).reasoning, Reasoning::OpenAiEffort);
         assert_eq!(caps_for("gemini", "gemini-2.0-flash", None, None).reasoning, Reasoning::None);
         assert_eq!(caps_for("deepseek", "deepseek-reasoner", None, None).reasoning, Reasoning::None);

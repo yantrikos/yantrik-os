@@ -15,6 +15,11 @@ comments and blank lines skipped. A key the unit already sets is the unit's: HOM
 YANTRIK_MIND_RUN come from the unit, so a settings file written when the Mind lived in the
 person's home cannot point it back there, where it can no longer look.
 
+Two keys are the unit's or nobody's: YM_MEMORY_SOCKET, where the Mind serves the person's memory
+socket, and YANTRIK_PERSON_UID, the one peer it answers there (#447). yantrik-update writes them in
+a drop-in for the desktop's owner. The settings file is the mind's own to write, so a value in it is
+dropped even when the unit sets neither: a mind must not choose who may hand it a provider.
+
 Two settings have a default when the file leaves them out, because without them the Mind speaks as
 its engine's stock persona ("JARVIS, an extension of the user"): YM_MIND_NAME, the name the
 desktop's mind picker shows, and YM_OPERATOR, its person's full name as the desktop greets them.
@@ -32,6 +37,17 @@ KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 MIND_NAME = "Yantrik Mind"
 # Accounts people log in as; system accounts (the mind's own included) sit below, nobody above.
 PERSON_UIDS = range(1000, 60000)
+
+
+# Set by the unit's drop-in or not at all; never from the settings file.
+UNIT_ONLY = ("YM_MEMORY_SOCKET", "YANTRIK_PERSON_UID")
+
+
+def apply_settings(env, settings):
+    """Add the settings file's values to `env`, where the unit did not set them first."""
+    for key, value in settings.items():
+        if key not in UNIT_ONLY:
+            env.setdefault(key, value)
 
 
 def parse(text):
@@ -96,8 +112,7 @@ def main():
             sys.exit("cannot read the mind's settings at %s: %s" % (path, e))
         if fd is not None:
             with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as f:
-                for key, value in parse(f.read(1 << 20)).items():
-                    os.environ.setdefault(key, value)
+                apply_settings(os.environ, parse(f.read(1 << 20)))
     fill_defaults(os.environ)
     os.execv(MIND, [MIND] + sys.argv[1:])
 

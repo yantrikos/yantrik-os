@@ -73,7 +73,10 @@ fn install_offer(harness: &str) -> Result<provider_handoff::Offer, String> {
 /// Revert. Idempotent; a harness the person gave a saved provider or "Use its own models" is left
 /// alone. What `yantrik-ui --wire-model <harness>` and Settings → Harnesses → Install call.
 pub(crate) fn wire_installed(harness: &str) -> Result<provider_handoff::Wired, String> {
-    provider_handoff::wire_at_install(&home(), harness, || install_offer(harness))
+    // Only the shell's own host knows what an attached Mind announced; another process (the
+    // installer's `--wire-model`) reads false, and the Mind is asked first, as before.
+    let needs_model = crate::wire::harness::host().is_some_and(|h| h.needs_model(harness));
+    provider_handoff::wire_at_install(&home(), harness, needs_model, || install_offer(harness))
 }
 
 /// `yantrik-ui --wire-model <harness>`: [`wire_installed`] for an installer (the ISO build, the

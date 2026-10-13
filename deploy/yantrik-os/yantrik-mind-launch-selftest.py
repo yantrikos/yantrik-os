@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Selftest for yantrik-mind-launch: how it reads the Mind's settings, and the two names it gives
-the Mind when the settings leave them out. Run: python3 deploy/yantrik-os/yantrik-mind-launch-selftest.py"""
+"""Selftest for yantrik-mind-launch: how it reads the Mind's settings, the two names it gives
+the Mind when the settings leave them out, and the two keys only the unit may set. Run: python3 deploy/yantrik-os/yantrik-mind-launch-selftest.py"""
 import importlib.machinery
 import importlib.util
 import os
@@ -82,6 +82,25 @@ class FillDefaults(unittest.TestCase):
         env = self.filled({}, passwd="")
         self.assertNotIn("YM_OPERATOR", env)
         self.assertEqual(env["YM_MIND_NAME"], "Yantrik Mind")
+
+
+class ApplySettings(unittest.TestCase):
+    UNIT = {"YANTRIK_PERSON_UID": "1000", "YM_MEMORY_SOCKET": "/run/yantrik-mind/1000/memory.sock", "YM_DB": "/var/lib/yantrik-mind/mind.db"}
+
+    def test_the_units_memory_socket_and_person_reach_the_mind(self):
+        env = dict(self.UNIT)
+        launch.apply_settings(env, {"YM_PRIMARY_BRAIN": "gateway"})
+        self.assertEqual(env, dict(self.UNIT, YM_PRIMARY_BRAIN="gateway"))
+
+    def test_the_settings_file_cannot_change_the_socket_or_its_person(self):
+        env = dict(self.UNIT)
+        launch.apply_settings(env, {"YANTRIK_PERSON_UID": "0", "YM_MEMORY_SOCKET": "/tmp/x.sock", "YM_DB": ":memory:"})
+        self.assertEqual(env, self.UNIT)
+
+    def test_without_the_drop_in_the_settings_file_cannot_supply_them(self):
+        env = {}
+        launch.apply_settings(env, {"YANTRIK_PERSON_UID": "1001", "YM_MEMORY_SOCKET": "/run/yantrik-mind/1001/memory.sock"})
+        self.assertEqual(env, {})
 
 
 class Parse(unittest.TestCase):

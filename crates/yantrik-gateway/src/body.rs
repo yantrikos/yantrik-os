@@ -31,7 +31,13 @@ pub fn rewrite(body: &mut Value, target: &Target) -> Result<Option<Effort>, Refu
     if let Some(effort) = applied {
         let p = effort_params(target.reasoning, effort);
         for (k, v) in p.set {
-            map.insert(k, v);
+            // A caller's own chat_template_kwargs keeps its other keys: only the switch is set.
+            match (map.get_mut(&k), v) {
+                (Some(Value::Object(theirs)), Value::Object(ours)) => theirs.extend(ours),
+                (_, v) => {
+                    map.insert(k, v);
+                }
+            }
         }
         if let Some(least) = p.min_max_tokens {
             for field in ["max_tokens", "max_completion_tokens"] {
@@ -53,6 +59,22 @@ pub fn rewrite(body: &mut Value, target: &Target) -> Result<Option<Effort>, Refu
     Ok(if target.reasoning == yantrik_ml::model_caps::Reasoning::None { None } else { applied })
 }
 
+/// Take the gateway's own template switch back out of a body, leaving the rest of a caller's
+/// `chat_template_kwargs` as it was: for a server that answered 400 to it.
+pub fn drop_template_switch(body: &mut Value) {
+    let Some(map) = body.as_object_mut() else { return };
+    let empty = match map.get_mut("chat_template_kwargs") {
+        Some(Value::Object(kw)) => {
+            kw.remove("enable_thinking");
+            kw.is_empty()
+        }
+        _ => false,
+    };
+    if empty {
+        map.remove("chat_template_kwargs");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,6 +92,30 @@ mod tests {
             sharing: crate::policy::Sharing::Off,
             provider: "A".into(),
         }
+    }
+
+    #[test]
+    fn the_template_switch_joins_a_callers_own_kwargs_and_comes_back_out_alone() {
+        let target = Target {
+            account: "home".into(),
+            model: "qwen3.5:27b".into(),
+            base_url: "https://aig.example/v1".into(),
+            key: None,
+            efforts: Reasoning::ChatTemplateThinking.efforts(),
+            reasoning: Reasoning::ChatTemplateThinking,
+            local: false,
+            sharing: crate::policy::Sharing::Share,
+            provider: "Custom".into(),
+        };
+        let mut b = json!({"model": "home/qwen3.5:27b", "effort": "easy", "chat_template_kwargs": {"keep": 1}, "messages": []});
+        rewrite(&mut b, &target).unwrap();
+        assert_eq!(b["chat_template_kwargs"], json!({"keep": 1, "enable_thinking": false}), "merged, not replaced");
+        drop_template_switch(&mut b);
+        assert_eq!(b["chat_template_kwargs"], json!({"keep": 1}), "only the switch comes out");
+        let mut alone = json!({"model": "home/qwen3.5:27b", "effort": "easy", "messages": []});
+        rewrite(&mut alone, &target).unwrap();
+        drop_template_switch(&mut alone);
+        assert!(alone.get("chat_template_kwargs").is_none(), "an object that held only the switch goes: {alone}");
     }
 
     #[test]

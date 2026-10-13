@@ -3,7 +3,7 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -63,6 +63,10 @@ pub struct Gateway {
     pub accounts: Arc<dyn Accounts>,
     pub upstream: Arc<dyn Upstream>,
     pub log: Arc<CallLog>,
+    /// Accounts whose server answered 400 to the template thinking switch (`chat_template_kwargs`).
+    /// A `custom` account is any endpoint the person typed, so a hosted service serving a Qwen3 can
+    /// sit behind one; it is asked once more without the switch, and never sent it again this session.
+    pub template_refused: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 /// The most connections served at once. The mind account can reach this port (its kernel loopback
@@ -175,11 +179,19 @@ impl Gateway {
                 let _ = write_json(out, 200, &self.models_for(&grant));
             }
             ("POST", "/v1/chat/completions") => self.chat(&grant, req, out),
-            (_, "/v1/models") | (_, "/v1/chat/completions") => {
+            // Which harness this token is (E.SOCK2). The Mind asks it of a token it is offered
+            // before it saves it, and takes only its own: a process running as the person could
+            // otherwise hand the Mind that process's token, and the Mind's calls would then run
+            // under another harness's grant and pick. It names only the holder's own harness,
+            // which the holder of the token already is.
+            ("GET", "/v1/whoami") => {
+                let _ = write_json(out, 200, &serde_json::json!({ "harness": grant.harness }));
+            }
+            (_, "/v1/models") | (_, "/v1/chat/completions") | (_, "/v1/whoami") => {
                 let _ = write_json(out, 405, &error_body("method_not_allowed", "Not with that method."));
             }
             _ => {
-                let _ = write_json(out, 404, &error_body("not_found", "The gateway serves /v1/models and /v1/chat/completions."));
+                let _ = write_json(out, 404, &error_body("not_found", "The gateway serves /v1/models, /v1/chat/completions and /v1/whoami."));
             }
         }
     }
@@ -274,13 +286,36 @@ impl Gateway {
                 }
             }
         }
+        let switch = yantrik_ml::model_caps::Reasoning::ChatTemplateThinking;
+        if target.reasoning == switch && self.template_refused.lock().is_ok_and(|s| s.contains(&target.account)) {
+            target.reasoning = yantrik_ml::model_caps::Reasoning::None;
+            target.efforts = Vec::new();
+        }
         let effort = body::rewrite(&mut body, &target)?;
         call.effort = effort.map(|e| e.as_str().to_string());
         let bytes = serde_json::to_vec(&body).map_err(|_| Refusal::new(400, "bad_request", "The request could not be re-encoded."))?;
-        let reply = self
+        let mut reply = self
             .upstream
             .chat(&target.base_url, target.key.as_deref(), &bytes)
             .map_err(|u| Refusal::new(502, u.code, u.message))?;
+        if reply.status == 400 && target.reasoning == switch && effort.is_some() {
+            // The switch was the gateway's, not the caller's: the call goes again without it, once.
+            body::drop_template_switch(&mut body);
+            let bytes = serde_json::to_vec(&body).map_err(|_| Refusal::new(400, "bad_request", "The request could not be re-encoded."))?;
+            reply = self
+                .upstream
+                .chat(&target.base_url, target.key.as_deref(), &bytes)
+                .map_err(|u| Refusal::new(502, u.code, u.message))?;
+            // Remembered only when the switch was the difference: a 400 for another reason (a context
+            // too long, a bad tool schema) fails again without it, and leaves the switch on.
+            if (200..300).contains(&reply.status) {
+                call.effort = None;
+                if let Ok(mut refused) = self.template_refused.lock() {
+                    refused.insert(target.account.clone());
+                }
+                tracing::info!(account = %target.account, "the account's server refused chat_template_kwargs; it is sent no switch from now on");
+            }
+        }
         call.status = reply.status;
         if !(200..300).contains(&reply.status) {
             call.outcome = format!("upstream_{}", reply.status);

@@ -178,6 +178,12 @@ pub struct Attach {
     /// to its own question and filed it in their profile (yantrik-mind F28, 2026-09-27).
     #[serde(default)]
     pub handover_context: bool,
+    /// Booted with no model to think with (yantrik-mind E.SOCK2b: the placeholder that says "not
+    /// set up yet — say hello"). The first run may then give it the person's pick through the
+    /// gateway with no question. False, the default, is what an older mind reads as: it has a
+    /// provider of its own and is asked first.
+    #[serde(default)]
+    pub needs_model: bool,
     /// What this harness was doing for a desktop it lost (#246): each conversation it still
     /// holds, with the agent token the desktop gave it, and the turn it is still answering in
     /// it, if any. A shell that restarted mid-answer used to fail every one of them, so the
@@ -412,6 +418,7 @@ mod tests {
             memory: true,
             conversations: true,
             handover_context: true,
+            needs_model: false,
             resume: Vec::new(),
             shared: false,
             takes_turns: true,
@@ -489,6 +496,7 @@ mod tests {
             memory: false,
             conversations: true,
             handover_context: false,
+            needs_model: false,
             resume: vec![resume.clone()],
             shared: false,
             takes_turns: true,

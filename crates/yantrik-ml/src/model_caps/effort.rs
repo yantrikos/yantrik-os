@@ -62,6 +62,12 @@ pub enum Reasoning {
     /// Anthropic's extended thinking, `thinking: {type: enabled, budget_tokens}`, through its
     /// OpenAI-compatible endpoint.
     AnthropicBudget,
+    /// `chat_template_kwargs: {enable_thinking}`, on or off: a Qwen3-family model on a self-hosted
+    /// OpenAI-compatible server (llama.cpp, vLLM, LM Studio, LocalAI) whose chat template reads it.
+    /// Measured on the LAN Qwen 27B behind llama.cpp (13 Oct): `enable_thinking: false` answered in
+    /// 0.8 s with no reasoning and 2 tokens, against 2.2 s and 94 characters of reasoning by default;
+    /// `reasoning_effort` and `think` were both ignored there.
+    ChatTemplateThinking,
 }
 
 impl Reasoning {
@@ -73,7 +79,7 @@ impl Reasoning {
             Reasoning::OpenAiEffort | Reasoning::OpenRouter => vec![Effort::Easy, Effort::Medium, Effort::High],
             Reasoning::OllamaThink { levels: true } => vec![Effort::Easy, Effort::Medium, Effort::High],
             // On or off: easy is off, medium is on. Nothing above it would differ.
-            Reasoning::OllamaThink { levels: false } => vec![Effort::Easy, Effort::Medium],
+            Reasoning::OllamaThink { levels: false } | Reasoning::ChatTemplateThinking => vec![Effort::Easy, Effort::Medium],
             Reasoning::AnthropicBudget => Effort::ALL.to_vec(),
         }
     }
@@ -122,6 +128,9 @@ pub fn params(reasoning: Reasoning, effort: Effort) -> EffortParams {
         Reasoning::OllamaThink { levels: false } => {
             set.insert("think".into(), json!(effort != Effort::Easy));
         }
+        Reasoning::ChatTemplateThinking => {
+            set.insert("chat_template_kwargs".into(), json!({ "enable_thinking": effort != Effort::Easy }));
+        }
         Reasoning::AnthropicBudget => {
             let budget = anthropic_budget(effort);
             set.insert("thinking".into(), json!({ "type": "enabled", "budget_tokens": budget }));
@@ -159,6 +168,15 @@ mod tests {
         assert_eq!(params(Reasoning::OllamaThink { levels: true }, Effort::Medium).set["think"], "medium");
         assert_eq!(params(Reasoning::OllamaThink { levels: false }, Effort::Easy).set["think"], false);
         assert_eq!(params(Reasoning::OllamaThink { levels: false }, Effort::High).set["think"], true);
+    }
+
+    #[test]
+    fn a_self_hosted_qwen_gets_its_template_switch() {
+        let off = params(Reasoning::ChatTemplateThinking, Effort::Easy);
+        assert_eq!(off.set["chat_template_kwargs"], json!({"enable_thinking": false}));
+        assert_eq!(off.set.len(), 1, "nothing else is sent: {:?}", off.set);
+        assert_eq!(params(Reasoning::ChatTemplateThinking, Effort::High).set["chat_template_kwargs"], json!({"enable_thinking": true}));
+        assert_eq!(Reasoning::ChatTemplateThinking.efforts(), vec![Effort::Easy, Effort::Medium], "on or off, nothing above");
     }
 
     #[test]
