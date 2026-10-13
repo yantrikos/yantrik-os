@@ -675,6 +675,11 @@ every window a mind opens is drawn in Mind View and never on the person's deskto
 - `agent_run` mirrors the command and its output into a terminal in Mind View. The view is text
   and colours only (no screen clears, no carriage returns, no titles), capped per command; the
   answer and the Agents screen keep the full output.
+- A person opening an app a mind already has open (dock, tile, `open_app`, a terminal) gets that
+  app, not a silent second launch: the second copy asks the running one to `present` itself, and the
+  shell brings Mind View forward, because that is where the window is. Every surface on the app
+  runtime publishes `present` (`safe`; refused to an agent, since it is the desktop's own handover).
+  A copy with no window answers that it has none, and the launch says so.
 - Not changed by design: `open_app files|settings|launchpad` switches the person's own screen;
   `focus_window`/`close_window` act on the person's windows; a mind typing into the Terminal app
   drives whichever Terminal window is open, including the person's if that is the one open.

@@ -1108,6 +1108,18 @@ fn exit_verdict(lived_ms: u64, status_success: bool, owns_window: bool, brought_
     }
 }
 
+/// Raise the window a second copy handed over to: the app's own, or Mind View when that is where
+/// the app is drawn. Says whether anything came forward.
+///
+/// An app a mind opened is drawn inside Mind View, and the person's compositor lists Mind View,
+/// not the app. Raising the app by its title then found nothing, so a person who clicked Calendar
+/// while a mind had it open saw nothing happen at all (13 Oct). The second copy has already asked
+/// the first to show its window there (`yantrik_app_runtime::present`); this brings the window
+/// that holds it in front of the person.
+fn bring_forward(app_id: &str, in_mind_view: bool, present: impl Fn(&str) -> bool) -> bool {
+    present(app_id) || (in_mind_view && present(crate::mind_view::APP_ID))
+}
+
 /// The body of every launch, with the adapter a `.desktop` file may declare for the app.
 ///
 /// `adapter` is `(surface, command)`: started once the app process exists, told which process it
@@ -1293,7 +1305,11 @@ fn launch(
                         let brought_forward = lived_ms < crate::running::LAUNCH_GRACE_MS
                             && success
                             && raise_on_handover
-                            && crate::windows::present_app(&id);
+                            && bring_forward(
+                                &id,
+                                crate::mind_view::is_mind_view_app(&id),
+                                crate::windows::present_app,
+                            );
                         match exit_verdict(lived_ms, success, owns_window, brought_forward) {
                             ExitVerdict::SecondCopy => {
                                 second_copy = true;
@@ -1913,6 +1929,31 @@ mod tests {
             ExitVerdict::Exited
         );
         assert_eq!(exit_verdict(60_000, true, true, false), ExitVerdict::Exited);
+    }
+
+    #[test]
+    fn a_handover_to_an_app_drawn_in_mind_view_brings_mind_view_forward() {
+        let raised = std::cell::RefCell::new(Vec::new());
+        let only_mind_view = |id: &str| {
+            raised.borrow_mut().push(id.to_string());
+            id == crate::mind_view::APP_ID
+        };
+        assert!(bring_forward("calendar", true, &only_mind_view));
+        assert_eq!(*raised.borrow(), ["calendar", crate::mind_view::APP_ID]);
+
+        // An app on the person's desktop is raised as itself, and Mind View is left where it is.
+        raised.borrow_mut().clear();
+        let any = |id: &str| {
+            raised.borrow_mut().push(id.to_string());
+            true
+        };
+        assert!(bring_forward("calendar", true, &any));
+        assert_eq!(*raised.borrow(), ["calendar"]);
+
+        // An app not drawn in Mind View never raises it.
+        raised.borrow_mut().clear();
+        assert!(!bring_forward("calendar", false, &only_mind_view));
+        assert_eq!(*raised.borrow(), ["calendar"]);
     }
 
     /// The handover the fix must not disturb: a second copy of a single-instance app exits at once
