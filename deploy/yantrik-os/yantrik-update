@@ -53,6 +53,9 @@ set -uo pipefail
 # `sudo yantrik-update check`, ran their code as root through the password-free rule. Every
 # interpreter below is also started isolated (`python3 -I`: no working directory, no PYTHON*
 # variables, no user site).
+# This script's own path, absolute, before the line below moves the working directory: the
+# selftest reads the build scripts beside it.
+SELF_PATH="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
 [ "$(id -u)" = 0 ] && cd /
 
 # ── Where things live ───────────────────────────────────────────────────────────────────
@@ -586,7 +589,7 @@ cmd_migrate_ownership() {
   say "Making $PREFIX root's; $owner keeps logs/ and data/"
   chown root:root "$PREFIX" && chmod 0755 "$PREFIX"
   for d in "$BIN_DIR" "$SHARE_DIR" "$UPDATES_DIR" "$BACKUP_DIR" "$PREFIX/models" "$PREFIX/skills" \
-           "$PREFIX/i18n" "$PREFIX/ui-deployments"; do
+           "$PREFIX/i18n" "$PREFIX/ui-deployments" "$PREFIX/memory"; do
     [ -e "$d" ] || continue
     chown -R root:root "$d"
     chmod -R go-w "$d"
@@ -975,6 +978,11 @@ safely. Old backups live in $BACKUP_DIR."
     fi
   fi
 
+  if ! install_memory "$root" "$backup"; then
+    restore_backup "$backup"
+    fail "could not install memory/ (YantrikDB for the harnesses); rolled back to the previous build"
+  fi
+
   # Record the new build so `check` can prove currency next time.
   cat > "$BUILD_FILE" <<EOF
 name=${artifact%.tar.zst}
@@ -1347,6 +1355,17 @@ restore_backup() {
     seal_share
   fi
   [ -f "$backup/BUILD" ] && cp -a "$backup/BUILD" "$BUILD_FILE"
+  # The YantrikDB the build had (#677), which apply moved into the backup. Only from a tree root
+  # alone could write, as the binaries: a harness install feeds these wheels to pip. A backup
+  # taken before the bundle carried memory/ has none, and the one here now stays: the older
+  # build's installers read the same paths, and none would work without it.
+  if [ -d "$backup/memory" ]; then
+    if tree_is_roots && [ -n "$(find "$backup/memory" \( ! -user root -o \( ! -type l -perm /022 \) \) -print -quit 2>/dev/null)" ]; then
+      warn "backup $backup/memory is not root's alone to write; keeping the YantrikDB installed now"
+    else
+      swap_memory "$backup/memory" || warn "could not restore memory/ from $backup; keeping the YantrikDB installed now"
+    fi
+  fi
   # A rollback moves the version backwards, so the one-line copy has to move with it.
   stamp_version_file "$PREFIX" "$(installed_version)"
   info "restored from $backup"
@@ -1634,6 +1653,73 @@ seal_share() {
   chown -R root:root "$SHARE_DIR" && chmod -R go-w "$SHARE_DIR"
 }
 
+# YantrikDB, every mind's memory (#677): the bundle's memory/ (bake-memory.sh) at $PREFIX/memory,
+# where every harness install reads its wheels and yantrikdb-mcp. Before the bundle carried it,
+# only an imaged machine had it, and one that got its build by update (VM 520, build 1448) stopped
+# every harness install at "this image has no yantrikdb-mcp".
+#
+# install_memory ROOT BACKUP — the old tree is moved into BACKUP/memory (a rename on the same
+# disk, so it costs no space) and restore_backup puts it back with the rest of the build. A bundle
+# without memory/ (one built before this) leaves what is there alone. Returns 1 on failure, and
+# the caller rolls the whole build back.
+install_memory() {
+  local root="$1" backup="${2:-}" dest="$PREFIX/memory"
+  if [ ! -d "$root/memory" ]; then
+    warn "this build carries no memory/; harness installs use the YantrikDB already here, if any"
+    return 0
+  fi
+  swap_memory "$root/memory" "$backup" || return 1
+  local want have
+  want="$(sed -n 's/^image-python=//p' "$dest/VERSIONS" 2>/dev/null)"
+  have="$(python3 -I -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
+  if [ -n "$want" ] && [ "$want" != "$have" ]; then
+    warn "this build's yantrikdb-mcp is for Python $want and this machine's python3 is ${have:-missing}; Pi, DeepSeek and OpenClaw memory will not start"
+  fi
+  info "installed YantrikDB for the harnesses ($(head -n 1 "$dest/VERSIONS" 2>/dev/null))"
+}
+
+# swap_memory SRC [KEEP] — SRC's copy becomes $PREFIX/memory whole: copied beside it, sealed, then
+# two renames, so a harness install never reads half of one memory and half of another. The tree
+# it replaces goes to KEEP/memory when KEEP is given, and is deleted otherwise.
+#
+# Sealed as root: root:root and nothing writable by group or others, whoever owned SRC, on the
+# update path as on the ISO (build-debian-iso.sh). The harnesses run as the person and only read
+# it, so neither the person nor a harness can swap a wheel or yantrikdb-mcp under the next install.
+# The copy is a hard-link copy where it can be (a backup's tree back in place costs no space); a
+# shared file is never written, only replaced whole, and the seal applies to the backup's links too.
+swap_memory() {
+  local src="$1" keep="${2:-}" dest="$PREFIX/memory" new="$PREFIX/.memory.new" old="$PREFIX/.memory.old"
+  rm -rf "$new" "$old"
+  if ! { cp -al "$src" "$new" 2>/dev/null || { rm -rf "$new"; cp -a --no-preserve=ownership "$src" "$new"; }; }; then
+    rm -rf "$new"
+    warn "could not copy memory/ (YantrikDB for the harnesses) into place"
+    return 1
+  fi
+  if [ "$(id -u)" = 0 ]; then
+    chown -R root:root "$new" || { rm -rf "$new"; warn "could not make memory/ root's"; return 1; }
+  fi
+  # a+rX as well: tar unpacked the bundle under root's umask, and a sudo umask of 077 would leave
+  # a tree the harnesses (the person's) cannot read. Modes then match the ISO's copy of the bundle.
+  chmod -R go-w,a+rX "$new" || { rm -rf "$new"; warn "could not seal memory/"; return 1; }
+  if [ -e "$dest" ]; then
+    mv "$dest" "$old" || { rm -rf "$new"; warn "could not move the old memory/ aside"; return 1; }
+  fi
+  if ! mv "$new" "$dest"; then
+    [ -e "$old" ] && mv "$old" "$dest"
+    rm -rf "$new"
+    warn "could not put memory/ (YantrikDB for the harnesses) in place"
+    return 1
+  fi
+  if [ -e "$old" ]; then
+    if [ -n "$keep" ] && [ -d "$keep" ] && [ ! -e "$keep/memory" ] && mv "$old" "$keep/memory"; then
+      [ "$(id -u)" = 0 ] && chmod -R go-w "$keep/memory"
+    else
+      rm -rf "$old"
+    fi
+  fi
+  return 0
+}
+
 # Whether a file this updater is about to install as root came from where only root can write:
 # root's, not writable by group or others, in a directory (and a share/ and prefix) the same.
 source_is_roots() {
@@ -1867,6 +1953,91 @@ d /run/yantrik-minds 2750 $owner yantrik-minds -"
 ' "$want" > "$conf" && chmod 0644 "$conf" && info "mind door in place: /run/yantrik-minds for $owner"
   fi
   systemd-tmpfiles --create "$conf" >/dev/null 2>&1 || warn "could not make /run/yantrik-minds now; it is made at the next boot"
+  reconcile_mind_socket "$owner"
+}
+
+# The person's memory socket (#447, step d): the other direction from the door above. The person's
+# desktop asks the Mind things only the person may (POST /provider, the model they picked at first
+# run; /consent) at /run/yantrik-mind/<uid>/memory.sock, which the Mind binds only when its
+# environment names it (YM_MEMORY_SOCKET) and answers only for the peer uid YANTRIK_PERSON_UID
+# names. Its directory is the mind account's, setgid to the person's primary group, so the socket
+# the Mind binds there (0660) is the person's group's and nobody else's; tmpfiles makes it at every
+# boot, because /run is emptied and RuntimeDirectory= cannot give a directory the person's group.
+# The two values go in a drop-in beside the shipped unit, which stays the same file on every
+# machine. Both are numbers from the account database and never anything the mind can write.
+MIND_SOCKET_TMPFILES=/etc/tmpfiles.d/yantrik-mind-socket.conf
+MIND_SOCKET_DROPIN=/etc/systemd/system/yantrik-mind.service.d/yantrik-person.conf
+
+# "<uid> <gid>" of the desktop's owner, or nothing (and false) for a name that is not a plain
+# account name, root, an account the database does not know, a uid outside the people's range the
+# launcher trusts (1000-59999), or a primary group anyone else is in. The socket is 0660 to that
+# group, so a shared one (Debian's "users", gid 100) would let every member connect to it, and
+# the Mind's peer-uid check is the only gate on /mcp's memory: it is refused rather than trusted.
+# The selftest hands it passwd and group files of its own; every real run asks the database.
+mind_person_ids() { # <owner> [passwd file] [group file]
+  local line uid gid others members
+  # Never the mind account itself: a Mind that answered its own uid would answer itself.
+  case "$1" in ''|root|yantrik-mind|*[!a-z0-9_-]*) return 1 ;; esac
+  if [ -n "${2:-}" ]; then line="$(grep -m1 "^$1:" "$2" 2>/dev/null)" || return 1
+  else line="$(getent passwd "$1" 2>/dev/null)" || return 1; fi
+  uid="$(printf '%s' "$line" | cut -d: -f3)"; gid="$(printf '%s' "$line" | cut -d: -f4)"
+  case "$uid" in ''|0|*[!0-9]*) return 1 ;; esac
+  case "$gid" in ''|0|*[!0-9]*) return 1 ;; esac
+  [ "$uid" -ge 1000 ] && [ "$uid" -lt 60000 ] || return 1
+  # Anyone else whose primary group it is, or who is listed in it.
+  if [ -n "${2:-}" ]; then others="$(awk -F: -v g="$gid" -v me="$1" '$4 == g && $1 != me' "$2")"
+  else others="$(getent passwd | awk -F: -v g="$gid" -v me="$1" '$4 == g && $1 != me')"; fi
+  [ -z "$others" ] || return 1
+  if [ -n "${3:-}" ]; then members="$(awk -F: -v g="$gid" '$3 == g { print $4 }' "$3")"
+  else members="$(getent group "$gid" 2>/dev/null | cut -d: -f4)"; fi
+  [ -z "$(printf '%s' "$members" | tr ',' '\n' | grep -vx -e "$1" -e '')" ] || return 1
+  printf '%s %s\n' "$uid" "$gid"
+}
+
+mind_socket_tmpfiles_text() { # <owner> <uid> <gid>
+  printf '%s\n' \
+    "# Yantrik OS (#447): where the Mind (yantrik-mind) serves $1's memory socket, to $1's group only." \
+    "d /run/yantrik-mind 0755 root root -" \
+    "d /run/yantrik-mind/$2 2750 yantrik-mind $3 -"
+}
+
+mind_socket_dropin_text() { # <owner> <uid>
+  printf '%s\n' \
+    "# Yantrik OS (#447): the Mind serves $1's memory socket, and answers it only for $1's uid." \
+    "# Written by yantrik-update; never a key or a token here." \
+    "[Service]" \
+    "Environment=YANTRIK_PERSON_UID=$2" \
+    "Environment=YM_MEMORY_SOCKET=/run/yantrik-mind/$2/memory.sock"
+}
+
+# Write both files for <owner> when they differ, and say "changed" when either did. A link at
+# either path is replaced, never written through. False, with nothing written, for an owner whose
+# ids cannot be told: a socket for the wrong person is worse than none.
+mind_socket_write() { # <owner> <tmpfiles conf> <drop-in> [passwd file] [group file]
+  local ids uid gid want f changed=""
+  ids="$(mind_person_ids "$1" "${4:-}" "${5:-}")" || return 1
+  uid="${ids% *}"; gid="${ids#* }"
+  for f in "$2" "$3"; do
+    if [ "$f" = "$2" ]; then want="$(mind_socket_tmpfiles_text "$1" "$uid" "$gid")"
+    else want="$(mind_socket_dropin_text "$1" "$uid")"; fi
+    [ ! -L "$f" ] && [ "$(cat "$f" 2>/dev/null)" = "$want" ] && continue
+    mkdir -p "$(dirname "$f")" && rm -f "$f" && printf '%s\n' "$want" > "$f" && chmod 0644 "$f" || return 1
+    changed=changed
+  done
+  printf '%s' "$changed"
+}
+
+reconcile_mind_socket() { # <owner>
+  local out
+  out="$(mind_socket_write "$1" "$MIND_SOCKET_TMPFILES" "$MIND_SOCKET_DROPIN")" \
+    || { warn "the Mind's memory socket is not set up: $1 needs an account of their own (uid 1000-59999) and a primary group nobody else is in"; return 0; }
+  systemd-tmpfiles --create "$MIND_SOCKET_TMPFILES" >/dev/null 2>&1 \
+    || warn "could not make /run/yantrik-mind now; it is made at the next boot"
+  [ "$out" = changed ] || return 0
+  info "the Mind's memory socket is $1's: $(sed -n 's/^Environment=YM_MEMORY_SOCKET=//p' "$MIND_SOCKET_DROPIN")"
+  # A running Mind keeps the environment and the sandbox it started with.
+  systemctl daemon-reload >/dev/null 2>&1
+  systemctl try-restart yantrik-mind.service >/dev/null 2>&1 || true
 }
 
 # The browsers' DevTools ports. The desktop's Browser listens on 127.0.0.1:9222 and the
@@ -2286,7 +2457,7 @@ reconcile_hermes_launcher() {
 # person's policy, enforce mode and Private mode. Now the kernel holds the account to it, the same
 # shape as the DevTools guard: an output chain for `meta skuid <yantrik-mind>` that lets through
 #   * on loopback, only the ports the mind always needs (MIND_LOOPBACK_PORTS: the proxy, the memory
-#     server, the bundled llama-server) and the ones the person opened to it with a rule
+#     server, the model gateway, the bundled llama-server) and the ones the person opened to it with a rule
 #     `{host: 127.0.0.1 or ::1, ports, lan: true}` (a local Ollama on 11434). Everything else on
 #     this machine (`fib daddr type local`: loopback, and its own LAN address) is refused: a local
 #     model server or anything bound to 0.0.0.0 would otherwise be a way out past the proxy;
@@ -2329,12 +2500,17 @@ MIND_LAN_HOSTS_MAX=64
 # else) and in its unit; the kernel's loopback set and the status file's public_proxy are made from
 # this one, and the selftest checks all four agree.
 EGRESS_PUBLIC_DOOR=127.0.0.1:7451
+# The local model gateway (crates/yantrik-gateway, #673): the shell's OpenAI-compatible endpoint that
+# forwards a mind's model calls to the person's AI accounts with keys the mind never holds. Pinned,
+# the same as the crate's PORT and ADDR, and the selftest checks they agree. It refuses a call
+# without the mind's own token, and in Private mode anything not on this machine or network.
+GATEWAY_ADDR=127.0.0.1:7460
 # 127.0.0.1 ports every mind may reach: the egress proxy's two doors (7450 the endpoint door, the
-# public door's port from EGRESS_PUBLIC_DOOR), the memory server (7440, YM_MEMORY_SERVER) and the
-# bundled llama-server fallback (8341). The Mind's other loopback listeners are off in its unit
-# (YM_CTL 8077, YM_WEB, YM_WEBUI) and its sandboxes run in network namespaces of their own;
-# anything else is the person's to open with a rule.
-MIND_LOOPBACK_PORTS="7440, 7450, ${EGRESS_PUBLIC_DOOR##*:}, 8341"
+# public door's port from EGRESS_PUBLIC_DOOR), the memory server (7440, YM_MEMORY_SERVER), the
+# model gateway (GATEWAY_ADDR's port) and the bundled llama-server fallback (8341). The Mind's other
+# loopback listeners are off in its unit (YM_CTL 8077, YM_WEB, YM_WEBUI) and its sandboxes run in
+# network namespaces of their own; anything else is the person's to open with a rule.
+MIND_LOOPBACK_PORTS="7440, 7450, ${EGRESS_PUBLIC_DOOR##*:}, ${GATEWAY_ADDR##*:}, 8341"
 
 # What `yantrik-egress direct` printed, checked again: `private on|off`, `mode audit|guarded|enforce`, then
 # `direct <ip> <port>` lines (a literal address on the local network: 10/8, 172.16/12,
@@ -2494,8 +2670,9 @@ mind_egress_text() { # <uid> <entry lines> <resolver lines> <dns|nodns> <note>
 # Yantrik OS: where the mind account (yantrik-mind, uid $1) may connect, held by the kernel.
 # Its way out is the person's egress proxy on loopback (yantrik-egress: 127.0.0.1:7450, the endpoint
 # door, and 127.0.0.1:7451, the public door, which never reaches the local network), which
-# applies their policy and Private mode. Beside it: the memory server and the loopback services
-# the person opened, DNS (audit only: in guarded and enforce the proxy resolves), and the direct set (LAN services the person allowed by
+# applies their policy and Private mode. Beside it: the memory server, the model gateway
+# (127.0.0.1:7460, which forwards to the person's AI accounts with the mind's own token), and the
+# loopback services the person opened, DNS (audit only: in guarded and enforce the proxy resolves), and the direct set (LAN services the person allowed by
 # address: a policy rule with lan: true whose host is a literal address). Everything else from
 # the account is refused, and counted: nft list counters table inet yantrik_mind_egress
 # Entries: $5
@@ -4015,6 +4192,59 @@ loopback 127.0.0.1 11434")"
     t "mind-egress: ... and checks the table is loaded before it starts" "nft list table inet yantrik_mind_egress" "$(grep '^ExecStartPre=+' "$mind_unit")"
   fi
 
+  # The person's memory socket (#447): the drop-in and tmpfiles entry for the desktop's owner,
+  # written once, and nothing at all for an owner whose ids cannot be told.
+  local mk="$root/mind-socket" mout
+  mkdir -p "$mk"
+  printf '%s\n' 'root:x:0:0:root:/root:/bin/bash' 'yantrik-mind:x:998:997::/var/lib/yantrik-mind:/usr/sbin/nologin' \
+    'asha:x:1000:1000:Asha:/home/asha:/bin/bash' 'ravi:x:1001:100:Ravi:/home/ravi:/bin/bash' \
+    'broken:x:1002::Broken:/home/broken:/bin/bash' 'sam:x:1003:100:Sam:/home/sam:/bin/bash' \
+    'meera:x:1004:1004:Meera:/home/meera:/bin/bash' 'svc:x:999:999::/var/lib/svc:/usr/sbin/nologin' \
+    'big:x:60001:60001::/home/big:/bin/bash' > "$mk/passwd"
+  printf '%s\n' 'asha:x:1000:' 'users:x:100:' 'meera:x:1004:asha' 'svc:x:999:' 'big:x:60001:' > "$mk/group"
+  is "mind-socket: the owner's uid and primary group" "1000 1000" "$(mind_person_ids asha "$mk/passwd" "$mk/group")"
+  is "mind-socket: a primary group another account also has is refused (Debian's users)" "" \
+    "$(mind_person_ids ravi "$mk/passwd" "$mk/group")"
+  is "mind-socket: a primary group that lists another member is refused" "" \
+    "$(mind_person_ids meera "$mk/passwd" "$mk/group")"
+  is "mind-socket: a uid below the people's range is refused" "" "$(mind_person_ids svc "$mk/passwd" "$mk/group")"
+  is "mind-socket: a uid above it is refused" "" "$(mind_person_ids big "$mk/passwd" "$mk/group")"
+  mout="$(mind_socket_write asha "$mk/tmpfiles.conf" "$mk/unit.d/person.conf" "$mk/passwd" "$mk/group")"
+  is "mind-socket: a first write says it changed" "changed" "$mout"
+  is "mind-socket: the drop-in names the person's uid and their socket" \
+    "Environment=YANTRIK_PERSON_UID=1000 Environment=YM_MEMORY_SOCKET=/run/yantrik-mind/1000/memory.sock" \
+    "$(grep '^Environment=' "$mk/unit.d/person.conf" | tr '\n' ' ' | sed 's/ $//')"
+  is "mind-socket: ... under [Service], and nothing else in it: no key, no token" \
+    "[Service] Environment=YANTRIK_PERSON_UID=1000 Environment=YM_MEMORY_SOCKET=/run/yantrik-mind/1000/memory.sock" \
+    "$(grep -v '^#' "$mk/unit.d/person.conf" | tr '\n' ' ' | sed 's/ $//')"
+  is "mind-socket: tmpfiles makes the parent root's and the person's directory the mind's, setgid to their group" \
+    "d /run/yantrik-mind 0755 root root - d /run/yantrik-mind/1000 2750 yantrik-mind 1000 -" \
+    "$(grep '^d ' "$mk/tmpfiles.conf" | tr '\n' ' ' | sed 's/ $//')"
+
+  is "mind-socket: a second write changes nothing" "" "$(mind_socket_write asha "$mk/tmpfiles.conf" "$mk/unit.d/person.conf" "$mk/passwd" "$mk/group")"
+  ln -s "$mk/passwd" "$mk/linked.conf"
+  mind_socket_write asha "$mk/tmpfiles.conf" "$mk/linked.conf" "$mk/passwd" "$mk/group" >/dev/null
+  is "mind-socket: a link at the drop-in's path is replaced, not written through" "file asha:x:1000" \
+    "$([ -f "$mk/linked.conf" ] && [ ! -L "$mk/linked.conf" ] && echo file) $(grep -o '^asha:x:1000' "$mk/passwd")"
+  local who
+  for who in nobody-here root yantrik-mind broken ravi meera svc big 'Asha' 'a;b' ''; do
+    mout="$(mind_socket_write "$who" "$mk/no-tmpfiles.conf" "$mk/no-person.conf" "$mk/passwd" "$mk/group"; echo " [exit $?]")"
+    is "mind-socket: an owner it cannot resolve ('$who') is refused" " [exit 1]" "$mout"
+  done
+  is "mind-socket: ... and nothing is written for them" "no" "$([ -e "$mk/no-tmpfiles.conf" ] || [ -e "$mk/no-person.conf" ] && echo yes || echo no)"
+
+  # The unit can write that directory, and nothing in its sandbox hides it again.
+  if [ -f "$mind_unit" ]; then
+    is "mind-socket: the unit's ReadWritePaths names /run/yantrik-mind" "yes" \
+      "$(grep -E '^ReadWritePaths=' "$mind_unit" | tr ' ' '\n' | sed 's/^ReadWritePaths=//; s/^-//' | grep -qx /run/yantrik-mind && echo yes || echo no)"
+    is "mind-socket: ... no InaccessiblePaths covers it" "" \
+      "$(grep -E '^InaccessiblePaths=' "$mind_unit" | sed 's/^InaccessiblePaths=//' | tr ' ' '\n' | sed 's/^-//' \
+         | while read -r p; do case "/run/yantrik-mind/" in "${p%/}/"*) echo "$p" ;; esac; done)"
+    is "mind-socket: ... ProtectHome hides only /home, /root and /run/user" "yes" "$(grep -qx 'ProtectHome=yes' "$mind_unit" && echo yes || echo no)"
+    is "mind-socket: ... and it is not a temporary filesystem or another unit's runtime directory" "" \
+      "$(grep -E '^(TemporaryFileSystem|RuntimeDirectory|PrivateMounts|ProtectHome=tmpfs)' "$mind_unit")"
+  fi
+
   # The direct-set ranges are written twice, in the proxy (direct.rs, DIRECT_RANGES) and in the
   # root check above (PY_MIND_DIRECT): the two must be the same list.
   local direct_rs; direct_rs="$(dirname "$0")/../../crates/yantrik-egress/src/direct.rs"
@@ -4094,6 +4324,21 @@ d = json.load(sys.stdin); print(d["public_proxy"], d["proxy"].split(":")[0])')"
   is "public door: ... the kernel's loopback set has its port, once" "${EGRESS_PUBLIC_DOOR##*:}" \
     "$(printf '%s\n' "$MIND_LOOPBACK_PORTS" | tr ',' '\n' | tr -d ' ' | grep -x "${EGRESS_PUBLIC_DOOR##*:}")"
   is "public door: ... on 127.0.0.1, the only address the loopback set is for" "127.0.0.1" "${EGRESS_PUBLIC_DOOR%:*}"
+  # The model gateway (#673): its port is in the mind's loopback set once, on 127.0.0.1, and it is
+  # the only port added since the public door: the set is exactly these five, nothing widened.
+  is "model gateway: the kernel's loopback set has its port, once" "${GATEWAY_ADDR##*:}" \
+    "$(printf '%s\n' "$MIND_LOOPBACK_PORTS" | tr ',' '\n' | tr -d ' ' | grep -x "${GATEWAY_ADDR##*:}")"
+  is "model gateway: ... on 127.0.0.1, the only address the loopback set is for" "127.0.0.1" "${GATEWAY_ADDR%:*}"
+  is "model gateway: ... and the set is the five the mind always needs, nothing more" "7440 7450 7451 7460 8341" \
+    "$(printf '%s\n' "$MIND_LOOPBACK_PORTS" | tr ',' '\n' | tr -d ' ' | sort -n | tr '\n' ' ' | sed 's/ $//')"
+  local gateway_lib
+  gateway_lib="$(dirname "$0")/../../crates/yantrik-gateway/src/lib.rs"
+  if [ -f "$gateway_lib" ]; then
+    is "model gateway: ... the crate listens on the same address" "pub const ADDR: &str = \"$GATEWAY_ADDR\";" \
+      "$(grep '^pub const ADDR' "$gateway_lib")"
+    is "model gateway: ... and names the same port" "pub const PORT: u16 = ${GATEWAY_ADDR##*:};" \
+      "$(grep '^pub const PORT' "$gateway_lib")"
+  fi
   local egress_unit egress_main
   egress_unit="$(dirname "$0")/../../config/systemd/yantrik-egress.service"
   egress_main="$(dirname "$0")/../../crates/yantrik-egress/src/main.rs"
@@ -4461,6 +4706,79 @@ c.sendall((json.dumps({"ok": True, "seeded": req["rules"]}) + "\n").encode())' "
   is "blanket rule: cloud-init's for another account is not the desktop's" "no" "$(blanket_rule_in "$sd/ci-debian" asha && echo yes || echo no)"
   is "blanket rule: a file with rules for two accounts is left alone" "no" "$(blanket_rule_in "$sd/ci-both" asha && echo yes || echo no)"
   is "blanket rule: a narrow rule a person wrote is theirs" "no" "$(blanket_rule_in "$sd/own" asha && echo yes || echo no)"
+
+  # YantrikDB for the harnesses (#677): the bundle carries memory/, apply installs it whole at
+  # $PREFIX/memory, and the image takes the same tree from the bundle. VM 520 on build 1448 was
+  # updated, not imaged, had no /opt/yantrik/memory, and every harness install stopped there.
+  local mb="$root/membundle" mp="$root/memprefix" here; here="$(dirname "$SELF_PATH")"
+  mkdir -p "$mb/memory/bin" "$mb/memory/wheels" "$mb/memory/mcp/yantrikdb_mcp" "$mb/memory/mcp/yantrikdb" "$mp/memory"
+  printf '#!/bin/sh\nexec /usr/bin/python3 -I -c x "$@"\n' > "$mb/memory/bin/yantrikdb-mcp"
+  chmod 755 "$mb/memory/bin/yantrikdb-mcp"
+  for w in yantrikdb-0.23.2-cp310-abi3-x.whl yantrikdb_hermes_plugin-0.28.0-py3-none-any.whl uuid_utils-1.0.0-cp313-x.whl click-8.3.1-py3-none-any.whl; do
+    : > "$mb/memory/wheels/$w"
+  done
+  printf 'yantrikdb=0.23.2\nimage-python=0.0\n' > "$mb/memory/VERSIONS"
+  chmod -R go-w "$mb/memory"
+  printf 'old\n' > "$mp/memory/stale"
+  chmod 600 "$mb/memory/VERSIONS"; chmod 700 "$mb/memory/bin/yantrikdb-mcp" "$mb/memory/wheels"
+  is "memory: the bundle's file list passes bake-memory's check" "ok" \
+    "$(sh "$here/bake-memory.sh" --check "$mb/memory" 2>&1 && echo ok)"
+  out="$( (PREFIX="$mp"; install_memory "$mb") 2>&1 )"
+  is "memory: apply installs the bundle's memory/ at \$PREFIX/memory" "yes" \
+    "$([ -x "$mp/memory/bin/yantrikdb-mcp" ] && [ -f "$mp/memory/wheels/click-8.3.1-py3-none-any.whl" ] && echo yes || echo no)"
+  is "memory: modes are the ISO's whatever the umask (dirs 755, files 644, the launcher 755)" "755 644 755 755" \
+    "$(stat -c %a "$mp/memory/wheels" "$mp/memory/VERSIONS" "$mp/memory/bin/yantrikdb-mcp" "$mp/memory/bin" | tr '\n' ' ' | sed 's/ $//')"
+  is "memory: migrate-ownership makes memory/ root's with the rest of the tree" "yes" \
+    "$(declare -f cmd_migrate_ownership | grep -qF '"$PREFIX/memory"' && echo yes || echo no)"
+  is "memory: the old memory/ is replaced whole, not merged" "no" "$([ -e "$mp/memory/stale" ] && echo yes || echo no)"
+  is "memory: nothing is left beside it" "none" "$(find "$mp" -mindepth 1 -maxdepth 1 ! -name memory | head -n 1)$( [ -z "$(find "$mp" -mindepth 1 -maxdepth 1 ! -name memory)" ] && echo none)"
+  t "memory: a python3 the bundle was not built for is said" "is for Python 0.0" "$out"
+  is "memory: nothing in it is writable by others" "none" "$(find "$mp/memory" ! -type l -perm /022 | head -n 1 || true)$( [ -z "$(find "$mp/memory" ! -type l -perm /022 | head -n 1)" ] && echo none)"
+  rm "$mb/memory/wheels/yantrikdb_hermes_plugin-0.28.0-py3-none-any.whl"
+  t "memory: a bundle missing the Hermes provider fails the check" "no Hermes provider" \
+    "$(sh "$here/bake-memory.sh" --check "$mb/memory" 2>&1 || true)"
+  rm -rf "$mb/memory"
+  out="$( (PREFIX="$mp"; install_memory "$mb") 2>&1 )"
+  t "memory: a bundle without memory/ leaves what is there alone" "carries no memory/" "$out"
+  is "memory: ... and what was there stays" "yes" "$([ -x "$mp/memory/bin/yantrikdb-mcp" ] && echo yes || echo no)"
+  is "memory: the release bundle bakes memory/ with bake-memory.sh" "yes" \
+    "$(grep -qF -- 'bake-memory.sh" "$ROOT/memory"' "$here/build-release.sh" && echo yes || echo no)"
+  is "memory: the release bundle checks its memory/ file list" "yes" \
+    "$(grep -qF -- 'bake-memory.sh" --check "$ROOT/memory"' "$here/build-release.sh" && echo yes || echo no)"
+  is "memory: the image takes memory/ from the bundle it unpacks" "yes" \
+    "$(grep -qF -- 'cp -a "$UNPACK/memory/.' "$here/build-debian-iso.sh" && echo yes || echo no)"
+  is "memory: apply installs memory/" "yes" \
+    "$(sed -n '/^cmd_apply()/,/^}/p' "$SELF_PATH" | grep -cF 'install_memory "$root"' | grep -qx 1 && echo yes || echo no)"
+  is "memory: a failed memory install rolls the whole build back" "yes" \
+    "$(sed -n '/^cmd_apply()/,/^}/p' "$SELF_PATH" | grep -A1 -F 'if ! install_memory "$root" "$backup"' | grep -qF 'restore_backup "$backup"' && echo yes || echo no)"
+
+  # Rollback brings the previous memory/ back with the rest of the build: apply moves the tree it
+  # replaces into the backup, and restore_backup swaps it back in, sealed as on install.
+  local rb="$root/memrb" rbk
+  rbk="$rb/backups/1"
+  mkdir -p "$rb/bin" "$rb/share" "$rbk/bin" "$rb/memory/wheels"
+  printf 'x\n' > "$rbk/bin/yantrik-ui"
+  printf 'build-a\n' > "$rb/memory/VERSIONS"
+  mkdir -p "$mb/memory/bin" "$mb/memory/wheels"
+  printf 'build-b\nimage-python=0.0\n' > "$mb/memory/VERSIONS"
+  out="$( (PREFIX="$rb"; install_memory "$mb" "$rbk") 2>&1 )"
+  is "memory: apply moves the memory/ it replaces into the backup" "build-a|build-b" \
+    "$(head -n 1 "$rbk/memory/VERSIONS" 2>/dev/null)|$(head -n 1 "$rb/memory/VERSIONS" 2>/dev/null)"
+  is "memory: ... and leaves nothing beside it" "" "$(find "$rb" -mindepth 1 -maxdepth 1 -name '.memory*')"
+  ( PREFIX="$rb" BIN_DIR="$rb/bin" SHARE_DIR="$rb/share" BUILD_FILE="$rb/BUILD"; restore_backup "$rbk" ) >/dev/null 2>&1
+  is "memory: rollback restores the previous memory/" "build-a" "$(head -n 1 "$rb/memory/VERSIONS" 2>/dev/null)"
+  is "memory: ... and the backup keeps it for the next rollback" "build-a" "$(head -n 1 "$rbk/memory/VERSIONS" 2>/dev/null)"
+  is "memory: ... sealed: nothing in it writable by group or others" "" "$(find "$rb/memory" ! -type l -perm /022 | head -n 1)"
+  if [ "$(id -u)" = 0 ]; then
+    is "memory: as root the installed tree is root's" "" "$(find "$rb/memory" ! -user root | head -n 1)"
+    chmod g+w "$rbk/memory/VERSIONS"; printf 'build-c\n' > "$rb/memory/VERSIONS"
+    out="$( ( PREFIX="$rb" BIN_DIR="$rb/bin" SHARE_DIR="$rb/share" BUILD_FILE="$rb/BUILD"; restore_backup "$rbk" ) 2>&1 )"
+    is "memory: a backup memory/ others could write is not restored" "build-c" "$(head -n 1 "$rb/memory/VERSIONS")"
+    t "memory: ... and it says so" "not root's alone to write" "$out"
+  fi
+  rm -rf "$rbk/memory"; printf 'build-d\n' > "$rb/memory/VERSIONS"
+  ( PREFIX="$rb" BIN_DIR="$rb/bin" SHARE_DIR="$rb/share" BUILD_FILE="$rb/BUILD"; restore_backup "$rbk" ) >/dev/null 2>&1
+  is "memory: a backup from before memory/ shipped leaves the installed one" "build-d" "$(head -n 1 "$rb/memory/VERSIONS" 2>/dev/null)"
 
   if [ "$fails" = 0 ]; then
     printf '%sall selftest checks passed%s\n' "$c_grn" "$c_off"

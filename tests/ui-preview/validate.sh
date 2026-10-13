@@ -25,6 +25,7 @@ run target/ui-validation/calendar.png 1100 720 verify-calendar
 run target/ui-validation/memory-busy.png 1280 800 verify-memory-busy
 run target/ui-validation/provider-panel.png 1280 800 verify-provider-panel
 run target/ui-validation/handoff-card.png 1280 800 verify-handoff-card
+run target/ui-validation/picker.png 760 560 verify-picker
 run target/ui-validation/accounts-page.png 1280 800 verify-accounts-page
 run target/ui-validation/ai-map.png 1280 800 verify-ai-map
 run target/ui-validation/free-ai.png 600 1800 verify-free-ai

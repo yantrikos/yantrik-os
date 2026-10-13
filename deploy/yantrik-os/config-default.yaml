@@ -27,21 +27,20 @@ personality:
     if you don't know, say so.
 
 # ── The model ──────────────────────────────────────────────────────────────────────────
-# Loopback only. A fresh machine either runs a model on itself (llama-server on 8341, which
-# --with-llm installs and enables) or is pointed at one by the person who owns it, during
-# onboarding. It never ships pointed at somebody else's server: an endpoint baked into a
-# public image is an endpoint every copy of that image talks to.
+# None is chosen. A fresh machine is pointed at a model by the person who owns it, during
+# onboarding or in Settings → AI, which saves it as an AI account; or, built --with-llm, at
+# the model it runs on itself (llama-server on 127.0.0.1:8341), which the build writes here
+# only when that model is actually installed. It never names a model nothing serves (the
+# public nightly has no bundled model), and never ships pointed at somebody else's server:
+# an endpoint baked into a public image is an endpoint every copy of that image talks to.
+# With none chosen the companion still starts, and its chat says how to choose one.
 llm:
   backend: "api"
-  api_base_url: "http://127.0.0.1:8341/v1"
-  api_model: "yantrik-4b"
+  api_base_url: ""
+  api_model: ""
   max_tokens: 1024
   temperature: 0.6
   max_context_tokens: 16384
-  fallback:
-    backend: "api"
-    api_base_url: "http://127.0.0.1:8341/v1"
-    api_model: "yantrik-4b"
 
 # Loopback, not 0.0.0.0. The shell's own API has no authentication; bound to every interface
 # it is an unauthenticated agent surface on whatever network the machine joins, which for a

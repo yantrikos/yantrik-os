@@ -1136,6 +1136,7 @@ impl Host {
                 memory_credential: String::new(),
                 memory_url: String::new(),
                 origin: turn.origin,
+                options: turn.options.filter(|o| !o.is_empty()),
             },
             tx,
         });
@@ -1343,6 +1344,15 @@ impl Host {
         let mut state = self.lock();
         self.reap(&mut state);
         state.attached.get(harness_id).is_some_and(|h| h.announced.handover_context)
+    }
+
+    /// Whether an attached harness said it has no model to think with yet (`needs_model`), so a
+    /// first run may give it the person's pick with no question. False when nothing by that id
+    /// is attached, and for a harness that did not say: that one has a provider of its own.
+    pub fn needs_model(&self, harness_id: &str) -> bool {
+        let mut state = self.lock();
+        self.reap(&mut state);
+        state.attached.get(harness_id).is_some_and(|h| h.announced.needs_model)
     }
 
     /// Hand a live agent's token to `f`, for the one thing the shell derives from it: the one-way
@@ -3312,6 +3322,26 @@ mod tests {
         host.handle_from(protocol::ATTACH, &json!({ "id": "mind", "name": "Yantrik Mind" }), Some(701), Some(990))
             .unwrap();
         assert_eq!(host.list().into_iter().find(|e| e.id == "mind").unwrap().pid, Some(701));
+    }
+
+    #[test]
+    fn the_persons_choices_travel_with_the_turn_and_an_empty_choice_is_not_sent() {
+        let host = host_with_nothing().with_liveness(|pid| pid == 4242);
+        let pi = host
+            .handle_from(protocol::ATTACH, &json!({ "id": "pi", "name": "Pi" }), Some(4242), Some(1000))
+            .unwrap()["session"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let chosen = protocol::TurnOptions { model: "free-groq/openai/gpt-oss-120b".into(), effort: "medium".into(), attachments: vec![] };
+        let _a = host.send_to(&AgentId::new("pi", AgentId::MAIN), Turn::new("one").with_options(chosen)).unwrap();
+        let first = poll_from(&host, &pi, 4242, Some(1000)).unwrap();
+        assert_eq!(first["options"], json!({ "model": "free-groq/openai/gpt-oss-120b", "effort": "medium" }));
+        host.handle_from(protocol::COMPLETE, &json!({ "session": pi, "turn_id": first["turn_id"] }), Some(4242), Some(1000))
+            .unwrap();
+        let _b = host.send_to(&AgentId::new("pi", AgentId::MAIN), Turn::new("two").with_options(protocol::TurnOptions::default())).unwrap();
+        let second = poll_from(&host, &pi, 4242, Some(1000)).unwrap();
+        assert!(second.get("options").is_none(), "nothing chosen, nothing on the wire: {second}");
     }
 
     #[test]

@@ -48,7 +48,8 @@ if _LIB.is_dir() and str(_LIB) not in sys.path:
     sys.path.insert(0, str(_LIB))
 
 from yantrik_harness import (  # noqa: E402
-    AGENT_TOKEN_ENV, Handler, Harness, McpTools, PerConversation, Turn, summary_line, tool_target,
+    AGENT_TOKEN_ENV, Handler, Harness, McpTools, PerConversation, Turn, WithMemory, memory_on,
+    memory_tools, summary_line, tool_target,
 )
 
 VERSION = "1.0"
@@ -96,6 +97,9 @@ Say what you are about to do before a long run of actions, then do it."""
 # arguments. Picking which app and which action is exactly that shape; filling in the arguments
 # is not, and stays with the chat model. So the decider goes in front of the generator: it picks,
 # the generator fills, and below a confidence gate the generator does both as it always did.
+
+# The desktop's model gateway (#673), where a turn's picked `<account>/<model>` can be sent.
+GATEWAY_HOSTS = ("127.0.0.1:7460", "localhost:7460")
 
 # The three kinds, with the base_url and model each is usually pointed at.
 DECIDER_KINDS = {
@@ -201,7 +205,8 @@ class Config:
     def __init__(self, base_url: str, model: str, api_key: str = "", max_steps: int = DEFAULT_MAX_STEPS,
                  temperature: Optional[float] = None,
                  request_timeout: float = DEFAULT_REQUEST_TIMEOUT, source: str = CONFIG_PATH,
-                 decider: Optional[DeciderConfig] = None, include_usage: bool = True) -> None:
+                 decider: Optional[DeciderConfig] = None, include_usage: bool = True,
+                 memory: bool = False) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key
@@ -214,6 +219,9 @@ class Config:
         # for the agent's details. OpenAI, DeepSeek and Ollama take it; a server that rejects
         # the field is one line in the config to turn it off.
         self.include_usage = include_usage
+        # YantrikDB as this mind's memory (#677): on by default where the image carries it, off
+        # with `"memory": "off"`. The tools come from yantrikdb-mcp beside the desktop's.
+        self.memory = memory
 
     @property
     def host(self) -> str:
@@ -306,6 +314,7 @@ def load_config(path: Optional[str] = None) -> Config:
         source=str(where),
         decider=load_decider(data.get("decider"), where),
         include_usage=bool(data.get("include_usage", True)),
+        memory=memory_on(data.get("memory")),
     )
 
 
@@ -1135,6 +1144,10 @@ class DeepSeekMind(Handler):
         self.decider = build_decider(config.decider, self._open)
         self.messages: List[Dict[str, Any]] = []
         self._context: Optional[str] = None
+        # What the person picked for this turn (#673): a model and an effort, used only when this
+        # harness talks to the desktop's model gateway, where `<account>/<model>` means something.
+        self._turn_model = ""
+        self._turn_effort = ""
 
     def __repr__(self) -> str:
         return "DeepSeekMind(%r, %d messages, %s)" % (
@@ -1157,6 +1170,9 @@ class DeepSeekMind(Handler):
 
     def answer(self, turn: Turn) -> None:
         self._context = turn.context
+        on_gateway = urlsplit(self.config.base_url).netloc in GATEWAY_HOSTS
+        self._turn_model = turn.model if on_gateway else ""
+        self._turn_effort = turn.effort if on_gateway else ""
         self.messages.append({"role": "user", "content": turn.text})
         try:
             schemas = self.tools.as_openai_tools()
@@ -1406,10 +1422,13 @@ class DeepSeekMind(Handler):
     def _payload(self, schemas: List[Dict[str, Any]],
                  tool_choice: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         body: Dict[str, Any] = {
-            "model": self.config.model,
+            "model": self._turn_model or self.config.model,
             "messages": [{"role": "system", "content": self._system()}] + self.messages,
             "stream": True,
         }
+        if self._turn_effort:
+            # The gateway turns it into the provider's own knob.
+            body["effort"] = self._turn_effort
         if schemas:
             body["tools"] = schemas
         if schemas and tool_choice:
@@ -1593,10 +1612,15 @@ def handler(config: Config, make_tools: Optional[Any] = None, log: Optional[Any]
     (`YANTRIK_AGENT_TOKEN` in its environment): every act it makes is then the act of that agent.
     `make_tools(token)` builds it; the default is `yos-mcp`.
     """
+    # One memory server for the whole harness, shared by every conversation: a server per
+    # conversation would each keep its own index of the same file and miss the others' writes.
+    memory = memory_tools("deepseek", log=log) if config.memory and make_tools is None else None
+
     def tools_for(token: str) -> Any:
         if make_tools is not None:
             return make_tools(token)
-        return McpTools("DeepSeek", VERSION, env={AGENT_TOKEN_ENV: token} if token else None)
+        desktop = McpTools("DeepSeek", VERSION, env={AGENT_TOKEN_ENV: token} if token else None)
+        return WithMemory(desktop, memory, "deepseek") if memory is not None else desktop
 
     return PerConversation(
         lambda conversation, token: DeepSeekMind(config, tools_for(token), log=log),
@@ -1614,7 +1638,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     mind = handler(config)
     harness = Harness(
         id="deepseek", name="DeepSeek", handler=mind, detail=config.detail,
-        tools=True, memory=False,
+        tools=True, memory=config.memory,
     )
     print("deepseek harness: %s at %s" % (config.model, config.host), file=sys.stderr)
     if config.decider:

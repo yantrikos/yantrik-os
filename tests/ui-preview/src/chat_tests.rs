@@ -45,6 +45,8 @@ fn msg(role: &str, content: &str, run: &str) -> MessageData {
         is_streaming: false,
         blocks: ModelRc::new(VecModel::from(Vec::<ContentBlock>::new())),
         run: run.into(),
+        mind: Default::default(),
+        model: Default::default(),
     }
 }
 

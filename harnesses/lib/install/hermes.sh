@@ -50,16 +50,129 @@ fi
 heal_hermes_launcher "$HOME" || fail "Hermes's launcher still points into /tmp"
 say "$(hermes --version 2>/dev/null | head -n 1 || echo Hermes) is here"
 
+HARNESS=hermes
+# The Python Hermes runs on, which has its YAML library and is where its plugins are installed.
+hermes_bin=$(readlink -f "$(command -v hermes)") || fail "cannot tell where hermes is installed"
+hermes_python="$(dirname "$hermes_bin")/python"
+[ -x "$hermes_python" ] || fail "no Python beside $hermes_bin"
+# `timeout`: a `hermes config` call was seen to hang on a fresh HERMES_HOME (review of #696), and
+# an install that runs from a button must never hang.
+config=$(timeout 30 hermes config path </dev/null) || fail "Hermes would not say where its config.yaml is"
+env_file=$(timeout 30 hermes config env-path </dev/null 2>/dev/null) || env_file="$HOME/.hermes/.env"
+backup_once "$config"
+backup_once "$env_file"
+
 say "copying the desktop plugin into ~/.hermes"
 mkdir -p "$HOME/.hermes/plugins/yantrik"
 cp -r "$plugin/." "$HOME/.hermes/plugins/yantrik/"
 hermes plugins enable yantrik-desktop || fail "Hermes would not enable the desktop plugin"
 
-# Hermes's gateway as the person's own user service, started now and at every login: nothing
-# else loads the plugin. `--if-missing` leaves one that is already there alone.
-hermes gateway install --if-missing --start-now --start-on-login </dev/null \
-    || fail "Hermes would not install its gateway service"
-systemctl --user restart hermes-gateway || fail "Hermes's gateway would not start"
+# ── The desktop's tools, not Hermes's own ──
+# Hermes's `terminal`, `file`, `code_execution`, `browser` and `web` are a second, ungraded route
+# around every app on this desktop (README.md). `hermes config set` cannot write a list, so
+# hermes_config.py does it with Hermes's own Python, after `plugins enable`, which edits the same
+# lists, and checks the result with Hermes's own resolver.
+say "giving Hermes's desktop platform the desktop's tools in $config"
+"$hermes_python" "$INSTALL_LIB/hermes_config.py" apply "$config" \
+    || fail "could not give Hermes's desktop platform the desktop's tools; config.yaml is as it was"
 
-# The desktop opens `hermes model` next (the manifest's `configure`); by hand it is the same.
-say "Hermes is installed. Next, choose its model: Choose model on this row, or run: hermes model"
+# ── Model ──
+wire_model hermes
+
+# ── Memory: YantrikDB, from the image ──
+# Installed from the wheels at /opt/yantrik/memory (bake-memory.sh; there by image or by update),
+# with no index: nothing is fetched from a catalog, git or PyPI here, and no TTY is needed (the Mac failure of #677 was
+# `hermes plugins install` refusing the provider's dependencies without one). The provider and
+# the engine go in with --no-deps; of their own dependencies, only what Hermes's environment lacks
+# is added, so none of Hermes's locked packages is moved. requests is Hermes's own.
+[ -d "$MEMORY_WHEELS" ] || fail "this image has no YantrikDB wheels at $MEMORY_WHEELS"
+say "installing the YantrikDB memory provider into Hermes, from the image"
+pip_install() {
+    if command -v uv >/dev/null 2>&1; then
+        uv pip install --python "$hermes_python" --offline --no-index --find-links "$MEMORY_WHEELS" --no-deps "$@" </dev/null
+    else
+        "$hermes_python" -m pip install --no-index --find-links "$MEMORY_WHEELS" --no-deps "$@" </dev/null
+    fi
+}
+pip_install yantrikdb yantrikdb-hermes-plugin \
+    || fail "the YantrikDB memory provider did not install from $MEMORY_WHEELS"
+for dep in uuid_utils:uuid-utils click:click; do
+    "$hermes_python" -c "import ${dep%%:*}" </dev/null 2>/dev/null && continue
+    pip_install "${dep#*:}" || fail "the memory provider's dependency ${dep#*:} did not install from $MEMORY_WHEELS"
+done
+"$hermes_python" -c "import requests, yantrikdb, yantrikdb_hermes_plugin" </dev/null \
+    || fail "the YantrikDB memory provider is installed but does not import in Hermes's Python"
+# `--force` replaces the shim an earlier install left, which is the package's own.
+"$(dirname "$hermes_bin")/yantrikdb-hermes" install --force </dev/null >/dev/null \
+    || fail "the YantrikDB memory provider would not register itself with Hermes"
+timeout 30 hermes config set memory.provider yantrikdb </dev/null \
+    || fail "Hermes would not take yantrikdb as its memory"
+# A provider runs beside Hermes's own MEMORY.md and USER.md (Hermes's agent_init.py). Left on,
+# they are a second memory of the person outside YantrikDB.
+timeout 30 hermes config set memory.memory_enabled false </dev/null || fail "Hermes would not turn off its own MEMORY.md"
+timeout 30 hermes config set memory.user_profile_enabled false </dev/null || fail "Hermes would not turn off its own USER.md"
+# TODO(#586): `YANTRIKDB_MODE=yantrik`, the person's one shared memory through the memory server
+# (yantrikdb-hermes-plugin#93, baked in this image), once the door to it is tamper-proof. Until
+# then any process running as the person could attach as `hermes` and be handed Hermes's memory
+# credential, which is why #574 was held; so Hermes keeps a YantrikDB of its own, here, and every
+# write carries `hermes` as its agent. Switching later is these two lines and a gateway restart.
+env_line "$env_file" YANTRIKDB_MODE embedded
+env_line "$env_file" YANTRIKDB_DB_PATH "$(harness_memory_db hermes)"
+env_line "$env_file" YANTRIKDB_AGENT_NAME hermes
+memory_dir hermes
+
+# ── The desktop channel, paired with the owner only ──
+# Hermes reads a platform's gate from the profile's own .env, not from what a plugin put in its
+# environment (#676), so it is written there: the desktop platform's allowlist is the desktop's
+# owner, the one user id the adapter gives every desktop turn (adapter.py, OWNER_ID). Never
+# YANTRIK_ALLOW_ALL_USERS (an earlier install's is taken out) and never a wildcard. Whoever reaches
+# the harness socket is the owner because the host checks the kernel's peer credentials at accept.
+# A TCP address in YANTRIK_HARNESS is the dev path, which any local user can reach: there nobody is
+# allowlisted, and Hermes asks for a pairing code as it would on any other platform.
+env_unset "$env_file" YANTRIK_ALLOW_ALL_USERS
+case "${YANTRIK_HARNESS:-}" in
+    ""|off|unix:*|/*) env_line "$env_file" YANTRIK_ALLOWED_USERS owner ;;
+    *) say "YANTRIK_HARNESS is a network address (the dev path), so nobody is allowlisted; Hermes will ask for a pairing code" ;;
+esac
+
+# Once more now that the memory provider is in: whatever it brought as a plugin toolset is marked
+# seen for the desktop platform too, so Hermes does not turn it on there by itself.
+"$hermes_python" "$INSTALL_LIB/hermes_config.py" apply "$config" >/dev/null \
+    || fail "could not hold Hermes's desktop platform to the desktop's tools; see $config"
+
+# Checked before the gateway starts, and again once it has, against the same file. A gateway is not
+# left running on an allowlist that does not hold.
+hermes_check() {
+    "$hermes_python" "$INSTALL_LIB/hermes_config.py" check "$config"
+}
+stop_gateway() {
+    systemctl --user stop hermes-gateway >/dev/null 2>&1 || true
+}
+# Hermes's gateway as the person's own user service, started now and at every login: nothing
+# else loads the plugin. A Hermes that knows `--if-missing` leaves a unit that is already there
+# alone. An older one (0.14.0 on VM 520 knows only --force, --system and --run-as-user, and
+# refused the rest) is given a unit only when there is none, and is enabled for login here; the
+# restart after this starts it either way.
+gateway_install() {
+    if hermes gateway install --help 2>/dev/null | grep -q -e '--if-missing'; then
+        hermes gateway install --if-missing --start-now --start-on-login </dev/null
+        return
+    fi
+    if ! systemctl --user cat hermes-gateway >/dev/null 2>&1; then
+        hermes gateway install </dev/null || return 1
+    fi
+    systemctl --user enable hermes-gateway >/dev/null 2>&1
+}
+hermes_check || { stop_gateway; fail "Hermes's desktop platform has more than the desktop's tools, and Hermes's gateway is stopped; see $config"; }
+
+gateway_install || { stop_gateway; fail "Hermes would not install its gateway service"; }
+systemctl --user restart hermes-gateway || { stop_gateway; fail "Hermes's gateway would not start"; }
+
+# Read back last, after everything else that edits config.yaml has run.
+hermes_check || { stop_gateway; fail "Hermes's desktop platform still has Hermes's own tools, so its gateway is stopped; see $config"; }
+
+# ── Proofs ──
+prove hermes 120
+say "Hermes is installed: it answers, remembers in YantrikDB and is paired with this desktop"
+[ -s "$(harness_state hermes)/model" ] \
+    || say "Hermes keeps its own model: choose it with Choose model on this row, or run: hermes model"

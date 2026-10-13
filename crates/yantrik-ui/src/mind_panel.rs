@@ -456,8 +456,10 @@ pub fn ago(now: u64, then: u64) -> String {
 pub struct Inputs {
     /// `None` until the harness host is up.
     pub minds: Option<MindsSeen>,
-    /// The built-in's configured model (`ai-active-provider-label`); empty when none is configured.
-    pub provider_label: String,
+    /// Whether the answering mind's model works, as the picker judged it (`picker::status`):
+    /// (state, words), from a real call or a probe and never from configuration (#673). `None`
+    /// until it has been judged.
+    pub status: Option<(String, String)>,
     pub companion_online: bool,
     pub companion_status: String,
     /// A reply is being written right now, by whichever mind is answering.
@@ -516,33 +518,23 @@ pub fn build(input: &Inputs) -> Panel {
                     .find(|c| c.is_alphanumeric())
                     .map(|c| c.to_uppercase().to_string())
                     .unwrap_or_else(|| "?".into());
-                if m.builtin {
-                    // The built-in runs on what this shell is configured with.
-                    let label = input.provider_label.trim();
-                    let (model, named) = if label.is_empty() {
-                        ("no model configured".to_string(), false)
-                    } else {
-                        (label.to_string(), true)
-                    };
-                    let state = if !input.companion_online {
-                        "offline"
-                    } else if input.generating || input.companion_status == "thinking" {
-                        "thinking"
-                    } else {
-                        "ready"
-                    };
-                    (true, m.name.clone(), initial, true, model, named, state.to_string())
+                // What its model is doing, said only from a real call or a probe: "connected ·
+                // gpt-oss-120b", "key missing", "uses its own models". It used to be the configured
+                // name with ready in front (ready · yantrik-4b on a fresh install with nothing
+                // listening), which was configuration dressed as health.
+                let (state, words) = if m.builtin && !input.companion_online {
+                    ("offline".to_string(), "offline · the companion is not running".to_string())
                 } else {
-                    // An attached mind runs on whatever it said it runs on — and never on the
-                    // shell's configured model, which is not doing the work.
-                    let detail = m.detail.as_deref().map(str::trim).filter(|d| !d.is_empty());
-                    let (model, named) = match detail {
-                        Some(d) => (d.to_string(), true),
-                        None => ("model not reported".to_string(), false),
-                    };
-                    let state = if input.generating { "thinking" } else { "attached" };
-                    (true, m.name.clone(), initial, false, model, named, state.to_string())
-                }
+                    input.status.clone().unwrap_or_else(|| ("checking".to_string(), "checking".to_string()))
+                };
+                let named = state == "connected";
+                let (state, model) = if input.generating || (m.builtin && input.companion_status == "thinking") {
+                    let tail = words.strip_prefix("connected · ").unwrap_or(&words).to_string();
+                    ("thinking".to_string(), format!("thinking · {tail}"))
+                } else {
+                    (state, words)
+                };
+                (true, m.name.clone(), initial, m.builtin, model, named, state)
             }
         },
     };
@@ -749,7 +741,7 @@ fn refresh(ui: &App) {
     };
     let input = Inputs {
         minds: minds_seen(),
-        provider_label: ui.get_ai_active_provider_label().to_string(),
+        status: Some(crate::picker::panel_status()),
         companion_online: ui.get_companion_online(),
         companion_status: ui.get_companion_status().to_string(),
         generating: ui.get_is_generating(),
@@ -853,7 +845,7 @@ mod tests {
                 count: 3,
                 keep_memory: 2,
             }),
-            provider_label: "qwen3.5:9b".into(),
+            status: Some(("connected".into(), "connected · qwen3.5:9b".into())),
             companion_online: true,
             companion_status: "idle".into(),
             memory_count: Some(1234),
@@ -863,38 +855,53 @@ mod tests {
     }
 
     #[test]
-    fn now_says_who_is_answering_and_on_what() {
+    fn now_says_who_is_answering_and_whether_its_model_works() {
         let panel = build(&input());
         assert_eq!(panel.now.mind, "Yantrik Companion");
         assert!(panel.now.builtin);
-        assert_eq!(panel.now.model, "qwen3.5:9b", "the built-in runs on the shell's configured model");
+        assert_eq!(panel.now.model, "connected · qwen3.5:9b", "connected only as the status found it");
         assert!(panel.now.model_named);
-        assert_eq!(panel.now.state, "ready");
+        assert_eq!(panel.now.state, "connected");
         assert_eq!(panel.now.initial, "Y");
 
-        // An attached mind runs on what it said it runs on, never on the shell's own setting.
+        // An attached mind says what its status says, never the shell's own setting.
         let mut hermes = input();
         hermes.minds.as_mut().unwrap().answering =
             Some(Mind { name: "hermes".into(), builtin: false, detail: Some("gpt-6 on node1".into()) });
+        hermes.status = Some(("own".into(), "uses its own models".into()));
         let panel = build(&hermes);
-        assert_eq!(panel.now.model, "gpt-6 on node1");
-        assert_eq!(panel.now.state, "attached");
-        assert_eq!(panel.now.initial, "H");
-
-        // One that said nothing about its model is not given the shell's.
-        hermes.minds.as_mut().unwrap().answering.as_mut().unwrap().detail = None;
-        let panel = build(&hermes);
-        assert_eq!(panel.now.model, "model not reported");
+        assert_eq!(panel.now.model, "uses its own models");
+        assert_eq!(panel.now.state, "own");
         assert!(!panel.now.model_named);
-        assert!(!panel.now.model.contains("qwen"), "the shell's setting is not the attached mind's model");
+        assert_eq!(panel.now.initial, "H");
 
         // Writing a reply, whoever is answering.
         hermes.generating = true;
         assert_eq!(build(&hermes).now.state, "thinking");
+        let mut busy = input();
+        busy.generating = true;
+        assert_eq!(build(&busy).now.model, "thinking · qwen3.5:9b");
 
         let mut offline = input();
         offline.companion_online = false;
         assert_eq!(build(&offline).now.state, "offline");
+    }
+
+    #[test]
+    fn a_configured_model_is_never_called_ready_without_a_call_or_a_probe() {
+        // A fresh install: config.yaml names yantrik-4b and nothing listens. Not judged yet is
+        // "checking"; judged, it is what was found — never "ready · yantrik-4b".
+        let mut fresh = input();
+        fresh.status = None;
+        let panel = build(&fresh);
+        assert_eq!((panel.now.state.as_str(), panel.now.model.as_str()), ("checking", "checking"));
+        fresh.status = Some(("not-set-up".into(), "not set up · pick a model".into()));
+        let panel = build(&fresh);
+        assert_eq!(panel.now.state, "not-set-up");
+        assert!(!panel.now.model.contains("ready") && !panel.now.model.contains("yantrik-4b"));
+        let src = include_str!("mind_panel.rs");
+        let hard_coded = ["\"ready\"", "\"ready \u{b7} "].iter().any(|n| src.split("#[cfg(test)]").next().unwrap().contains(n));
+        assert!(!hard_coded, "no `ready` state is made up from configuration");
     }
 
     #[test]
@@ -923,11 +930,6 @@ mod tests {
         assert_eq!(panel.now.mind, "no mind");
         assert_eq!(panel.now.model, "nothing is answering");
 
-        let mut unconfigured = input();
-        unconfigured.provider_label = "  ".into();
-        let panel = build(&unconfigured);
-        assert_eq!(panel.now.model, "no model configured");
-        assert!(!panel.now.model_named);
     }
 
     #[test]
