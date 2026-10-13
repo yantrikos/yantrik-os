@@ -1,0 +1,106 @@
+// The one approval card an agent's pane answers, pinned above its reply box.
+//
+// In the transcript a waiting card could have its head scrolled off the top while its Allow stayed
+// live: the pane follows the bottom, and whatever was appended under the card — a second request
+// from parallel calls, a tool card whose output grows — pushed who was asking, the grade and the
+// action's sentence out of view, with the arguments and Allow still on screen. The card's read
+// gate only knew its own scroll, not the pane's, and the corner hides that agent's card while its
+// pane is up. So the pane draws the card here instead, outside the scroller, where nothing below
+// can move it: the oldest waiting request for the agent (wire/agents_pinned.rs), the corner's
+// card with the corner's height limit and read gate, and the others as a count under it. The
+// transcript keeps a one-line "Waiting on you" where each card was, and draws no buttons.
+//
+// Drawn from props, so the session, the run's detail and a popped-out window all host it the same
+// way, and answered through the host's callbacks with the request id — the same Allow, Allow for
+// this session and Decline the transcript's card called. Nothing here makes a grant.
+
+import { Theme } from "theme.slint";
+import { ApprovalRequest, ApprovalCard } from "components/intent_lens.slint";
+
+export component PinnedApproval inherits Rectangle {
+    in property <ApprovalRequest> data;
+    // How many more of this agent's requests wait behind this one.
+    in property <int> more;
+    // How tall the whole of this may be: what the host has left once its header, its reply box
+    // and a floor of transcript are counted. The card takes the three cases it takes in the Lens
+    // and the corner (intent_lens.slint, `height-limit`), and since nothing scrolls it, the whole
+    // card is in view at once: when its pinned lines fit, Allow is live; when they do not, Allow
+    // waits until the card's own scroll has been to its end.
+    in property <length> limit;
+    callback allow(string);
+    callback allow-session(string);
+    callback deny(string);
+
+    // ── A moved Allow does not take a resting pointer's click ──
+    //
+    // A card that changes or moves — the next request coming up after an answer, the count under
+    // it changing its height, the window resized — can put Allow where the pointer already is.
+    // For a moment after any such change Allow and the session row are held (`held` on the card)
+    // and a click on them does nothing; Decline never is. `place` is everything that moves the
+    // button or changes what it would allow, except the countdown, which ticks every second and
+    // moves nothing. The comparison with `armed-place` holds the button from the very change,
+    // before the timer has started; the timer keeps it held for the rest of the moment.
+    property <string> place: root.data.id + "|" + root.data.what + "|" + root.data.exactly
+        + "|" + root.data.args.length + "|" + root.more
+        + "|" + self.absolute-position.x / 1px + "," + self.absolute-position.y / 1px
+        + "|" + self.width / 1px + "x" + self.height / 1px;
+    property <string> armed-place: "";
+    property <bool> rearming: false;
+    // When the last change was seen, on the animation clock. A change during the moment starts it
+    // over; the timer only looks at the clock, so it never has to be restarted.
+    property <duration> armed-at: 0ms;
+    property <duration> moment: 400ms;
+    property <bool> held: root.rearming || root.armed-place != root.place;
+    function rearm() {
+        root.armed-place = root.place;
+        root.armed-at = animation-tick();
+        root.rearming = true;
+    }
+    init => { root.rearm(); }
+    changed place => { root.rearm(); }
+    Timer {
+        interval: 100ms;
+        running: root.rearming;
+        triggered => {
+            if (animation-tick() - root.armed-at >= root.moment) {
+                root.rearming = false;
+            }
+        }
+    }
+
+    height: col.preferred-height;
+
+    col := VerticalLayout {
+        spacing: Theme.sp-1;
+
+        ApprovalCard {
+            data: root.data;
+            held: root.held;
+            height-limit: root.limit - (root.more > 0 ? 16px + Theme.sp-1 : 0px);
+            // The card's own Allow is disabled while held; the check here is the same rule again,
+            // at the one place the click becomes a request id.
+            allow => {
+                if (!root.held) {
+                    root.allow(root.data.id);
+                }
+            }
+            allow-session => {
+                if (!root.held) {
+                    root.allow-session(root.data.id);
+                }
+            }
+            deny => { root.deny(root.data.id); }
+        }
+
+        if root.more > 0 : Text {
+            height: 16px;
+            text: "and " + root.more + " more waiting — this one first";
+            color: Theme.text-dim;
+            font-size: Theme.fs-micro;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            wrap: no-wrap;
+            overflow: elide;
+        }
+    }
+}

@@ -15,6 +15,7 @@ pub mod backlight;
 pub mod osd;
 // The Agents screen and every agent popped out into its own window.
 pub mod agents;
+mod agents_pinned;
 #[cfg(test)]
 mod lens_card_layout;
 pub mod lens_work;

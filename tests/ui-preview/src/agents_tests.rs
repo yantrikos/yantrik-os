@@ -24,7 +24,7 @@ fn runs(lines: &[(&str, (u8, u8, u8), bool)]) -> ModelRc<AgentRunData> {
     ))
 }
 
-fn call(name: &str, target: &str, summary: &str, arguments: &str, status: &str, output: &str) -> ToolCallData {
+pub(crate) fn call(name: &str, target: &str, summary: &str, arguments: &str, status: &str, output: &str) -> ToolCallData {
     ToolCallData {
         name: name.into(),
         target: target.into(),
@@ -606,8 +606,11 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     wg.set_items(model(vec![
         item("prompt", "t2", "move the duplicates into Trash"),
         item("text", "t2.0", "38 duplicates in 17 groups. Asking before anything moves."),
-        AgentItemData { approval, ..item("approval", "t2.1", "files.move") },
+        AgentItemData { approval: approval.clone(), ..item("approval", "t2.1", "files.move") },
     ]));
+    // The shell pins the oldest waiting card above the reply box (wire/agents_pinned.rs); the
+    // transcript keeps a line where it was.
+    wg.set_pinned(approval);
     window.show()?;
     let (ww, wh) = (1000u32, 680u32);
     w.set_size(slint::PhysicalSize::new(ww, wh));
@@ -618,6 +621,9 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         w.draw_if_needed(|r| { r.render(pixels.make_mut_slice(), ww as usize); });
         pixels
     };
+    draw_window();
+    // Past the pinned card's re-arm: Allow takes no click for a moment after the card appears.
+    std::thread::sleep(std::time::Duration::from_millis(550));
     draw_window();
     save(&draw_window(), &output.replace(".png", "-approval.png"), ww, wh)?;
     let answered = || log.borrow().iter().any(|e| e.starts_with("allow") || e.starts_with("deny"));
@@ -641,6 +647,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         item("prompt", "t2", "move the duplicates into Trash"),
         AgentItemData { approval: answered_card, ..item("approval", "t2.1", "files.move") },
     ]));
+    wg.set_pinned(ApprovalRequest::default());
     let before = log.borrow().len();
     draw_window();
     for y in range(90, wh as i32 - 70, 6) {
