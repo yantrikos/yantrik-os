@@ -1188,13 +1188,26 @@ fn spawn_launch(
 /// The command that starts one app: the person's session environment, or for Mind View the same
 /// with everything that names the person's session cleared and the seat's display set. Separate
 /// from [`launch`] so the environment a mind's app gets can be tested without starting anything.
+///
+/// With `scope`, the app is started through `systemd-run --user --scope` so it is born inside
+/// that unit instead of being moved into one after the fact (#736); `systemd-run` execs the app
+/// in place, so the environment and directory set here are the app's own.
 fn launch_command(
     path: &std::path::Path,
     args: &[&str],
     dir: Option<&std::path::Path>,
     seat: Option<&crate::mind_view::Seat>,
+    scope: Option<(&std::path::Path, &str)>,
 ) -> std::process::Command {
-    let mut command = std::process::Command::new(path);
+    let mut command = match scope {
+        Some((systemd_run, unit)) => {
+            let mut c = std::process::Command::new(systemd_run);
+            c.args(yantrik_shell_core::app_scope::systemd_run_args(unit));
+            c.arg(path);
+            c
+        }
+        None => std::process::Command::new(path),
+    };
     if let Some(dir) = dir {
         command.current_dir(dir);
     }
@@ -1216,6 +1229,52 @@ fn launch_command(
         seat.display().apply(&mut command);
     }
     command
+}
+
+/// The `systemd-run` binary and a fresh scope unit name for one launch of `app_id`, or `None` when
+/// the person's user manager cannot be asked for a scope (no systemd-run, no user session bus), in
+/// which case the app is launched bare, exactly as before #736. Also `None` for the rest of the
+/// session once a scoped launch has failed at once ([`SCOPES_OFF`]).
+fn app_scope_for(app_id: &str) -> Option<(PathBuf, String)> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    if SCOPES_OFF.load(Ordering::Relaxed) {
+        return None;
+    }
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+    let bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some();
+    if !yantrik_shell_core::app_scope::user_manager_reachable(runtime.as_deref(), bus) {
+        return None;
+    }
+    let systemd_run = find_program("systemd-run")?;
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    Some((systemd_run, yantrik_shell_core::app_scope::unit_name(app_id, std::process::id(), seq)))
+}
+
+/// Set once a scoped launch has died at once: `systemd-run` could not make the scope, so this
+/// session's user manager is not one to ask, and every later launch goes bare (#736). Asking again
+/// for each launch would cost every app a failed start before its retry.
+static SCOPES_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Clear the failed state of any `app-*-<pid>.scope` the app made for itself and of the launch's
+/// own scope when it had one, after the app has exited. Blocks for several seconds, so it runs on
+/// the reaper thread, never the UI thread.
+///
+/// Not straight after `wait()`: systemd marks an app's own hand-over scope failed only when it
+/// tries to move the pid and finds it gone, which is often after the shell has already reaped it,
+/// and a reset that comes first clears nothing. So once at about two seconds and once more a few
+/// seconds later. Run for every launch, Mind View's too, since the app makes its own scope
+/// whatever the shell did (#736).
+fn reset_failed_scopes_later(unit: Option<&str>, pid: u32) {
+    for wait_ms in [2_000, 4_000] {
+        std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+        let _ = std::process::Command::new("systemctl")
+            .args(yantrik_shell_core::app_scope::reset_failed_args(unit, pid))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
 }
 
 /// Where a mind's browser keeps its profile in Mind View: not the person's.
@@ -1255,7 +1314,12 @@ fn launch(
     raise_on_handover: bool,
 ) {
     let path = resolve_app_binary(bin);
-    let mut command = launch_command(&path, args, dir, seat);
+    // Only the person's desktop launches get a scope: Mind View apps run against a nested seat
+    // with an environment of their own, and they were not where #736 was seen.
+    let scope = if seat.is_none() { app_scope_for(app_id) } else { None };
+    let mut command =
+        launch_command(&path, args, dir, seat, scope.as_ref().map(|(r, u)| (r.as_path(), u.as_str())));
+    let unit = scope.map(|(_, unit)| unit);
     match command
         // The shell is often started with SLINT_FULLSCREEN=1 (dev runs, kiosk sessions). A child
         // inherits the environment, and an app that inherits that variable opens fullscreen too.
@@ -1267,7 +1331,7 @@ fn launch(
     {
         Ok(mut child) => {
             let pid = child.id();
-            tracing::info!(app = app_id, bin, pid, path = %path.display(), "App launched");
+            tracing::info!(app = app_id, bin, pid, path = %path.display(), scope = ?unit, "App launched");
             // The shell now knows this window is open without asking the compositor. Recorded
             // before the reaper thread starts, so a describe that lands in the same instant sees
             // it.
@@ -1290,12 +1354,37 @@ fn launch(
             // "accepted: true" and an empty screen could both be true at once. What an exit means
             // is decided in `exit_verdict`, where the cases can be tested.
             crate::running::clear_launch_failure(&id);
+            // What a bare retry needs if the scope turns out not to be makeable (#736): the same
+            // launch, owned, for the reaper thread.
+            let retry_args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            let retry_dir = dir.map(std::path::Path::to_path_buf);
+            let retry_adapter = adapter.map(|(s, c)| (s.to_string(), c.to_string()));
             let started = std::time::Instant::now();
             std::thread::spawn(move || {
                 // Whether this exit was a second copy handing over to a window already open,
                 // which leaves that window's adapter where it is.
                 let mut second_copy = false;
+                // Whether this was `systemd-run` failing to make the scope, so the app is started
+                // again without one once this exit has been cleaned up.
+                let mut relaunch_bare = false;
                 match child.wait() {
+                    Ok(status) if yantrik_shell_core::app_scope::retry_bare(
+                        unit.is_some(),
+                        started.elapsed().as_millis() as u64,
+                        crate::running::LAUNCH_GRACE_MS,
+                        status.success(),
+                    ) =>
+                    {
+                        // Not recorded as a failed launch or a crash: the app may never have run.
+                        // If it really cannot start, the bare launch fails and is recorded.
+                        tracing::warn!(
+                            app = %name, %status, unit = ?unit,
+                            "Scoped launch failed at once; starting it again without a scope, and \
+                             launching bare for the rest of the session"
+                        );
+                        SCOPES_OFF.store(true, std::sync::atomic::Ordering::Relaxed);
+                        relaunch_bare = true;
+                    }
                     Ok(status) => {
                         let lived_ms = started.elapsed().as_millis() as u64;
                         let success = status.success();
@@ -1342,6 +1431,17 @@ fn launch(
                 crate::surfaces::app_exited(pid, second_copy);
                 crate::running::mark_exited(&id, pid);
                 crate::mind_view::mark_exited(pid);
+                if relaunch_bare {
+                    // After the old pid's record is gone, so the new one takes the registry.
+                    // `SCOPES_OFF` is set, so this launch gets no scope. Only a launch on the
+                    // person's desktop is ever scoped, hence no seat.
+                    let args: Vec<&str> = retry_args.iter().map(String::as_str).collect();
+                    let adapter = retry_adapter.as_ref().map(|(s, c)| (s.as_str(), c.as_str()));
+                    launch(&id, &name, &args, retry_dir.as_deref(), adapter, None, raise_on_handover);
+                }
+                // A scope that ended failed, ours or one the app made for this pid itself, would
+                // otherwise sit in `systemctl --user list-units --failed` until logout (#736).
+                reset_failed_scopes_later(unit.as_deref(), pid);
             });
         }
         Err(e) => tracing::error!(app = app_id, bin, path = %path.display(), error = %e, "Failed to launch app"),
@@ -1835,12 +1935,12 @@ mod tests {
     #[test]
     fn a_minds_launch_command_never_carries_the_persons_display() {
         let seat = crate::mind_view::Seat { wayland: "wayland-1".into(), x11: None };
-        let command = launch_command(std::path::Path::new("/usr/bin/blender"), &["--python", "x"], None, Some(&seat));
+        let command = launch_command(std::path::Path::new("/usr/bin/blender"), &["--python", "x"], None, Some(&seat), None);
         assert_eq!(env_of(&command, "DISPLAY"), Some(None), "DISPLAY must be cleared for a mind");
         assert_eq!(env_of(&command, "WAYLAND_SOCKET"), Some(None));
         assert_eq!(env_of(&command, "WAYLAND_DISPLAY"), Some(Some("wayland-1".to_string())));
         assert_eq!(env_of(&command, "GDK_BACKEND"), Some(Some("wayland".to_string())));
-        let person = launch_command(std::path::Path::new("/usr/bin/blender"), &[], None, None);
+        let person = launch_command(std::path::Path::new("/usr/bin/blender"), &[], None, None, None);
         assert_ne!(env_of(&person, "DISPLAY"), Some(None), "the person's own launch is untouched");
         assert_eq!(env_of(&person, "WAYLAND_DISPLAY"), None);
     }

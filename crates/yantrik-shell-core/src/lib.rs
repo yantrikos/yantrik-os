@@ -3,6 +3,7 @@
 //! Pure Rust, no Slint dependency. Provides the shell's understanding of
 //! installed applications, built-in apps, and screen ID routing.
 
+pub mod app_scope;
 pub mod apps;
 pub mod screens;
 pub mod service_manager;
