@@ -31,7 +31,7 @@
 // Idle: the three Timers below run only while a pointer rests on a button or the list is waiting
 // to close, and each stops itself. At rest nothing ticks and nothing animates.
 
-import { Theme } from "theme.slint";
+import { Theme, DirectionMode } from "theme.slint";
 import { Icon, Icons } from "icon.slint";
 import { AppTile } from "app_tile.slint";
 import { AppLabel } from "app_label.slint";
@@ -369,6 +369,48 @@ export component GroundedDock inherits Rectangle {
             height: Theme.dock-button;
             spacing: Theme.dock-gap;
 
+            // ── Mind half first, when the row reads right-to-left ──
+            //
+            // Slint 1.17 has no layout-direction, so the row is mirrored by order instead: the
+            // mind half — mind, then divider — leads when DirectionMode.rtl is set and trails
+            // otherwise, the apps half unchanged in between. Apps lands at the right edge, the
+            // mind at the left. Mirroring the rest of the shell is later work. The two mind
+            // copies must stay in sync; the design note lives on the left-to-right one.
+            if DirectionMode.rtl : DockBtn {
+                name: root.cards-waiting > 0 ? root.mind-label + ", " + root.cards-waiting + " waiting for you" : root.mind-label;
+                needs-you: root.cards-waiting > 0;
+                clicked => { root.close-list(); root.open-companion(); }
+                wheel(n) => { root.page-by(n); }
+                attention(on) => { root.attend(on, "mind", root.cards-waiting > 0 ? root.mind-label + " — " + root.cards-waiting + " waiting for you" : root.mind-label, 0, self.anchor-x); }
+                Rectangle {
+                    width: Theme.dock-icon;
+                    height: Theme.dock-icon;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: self.width / 2;
+                    background: transparent;
+                    border-width: 1px;
+                    border-color: root.companion-online ? Theme.mind : Theme.dock-raised-line;
+                    Icon {
+                        commands: Icons.companion;
+                        size: Theme.dock-icon * Theme.dock-mind-glyph-ratio;
+                        tint: root.companion-online ? Theme.mind : Theme.text-dim;
+                        thickness: 1.8px;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                    }
+                }
+            }
+            if DirectionMode.rtl : Rectangle {
+                width: 1px;
+                Rectangle {
+                    y: Theme.dock-divider-inset;
+                    width: 1px;
+                    height: parent.height - 2 * Theme.dock-divider-inset;
+                    background: Theme.dock-border;
+                }
+            }
+
             // ── Apps ──
             DockBtn {
                 name: root.launcher-label;
@@ -415,7 +457,7 @@ export component GroundedDock inherits Rectangle {
                     background: back.has-hover && root.before > 0 ? Theme.dock-raised : transparent;
                     opacity: root.before > 0 ? 1.0 : 0.35;
                     Text {
-                        text: root.before > 0 ? "‹ +" + root.before : "‹";
+                        text: DirectionMode.rtl ? (root.before > 0 ? "› +" + root.before : "›") : (root.before > 0 ? "‹ +" + root.before : "‹");
                         color: Theme.text-secondary;
                         font-size: Theme.fs-micro;
                         font-weight: 600;
@@ -499,7 +541,7 @@ export component GroundedDock inherits Rectangle {
                     background: next.has-hover && root.after > 0 ? Theme.dock-raised : transparent;
                     opacity: root.after > 0 ? 1.0 : 0.35;
                     Text {
-                        text: root.after > 0 ? "› +" + root.after : "›";
+                        text: DirectionMode.rtl ? (root.after > 0 ? "‹ +" + root.after : "‹") : (root.after > 0 ? "› +" + root.after : "›");
                         color: Theme.text-secondary;
                         font-size: Theme.fs-micro;
                         font-weight: 600;
@@ -512,8 +554,8 @@ export component GroundedDock inherits Rectangle {
                 accessible-label: "Later apps";
             }
 
-            // ── Divider ──
-            Rectangle {
+            // ── Divider, then the mind at the right edge, when the row reads left-to-right ──
+            if !DirectionMode.rtl : Rectangle {
                 width: 1px;
                 Rectangle {
                     y: Theme.dock-divider-inset;
@@ -524,7 +566,7 @@ export component GroundedDock inherits Rectangle {
             }
 
             // ── Yantrik Mind ──
-            DockBtn {
+            if !DirectionMode.rtl : DockBtn {
                 name: root.cards-waiting > 0 ? root.mind-label + ", " + root.cards-waiting + " waiting for you" : root.mind-label;
                 needs-you: root.cards-waiting > 0;
                 clicked => { root.close-list(); root.open-companion(); }

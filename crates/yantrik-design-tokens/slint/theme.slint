@@ -18,6 +18,12 @@ export global ThemeMode {
     in-out property <bool> dark: true;
 }
 
+// Reading direction. Set by the shell from the locale (yantrik-ui wire/i18n.rs), read by any
+// window; off by default, so every app that never sets it keeps today's layout.
+export global DirectionMode {
+    in-out property <bool> rtl: false;
+}
+
 // Accent color presets — index selects which accent palette is active.
 // 0 = soft blue (default), 2 = violet, 4 = pink. 1 and 3 are not presets.
 //

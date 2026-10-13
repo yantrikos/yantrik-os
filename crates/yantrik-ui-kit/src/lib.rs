@@ -20,6 +20,8 @@ mod app_labels;
 #[cfg(test)]
 mod colour_roles;
 #[cfg(test)]
+mod direction;
+#[cfg(test)]
 mod slint_source;
 
 #[cfg(test)]

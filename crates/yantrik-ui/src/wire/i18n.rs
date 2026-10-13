@@ -1,4 +1,5 @@
-//! i18n wiring — push translations from I18n to Slint's Tr global.
+//! i18n wiring — push translations from I18n to Slint's Tr global, and the reading direction
+//! to DirectionMode.
 //!
 //! Called once at startup. Can be re-called on locale switch.
 
@@ -6,15 +7,19 @@ use slint::ComponentHandle;
 
 use crate::app_context::AppContext;
 use crate::i18n::I18n;
-use crate::{App, Tr};
+use crate::{App, DirectionMode, Tr};
 
 /// Push all translations to the Slint Tr global.
 pub fn wire(ui: &App, ctx: &AppContext) {
+    ui.global::<DirectionMode>().set_rtl(ctx.i18n.is_rtl());
     push_translations(ui, &ctx.i18n);
 }
 
 /// Set every Tr property from the i18n store.
 pub fn push_translations(ui: &App, i18n: &I18n) {
+    // Re-set here too: this is what a locale switch re-calls, and the direction follows
+    // the locale. Only the shell sets it — apps inherit the default.
+    ui.global::<DirectionMode>().set_rtl(i18n.is_rtl());
     let tr = ui.global::<Tr>();
 
     // ── Common ──
