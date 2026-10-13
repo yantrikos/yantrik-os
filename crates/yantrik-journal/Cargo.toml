@@ -1,0 +1,10 @@
+[package]
+name = "yantrik-journal"
+version = "0.1.0"
+edition = "2021"
+description = "The append-only, fsync-before-cursor segment journal shared by perception-journal and the action ledger"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
