@@ -188,11 +188,14 @@ struct FocusLog<K> {
     since: Option<Instant>,
     /// Every window that has had focus and still exists, the one in front first. The overview's order.
     recent: Vec<(K, String)>,
+    /// The windows the compositor has minimized. A minimized window is not "in front", whatever
+    /// focus the log still remembers for it.
+    minimized: Vec<K>,
 }
 
 impl<K: PartialEq + Clone> FocusLog<K> {
     const fn new() -> Self {
-        Self { current: None, previous: None, since: None, recent: Vec::new() }
+        Self { current: None, previous: None, since: None, recent: Vec::new(), minimized: Vec::new() }
     }
 
     /// The compositor's latest word on which window is activated.
@@ -228,6 +231,7 @@ impl<K: PartialEq + Clone> FocusLog<K> {
     /// A window went away. It is no longer the answer to "what was in front", whatever it was.
     fn closed(&mut self, key: &K) {
         self.recent.retain(|(k, _)| k != key);
+        self.minimized.retain(|k| k != key);
         if self.previous.as_ref().is_some_and(|(k, _)| k == key) {
             self.previous = None;
         }
@@ -236,15 +240,30 @@ impl<K: PartialEq + Clone> FocusLog<K> {
         }
     }
 
+    /// The compositor's latest word on whether `key` is minimized. A minimized window is not "in
+    /// front", so `was_in_front` must not answer true for it even while focus has not moved.
+    fn set_minimized(&mut self, key: &K, yes: bool) {
+        if yes {
+            if !self.minimized.contains(key) {
+                self.minimized.push(key.clone());
+            }
+        } else {
+            self.minimized.retain(|k| k != key);
+        }
+    }
+
     fn was_in_front(&self, title: &str, shell: &str, now: Instant) -> bool {
         let Some((_, current)) = &self.current else { return false };
         if current != shell {
             // The click did not move focus to the shell (or the compositor has not said so yet):
             // whatever is activated now is what was in front.
-            return current == title;
+            return current == title
+                && !self.current.as_ref().is_some_and(|(k, _)| self.minimized.contains(k));
         }
         let just_now = self.since.is_some_and(|at| now.saturating_duration_since(at) <= CLICK_TOOK_FOCUS);
-        just_now && self.previous.as_ref().is_some_and(|(_, t)| t == title)
+        just_now
+            && self.previous.as_ref().is_some_and(|(_, t)| t == title)
+            && !self.previous.as_ref().is_some_and(|(k, _)| self.minimized.contains(k))
     }
 }
 
@@ -255,9 +274,11 @@ struct Toplevel {
     title: String,
     app_id: String,
     activated: bool,
+    minimized: bool,
     pending_title: Option<String>,
     pending_app_id: Option<String>,
     pending_activated: Option<bool>,
+    pending_minimized: Option<bool>,
 }
 
 #[derive(Default)]
@@ -395,10 +416,12 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Watch {
             handle::Event::Title { title } => watch.window(id).pending_title = Some(title),
             handle::Event::AppId { app_id } => watch.window(id).pending_app_id = Some(app_id),
             handle::Event::State { state } => {
-                watch.window(id).pending_activated = Some(is_activated(&state));
+                let w = watch.window(id);
+                w.pending_activated = Some(is_activated(&state));
+                w.pending_minimized = Some(is_minimized(&state));
             }
             handle::Event::Done => {
-                let w = watch.window(id);
+                let w = watch.window(id.clone());
                 if let Some(title) = w.pending_title.take() {
                     w.title = title;
                 }
@@ -407,6 +430,12 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Watch {
                 }
                 if let Some(activated) = w.pending_activated.take() {
                     w.activated = activated;
+                }
+                if let Some(minimized) = w.pending_minimized.take() {
+                    w.minimized = minimized;
+                }
+                if let Ok(mut log) = LOG.lock() {
+                    log.set_minimized(&id, w.minimized);
                 }
                 watch.count_shell_titled();
                 watch.publish();
@@ -450,6 +479,14 @@ fn is_activated(state: &[u8]) -> bool {
     state
         .chunks_exact(4)
         .any(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]) == activated)
+}
+
+/// The protocol's state is an array of native-endian u32 values, one per state the window is in.
+fn is_minimized(state: &[u8]) -> bool {
+    let minimized = handle::State::Minimized as u32;
+    state
+        .chunks_exact(4)
+        .any(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]) == minimized)
 }
 
 #[cfg(test)]
@@ -560,5 +597,56 @@ mod tests {
         assert!(is_activated(&bytes(&[0, 2])));
         assert!(!is_activated(&bytes(&[0, 1])));
         assert!(!is_activated(&[]));
+    }
+
+    /// A minimized window is not "in front", even while focus has not moved away from it.
+    #[test]
+    fn a_minimized_window_is_not_in_front() {
+        let (mut log, t) = log();
+        log.observe(Some((1, "Notes".into())), t);
+        log.set_minimized(&1, true);
+        assert!(!log.was_in_front("Notes", SHELL, t + Duration::from_secs(30)));
+        log.set_minimized(&1, false);
+        assert!(log.was_in_front("Notes", SHELL, t + Duration::from_secs(30)));
+    }
+
+    /// A window minimized under the desktop is not "in front" even within the click window.
+    #[test]
+    fn a_window_minimized_under_the_desktop_is_not_in_front() {
+        let (mut log, t) = log();
+        log.observe(Some((1, "Notes".into())), t);
+        log.observe(Some((0, SHELL.into())), t + Duration::from_millis(5));
+        log.set_minimized(&1, true);
+        assert!(!log.was_in_front("Notes", SHELL, t + Duration::from_millis(150)));
+    }
+
+    /// Minimizing one window does not change the answer for another.
+    #[test]
+    fn minimizing_one_window_does_not_unsettle_another() {
+        let (mut log, t) = log();
+        log.observe(Some((1, "Notes".into())), t);
+        log.set_minimized(&1, true);
+        log.observe(Some((2, "Terminal".into())), t + Duration::from_millis(5));
+        assert!(log.was_in_front("Terminal", SHELL, t + Duration::from_millis(150)));
+        assert!(!log.was_in_front("Notes", SHELL, t + Duration::from_millis(150)));
+    }
+
+    /// A closed minimized window leaves no mark: a new window reusing its key is in front.
+    #[test]
+    fn a_closed_minimized_window_leaves_no_mark() {
+        let (mut log, t) = log();
+        log.observe(Some((1, "Notes".into())), t);
+        log.set_minimized(&1, true);
+        log.closed(&1);
+        log.observe(Some((1, "Notes".into())), t + Duration::from_millis(5));
+        assert!(log.was_in_front("Notes", SHELL, t + Duration::from_millis(150)));
+    }
+
+    #[test]
+    fn the_minimized_state_is_read_from_the_array() {
+        let bytes = |v: &[u32]| v.iter().flat_map(|x| x.to_ne_bytes()).collect::<Vec<u8>>();
+        assert!(is_minimized(&bytes(&[0, 1])));
+        assert!(!is_minimized(&bytes(&[0, 2])));
+        assert!(!is_minimized(&[]));
     }
 }
