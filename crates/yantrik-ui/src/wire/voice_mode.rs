@@ -2,7 +2,7 @@
 //!
 //! The VoiceRuntime is started once at boot and lives for the entire session.
 //! Super+Space (or mic button) activates listening. The runtime handles:
-//! - VAD → STT → LLM → TTS pipeline
+//! - VAD → STT → the Lens's mind (`chat::send_turn`) → TTS pipeline
 //! - Follow mode (15s window for back-and-forth)
 //! - Barge-in detection during TTS playback
 //! - OS context injection for each voice turn
@@ -12,8 +12,34 @@ use std::sync::Arc;
 use slint::ComponentHandle;
 
 use crate::app_context::AppContext;
-use crate::voice::{VoiceMode, VoiceRuntime};
+use crate::streaming::Streams;
+use crate::voice::{SendTurn, VoiceMode, VoiceRuntime, VoiceTurn};
 use crate::App;
+
+thread_local! {
+    /// The pumps for spoken turns' replies in the Lens, as each typed entry point holds its own.
+    /// Lives on the UI thread, where `send_turn` runs.
+    static STREAMS: Streams = Streams::new();
+}
+
+/// How the voice runtime, on its own thread, sends a turn: on the UI thread through the Lens's
+/// own send path, waiting for the reply stream to be handed back.
+fn send_turn(ctx: &AppContext, ui: &App) -> SendTurn {
+    let bridge = ctx.bridge.clone();
+    let ui_weak = ui.as_weak();
+    Arc::new(move |turn: VoiceTurn| {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let (bridge, ui_weak) = (bridge.clone(), ui_weak.clone());
+        slint::invoke_from_event_loop(move || {
+            let reply = STREAMS.with(|streams| {
+                super::chat::send_turn(&ui_weak, &bridge, &turn.text, turn.origin, &turn.desk, streams)
+            });
+            let _ = tx.send(reply);
+        })
+        .ok()?;
+        rx.recv_timeout(std::time::Duration::from_secs(10)).ok()
+    })
+}
 
 /// Wire voice callbacks and start the persistent voice runtime.
 pub fn wire(ui: &App, ctx: &AppContext) {
@@ -22,6 +48,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         ctx.bridge.clone(),
         ui.as_weak(),
         ctx.voice_config.clone(),
+        send_turn(ctx, ui),
     );
     let voice_state = runtime.state.clone();
 
@@ -44,8 +71,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 tracing::info!("Voice: mic button → activate");
             }
             VoiceMode::Speaking => {
-                // Barge-in via button
-                state_mic.activate();
+                // Barge-in via button. The runtime is inside the reply loop, which reads the
+                // stop signal; `activate` would only be read after the reply had ended.
+                state_mic.request_stop_tts();
                 tracing::info!("Voice: mic button → barge-in");
             }
             VoiceMode::Following => {
@@ -86,7 +114,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 }
             }
             VoiceMode::Speaking => {
-                state_hotkey.activate(); // barge-in
+                state_hotkey.request_stop_tts(); // barge-in, read inside the reply loop
             }
             VoiceMode::Following => {
                 // User pressed hotkey in follow mode — they want to speak

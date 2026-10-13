@@ -31,9 +31,12 @@ a real harness replaces is the function that produces the answer. `harness.event
 optional to use: a harness that knows none of them works exactly as it always did.
 
 A turn may carry `origin`, where the person asked it from (design/channels-2026-09-29.md):
-`{"channel": "lens"|"telegram"|"signal"|…, "remote": bool, "person", "carries": ["text","voice","photo"],
+`{"channel": "lens"|"voice"|"telegram"|"signal"|…, "remote": bool, "person", "carries": ["text","voice","photo"],
 "trust": "local"|"e2e"|"provider-readable"}`. Absent when the desktop does not say. Use it for register
-(terse on a phone) and for what to send back. While a turn is `remote`, the agent answering it is
+(terse on a phone) and for what to send back. `voice` is the desk like `lens`, but the person spoke
+the turn (Super+Space, or the Lens's mic) and the reply will be read aloud as it arrives: answer
+briefly and conversationally, without tables, lists or code. It is an additional value, not a
+protocol change; a harness that ignores `origin` still answers, and the desktop speaks what it says. While a turn is `remote`, the agent answering it is
 held on every door, whatever the mode, both bypasses included: reads run; anything up to `sensitive`
 asks the person (a `GRANT:` refusal, answered by a card the person may answer on the phone);
 nothing above runs; and it hands no work to another agent. Only a mind running as its own

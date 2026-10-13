@@ -56,6 +56,94 @@ pub(crate) fn context_with_handover(context: &str, handover: &crate::agents::han
     value.to_string()
 }
 
+/// The desktop's context with what the desk was showing when a turn was said ("Active app:
+/// Terminal"), as `desk`. "" adds nothing.
+fn context_with_desk(context: &str, desk: &str) -> String {
+    if desk.trim().is_empty() {
+        return context.to_string();
+    }
+    let mut value: serde_json::Value = serde_json::from_str(context).unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(object) = value.as_object_mut() {
+        object.insert("desk".into(), desk.trim().into());
+    }
+    value.to_string()
+}
+
+/// Who answers a turn: the built-in on its own path, or an attached mind through the host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Route {
+    Builtin,
+    Harness(String),
+}
+
+/// Where a turn goes, from the id of the mind the Lens talks to. The built-in is chosen by its id,
+/// never by default: anything else is an attached mind, and the turn is its.
+pub(crate) fn route(active: &str) -> Route {
+    if active == super::harness::BUILTIN_ID {
+        Route::Builtin
+    } else {
+        Route::Harness(active.to_string())
+    }
+}
+
+/// The turn an attached mind is handed: the words it is sent, the desktop's context, and where the
+/// person said them.
+pub(crate) fn harness_turn(sent: String, context: String, origin: yantrik_harness::protocol::Origin) -> yantrik_harness::Turn {
+    yantrik_harness::Turn::new(sent).with_context(context).with_origin(origin)
+}
+
+/// A reply as it arrives, for whoever sent the turn: the voice runtime speaks it.
+///
+/// `tokens` speaks the pump's protocol: reply text, `__REPLACE__` before a token that replaces
+/// everything said so far, and `__DONE__` at the end. The run link (`streaming::RUN_MARK`) is the
+/// Lens's alone and is left out. Dropping it changes nothing for the Lens, which keeps its own copy.
+pub(crate) struct TurnStream {
+    pub tokens: crossbeam_channel::Receiver<String>,
+    /// The attached mind's agent answering, to interrupt; None for the built-in and the desktop.
+    agent: Option<crate::agents::model::AgentId>,
+}
+
+impl TurnStream {
+    fn new(tokens: crossbeam_channel::Receiver<String>, agent: Option<crate::agents::model::AgentId>) -> Self {
+        Self { tokens, agent }
+    }
+
+    /// A reply the desktop gave itself, whole.
+    fn said(text: &str) -> Self {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let _ = tx.send(text.to_string());
+        let _ = tx.send("__DONE__".to_string());
+        Self::new(rx, None)
+    }
+
+    /// The person spoke over the reply: the mind stops too. An attached mind's turn is
+    /// interrupted, and it answers what was still on its way with `{"dropped":true}`. The
+    /// built-in has no stop for a turn in flight; its reply finishes in the Lens unspoken.
+    pub fn interrupt(&self) {
+        if let (Some(agent), Some(host)) = (&self.agent, super::harness::host()) {
+            host.interrupt(agent);
+        }
+    }
+}
+
+/// Two copies of a reply: every token for the Lens's pump, and the reply's own tokens for the
+/// sender. The Lens's copy runs on whether or not the sender keeps reading.
+fn tee(
+    tokens: crossbeam_channel::Receiver<String>,
+) -> (crossbeam_channel::Receiver<String>, crossbeam_channel::Receiver<String>) {
+    let (lens_tx, lens_rx) = crossbeam_channel::unbounded::<String>();
+    let (their_tx, their_rx) = crossbeam_channel::unbounded::<String>();
+    std::thread::spawn(move || {
+        while let Ok(token) = tokens.recv() {
+            if !token.starts_with(streaming::RUN_MARK) {
+                let _ = their_tx.send(token.clone());
+            }
+            let _ = lens_tx.send(token);
+        }
+    });
+    (lens_rx, their_rx)
+}
+
 /// The built-in's turn: relayed to the chat panel, and counted when it ends answered.
 ///
 /// The built-in used to score its own turns from inside its handlers — and those handlers also
@@ -70,11 +158,16 @@ fn builtin_turn(
     bridge: &Arc<CompanionBridge>,
     text: &str,
     handover: Option<&crate::agents::handover::Handover>,
+    spoken: Option<&str>,
     streams: &streaming::Streams,
-) {
+) -> crossbeam_channel::Receiver<String> {
     let sent = match handover {
         Some(h) => crate::agents::handover::with_handover(h, text),
         None => text.to_string(),
+    };
+    let sent = match spoken {
+        Some(desk) => with_voice_frame(desk, &sent),
+        None => sent,
     };
     let answer = bridge.send_message(sent);
     let (tx, rx) = crossbeam_channel::unbounded::<String>();
@@ -109,6 +202,7 @@ fn builtin_turn(
             bridge.score_conversation_turn(asked);
         }
     });
+    let (rx, theirs) = tee(rx);
     match handover {
         Some(h) => {
             streaming::say(ui_weak, Some(text), "desktop", &switched_to("Yantrik Companion", h));
@@ -116,6 +210,26 @@ fn builtin_turn(
         }
         None => streaming::stream_into(ui_weak.clone(), rx, text, streams),
     }
+    theirs
+}
+
+/// A spoken turn, for the built-in: it has no `origin` or `context` to read, so the desktop says
+/// so in front of the words, the way it hands a conversation over (`with_handover`). The reply is
+/// read aloud, so it must be short plain sentences, and the desk is what "this" and "my screen"
+/// mean. The person's bubble still shows only what they said.
+pub(crate) fn with_voice_frame(desk: &str, text: &str) -> String {
+    let mut frame = String::from(
+        "[From the desktop: the person said this aloud and will hear your reply spoken. Answer \
+         briefly, in plain sentences: no lists, tables, code or markdown.",
+    );
+    if !desk.trim().is_empty() {
+        frame.push_str(" Their desk: ");
+        frame.push_str(&desk.trim().replace('\n', "; "));
+        frame.push('.');
+    }
+    frame.push_str("]\n\n");
+    frame.push_str(text);
+    frame
 }
 
 /// The desktop's line when the conversation changes hands: who answers now, and that it knows.
@@ -139,6 +253,49 @@ fn dispatch(
     text: &str,
     streams: &streaming::Streams,
 ) {
+    // Typed at the desk: the Lens shows the reply, and nobody else wants a copy of it.
+    let _ = send_turn(ui_weak, bridge, text, yantrik_harness::protocol::Origin::desk(), "", streams);
+}
+
+/// Send the person's words to whichever mind is answering, from wherever they said them — typed
+/// (`dispatch`) or spoken (`voice`) — and hand back the reply as it arrives.
+///
+/// One road for both, so a spoken turn is the same turn as a typed one: it reaches the mind the
+/// Lens talks to, the person's words and the reply go in the Lens, it counts toward the bond, and
+/// a harness is told where it came from (`origin`). Voice used to send every utterance to the
+/// built-in's own model and keep the conversation to itself, so Hermes, Pi or any attached mind
+/// never heard the person and was never heard.
+///
+/// `desk` is what the desk was showing when the turn was said ("Active app: Terminal"), added to
+/// the turn's context beside the machine, never to the person's words; "" for none.
+pub(crate) fn send_turn(
+    ui_weak: &slint::Weak<App>,
+    bridge: &Arc<CompanionBridge>,
+    text: &str,
+    origin: yantrik_harness::protocol::Origin,
+    desk: &str,
+    streams: &streaming::Streams,
+) -> TurnStream {
+    let spoken = origin.channel == "voice";
+    let stream = turn(ui_weak, bridge, text, origin, desk, streams);
+    if spoken {
+        streaming::mark_spoken(ui_weak);
+    }
+    stream
+}
+
+fn turn(
+    ui_weak: &slint::Weak<App>,
+    bridge: &Arc<CompanionBridge>,
+    text: &str,
+    origin: yantrik_harness::protocol::Origin,
+    desk: &str,
+    streams: &streaming::Streams,
+) -> TurnStream {
+    // Spoken at the desk: the built-in is told so in front of the words (`with_voice_frame`); an
+    // attached mind reads it from `origin`, and the desk from the context.
+    let spoken = (origin.channel == "voice").then_some(desk);
+
     // A person just said something — to whichever mind. The Synthesis Gate, which decides
     // whether the built-in companion may speak unprompted, used to read a timestamp bumped only
     // inside the companion's own message arm, so a conversation with a harness mind looked like
@@ -153,14 +310,14 @@ fn dispatch(
     // pause or cancel a recipe (#176).
     if let Some(word) = crate::recipes::said_in_chat(text) {
         let reply = crate::recipes::act_from_chat(bridge.handle(), word);
+        let (reply, theirs) = tee(reply);
         streaming::stream_into(ui_weak.clone(), reply, text, streams);
-        return;
+        return TurnStream::new(theirs, None);
     }
 
     let Some(host) = super::harness::host() else {
         // No host yet (very early boot). The builtin is the only thing that could answer.
-        builtin_turn(ui_weak, bridge, text, None, streams);
-        return;
+        return TurnStream::new(builtin_turn(ui_weak, bridge, text, None, spoken, streams), None);
     };
 
     // The conversation, handed over when the answering mind has changed since the last word
@@ -176,15 +333,15 @@ fn dispatch(
     // link (`private_mode::LEAVE_LINK`).
     if crate::private_mode::is_on() {
         let mind = host.list().into_iter().find(|e| e.id == active).map(|e| e.name).unwrap_or_else(|| active.clone());
-        streaming::offer(ui_weak, Some(text), &crate::private_mode::lens_offer(&mind), crate::private_mode::LEAVE_LINK);
-        return;
+        let said = crate::private_mode::lens_offer(&mind);
+        streaming::offer(ui_weak, Some(text), &said, crate::private_mode::LEAVE_LINK);
+        return TurnStream::said(&said);
     }
 
     // The builtin keeps its own path: it carries tool calls, the __REPLACE__ convention and the
     // job board, none of which the harness protocol has or needs.
-    if active == super::harness::BUILTIN_ID {
-        builtin_turn(ui_weak, bridge, text, handover.as_ref(), streams);
-        return;
+    if route(&active) == Route::Builtin {
+        return TurnStream::new(builtin_turn(ui_weak, bridge, text, handover.as_ref(), spoken, streams), None);
     }
 
     // A mind already at work is answered by the desktop first, from its own record of the task:
@@ -206,13 +363,13 @@ fn dispatch(
     // speaks, on a thread, because `Answer` is a blocking std channel and this is the UI thread.
     // A harness that reads the hand-over from the context gets the person's words alone; any other
     // gets it in front of them, as before.
-    let context = desktop_context(&super::settings::place());
+    let context = context_with_desk(&desktop_context(&super::settings::place()), desk);
     let (sent, context) = match &handover {
         Some(h) if host.reads_handover(&active) => (text.to_string(), context_with_handover(&context, h)),
         Some(h) => (crate::agents::handover::with_handover(h, text), context),
         None => (text.to_string(), context),
     };
-    let answer = host.send(yantrik_harness::Turn::new(sent).with_context(context).with_origin(yantrik_harness::protocol::Origin::desk()));
+    let answer = host.send(harness_turn(sent, context, origin));
     // The same turn, recorded as this mind's agent on the Agents screen; the answer passes through.
     let answer = crate::agents::feed::lens_turn(&host.active_id(), text, answer);
     let run_of = crate::agents::feed::main_agent(&host.active_id());
@@ -282,6 +439,7 @@ fn dispatch(
     let mind = host.list().into_iter().find(|e| e.id == active).map(|e| e.name).unwrap_or_else(|| active.clone());
     let desktop: Vec<String> =
         [handover.as_ref().map(|h| switched_to(&mind, h)), told].into_iter().flatten().collect();
+    let (rx, theirs) = tee(rx);
     if desktop.is_empty() {
         streaming::stream_into(ui_weak.clone(), rx, text, streams);
     } else {
@@ -290,6 +448,7 @@ fn dispatch(
 "));
         streaming::stream_answer(ui_weak.clone(), rx, streams);
     }
+    TurnStream::new(theirs, Some(crate::agents::feed::main_agent(&active)))
 }
 
 /// An answer the Lens was waiting for when the shell restarted, picked back up after it (#246):
@@ -503,6 +662,65 @@ mod handover_context_tests {
 
         let broken: serde_json::Value = serde_json::from_str(&context_with_handover("not json", &handover)).unwrap();
         assert_eq!(broken["handover"]["from"], "Hermes Agent", "a context that did not parse still carries it");
+    }
+}
+
+#[cfg(test)]
+mod send_turn_tests {
+    use super::*;
+    use yantrik_harness::protocol::Origin;
+
+    /// The mind the Lens talks to gets the turn, with the origin it was said from: a spoken turn
+    /// reaches Hermes as `voice`, not the built-in's own model.
+    #[test]
+    fn the_active_harness_gets_the_turn_with_its_origin() {
+        assert_eq!(route("hermes"), Route::Harness("hermes".into()));
+        let turn = harness_turn("what time is it".into(), "{}".into(), Origin::voice());
+        assert_eq!(turn.text, "what time is it");
+        assert_eq!(turn.origin, Some(Origin::voice()));
+        assert_eq!(harness_turn("hi".into(), "{}".into(), Origin::desk()).origin, Some(Origin::desk()));
+    }
+
+    /// The built-in hears that a turn was spoken, and what was on the desk, in the desktop's own
+    /// bracket in front of the words — the words themselves unchanged after it.
+    #[test]
+    fn the_builtin_is_told_a_turn_was_spoken() {
+        let sent = with_voice_frame("Active app: Terminal\nCompanion status: listening\n", "what time is it");
+        assert!(sent.starts_with("[From the desktop: the person said this aloud"), "{sent}");
+        assert!(sent.contains("Their desk: Active app: Terminal; Companion status: listening."), "{sent}");
+        assert!(sent.ends_with("]\n\nwhat time is it"), "{sent}");
+        assert!(!with_voice_frame("", "hi").contains("Their desk"), "no desk, no desk line");
+    }
+
+    #[test]
+    fn the_builtin_gets_the_turn_when_it_is_active() {
+        assert_eq!(route(crate::wire::harness::BUILTIN_ID), Route::Builtin);
+    }
+
+    /// What the desk was showing rides in the context beside the machine, never in the words.
+    #[test]
+    fn the_desk_rides_in_the_context() {
+        let context = r#"{"machine":{"timezone":"America/Chicago"}}"#;
+        let with: serde_json::Value =
+            serde_json::from_str(&context_with_desk(context, "Active app: Terminal\n")).unwrap();
+        assert_eq!(with["machine"]["timezone"], "America/Chicago");
+        assert_eq!(with["desk"], "Active app: Terminal");
+        assert_eq!(context_with_desk(context, " "), context, "nothing to add adds nothing");
+    }
+
+    /// The sender's copy of a reply is the reply: the run link is the Lens's alone, and the Lens
+    /// gets every token whether or not the sender is still reading.
+    #[test]
+    fn the_sender_hears_the_reply_and_the_lens_sees_all_of_it() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        for t in ["It is ", "__REPLACE__", "noon.", "__RUN__:hermes:main#3", "__DONE__"] {
+            tx.send(t.to_string()).unwrap();
+        }
+        drop(tx);
+        let (lens, theirs) = tee(rx);
+        let theirs: Vec<String> = theirs.iter().collect();
+        assert_eq!(theirs, ["It is ", "__REPLACE__", "noon.", "__DONE__"]);
+        assert_eq!(lens.iter().count(), 5);
     }
 }
 

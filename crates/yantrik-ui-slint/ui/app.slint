@@ -425,6 +425,9 @@ export component App inherits Window {
     // Voice state
     in-out property <bool> voice-active: false;
     in property <int> voice-state: 0;
+    // Why voice cannot work on this machine ("Voice is unavailable: no microphone found."), from
+    // the voice runtime; "" when it can. The Lens's mic button is drawn disabled and says this.
+    in-out property <string> voice-unavailable: "";
     in property <string> voice-transcribed: "";
     in property <string> voice-response: "";
 
@@ -1796,6 +1799,8 @@ export component App inherits Window {
             // Callbacks
             send-message(text) => { root.send-message(text); }
             mic-pressed => { root.mic-pressed(); }
+            mic-state: root.voice-active ? root.voice-state : -1;
+            mic-unavailable: root.voice-unavailable;
             launch-app(app-id) => { root.launch-app(app-id); }
             navigate-to(screen) => {
                 root.current-screen = screen;
@@ -3073,6 +3078,7 @@ export component App inherits Window {
             volume-available: root.volume-available;
             volume-muted: root.volume-muted;
             volume-level: root.volume-level;
+            listening: root.voice-active && root.voice-state == 0;
             volume-changed(val) => { root.volume-changed(val); }
             volume-mute-toggled => { root.volume-mute-toggled(); }
             dnd-enabled: root.dnd-mode;

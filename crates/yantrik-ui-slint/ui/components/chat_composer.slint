@@ -18,6 +18,7 @@
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icon.slint";
 import { ChatPill } from "chat_parts.slint";
+import { YTooltip } from "y_tooltip.slint";
 
 export component ChatComposer inherits Rectangle {
     in property <string> mind-name;
@@ -29,6 +30,11 @@ export component ChatComposer inherits Rectangle {
     in property <string> destination: "";
     // A run for this chat is going: the button says so.
     in property <bool> run-active: false;
+    // The voice runtime, for the mic: -1 idle, 0 listening, 1 transcribing, 2 speaking.
+    in property <int> mic-state: -1;
+    // Why voice cannot work on this machine, "" when it can: the mic is drawn off, does nothing,
+    // and says this when the pointer rests on it.
+    in property <string> mic-unavailable: "";
     out property <bool> has-text: input.chat-text != "";
     // Whether the cursor is in the box (the idle-redraw and focus tests read it).
     out property <bool> focused: input.has-focus;
@@ -187,31 +193,51 @@ export component ChatComposer inherits Rectangle {
 
             Rectangle { horizontal-stretch: 1; }
 
-            // Voice: the same button the panel always had, drawn in the new language.
+            // Voice: what Super+Space does, drawn in the runtime's state — lit while it listens or
+            // transcribes, the speaker while it speaks, struck through and inert with no mic.
             VerticalLayout {
                 alignment: center;
                 Rectangle {
+                    property <bool> off: root.mic-unavailable != "";
+                    property <bool> lit: root.mic-state == 0 || root.mic-state == 1;
                     width: 28px;
                     height: 28px;
                     border-radius: 14px;
-                    background: mic-ta.has-hover ? Theme.hover-fill : transparent;
+                    background: self.lit ? Theme.chat-user-bubble
+                        : mic-ta.has-hover && !self.off ? Theme.hover-fill : transparent;
                     border-width: 1px;
                     border-color: Theme.chat-border;
+                    opacity: self.off ? 0.4 : root.mic-state == 1 ? 0.7 : 1.0;
                     accessible-role: button;
-                    accessible-label: "Speak";
-                    accessible-action-default => { root.mic(); }
+                    accessible-enabled: !self.off;
+                    accessible-label: self.off ? root.mic-unavailable
+                        : root.mic-state == 0 ? "Listening"
+                        : root.mic-state == 1 ? "Transcribing"
+                        : root.mic-state == 2 ? "Speaking; press to interrupt"
+                        : "Speak";
+                    accessible-action-default => { if (!self.off) { root.mic(); } }
 
                     mic-ta := TouchArea {
-                        mouse-cursor: pointer;
+                        enabled: !parent.off;
+                        mouse-cursor: parent.off ? default : pointer;
                         clicked => { root.mic(); }
                     }
-                    Rectangle {
+                    Icon {
                         x: (parent.width - self.width) / 2;
-                        y: 7px;
-                        width: 6px;
-                        height: 10px;
-                        border-radius: 3px;
-                        background: Theme.chat-text-2;
+                        y: (parent.height - self.height) / 2;
+                        commands: parent.off ? Icons.mic-off : root.mic-state == 2 ? Icons.volume : Icons.mic;
+                        size: 16px;
+                        tint: parent.lit ? Theme.chat-user-text : Theme.chat-text-2;
+                    }
+                    YTooltip {
+                        text: root.mic-unavailable;
+                        hovered: mic-hover.has-hover;
+                        x: parent.width - self.width;
+                        y: -self.height - 4px;
+                    }
+                    // The disabled TouchArea reports no hover; this one only watches for it.
+                    mic-hover := TouchArea {
+                        enabled: parent.off;
                     }
                 }
             }

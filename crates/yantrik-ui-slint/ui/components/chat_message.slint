@@ -15,6 +15,7 @@ import { Theme } from "theme.slint";
 import { MessageData } from "message_bubble.slint";
 import { ToolCallCard } from "tool_call.slint";
 import { ChatPill } from "chat_parts.slint";
+import { Icon, Icons } from "icon.slint";
 
 export component ChatMessage inherits Rectangle {
     in property <MessageData> data;
@@ -29,6 +30,9 @@ export component ChatMessage inherits Rectangle {
 
     property <bool> is-user: root.data.role == "user";
     property <bool> is-desktop: root.data.role == "desktop";
+    // The person said these words aloud (Super+Space, or the mic) rather than typing them
+    // (`streaming::SPOKEN_MARK`): a small "spoken" mark under the bubble.
+    property <bool> spoken: root.is-user && root.data.run == "spoken";
     property <bool> has-blocks: root.data.blocks.length > 0 && !root.data.is-streaming;
     property <bool> actions-open: false;
 
@@ -41,11 +45,33 @@ export component ChatMessage inherits Rectangle {
 
         if root.is-user : Rectangle {
             property <length> bubble-w: min(label.preferred-width + 28px, (root.width - 32px) * 0.85);
-            height: label.preferred-height + 24px;
+            property <length> mark-h: root.spoken ? 18px : 0px;
+            height: label.preferred-height + 24px + self.mark-h;
+            if root.spoken : HorizontalLayout {
+                // As wide as its content: a layout in a Rectangle otherwise fills it, and the
+                // mark would sit at the left edge rather than under the bubble.
+                width: self.preferred-width;
+                x: parent.width - self.width - Theme.sp-4;
+                y: parent.height - parent.mark-h + 2px;
+                height: 16px;
+                spacing: Theme.sp-1;
+                Icon {
+                    y: (parent.height - self.height) / 2;
+                    commands: Icons.mic;
+                    size: 12px;
+                    tint: Theme.chat-text-2;
+                }
+                Text {
+                    text: "spoken";
+                    color: Theme.chat-text-2;
+                    font-size: Theme.fs-caption;
+                    vertical-alignment: center;
+                }
+            }
             Rectangle {
                 x: parent.width - self.width - Theme.sp-4;
                 width: parent.bubble-w;
-                height: parent.height;
+                height: parent.height - parent.mark-h;
                 border-radius: Theme.chat-radius;
                 background: Theme.chat-user-bubble;
 

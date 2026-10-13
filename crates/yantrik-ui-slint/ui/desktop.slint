@@ -193,6 +193,10 @@ export component DesktopScreen inherits Rectangle {
     // Callbacks
     callback send-message(string);
     callback mic-pressed();
+    // The voice runtime's state for the Lens's mic button: -1 idle, 0 listening, 1 transcribing,
+    // 2 speaking; and why voice cannot work here, "" when it can.
+    in property <int> mic-state: -1;
+    in property <string> mic-unavailable: "";
     callback launch-app(string);
 
     // The desktop's right-click menu.
@@ -677,6 +681,8 @@ export component DesktopScreen inherits Rectangle {
         }
         send-message(text) => { root.send-message(text); }
         mic-pressed => { root.mic-pressed(); }
+        mic-state: root.mic-state;
+        mic-unavailable: root.mic-unavailable;
     }
 
     // Last in the file so it draws over the icons, the orb and the taskbar. A menu that opened
