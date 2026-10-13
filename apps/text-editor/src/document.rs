@@ -1,5 +1,6 @@
 //! Bounded UTF-8 documents, conflict-aware atomic saves and private recovery.
 use crate::owner::Opener;
+use crate::project::{self, Saved};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -29,7 +30,11 @@ pub const MAX_TABS: usize = 128;
 /// newline, return and tab, each escaped to two bytes, as are quotes and backslashes; serde_json
 /// writes the rest as it is). Per tab, a path of at most 4096 bytes, doubled, plus field names,
 /// fit inside `RECOVERY_PER_TAB`. About 258 MiB.
-pub const RECOVERY_LIMIT: usize = 4 * MAX_OPEN_BYTES + MAX_TABS * RECOVERY_PER_TAB + 65536;
+pub const RECOVERY_LIMIT: usize =
+    4 * MAX_OPEN_BYTES + MAX_TABS * RECOVERY_PER_TAB + RECOVERY_FOLDER + 65536;
+/// What the open folder (#731) may take in the file: its root and the expanded folders kept, each
+/// a path of at most 4096 bytes, doubled by escaping.
+pub const RECOVERY_FOLDER: usize = (project::MAX_SAVED_EXPANDED + 1) * 2 * 4096;
 /// What one recovered tab may take in the file besides its text and baseline.
 pub const RECOVERY_PER_TAB: usize = 16 * 1024;
 static SERIAL: AtomicU64 = AtomicU64::new(0);
@@ -343,8 +348,23 @@ pub fn recover(path: &Path) -> Result<Vec<Document>, String> {
 }
 /// `recover`, reading at most `limit` bytes; the tests use a small one.
 pub fn recover_within(path: &Path, limit: usize) -> Result<Vec<Document>, String> {
+    recover_all_within(path, limit).map(|(docs, _)| docs)
+}
+/// The drafts and the folder that was open beside them (#731).
+pub fn recover_all(path: &Path) -> Result<(Vec<Document>, Option<Saved>), String> {
+    recover_all_within(path, RECOVERY_LIMIT)
+}
+/// The recovery file: the drafts alone, as every editor before #731 wrote it, or with the open
+/// folder beside them. Only a file with a folder open is written the second way.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum Recovery<D> {
+    Tabs(Vec<D>),
+    WithFolder { tabs: Vec<D>, folder: Option<Saved> },
+}
+fn recover_all_within(path: &Path, limit: usize) -> Result<(Vec<Document>, Option<Saved>), String> {
     if !path.exists() {
-        return Ok(vec![]);
+        return Ok((vec![], None));
     }
     let mut bytes = Vec::new();
     OpenOptions::new()
@@ -358,9 +378,13 @@ pub fn recover_within(path: &Path, limit: usize) -> Result<Vec<Document>, String
     if bytes.len() > limit {
         return Err("Recovery file is larger than the editor ever writes; it was not read.".into());
     }
-    let docs: Vec<Document> = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("Recovery file could not be read: {e}"))?;
-    admit(docs)
+    let (docs, folder) = match serde_json::from_slice(&bytes)
+        .map_err(|e| format!("Recovery file could not be read: {e}"))?
+    {
+        Recovery::Tabs(docs) => (docs, None),
+        Recovery::WithFolder { tabs, folder } => (tabs, folder),
+    };
+    Ok((admit(docs)?, folder))
 }
 /// What the recovery file's drafts must be to be opened again: no more of them than the strip
 /// holds, within the budget, and each valid text.
@@ -379,7 +403,15 @@ pub fn admit(mut docs: Vec<Document>) -> Result<Vec<Document>, String> {
     Ok(docs)
 }
 pub fn checkpoint(path: &Path, docs: &[Document]) -> Result<(), String> {
-    let docs: Vec<_> = docs.iter().filter(|d| d.dirty()).collect();
+    checkpoint_with(path, docs, None)
+}
+/// `checkpoint`, keeping the open folder (#731) beside the drafts.
+pub fn checkpoint_with(path: &Path, docs: &[Document], folder: Option<&Saved>) -> Result<(), String> {
+    let tabs: Vec<_> = docs.iter().filter(|d| d.dirty()).collect();
+    let docs = match folder {
+        None => Recovery::Tabs(tabs),
+        Some(f) => Recovery::WithFolder { tabs, folder: Some(f.clone()) },
+    };
     let parent = path.parent().ok_or("Invalid recovery path")?;
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;

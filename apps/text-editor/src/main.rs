@@ -1,7 +1,9 @@
 //! Native, bounded text workbench. All document I/O runs on one worker.
 mod agent_rule;
 mod document;
+mod folder;
 mod owner;
+mod project;
 mod reading;
 use document::Document;
 use owner::Opener;
@@ -26,8 +28,8 @@ enum Job {
     /// added when the worker answers, which may be after the asking call has returned.
     Open(PathBuf, Opener),
     Save(Document, PathBuf, bool),
-    Recovery(Vec<Document>, u64),
-    Shutdown(Vec<Document>),
+    Recovery(Vec<Document>, Option<project::Saved>, u64),
+    Shutdown(Vec<Document>, Option<project::Saved>),
 }
 enum Event {
     Open(Result<Document, String>),
@@ -55,6 +57,9 @@ struct Workbench {
     recovery_timer: slint::Timer,
     recovery_generation: u64,
     worker: Option<std::thread::JoinHandle<()>>,
+    /// The folder open beside the tabs (#731), and the rows its tree shows, by index.
+    folder: Option<project::Project>,
+    rows: Vec<project::Node>,
 }
 type State = Rc<RefCell<Workbench>>;
 fn expanded(value: &str) -> PathBuf {
@@ -124,7 +129,7 @@ fn main() {
     // Synchronous final checkpoint only after the window event loop has stopped.
     let mut b = state.borrow_mut();
     b.recovery_timer.stop();
-    let _ = b.jobs.send(Job::Shutdown(b.docs.clone()));
+    let _ = b.jobs.send(Job::Shutdown(b.docs.clone(), folder::saved(&b)));
     if let Some(worker) = b.worker.take() {
         let _ = worker.join();
     }
@@ -138,7 +143,10 @@ fn wire(ui: &TextEditorApp, recovery_path: PathBuf, publish: bool) -> State {
     let (jobs, work) = mpsc::channel();
     let (results, events) = mpsc::channel();
     let weak = ui.as_weak();
-    let recovery = document::recover(&recovery_path);
+    let (recovery, saved) = match document::recover_all(&recovery_path) {
+        Ok((docs, saved)) => (Ok(docs), saved),
+        Err(e) => (Err(e), None),
+    };
     let recovery_ok = recovery.is_ok();
     let docs = match recovery {
         Ok(d) if !d.is_empty() => {
@@ -158,17 +166,17 @@ fn wire(ui: &TextEditorApp, recovery_path: PathBuf, publish: bool) -> State {
                 Job::Save(d, p, overwrite) => {
                     Event::Saved(if overwrite { d.save_over(&p) } else { d.save(&p) })
                 }
-                Job::Recovery(d, g) => Event::Recovery(
+                Job::Recovery(d, f, g) => Event::Recovery(
                     if recovery_ok {
-                        document::checkpoint(&recovery_path, &d)
+                        document::checkpoint_with(&recovery_path, &d, f.as_ref())
                     } else {
                         Err("Existing recovery file is unreadable and has been preserved.".into())
                     },
                     g,
                 ),
-                Job::Shutdown(d) => {
+                Job::Shutdown(d, f) => {
                     if recovery_ok {
-                        let _ = document::checkpoint(&recovery_path, &d);
+                        let _ = document::checkpoint_with(&recovery_path, &d, f.as_ref());
                     }
                     break;
                 }
@@ -203,7 +211,10 @@ fn wire(ui: &TextEditorApp, recovery_path: PathBuf, publish: bool) -> State {
         recovery_timer: slint::Timer::default(),
         recovery_generation: 0,
         worker: Some(worker),
+        folder: saved.and_then(project::Project::from_saved),
+        rows: vec![],
     }));
+    folder::wire(ui, &state);
     let weak = ui.as_weak();
     let s = state.clone();
     ui.on_refresh(move || {
@@ -426,6 +437,9 @@ fn paint(ui: &TextEditorApp, b: &mut Workbench, content: bool) {
     // Re-point the folder watch at wherever the active tab's file lives now. Called from `paint`
     // rather than from each of the places that change a path, because `paint` is the one function
     // every one of them already goes through; re-pointing at the same folder is a no-op.
+    if b.docs[b.active].path != b.watched {
+        folder::follow_tab(ui, b);
+    }
     b.watched = b.docs[b.active].path.clone();
     b.follow.point_at(b.watched.as_deref());
 }
@@ -510,13 +524,14 @@ fn checkpoint(ui: &TextEditorApp, state: &State) {
     b.recovery_generation += 1;
     let generation = b.recovery_generation;
     let docs: Vec<_> = b.docs.iter().map(Document::snapshot).collect();
+    let folder = folder::saved(&b);
     let jobs = b.jobs.clone();
     ui.set_recovery_status("Protecting draft…".into());
     b.recovery_timer.start(
         slint::TimerMode::SingleShot,
         Duration::from_millis(750),
         move || {
-            let _ = jobs.send(Job::Recovery(docs.clone(), generation));
+            let _ = jobs.send(Job::Recovery(docs.clone(), folder.clone(), generation));
         },
     );
 }
@@ -804,7 +819,7 @@ fn finish_close(ui: &TextEditorApp, s: &State) {
             b.recovery_timer.stop();
             let _ = b
                 .jobs
-                .send(Job::Recovery(b.docs.clone(), b.recovery_generation));
+                .send(Job::Recovery(b.docs.clone(), folder::saved(&b), b.recovery_generation));
             drop(b);
             let _ = ui.hide();
             let _ = slint::quit_event_loop();
@@ -857,9 +872,9 @@ fn action(ui: &TextEditorApp, s: &State, id: &str) {
             ui.set_notice("".into());
             paint(ui, &mut b, true);
         }
-        "open" | "save-as" => {
+        "open" | "open-folder" | "save-as" => {
             let b = s.borrow();
-            ui.set_dialog_path(if id == "open" {
+            ui.set_dialog_path(if id != "save-as" {
                 "~/".into()
             } else {
                 b.docs[b.active]
@@ -870,8 +885,9 @@ fn action(ui: &TextEditorApp, s: &State, id: &str) {
                     .into()
             });
             ui.set_dialog_error("".into());
-            ui.set_dialog(if id == "open" { 1 } else { 2 });
+            ui.set_dialog(match id { "open" => 1, "open-folder" => 5, _ => 2 });
         }
+        "close-folder" => folder::close_folder(ui, s),
         "save" => save(ui, s, None, false),
         "save-close" => {
             s.borrow_mut().save_close = true;
@@ -885,6 +901,10 @@ fn action(ui: &TextEditorApp, s: &State, id: &str) {
         "confirm" => match ui.get_dialog() {
             1 => open(ui, s, expanded(&ui.get_dialog_path())),
             2 => save(ui, s, Some(expanded(&ui.get_dialog_path())), false),
+            5 => match folder::open_folder(ui, s, expanded(&ui.get_dialog_path())) {
+                Ok(()) => ui.set_dialog(0),
+                Err(e) => ui.set_dialog_error(e.into()),
+            },
             4 => {
                 if let Ok(line) = ui.get_dialog_path().parse::<usize>() {
                     let text = ui.get_content();
@@ -1110,6 +1130,7 @@ fn no_dialog(ui: &TextEditorApp, name: &str) -> Result<(), String> {
                 match other {
                     1 => "Open file",
                     2 => "Save As",
+                    5 => "Open folder",
                     _ => "Go to line",
                 }
             ),
@@ -1185,6 +1206,7 @@ fn view(ui: &TextEditorApp, s: &State) -> View {
         3 => summary.push_str(" · asking about unsaved changes: save, discard or cancel"),
         1 => summary.push_str(" · Open file dialog is up"),
         2 => summary.push_str(" · Save As dialog is up"),
+        5 => summary.push_str(" · Open folder dialog is up"),
         _ => summary.push_str(" · Go to line dialog is up"),
     }
     if ui.get_busy() {
@@ -1253,6 +1275,7 @@ fn view(ui: &TextEditorApp, s: &State) -> View {
         .with("find_query", if hidden { String::new() } else { ui.get_query().to_string() })
         .with("find_count", if hidden { 0 } else { ui.get_match_count() })
         .with("replacement", if hidden { String::new() } else { ui.get_replacement().to_string() })
+        .with("folder", folder::describe(&b))
 }
 
 /// How a tab an agent is not shown is named to it, in place of its file's name and path.
@@ -1888,6 +1911,9 @@ fn surface(ui: &TextEditorApp, s: &State) -> Vec<(Action, Handler)> {
             Ok(document_now(ui, s))
         },
     );
+    for (spec, run) in folder::actions() {
+        add(spec, run);
+    }
 
     out
 }

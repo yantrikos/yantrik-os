@@ -6,8 +6,9 @@ import { YButton, YIconButton } from "y_button.slint";
 import { YInput } from "y_input.slint";
 import { YSwitch } from "y_switch.slint";
 import { Icon, Icons } from "icon.slint";
+import { YTree, TreeRow } from "y_tree.slint";
 import { ScrollView } from "std-widgets.slint";
-export { ThemeMode, AccentPreset }
+export { ThemeMode, AccentPreset, TreeRow }
 export struct DocumentTab { title: string, active: bool, modified: bool }
 export component TextEditorApp inherits AppWindow {
     title: "Editor";
@@ -58,12 +59,23 @@ export component TextEditorApp inherits AppWindow {
     in-out property <string> replacement;
     in property <int> match-count;
     in property <int> match-index;
-    // 1 open, 2 save as, 3 unsaved changes, 4 go to line.
+    // 1 open, 2 save as, 3 unsaved changes, 4 go to line, 5 open a folder.
     in-out property <int> dialog;
     in-out property <string> dialog-path;
     in property <string> dialog-error;
     in property <string> close-label;
     in-out property <bool> syntax: true;
+    // The folder open beside the tabs (#731): its name, its visible rows, and whether the panel
+    // is shown. Ctrl+B hides it without closing the folder.
+    in property <bool> folder-open;
+    in property <string> project-name;
+    in property <[TreeRow]> tree-rows;
+    in-out property <int> tree-current: -1;
+    in-out property <bool> show-tree: true;
+    in-out property <string> tree-filter;
+    callback tree-activated(int);
+    callback tree-toggled(int);
+    callback tree-filtered(string);
     in property <string> keywords;
     in property <string> strings;
     in property <string> comments;
@@ -83,7 +95,9 @@ export component TextEditorApp inherits AppWindow {
             if (event.text == "z" || event.text == "Z" || event.text == "y") { root.action(event.modifiers.shift || event.text == "y" ? "redo" : "undo"); return accept; }
             if (event.text == "s" || event.text == "S") { root.action(event.modifiers.shift ? "save-as" : "save"); return accept; }
             if (event.text == "n" || event.text == "t") { root.action("new"); return accept; }
+            if (event.text == "O" || (event.text == "o" && event.modifiers.shift)) { root.action("open-folder"); return accept; }
             if (event.text == "o") { root.action("open"); return accept; }
+            if (event.text == "b" || event.text == "B") { root.show-tree = !root.show-tree; return accept; }
             if (event.text == "w") { root.action("close"); return accept; }
             if (event.text == "f" || event.text == "h") { root.show-find = true; root.show-replace = event.text == "h"; find-field.focus(); return accept; }
             if (event.text == "g") { root.action("goto"); return accept; }
@@ -101,6 +115,28 @@ export component TextEditorApp inherits AppWindow {
     changed font-pixels => { root.action("reflow"); }
     FocusScope {
     key-pressed(event) => { return root.shortcut(event); }
+    HorizontalLayout {
+    // The project panel (#731), left of the tabs. Fixed at 240px: the kit has no splitter yet.
+    if root.folder-open && root.show-tree : Rectangle {
+        width: 240px; background: Theme.bg-surface;
+        Rectangle { x: parent.width - 1px; width: 1px; background: Theme.separator; }
+        VerticalLayout {
+            padding: 8px; padding-right: 9px; spacing: 6px;
+            HorizontalLayout {
+                height: 35px; padding-left: 6px; spacing: 4px;
+                Text { text: root.project-name; color: Theme.text-primary; font-size: 13px; font-weight: 600; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                YIconButton { icon-path: Icons.close; variant: 2; clicked => { root.action("close-folder"); } }
+            }
+            YInput { placeholder: "Filter files"; mode: 1; value <=> root.tree-filter; edited(text) => { root.tree-filtered(text); } cleared => { root.tree-filtered(""); } }
+            YTree {
+                vertical-stretch: 1;
+                rows: root.tree-rows;
+                current <=> root.tree-current;
+                activated(i) => { root.tree-activated(i); }
+                toggled(i) => { root.tree-toggled(i); }
+            }
+        }
+    }
     VerticalLayout {
         spacing: 0px;
         // The tab strip. Tabs were capped at eight, which a row of shrinking tabs could always
@@ -195,7 +231,7 @@ export component TextEditorApp inherits AppWindow {
             if root.content == "" : VerticalLayout {
                 padding-left:80px; padding-top:70px; alignment:start; spacing:12px;
                 Text {text:"Make room for an idea."; color:Theme.text-dim; font-size:25px; font-weight:500;}
-                Text {text:"Start writing, or open a text file.\nCtrl+O  Open     Ctrl+S  Save     Ctrl+F  Find";color:Theme.text-dim; font-size:14px;}
+                Text {text:"Start writing, or open a text file.\nCtrl+O  Open     Ctrl+Shift+O  Open folder     Ctrl+S  Save     Ctrl+F  Find";color:Theme.text-dim; font-size:14px;}
             }
             scroll := ScrollView {
                 width:parent.width; height:parent.height;
@@ -246,6 +282,7 @@ export component TextEditorApp inherits AppWindow {
             }
         }
     }
+    }
     Rectangle {
         visible:root.dialog != 0;
         background:#00000066;
@@ -256,14 +293,14 @@ export component TextEditorApp inherits AppWindow {
             border-radius:14px;background:Theme.bg-elevated;border-width:1px;border-color:Theme.border-default;
             modal := VerticalLayout {
                 padding:24px;spacing:16px;
-                Text {text:root.dialog == 1 ? "Open a file" : root.dialog == 2 ? "Save a copy" : root.dialog == 4 ? "Go to line" : "Keep your changes?";color:Theme.text-primary;font-size:22px;font-weight:600;}
-                Text {text:root.dialog == 3 ? root.close-label : root.dialog == 4 ? "Enter a line number." : "Absolute path or ~/ — UTF-8 text, up to 1 MiB.";color:Theme.text-secondary;font-size:14px;wrap:word-wrap;}
+                Text {text:root.dialog == 1 ? "Open a file" : root.dialog == 5 ? "Open a folder" : root.dialog == 2 ? "Save a copy" : root.dialog == 4 ? "Go to line" : "Keep your changes?";color:Theme.text-primary;font-size:22px;font-weight:600;}
+                Text {text:root.dialog == 3 ? root.close-label : root.dialog == 4 ? "Enter a line number." : root.dialog == 5 ? "Absolute path or ~/ — its files are listed beside your tabs." : "Absolute path or ~/ — UTF-8 text, up to 1 MiB.";color:Theme.text-secondary;font-size:14px;wrap:word-wrap;}
                 path-field := YInput {visible:root.dialog != 3; value<=>root.dialog-path;accepted(_)=>{root.action("confirm");}}
                 if root.dialog-error != "" : Text {text:root.dialog-error;color:Theme.amber;font-size:13px;wrap:word-wrap;}
                 HorizontalLayout {spacing:8px;alignment:end;
                     YButton {label:"Cancel";variant:2;clicked=>{root.action("cancel");}}
                     if root.dialog == 3 : YButton {label:"Discard";variant:1;clicked=>{root.action("discard");}}
-                    YButton {label:root.busy ? "Working…" : root.dialog == 1 ? "Open" : root.dialog == 4 ? "Go" : "Save";variant:0;clicked=>{root.action(root.dialog == 3 ? "save-close" : "confirm");}}
+                    YButton {label:root.busy ? "Working…" : root.dialog == 1 || root.dialog == 5 ? "Open" : root.dialog == 4 ? "Go" : "Save";variant:0;clicked=>{root.action(root.dialog == 3 ? "save-close" : "confirm");}}
                 }
             }
         }
