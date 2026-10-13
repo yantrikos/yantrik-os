@@ -11434,6 +11434,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "yantrik-gateway"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tracing",
+ "ureq 2.12.1",
+ "yantrik-ml",
+]
+
+[[package]]
 name = "yantrik-harness"
 version = "0.1.0"
 dependencies = [
@@ -11897,6 +11910,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "slint",
  "sysinfo",
  "tokio",
@@ -11911,6 +11925,7 @@ dependencies = [
  "yantrik-app-runtime",
  "yantrik-chat",
  "yantrik-companion",
+ "yantrik-gateway",
  "yantrik-harness",
  "yantrik-install-target",
  "yantrik-ipc-contracts",

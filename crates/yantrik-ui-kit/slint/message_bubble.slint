@@ -25,6 +25,11 @@ export struct MessageData {
     // different things, and a reply that did work links to its run in Agents. "" for talk.
     // `private:leave` is the desktop's offer, while private, to leave Private mode.
     run: string,
+    // Who said it (#673): the mind that produced this reply, and on which model, fixed when the
+    // reply began. Switching mind never relabels it. "" for the person and the desktop, and for a
+    // reply from before this was kept, which reads as the mind answering now.
+    mind: string,
+    model: string,
 }
 
 export component MessageBubble inherits Rectangle {

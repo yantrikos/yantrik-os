@@ -40,12 +40,12 @@ impl Handoff for DeepSeek {
             ));
         }
         let path = home.join(".config/yantrik/deepseek.json");
-        let mut config: Map<String, Value> = match std::fs::read_to_string(&path) {
-            Ok(text) => match serde_json::from_str::<Value>(&text) {
+        let mut config: Map<String, Value> = match super::read_config(&path)? {
+            Some(text) => match serde_json::from_str::<Value>(&text) {
                 Ok(Value::Object(m)) => m,
                 _ => return Err(format!("{} is not a JSON object, so it is left alone", path.display())),
             },
-            Err(_) => Map::new(),
+            None => Map::new(),
         };
         // The harness speaks OpenAI chat completions, so a provider saved at a native address
         // (Anthropic's, Gemini's) is given its OpenAI-compatible one. Any other address is the
@@ -81,6 +81,27 @@ impl Handoff for DeepSeek {
                 },
             }],
             restart: Some(UNIT.into()),
+            token: None,
+            private_context: false,
+            mind_post: None,
         })
+    }
+
+    /// The gateway is one more OpenAI-compatible endpoint to it: `base_url`, `model` and the token
+    /// as `api_key`, and the rest of the file as it was.
+    fn plan_gateway(&self, home: &Path, offer: &super::Offer) -> Result<Plan, String> {
+        let path = home.join(".config/yantrik/deepseek.json");
+        let mut config = super::read_json_object(&path)?;
+        config.insert("base_url".into(), Value::String(offer.base_url()));
+        config.insert("model".into(), Value::String(yantrik_gateway::PICKED.into()));
+        config.remove("api_key_env");
+        config.insert("api_key".into(), Value::String(offer.token.0.clone()));
+        let content = serde_json::to_string_pretty(&Value::Object(config)).map_err(|e| e.to_string())? + "\n";
+        let write = Write { path, content, what: "the gateway's address, `picked` as its model, and its gateway token".into() };
+        Ok(super::gateway_plan(self, offer, vec![write]))
+    }
+
+    fn takes_saved_provider(&self) -> bool {
+        true
     }
 }

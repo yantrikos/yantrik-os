@@ -10,6 +10,11 @@
 // conversation context to: <provider> · <model>", or "Stays on this machine · <model>" only when
 // that is certain, in the box, always there.
 //
+// The picker (#673) leads the row under the words: [Mind ▾] [Model ▾] [Effort ▾] [📎], the
+// one picker the mind panel also shows (components/picker_state.slint). Files handed over sit as
+// chips above the words until they are sent with the message, and a file dragged over the window
+// is said to be welcome.
+//
 // The mode chip ("Mode: Ask") is the status bar chip's twin: it opens the same mind-mode choice,
 // it does not change the mode by itself, and a mode change applies to the next run. The noun is
 // in the chip's words only, so a bare "Ask" beside the field does not read as a button that asks. The starters in the
@@ -18,6 +23,8 @@
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icon.slint";
 import { ChatPill } from "chat_parts.slint";
+import { BoundPicker, PickerState } from "picker_state.slint";
+import { AttachmentChips } from "model_picker.slint";
 
 export component ChatComposer inherits Rectangle {
     in property <string> mind-name;
@@ -35,12 +42,14 @@ export component ChatComposer inherits Rectangle {
     // The destination row's own room, inside the box above the row Send is on. Always there: a
     // row that comes and goes is one a person cannot learn to look for (review by GPT-6 Astra, A).
     property <length> destination-h: 20px;
+    // The files handed over, as chips above the words; no room when there are none.
+    property <length> files-h: PickerState.files.length > 0 ? 32px : 0px;
     // The bar's own height, which the panel's arithmetic subtracts.
-    out property <length> bar-height: max(112px, min(200px, input.preferred-height + 14px) + 72px) + root.destination-h;
+    out property <length> bar-height: max(112px, min(200px, input.preferred-height + 14px) + 72px) + root.destination-h + root.files-h;
     // The tallest `bar-height` gets: the field's 200px cap plus the 72px around it, and the
     // destination line. The approval card's height limit reads this and not `bar-height`, so
     // typing cannot resize the card.
-    out property <length> bar-height-max: 272px + root.destination-h;
+    out property <length> bar-height-max: 272px + root.destination-h + 32px;
 
     callback send(string);
     callback mic();
@@ -82,12 +91,20 @@ export component ChatComposer inherits Rectangle {
 
         TouchArea { mouse-cursor: text; clicked => { input.focus(); } }
 
+        AttachmentChips {
+            x: Theme.sp-3;
+            y: Theme.sp-2;
+            width: parent.width - 2 * Theme.sp-3;
+            files: PickerState.files;
+            remove(path) => { PickerState.remove-file(path); }
+        }
+
         input := TextInput {
             property <string> chat-text: "";
             x: Theme.sp-3;
-            y: Theme.sp-3;
+            y: Theme.sp-3 + root.files-h;
             width: parent.width - 2 * Theme.sp-3;
-            height: parent.height - 56px - root.destination-h;
+            height: parent.height - 56px - root.destination-h - root.files-h;
             color: Theme.chat-text;
             font-size: Theme.fs-title-2;
             wrap: word-wrap;
@@ -112,7 +129,7 @@ export component ChatComposer inherits Rectangle {
 
         if input.chat-text == "" : Text {
             x: Theme.sp-3;
-            y: Theme.sp-3;
+            y: Theme.sp-3 + root.files-h;
             text: "Message " + root.mind-name + "\u{2026}";
             color: Theme.chat-text-2;
             font-size: Theme.fs-title-2;
@@ -136,13 +153,34 @@ export component ChatComposer inherits Rectangle {
             accessible-label: root.destination != "" ? root.destination : "Where message text goes is not known";
         }
 
-        // The row under the words: the mode chip on the left, mic and send on the right.
+        // A file over the window: the box says it will take it.
+        if PickerState.drop-hover : Rectangle {
+            border-radius: Theme.chat-radius;
+            background: Theme.tint-accent;
+            border-width: 1px;
+            border-color: Theme.accent;
+            Text {
+                text: "Drop to hand it to " + root.mind-name;
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        // The row under the words: the picker and the mode chip on the left, mic and send on the
+        // right.
         HorizontalLayout {
             x: Theme.sp-2;
             y: parent.height - 44px;
             width: parent.width - 2 * Theme.sp-2;
             height: 36px;
             spacing: Theme.sp-2;
+
+            VerticalLayout {
+                alignment: center;
+                BoundPicker { }
+            }
 
             VerticalLayout {
                 alignment: center;

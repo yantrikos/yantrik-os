@@ -473,10 +473,11 @@ def _approval_pending(session_key: str) -> bool:
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system at startup."""
-    # The desktop's socket lives in a directory the OS creates at mode 0700, so only processes
-    # already running as the machine's owner can reach it. Whoever is typing there is that person;
-    # there is no one to pair with and no one else to keep out.
-    os.environ.setdefault("YANTRIK_ALLOW_ALL_USERS", "true")
+    # Every desktop turn arrives as the one user OWNER_ID, and only the machine's owner can reach the
+    # harness socket (its directory is 0700 and the host checks the kernel's peer credentials at
+    # accept). So the platform's allowlist is that one user: never "all users", never a wildcard.
+    # hermes.sh writes the same into Hermes's own .env, which is what Hermes 0.21+ reads (#676).
+    os.environ.setdefault("YANTRIK_ALLOWED_USERS", OWNER_ID)
     # The desktop has one conversation, so it is home. Without a home, the gateway opens the first
     # answer on a new machine with a paragraph asking the person to type /sethome.
     os.environ.setdefault("YANTRIK_HOME_CHANNEL", CHAT_ID)

@@ -34,6 +34,12 @@ mod token_stream;
 // LLM backend modules
 mod llm;
 
+// The companion's model when none is chosen: its chat says how to choose one.
+pub mod not_set_up;
+
+// What each model can do and how hard it can be asked to think (the AI accounts catalogue).
+pub mod model_caps;
+
 // Provider registry (multi-provider management, key validation)
 #[cfg(feature = "api-llm")]
 pub mod provider;

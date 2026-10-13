@@ -5,6 +5,11 @@ key, and it has nowhere to put them. `yantrik-mind` has its own setup, hermes-ag
 OpenClaw has its own — that work is done, and doing it again in this OS would mean doing it worse
 and keeping it in sync forever.
 
+Since 6 October 2026 (#673) the OS also *offers* a harness models: the accounts the person added in
+Settings, through a local gateway that holds the keys, so a harness never holds one either. Taking
+them is the person's choice per harness ("Use Yantrik models"); see
+[Yantrik models](#yantrik-models-the-local-model-gateway-and-turn-options).
+
 What the OS owns is **which mind the person is talking to**. This is the interface for becoming
 one of the candidates.
 
@@ -14,7 +19,7 @@ Seven methods on the `harness` socket, all spoken by the harness:
 
 ```text
 harness.attach   {id, name, detail?, tools?, memory?, conversations?}  → {session}
-harness.poll     {session}              → {turn_id, text, context, conversation, agent_token, origin?} | {}
+harness.poll     {session}              → {turn_id, text, context, conversation, agent_token, origin?, options?} | {}
                                           … either may also carry cancelled: [turn_id], ended: [conversation],
                                             answers: [{turn_id, request_id, answer}]
 harness.chunk    {session, turn_id, delta}             → {}
@@ -27,7 +32,7 @@ harness.detach   {session}                             → {}
 Attach, then loop: ask for a turn, stream the answer back in pieces, say you are done.
 `crates/yantrik-harness/examples/echo_harness.rs` is a working one end to end, and the only part
 a real harness replaces is the function that produces the answer. `harness.event`,
-`conversations`, `conversation`, `agent_token`, `cancelled`, `ended`, `answers` and `origin` are all
+`conversations`, `conversation`, `agent_token`, `cancelled`, `ended`, `answers`, `origin` and `options` are all
 optional to use: a harness that knows none of them works exactly as it always did.
 
 A turn may carry `origin`, where the person asked it from (design/channels-2026-09-29.md):
@@ -501,6 +506,78 @@ conversation still gets "still working on the previous request", while different
 run at once. `/stop` and `/new` act on their own conversation only. Against a desktop too old for
 `harness.event`, the events are skipped after one log line and the trail lines carry on.
 
+## Yantrik models: the local model gateway and turn options
+
+*6 October 2026, #673.* This revises the rule this page opens with, that a harness brings its own
+models. It still may — and one that opts out keeps its own setup, shown in the picker as "uses its
+own models" — but the OS now also offers every mind the accounts the person added once in
+**Settings → AI & Intelligence**, through one endpoint it owns. Keys never reach a harness.
+
+**The gateway.** `http://127.0.0.1:7460/v1`, on loopback only (`crates/yantrik-gateway`):
+
+```text
+GET  /v1/models              → {"object":"list","data":[{"id":"<account>/<model>","owned_by":"<account>",
+                                 "yantrik":{"name","efforts":["easy","medium","high"],"vision","context","tools"}}]}
+POST /v1/chat/completions    → OpenAI chat completions; "stream": true streams server-sent events
+     Authorization: Bearer ygw-<64 hex>      the token the OS gave this harness, nothing else
+     {"model": "<account>/<model>", "effort": "easy|medium|high|xhigh", "messages": [...], ...}
+```
+
+- **The model id is `<account>/<model>`**: the account as Settings names it (`ollama-cloud`,
+  `free-groq`), a slash, and the provider's own model id, which may hold slashes of its own
+  (`free-groq/openai/gpt-oss-120b`). `/v1/models` lists what this harness may use.
+- **`"model": "picked"`** is whichever model the person picked for this harness in the ask bar,
+  resolved at each call. "Use Yantrik models" writes `picked` into a harness's config, so a pick
+  takes effect on its next call without its config being written again or it restarting; one
+  that reads the turn's `options.model` may send that instead. `/v1/models` lists `picked` first,
+  with what it is now under `yantrik.picked`.
+- **`effort`** (or OpenAI's `reasoning_effort`, in any of its words) is turned into the provider's
+  own knob: Ollama's `think`, OpenAI's and Gemini's `reasoning_effort`, OpenRouter's
+  `reasoning.effort`, Anthropic's thinking budget. A model with no knob is sent none. A level the
+  model does not have becomes the nearest one below it. A request that names none is given the
+  effort the person picked for that harness, so one that never reads `options` still thinks as
+  hard as was picked.
+- **The token is the harness's own.** A harness is wired when it is installed (by the ISO, the
+  installer or Settings → Harnesses → Install), with no question: a token is minted and written
+  into that harness's own config, the harness's way, with `picked` as its model, and its own file
+  kept for Revert. The installers' step is `yantrik-ui --wire-model <harness>` (idempotent, no
+  TTY; `wire_model` in harnesses/lib/install/common.sh). "Use its own models" on the row puts the
+  file back and keeps later installs from wiring it; "Use Yantrik models" wires it again. A wrong
+  or missing token is a 401. A request carrying an `Origin` header (a web page) is refused.
+- **Private context goes where the person chose.** Every mind has YantrikDB memory, so every token
+  is marked as carrying private context. Per account the person chose (Settings → AI accounts):
+  **Share** ("Share what your minds know about you with <provider>") sends the call unchanged;
+  **Private lane** ("Keep personal things on this computer") sends it to the local model kept as
+  the private lane, and the call log records which model answered (`lane_for` names the one the
+  call asked for); **Off** ("Don't share") refuses it with 403 `private_context_not_shared` and the
+  fix: "Set up a private lane, or allow sharing with <provider> in AI accounts". An account on this
+  machine or network is always Share. In Private mode only those are used, for every call.
+- **Every call is logged without content**: harness, account, model, effort, status, tokens, time
+  (`~/.local/state/yantrik/gateway-calls.jsonl`). The status shown for a mind comes from these.
+
+**Turn options.** A turn may carry `options` — what the person chose in the picker above the ask bar:
+
+```json
+"options": {
+  "model": "ollama-cloud/deepseek-v4.1-flash",
+  "effort": "high",
+  "attachments": [{"name": "plan.md", "path": "/home/p/plan.md", "mime": "text/markdown",
+                   "size": 1834, "sha256": "…", "handed_over_by": "person", "via": "lens",
+                   "at": "2026-10-06T10:00:00Z", "content_b64": "…"}]
+}
+```
+
+Every field is optional and absent when not chosen; a harness that does not know `options` ignores
+it and answers as it always did. Nothing in it is a credential: a model is named, and reached
+through the gateway. A harness pointed at the gateway sends `options.model` as the request's
+`model` and `options.effort` as its `effort` for that turn; one with its own models may map
+`effort` to whatever it has (a step budget) or ignore it. An attachment is a file the person
+handed over: `handed_over_by: "person"`, `via` and `at` are its provenance, which makes it a
+valid source under the egress rules, as the person's own words are. `path` is readable by a
+harness running as the person; `content_b64` carries a file up to 1 MiB (4 MiB a turn) for one
+that runs as an account of its own. `harnesses/lib/yantrik_harness.py` gives a handler
+`turn.model`, `turn.effort` and `turn.attachments`.
+
 ## Rules worth knowing
 
 - **`id` is what a person types to select you**, so it cannot be empty or contain spaces.
@@ -764,6 +841,31 @@ the token goes), sends each tool call it runs as a card with its result, `reason
 thinking, and the token counts the API reports at the end of the stream
 (`stream_options.include_usage`; `"include_usage": false` in its config for a server that
 rejects the field).
+
+## Installed means proved (#677)
+
+Every harness's *Install* (`harnesses/lib/install/<id>.sh`) does the same four things with no
+question: the model step (`wire_model`, #675's, skipped with a line where the image lacks it),
+YantrikDB as its memory from the image (`/opt/yantrik/memory`, nothing fetched), the desktop
+channel paired with the owner only, and three proofs:
+
+| Proof | What is seen | Passes as |
+|---|---|---|
+| Can it answer? | one real call through the model gateway, when the model step ran | `connected · <model>`, or `model: its own` |
+| Can it remember? | a note written through the harness's own memory path, recalled, deleted | `memory · YantrikDB · recalled` |
+| Can it reach the desktop? | the harness listed as attached by the desktop (an attach on the harness socket) | `paired` |
+
+`python3 /opt/yantrik/share/harnesses/lib/proofs.py <id> --json` is the one call the Settings row
+and the onboarding summary make; each failure carries its one-press fix (`install`, `configure`,
+or `restart` with the command). Only when all three pass does the install write
+`~/.local/state/yantrik/harnesses/<id>/installed`, which every manifest requires, so a row reads
+installed only once it was proved. `revert.sh <id>` puts back every file the install wrote.
+
+Each harness keeps its YantrikDB in a file of its own (`~/.local/share/yantrik/memory/<id>.db`):
+the engine keeps its index in the process that opened the file and does not see another
+process's later writes, so one shared file would give each running harness a different memory.
+The person's one shared memory is the `yantrik` mode through the memory server, which waits on
+the tamper-proof door (#586). Every write carries its harness as provenance (`source`).
 
 ## What is not here yet
 
