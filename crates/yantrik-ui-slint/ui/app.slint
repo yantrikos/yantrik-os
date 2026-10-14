@@ -50,6 +50,7 @@ import { ToastBanner, ToastData, ToastActionData } from "components/toast_banner
 export { OsdWindow } from "osd_window.slint";
 import { ProblemReportScreen, ProblemRow } from "problem_report.slint";
 import { WorkCardData } from "components/work_card.slint";
+import { StepLineData } from "components/live_steps.slint";
 // Agents (screen 34), and the window one agent pops out into. The window and the global it reads
 // are exported so the shell can create a window per agent and fill each one.
 import { AgentsScreen, AgentsState } from "agents.slint";
@@ -92,7 +93,7 @@ import { YMenuAction, YContextMenu } from "components/y_context_menu.slint";
 import { Icons } from "components/icon.slint";
 import { Tr } from "translations.slint";
 
-export { HarnessData, HarnessRowData, Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, ToolCallData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, ApprovalRequest, QuestionRequest, MindRule, MindAuditEntry, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, NotifActionData, ProcessData, ClipboardEntryData, CheatRowData, AppGridItem, ServiceItem, WindowItem, SwitcherCell, DockItem, DockButton, DockWindow, ToastData, ToastActionData, PackageData, PendingAction, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction, ProblemRow, WorkCardData }
+export { HarnessData, HarnessRowData, Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, ToolCallData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, ApprovalRequest, QuestionRequest, MindRule, MindAuditEntry, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, NotifActionData, ProcessData, ClipboardEntryData, CheatRowData, AppGridItem, ServiceItem, WindowItem, SwitcherCell, DockItem, DockButton, DockWindow, ToastData, ToastActionData, PackageData, PendingAction, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction, ProblemRow, WorkCardData, StepLineData }
 
 export component App inherits Window {
     default-font-family: Theme.font-ui;
@@ -1815,6 +1816,8 @@ export component App inherits Window {
             // Chat v2: the run cards, the strip and the header's words.
             lens-work-cards: AgentsState.lens-cards;
             lens-strip: AgentsState.lens-strip;
+            lens-live-steps: AgentsState.lens-steps;
+            lens-live-steps-row: AgentsState.lens-steps-row;
             lens-live-runs: AgentsState.lens-live;
             lens-waiting-runs: AgentsState.lens-waiting;
             lens-mode-label: root.mind-mode-label;

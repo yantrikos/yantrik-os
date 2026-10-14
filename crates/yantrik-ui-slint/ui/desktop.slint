@@ -29,6 +29,7 @@ import { DockItem } from "components/app_dock.slint";
 import { Icon, Icons } from "components/icon.slint";
 import { IntentLens, LensResult, ApprovalRequest } from "components/intent_lens.slint";
 import { WorkCardData } from "components/work_card.slint";
+import { StepLineData } from "components/live_steps.slint";
 import { QuestionRequest } from "components/question_card.slint";
 import { MessageData } from "components/message_bubble.slint";
 import { UrgeCardData } from "components/glance_card.slint";
@@ -118,6 +119,9 @@ export component DesktopScreen inherits Rectangle {
     // chip's label and the header's identity line. Filled from the Agents store and the mind mode.
     in property <[WorkCardData]> lens-work-cards: [];
     in property <WorkCardData> lens-strip;
+    // What the mind is doing in the reply still arriving, and that reply's row (-1: none).
+    in property <[StepLineData]> lens-live-steps: [];
+    in property <int> lens-live-steps-row: -1;
     in property <int> lens-live-runs: 0;
     in property <int> lens-waiting-runs: 0;
     in property <string> lens-mode-label: "Ask";
@@ -653,6 +657,8 @@ export component DesktopScreen inherits Rectangle {
         new-chat => { root.lens-new-chat(); }
         work-cards: root.lens-work-cards;
         strip: root.lens-strip;
+        live-steps: root.lens-live-steps;
+        live-steps-row: root.lens-live-steps-row;
         live-runs: root.lens-live-runs;
         waiting-runs: root.lens-waiting-runs;
         mode-label: root.lens-mode-label;

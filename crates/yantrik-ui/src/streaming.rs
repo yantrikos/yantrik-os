@@ -239,6 +239,9 @@ fn pump(
     let finished = done_flag.clone();
     let mine = streams.clone();
     let replace_next = Rc::new(RefCell::new(false));
+    // The reply as it arrived, trail lines and all. The bubble shows it without them while it
+    // streams, and gets the whole of it back at the end, for the fold.
+    let whole = Rc::new(RefCell::new(String::new()));
 
     let timer = Timer::default();
     timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
@@ -278,13 +281,12 @@ fn pump(
                 };
                 if let Some(mut bubble) = model.row_data(row) {
                     if *replace_next.borrow() {
-                        bubble.content = SharedString::from(&token);
+                        *whole.borrow_mut() = token;
                         *replace_next.borrow_mut() = false;
                     } else {
-                        let mut content = bubble.content.to_string();
-                        content.push_str(&token);
-                        bubble.content = SharedString::from(&content);
+                        whole.borrow_mut().push_str(&token);
                     }
+                    bubble.content = SharedString::from(crate::trail::without_trail(&whole.borrow()));
                     model.set_row_data(row, bubble);
                 }
             }
@@ -297,7 +299,14 @@ fn pump(
                 if let Some(model) = messages.as_any().downcast_ref::<VecModel<MessageData>>() {
                     if let Some(mut bubble) = model.row_data(row) {
                         bubble.is_streaming = false;
-                        bubble.blocks = parse_content_blocks(&bubble.content);
+                        if !whole.borrow().is_empty() {
+                            bubble.content = SharedString::from(whole.borrow().as_str());
+                        }
+                        let blocks = parse_content_blocks(&bubble.content);
+                        // A reply with no trail lines (the Mind writes none) folds the steps the
+                        // Lens followed instead, so every mind's answer can say what it did.
+                        let steps = crate::wire::lens_steps::fold(row);
+                        bubble.blocks = with_steps(blocks, &steps);
                         model.set_row_data(row, bubble);
                     }
                 }
@@ -312,6 +321,25 @@ fn pump(
         }
     });
     streams.remember(done_flag, timer);
+}
+
+/// `blocks` with the turn's steps after them as "Show actions", when the reply carried no call of
+/// its own to fold. A reply whose trail lines are already folded keeps exactly those.
+fn with_steps(blocks: ModelRc<ContentBlock>, steps: &[crate::wire::lens_steps::Step]) -> ModelRc<ContentBlock> {
+    let mut all: Vec<ContentBlock> = blocks.iter().collect();
+    if steps.is_empty() || all.iter().any(|b| b.block_type == "tool") {
+        return blocks;
+    }
+    all.extend(steps.iter().map(|s| ContentBlock {
+        block_type: "tool".into(),
+        text: s.text.as_str().into(),
+        call: crate::ToolCallData {
+            summary: s.text.as_str().into(),
+            status: s.state.word().into(),
+            ..Default::default()
+        },
+    }));
+    ModelRc::new(VecModel::from(all))
 }
 
 /// Parse message content into styled blocks for rich rendering.
@@ -355,6 +383,43 @@ mod tests {
         let prose = blocks.row_data(2).expect("the answer goes on after the call");
         assert_eq!(prose.text, "Done.");
         assert_eq!(prose.call.summary, "", "a paragraph carries no call");
+    }
+
+    /// The trail lines of a reply still arriving are steps above it, not its words; the whole text
+    /// keeps them, so the finished reply folds them under "Show actions" as before.
+    #[test]
+    fn trail_lines_are_left_out_while_streaming_and_kept_for_the_fold() {
+        let whole = "Saving that.\n⚙️ memory_remember {\"text\": \"tea, no sugar\"}\nDone, I\u{2019}ll remember.";
+        let shown = crate::trail::without_trail(whole);
+        assert_eq!(shown, "Saving that.\nDone, I\u{2019}ll remember.");
+        assert!(!shown.contains('\u{2699}') && !shown.contains('{'));
+        assert_eq!(crate::trail::without_trail("⚙️ os_ac"), "", "a call still arriving is not drawn either");
+        assert_eq!(crate::trail::without_trail("⚙️ os_act(['app'])\n{\"app\": \"notes\"}\nOk."), "Ok.", "Hermes' arguments line goes with its call");
+
+        let blocks = parse_content_blocks(&SharedString::from(whole));
+        let tool = blocks.iter().find(|b| b.block_type == "tool").expect("the call is folded at the end");
+        assert_eq!(tool.call.name, "memory_remember");
+    }
+
+    /// The Mind writes no trail lines: its steps become the fold. A reply that carried its own
+    /// calls keeps them, and is not given a second list.
+    #[test]
+    fn a_reply_with_no_trail_lines_folds_the_steps_the_lens_followed() {
+        use crate::wire::lens_steps::{Step, StepState};
+        let steps = vec![
+            Step { text: "Looked at your calendar".into(), state: StepState::Done, action: true },
+            Step { text: "Couldn\u{2019}t open the web page".into(), state: StepState::Failed, action: true },
+        ];
+        let blocks = with_steps(parse_content_blocks(&SharedString::from("You have a dentist at 10.")), &steps);
+        let tools: Vec<ContentBlock> = blocks.iter().filter(|b| b.block_type == "tool").collect();
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0].call.summary, "Looked at your calendar");
+        assert_eq!(tools[1].call.status, "failed");
+        assert_eq!(tools[0].call.arguments, "", "nothing to open: the sentence is everything");
+
+        let own = parse_content_blocks(&SharedString::from("On it.\n⚙️ os_apps\nDone."));
+        let kept = with_steps(own, &steps);
+        assert_eq!(kept.iter().filter(|b| b.block_type == "tool").count(), 1);
     }
 
     /// Starting an answer must not end one that is still arriving.

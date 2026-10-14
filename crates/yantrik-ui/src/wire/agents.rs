@@ -34,7 +34,7 @@ use super::agents_workroom as workroom;
 use crate::{
     AccentPreset, AgentDetailsData, AgentHeaderData, AgentItemData, AgentMindData, AgentRoleData,
     AgentRunData, AgentWindow, AgentsState, App, ApprovalRequest, ChangeRowData, ChildRunData, DecisionData,
-    DeskCardData, ResultData, RunFactData, ThemeMode, ThemeOverrides, ToolCallData, WorkCardData, WorkNavData,
+    DeskCardData, ResultData, RunFactData, StepLineData, ThemeMode, ThemeOverrides, ToolCallData, WorkCardData, WorkNavData,
 };
 use super::lens_work;
 
@@ -305,7 +305,14 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
                 ui.set_lens_can_open_in_agents(lens_agent);
             }
             publish_lens_questions(&ui);
-            if ui.get_current_screen() == SCREEN {
+            let plan = tick_plan(ui.get_current_screen(), ui.get_lens_open(), ui.get_is_generating());
+            if plan.lens_cards {
+                agents::store().read(|s| publish_lens(&ui.global::<AgentsState>(), s));
+            }
+            if plan.lens_steps {
+                publish_lens_steps(&ui);
+            }
+            if plan.workroom {
                 refresh(&ui, &state, false);
             } else if beat.replace(beat.get().wrapping_add(1)) % 4 == 3 {
                 // The bar's Minds chip is on every screen and counts the same requests the
@@ -321,6 +328,26 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
     }
     // The timer lives as long as the shell, the idiom every wire module uses.
     std::mem::forget(timer);
+}
+
+/// What one tick redraws.
+#[derive(Debug, PartialEq, Eq)]
+struct TickPlan {
+    /// The workroom, which also publishes the Lens's cards.
+    workroom: bool,
+    /// The Lens's work cards and strip, when the workroom is not doing it.
+    lens_cards: bool,
+    /// The steps in the Lens's streaming bubble.
+    lens_steps: bool,
+}
+
+/// The workroom while the Agents screen is up; the Lens's cards whenever the Lens is open over any
+/// other screen. They were published only by the workroom's redraw, so a Lens open on the home
+/// screen (1) kept the card it was opened with. The steps are followed while the Lens is open or an
+/// answer is arriving, so a reply whose Lens was closed meanwhile still folds what it did.
+fn tick_plan(screen: i32, lens_open: bool, answering: bool) -> TickPlan {
+    let workroom = screen == SCREEN;
+    TickPlan { workroom, lens_cards: lens_open && !workroom, lens_steps: lens_open || answering }
 }
 
 /// Back to the page a run was opened from: nothing selected, and nothing half-asked.
@@ -649,6 +676,38 @@ fn publish_lens(g: &AgentsState, s: &Store) {
     if g.get_lens_identity() != identity {
         g.set_lens_identity(identity.into());
     }
+}
+
+/// The active mind's id, as the host names it; the built-in when there is no host.
+fn lens_mind() -> String {
+    crate::wire::harness::host().map(|h| h.active_id()).unwrap_or_else(|| crate::wire::harness::BUILTIN_ID.to_string())
+}
+
+/// The steps of the Lens's open turn, for the bubble its answer streams into (`lens_steps`). The
+/// row is the newest bubble still arriving when the turn is first seen, and the steps stay on it
+/// until the turn ends. None shown (row -1) when nothing is open.
+fn publish_lens_steps(ui: &App) {
+    let g = ui.global::<AgentsState>();
+    let messages = ui.get_messages();
+    let arriving = |row: usize| messages.row_data(row).is_some_and(|m| m.is_streaming && m.role == "assistant");
+    let newest = (0..messages.row_count()).rev().find(|&row| arriving(row));
+    let has_words = |row: usize| messages.row_data(row).is_some_and(|m| !m.content.trim().is_empty());
+    let live = super::lens_steps::live_lines(&feed::main_agent(&lens_mind()), newest, has_words, now())
+        .filter(|(row, _)| arriving(*row));
+    let (row, lines) = match live {
+        Some((row, lines)) => (row as i32, lines.iter().map(step_line).collect()),
+        None => (-1, Vec::new()),
+    };
+    if let Some(model) = crate::models::changed(g.get_lens_steps(), lines) {
+        g.set_lens_steps(model);
+    }
+    if g.get_lens_steps_row() != row {
+        g.set_lens_steps_row(row);
+    }
+}
+
+fn step_line(s: &super::lens_steps::Step) -> StepLineData {
+    StepLineData { text: s.text.as_str().into(), state: s.state.word().into() }
 }
 
 /// The latest status line of the active mind's open turn, for `describe shell`; empty when it has
@@ -3077,5 +3136,30 @@ mod status_for_describe_tests {
         assert!(!said.contains('\u{202e}') && !said.contains('\u{7}') && !said.contains('\n'), "{said:?}");
         assert!(said.chars().count() <= 121, "{said:?}");
         assert!(said.starts_with("Thinking word"), "{said:?}");
+    }
+}
+
+#[cfg(test)]
+mod lens_tick_tests {
+    use super::{tick_plan, TickPlan, SCREEN};
+
+    /// The Lens is drawn over the home screen (1). Its cards and steps were published only by the
+    /// workroom's redraw, which runs on the Agents screen alone, so an open Lens kept what it was
+    /// opened with.
+    #[test]
+    fn the_lens_steps_and_cards_refresh_on_the_tick_with_the_lens_open_on_screen_1() {
+        assert_eq!(tick_plan(1, true, true), TickPlan { workroom: false, lens_cards: true, lens_steps: true });
+        assert_eq!(tick_plan(1, true, false), TickPlan { workroom: false, lens_cards: true, lens_steps: true });
+    }
+
+    #[test]
+    fn an_answer_arriving_behind_a_closed_lens_is_still_followed_for_its_fold() {
+        assert_eq!(tick_plan(1, false, true), TickPlan { workroom: false, lens_cards: false, lens_steps: true });
+        assert_eq!(tick_plan(1, false, false), TickPlan { workroom: false, lens_cards: false, lens_steps: false });
+    }
+
+    #[test]
+    fn on_the_agents_screen_the_workroom_publishes_the_cards_once() {
+        assert_eq!(tick_plan(SCREEN, true, true), TickPlan { workroom: true, lens_cards: false, lens_steps: true });
     }
 }

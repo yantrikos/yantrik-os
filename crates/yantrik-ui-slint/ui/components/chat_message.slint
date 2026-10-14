@@ -8,13 +8,15 @@
 //
 // The mind's tool calls are not the reply. They stay on the record (the Agents pane draws them as
 // cards), and here they sit behind one quiet "Show actions" line, so a person reads the answer and
-// not a column of `os_act` lines. Teal marks a mind and nothing else; the desktop speaking for
+// not a column of `os_act` lines. While the reply arrives, the same steps are said in words above
+// it (LiveSteps), and the trail lines are left out of the text until the end. Teal marks a mind and nothing else; the desktop speaking for
 // itself gets a neutral dot and its own label so it is never read as the mind's.
 
 import { Theme } from "theme.slint";
 import { MessageData } from "message_bubble.slint";
 import { ToolCallCard } from "tool_call.slint";
 import { ChatPill } from "chat_parts.slint";
+import { StepLineData, LiveSteps } from "live_steps.slint";
 
 export component ChatMessage inherits Rectangle {
     in property <MessageData> data;
@@ -22,6 +24,9 @@ export component ChatMessage inherits Rectangle {
     in property <string> mind-name;
     // True when the previous message was from someone else (or there was none).
     in property <bool> group-start: true;
+    // What the mind is doing while this reply arrives (wire/lens_steps.rs): drawn above the words,
+    // and kept there until the turn ends. Empty for every other message.
+    in property <[StepLineData]> steps: [];
 
     // The desktop's own offer, while private, to leave Private mode: the one link a reply still
     // carries, because it is the desktop speaking and not a run.
@@ -95,6 +100,10 @@ export component ChatMessage inherits Rectangle {
                     // Under the name, before the first line of the reply.
                 }
                 if root.group-start : Rectangle { height: Theme.sp-1; }
+
+                if root.data.is-streaming && root.steps.length > 0 : LiveSteps {
+                    steps: root.steps;
+                }
 
                 // Streaming, or no parsed blocks: the plain text.
                 if !root.has-blocks : Text {

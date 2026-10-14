@@ -21,6 +21,7 @@ import { ToolCallData, ToolCallCard } from "components/tool_call.slint";
 import { ApprovalRequest, ApprovalCard } from "components/intent_lens.slint";
 import { QuestionCard } from "components/question_card.slint";
 import { WorkCardData } from "components/work_card.slint";
+import { StepLineData } from "components/live_steps.slint";
 import { JumpToPresent } from "jump_to_present.slint";
 import { YContextMenu } from "components/y_context_menu.slint";
 import {
@@ -138,6 +139,10 @@ export global AgentsState {
     // Filled by wire/agents.rs from the same store as the workroom.
     in-out property <[WorkCardData]> lens-cards: [];
     in-out property <WorkCardData> lens-strip;
+    // The steps of the Lens's open turn, said in words (wire/lens_steps.rs), and the conversation
+    // row of the reply they belong to (-1: no turn open).
+    in-out property <[StepLineData]> lens-steps: [];
+    in-out property <int> lens-steps-row: -1;
     in-out property <int> lens-live: 0;
     in-out property <int> lens-waiting: 0;
     // "Built-in mind" or "Attached mind", for the conversation header.

@@ -720,6 +720,13 @@ pub fn publish(
                         if !calls.is_empty() {
                             entry["calls"] = serde_json::Value::Array(calls);
                         }
+                        // What the mind is doing in a reply still arriving, as the bubble says
+                        // it: `[{text, state}]`, state running | done | failed | waiting. Once the
+                        // reply ends, the steps its "Show actions" folded. Read here so a gate can
+                        // check the live steps without a screenshot.
+                        if let Some(steps) = crate::wire::lens_steps::for_describe(i) {
+                            entry["steps"] = steps;
+                        }
                         entry
                     })
                     .collect()
@@ -3573,6 +3580,20 @@ mod power_profile_tests {
         let src = source();
         assert!(src.contains("crate::power_status::battery_for_describe("), "describe's `battery` comes from power_status");
         assert!(src.contains("\"power_profile\","), "describe has a top-level `power_profile`, battery or not");
+    }
+}
+
+#[cfg(test)]
+mod steps_describe_tests {
+    /// `describe shell` carries the live steps on the reply they belong to, inside the
+    /// conversation, which an agent caller is never handed.
+    #[test]
+    fn the_open_turns_steps_ride_on_its_conversation_entry() {
+        let src = include_str!("control.rs");
+        let at = src.find("let conversation: Vec<serde_json::Value> = if agent_reading { Vec::new() }").expect("conversation");
+        let block = &src[at..at + 4000];
+        assert!(block.contains("crate::wire::lens_steps::for_describe(i)"), "{block}");
+        assert!(block.contains("entry[\"steps\"] = steps"), "{block}");
     }
 }
 

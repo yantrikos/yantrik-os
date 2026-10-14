@@ -13,6 +13,7 @@ import { QuestionRequest, QuestionCard } from "question_card.slint";
 import { Icon, Icons } from "icon.slint";
 import { MessageData } from "message_bubble.slint";
 import { WorkCardData, WorkCard, WorkStrip } from "work_card.slint";
+import { StepLineData } from "live_steps.slint";
 import { ChatMessage } from "chat_message.slint";
 import { ChatTranscript } from "chat_transcript.slint";
 import { ChatComposer } from "chat_composer.slint";
@@ -1209,6 +1210,9 @@ export component IntentLens inherits Rectangle {
     // What the shell knows of the runs this chat started, from the Agents store: one card per
     // run, found by the id a reply carries. Nothing here is composed by the mind.
     in property <[WorkCardData]> work-cards: [];
+    // What the mind is doing in the reply still arriving, and that reply's row (-1: none).
+    in property <[StepLineData]> live-steps: [];
+    in property <int> live-steps-row: -1;
     // The run the strip describes (the live one that most needs the person), and how many runs are
     // live in this chat, and how many of those wait on the person. `strip.run == ""` is none.
     in property <WorkCardData> strip;
@@ -2313,6 +2317,7 @@ export component IntentLens inherits Rectangle {
                                 data: msg;
                                 mind-name: root.mind-name;
                                 group-start: idx == 0 || root.messages[idx - 1].role != msg.role || root.messages[idx - 1].mind != msg.mind;
+                                steps: idx == root.live-steps-row ? root.live-steps : [];
                                 open-run(run) => { root.open-run(run); }
                             }
                             // The run this reply started, as one card, kept in step with the

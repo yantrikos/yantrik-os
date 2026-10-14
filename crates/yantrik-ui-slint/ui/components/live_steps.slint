@@ -1,0 +1,54 @@
+// What a mind is doing while it answers, in its own bubble: up to two finished steps, quiet, with
+// ✓ or ✗, and the current one under them with a gentle pulse.
+//
+// On VM 541 a question to the Mind sat 72 s behind an empty bubble: a name, a dot and a 2px bar,
+// and nothing else until the whole answer landed. The words are the shell's (wire/step_words.rs),
+// from what the Agents store recorded; nothing here is composed by the mind.
+
+import { Theme } from "theme.slint";
+
+export struct StepLineData {
+    // One sentence: "Looking at your calendar… · 24 s". Never arguments, paths or JSON.
+    text: string,
+    // "running", "done", "failed" or "waiting" (on the person: the card pinned above).
+    state: string,
+}
+
+export component LiveSteps inherits VerticalLayout {
+    in property <[StepLineData]> steps;
+
+    // 160 ms a step, the rate the Lens's other pulses use: a pulse, not an animation loop.
+    property <float> pulse-phase: 0;
+    property <bool> live: root.steps.length > 0;
+
+    spacing: 2px;
+    padding-bottom: root.live ? Theme.sp-1 : 0px;
+
+    Timer {
+        interval: 160ms;
+        running: root.live;
+        triggered => { root.pulse-phase = mod(root.pulse-phase + 0.08, 1.0); }
+    }
+
+    for step in root.steps : HorizontalLayout {
+        property <bool> current: step.state == "running" || step.state == "waiting";
+        spacing: Theme.sp-1;
+
+        Text {
+            text: step.state == "done" ? "\u{2713}" : step.state == "failed" ? "\u{2717}" : "";
+            visible: !current;
+            width: current ? 0px : 12px;
+            color: Theme.chat-text-2;
+            font-size: Theme.fs-caption;
+            vertical-alignment: center;
+        }
+        Text {
+            text: step.text;
+            horizontal-stretch: 1;
+            wrap: word-wrap;
+            color: step.state == "waiting" ? Theme.chat-needs-you : current ? Theme.chat-text : Theme.chat-text-2;
+            font-size: current ? Theme.fs-body : Theme.fs-caption;
+            opacity: current ? 0.6 + 0.4 * (0.5 + 0.5 * sin(root.pulse-phase * 6.2832 * 1rad)) : 1.0;
+        }
+    }
+}

@@ -18,6 +18,8 @@ pub mod agents;
 #[cfg(test)]
 mod lens_card_layout;
 pub mod lens_work;
+pub mod lens_steps;
+pub mod step_words;
 pub mod agents_workroom;
 mod run_heading;
 pub mod runs_on_card;

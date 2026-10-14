@@ -57,6 +57,28 @@ fn strip_mark(line: &str) -> Option<&str> {
         .map(|rest| rest.trim())
 }
 
+/// `text` with its trail lines left out: what a reply says while it is still arriving. The calls
+/// are already said as steps above it (`wire::lens_steps`), and drawn raw they were
+/// `⚙️ memory_remember {"text": …}` in the middle of an answer. The whole text, trail and all, is
+/// kept for the reply's "Show actions" fold at the end.
+pub fn without_trail(text: &str) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    let mut after_call = false;
+    for line in text.split('\n') {
+        if is_trail(line) {
+            after_call = true;
+            continue;
+        }
+        // Hermes' verbose form writes the call's arguments on the line after it.
+        if after_call && line.trim_start().starts_with('{') {
+            continue;
+        }
+        after_call = false;
+        kept.push(line);
+    }
+    kept.join("\n").trim_start_matches('\n').to_string()
+}
+
 /// Read one call from a trail line.
 ///
 /// `next` is the line after it, offered because Hermes' verbose form puts the arguments there.
