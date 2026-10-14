@@ -61,5 +61,10 @@ hermes gateway install --if-missing --start-now --start-on-login </dev/null \
     || fail "Hermes would not install its gateway service"
 systemctl --user restart hermes-gateway || fail "Hermes's gateway would not start"
 
-# The desktop opens `hermes model` next (the manifest's `configure`); by hand it is the same.
-say "Hermes is installed. Next, choose its model: Choose model on this row, or run: hermes model"
+# The model step: Hermes uses the person's model through the desktop's gateway, no question.
+# Where that cannot run, the desktop opens `hermes model` next (the manifest's `configure`).
+if wire_model hermes; then
+    say "Hermes is installed and uses your model."
+else
+    say "Hermes is installed. Next, choose its model: Choose model on this row, or run: hermes model"
+fi

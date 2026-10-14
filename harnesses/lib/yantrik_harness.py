@@ -336,7 +336,7 @@ class Turn:
 
     def __init__(self, harness: "Harness", session: str, turn_id: int, text: str,
                  context: Optional[str] = None, conversation: str = MAIN,
-                 agent_token: str = "") -> None:
+                 agent_token: str = "", options: Optional[Dict[str, Any]] = None) -> None:
         self.harness = harness
         self.session = session
         self.turn_id = turn_id
@@ -347,6 +347,10 @@ class Turn:
         # (AGENT_TOKEN_ENV), never to the model and never into a log.
         self.conversation = conversation or MAIN
         self.agent_token = agent_token or ""
+        # What the person chose in the picker for this turn (#673; protocol.rs `TurnOptions`):
+        # `model` as `<account>/<model>` at the local model gateway, `effort`, and the files they
+        # handed over. Empty when they chose nothing; a handler that ignores it answers as before.
+        self.options: Dict[str, Any] = options if isinstance(options, dict) else {}
         # Set when the person said /stop, or /new arrived while this was running. A handler that
         # watches it can stop between steps; one that does not is simply left to finish.
         self.cancelled = threading.Event()
@@ -364,6 +368,24 @@ class Turn:
         self.away_text: List[str] = []
         self.away_end: Optional[Tuple[Optional[str]]] = None
         self._lock = threading.Lock()
+
+    @property
+    def model(self) -> str:
+        """The model the person picked for this turn, `<account>/<model>`, or "" for the harness's own."""
+        return str(self.options.get("model") or "")
+
+    @property
+    def effort(self) -> str:
+        """`easy`, `medium`, `high` or `xhigh`, or "" when the model does not think or none was picked."""
+        effort = str(self.options.get("effort") or "")
+        return effort if effort in ("easy", "medium", "high", "xhigh") else ""
+
+    @property
+    def attachments(self) -> List[Dict[str, Any]]:
+        """The files the person handed over with this message: name, path, mime, size, sha256,
+        handed_over_by, via, at, and content_b64 for a small one."""
+        found = self.options.get("attachments")
+        return [a for a in found if isinstance(a, dict)] if isinstance(found, list) else []
 
     @property
     def notes(self) -> List[str]:
@@ -772,7 +794,8 @@ class Harness:
                 self._dispatch(Turn(self, self.session, turn_id,
                                     str(reply.get("text") or ""), reply.get("context"),
                                     conversation=conversation,
-                                    agent_token=str(reply.get("agent_token") or "")))
+                                    agent_token=str(reply.get("agent_token") or ""),
+                                    options=reply.get("options")))
         finally:
             self._shutdown()
 

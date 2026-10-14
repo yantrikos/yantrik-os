@@ -183,7 +183,17 @@ fn dispatch(
     // The builtin keeps its own path: it carries tool calls, the __REPLACE__ convention and the
     // job board, none of which the harness protocol has or needs.
     if active == super::harness::BUILTIN_ID {
-        builtin_turn(ui_weak, bridge, text, handover.as_ref(), streams);
+        // The built-in reads the person's files itself: the ones handed over are named for it.
+        // On Yantrik models it asks for `picked`, and the gateway applies the picked effort.
+        let handed = crate::picker::turn_options(&active, "lens").map(|o| o.attachments).unwrap_or_default();
+        let said = if handed.is_empty() {
+            text.to_string()
+        } else {
+            let names: Vec<String> = handed.iter().map(|a| format!("{} ({})", a.path, crate::picker::attach::size_words(a.size))).collect();
+            format!("{text}\n\n[Files I handed over: {}]", names.join(", "))
+        };
+        builtin_turn(ui_weak, bridge, &said, handover.as_ref(), streams);
+        crate::picker::files_sent(ui_weak);
         return;
     }
 
@@ -212,7 +222,13 @@ fn dispatch(
         Some(h) => (crate::agents::handover::with_handover(h, text), context),
         None => (text.to_string(), context),
     };
-    let answer = host.send(yantrik_harness::Turn::new(sent).with_context(context).with_origin(yantrik_harness::protocol::Origin::desk()));
+    // What the person picked — model, effort, the files they handed over — goes with the turn.
+    let mut turn = yantrik_harness::Turn::new(sent).with_context(context).with_origin(yantrik_harness::protocol::Origin::desk());
+    if let Some(options) = crate::picker::turn_options(&active, "lens") {
+        turn = turn.with_options(options);
+    }
+    crate::picker::files_sent(ui_weak);
+    let answer = host.send(turn);
     // The same turn, recorded as this mind's agent on the Agents screen; the answer passes through.
     let answer = crate::agents::feed::lens_turn(&host.active_id(), text, answer);
     let run_of = crate::agents::feed::main_agent(&host.active_id());

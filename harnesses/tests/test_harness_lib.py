@@ -163,6 +163,30 @@ class HarnessTests(unittest.TestCase):
         self.desktop.wait_closed(turn)
         self.assertIn("Asia/Kolkata", seen[0])
 
+    def test_the_persons_picks_reach_the_handler_and_a_turn_without_them_reads_as_none(self):
+        seen = []
+
+        class Peek(Handler):
+            def answer(self, turn):
+                seen.append((turn.model, turn.effort, turn.attachments))
+                turn.emit("ok")
+
+        self.start(Peek())
+        picked = {"model": "free-groq/openai/gpt-oss-120b", "effort": "high",
+                  "attachments": [{"name": "a.txt", "path": "/tmp/a.txt", "size": 1, "sha256": "00",
+                                   "handed_over_by": "person", "via": "lens", "at": "now"}]}
+        turn = self.desktop.ask("look", options=picked)
+        self.desktop.wait_closed(turn)
+        turn = self.desktop.ask("again")
+        self.desktop.wait_closed(turn)
+        turn = self.desktop.ask("odd", options={"effort": "turbo", "attachments": "nope"})
+        self.desktop.wait_closed(turn)
+        self.assertEqual(seen[0][0], "free-groq/openai/gpt-oss-120b")
+        self.assertEqual(seen[0][1], "high")
+        self.assertEqual(seen[0][2][0]["handed_over_by"], "person")
+        self.assertEqual(seen[1], ("", "", []), "an older desktop's turn chose nothing")
+        self.assertEqual(seen[2], ("", "", []), "what is not understood is ignored")
+
     # ── closed exactly once ─────────────────────────────────────────────
 
     def test_a_handler_that_raises_fails_the_turn_once_with_a_readable_sentence(self):

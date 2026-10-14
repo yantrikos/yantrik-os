@@ -48,6 +48,18 @@ delegation:
   max_iterations: 25        # a research sub-agent that may take 50 turns will take 50
 ```
 
+## Yantrik models
+
+Installing Hermes (the ISO, the installer, or **Settings → Harnesses → Install**) does this with no
+question; **Use its own models** on its row undoes it, and **Use Yantrik models** does it again. It
+sets Hermes's model in its own
+`~/.hermes/config.yaml` to the desktop's model gateway: `model.provider: custom`,
+`model.base_url: http://127.0.0.1:7460/v1`, `model.default: picked` and a gateway token of Hermes's
+own as `model.api_key` — never a provider's key. `picked` is whichever model you pick for Hermes in
+the ask bar. The file's comments are not kept in the new file; Revert puts your own back, comments
+and all, and withdraws the token. What Hermes remembers about you goes where you chose per account
+in Settings → AI accounts: shared, kept on this computer (the private lane), or not sent.
+
 ## Turning it off
 
 `YANTRIK_HARNESS=off` in the Hermes environment keeps the plugin loaded and off the desktop.

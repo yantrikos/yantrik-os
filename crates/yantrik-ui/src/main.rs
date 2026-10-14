@@ -32,6 +32,12 @@ use std::path::PathBuf;
 use yantrik_companion::CompanionConfig;
 
 mod accounts;
+// The AI accounts the person added and their models (#673): Settings, the picker, the gateway.
+mod ai_accounts;
+// The local model gateway on 127.0.0.1:7460, which forwards a mind's calls to those accounts.
+mod gateway;
+// The one picker for every mind, in the ask bar and the mind panel (#673).
+mod picker;
 mod activity_feed;
 /// Every agent — one conversation with one mind — and its session, drawn by the Agents screen.
 mod agents;
@@ -191,6 +197,15 @@ fn main() {
     // start. The first argument is otherwise a config path, so this also stops `--version`
     // being read as the name of a config file that does not exist.
     yantrik_version::handle_version_flag("yantrik-ui");
+
+    // `yantrik-ui --wire-model <harness>`: an installer's model step (the ISO build, the
+    // installer, harnesses/lib/install's `wire_model`). No window, no TTY, one line, an exit code.
+    {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        if args.first().map(String::as_str) == Some("--wire-model") {
+            std::process::exit(wire::harness_provider::wire_model_cli(&args[1..]));
+        }
+    }
 
     // Private mode lasts until the person turns it off, so it is read back before the companion,
     // the clipboard watcher or the harness socket can start thinking it is off.

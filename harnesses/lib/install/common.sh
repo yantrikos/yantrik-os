@@ -75,3 +75,19 @@ ensure_node() {
     node_at_least "$want" || fail "Node $NODE_VERSION is unpacked but does not run, or is older than $want"
     say "Node $(node --version) installed in ~/.local/node"
 }
+
+# wire_model HARNESS — the model step of an install (design/onboarding-one-model-one-memory-
+# 2026-10-10.md, "The flow"): the harness's own config pointed at the desktop's model gateway
+# with a token of its own and `model: picked`, by the desktop's own adapter for it, its own file
+# kept for Revert (`yantrik-ui --wire-model`, crates/yantrik-ui/src/wire/harness_provider.rs).
+# No question and no TTY; a second run changes nothing, and a harness the person set to "Use its
+# own models" or gave a saved provider is left alone. A step that cannot run is said and does not
+# fail the install: Settings → Harnesses → Use Yantrik models does the same later.
+wire_model() {
+    ui=$(command -v yantrik-ui 2>/dev/null || echo /opt/yantrik/bin/yantrik-ui)
+    if [ ! -x "$ui" ]; then
+        say "no desktop here to point $1 at your model; Settings → Harnesses does it later"
+        return 1
+    fi
+    "$ui" --wire-model "$1" </dev/null || { say "$1 was not pointed at your model; Settings → Harnesses → Use Yantrik models does it"; return 1; }
+}

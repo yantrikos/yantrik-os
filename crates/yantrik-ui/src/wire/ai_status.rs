@@ -12,6 +12,10 @@
 //! not among the ones it lists, the key was refused, nothing answered, or nothing is set up. It
 //! asks with the one request the provider form's Connect uses (`provider_models::list_models`),
 //! off the UI thread, and shows "Checking" until it has an answer.
+//!
+//! config-default.yaml now ships with no model chosen (11 Oct: the public nightly has no bundled
+//! model, so `yantrik-4b` named one nothing served), and the card names a model only once the
+//! account it is on lists it: a fresh install reads "Not set up", never a model name.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -206,7 +210,12 @@ pub(crate) fn card(target: Option<&Target>, health: &Health, fallback: Option<&s
     AIStatusData {
         provider_name: target.map(|t| t.name.clone()).unwrap_or_default().into(),
         provider_type: target.map(|t| format!("from {}", t.source)).unwrap_or_default().into(),
-        model_name: target.map(|t| t.model.clone()).unwrap_or_default().into(),
+        // Only a model its account lists: one it was only configured with is not shown as if it ran.
+        model_name: match (target, health) {
+            (Some(t), Health::Connected) => t.model.clone(),
+            _ => String::new(),
+        }
+        .into(),
         model_tier: SharedString::default(),
         status: status.into(),
         detail: detail.into(),
@@ -321,7 +330,7 @@ mod tests {
             is_fallback: false,
             model: "nvidia/nemotron-3-super-120b-a12b".into(),
         });
-        let t = target(&store, "http://127.0.0.1:8341/v1", "yantrik-4b", None).unwrap();
+        let t = target(&store, "", "", None).unwrap();
         assert_eq!((t.name.as_str(), t.model.as_str()), ("NVIDIA NIM", "nvidia/nemotron-3-super-120b-a12b"));
     }
 
@@ -329,20 +338,43 @@ mod tests {
     fn connected_means_the_model_asked_for_is_one_it_serves() {
         assert_eq!(judge(Ok(listed(&["qwen3.5:9b", "bge-m3:latest"])), "qwen3.5:9b"), Health::Connected);
         assert_eq!(judge(Ok(listed(&["llama3:latest"])), "llama3"), Health::Connected, "Ollama's :latest");
-        assert_eq!(judge(Ok(listed(&["a", "b"])), "yantrik-4b"), Health::ModelMissing { listed: 2 });
+        assert_eq!(judge(Ok(listed(&["a", "b"])), "qwen3.5-4b"), Health::ModelMissing { listed: 2 });
         assert_eq!(judge(Err(ListError::KeyRefused), "m"), Health::KeyRefused);
         assert!(matches!(judge(Err(ListError::Unreachable { host: "127.0.0.1:8341".into() }), "m"), Health::Unreachable(_)));
     }
 
     #[test]
     fn the_fresh_install_card_no_longer_says_connected() {
-        // config-default.yaml's endpoint, with nothing listening there.
-        let t = target(&ProviderStore::default(), "http://127.0.0.1:8341/v1", "yantrik-4b", None).unwrap();
+        // A local endpoint with nothing listening there.
+        let t = target(&ProviderStore::default(), "http://127.0.0.1:8341/v1", "qwen3.5-4b", None).unwrap();
         let health = judge(Err(ListError::Unreachable { host: "127.0.0.1:8341".into() }), &t.model);
         let c = card(Some(&t), &health, None);
         assert_eq!(c.status, "unreachable");
         assert_eq!(c.detail, "Could not reach 127.0.0.1:8341.");
         assert_eq!(c.provider_name, "127.0.0.1:8341");
+    }
+
+    #[test]
+    fn a_fresh_default_config_is_not_set_up_and_names_no_model() {
+        let shipped: yantrik_companion::CompanionConfig =
+            serde_yaml::from_str(include_str!("../../../../deploy/yantrik-os/config-default.yaml")).unwrap();
+        let url = shipped.llm.resolve_api_base_url().unwrap_or_default();
+        let model = shipped.llm.api_model.clone().unwrap_or_default();
+        let t = target(&ProviderStore::default(), &url, &model, None);
+        assert_eq!(t, None, "nothing is chosen");
+        let c = card(t.as_ref(), &Health::NotSetUp, None);
+        assert_eq!(c.status, "unset", "the card reads Not set up");
+        assert_eq!((c.model_name.as_str(), c.provider_name.as_str()), ("", ""));
+        assert!(!format!("{}{}", c.detail, c.fallback_provider).contains("yantrik-4b"));
+    }
+
+    #[test]
+    fn a_model_is_named_only_once_its_account_lists_it() {
+        let t = target(&ProviderStore::default(), "http://127.0.0.1:8341/v1", "qwen3.5-4b", None).unwrap();
+        for h in [Health::Checking, Health::ModelMissing { listed: 2 }, Health::Unreachable("x".into()), Health::KeyRefused] {
+            assert_eq!(card(Some(&t), &h, None).model_name, "", "{h:?}");
+        }
+        assert_eq!(card(Some(&t), &Health::Connected, None).model_name, "qwen3.5-4b");
     }
 
     #[test]

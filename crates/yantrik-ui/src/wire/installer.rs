@@ -1524,22 +1524,8 @@ fn grub_defaults(encrypted: bool) -> String {
 mod tests {
     use super::*;
 
-    /// Shaped like the llm section of config-default.yaml, which the image ships
-    /// as /opt/yantrik/config.yaml: the primary endpoint first, a fallback block
-    /// after it.
-    const IMAGE_CONFIG: &str = "\
-user_name: \"User\"
-
-llm:
-  backend: \"api\"
-  api_base_url: \"http://127.0.0.1:8341/v1\"
-  api_model: \"yantrik-4b\"
-  max_tokens: 1024
-  fallback:
-    backend: \"api\"
-    api_base_url: \"http://127.0.0.1:8341/v1\"
-    api_model: \"yantrik-4b\"
-";
+    /// The image's own /opt/yantrik/config.yaml, as shipped: it names no model.
+    const IMAGE_CONFIG: &str = include_str!("../../../../deploy/yantrik-os/config-default.yaml");
 
     fn wizard_state(provider: &str, base_url: &str, key: &str) -> InstallerState {
         InstallerState {
@@ -1561,9 +1547,18 @@ llm:
         assert!(out.contains("user_name: \"Ada Lovelace\""), "{out}");
         assert!(out.contains("api_base_url: \"https://api.openai.com/v1\""), "{out}");
         assert!(out.contains("api_model: \"gpt-4o-mini\""), "{out}");
-        // Only the primary endpoint is replaced; the fallback block is the
-        // image's own and the wizard said nothing about it.
-        assert!(out.contains("    api_base_url: \"http://127.0.0.1:8341/v1\""), "{out}");
+        assert_eq!(out.matches("api_model:").count(), 1, "one model line, and no fallback naming another: {out}");
+    }
+
+    #[test]
+    fn the_image_names_no_model_until_one_is_chosen() {
+        let config: yantrik_companion::CompanionConfig = serde_yaml::from_str(IMAGE_CONFIG).expect("the image's config parses");
+        assert_eq!(yantrik_ml::not_set_up::chosen(config.llm.api_model.as_deref()), None);
+        assert!(config.llm.fallback.is_none(), "no fallback naming a model nothing serves");
+        assert!(!IMAGE_CONFIG.contains("yantrik-4b"));
+        // Skipping the AI step leaves it so.
+        let out = installed_config_yaml(IMAGE_CONFIG, &wizard_state("", "", ""));
+        assert!(out.contains("api_model: \"\""), "{out}");
     }
 
     #[test]
@@ -1572,9 +1567,9 @@ llm:
         assert!(out.contains("api_base_url: \"https://integrate.api.nvidia.com/v1\""), "{out}");
         assert!(out.contains("api_model: \"nvidia/nemotron-3-super-120b-a12b\""), "{out}");
         // A provider the catalogue does not know, with no endpoint saved, leaves
-        // the image's own endpoint rather than guessing one.
+        // the image's own (none) rather than guessing one.
         let out = installed_config_yaml(IMAGE_CONFIG, &wizard_state("nonesuch", "", ""));
-        assert!(out.contains("api_base_url: \"http://127.0.0.1:8341/v1\""), "{out}");
+        assert!(out.contains("api_base_url: \"\""), "{out}");
     }
 
     #[test]
@@ -1605,13 +1600,13 @@ llm:
             &wizard_state("openai", "https://api.openai.com/v1", "sk-secret-123"),
         );
         assert!(!out.contains("sk-secret-123"), "{out}");
-        assert!(!out.contains("api_key"), "{out}");
+        assert!(!out.lines().any(|l| l.trim_start().starts_with("api_key")), "no key line: {out}");
     }
 
     #[test]
     fn skipped_ai_leaves_the_image_default() {
         let out = installed_config_yaml(IMAGE_CONFIG, &InstallerState::default());
-        assert!(out.contains("api_base_url: \"http://127.0.0.1:8341/v1\""), "{out}");
+        assert!(out.contains("api_base_url: \"\"") && out.contains("api_model: \"\""), "nothing chosen stays nothing: {out}");
         assert!(installed_providers_yaml(&InstallerState::default()).is_none());
     }
 

@@ -862,6 +862,9 @@ pub fn publish(
                 // installed, or its config file was never written, or its unit is stopped. An
                 // agent asked to fix that needs the same list the Settings page draws.
                 .with("harnesses", crate::wire::harness::catalogue_for_describe())
+                // Settings → AI & Intelligence → AI accounts, as the card shows it (#673): each
+                // account, its models and whether personal things may go there. No key.
+                .with("ai_accounts", crate::wire::ai_accounts_card::for_describe())
                 // Agents' commands running now, per agent: the job, its command, how long, and
                 // whether it seems to be waiting for input. See `control_agent_terminal`.
                 .with("agent_jobs", {
