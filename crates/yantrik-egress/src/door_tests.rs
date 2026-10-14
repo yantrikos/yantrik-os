@@ -28,7 +28,7 @@ struct Doors {
 }
 
 fn lan(host: &str, ports: &[u16]) -> Rule {
-    Rule { host: host.into(), ports: ports.to_vec(), http: true, lan: true, why: "one of the Mind's endpoints".into(), seeded: true }
+    Rule { host: host.into(), ports: ports.to_vec(), http: true, lan: true, why: "one of the Mind's endpoints".into(), seeded: true, search_queries: Vec::new() }
 }
 
 /// This machine's network, and on it: the ISP's global prefix 2a02:8070:abcd:1::/64, a public IPv4
@@ -177,7 +177,7 @@ async fn the_public_door_lets_the_internet_through() {
     assert_eq!((s.audited, s.refused), (4, 0));
     // In enforce, by a rule like any other.
     let mut p = Policy { mode: Mode::Enforce, rules: vec![] };
-    p.allow(Rule { host: "1.1.1.1".into(), ports: vec![9], http: true, lan: false, why: "a public site".into(), seeded: false }).unwrap();
+    p.allow(Rule { host: "1.1.1.1".into(), ports: vec![9], http: true, lan: false, why: "a public site".into(), seeded: false, search_queries: Vec::new() }).unwrap();
     let d = start("internet-enforce", p).await;
     for code in both(d.public, "1.1.1.1:9").await {
         assert_ne!(code, 403);
@@ -245,7 +245,7 @@ async fn a_home_device_on_a_global_prefix_or_the_router_is_the_home_network() {
     }
     // In guarded, a rule without lan does not open it; one with lan does, on the endpoint door only.
     let mut p = Policy { mode: Mode::Guarded, rules: vec![] };
-    p.allow(Rule { host: "nas.home.example".into(), ports: vec![445], http: true, lan: false, why: "files".into(), seeded: false }).unwrap();
+    p.allow(Rule { host: "nas.home.example".into(), ports: vec![445], http: true, lan: false, why: "files".into(), seeded: false, search_queries: Vec::new() }).unwrap();
     let d = start("home-guarded-rule", p).await;
     for door in [d.endpoint, d.public] {
         assert_eq!(both(door, "nas.home.example:445").await, [403, 403], "a rule without lan");
@@ -306,7 +306,7 @@ async fn with_no_network_ever_read_nothing_is_reached() {
     }
     for mode in Mode::ALL {
         // A rule for it, so enforce gets as far as the lookup too.
-        let rule = Rule { host: "1.1.1.1".into(), ports: vec![443], http: true, lan: false, why: "x".into(), seeded: false };
+        let rule = Rule { host: "1.1.1.1".into(), ports: vec![443], http: true, lan: false, why: "x".into(), seeded: false, search_queries: Vec::new() };
         let d = start_on(&format!("nonet-{mode:?}"), Policy { mode, rules: vec![rule] }, none).await;
         for door in [d.endpoint, d.public] {
             assert_eq!(both(door, "1.1.1.1:443").await, [503, 503], "{mode:?}");
@@ -418,4 +418,23 @@ fn a_connection_from_an_address_the_read_did_not_know_is_judged_again() {
     STAGE.store(2, Ordering::SeqCst);
     let late = proxy::after_connect(&p, "1.1.1.1", 443, false, Place::Internet, &before, at("1.1.1.1:443"), new).unwrap_err();
     assert_eq!((late.code, late.outcome), (503, Outcome::Refused), "{late:?}");
+}
+
+#[tokio::test]
+async fn a_bound_search_rule_lets_out_only_the_approved_query() {
+    let mut p = Policy { mode: Mode::Enforce, rules: vec![] };
+    let mut rule = Rule { host: "1.1.1.1".into(), ports: vec![9], http: true, lan: false, why: "search".into(), seeded: false, search_queries: Vec::new() };
+    rule.search_queries = vec!["rust async".into()];
+    p.allow(rule).unwrap();
+    let d = start("search-bound", p).await;
+    let at = "1.1.1.1:9";
+    let get = |path: &str| format!("GET http://{at}{path} HTTP/1.1\r\nHost: {at}\r\n\r\n");
+    assert_ne!(status(d.public, &get("/search?q=rust+async")).await, 403, "the approved query");
+    for path in ["/search?q=other", "/search?flag&q=other", "/search?q=rust+async&q=other", "/search?%71=other"] {
+        assert_eq!(status(d.public, &get(path)).await, 403, "{path}");
+    }
+    // A form POST carries its query in the body, and a tunnel carries anything: neither is seen.
+    let post = format!("POST http://{at}/search HTTP/1.1\r\nHost: {at}\r\nContent-Length: 7\r\n\r\nq=other");
+    assert_eq!(status(d.public, &post).await, 403, "a body");
+    assert_eq!(status(d.public, &connect(at)).await, 403, "a tunnel");
 }

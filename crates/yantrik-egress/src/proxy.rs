@@ -305,6 +305,31 @@ async fn one(proxy: &Proxy, stream: &mut TcpStream, peer: SocketAddr) -> Result<
         return Err("refused");
     }
 
+    // A search request is the one thing the person never sees before it leaves: the query is the
+    // mind's. A rule that names search queries binds what was approved to what is sent, so on a
+    // host one matches, only a plain-HTTP request with no body and every `q=` approved goes out.
+    // A tunnel is refused there: the proxy sees the name and the port, never what goes through,
+    // and a tunnel to a bound host would carry any query at all. So would a body (a form POST).
+    // A rule without `search_queries` never triggers this.
+    let refused = {
+        let Ok(s) = proxy.state.lock() else { return Err("state poisoned") };
+        let bound: Vec<_> = s.policy.rules.iter().filter(|r| r.matches(&host, port) && !r.search_queries.is_empty()).collect();
+        !bound.is_empty()
+            && match &target {
+                Target::Connect { .. } => true,
+                Target::Http { body, queries, .. } => {
+                    *body > 0 || !queries.iter().all(|q| bound.iter().any(|r| crate::policy::search_allowed(r, q)))
+                }
+            }
+    };
+    if refused {
+        let why = format!("{host}: the search query was not one the person approved");
+        proxy.record(&host, port, Outcome::Refused, place == Place::Lan, http, &why);
+        tracing::info!(door = proxy.door.name(), host, port, why, "refused");
+        let _ = reply(stream, 403, &why).await;
+        return Err("refused");
+    }
+
     // 6. The connection, counted once it is made, or found not to be.
     let mut upstream = None;
     for addr in &usable {
