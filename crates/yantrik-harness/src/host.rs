@@ -2044,7 +2044,8 @@ impl Host {
 
         // A notice is not part of a turn's stream: it may come with no turn in flight at all
         // (#396). It is taken, not dropped, but only forwarded to a reader when a turn is
-        // listening; otherwise it is logged and answered as kept.
+        // listening; otherwise it is kept in a run of its own, or logged when the host keeps
+        // no runs, and answered as kept.
         if let Event::Notice { text } = &event {
             if text.trim().is_empty() {
                 counts.malformed += 1;
@@ -2065,7 +2066,20 @@ impl Host {
                     }
                 }
                 _ => {
-                    tracing::info!(harness = %who, turn = turn_id, "notice with no turn in flight; kept");
+                    // No turn to append to, so the notice opens a run of its own — the same shape
+                    // a turn's run has — owned by this harness, under an id of the host's. Where
+                    // the host keeps no runs there is nowhere to keep it, so it is only logged.
+                    if self.runs.is_some() {
+                        let session = harness.session.clone();
+                        let run = st.next_turn;
+                        st.next_turn += 1;
+                        self.record("start", run, |s| s.start(run, &who, "", &session));
+                        self.record("notice", run, |s| s.append(run, "notice", raw));
+                        self.record("end", run, |s| s.transition(run, RunState::Done));
+                        tracing::info!(harness = %who, turn = turn_id, run, "notice with no turn in flight; kept in a run of its own");
+                    } else {
+                        tracing::info!(harness = %who, turn = turn_id, "notice with no turn in flight; kept");
+                    }
                 }
             }
             counts.accepted += 1;
@@ -4010,6 +4024,29 @@ mod tests {
         // Its own turn's notice is kept in its run.
         event(&host, &session, run, json!({ "kind": "notice", "text": "mine" })).unwrap();
         assert!(kinds(&store, run).contains(&"notice".to_string()), "{:?}", kinds(&store, run));
+    }
+
+    #[test]
+    fn a_notice_with_no_turn_in_flight_is_kept_in_a_run_of_its_own() {
+        let (host, store) = host_with_runs();
+        let (_session, _agent, run, _answer) = turn_in_flight(&host);
+        let other = attach(&host, "mind");
+        // A notice naming a turn this harness was never handed: it opens a run of its own (#396).
+        let own = host.lock().next_turn;
+        let reply = event(&host, &other, run, json!({ "kind": "notice", "text": "download finished" })).unwrap();
+        assert_eq!(reply, json!({ "kept": true }), "{reply}");
+        // Kept in a run shaped like a turn's: a state, the notice, a closing state.
+        assert_eq!(kinds(&store, own), vec!["state", "notice", "state"], "{:?}", kinds(&store, own));
+        let notice = store
+            .events(own, 0, crate::run_store::PAGE_MAX)
+            .unwrap()
+            .events
+            .into_iter()
+            .find(|e| e.kind == "notice")
+            .expect("the notice is kept");
+        assert_eq!(notice.payload["text"], "download finished");
+        // The other harness's run is untouched: the notice never entered it.
+        assert!(!kinds(&store, run).contains(&"notice".to_string()), "{:?}", kinds(&store, run));
     }
 
     #[test]
