@@ -443,8 +443,6 @@ pub struct InstinctSettings {
     #[serde(default = "default_check_in_hours")]
     pub check_in_hours: f64,
     #[serde(default = "default_true")]
-    pub emotional_awareness_enabled: bool,
-    #[serde(default = "default_true")]
     pub follow_up_enabled: bool,
     #[serde(default = "default_follow_up_hours")]
     pub follow_up_min_hours: f64,
@@ -456,9 +454,6 @@ pub struct InstinctSettings {
     pub conflict_alerting_enabled: bool,
     #[serde(default = "default_conflict_threshold")]
     pub conflict_alert_threshold: usize,
-    /// Enable predictive workflow instinct.
-    #[serde(default = "default_evolution_enabled")]
-    pub predictive_workflow_enabled: bool,
     /// Enable morning/evening routine instinct.
     #[serde(default = "default_evolution_enabled")]
     pub routine_enabled: bool,
@@ -489,21 +484,6 @@ pub struct InstinctSettings {
     /// Minutes between news checks.
     #[serde(default = "default_news_interval")]
     pub news_watch_interval_minutes: f64,
-    /// Enable trend watching (searches Google/X/Reddit via browser).
-    #[serde(default = "default_true_val")]
-    pub trend_watch_enabled: bool,
-    /// Minutes between trend checks.
-    #[serde(default = "default_trend_interval")]
-    pub trend_watch_interval_minutes: f64,
-    /// Enable curiosity research (idle-triggered interest-based search).
-    #[serde(default = "default_true_val")]
-    pub curiosity_enabled: bool,
-    /// Minimum idle minutes before curiosity fires.
-    #[serde(default = "default_curiosity_idle")]
-    pub curiosity_idle_minutes: f64,
-    /// Hours between curiosity research sessions.
-    #[serde(default = "default_curiosity_interval")]
-    pub curiosity_interval_hours: f64,
     /// Enable interest intelligence (targeted research based on user's interests).
     #[serde(default = "default_true_val")]
     pub interest_intelligence_enabled: bool,
@@ -577,18 +557,6 @@ pub struct InstinctSettings {
     /// Hours between night owl thoughts.
     #[serde(default = "default_night_owl_interval")]
     pub night_owl_interval_hours: f64,
-    /// Enable legacy builder (rare zoom-out reflections on user's narrative arc).
-    #[serde(default = "default_true_val")]
-    pub legacy_builder_enabled: bool,
-    /// Hours between legacy builder reflections (should be high — weekly cadence).
-    #[serde(default = "default_legacy_builder_interval")]
-    pub legacy_builder_interval_hours: f64,
-    /// Enable identity thread (weaves user's values and identity markers into coherent narrative).
-    #[serde(default = "default_true_val")]
-    pub identity_thread_enabled: bool,
-    /// Hours between identity thread observations (should be very high — weekly cadence).
-    #[serde(default = "default_identity_thread_interval")]
-    pub identity_thread_interval_hours: f64,
     /// Enable myth buster (catches and corrects common misconceptions related to user's interests).
     #[serde(default = "default_true_val")]
     pub myth_buster_enabled: bool,
@@ -643,24 +611,6 @@ pub struct InstinctSettings {
     /// Hours between skill forge evaluations.
     #[serde(default = "default_skill_forge_interval")]
     pub skill_forge_interval_hours: f64,
-    /// Enable time capture (micro-journaling prompts at emotionally significant moments).
-    #[serde(default = "default_true_val")]
-    pub time_capture_enabled: bool,
-    /// Hours between time capture checks.
-    #[serde(default = "default_time_capture_interval")]
-    pub time_capture_interval_hours: f64,
-    /// Enable mentor match (finds the right teacher/resource for current learning edge).
-    #[serde(default = "default_true_val")]
-    pub mentor_match_enabled: bool,
-    /// Hours between mentor match evaluations.
-    #[serde(default = "default_mentor_match_interval")]
-    pub mentor_match_interval_hours: f64,
-    /// Enable debrief partner (structured reflection after significant events).
-    #[serde(default = "default_true_val")]
-    pub debrief_partner_enabled: bool,
-    /// Hours between debrief partner checks.
-    #[serde(default = "default_debrief_partner_interval")]
-    pub debrief_partner_interval_hours: f64,
     /// Enable philosophy companion (connects experiences to philosophical frameworks).
     #[serde(default = "default_true_val")]
     pub philosophy_companion_enabled: bool,
@@ -673,30 +623,12 @@ pub struct InstinctSettings {
     /// Hours between devil's advocate challenges.
     #[serde(default = "default_devils_advocate_interval")]
     pub devils_advocate_interval_hours: f64,
-    /// Enable energy map (observes chronotype and energy patterns).
-    #[serde(default = "default_true_val")]
-    pub energy_map_enabled: bool,
-    /// Hours between energy map observations.
-    #[serde(default = "default_energy_map_interval")]
-    pub energy_map_interval_hours: f64,
-    /// Enable future self (projects current trajectories forward).
-    #[serde(default = "default_true_val")]
-    pub future_self_enabled: bool,
-    /// Hours between future self projections.
-    #[serde(default = "default_future_self_interval")]
-    pub future_self_interval_hours: f64,
     /// Enable dream keeper (turns aspirations into actionable next steps).
     #[serde(default = "default_true_val")]
     pub dream_keeper_enabled: bool,
     /// Hours between dream keeper actionizations.
     #[serde(default = "default_dream_keeper_interval")]
     pub dream_keeper_interval_hours: f64,
-    /// Enable cultural radar (discovers new content matching user's taste).
-    #[serde(default = "default_true_val")]
-    pub cultural_radar_enabled: bool,
-    /// Hours between cultural radar discoveries.
-    #[serde(default = "default_cultural_radar_interval")]
-    pub cultural_radar_interval_hours: f64,
     /// Enable pattern breaker (identifies and surfaces recurring loops).
     #[serde(default = "default_true_val")]
     pub pattern_breaker_enabled: bool,
@@ -734,9 +666,6 @@ fn default_email_poll_minutes_f64() -> f64 {
 }
 fn default_true_val() -> bool { true }
 fn default_news_interval() -> f64 { 60.0 }
-fn default_trend_interval() -> f64 { 45.0 }
-fn default_curiosity_idle() -> f64 { 15.0 }
-fn default_curiosity_interval() -> f64 { 4.0 }
 fn default_interest_interval() -> f64 { 3.0 }
 fn default_deal_interval() -> f64 { 6.0 }
 fn default_activity_interval() -> f64 { 4.0 }
@@ -749,8 +678,6 @@ fn default_growth_mirror_interval() -> f64 { 18.0 }
 fn default_local_pulse_interval() -> f64 { 6.0 }
 fn default_tradition_keeper_interval() -> f64 { 22.0 }
 fn default_night_owl_interval() -> f64 { 2.5 }
-fn default_legacy_builder_interval() -> f64 { 168.0 } // ~weekly
-fn default_identity_thread_interval() -> f64 { 168.0 } // ~weekly
 fn default_myth_buster_interval() -> f64 { 8.0 }
 fn default_cooking_companion_interval() -> f64 { 6.0 }
 fn default_second_brain_interval() -> f64 { 12.0 }
@@ -760,15 +687,9 @@ fn default_relationship_radar_interval() -> f64 { 6.0 }
 fn default_goal_keeper_interval() -> f64 { 6.0 }
 fn default_decision_lab_interval() -> f64 { 8.0 }
 fn default_skill_forge_interval() -> f64 { 12.0 }
-fn default_time_capture_interval() -> f64 { 12.0 }
-fn default_mentor_match_interval() -> f64 { 48.0 }
-fn default_debrief_partner_interval() -> f64 { 6.0 }
 fn default_philosophy_companion_interval() -> f64 { 48.0 }
 fn default_devils_advocate_interval() -> f64 { 24.0 }
-fn default_energy_map_interval() -> f64 { 48.0 }
-fn default_future_self_interval() -> f64 { 72.0 }
 fn default_dream_keeper_interval() -> f64 { 72.0 }
-fn default_cultural_radar_interval() -> f64 { 24.0 }
 fn default_pattern_breaker_interval() -> f64 { 72.0 }
 fn default_opportunity_scout_interval() -> f64 { 48.0 }
 
@@ -777,14 +698,12 @@ impl Default for InstinctSettings {
         Self {
             check_in_enabled: true,
             check_in_hours: default_check_in_hours(),
-            emotional_awareness_enabled: true,
             follow_up_enabled: true,
             follow_up_min_hours: default_follow_up_hours(),
             reminder_enabled: true,
             pattern_surfacing_enabled: true,
             conflict_alerting_enabled: true,
             conflict_alert_threshold: default_conflict_threshold(),
-            predictive_workflow_enabled: true,
             routine_enabled: true,
             cognitive_load_enabled: true,
             smart_updates_enabled: true,
@@ -795,11 +714,6 @@ impl Default for InstinctSettings {
             email_poll_minutes: default_email_poll_minutes_f64(),
             news_watch_enabled: true,
             news_watch_interval_minutes: default_news_interval(),
-            trend_watch_enabled: true,
-            trend_watch_interval_minutes: default_trend_interval(),
-            curiosity_enabled: true,
-            curiosity_idle_minutes: default_curiosity_idle(),
-            curiosity_interval_hours: default_curiosity_interval(),
             interest_intelligence_enabled: true,
             interest_intelligence_interval_hours: default_interest_interval(),
             deal_watch_enabled: true,
@@ -824,10 +738,6 @@ impl Default for InstinctSettings {
             tradition_keeper_interval_hours: default_tradition_keeper_interval(),
             night_owl_enabled: false,
             night_owl_interval_hours: default_night_owl_interval(),
-            legacy_builder_enabled: true,
-            legacy_builder_interval_hours: default_legacy_builder_interval(),
-            identity_thread_enabled: true,
-            identity_thread_interval_hours: default_identity_thread_interval(),
             myth_buster_enabled: true,
             myth_buster_interval_hours: default_myth_buster_interval(),
             cooking_companion_enabled: true,
@@ -846,24 +756,12 @@ impl Default for InstinctSettings {
             decision_lab_interval_hours: default_decision_lab_interval(),
             skill_forge_enabled: true,
             skill_forge_interval_hours: default_skill_forge_interval(),
-            time_capture_enabled: true,
-            time_capture_interval_hours: default_time_capture_interval(),
-            mentor_match_enabled: true,
-            mentor_match_interval_hours: default_mentor_match_interval(),
-            debrief_partner_enabled: true,
-            debrief_partner_interval_hours: default_debrief_partner_interval(),
             philosophy_companion_enabled: true,
             philosophy_companion_interval_hours: default_philosophy_companion_interval(),
             devils_advocate_enabled: true,
             devils_advocate_interval_hours: default_devils_advocate_interval(),
-            energy_map_enabled: true,
-            energy_map_interval_hours: default_energy_map_interval(),
-            future_self_enabled: true,
-            future_self_interval_hours: default_future_self_interval(),
             dream_keeper_enabled: true,
             dream_keeper_interval_hours: default_dream_keeper_interval(),
-            cultural_radar_enabled: true,
-            cultural_radar_interval_hours: default_cultural_radar_interval(),
             pattern_breaker_enabled: true,
             pattern_breaker_interval_hours: default_pattern_breaker_interval(),
             opportunity_scout_enabled: true,
@@ -1835,5 +1733,48 @@ impl CompanionConfig {
     /// Check if a service is enabled by the user.
     pub fn has_service(&self, service: &str) -> bool {
         self.enabled_services.iter().any(|s| s.eq_ignore_ascii_case(service))
+    }
+}
+
+#[cfg(test)]
+mod instinct_curation_tests {
+    use super::{CompanionConfig, InstinctSettings};
+
+    /// Instincts `load_instincts` retired or merged under #755. A switch of theirs still in the
+    /// serialised default is a knob the person can turn that does nothing.
+    const GONE: &[&str] = &[
+        "emotional_awareness",
+        "bond_milestone",
+        "identity_thread",
+        "time_capture",
+        "energy_map",
+        "predictive_workflow",
+        "trend_watch",
+        "curiosity",
+        "cultural_radar",
+        "legacy_builder",
+        "future_self",
+        "mentor_match",
+        "debrief_partner",
+    ];
+
+    #[test]
+    fn a_retired_or_merged_instinct_leaves_no_switch() {
+        let json = serde_json::to_string(&InstinctSettings::default()).unwrap();
+        for gone in GONE {
+            assert!(!json.contains(gone), "{gone} still has a switch in: {json}");
+        }
+    }
+
+    #[test]
+    fn a_config_written_before_the_switch_was_removed_still_parses() {
+        // A person's file keeps switches for instincts that no longer exist. They are ignored
+        // rather than making the whole config unreadable, and the instincts that replaced them
+        // still come from their own defaults.
+        let cfg: CompanionConfig = serde_json::from_str(
+            r#"{"instincts": {"emotional_awareness_enabled": false, "trend_watch_enabled": true}}"#,
+        )
+        .unwrap();
+        assert!(cfg.instincts.news_watch_enabled);
     }
 }

@@ -74,7 +74,6 @@ cognition:
 instincts:
   check_in_enabled: true
   check_in_hours: 2.0
-  emotional_awareness_enabled: true
   follow_up_enabled: true
   follow_up_min_hours: 4.0
   reminder_enabled: true

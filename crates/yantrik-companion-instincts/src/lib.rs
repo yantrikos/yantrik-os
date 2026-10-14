@@ -369,8 +369,8 @@ mod load_tests {
 
     #[test]
     fn turning_off_a_merge_target_turns_it_off() {
-        // The merged instincts' old switches default to on; they must not keep a target running
-        // after the person turned it off.
+        // A merged instinct's own switch is gone (#755), so the target's switch is the only one
+        // that can keep it running — turning the target off always turns it off.
         let mut s = InstinctSettings::default();
         s.routine_enabled = false;
         s.news_watch_enabled = false;
@@ -390,6 +390,32 @@ mod load_tests {
         let names = loaded(&InstinctSettings::default());
         for kept in MERGE_TARGETS {
             assert!(names.iter().any(|n| n == kept), "{kept} missing: {names:?}");
+        }
+    }
+
+    /// Instincts retired or merged under #755, by the name they loaded under.
+    const RETIRED: &[&str] = &[
+        "emotional_awareness",
+        "BondMilestone",
+        "IdentityThread",
+        "TimeCapture",
+        "EnergyMap",
+        "predictive_workflow",
+        "TrendWatch",
+        "Curiosity",
+        "CulturalRadar",
+        "LegacyBuilder",
+        "FutureSelf",
+        "MentorMatch",
+        "DebriefPartner",
+    ];
+
+    #[test]
+    fn a_retired_or_merged_instinct_never_loads() {
+        // Their switches are gone from InstinctSettings, so nothing may load them again.
+        let names = loaded(&InstinctSettings::default());
+        for gone in RETIRED {
+            assert!(!names.iter().any(|n| n == gone), "{gone} loaded: {names:?}");
         }
     }
 }
