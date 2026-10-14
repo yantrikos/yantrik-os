@@ -34,6 +34,17 @@ impl BondLevel {
         }
     }
 
+    /// What this level changes about how the companion talks, in one short line.
+    pub fn description(&self) -> &'static str {
+        match self {
+            BondLevel::Stranger => "Talks to you politely and formally",
+            BondLevel::Acquaintance => "Talks to you with light warmth",
+            BondLevel::Friend => "Talks to you more casually, with humor",
+            BondLevel::Confidant => "Talks to you with deep emotional awareness",
+            BondLevel::PartnerInCrime => "Talks to you unfiltered and real",
+        }
+    }
+
     pub fn as_u8(&self) -> u8 {
         *self as u8
     }

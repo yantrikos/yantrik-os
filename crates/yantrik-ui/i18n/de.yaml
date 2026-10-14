@@ -378,7 +378,6 @@ bond.score: "Bindungswert"
 bond.level: "Stufe"
 bond.interactions: "Interaktionen gesamt"
 bond.days: "Gemeinsame Tage"
-bond.streak: "Aktuelle Serie"
 
 # ── Energie ──
 power.shutdown: "Herunterfahren"

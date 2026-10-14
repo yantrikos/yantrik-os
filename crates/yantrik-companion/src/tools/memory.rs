@@ -463,13 +463,13 @@ impl Tool for CheckBondTool {
     fn execute(&self, ctx: &ToolContext, _args: &serde_json::Value) -> String {
         let state = crate::bond::BondTracker::get_state(&ctx.db.conn());
         format!(
-            "Bond level: {} (score: {:.2})\nInteractions: {}\nDays together: {:.0}\nStreak: {} days\nVulnerability events: {}\nInside jokes: {}",
+            // No streak and no count of feelings shared: the companion would read them
+            // back to the person (#753, design/ux-psychology-2026-10-11.md).
+            "Bond level: {} (score: {:.2})\nInteractions: {}\nDays together: {:.0}\nInside jokes: {}",
             state.bond_level.name(),
             state.bond_score,
             state.total_interactions,
             state.days_together,
-            state.current_streak_days,
-            state.vulnerability_events,
             state.shared_references,
         )
     }

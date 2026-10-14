@@ -5,7 +5,7 @@
 // mind understands the person, can be relied on, or may do anything. The scoring is unchanged.
 
 import { Theme } from "theme.slint";
-import { Icons } from "components/icon.slint";
+import { Icon, Icons } from "components/icon.slint";
 import { AppHeader } from "components/app_header.slint";
 import { AppColor } from "components/app_color.slint";
 
@@ -18,13 +18,13 @@ export struct BondData {
     loaded: bool,
     bond-score: float,
     bond-level: string,
+    // What this level changes about how the companion talks, in one short line.
+    bond-description: string,
     // Which of the five levels, 1 (Stranger) to 5 (Partner-in-Crime): "Level 4 of 5".
     level-number: int,
     total-interactions: int,
     days-together: int,
-    current-streak: int,
     humor-rate: float,
-    vulnerability-events: int,
     shared-references: int,
 }
 
@@ -44,6 +44,11 @@ export component BondScreen inherits Rectangle {
 
     in property <BondData> data;
     callback back-pressed();
+
+    // The decimal score and the counting rules are folded away by default: a visible
+    // number invites grinding, and the level name plus what it changes is the honest
+    // version (design/ux-psychology-2026-10-11.md, "What we will not build").
+    in-out property <bool> details-open: false;
 
     background: Theme.bg-deep;
 
@@ -111,6 +116,13 @@ export component BondScreen inherits Rectangle {
                         wrap: word-wrap;
                     }
                     Text {
+                        text: data.bond-description;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-body;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                    Text {
                         text: "Level " + data.level-number + " of 5 · from "
                             + data.total-interactions + (data.total-interactions == 1 ? " interaction" : " interactions")
                             + " over " + data.days-together + (data.days-together == 1 ? " day" : " days");
@@ -118,30 +130,57 @@ export component BondScreen inherits Rectangle {
                         font-size: Theme.fs-body;
                         horizontal-alignment: center;
                     }
-                    // How it is counted, one rule to a line, left-aligned in a column no wider than
-                    // 720px: a centred paragraph of numbers is hard to read and harder to check.
-                    HorizontalLayout {
-                        padding-top: Theme.sp-3;
-                        alignment: start;
-                        VerticalLayout {
-                            max-width: 720px;
-                            spacing: 2px;
-                            for line in [
-                                "How this is counted:",
-                                "Each conversation turn adds 0.01 to a score.",
-                                "A longer message adds up to 0.03 more.",
-                                "One that says how you feel (\"I'm worried\", \"I miss…\") adds 0.05 more.",
-                                "The first turn of each day in a run of days adds up to 0.035 more.",
-                                "Laughing at a joke (\"haha\", \"lol\") adds 0.02.",
-                                "The score stops at 5.0 and sets the level:",
-                                "Stranger below 0.5, Acquaintance below 1.5, Friend below 2.5, Confidant below 3.5, Partner-in-Crime from 3.5.",
-                                "It is " + Math.round(data.bond-score * 100) / 100 + " now."
-                            ] : Text {
-                                text: line;
-                                color: Theme.text-secondary;
-                                font-size: Theme.font-label;
-                                horizontal-alignment: left;
-                                wrap: word-wrap;
+
+                    // Details, folded away by default: the decimal score and how it is counted.
+                    // A visible number invites grinding, so the level name and what it changes are
+                    // the main view; the curious can open this (design/ux-psychology-2026-10-11.md).
+                    Rectangle {
+                        height: details-col.preferred-height;
+                        details-col := VerticalLayout {
+                            spacing: Theme.sp-2;
+                            Rectangle {
+                                height: Theme.h-regular;
+                                accessible-role: button;
+                                accessible-label: "Details";
+                                accessible-expanded: root.details-open;
+                                HorizontalLayout {
+                                    spacing: Theme.sp-1h;
+                                    alignment: start;
+                                    Icon {
+                                        commands: root.details-open ? Icons.chevron-down : Icons.chevron-right;
+                                        size: Theme.wr-glyph;
+                                        tint: Theme.text-secondary;
+                                    }
+                                    Text {
+                                        text: "Details";
+                                        color: Theme.text-primary;
+                                        font-size: Theme.fs-title-2;
+                                        font-weight: Theme.fw-headline;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.details-open = !root.details-open; }
+                                }
+                            }
+                            if root.details-open : VerticalLayout {
+                                spacing: 2px;
+                                for line in [
+                                    "How this is counted:",
+                                    "Each conversation turn adds 0.01 to a score.",
+                                    "A longer message adds up to 0.02 more.",
+                                    "Laughing at a joke (\"haha\", \"lol\") adds 0.02.",
+                                    "The score stops at 5.0 and sets the level:",
+                                    "Stranger below 0.5, Acquaintance below 1.5, Friend below 2.5, Confidant below 3.5, Partner-in-Crime from 3.5.",
+                                    "It is " + Math.round(data.bond-score * 100) / 100 + " now."
+                                ] : Text {
+                                    text: line;
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-label;
+                                    horizontal-alignment: left;
+                                    wrap: word-wrap;
+                                }
                             }
                         }
                     }
@@ -199,24 +238,6 @@ export component BondScreen inherits Rectangle {
                             VerticalLayout {
                                 horizontal-stretch: 1;
                                 Text {
-                                    // "1 days" stood here beside "0 days
-                                    // together" in the audit that became #50.
-                                    text: data.current-streak + (data.current-streak == 1 ? " day" : " days");
-                                    color: Theme.text-primary;
-                                    font-size: Theme.fs-display;
-                                    font-weight: 600;
-                                }
-                                // A plain count, not a run to keep up.
-                                Text {
-                                    text: "in a row with a conversation";
-                                    color: Theme.text-secondary;
-                                    font-size: Theme.font-small;
-                                }
-                            }
-
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                Text {
                                     text: @tr("{}%", Math.round(data.humor-rate * 100));
                                     color: Theme.text-primary;
                                     font-size: Theme.fs-display;
@@ -224,27 +245,6 @@ export component BondScreen inherits Rectangle {
                                 }
                                 Text {
                                     text: "humor rate";
-                                    color: Theme.text-secondary;
-                                    font-size: Theme.font-small;
-                                }
-                            }
-                        }
-
-                        // Row 3
-                        HorizontalLayout {
-                            spacing: 16px;
-
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                Text {
-                                    text: data.vulnerability-events;
-                                    color: Theme.text-primary;
-                                    font-size: Theme.fs-display;
-                                    font-weight: 600;
-                                }
-                                // A plain count of what the scoring counted, not a stage reached.
-                                Text {
-                                    text: "messages that said how you felt";
                                     color: Theme.text-secondary;
                                     font-size: Theme.font-small;
                                 }

@@ -378,7 +378,6 @@ bond.score: "बॉन्ड स्कोर"
 bond.level: "स्तर"
 bond.interactions: "कुल बातचीत"
 bond.days: "साथ बिताए दिन"
-bond.streak: "वर्तमान स्ट्रीक"
 
 # ── Power ──
 power.shutdown: "बंद करें"

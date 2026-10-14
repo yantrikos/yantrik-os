@@ -378,7 +378,6 @@ bond.score: "Score de lien"
 bond.level: "Niveau"
 bond.interactions: "Interactions totales"
 bond.days: "Jours ensemble"
-bond.streak: "Série en cours"
 
 # ── Power ──
 power.shutdown: "Éteindre"
