@@ -22,6 +22,9 @@ Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # EnvironmentFile the person owns at mode 600 —
 #   EnvironmentFile=%h/.config/yantrik/openclaw.env
 # — never in an Environment= line here, which `systemctl show` prints to anyone who asks.
+# The Install button (harnesses/lib/install/openclaw.sh) writes that file, at mode 600, with a
+# token of this harness's own; the leading `-` lets the unit start without it (the per-turn route).
+EnvironmentFile=-%h/.config/yantrik/openclaw.env
 #
 # This unit does not start the gateway. OpenClaw's own service does that (`openclaw daemon
 # start`, or a unit of its own); this one only talks to it, and says so in the conversation when

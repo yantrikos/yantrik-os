@@ -842,6 +842,31 @@ thinking, and the token counts the API reports at the end of the stream
 (`stream_options.include_usage`; `"include_usage": false` in its config for a server that
 rejects the field).
 
+## Installed means proved (#677)
+
+Every harness's *Install* (`harnesses/lib/install/<id>.sh`) does the same four things with no
+question: the model step (`wire_model`, #675's, skipped with a line where the image lacks it),
+YantrikDB as its memory from the image (`/opt/yantrik/memory`, nothing fetched), the desktop
+channel paired with the owner only, and three proofs:
+
+| Proof | What is seen | Passes as |
+|---|---|---|
+| Can it answer? | one real call through the model gateway, when the model step ran | `connected · <model>`, or `model: its own` |
+| Can it remember? | a note written through the harness's own memory path, recalled, deleted | `memory · YantrikDB · recalled` |
+| Can it reach the desktop? | the harness listed as attached by the desktop (an attach on the harness socket) | `paired` |
+
+`python3 /opt/yantrik/share/harnesses/lib/proofs.py <id> --json` is the one call the Settings row
+and the onboarding summary make; each failure carries its one-press fix (`install`, `configure`,
+or `restart` with the command). Only when all three pass does the install write
+`~/.local/state/yantrik/harnesses/<id>/installed`, which every manifest requires, so a row reads
+installed only once it was proved. `revert.sh <id>` puts back every file the install wrote.
+
+Each harness keeps its YantrikDB in a file of its own (`~/.local/share/yantrik/memory/<id>.db`):
+the engine keeps its index in the process that opened the file and does not see another
+process's later writes, so one shared file would give each running harness a different memory.
+The person's one shared memory is the `yantrik` mode through the memory server, which waits on
+the tamper-proof door (#586). Every write carries its harness as provenance (`source`).
+
 ## What is not here yet
 
 Tasks, approvals as a first-class message and automations are designed

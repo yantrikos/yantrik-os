@@ -7,11 +7,13 @@ arrives while it is working.
 """
 
 import json
+import shutil
 import os
 import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 
 import support
 from support import FakeDesktop, recording_turn, said, wait_for
@@ -828,6 +830,58 @@ class SocketDiscoveryTests(unittest.TestCase):
                 os.environ.pop("YANTRIK_HARNESS_SOCKET", None)
             else:
                 os.environ["YANTRIK_HARNESS_SOCKET"] = old
+
+    def _looking(self, runtime):
+        saved = {k: os.environ.get(k) for k in ("XDG_RUNTIME_DIR", "YANTRIK_HARNESS_SOCKET", "YANTRIK_MIND_RUN")}
+        os.environ.pop("YANTRIK_HARNESS_SOCKET", None)
+        os.environ.pop("YANTRIK_MIND_RUN", None)
+        os.environ["XDG_RUNTIME_DIR"] = runtime
+
+        def restore():
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        self.addCleanup(restore)
+
+    def test_the_shells_own_directory_is_found_and_one_others_can_write_is_not(self):
+        runtime = tempfile.mkdtemp(prefix="harness-run-")
+        self.addCleanup(shutil.rmtree, runtime, True)
+        os.makedirs(os.path.join(runtime, "yantrik"), mode=0o700)
+        sock = os.path.join(runtime, "yantrik", "harness.sock")
+        Path(sock).touch()
+        self._looking(runtime)
+        self.assertEqual(yantrik_harness.socket_path(), sock)
+        os.chmod(os.path.join(runtime, "yantrik"), 0o777)
+        self.assertNotEqual(yantrik_harness.socket_path(), sock,
+                            "a directory any account can write is not the desktop's")
+
+    def test_another_accounts_tmp_directory_is_never_looked_in(self):
+        # /tmp is shared: a /tmp/yantrik-<anything> is not this account's unless it is its uid.
+        planted = tempfile.mkdtemp(prefix="yantrik-0000-", dir="/tmp")
+        self.addCleanup(shutil.rmtree, planted, True)
+        Path(planted, "harness.sock").touch()
+        self._looking(tempfile.mkdtemp(prefix="harness-empty-"))
+        self.assertNotEqual(yantrik_harness.socket_path(), os.path.join(planted, "harness.sock"))
+
+
+class MemoryDirectoryTests(unittest.TestCase):
+    def test_a_harness_memory_is_readable_by_its_account_only(self):
+        data = tempfile.mkdtemp(prefix="memory-home-")
+        self.addCleanup(shutil.rmtree, data, True)
+        previous = os.environ.get("XDG_DATA_HOME")
+        os.environ["XDG_DATA_HOME"] = data
+        self.addCleanup(lambda: os.environ.pop("XDG_DATA_HOME", None) if previous is None
+                        else os.environ.__setitem__("XDG_DATA_HOME", previous))
+        db = yantrik_harness.memory_db("pi")
+        os.makedirs(os.path.dirname(db), mode=0o755)
+        os.chmod(os.path.dirname(db), 0o755)
+        Path(db).write_text("x")
+        os.chmod(db, 0o644)
+        yantrik_harness.private_memory_dir("pi")
+        self.assertEqual(os.stat(os.path.dirname(db)).st_mode & 0o777, 0o700)
+        self.assertEqual(os.stat(db).st_mode & 0o777, 0o600)
 
 
 class MindDirectoryTests(unittest.TestCase):

@@ -718,6 +718,32 @@ fi
 sudo sh "$SCRIPT_DIR/stage-harnesses.sh" "$PROJECT_ROOT" "$ROOTFS/opt/yantrik/share/harnesses"     "$ROOTFS/etc/systemd/user"     || fail "the harnesses did not stage — Settings would not know which minds this image ships"
 ok "Harnesses staged at /opt/yantrik/share/harnesses, units in /etc/systemd/user (not enabled)"
 
+# ── YantrikDB, every mind's memory (#677) ──
+#
+# From the release bundle, which bakes it (bake-memory.sh, called by build-release.sh): the same
+# tree an update installs, so a machine set up from this image and one set up by update have the
+# same memory. /opt/yantrik/memory, root-owned and outside share/. What is in it, and why, is in
+# bake-memory.sh.
+[ -d "$UNPACK/memory" ] \
+    || fail "release tarball carries no memory/ — every harness install would stop at \"no yantrikdb-mcp\" (build it with build-release.sh, which bakes it)"
+sh "$SCRIPT_DIR/bake-memory.sh" --check "$UNPACK/memory" \
+    || fail "the release tarball's memory/ is missing a file a harness install reads"
+IMAGE_PY=$(sudo chroot "$ROOTFS" python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])') \
+    || fail "the image has no python3 to run yantrikdb-mcp on"
+BUNDLE_PY=$(sed -n 's/^image-python=//p' "$UNPACK/memory/VERSIONS")
+[ "$IMAGE_PY" = "$BUNDLE_PY" ] \
+    || fail "the bundle's yantrikdb-mcp is for Python $BUNDLE_PY and this image has $IMAGE_PY; rebuild the bundle with YANTRIK_IMAGE_PYTHON=$IMAGE_PY"
+sudo rm -rf "$ROOTFS/opt/yantrik/memory"
+sudo mkdir -p "$ROOTFS/opt/yantrik/memory"
+sudo cp -a "$UNPACK/memory/." "$ROOTFS/opt/yantrik/memory/"
+sudo chown -R root:root "$ROOTFS/opt/yantrik/memory"
+sudo chmod -R go-w "$ROOTFS/opt/yantrik/memory"
+sudo chmod 755 "$ROOTFS/opt/yantrik/memory/bin/yantrikdb-mcp"
+# Asserted, not hoped: each harness's Install fails on a machine without these.
+sudo chroot "$ROOTFS" /usr/bin/python3 -I -c 'import sys; sys.path.insert(0, "/opt/yantrik/memory/mcp"); import yantrikdb, yantrikdb_mcp' \
+    || fail "yantrikdb-mcp does not import on the image's Python"
+ok "YantrikDB at /opt/yantrik/memory ($(sudo du -sh "$ROOTFS/opt/yantrik/memory" | cut -f1)), from the release bundle: $(head -n 2 "$UNPACK/memory/VERSIONS" | tr '\n' ' ')"
+
 # ── The mind, beside the OS ──
 #
 # Installed and enabled, never configured: the OS holds no model, endpoint or key for

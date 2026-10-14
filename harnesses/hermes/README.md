@@ -13,10 +13,22 @@ reads none of it except the model name, which it passes as the `detail` the pick
 missing, and has an *Install* button that does all of it with the output on the row:
 `harnesses/lib/install/hermes.sh` installs Hermes itself when it is not there (Hermes's own
 installer, into `~/.hermes`, no root, browser and computer-use tools left out), copies and enables
-the plugin, and installs and starts Hermes's gateway as your user service. Hermes then needs a
-model, which is Hermes's own setting, so the row opens Hermes's own picker (`hermes model`) in a
-terminal as soon as the install finishes, and keeps a *Choose model* button for changing it
-later. The gateway is restarted afterwards so the running Hermes uses it. There is no *Start*
+the plugin, and installs and starts Hermes's gateway as your user service. It also (#677):
+
+- installs the YantrikDB memory provider **from the image** (`/opt/yantrik/memory/wheels`, no
+  network, no terminal) and sets `memory.provider: yantrikdb`, with Hermes's own MEMORY.md and
+  USER.md off. Hermes keeps a YantrikDB of its own (`~/.local/share/yantrik/memory/hermes.db`)
+  until the shared `yantrik` mode can be turned on safely (#586);
+- allowlists the desktop platform to the desktop's owner only (`YANTRIK_ALLOWED_USERS=owner` in
+  Hermes's `.env`, never `YANTRIK_ALLOW_ALL_USERS`), and holds it to the desktop's tools
+  (`hermes_config.py`, below);
+- ends with the three proofs (`harnesses/lib/proofs.py hermes`), and is not installed until
+  they pass. `harnesses/lib/install/revert.sh hermes` puts every file it wrote back.
+
+When the image carries the model step (#675), Hermes is given your model with no question.
+Otherwise Hermes needs a model, which is Hermes's own setting, so the row opens Hermes's own
+picker (`hermes model`) in a terminal as soon as the install finishes, and keeps a *Choose model*
+button for changing it later. The gateway is restarted afterwards so the running Hermes uses it. There is no *Start*
 button and there should not be: Hermes starts Hermes, and this plugin runs inside its gateway.
 
 On a machine that already has Hermes, the same thing by hand:
@@ -47,6 +59,15 @@ platform_toolsets:
 delegation:
   max_iterations: 25        # a research sub-agent that may take 50 turns will take 50
 ```
+
+**On an older Hermes, kanban is turned off everywhere.** A Hermes from before commit `3d7f773`
+(10 Sep 2026; releases before `v2026.9.14`, 0.14.0 among them) adds its `kanban` toolset to the desktop platform whatever
+the list above says. Kanban's `kanban_create` queues worker agents with toolsets of their own, a
+route around the desktop's grading, so the install turns it off in `agent.disabled_toolsets`, the
+only switch such a Hermes honours, and says so. That setting is **global**: your other Hermes
+platforms (Telegram, Discord, the CLI) lose kanban too. Revert puts your own `config.yaml` back,
+kanban included. A current Hermes (the commit the installer pins) honours the list, and nothing
+global is written.
 
 ## Yantrik models
 

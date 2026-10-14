@@ -44,6 +44,7 @@ import hashlib
 import json
 import os
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -143,15 +144,31 @@ def socket_path() -> Optional[str]:
     if runtime:
         candidates.append(Path(runtime) / "yantrik")
     candidates.append(Path("/run/yantrik"))
-    try:
-        candidates.extend(sorted(p for p in Path("/tmp").iterdir() if p.name.startswith("yantrik-")))
-    except OSError:
-        pass
+    # The shell's last resort is /tmp/yantrik-<its uid> (yantrik-ipc-transport, server.rs), and
+    # only this account's. /tmp is shared: any account can make a /tmp/yantrik-<anything> with a
+    # harness.sock in it, and a harness that attached there would take that account's "turns" as
+    # the owner's (every desktop turn is the allowlisted user `owner`) and answer it from this
+    # person's memory and model.
+    candidates.append(Path("/tmp") / ("yantrik-%d" % os.getuid()))
     for directory in candidates:
         sock = directory / "harness.sock"
-        if sock.exists():
+        if _ours(directory, sock):
             return str(sock)
     return None
+
+
+def _ours(directory: Path, sock: Path) -> bool:
+    """A socket found by looking (not named outright) counts only when it, and the directory it is
+    in, belong to this account and no other account can write that directory: a socket another
+    account put somewhere this looks is not the desktop's."""
+    try:
+        d = os.lstat(directory)
+        s = os.lstat(sock)
+    except OSError:
+        return False
+    me = os.getuid()
+    return (stat.S_ISDIR(d.st_mode) and d.st_uid == me and not (d.st_mode & 0o022)
+            and s.st_uid == me)
 
 
 def call(address: str, method: str, params: Dict[str, Any], timeout: float = 10.0) -> Any:
@@ -1428,6 +1445,136 @@ class McpTools:
                 proc.stdin.flush()
             except (OSError, ValueError) as exc:
                 raise McpError("could not reach the desktop bridge: %s" % exc) from exc
+
+
+# ── YantrikDB, every mind's memory (#677) ───────────────────────────────────────────────────
+
+# yantrikdb-mcp, baked into the image beside its own Python (build-debian-iso.sh), and the file
+# each harness keeps its memory in. One file per harness: the engine keeps its index in the
+# process that opened it and does not see another process's later writes, so one memory server
+# per harness process, shared by its conversations, is what keeps a recall honest.
+YANTRIKDB_MCP = os.environ.get("YANTRIKDB_MCP_BIN", "/opt/yantrik/memory/bin/yantrikdb-mcp")
+# A mind's memory, not the store's administration (think, packs, skills, sessions stay out).
+MEMORY_TOOLS = ("remember", "recall", "forget", "correct")
+MEMORY_PREFIX = "memory_"
+
+
+def memory_db(harness: str) -> str:
+    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return str(Path(base) / "yantrik" / "memory" / ("%s.db" % harness))
+
+
+def private_memory_dir(harness: str) -> str:
+    """The directory of the harness's YantrikDB file, made and kept private (700), with any file
+    already in it 600: what a mind remembers about the person is never readable by another
+    account, whatever umask the harness or the engine runs under."""
+    directory = os.path.dirname(memory_db(harness))
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    os.chmod(directory, 0o700)
+    for name in os.listdir(directory):
+        path = os.path.join(directory, name)
+        if os.path.isfile(path) and not os.path.islink(path):
+            os.chmod(path, 0o600)
+    return directory
+
+
+def memory_env(harness: str) -> Dict[str, str]:
+    """What the harness's yantrikdb-mcp is given: its own file and the engine's bundled embedder,
+    which is offline (nothing is fetched on first use)."""
+    return {"YANTRIKDB_DB_PATH": memory_db(harness), "YANTRIKDB_EMBEDDER": "bundled"}
+
+
+def memory_on(setting: Any) -> bool:
+    """YantrikDB is the default memory: on unless the harness's config says `"memory": "off"`,
+    and only where the image carries yantrikdb-mcp."""
+    if isinstance(setting, str) and setting.strip().lower() in ("off", "none", "false", "own"):
+        return False
+    if setting is False:
+        return False
+    return os.path.exists(YANTRIKDB_MCP)
+
+
+def memory_tools(harness: str, log: Optional[Callable[[str], None]] = None) -> "McpTools":
+    """The harness's own YantrikDB, as an MCP client: one per harness process."""
+    private_memory_dir(harness)
+    return McpTools("Yantrik %s memory" % harness, "1.0.0", command=[YANTRIKDB_MCP], env=memory_env(harness),
+                    timeout=60.0, log=log)
+
+
+class WithMemory:
+    """The desktop's tools and YantrikDB's memory tools, as one set a mind is offered.
+
+    The memory tools arrive as `memory_remember`, `memory_recall`, ... so they can never shadow a
+    desktop tool, and only the four a mind needs are offered. Every write carries the harness as
+    its provenance (`source`, and `metadata.provenance`), set here and not by the model, so a
+    memory always says which mind wrote it. `memory` may be shared by many of these (one per
+    conversation) and is not closed by them; whoever made it closes it.
+    """
+
+    def __init__(self, desktop: Any, memory: Any, source: str) -> None:
+        self.desktop = desktop
+        self.memory = memory
+        self.source = source
+
+    def _memory_list(self) -> List[Dict[str, Any]]:
+        try:
+            tools = self.memory.list()
+        except Exception:
+            return []
+        out = []
+        for tool in tools:
+            if tool.get("name") in MEMORY_TOOLS:
+                renamed = dict(tool)
+                renamed["name"] = MEMORY_PREFIX + tool["name"]
+                out.append(renamed)
+        return out
+
+    def list(self, refresh: bool = False) -> List[Dict[str, Any]]:
+        return list(self.desktop.list(refresh)) + self._memory_list()
+
+    def as_openai_tools(self) -> List[Dict[str, Any]]:
+        out = list(self.desktop.as_openai_tools())
+        for tool in self._memory_list():
+            out.append({
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": str(tool.get("description") or "")[:4000],
+                    "parameters": tool.get("inputSchema") or {"type": "object", "properties": {}},
+                },
+            })
+        return out
+
+    def call(self, name: str, arguments: Optional[Dict[str, Any]] = None,
+             timeout: Optional[float] = None) -> Tuple[str, bool]:
+        if not name.startswith(MEMORY_PREFIX) or name[len(MEMORY_PREFIX):] not in MEMORY_TOOLS:
+            return self.desktop.call(name, arguments, timeout)
+        args = dict(arguments or {})
+        if name == MEMORY_PREFIX + "remember":
+            args = stamped(args, self.source)
+        return self.memory.call(name[len(MEMORY_PREFIX):], args, timeout)
+
+    def close(self) -> None:
+        close = getattr(self.desktop, "close", None)
+        if close:
+            close()
+
+
+def stamped(args: Dict[str, Any], source: str) -> Dict[str, Any]:
+    """A remember's arguments with the harness as the source of every memory in it."""
+    args = dict(args)
+    args["source"] = source
+    meta = dict(args.get("metadata") or {}) if isinstance(args.get("metadata"), dict) else {}
+    meta["provenance"] = source
+    args["metadata"] = meta
+    if isinstance(args.get("memories"), list):
+        args["memories"] = [
+            dict(m, source=source, metadata=dict(m["metadata"] if isinstance(m.get("metadata"), dict) else {},
+                                                 provenance=source))
+            if isinstance(m, dict) else m
+            for m in args["memories"]
+        ]
+    return args
 
 
 class McpError(Exception):

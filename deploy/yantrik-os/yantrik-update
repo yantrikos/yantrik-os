@@ -53,6 +53,9 @@ set -uo pipefail
 # `sudo yantrik-update check`, ran their code as root through the password-free rule. Every
 # interpreter below is also started isolated (`python3 -I`: no working directory, no PYTHON*
 # variables, no user site).
+# This script's own path, absolute, before the line below moves the working directory: the
+# selftest reads the build scripts beside it.
+SELF_PATH="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
 [ "$(id -u)" = 0 ] && cd /
 
 # ── Where things live ───────────────────────────────────────────────────────────────────
@@ -586,7 +589,7 @@ cmd_migrate_ownership() {
   say "Making $PREFIX root's; $owner keeps logs/ and data/"
   chown root:root "$PREFIX" && chmod 0755 "$PREFIX"
   for d in "$BIN_DIR" "$SHARE_DIR" "$UPDATES_DIR" "$BACKUP_DIR" "$PREFIX/models" "$PREFIX/skills" \
-           "$PREFIX/i18n" "$PREFIX/ui-deployments"; do
+           "$PREFIX/i18n" "$PREFIX/ui-deployments" "$PREFIX/memory"; do
     [ -e "$d" ] || continue
     chown -R root:root "$d"
     chmod -R go-w "$d"
@@ -975,6 +978,11 @@ safely. Old backups live in $BACKUP_DIR."
     fi
   fi
 
+  if ! install_memory "$root" "$backup"; then
+    restore_backup "$backup"
+    fail "could not install memory/ (YantrikDB for the harnesses); rolled back to the previous build"
+  fi
+
   # Record the new build so `check` can prove currency next time.
   cat > "$BUILD_FILE" <<EOF
 name=${artifact%.tar.zst}
@@ -1347,6 +1355,17 @@ restore_backup() {
     seal_share
   fi
   [ -f "$backup/BUILD" ] && cp -a "$backup/BUILD" "$BUILD_FILE"
+  # The YantrikDB the build had (#677), which apply moved into the backup. Only from a tree root
+  # alone could write, as the binaries: a harness install feeds these wheels to pip. A backup
+  # taken before the bundle carried memory/ has none, and the one here now stays: the older
+  # build's installers read the same paths, and none would work without it.
+  if [ -d "$backup/memory" ]; then
+    if tree_is_roots && [ -n "$(find "$backup/memory" \( ! -user root -o \( ! -type l -perm /022 \) \) -print -quit 2>/dev/null)" ]; then
+      warn "backup $backup/memory is not root's alone to write; keeping the YantrikDB installed now"
+    else
+      swap_memory "$backup/memory" || warn "could not restore memory/ from $backup; keeping the YantrikDB installed now"
+    fi
+  fi
   # A rollback moves the version backwards, so the one-line copy has to move with it.
   stamp_version_file "$PREFIX" "$(installed_version)"
   info "restored from $backup"
@@ -1632,6 +1651,73 @@ seal_share() {
   [ "$(id -u)" = 0 ] || return 0
   [ -d "$SHARE_DIR" ] || return 0
   chown -R root:root "$SHARE_DIR" && chmod -R go-w "$SHARE_DIR"
+}
+
+# YantrikDB, every mind's memory (#677): the bundle's memory/ (bake-memory.sh) at $PREFIX/memory,
+# where every harness install reads its wheels and yantrikdb-mcp. Before the bundle carried it,
+# only an imaged machine had it, and one that got its build by update (VM 520, build 1448) stopped
+# every harness install at "this image has no yantrikdb-mcp".
+#
+# install_memory ROOT BACKUP — the old tree is moved into BACKUP/memory (a rename on the same
+# disk, so it costs no space) and restore_backup puts it back with the rest of the build. A bundle
+# without memory/ (one built before this) leaves what is there alone. Returns 1 on failure, and
+# the caller rolls the whole build back.
+install_memory() {
+  local root="$1" backup="${2:-}" dest="$PREFIX/memory"
+  if [ ! -d "$root/memory" ]; then
+    warn "this build carries no memory/; harness installs use the YantrikDB already here, if any"
+    return 0
+  fi
+  swap_memory "$root/memory" "$backup" || return 1
+  local want have
+  want="$(sed -n 's/^image-python=//p' "$dest/VERSIONS" 2>/dev/null)"
+  have="$(python3 -I -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
+  if [ -n "$want" ] && [ "$want" != "$have" ]; then
+    warn "this build's yantrikdb-mcp is for Python $want and this machine's python3 is ${have:-missing}; Pi, DeepSeek and OpenClaw memory will not start"
+  fi
+  info "installed YantrikDB for the harnesses ($(head -n 1 "$dest/VERSIONS" 2>/dev/null))"
+}
+
+# swap_memory SRC [KEEP] — SRC's copy becomes $PREFIX/memory whole: copied beside it, sealed, then
+# two renames, so a harness install never reads half of one memory and half of another. The tree
+# it replaces goes to KEEP/memory when KEEP is given, and is deleted otherwise.
+#
+# Sealed as root: root:root and nothing writable by group or others, whoever owned SRC, on the
+# update path as on the ISO (build-debian-iso.sh). The harnesses run as the person and only read
+# it, so neither the person nor a harness can swap a wheel or yantrikdb-mcp under the next install.
+# The copy is a hard-link copy where it can be (a backup's tree back in place costs no space); a
+# shared file is never written, only replaced whole, and the seal applies to the backup's links too.
+swap_memory() {
+  local src="$1" keep="${2:-}" dest="$PREFIX/memory" new="$PREFIX/.memory.new" old="$PREFIX/.memory.old"
+  rm -rf "$new" "$old"
+  if ! { cp -al "$src" "$new" 2>/dev/null || { rm -rf "$new"; cp -a --no-preserve=ownership "$src" "$new"; }; }; then
+    rm -rf "$new"
+    warn "could not copy memory/ (YantrikDB for the harnesses) into place"
+    return 1
+  fi
+  if [ "$(id -u)" = 0 ]; then
+    chown -R root:root "$new" || { rm -rf "$new"; warn "could not make memory/ root's"; return 1; }
+  fi
+  # a+rX as well: tar unpacked the bundle under root's umask, and a sudo umask of 077 would leave
+  # a tree the harnesses (the person's) cannot read. Modes then match the ISO's copy of the bundle.
+  chmod -R go-w,a+rX "$new" || { rm -rf "$new"; warn "could not seal memory/"; return 1; }
+  if [ -e "$dest" ]; then
+    mv "$dest" "$old" || { rm -rf "$new"; warn "could not move the old memory/ aside"; return 1; }
+  fi
+  if ! mv "$new" "$dest"; then
+    [ -e "$old" ] && mv "$old" "$dest"
+    rm -rf "$new"
+    warn "could not put memory/ (YantrikDB for the harnesses) in place"
+    return 1
+  fi
+  if [ -e "$old" ]; then
+    if [ -n "$keep" ] && [ -d "$keep" ] && [ ! -e "$keep/memory" ] && mv "$old" "$keep/memory"; then
+      [ "$(id -u)" = 0 ] && chmod -R go-w "$keep/memory"
+    else
+      rm -rf "$old"
+    fi
+  fi
+  return 0
 }
 
 # Whether a file this updater is about to install as root came from where only root can write:
@@ -4482,6 +4568,79 @@ c.sendall((json.dumps({"ok": True, "seeded": req["rules"]}) + "\n").encode())' "
   is "blanket rule: cloud-init's for another account is not the desktop's" "no" "$(blanket_rule_in "$sd/ci-debian" asha && echo yes || echo no)"
   is "blanket rule: a file with rules for two accounts is left alone" "no" "$(blanket_rule_in "$sd/ci-both" asha && echo yes || echo no)"
   is "blanket rule: a narrow rule a person wrote is theirs" "no" "$(blanket_rule_in "$sd/own" asha && echo yes || echo no)"
+
+  # YantrikDB for the harnesses (#677): the bundle carries memory/, apply installs it whole at
+  # $PREFIX/memory, and the image takes the same tree from the bundle. VM 520 on build 1448 was
+  # updated, not imaged, had no /opt/yantrik/memory, and every harness install stopped there.
+  local mb="$root/membundle" mp="$root/memprefix" here; here="$(dirname "$SELF_PATH")"
+  mkdir -p "$mb/memory/bin" "$mb/memory/wheels" "$mb/memory/mcp/yantrikdb_mcp" "$mb/memory/mcp/yantrikdb" "$mp/memory"
+  printf '#!/bin/sh\nexec /usr/bin/python3 -I -c x "$@"\n' > "$mb/memory/bin/yantrikdb-mcp"
+  chmod 755 "$mb/memory/bin/yantrikdb-mcp"
+  for w in yantrikdb-0.23.2-cp310-abi3-x.whl yantrikdb_hermes_plugin-0.28.0-py3-none-any.whl uuid_utils-1.0.0-cp313-x.whl click-8.3.1-py3-none-any.whl; do
+    : > "$mb/memory/wheels/$w"
+  done
+  printf 'yantrikdb=0.23.2\nimage-python=0.0\n' > "$mb/memory/VERSIONS"
+  chmod -R go-w "$mb/memory"
+  printf 'old\n' > "$mp/memory/stale"
+  chmod 600 "$mb/memory/VERSIONS"; chmod 700 "$mb/memory/bin/yantrikdb-mcp" "$mb/memory/wheels"
+  is "memory: the bundle's file list passes bake-memory's check" "ok" \
+    "$(sh "$here/bake-memory.sh" --check "$mb/memory" 2>&1 && echo ok)"
+  out="$( (PREFIX="$mp"; install_memory "$mb") 2>&1 )"
+  is "memory: apply installs the bundle's memory/ at \$PREFIX/memory" "yes" \
+    "$([ -x "$mp/memory/bin/yantrikdb-mcp" ] && [ -f "$mp/memory/wheels/click-8.3.1-py3-none-any.whl" ] && echo yes || echo no)"
+  is "memory: modes are the ISO's whatever the umask (dirs 755, files 644, the launcher 755)" "755 644 755 755" \
+    "$(stat -c %a "$mp/memory/wheels" "$mp/memory/VERSIONS" "$mp/memory/bin/yantrikdb-mcp" "$mp/memory/bin" | tr '\n' ' ' | sed 's/ $//')"
+  is "memory: migrate-ownership makes memory/ root's with the rest of the tree" "yes" \
+    "$(declare -f cmd_migrate_ownership | grep -qF '"$PREFIX/memory"' && echo yes || echo no)"
+  is "memory: the old memory/ is replaced whole, not merged" "no" "$([ -e "$mp/memory/stale" ] && echo yes || echo no)"
+  is "memory: nothing is left beside it" "none" "$(find "$mp" -mindepth 1 -maxdepth 1 ! -name memory | head -n 1)$( [ -z "$(find "$mp" -mindepth 1 -maxdepth 1 ! -name memory)" ] && echo none)"
+  t "memory: a python3 the bundle was not built for is said" "is for Python 0.0" "$out"
+  is "memory: nothing in it is writable by others" "none" "$(find "$mp/memory" ! -type l -perm /022 | head -n 1 || true)$( [ -z "$(find "$mp/memory" ! -type l -perm /022 | head -n 1)" ] && echo none)"
+  rm "$mb/memory/wheels/yantrikdb_hermes_plugin-0.28.0-py3-none-any.whl"
+  t "memory: a bundle missing the Hermes provider fails the check" "no Hermes provider" \
+    "$(sh "$here/bake-memory.sh" --check "$mb/memory" 2>&1 || true)"
+  rm -rf "$mb/memory"
+  out="$( (PREFIX="$mp"; install_memory "$mb") 2>&1 )"
+  t "memory: a bundle without memory/ leaves what is there alone" "carries no memory/" "$out"
+  is "memory: ... and what was there stays" "yes" "$([ -x "$mp/memory/bin/yantrikdb-mcp" ] && echo yes || echo no)"
+  is "memory: the release bundle bakes memory/ with bake-memory.sh" "yes" \
+    "$(grep -qF -- 'bake-memory.sh" "$ROOT/memory"' "$here/build-release.sh" && echo yes || echo no)"
+  is "memory: the release bundle checks its memory/ file list" "yes" \
+    "$(grep -qF -- 'bake-memory.sh" --check "$ROOT/memory"' "$here/build-release.sh" && echo yes || echo no)"
+  is "memory: the image takes memory/ from the bundle it unpacks" "yes" \
+    "$(grep -qF -- 'cp -a "$UNPACK/memory/.' "$here/build-debian-iso.sh" && echo yes || echo no)"
+  is "memory: apply installs memory/" "yes" \
+    "$(sed -n '/^cmd_apply()/,/^}/p' "$SELF_PATH" | grep -cF 'install_memory "$root"' | grep -qx 1 && echo yes || echo no)"
+  is "memory: a failed memory install rolls the whole build back" "yes" \
+    "$(sed -n '/^cmd_apply()/,/^}/p' "$SELF_PATH" | grep -A1 -F 'if ! install_memory "$root" "$backup"' | grep -qF 'restore_backup "$backup"' && echo yes || echo no)"
+
+  # Rollback brings the previous memory/ back with the rest of the build: apply moves the tree it
+  # replaces into the backup, and restore_backup swaps it back in, sealed as on install.
+  local rb="$root/memrb" rbk
+  rbk="$rb/backups/1"
+  mkdir -p "$rb/bin" "$rb/share" "$rbk/bin" "$rb/memory/wheels"
+  printf 'x\n' > "$rbk/bin/yantrik-ui"
+  printf 'build-a\n' > "$rb/memory/VERSIONS"
+  mkdir -p "$mb/memory/bin" "$mb/memory/wheels"
+  printf 'build-b\nimage-python=0.0\n' > "$mb/memory/VERSIONS"
+  out="$( (PREFIX="$rb"; install_memory "$mb" "$rbk") 2>&1 )"
+  is "memory: apply moves the memory/ it replaces into the backup" "build-a|build-b" \
+    "$(head -n 1 "$rbk/memory/VERSIONS" 2>/dev/null)|$(head -n 1 "$rb/memory/VERSIONS" 2>/dev/null)"
+  is "memory: ... and leaves nothing beside it" "" "$(find "$rb" -mindepth 1 -maxdepth 1 -name '.memory*')"
+  ( PREFIX="$rb" BIN_DIR="$rb/bin" SHARE_DIR="$rb/share" BUILD_FILE="$rb/BUILD"; restore_backup "$rbk" ) >/dev/null 2>&1
+  is "memory: rollback restores the previous memory/" "build-a" "$(head -n 1 "$rb/memory/VERSIONS" 2>/dev/null)"
+  is "memory: ... and the backup keeps it for the next rollback" "build-a" "$(head -n 1 "$rbk/memory/VERSIONS" 2>/dev/null)"
+  is "memory: ... sealed: nothing in it writable by group or others" "" "$(find "$rb/memory" ! -type l -perm /022 | head -n 1)"
+  if [ "$(id -u)" = 0 ]; then
+    is "memory: as root the installed tree is root's" "" "$(find "$rb/memory" ! -user root | head -n 1)"
+    chmod g+w "$rbk/memory/VERSIONS"; printf 'build-c\n' > "$rb/memory/VERSIONS"
+    out="$( ( PREFIX="$rb" BIN_DIR="$rb/bin" SHARE_DIR="$rb/share" BUILD_FILE="$rb/BUILD"; restore_backup "$rbk" ) 2>&1 )"
+    is "memory: a backup memory/ others could write is not restored" "build-c" "$(head -n 1 "$rb/memory/VERSIONS")"
+    t "memory: ... and it says so" "not root's alone to write" "$out"
+  fi
+  rm -rf "$rbk/memory"; printf 'build-d\n' > "$rb/memory/VERSIONS"
+  ( PREFIX="$rb" BIN_DIR="$rb/bin" SHARE_DIR="$rb/share" BUILD_FILE="$rb/BUILD"; restore_backup "$rbk" ) >/dev/null 2>&1
+  is "memory: a backup from before memory/ shipped leaves the installed one" "build-d" "$(head -n 1 "$rb/memory/VERSIONS" 2>/dev/null)"
 
   if [ "$fails" = 0 ]; then
     printf '%sall selftest checks passed%s\n' "$c_grn" "$c_off"
