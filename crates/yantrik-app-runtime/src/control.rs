@@ -729,7 +729,14 @@ impl App {
     /// Must be called from the thread that owns the window, before `run()`. Failing to serve is
     /// not fatal: an app whose socket cannot be bound is still a working app, it is only invisible
     /// to the mind, and taking the window down over that would be the worse outcome.
-    pub fn serve(self) {
+    pub fn serve(mut self) {
+        // Every surface answers `present`, so a second launch can ask the copy that holds the
+        // single-instance slot to show its window (`present`). An app that declared its own keeps
+        // it. Not the desktop's own surface: nothing launches the shell a second time, and it has
+        // its own way to the front (`windows::raise_shell`).
+        if self.registry.app_id() != "shell" && self.registry.published_grade(crate::present::ACTION).is_none() {
+            self.registry.add(crate::present::action(), Box::new(crate::present::handle));
+        }
         let app_id = self.registry.app_id().to_string();
         let action_count = self.registry.action_count();
         REGISTRY.with(|cell| *cell.borrow_mut() = Some(self.registry));
