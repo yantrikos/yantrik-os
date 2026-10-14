@@ -92,7 +92,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     let log: Rc<RefCell<Vec<String>>> = Rc::default();
     {
         let l = log.clone();
-        ui.on_taskbar_window_clicked(move |t| l.borrow_mut().push(format!("activate:{t}")));
+        ui.on_taskbar_window_clicked(move |t, a| l.borrow_mut().push(format!("activate:{t}:{a}")));
         let l = log.clone();
         ui.on_launch_app(move |a| l.borrow_mut().push(format!("launch:{a}")));
     }
@@ -141,7 +141,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     draw();
     click(w, btn(1) as f32, row_y as f32);
     draw();
-    assert_eq!(*log.borrow(), ["launch:files", "activate:Notes window"], "a closed app launches, a single window activates");
+    assert_eq!(*log.borrow(), ["launch:files", "activate:Notes window:notes"], "a closed app launches, a single window activates");
     log.borrow_mut().clear();
     mv(w, 5.0, 300.0);
     draw();
@@ -222,7 +222,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     draw();
     click(w, term, 536.0 + 40.0 + 56.0 + 28.0);
     draw();
-    assert_eq!(*log.borrow(), ["activate:Terminal: logs"], "a click on a row activates that window: {:?}", log.borrow());
+    assert_eq!(*log.borrow(), ["activate:Terminal: logs:terminal"], "a click on a row activates that window: {:?}", log.borrow());
     log.borrow_mut().clear();
     // Click on the multi-window app opens the list and stays; Escape puts it away.
     mv(w, 5.0, 300.0);
