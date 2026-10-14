@@ -148,6 +148,8 @@ mod cheat_sheet;
 // Every key the screens advertise is bound in rc.xml, and every binding names a real action (tests only).
 #[cfg(test)]
 mod rc_keys;
+#[cfg(test)]
+mod accessible;
 mod notifications;
 // The short "Sent by … · verified" line on a notification card.
 mod notification_sender;

@@ -136,12 +136,12 @@ export component TextEditorApp inherits AppWindow {
                     x: i * (tab-bar.tab-w + tab-bar.gap); y: (parent.height - self.height) / 2;
                     width: tab-bar.tab-w; height: 38px;
                     border-radius: 7px; background: tab.active ? Theme.bg-elevated : area.has-hover ? Theme.hover-fill : transparent;
-                    area := TouchArea { clicked => { root.select-tab(i); } }
+                    area := TouchArea { accessible-role: AccessibleRole.tab; accessible-label: tab.title; accessible-action-default => { root.select-tab(i); } clicked => { root.select-tab(i); } }
                     HorizontalLayout {
                         padding-left: 10px; padding-right: 4px; spacing: 6px;
                         Text { text: tab.modified ? "●" : ""; width: 8px; color: Theme.accent; font-size: 9px; vertical-alignment: center; }
                         Text { text: tab.title; color: tab.active ? Theme.text-primary : Theme.text-secondary; font-size: 13px; overflow: elide; vertical-alignment: center; }
-                        close := TouchArea { width: 22px; clicked => { root.close-tab(i); } Text { text: "×"; color: close.has-hover ? Theme.text-primary : Theme.text-dim; horizontal-alignment: center; vertical-alignment: center; } }
+                        close := TouchArea { width: 22px; accessible-role: button; accessible-label: "Close " + tab.title; accessible-action-default => { root.close-tab(i); } clicked => { root.close-tab(i); } Text { text: "×"; color: close.has-hover ? Theme.text-primary : Theme.text-dim; horizontal-alignment: center; vertical-alignment: center; } }
                     }
                     if tab.active : Rectangle { y: parent.height - 2px; height: 2px; background: Theme.accent; }
                 }
@@ -249,7 +249,7 @@ export component TextEditorApp inherits AppWindow {
     Rectangle {
         visible:root.dialog != 0;
         background:#00000066;
-        TouchArea {}
+        TouchArea { accessible-role: none; }
         Rectangle {
             x:(parent.width - self.width)/2;y:(parent.height - self.height)/2;
             width:min(520px,root.width - 48px);height:modal.preferred-height;
