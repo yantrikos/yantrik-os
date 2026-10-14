@@ -10,8 +10,9 @@
   The same theme as the person's desktop (config/labwc/rc.xml), so a window reads as this OS's
   wherever it is drawn. What differs is deliberate:
 
-  - No <margin>. There is no status bar or taskbar in here to keep clear of.
-  - Two keybindings, not the desktop's thirty. The person's compositor sees every key first, so
+  - No <margin>. The labwc this OS ships (0.8.3) has no panel, so there is no status bar or
+    taskbar in here to keep clear of; the verbs a taskbar would carry are on the keys below.
+  - Five keybindings, not the desktop's thirty. The person's compositor sees every key first, so
     their own shortcuts — lock, screenshot, the launcher — keep working while Mind View has the
     keyboard; the only keys that reach this one are ones the person's compositor did not bind.
     Defining any <keybind> also stops labwc loading its stock set, whose Super+Return starts a
@@ -48,6 +49,17 @@
     </keybind>
     <keybind key="A-F4">
       <action name="Close" />
+    </keybind>
+    <!-- Cycle back on Ctrl+Alt+Tab: A-S-Tab is the person's own previous-window key, so it never
+         reaches this one. A-m and A-Escape are unbound on the desktop too. -->
+    <keybind key="C-A-Tab">
+      <action name="PreviousWindow" />
+    </keybind>
+    <keybind key="A-m">
+      <action name="ToggleMaximize" />
+    </keybind>
+    <keybind key="A-Escape">
+      <action name="Iconify" />
     </keybind>
   </keyboard>
 </labwc_config>

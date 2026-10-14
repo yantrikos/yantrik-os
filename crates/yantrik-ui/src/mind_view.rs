@@ -1063,4 +1063,34 @@ mod tests {
         );
         assert!(worker.contains("Some(&seat)"), "the worker launches on Mind View's seat");
     }
+
+    /// The bug: Mind View had no taskbar, so a window minimised inside it was lost and there was
+    /// no way to switch, maximise or close its windows. The labwc this OS ships has no panel, so
+    /// the verbs live on the keys; none of them may use Super, which the person's compositor owns.
+    #[test]
+    fn mind_views_windows_can_be_switched_maximised_and_minimised_by_key() {
+        let rc = include_str!("../../../config/labwc-mind/rc.xml");
+        let binding = |key: &str| {
+            let at = rc.find(&format!("<keybind key=\"{key}\">"))
+                .unwrap_or_else(|| panic!("no {key} binding in Mind View's rc.xml"));
+            rc[at..at + rc[at..].find("</keybind>").unwrap()].to_string()
+        };
+        for (key, action) in [
+            ("A-Tab", "NextWindow"),
+            ("C-A-Tab", "PreviousWindow"),
+            ("A-F4", "Close"),
+            ("A-m", "ToggleMaximize"),
+            ("A-Escape", "Iconify"),
+        ] {
+            assert!(
+                binding(key).contains(&format!("<action name=\"{action}\"")),
+                "{key} must be bound to {action}: a window with no taskbar entry needs its verbs on the keys"
+            );
+        }
+        // The person's compositor owns Super; nothing in here binds it.
+        for line in rc.lines().filter(|l| l.contains("<keybind key=\"")) {
+            let key = line.split("<keybind key=\"").nth(1).unwrap_or_default();
+            assert!(!key.starts_with("W-"), "Super belongs to the person's compositor: {line}");
+        }
+    }
 }
