@@ -132,6 +132,20 @@ fn a_wrong_or_missing_token_is_refused_before_anything_else() {
 }
 
 #[test]
+fn whoami_names_the_tokens_own_harness_and_nothing_without_one() {
+    let (g, _, pi, mind) = gateway(false);
+    let (status, body) = answer(&g, &request("GET", "/v1/whoami", Some(&mind), json!({})));
+    assert_eq!(status, 200);
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap(), json!({"harness": "mind"}), "only the harness id");
+    let (status, body) = answer(&g, &request("GET", "/v1/whoami", Some(&pi), json!({})));
+    assert_eq!((status, serde_json::from_str::<Value>(&body).unwrap()), (200, json!({"harness": "pi"})));
+    for token in [None, Some("ygw-0000"), Some(&*format!("ygw-{}", "0".repeat(64)))] {
+        assert_eq!(answer(&g, &request("GET", "/v1/whoami", token, json!({}))).0, 401, "{token:?}");
+    }
+    assert_eq!(answer(&g, &request("POST", "/v1/whoami", Some(&mind), json!({}))).0, 405);
+}
+
+#[test]
 fn each_harness_has_its_own_token_and_a_new_one_replaces_the_old() {
     let tokens = Tokens::in_memory();
     let first = mint().unwrap();

@@ -306,9 +306,17 @@ pub(crate) fn set_own_models(home: &Path, harness: &str, on: bool) -> Result<(),
 /// question, through its own adapter, keeping its own file for Revert. Idempotent: one already
 /// on the gateway, one the person gave a saved provider, and one marked "Use its own models" are
 /// left as they are. `offer` is asked for only when a write is due.
-pub(crate) fn wire_at_install(home: &Path, harness: &str, offer: impl FnOnce() -> Result<Offer, String>) -> Result<Wired, String> {
+pub(crate) fn wire_at_install(
+    home: &Path,
+    harness: &str,
+    mind_needs_model: bool,
+    offer: impl FnOnce() -> Result<Offer, String>,
+) -> Result<Wired, String> {
     let adapter = adapter_for(harness).ok_or_else(|| format!("{harness} has no model step: it keeps its own settings"))?;
-    if harness == mind::ID {
+    // The Mind keeps a provider it already has until the person chooses Use Yantrik models on its
+    // card. One that booted with none (`needs_model`, as it attached) is given the person's pick
+    // like every other mind, which is what the first run told them ("Your minds will use …").
+    if harness == mind::ID && !mind_needs_model {
         return Ok(Wired::AsksFirst);
     }
     if uses_own_models(home, harness) {

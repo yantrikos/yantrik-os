@@ -1346,6 +1346,15 @@ impl Host {
         state.attached.get(harness_id).is_some_and(|h| h.announced.handover_context)
     }
 
+    /// Whether an attached harness said it has no model to think with yet (`needs_model`), so a
+    /// first run may give it the person's pick with no question. False when nothing by that id
+    /// is attached, and for a harness that did not say: that one has a provider of its own.
+    pub fn needs_model(&self, harness_id: &str) -> bool {
+        let mut state = self.lock();
+        self.reap(&mut state);
+        state.attached.get(harness_id).is_some_and(|h| h.announced.needs_model)
+    }
+
     /// Hand a live agent's token to `f`, for the one thing the shell derives from it: the one-way
     /// digest it publishes an agent's reach under (`yantrik_ipc_transport::reach`). The token
     /// itself goes no further than `f`. `None` for an agent that is not live.

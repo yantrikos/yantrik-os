@@ -77,6 +77,12 @@ RestartSec=3
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/yantrik-mind
+# Where it binds the person's memory socket (#447): /run/yantrik-mind/<uid>, the mind account's,
+# setgid to the person's group, made at every boot by yantrik-update's tmpfiles entry, which also
+# writes the drop-in that names it (YM_MEMORY_SOCKET, YANTRIK_PERSON_UID). /run/yantrik-mind itself
+# is root's 0755, so the mind can write only its own directory under it. The `-`: a machine whose
+# updater has not made it yet starts a Mind without the socket rather than no Mind at all.
+ReadWritePaths=-/run/yantrik-mind
 ProtectHome=yes
 # The desktop's own log, memory and settings are the person's, not the mind's: the log holds what
 # they type to the built-in companion, data/ its memories, config.yaml their provider keys. Out of

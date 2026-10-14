@@ -383,13 +383,13 @@ fn an_installed_harness_is_wired_with_no_question_once_and_revert_restores_its_f
         offered += 1;
         Ok(offer())
     };
-    assert_eq!(wire_at_install(&home.0, "hermes", &mut ask).unwrap(), Wired::Now);
+    assert_eq!(wire_at_install(&home.0, "hermes", false, &mut ask).unwrap(), Wired::Now);
     assert!(uses_gateway(&home.0, "hermes"));
     let yaml: serde_yaml::Value = serde_yaml::from_str(&std::fs::read_to_string(home.0.join(".hermes/config.yaml")).unwrap()).unwrap();
     assert_eq!(yaml["model"]["default"].as_str(), Some("picked"), "its config names `picked`, never a model");
     assert!(crate::gateway::tokens().harnesses().contains(&"hermes".to_string()));
     // Idempotent: a second install asks for nothing and writes nothing.
-    assert_eq!(wire_at_install(&home.0, "hermes", &mut ask).unwrap(), Wired::Already);
+    assert_eq!(wire_at_install(&home.0, "hermes", false, &mut ask).unwrap(), Wired::Already);
     assert_eq!(offered, 1);
     revert(&home.0, "hermes").unwrap();
     assert_eq!(std::fs::read_to_string(home.0.join(".hermes/config.yaml")).unwrap(), theirs, "Revert restores the person's file");
@@ -400,12 +400,12 @@ fn use_its_own_models_puts_the_file_back_and_no_install_wires_it_again() {
     let _turn = DEEPSEEK_TOKEN.lock().unwrap_or_else(|e| e.into_inner());
     let home = Home::new("own-models");
     std::fs::write(home.deepseek(), r#"{"base_url":"https://api.deepseek.com/v1"}"#).unwrap();
-    assert_eq!(wire_at_install(&home.0, "deepseek", || Ok(offer())).unwrap(), Wired::Now);
+    assert_eq!(wire_at_install(&home.0, "deepseek", false, || Ok(offer())).unwrap(), Wired::Now);
     set_own_models(&home.0, "deepseek", true).unwrap();
     assert!(!uses_gateway(&home.0, "deepseek"));
     assert_eq!(json(&home.deepseek())["base_url"], "https://api.deepseek.com/v1");
     assert!(!crate::gateway::tokens().harnesses().contains(&"deepseek".to_string()), "its token is withdrawn");
-    assert_eq!(wire_at_install(&home.0, "deepseek", || panic!("not asked")).unwrap(), Wired::OwnModels);
+    assert_eq!(wire_at_install(&home.0, "deepseek", false, || panic!("not asked")).unwrap(), Wired::OwnModels);
     assert_eq!(row_line(&home.0, "deepseek"), "Provider: its own models (your choice)");
     // Choosing Yantrik models again lifts it.
     let plan = adapter_for("deepseek").unwrap().plan_gateway(&home.0, &offer()).unwrap();
@@ -419,8 +419,8 @@ fn a_saved_provider_the_person_chose_is_left_alone_at_install() {
     let home = Home::new("install-saved");
     let plan = adapter_for("deepseek").unwrap().plan(&home.0, &nim()).unwrap();
     apply(&home.0, &plan).unwrap();
-    assert_eq!(wire_at_install(&home.0, "deepseek", || panic!("not asked")).unwrap(), Wired::SavedProvider("NVIDIA NIM".into()));
-    assert!(wire_at_install(&home.0, "claude-code", || Ok(offer())).is_err(), "the person's own CLIs are never wired silently");
+    assert_eq!(wire_at_install(&home.0, "deepseek", false, || panic!("not asked")).unwrap(), Wired::SavedProvider("NVIDIA NIM".into()));
+    assert!(wire_at_install(&home.0, "claude-code", false, || Ok(offer())).is_err(), "the person's own CLIs are never wired silently");
 }
 
 #[test]
@@ -436,9 +436,28 @@ fn a_mind_that_does_not_take_the_offer_leaves_no_token_and_no_marker() {
 }
 
 #[test]
+fn a_mind_that_booted_with_no_model_is_given_the_pick_and_one_with_its_own_is_asked_first() {
+    // needs_model false (an older Mind, or one with a provider of its own): asked first, nothing
+    // minted. True: it is offered the gateway like any mind; with no Mind's socket here the post
+    // fails, so the install says so and leaves no token and no marker behind.
+    let home = Home::new("gw-mind-needs-model");
+    assert!(matches!(wire_at_install(&home.0, "mind", false, || panic!("not asked")).unwrap(), Wired::AsksFirst));
+    let mut asked = false;
+    let why = wire_at_install(&home.0, "mind", true, || {
+        asked = true;
+        Ok(offer())
+    })
+    .unwrap_err();
+    assert!(asked, "the offer is made");
+    assert!(why.contains("Mind"), "{why}");
+    assert!(!uses_gateway(&home.0, "mind"));
+    assert!(!crate::gateway::tokens().harnesses().contains(&"mind".to_string()));
+}
+
+#[test]
 fn an_install_never_hands_the_mind_a_model_the_person_did_not_pick_on_its_card() {
     let home = Home::new("gw-mind-install");
-    let wired = wire_at_install(&home.0, "mind", || panic!("no offer is made, so no token is minted")).unwrap();
+    let wired = wire_at_install(&home.0, "mind", false, || panic!("no offer is made, so no token is minted")).unwrap();
     assert!(matches!(wired, Wired::AsksFirst));
     assert!(!uses_gateway(&home.0, "mind"));
     assert!(!crate::gateway::tokens().harnesses().contains(&"mind".to_string()));

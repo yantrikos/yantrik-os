@@ -175,11 +175,19 @@ impl Gateway {
                 let _ = write_json(out, 200, &self.models_for(&grant));
             }
             ("POST", "/v1/chat/completions") => self.chat(&grant, req, out),
-            (_, "/v1/models") | (_, "/v1/chat/completions") => {
+            // Which harness this token is (E.SOCK2). The Mind asks it of a token it is offered
+            // before it saves it, and takes only its own: a process running as the person could
+            // otherwise hand the Mind that process's token, and the Mind's calls would then run
+            // under another harness's grant and pick. It names only the holder's own harness,
+            // which the holder of the token already is.
+            ("GET", "/v1/whoami") => {
+                let _ = write_json(out, 200, &serde_json::json!({ "harness": grant.harness }));
+            }
+            (_, "/v1/models") | (_, "/v1/chat/completions") | (_, "/v1/whoami") => {
                 let _ = write_json(out, 405, &error_body("method_not_allowed", "Not with that method."));
             }
             _ => {
-                let _ = write_json(out, 404, &error_body("not_found", "The gateway serves /v1/models and /v1/chat/completions."));
+                let _ = write_json(out, 404, &error_body("not_found", "The gateway serves /v1/models, /v1/chat/completions and /v1/whoami."));
             }
         }
     }
