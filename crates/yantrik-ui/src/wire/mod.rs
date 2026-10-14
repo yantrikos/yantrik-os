@@ -72,6 +72,7 @@ pub mod problem_report;
 pub mod version;
 pub mod ai_assist;
 pub mod ai_onboarding;
+pub mod onboarding;
 pub mod ai_provider;
 pub mod ai_status;
 pub mod harness_provider;
@@ -161,6 +162,7 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     command_palette::wire(ui, ctx);
     cross_app::wire(ui, ctx);
     ai_onboarding::wire(ui, ctx);
+    onboarding::wire(ui, ctx);
     ai_provider::wire(ui, ctx);
     decision_model::wire(ui, ctx);
     free_ai::wire(ui, ctx);

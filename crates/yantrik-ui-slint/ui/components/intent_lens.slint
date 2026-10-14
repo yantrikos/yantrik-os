@@ -1252,6 +1252,15 @@ export component IntentLens inherits Rectangle {
     callback close-lens();
     callback send-message(string);
     callback mic-pressed();
+    // The first run's first success (wire/onboarding.rs): the chat opens on one suggestion, and
+    // says "You're ready." with Done only once the mind has really answered. A reply that was an
+    // error or the not-set-up sentence keeps the person here, with the plain sentence and Try again.
+    in property <bool> first-run: false;
+    // "", "answered", "failed": what the first reply was, from Rust.
+    in property <string> first-run-outcome: "";
+    in property <string> first-run-failure: "";
+    callback first-run-done();
+    callback first-run-retry();
     // "open in Agents": the Agents screen, with this conversation's agent selected.
     callback open-in-agents();
     // "History": every conversation, on the Agents screen's All tab (#246).
@@ -2281,7 +2290,10 @@ export component IntentLens inherits Rectangle {
 
                     if root.messages.length == 0 : ChatEmpty {
                         mind-name: root.mind-name;
+                        first-run: root.first-run;
                         starter(words) => { composer.fill(words); }
+                        type-chosen => { composer.focus-input(); }
+                        talk-chosen => { root.mic-pressed(); }
                     }
 
                     transcript := ChatTranscript {
@@ -2348,6 +2360,93 @@ export component IntentLens inherits Rectangle {
                     can-view-desk: root.strip.can-view-desk;
                     view-desk => { root.view-desk(root.strip.run); }
                     view-work => { root.open-in-agents(); }
+                }
+
+                // The first reply was not an answer: the plain sentence, and Try again.
+                if root.first-run && root.first-run-outcome == "failed" && !root.is-generating : Rectangle {
+                    height: failed-row.preferred-height + 16px;
+                    border-radius: Theme.r-md;
+                    background: Theme.hover-fill;
+                    failed-row := HorizontalLayout {
+                        padding-left: Theme.sp-3; padding-right: Theme.sp-2;
+                        padding-top: 8px; padding-bottom: 8px;
+                        spacing: Theme.sp-2;
+                        Text {
+                            text: root.first-run-failure;
+                            color: Theme.color-warning;
+                            font-size: Theme.fs-body;
+                            wrap: word-wrap;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        Rectangle {
+                            width: retry-text.preferred-width + 2 * Theme.sp-3;
+                            border-radius: Theme.r-md;
+                            border-width: retry-fs.has-focus ? Theme.focus-ring-width : 1px;
+                            border-color: retry-fs.has-focus ? Theme.focus-ring : Theme.chat-border;
+                            accessible-role: button;
+                            accessible-label: "Try again";
+                            accessible-action-default => { root.first-run-retry(); }
+                            retry-fs := FocusScope {
+                                init => { self.focus(); }
+                                key-pressed(event) => {
+                                    if (event.text == "\n" || event.text == " ") { root.first-run-retry(); return accept; }
+                                    reject
+                                }
+                            }
+                            TouchArea { mouse-cursor: pointer; clicked => { root.first-run-retry(); } }
+                            retry-text := Text {
+                                text: "Try again";
+                                color: Theme.chat-text;
+                                font-size: Theme.fs-body;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // 4:30 in the first run: the closing line, once the mind has really answered.
+                if root.first-run && root.first-run-outcome == "answered" && !root.is-generating : Rectangle {
+                    height: ready-row.preferred-height + 16px;
+                    border-radius: Theme.r-md;
+                    background: Theme.hover-fill;
+                    ready-row := HorizontalLayout {
+                        padding-left: Theme.sp-3; padding-right: Theme.sp-2;
+                        padding-top: 8px; padding-bottom: 8px;
+                        spacing: Theme.sp-2;
+                        Text {
+                            text: "You\u{2019}re ready. The chat is always on the right; the microphone is in it.";
+                            color: Theme.chat-text;
+                            font-size: Theme.fs-body;
+                            wrap: word-wrap;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        Rectangle {
+                            width: done-text.preferred-width + 2 * Theme.sp-3;
+                            border-radius: Theme.r-md;
+                            border-width: done-fs.has-focus ? Theme.focus-ring-width : 1px;
+                            border-color: done-fs.has-focus ? Theme.focus-ring : Theme.chat-border;
+                            accessible-role: button;
+                            accessible-label: "Done";
+                            accessible-action-default => { root.first-run-done(); }
+                            done-fs := FocusScope {
+                                key-pressed(event) => {
+                                    if (event.text == "\n" || event.text == " ") { root.first-run-done(); return accept; }
+                                    reject
+                                }
+                            }
+                            TouchArea { mouse-cursor: pointer; clicked => { root.first-run-done(); } }
+                            done-text := Text {
+                                text: "Done";
+                                color: Theme.chat-text;
+                                font-size: Theme.fs-body;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
                 }
 
                 composer := ChatComposer {

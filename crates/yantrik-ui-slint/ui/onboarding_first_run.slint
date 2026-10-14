@@ -1,0 +1,1060 @@
+// The first run, minute by minute (design/experience-final-2026-10-10.md). Five screens:
+//
+//   1  Welcome            "Welcome to Yantrik. Make yourself at home. Your files are safe."
+//                         (and, on a first boot the installer did not set up, the person's name)
+//   2  Who thinks         named cards with honest needs; the full provider list behind them;
+//                         Connect account (browser sign-in where the provider has it, else a key
+//                         with "Show me where to find it"); then the models the account lists,
+//                         none chosen, for the person to pick; Advanced for an endpoint + model
+//                         id, and for a provider whose address has a part to fill in
+//   3  What minds share   the pre-checked sentence naming the provider, "What's shared?", and
+//                         "Keep personal things on this computer instead" (Share / Private lane / Off)
+//   4  Getting ready      three factual rows per mind, each Not checked yet → Checking (started
+//                         h:mm) → Passed / Needs attention: <reason>. No percentages, no spinners.
+//   5  Your minds         one row per mind with what was seen; Add another mind; Continue
+//
+// The first success (6) and "You're ready" (7) happen in the chat beside the desktop, not here:
+// `finished` hands over to the shell, which opens the chat in its first-run state.
+//
+// The provider is chosen once. When the installer already chose it, `installer-chose` is set and
+// Get started goes straight to 4. Nothing here names or picks a model the person did not choose:
+// the rows, cards and models say what Rust measured (wire/onboarding.rs), and Rust never invents
+// one. Escape is Back on every screen.
+//
+// Words: only the plain vocabulary of the experience doc (mind, Chat, Recorded, No thanks …).
+// Every control is a focus stop with a visible ring, Enter and Space press it, Tab walks the
+// screen in reading order, and each step puts focus on its first control. All text is sized with
+// Theme's `fs-` tokens, which follow TextScale.factor, so Make text bigger applies to everything
+// here and to the rest of the shell, live and on every later start.
+
+import { Theme, TextScale } from "theme.slint";
+
+export struct FirstRunProvider {
+    id: string,
+    // "Claude", "On this computer", "OpenRouter" …
+    name: string,
+    // One plain line: "online, careful with words".
+    line: string,
+    // The honest requirement: "needs an Anthropic account", "downloads 2.5 GB".
+    needs: string,
+    // "cloud", "aggregator", "local" (a runtime the person hosts), "this-computer"
+    group: string,
+    // What the key field shows before anything is typed; empty when no key is needed.
+    key-placeholder: string,
+    // The provider lets a person sign in with the browser instead of pasting a key.
+    browser-sign-in: bool,
+    // There is a page that shows where the key is.
+    key-help: bool,
+}
+
+// One model the connected account lists, for the person to choose. Nothing is chosen for them.
+export struct FirstRunModel {
+    id: string,              // what the provider calls it: "claude-sonnet-4-5"
+    name: string,            // what to show; the id when the provider gives no display name
+}
+
+export struct FirstRunCheck {
+    id: string,              // "answer", "remember", "desktop"
+    label: string,           // "Can it answer?"
+    state: string,           // "not-checked", "checking", "passed", "attention"
+    words: string,           // "Checking (started 2:16)", "Needs attention: the key was refused"
+    details: string,         // raw output, latency, model id — for Details
+}
+
+export struct FirstRunMind {
+    id: string,
+    name: string,            // "Yantrik Companion" (the built-in mind; the harness Mind is "Yantrik Mind")
+    words: string,           // "Ready", "Needs attention: …", "Not checked yet"
+    ok: bool,
+    checks: [FirstRunCheck],
+}
+
+// ── Controls ────────────────────────────────────────────────────────────────────────
+
+component FrButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: false;
+    in property <bool> link: false;
+    in property <bool> enabled: true;
+    callback clicked();
+    public function focus-me() { fs.focus(); }
+    out property <bool> focused: fs.has-focus;
+
+    property <float> s: TextScale.factor;
+    height: root.link ? txt.preferred-height + 8px : max(40px, txt.preferred-height + 18px);
+    min-width: root.link ? txt.preferred-width + 8px : txt.preferred-width + 36px;
+    horizontal-stretch: 0;
+    border-radius: Theme.r-md;
+    opacity: root.enabled ? 1.0 : 0.45;
+    background: root.link ? transparent
+        : root.primary ? (ta.pressed ? Theme.accent-button-pressed : ta.has-hover ? Theme.accent-button-hover : Theme.accent)
+        : (ta.pressed ? Theme.hover-fill-strong : ta.has-hover ? Theme.hover-fill : transparent);
+    border-width: fs.has-focus ? Theme.focus-ring-width : (root.primary || root.link ? 0 : 1px);
+    border-color: fs.has-focus ? Theme.focus-ring : Theme.outline-border;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+
+    fs := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == "\n" || event.text == " ") {
+                if (!event.repeat && root.enabled) { root.clicked(); }
+                return accept;
+            }
+            reject
+        }
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { fs.focus(); root.clicked(); }
+    }
+    txt := Text {
+        text: root.label;
+        color: root.primary ? Theme.text-on-accent : root.link ? Theme.accent : Theme.text-primary;
+        font-size: Theme.fs-title-2;
+        font-weight: root.primary ? 600 : 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component FrCheckbox inherits Rectangle {
+    in property <string> label;
+    in-out property <bool> checked;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+    public function focus-me() { fs.focus(); }
+
+    property <float> s: TextScale.factor;
+    height: max(lbl.preferred-height, 22px * root.s) + 12px;
+    border-radius: Theme.r-md;
+    border-width: fs.has-focus ? Theme.focus-ring-width : 0;
+    border-color: Theme.focus-ring;
+    opacity: root.enabled ? 1.0 : 0.45;
+    accessible-role: checkbox;
+    accessible-checked: root.checked;
+    accessible-label: root.label;
+    accessible-action-default => { root.flip(); }
+
+    function flip() {
+        if root.enabled {
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
+    fs := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") { if !event.repeat { root.flip(); } return accept; }
+            reject
+        }
+    }
+    TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { fs.focus(); root.flip(); } }
+    HorizontalLayout {
+        padding: 6px;
+        spacing: 12px;
+        Rectangle {
+            width: 22px * root.s;
+            height: 22px * root.s;
+            border-radius: 5px;
+            border-width: 2px;
+            border-color: root.checked ? Theme.accent : Theme.outline-border;
+            background: root.checked ? Theme.accent : transparent;
+            Text {
+                text: root.checked ? "✓" : "";
+                color: Theme.text-on-accent;
+                font-size: Theme.fs-body;
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        lbl := Text {
+            text: root.label;
+            color: Theme.text-primary;
+            font-size: Theme.fs-title-2;
+            wrap: word-wrap;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component FrField inherits Rectangle {
+    in property <string> label;
+    in property <string> placeholder;
+    in property <bool> password: false;
+    in-out property <string> value;
+    callback accepted();
+    public function focus-me() { input.focus(); }
+
+    property <float> s: TextScale.factor;
+    height: lay.preferred-height;
+    lay := VerticalLayout {
+        spacing: 6px;
+        if root.label != "" : Text {
+            text: root.label;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-body;
+        }
+        Rectangle {
+            height: input.preferred-height + 20px;
+            border-radius: Theme.r-md;
+            background: Theme.bg-input;
+            border-width: input.has-focus ? Theme.focus-ring-width : 1px;
+            border-color: input.has-focus ? Theme.focus-ring : Theme.border-default;
+            TouchArea { mouse-cursor: text; clicked => { input.focus(); } }
+            if root.value == "" : Text {
+                x: 12px;
+                text: root.placeholder;
+                color: Theme.text-dim;
+                font-size: Theme.fs-title-2;
+                vertical-alignment: center;
+                height: parent.height;
+            }
+            input := TextInput {
+                x: 12px;
+                width: parent.width - 24px;
+                height: parent.height;
+                vertical-alignment: center;
+                text <=> root.value;
+                input-type: root.password ? InputType.password : InputType.text;
+                color: Theme.text-primary;
+                font-size: Theme.fs-title-2;
+                single-line: true;
+                accessible-label: root.label != "" ? root.label : root.placeholder;
+                accepted => { root.accepted(); }
+            }
+        }
+    }
+}
+
+// One named provider. A focus stop; Enter or Space chooses it.
+component FrProviderCard inherits Rectangle {
+    in property <FirstRunProvider> p;
+    in property <bool> selected;
+    callback chosen();
+    public function focus-me() { fs.focus(); }
+
+    property <float> s: TextScale.factor;
+    height: col.preferred-height + 24px;
+    border-radius: Theme.r-lg;
+    background: root.selected ? Theme.bg-selected : ta.has-hover ? Theme.bg-elevated : Theme.bg-card;
+    border-width: fs.has-focus ? Theme.focus-ring-width : root.selected ? 2px : 1px;
+    border-color: fs.has-focus ? Theme.focus-ring : root.selected ? Theme.accent : Theme.border-default;
+    accessible-role: button;
+    accessible-label: root.p.name + ". " + root.p.line + ". " + root.p.needs;
+    accessible-checked: root.selected;
+    accessible-action-default => { root.chosen(); }
+
+    fs := FocusScope {
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") { if !event.repeat { root.chosen(); } return accept; }
+            reject
+        }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { fs.focus(); root.chosen(); } }
+    col := VerticalLayout {
+        padding-left: 16px; padding-right: 16px; padding-top: 12px; padding-bottom: 12px;
+        spacing: 4px;
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: root.p.name;
+                color: Theme.text-primary;
+                font-size: Theme.fs-title-1;
+                font-weight: 600;
+                horizontal-stretch: 1;
+                wrap: word-wrap;
+            }
+            if root.selected : Text {
+                text: "Chosen";
+                color: Theme.accent;
+                font-size: Theme.fs-body;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+        }
+        Text {
+            // "online, careful with words · needs an Anthropic account"
+            text: root.p.needs == "" ? root.p.line : root.p.line + " · " + root.p.needs;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-title-2;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// One model the account lists. A focus stop; Enter or Space chooses it.
+component FrModelRow inherits Rectangle {
+    in property <FirstRunModel> m;
+    in property <bool> selected;
+    in property <bool> enabled: true;
+    callback chosen();
+    public function focus-me() { fs.focus(); }
+
+    property <float> s: TextScale.factor;
+    height: row.preferred-height + 16px;
+    border-radius: Theme.r-md;
+    opacity: root.enabled ? 1.0 : 0.45;
+    background: root.selected ? Theme.bg-selected : ta.has-hover ? Theme.bg-elevated : Theme.bg-card;
+    border-width: fs.has-focus ? Theme.focus-ring-width : root.selected ? 2px : 1px;
+    border-color: fs.has-focus ? Theme.focus-ring : root.selected ? Theme.accent : Theme.border-default;
+    accessible-role: button;
+    accessible-label: root.m.name;
+    accessible-checked: root.selected;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.chosen(); } }
+
+    fs := FocusScope {
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") { if !event.repeat && root.enabled { root.chosen(); } return accept; }
+            reject
+        }
+    }
+    ta := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { fs.focus(); root.chosen(); } }
+    row := HorizontalLayout {
+        padding-left: 14px; padding-right: 14px; padding-top: 8px; padding-bottom: 8px;
+        spacing: 8px;
+        Text {
+            text: root.m.name;
+            color: Theme.text-primary;
+            font-size: Theme.fs-title-2;
+            horizontal-stretch: 1;
+            wrap: word-wrap;
+        }
+        if root.m.name != root.m.id : Text {
+            text: root.m.id;
+            color: Theme.text-dim;
+            font-size: Theme.fs-body;
+            vertical-alignment: center;
+        }
+        if root.selected : Text {
+            text: "Chosen";
+            color: Theme.accent;
+            font-size: Theme.fs-body;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// One factual row: "Can it answer?" … "Passed". Details holds the raw proof.
+component FrCheckRow inherits Rectangle {
+    in property <FirstRunCheck> c;
+    property <bool> open: false;
+    property <float> s: TextScale.factor;
+
+    col := VerticalLayout {
+        spacing: 4px;
+        HorizontalLayout {
+            spacing: 12px;
+            Text {
+                text: root.c.state == "passed" ? "✓" : root.c.state == "attention" ? "!" : root.c.state == "checking" ? "…" : "○";
+                color: root.c.state == "passed" ? Theme.color-success
+                    : root.c.state == "attention" ? Theme.color-warning
+                    : root.c.state == "checking" ? Theme.accent : Theme.text-dim;
+                font-size: Theme.fs-title-2;
+                font-weight: 700;
+                width: 20px * root.s;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: root.c.label;
+                color: Theme.text-primary;
+                font-size: Theme.fs-title-2;
+                width: 210px * root.s;
+            }
+            Text {
+                text: root.c.words;
+                color: root.c.state == "passed" ? Theme.color-success
+                    : root.c.state == "attention" ? Theme.color-warning
+                    : root.c.state == "checking" ? Theme.text-primary : Theme.text-dim;
+                font-size: Theme.fs-title-2;
+                horizontal-stretch: 1;
+                wrap: word-wrap;
+            }
+            if root.c.details != "" : FrButton {
+                link: true;
+                label: root.open ? "Hide details" : "Details";
+                clicked => { root.open = !root.open; }
+            }
+        }
+        if root.open : HorizontalLayout {
+            padding-left: 32px * root.s;
+            Text {
+            text: root.c.details;
+            color: Theme.text-dim;
+            font-family: Theme.font-mono;
+            font-size: Theme.fs-mono;
+            wrap: word-wrap;
+            }
+        }
+    }
+}
+
+// ── The screen ──────────────────────────────────────────────────────────────────────
+
+export component FirstRunScreen inherits Rectangle {
+    // 1 welcome, 2 who thinks, 3 what minds share, 4 getting ready, 5 your minds.
+    in-out property <int> step: 1;
+
+    // The installer already chose the provider: Get started goes to 4, and 2 and 3 are not shown.
+    in property <bool> installer-chose: false;
+    // Drawn by the installer for its "Thinking" row: only 2 and 3, and `finished` after 3 (or
+    // Not now), back to the installer. The checks run at first boot, on the installed system.
+    in property <bool> in-installer: false;
+
+    // ── 1: a first boot that did not come through the installer asks one thing: the person's
+    // name, so the minds do not call them "User". One field, and leaving it empty skips it.
+    in property <bool> ask-name: false;
+    in-out property <string> person-name: "";
+
+    // ── 2: who should do the thinking ──
+    in property <[FirstRunProvider]> featured: [];
+    // Every provider the catalogue knows, never a shortened list (the owner's standing rule).
+    in property <[FirstRunProvider]> every-provider: [];
+    in-out property <string> chosen-id: "";
+    in-out property <string> chosen-name: "";
+    // "", "key", "browser", "advanced", "this-computer"
+    in-out property <string> connect-mode: "";
+    in-out property <string> key-input: "";
+    in-out property <string> custom-url: "";
+    in-out property <string> custom-model: "";
+    in-out property <string> custom-key: "";
+    in-out property <bool> show-every: false;
+    // "", "checking", "choose-model", "connected", "attention", "pick-failed"
+    in property <string> connect-status: "";
+    // The models the connected account lists, and the one the person chose (none until they do).
+    in property <[FirstRunModel]> models: [];
+    in-out property <string> chosen-model: "";
+    in property <string> connect-words: "";
+    // The key placeholder of the chosen card, and whether it has a browser sign-in.
+    in property <string> chosen-key-placeholder: "";
+    in property <bool> chosen-browser-sign-in: false;
+    in property <bool> chosen-key-help: false;
+
+    // ── 3: what your minds share ──
+    in-out property <bool> share: true;
+    in-out property <bool> private-lane: false;
+    in-out property <bool> show-shared: false;
+    in property <[string]> shared-items: [];
+    // "Uses a 2.5 GB model on this computer. Answers may be slower." Empty: none is here or
+    // downloadable, and the offer says so rather than pretending.
+    in property <string> private-lane-words: "";
+    // The sharing choice could not be kept as chosen (a private lane with no local model to
+    // keep it): said on the checks and on Your minds, not on a screen already left behind.
+    in property <string> sharing-words: "";
+
+    // ── 4 and 5 ──
+    in property <[FirstRunMind]> minds: [];
+    in property <bool> checks-running: false;
+    in property <bool> checks-done: false;
+
+    callback text-scale-changed(float);
+    callback name-given(string);
+    callback read-aloud(string);
+    callback choose-provider(string);
+    callback sign-in-browser(string);
+    callback show-key-help(string);
+    callback submit-key(string, string);
+    callback submit-custom(string, string, string);
+    callback use-this-computer();
+    callback pick-model(string);
+    callback retry-pick();
+    callback sharing-chosen(string);   // "share", "private-lane", "off"
+    callback start-checks();
+    callback add-mind();
+    callback finished();
+
+    property <float> s: TextScale.factor;
+    background: Theme.bg-deep;
+
+    // What Read this to me says on each screen: the words on it, in reading order.
+    property <string> spoken:
+        root.step == 1 ? "Welcome to Yantrik. Make yourself at home. Your files are safe. Buttons: Make text bigger. Read this to me. "
+            + (root.ask-name ? "What should your minds call you? You can leave this empty. " : "") + "Get started."
+      : root.step == 2 ? "Who should do the thinking? Choose one. " + (root.chosen-name == "" ? "" : root.chosen-name + " is chosen. ") + "Then connect its account."
+      : root.step == 3 ? root.share-sentence + " Or keep personal things on this computer instead."
+      : root.step == 4 ? "Getting your minds ready. Each mind is checked three ways: can it answer, can it remember, can it reach the desktop."
+      : "Your minds. " + root.minds-words;
+    property <string> minds-words: root.minds.length == 0 ? "No mind is set up yet." : root.minds[0].name + ": " + root.minds[0].words + ".";
+    property <string> share-sentence: "Your minds will send what they remember about you, and where you are, to "
+        + (root.chosen-name == "" ? "your provider" : root.chosen-name) + " when they ask it something.";
+
+    function next-from-welcome() {
+        if root.ask-name && root.person-name != "" { root.name-given(root.person-name); }
+        if root.installer-chose { root.step = 4; root.start-checks(); } else { root.step = 2; }
+    }
+    function choose-another() {
+        root.connect-mode = "";
+        root.chosen-id = "";
+        root.chosen-name = "";
+        root.chosen-model = "";
+    }
+    // Escape is Back, on every screen: it never closes the first run. Step 2 with a card being
+    // connected goes back to the list first; from the installer, Back is the installer.
+    function back() {
+        if root.step == 2 {
+            if root.connect-mode != "" { root.choose-another(); }
+            else if root.in-installer { root.finished(); }
+            else { root.step = 1; }
+        } else if root.step == 3 {
+            root.step = 2;
+        } else if root.step == 4 {
+            root.step = root.installer-chose ? 1 : root.chosen-id == "" || root.connect-mode == "this-computer" ? 2 : 3;
+        } else if root.step == 5 {
+            root.step = 4;
+        }
+    }
+    function sharing-mode() -> string {
+        root.private-lane ? "private-lane" : root.share ? "share" : "off"
+    }
+
+    // A runtime the person hosts lists its models before anything focusable shows, and the card
+    // that had the focus is gone: the screen holds it, so Escape still goes back.
+    changed connect-mode => { if root.connect-mode == "local" { keys.focus(); } }
+
+    keys := FocusScope {
+        x: 0; y: 0;
+        width: root.width;
+        height: root.height;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if event.text == Key.Escape { root.back(); return accept; }
+            reject
+        }
+
+        // ── Top bar: the two helps stay on every screen ──
+        if root.step > 1 : HorizontalLayout {
+            x: 0; y: 0;
+            width: root.width;
+            height: 64px * root.s;
+            padding-left: 24px; padding-right: 24px; padding-top: 12px; padding-bottom: 12px;
+            spacing: 8px;
+            alignment: end;
+            FrButton {
+                label: root.s >= 1.5 ? "Make text smaller" : "Make text bigger";
+                clicked => {
+                    TextScale.factor = root.s >= 1.5 ? 1.0 : root.s + 0.25;
+                    root.text-scale-changed(TextScale.factor);
+                }
+            }
+            FrButton {
+                label: "Read this to me";
+                clicked => { root.read-aloud(root.spoken); }
+            }
+        }
+
+        flick := Flickable {
+            x: 0;
+            y: root.step > 1 ? 64px * root.s : 0;
+            width: root.width;
+            height: root.height - self.y;
+            viewport-height: max(self.height, page.preferred-height + 48px);
+
+            page := VerticalLayout {
+                x: max(24px, (root.width - self.width) / 2);
+                y: 24px;
+                width: min(root.width - 48px, 640px + 160px * (root.s - 1.0));
+                alignment: start;
+                spacing: 16px;
+
+                // ── 1. Welcome ──────────────────────────────────────────────────────
+                if root.step == 1 : VerticalLayout {
+                    spacing: 20px;
+                    padding-top: max(0px, (root.height - 420px * root.s) / 2);
+                    Text {
+                        text: "Welcome to Yantrik.";
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-hero;
+                        font-weight: 600;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: "Make yourself at home. Your files are safe.";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-display;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        alignment: start;
+                        bigger := FrButton {
+                            label: root.s >= 1.5 ? "Make text smaller" : "Make text bigger";
+                            init => { self.focus-me(); }
+                            clicked => {
+                                TextScale.factor = root.s >= 1.5 ? 1.0 : root.s + 0.25;
+                                root.text-scale-changed(TextScale.factor);
+                            }
+                        }
+                        FrButton {
+                            label: "Read this to me";
+                            clicked => { root.read-aloud(root.spoken); }
+                        }
+                    }
+                    if root.ask-name : FrField {
+                        label: "What should your minds call you?";
+                        placeholder: "Your name. You can leave this empty.";
+                        value <=> root.person-name;
+                        accepted => { root.next-from-welcome(); }
+                    }
+                    HorizontalLayout {
+                        alignment: start;
+                        padding-top: 12px;
+                        FrButton {
+                            primary: true;
+                            label: "Get started";
+                            clicked => { root.next-from-welcome(); }
+                        }
+                    }
+                }
+
+                // ── 2. Who should do the thinking? ──────────────────────────────────
+                if root.step == 2 : VerticalLayout {
+                    spacing: 12px;
+                    Text {
+                        text: "Who should do the thinking?";
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-page;
+                        font-weight: 600;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: "Choose one. You can add others later.";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-title-2;
+                        wrap: word-wrap;
+                    }
+                    // Once a card is chosen, the list steps aside for connecting it, so the key field
+                    // is on screen; "Choose another" brings the list back.
+                    if root.connect-mode == "" : VerticalLayout {
+                        spacing: 12px;
+                        for p[i] in root.featured : FrProviderCard {
+                            p: p;
+                            selected: p.id == root.chosen-id;
+                            init => { if i == 0 { self.focus-me(); } }
+                            chosen => { root.choose-provider(p.id); }
+                        }
+                    }
+                    if root.connect-mode != "" : HorizontalLayout {
+                        spacing: 12px;
+                        alignment: start;
+                        Text {
+                            text: "Chosen: " + root.chosen-name;
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-title-1;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                        FrButton {
+                            link: true;
+                            label: "Choose another";
+                            clicked => { root.choose-another(); }
+                        }
+                    }
+                    if root.connect-mode == "" : HorizontalLayout {
+                        alignment: start;
+                        spacing: 8px;
+                        FrButton {
+                            link: true;
+                            label: root.show-every ? "Fewer choices" : "Show every provider (" + root.every-provider.length + ")";
+                            clicked => { root.show-every = !root.show-every; }
+                        }
+                        FrButton {
+                            link: true;
+                            label: "Advanced";
+                            clicked => { root.connect-mode = "advanced"; root.chosen-id = "custom"; root.chosen-name = "your endpoint"; }
+                        }
+                    }
+                    if root.show-every && root.connect-mode == "" : VerticalLayout {
+                        spacing: 8px;
+                        for p in root.every-provider : FrProviderCard {
+                            p: p;
+                            selected: p.id == root.chosen-id;
+                            chosen => { root.choose-provider(p.id); }
+                        }
+                    }
+
+                    // Connect account — under the cards, for the chosen one.
+                    if root.connect-mode == "key" || root.connect-mode == "browser" : VerticalLayout {
+                        spacing: 10px;
+                        padding-top: 8px;
+                        Text {
+                            text: "Connect your " + root.chosen-name + " account";
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-title-1;
+                            font-weight: 600;
+                            wrap: word-wrap;
+                        }
+                        if root.chosen-browser-sign-in && root.connect-mode == "browser" : HorizontalLayout {
+                            alignment: start;
+                            spacing: 8px;
+                            FrButton {
+                                primary: true;
+                                label: "Sign in with your browser";
+                                clicked => { root.sign-in-browser(root.chosen-id); }
+                            }
+                            FrButton {
+                                link: true;
+                                label: "Paste a key instead";
+                                clicked => { root.connect-mode = "key"; }
+                            }
+                        }
+                        if root.connect-mode == "key" : VerticalLayout {
+                            spacing: 8px;
+                            key := FrField {
+                                label: "Paste a key";
+                                placeholder: root.chosen-key-placeholder;
+                                password: true;
+                                value <=> root.key-input;
+                                init => { self.focus-me(); }
+                                accepted => { root.submit-key(root.chosen-id, root.key-input); }
+                            }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                FrButton {
+                                    primary: true;
+                                    label: "Connect account";
+                                    enabled: root.key-input != "" && root.connect-status != "checking";
+                                    clicked => { root.submit-key(root.chosen-id, root.key-input); }
+                                }
+                                if root.chosen-key-help : FrButton {
+                                    link: true;
+                                    label: "Show me where to find it";
+                                    clicked => { root.show-key-help(root.chosen-id); }
+                                }
+                                if root.chosen-browser-sign-in : FrButton {
+                                    link: true;
+                                    label: "Sign in with your browser instead";
+                                    clicked => { root.connect-mode = "browser"; }
+                                }
+                            }
+                        }
+                    }
+                    if root.connect-mode == "this-computer" : HorizontalLayout {
+                        alignment: start;
+                        padding-top: 8px;
+                        FrButton {
+                            primary: true;
+                            label: "Use this computer";
+                            enabled: root.connect-status != "checking";
+                            init => { self.focus-me(); }
+                            clicked => { root.use-this-computer(); }
+                        }
+                    }
+                    if root.connect-mode == "advanced" : VerticalLayout {
+                        spacing: 8px;
+                        padding-top: 8px;
+                        Text {
+                            text: root.chosen-id == "custom" ? "Advanced: your own endpoint" : "Advanced: " + root.chosen-name;
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-title-1;
+                            font-weight: 600;
+                            wrap: word-wrap;
+                        }
+                        // A provider whose address has a part only the person knows (Cloudflare's
+                        // account id) comes here rather than to a Connect that could only fail.
+                        if root.chosen-id != "custom" : Text {
+                            text: "Its address has a part only you know. Fill in the part in braces, then the model and the key.";
+                            color: Theme.text-secondary;
+                            font-size: Theme.fs-title-2;
+                            wrap: word-wrap;
+                        }
+                        FrField {
+                            label: root.chosen-id == "custom" ? "Endpoint (OpenAI-compatible)" : "Address";
+                            placeholder: "https://example.com/v1";
+                            value <=> root.custom-url;
+                            init => { self.focus-me(); }
+                        }
+                        FrField {
+                            label: "Model id";
+                            placeholder: "the model's exact id";
+                            value <=> root.custom-model;
+                        }
+                        FrField {
+                            label: "Key (if it needs one)";
+                            placeholder: "";
+                            password: true;
+                            value <=> root.custom-key;
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            FrButton {
+                                primary: true;
+                                label: "Connect";
+                                enabled: root.custom-url != "" && root.custom-model != "" && root.connect-status != "checking";
+                                clicked => { root.submit-custom(root.custom-url, root.custom-model, root.custom-key); }
+                            }
+                        }
+                    }
+                    if root.connect-words != "" : Text {
+                        text: root.connect-words;
+                        color: root.connect-status == "connected" ? Theme.color-success
+                            : root.connect-status == "attention" || root.connect-status == "pick-failed" ? Theme.color-warning : Theme.text-secondary;
+                        font-size: Theme.fs-title-2;
+                        wrap: word-wrap;
+                    }
+                    // The models the account lists. The person chooses; nothing is chosen for them,
+                    // and every mind uses the one chosen here (changed later in Settings → AI accounts).
+                    if root.models.length > 0 && root.connect-mode != "" && root.connect-status != "connected" && root.connect-status != "pick-failed" : VerticalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Which model should your minds use?";
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-title-1;
+                            font-weight: 600;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: "These are the models your " + root.chosen-name + " account lists. You can change this later in Settings → AI accounts.";
+                            color: Theme.text-secondary;
+                            font-size: Theme.fs-title-2;
+                            wrap: word-wrap;
+                        }
+                        for m[i] in root.models : FrModelRow {
+                            m: m;
+                            selected: m.id == root.chosen-model;
+                            enabled: root.connect-status != "checking";
+                            init => { if i == 0 { self.focus-me(); } }
+                            chosen => { root.pick-model(m.id); }
+                        }
+                    }
+                    if root.connect-status == "pick-failed" : HorizontalLayout {
+                        alignment: start;
+                        FrButton {
+                            label: "Try again";
+                            init => { self.focus-me(); }
+                            clicked => { root.retry-pick(); }
+                        }
+                    }
+                    HorizontalLayout {
+                        alignment: space-between;
+                        padding-top: 12px;
+                        FrButton {
+                            link: true;
+                            label: "Not now";
+                            clicked => {
+                                if root.in-installer { root.finished(); }
+                                else { root.chosen-id = ""; root.step = 4; root.start-checks(); }
+                            }
+                        }
+                        FrButton {
+                            primary: true;
+                            label: "Continue";
+                            // Connected, and still the chosen one: "Choose another" brings the list
+                            // back, and a connection made before it is not the one on screen.
+                            enabled: root.connect-status == "connected" && root.connect-mode != "";
+                            // The model rows (or Try again) that held the focus are gone once it
+                            // connects; without this nothing has focus and Escape reaches nothing.
+                            changed enabled => { if self.enabled { self.focus-me(); } }
+                            clicked => {
+                                // A model on this computer sends nothing anywhere: no sharing question.
+                                if root.connect-mode == "this-computer" {
+                                    root.sharing-chosen("local");
+                                    if root.in-installer { root.finished(); } else { root.step = 4; root.start-checks(); }
+                                }
+                                else { root.step = 3; }
+                            }
+                        }
+                    }
+                }
+
+                // ── 3. What your minds share ────────────────────────────────────────
+                if root.step == 3 : VerticalLayout {
+                    spacing: 12px;
+                    Text {
+                        text: "What your minds share";
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-page;
+                        font-weight: 600;
+                        wrap: word-wrap;
+                    }
+                    FrCheckbox {
+                        label: root.share-sentence;
+                        checked <=> root.share;
+                        enabled: !root.private-lane;
+                        init => { self.focus-me(); }
+                    }
+                    HorizontalLayout {
+                        alignment: start;
+                        FrButton {
+                            link: true;
+                            label: root.show-shared ? "Hide what's shared" : "What's shared?";
+                            clicked => { root.show-shared = !root.show-shared; }
+                        }
+                    }
+                    if root.show-shared : VerticalLayout {
+                        spacing: 4px;
+                        padding-left: 16px;
+                        for item in root.shared-items : Text {
+                            text: "• " + item;
+                            color: Theme.text-secondary;
+                            font-size: Theme.fs-title-2;
+                            wrap: word-wrap;
+                        }
+                    }
+                    Rectangle {
+                        height: lane.preferred-height + 24px;
+                        border-radius: Theme.r-lg;
+                        background: Theme.bg-card;
+                        border-width: 1px;
+                        border-color: Theme.border-default;
+                        lane := VerticalLayout {
+                            x: 16px; y: 12px;
+                            width: parent.width - 32px;
+                            spacing: 6px;
+                            FrCheckbox {
+                                label: "Keep personal things on this computer instead";
+                                checked <=> root.private-lane;
+                                enabled: root.private-lane-words != "";
+                                // Chosen, the sharing sentence above shows unchecked: nothing about
+                                // the person goes to the provider, and the screen does not look as if it did.
+                                toggled(on) => { if on { root.share = false; } }
+                            }
+                            Text {
+                                text: root.private-lane-words != "" ? root.private-lane-words
+                                    : "No model on this computer can do this yet. You can set one up later in Settings → AI accounts.";
+                                color: Theme.text-secondary;
+                                font-size: Theme.fs-body;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                    if !root.share && !root.private-lane : Text {
+                        text: "Your minds will still answer, without what they remember about you.";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-title-2;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        alignment: space-between;
+                        padding-top: 12px;
+                        FrButton {
+                            link: true;
+                            label: "Back";
+                            clicked => { root.step = 2; }
+                        }
+                        FrButton {
+                            primary: true;
+                            label: "Continue";
+                            clicked => {
+                                root.sharing-chosen(root.sharing-mode());
+                                if root.in-installer { root.finished(); } else { root.step = 4; root.start-checks(); }
+                            }
+                        }
+                    }
+                }
+
+                // ── 4. Getting your minds ready ─────────────────────────────────────
+                if root.step == 4 : VerticalLayout {
+                    spacing: 12px;
+                    Text {
+                        text: "Getting your minds ready";
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-page;
+                        font-weight: 600;
+                        wrap: word-wrap;
+                    }
+                    for m in root.minds : Rectangle {
+                        border-radius: Theme.r-lg;
+                        background: Theme.bg-card;
+                        border-width: 1px;
+                        border-color: Theme.border-default;
+                        VerticalLayout {
+                            padding-left: 16px; padding-right: 16px; padding-top: 12px; padding-bottom: 12px;
+                            spacing: 8px;
+                            Text {
+                                text: m.name;
+                                color: Theme.text-primary;
+                                font-size: Theme.fs-title-1;
+                                font-weight: 600;
+                            }
+                            for c in m.checks : FrCheckRow { c: c; }
+                        }
+                    }
+                    if root.sharing-words != "" : Text {
+                        text: root.sharing-words;
+                        color: Theme.color-warning;
+                        font-size: Theme.fs-title-2;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: 8px;
+                        padding-top: 12px;
+                        if root.checks-done : FrButton {
+                            label: "Check again";
+                            // This button goes away while the checks run: the screen keeps the focus.
+                            clicked => { keys.focus(); root.start-checks(); }
+                        }
+                        FrButton {
+                            primary: true;
+                            label: "Continue";
+                            // The three checks cannot be skipped; once they have said what they
+                            // found, passed or not, the person goes on and the rows say what to fix.
+                            enabled: root.checks-done;
+                            // Disabled while the checks run, so the focus cannot land here yet: the
+                            // screen holds it meanwhile (Escape still goes back), and it moves here
+                            // the moment the checks have said what they found.
+                            init => { if self.enabled { self.focus-me(); } else { keys.focus(); } }
+                            changed enabled => { if self.enabled { self.focus-me(); } }
+                            clicked => { root.step = 5; }
+                        }
+                    }
+                }
+
+                // ── 5. Your minds ───────────────────────────────────────────────────
+                if root.step == 5 : VerticalLayout {
+                    spacing: 12px;
+                    Text {
+                        text: "Your minds";
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-page;
+                        font-weight: 600;
+                    }
+                    for m in root.minds : HorizontalLayout {
+                        spacing: 12px;
+                        Text {
+                            text: m.ok ? "✓" : "!";
+                            color: m.ok ? Theme.color-success : Theme.color-warning;
+                            font-size: Theme.fs-title-1;
+                            font-weight: 700;
+                            width: 24px * root.s;
+                        }
+                        Text {
+                            text: m.name + ": " + m.words;
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-title-1;
+                            horizontal-stretch: 1;
+                            wrap: word-wrap;
+                        }
+                    }
+                    if root.sharing-words != "" : Text {
+                        text: root.sharing-words;
+                        color: Theme.color-warning;
+                        font-size: Theme.fs-title-2;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        alignment: space-between;
+                        padding-top: 12px;
+                        FrButton {
+                            label: "Add another mind";
+                            clicked => { root.add-mind(); }
+                        }
+                        FrButton {
+                            primary: true;
+                            label: "Continue";
+                            init => { self.focus-me(); }
+                            clicked => { root.finished(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

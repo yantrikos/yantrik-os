@@ -95,12 +95,12 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
 
             // The installer no longer asks about AI — that is first-boot setup now (#400) —
             // but a person who tried the live desktop first may have chosen a provider there,
-            // and wire::ai_onboarding::save_primary keeps that choice in this store. Carried
+            // and the first run's provider screens (wire/onboarding.rs) keep that choice in this store. Carried
             // over when present, so a key typed in the live session is not typed twice.
             let wizard = ProviderStore::load().primary().cloned();
-            let (ai_provider, ai_base_url, ai_api_key, ai_model) = match wizard {
-                Some(p) => (p.provider_type, p.base_url, p.api_key.unwrap_or_default(), p.model),
-                None => (String::new(), String::new(), String::new(), String::new()),
+            let (ai_provider, ai_name, ai_base_url, ai_api_key, ai_model) = match wizard {
+                Some(p) => (p.provider_type, p.name, p.base_url, p.api_key.unwrap_or_default(), p.model),
+                None => (String::new(), String::new(), String::new(), String::new(), String::new()),
             };
             // The endpoint is not a secret; the key is, so only its presence is logged.
             tracing::info!(
@@ -128,6 +128,7 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
                 encrypt,
                 partition_scheme: "auto".into(),
                 ai_provider,
+                ai_name,
                 ai_base_url,
                 ai_api_key,
                 ai_model,
@@ -329,6 +330,9 @@ pub struct InstallerState {
     pub encrypt: bool,
     pub partition_scheme: String,  // "auto" or "manual"
     pub ai_provider: String,
+    /// The live entry's name. The account id is made from it (`onboarding::account_id`), and
+    /// the carried picker.json names that id, so the installed entry keeps it.
+    pub ai_name: String,
     /// The endpoint the wizard saved for the provider. Empty means nobody chose
     /// one, and the provider's well-known URL is used if a provider is set.
     pub ai_base_url: String,
@@ -880,6 +884,35 @@ fi
     Ok(())
 }
 
+/// The first run's choices, carried from the live session to the new home: the sharing choice
+/// (ai-accounts.json), the text size (first-run.json) and the one model pick for every mind
+/// (picker.json). Choices only: no key in any of them.
+pub(crate) const CARRIED_CHOICES: [&str; 3] = ["ai-accounts.json", "first-run.json", "picker.json"];
+
+/// Whether a choices file is free of anything key-like: a field named like a secret with a value,
+/// or a value shaped like a provider key. A file that is not JSON is not carried either.
+pub(crate) fn holds_no_key(text: &str) -> bool {
+    fn clean(v: &serde_json::Value) -> bool {
+        match v {
+            serde_json::Value::Object(map) => map.iter().all(|(k, v)| {
+                let k = k.to_ascii_lowercase();
+                let secret_name = ["key", "token", "secret", "password", "authorization"]
+                    .iter()
+                    .any(|w| k == *w || k.ends_with(&format!("_{w}")) || k.ends_with(&format!("-{w}")) || k == "apikey");
+                let empty = v.is_null() || v.as_str().is_some_and(|s| s.is_empty());
+                (!secret_name || empty) && clean(v)
+            }),
+            serde_json::Value::Array(a) => a.iter().all(clean),
+            serde_json::Value::String(s) => {
+                let s = s.trim();
+                !["sk-", "nvapi-", "gsk_", "hf_", "AIza", "Bearer "].iter().any(|p| s.starts_with(p))
+            }
+            _ => true,
+        }
+    }
+    serde_json::from_str::<serde_json::Value>(text).is_ok_and(|v| clean(&v))
+}
+
 /// Write AI provider config and user_name into the installed system's config.yaml,
 /// and the provider entry — key included — into the new user's providers.yaml.
 fn configure_ai(mount_dir: &str, state: &InstallerState) {
@@ -906,6 +939,22 @@ fn configure_ai(mount_dir: &str, state: &InstallerState) {
         if sudo_write(&providers_path, &yaml).is_ok() {
             // sudo tee creates the file world-readable; it holds a secret.
             let _ = run_cmd("chmod", &["600", &providers_path]);
+        }
+    }
+
+    // ── The sharing choice, the text size and the model the person picked with the provider,
+    // so the first boot does not ask again (wire/onboarding.rs). None holds a key, and one that
+    // somehow did would not be carried: the key travels only in providers.yaml, mode 600.
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+    for file in CARRIED_CHOICES {
+        if let Ok(text) = std::fs::read_to_string(format!("{home}/.config/yantrik/{file}")) {
+            if !holds_no_key(&text) {
+                tracing::warn!(file, "installer: a choices file holds something like a key; not carried");
+                continue;
+            }
+            if let Err(e) = sudo_write(&format!("{settings_dir}/{file}"), &text) {
+                tracing::warn!(file, error = %e, "installer: a first-run choice was not carried over");
+            }
         }
     }
 
@@ -1012,7 +1061,8 @@ fn installed_providers_yaml(state: &InstallerState) -> Option<String> {
     if state.ai_provider.is_empty() {
         return None;
     }
-    let (name, preset_url) = provider_preset(&state.ai_provider);
+    let (preset_name, preset_url) = provider_preset(&state.ai_provider);
+    let name = if state.ai_name.is_empty() { preset_name } else { state.ai_name.as_str() };
     let base_url = if !state.ai_base_url.is_empty() {
         state.ai_base_url.as_str()
     } else {
@@ -1524,6 +1574,29 @@ fn grub_defaults(encrypted: bool) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_install_carries_the_pick_with_the_other_choices_and_no_key() {
+        assert!(CARRIED_CHOICES.contains(&"picker.json"), "the person's model pick reaches the new home");
+        assert!(CARRIED_CHOICES.contains(&"ai-accounts.json") && CARRIED_CHOICES.contains(&"first-run.json"));
+        // Each file as its own module writes it, with a choice in it: no key.
+        let mut picks = crate::picker::choices::Choices::default();
+        picks.pick_model("", "anthropic/claude-sonnet-4-5");
+        let picker = serde_json::to_string(&picks).unwrap();
+        assert!(picker.contains("anthropic/claude-sonnet-4-5"));
+        let first_run = serde_json::to_string(&crate::wire::onboarding::Saved { text_scale: 1.25, sharing: "share".into(), ..Default::default() }).unwrap();
+        let mut consent = crate::ai_accounts::consent::Consent::default();
+        consent.lane = Some("on-this-computer/qwen".into());
+        let accounts = serde_json::to_string(&consent).unwrap();
+        for text in [&picker, &first_run, &accounts] {
+            assert!(holds_no_key(text), "{text}");
+        }
+        // And one that somehow held a key is not carried.
+        assert!(!holds_no_key(r#"{"model":"a/b","api_key":"x"}"#));
+        assert!(!holds_no_key(r#"{"minds":{"m":{"model":"sk-ant-api03-abc"}}}"#));
+        assert!(!holds_no_key("not json"));
+        assert!(holds_no_key(r#"{"api_key":""}"#), "an empty field holds nothing");
+    }
+
     /// The image's own /opt/yantrik/config.yaml, as shipped: it names no model.
     const IMAGE_CONFIG: &str = include_str!("../../../../deploy/yantrik-os/config-default.yaml");
 
@@ -1581,6 +1654,33 @@ mod tests {
         let yaml = installed_providers_yaml(&state).expect("a chosen provider produces a store");
         let store: ProviderStore = serde_yaml::from_str(&yaml).expect("valid YAML");
         assert_eq!(store.primary().expect("primary").model, "anthropic/claude-sonnet-5-5");
+    }
+
+    /// The carried picker.json names the live account by id, and the id is made from the
+    /// entry's name: the installed entry keeps that name, or the pick points at nothing.
+    #[test]
+    fn the_installed_account_keeps_the_live_id() {
+        let mut state = wizard_state("llamacpp", "http://127.0.0.1:8080/v1", "");
+        state.ai_name = "On this computer".into();
+        state.ai_model = "qwen3.5-4b".into();
+        let live = ProviderStoreEntry {
+            id: "llamacpp-onboarding".into(),
+            name: state.ai_name.clone(),
+            provider_type: state.ai_provider.clone(),
+            base_url: state.ai_base_url.clone(),
+            api_key: None,
+            auth_type: String::new(),
+            is_primary: true,
+            is_fallback: false,
+            model: state.ai_model.clone(),
+        };
+        let yaml = installed_providers_yaml(&state).expect("a chosen provider produces a store");
+        let store: ProviderStore = serde_yaml::from_str(&yaml).expect("valid YAML");
+        let installed = store.primary().expect("primary");
+        assert_eq!(
+            crate::wire::onboarding::account_id(installed),
+            crate::wire::onboarding::account_id(&live),
+        );
     }
 
     #[test]

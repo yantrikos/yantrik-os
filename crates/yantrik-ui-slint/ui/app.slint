@@ -7,7 +7,7 @@
 //   29=spreadsheet, 30=document_editor, 31=presentation.
 // The AI IS the shell — Intent Lens is the primary interaction.
 
-import { Theme, ThemeMode, ThemeOverrides, AccentPreset } from "theme.slint";
+import { Theme, ThemeMode, ThemeOverrides, AccentPreset, TextScale } from "theme.slint";
 // A window frame's glyph wears its app's colour from the one table, not the minds' teal.
 import { AppColor } from "components/app_color.slint";
 // The letter on an unknown app's tile, answered from Rust (wire/mod.rs).
@@ -21,7 +21,10 @@ import { TodayState, TodayEvent } from "components/bar/today_state.slint";
 import { CalendarDay } from "components/month_grid.slint";
 export { TodayState, TodayEvent, CalendarDay }
 import { BootScreen, BootStage } from "boot.slint";
-import { OnboardingScreen } from "onboarding.slint";
+// The first boot is the first run (design/experience-final-2026-10-10.md); onboarding.slint
+// is no longer mounted.
+import { FirstRunScreen, FirstRunProvider, FirstRunModel, FirstRunCheck, FirstRunMind } from "onboarding_first_run.slint";
+export { FirstRunProvider, FirstRunModel, FirstRunCheck, FirstRunMind, TextScale }
 import { InstallerScreen, InstallerDisk, InstallerSegment, InstallerTargetDisk, KeyboardChoice } from "installer.slint";
 export { InstallerDisk, InstallerSegment, InstallerTargetDisk, KeyboardChoice }
 export { DecisionPreset, DecisionUse, ThemeCardData } from "settings.slint";
@@ -1357,6 +1360,67 @@ export component App inherits Window {
     in-out property <bool> onboard-encrypt: true;
     callback onboard-install-reboot();
 
+    // The first run (onboarding_first_run.slint, wired by wire/onboarding.rs).
+    in-out property <int> fr-step: 1;
+    in property <bool> fr-installer-chose: false;
+    // A first boot that did not come through the installer asks the person's name (wire/onboarding.rs).
+    in property <bool> fr-ask-name: false;
+    in property <[FirstRunProvider]> fr-featured: [];
+    in property <[FirstRunProvider]> fr-every-provider: [];
+    in-out property <string> fr-chosen-id: "";
+    in-out property <string> fr-chosen-name: "";
+    in-out property <string> fr-connect-mode: "";
+    in-out property <string> fr-key-input: "";
+    in-out property <string> fr-custom-url: "";
+    in-out property <string> fr-custom-model: "";
+    in-out property <string> fr-custom-key: "";
+    in-out property <bool> fr-show-every: false;
+    in property <string> fr-connect-status: "";
+    in property <string> fr-connect-words: "";
+    in property <[FirstRunModel]> fr-models: [];
+    in-out property <string> fr-chosen-model: "";
+    in property <string> fr-chosen-key-placeholder: "";
+    in property <bool> fr-chosen-browser-sign-in: false;
+    in property <bool> fr-chosen-key-help: false;
+    in-out property <bool> fr-share: true;
+    in-out property <bool> fr-private-lane: false;
+    in-out property <bool> fr-show-shared: false;
+    in property <[string]> fr-shared-items: [];
+    in property <string> fr-private-lane-words: "";
+    in property <string> fr-sharing-words: "";
+    in property <[FirstRunMind]> fr-minds: [];
+    in property <bool> fr-checks-running: false;
+    in property <bool> fr-checks-done: false;
+    // The first success, in the chat beside the desktop: 1 while it waits for it, 0 after.
+    in-out property <int> fr-chat: 0;
+    // What the first reply was ("", "answered", "failed") and, when it failed, the sentence.
+    in property <string> fr-chat-outcome: "";
+    in property <string> fr-chat-failure: "";
+    callback fr-chat-retry();
+    // The installer's "Thinking" row opened the first run's provider screens over it.
+    in-out property <bool> fr-in-installer: false;
+    // What the installer's row shows: "Claude", or empty when nothing is chosen yet.
+    in property <string> fr-installer-choice: "";
+    callback fr-installer-done();
+    callback fr-text-scale-changed(float);
+    callback fr-read-aloud(string);
+    callback fr-choose-provider(string);
+    callback fr-sign-in-browser(string);
+    callback fr-show-key-help(string);
+    callback fr-submit-key(string, string);
+    callback fr-submit-custom(string, string, string);
+    callback fr-use-this-computer();
+    callback fr-pick-model(string);
+    callback fr-retry-pick();
+    // Bumped when the provider screens drawn over the installer close: focus goes back to its
+    // Thinking row.
+    in-out property <int> fr-installer-returned: 0;
+    callback fr-sharing-chosen(string);
+    callback fr-start-checks();
+    callback fr-add-mind();
+    callback fr-finished();
+    callback fr-chat-done();
+
     // AI onboarding setup (V59)
     in property <bool> onboard-ai-hw-cpu-ok: false;
     in property <bool> onboard-ai-hw-ram-ok: false;
@@ -1369,16 +1433,7 @@ export component App inherits Window {
     in property <string> onboard-ai-hw-gpu-label: "";
     in property <string> onboard-ai-hw-disk-label: "";
     in property <string> onboard-ai-hw-recommend: "local";
-    in property <string> onboard-ai-test-status: "";
-    in property <string> onboard-ai-test-model: "";
-    in property <int> onboard-ai-test-latency-ms: 0;
-    in property <string> onboard-ai-test-privacy: "local";
-    callback onboard-ai-mode-selected(string);
     in property <[ProviderPresetData]> onboard-ai-cloud-presets: [];
-    callback onboard-ai-provider-selected(string);
-    callback onboard-ai-api-key-submitted(string, string);
-    callback onboard-ai-test-connection();
-    callback onboard-ai-skip-setup();
 
     // V61 — Runtime provider state (status bar + quick switcher)
     in property <string> ai-privacy-mode: "local";   // "local", "cloud", "hybrid"
@@ -1516,67 +1571,80 @@ export component App inherits Window {
             boot-complete => { root.boot-complete(); }
         }
 
-        // Onboarding (first boot only)
-        if current-screen == 2 && !root.onboard-installer-mode : OnboardingScreen {
+        // The first run (first boot only): five screens, then the first success in the chat.
+        if current-screen == 2 && (!root.onboard-installer-mode || root.fr-in-installer) : FirstRunScreen {
             width: 100%; height: 100%;
-            ambient-interval-ms: root.ambient-interval-ms;
-            companion-name: root.settings-companion-name;
-            after-install: root.onboard-after-install;
-            hw-note: root.onboard-hw-note;
-            // AI hardware scan properties
-            ai-hw-cpu-ok: root.onboard-ai-hw-cpu-ok;
-            ai-hw-ram-ok: root.onboard-ai-hw-ram-ok;
-            ai-hw-gpu-ok: root.onboard-ai-hw-gpu-ok;
-            ai-hw-disk-ok: root.onboard-ai-hw-disk-ok;
-            ai-hw-network-ok: root.onboard-ai-hw-network-ok;
-            ai-hw-runtime-ok: root.onboard-ai-hw-runtime-ok;
-            ai-hw-cpu-label: root.onboard-ai-hw-cpu-label;
-            ai-hw-ram-label: root.onboard-ai-hw-ram-label;
-            ai-hw-gpu-label: root.onboard-ai-hw-gpu-label;
-            ai-hw-disk-label: root.onboard-ai-hw-disk-label;
-            ai-hw-recommend: root.onboard-ai-hw-recommend;
-            ai-test-status: root.onboard-ai-test-status;
-            ai-test-model: root.onboard-ai-test-model;
-            ai-test-latency-ms: root.onboard-ai-test-latency-ms;
-            ai-test-privacy: root.onboard-ai-test-privacy;
-            ai-cloud-presets: root.onboard-ai-cloud-presets;
-            set-names(user-name, comp-name) => {
-                if user-name != "" {
-                    root.rename-user(user-name);
-                    root.settings-user-name = user-name;
+            in-installer: root.onboard-installer-mode;
+            step <=> root.fr-step;
+            installer-chose: root.fr-installer-chose;
+            ask-name: root.fr-ask-name;
+            name-given(n) => {
+                root.rename-user(n);
+                root.settings-user-name = n;
+            }
+            featured: root.fr-featured;
+            every-provider: root.fr-every-provider;
+            chosen-id <=> root.fr-chosen-id;
+            chosen-name <=> root.fr-chosen-name;
+            connect-mode <=> root.fr-connect-mode;
+            key-input <=> root.fr-key-input;
+            custom-url <=> root.fr-custom-url;
+            custom-model <=> root.fr-custom-model;
+            custom-key <=> root.fr-custom-key;
+            show-every <=> root.fr-show-every;
+            connect-status: root.fr-connect-status;
+            connect-words: root.fr-connect-words;
+            models: root.fr-models;
+            chosen-model <=> root.fr-chosen-model;
+            chosen-key-placeholder: root.fr-chosen-key-placeholder;
+            chosen-browser-sign-in: root.fr-chosen-browser-sign-in;
+            chosen-key-help: root.fr-chosen-key-help;
+            share <=> root.fr-share;
+            private-lane <=> root.fr-private-lane;
+            show-shared <=> root.fr-show-shared;
+            shared-items: root.fr-shared-items;
+            private-lane-words: root.fr-private-lane-words;
+            sharing-words: root.fr-sharing-words;
+            minds: root.fr-minds;
+            checks-running: root.fr-checks-running;
+            checks-done: root.fr-checks-done;
+            text-scale-changed(f) => { root.fr-text-scale-changed(f); }
+            read-aloud(t) => { root.fr-read-aloud(t); }
+            choose-provider(id) => { root.fr-choose-provider(id); }
+            sign-in-browser(id) => { root.fr-sign-in-browser(id); }
+            show-key-help(id) => { root.fr-show-key-help(id); }
+            submit-key(id, key) => { root.fr-submit-key(id, key); }
+            submit-custom(url, model, key) => { root.fr-submit-custom(url, model, key); }
+            use-this-computer => { root.fr-use-this-computer(); }
+            pick-model(m) => { root.fr-pick-model(m); }
+            retry-pick => { root.fr-retry-pick(); }
+            sharing-chosen(mode) => { root.fr-sharing-chosen(mode); }
+            start-checks => { root.fr-start-checks(); }
+            add-mind => { root.fr-add-mind(); }
+            finished => {
+                if root.onboard-installer-mode {
+                    root.fr-in-installer = false;
+                    root.fr-installer-returned += 1;
+                    root.fr-installer-done();
+                } else {
+                    root.current-screen = 1;
+                    root.navigate(1);
+                    root.fr-finished();
                 }
-                if comp-name != "" {
-                    root.rename-companion(comp-name);
-                    root.settings-companion-name = comp-name;
-                }
-            }
-            set-profile(interests, home-loc, notif-pref) => {
-                root.onboarding-set-profile(interests, home-loc, notif-pref);
-            }
-            ai-mode-selected(mode) => { root.onboard-ai-mode-selected(mode); }
-            ai-provider-selected(provider) => { root.onboard-ai-provider-selected(provider); }
-            ai-api-key-submitted(provider, key) => { root.onboard-ai-api-key-submitted(provider, key); }
-            ai-test-connection => { root.onboard-ai-test-connection(); }
-            ai-skip-setup => { root.onboard-ai-skip-setup(); }
-            phase <=> root.onboard-phase;
-            input-user-name <=> root.onboard-input-full-name;
-            input-companion-name <=> root.onboard-input-companion;
-            input-home-location <=> root.onboard-input-location;
-            ready => {
-                root.current-screen = 1;
-                root.navigate(1);
-                root.onboarding-ready();
-            }
-            skip => {
-                root.current-screen = 1;
-                root.navigate(1);
-                root.onboarding-skip();
             }
         }
 
         // The installer (live ISO booted to install): four screens, then the install (#400).
         if current-screen == 2 && root.onboard-installer-mode : InstallerScreen {
             width: 100%; height: 100%;
+            // Hidden, not removed, while the provider screens are over it: what was typed stays.
+            visible: !root.fr-in-installer;
+            ai-choice: root.fr-installer-choice;
+            ai-returned: root.fr-installer-returned;
+            choose-ai => {
+                root.fr-step = 2;
+                root.fr-in-installer = true;
+            }
             step <=> root.onboard-phase;
             keyboards: root.onboard-keyboards;
             keyboard <=> root.onboard-keyboard;
@@ -1800,6 +1868,11 @@ export component App inherits Window {
             // Callbacks
             send-message(text) => { root.send-message(text); }
             mic-pressed => { root.mic-pressed(); }
+            first-run-chat: root.fr-chat > 0;
+            first-run-chat-outcome: root.fr-chat-outcome;
+            first-run-chat-failure: root.fr-chat-failure;
+            first-run-chat-done => { root.fr-chat-done(); }
+            first-run-chat-retry => { root.fr-chat-retry(); }
             launch-app(app-id) => { root.launch-app(app-id); }
             navigate-to(screen) => {
                 root.current-screen = screen;

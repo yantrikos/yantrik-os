@@ -152,13 +152,34 @@ component LinkText inherits Rectangle {
     in property <string> text;
     in property <bool> active: false;
     in property <bool> strong: false;
+    // A focus stop of its own (Tab, Enter, Space), with a ring. Off for the links that sit
+    // beside a field whose own keys already reach them.
+    in property <bool> focusable: false;
+    // Each change puts focus here: how a screen drawn over this one hands focus back.
+    in property <int> focus-when: 0;
     callback clicked();
-    width: label.preferred-width;
-    height: label.preferred-height;
+    width: label.preferred-width + (root.focusable ? 8px : 0);
+    height: label.preferred-height + (root.focusable ? 4px : 0);
+    border-radius: 4px;
+    border-width: fs.has-focus ? Theme.focus-ring-width : 0;
+    border-color: Theme.focus-ring;
+    accessible-role: button;
+    accessible-action-default => { root.clicked(); }
+    accessible-label: root.text;
+    changed focus-when => { if root.focusable { fs.focus(); } }
+    fs := FocusScope {
+        enabled: root.focusable;
+        key-pressed(event) => {
+            if (event.text == "\n" || event.text == " ") { if !event.repeat { root.clicked(); } return accept; }
+            reject
+        }
+    }
     label := Text {
+        x: root.focusable ? 4px : 0;
         text: root.text;
         color: root.strong || root.active || touch.has-hover ? Theme.accent : Theme.text-secondary;
         font-size: Theme.fs-caption;
+        vertical-alignment: center;
     }
     touch := TouchArea {
         mouse-cursor: pointer;
@@ -343,6 +364,13 @@ export component InstallerScreen inherits Rectangle {
                              /* keyboard */ string, /* timezone */ string,
                              /* target_disk */ string, /* encrypt */ bool);
     callback reboot();
+    // Who should do the thinking: the full provider selection, the first run's own screens
+    // (onboarding_first_run.slint) drawn over this one. Chosen here, the first boot does not
+    // ask again. Empty: not chosen, and the first boot asks.
+    in property <string> ai-choice: "";
+    // Bumped when the provider screens close: focus comes back to the Thinking row's link.
+    in property <int> ai-returned: 0;
+    callback choose-ai();
 
     // ── The rules (installer_rules.rs); each check answers "" when the value is fine ──
     pure callback derive-username(string) -> string;
@@ -1228,6 +1256,37 @@ export component InstallerScreen inherits Rectangle {
                                 placeholder: "Region/City, e.g. Europe/Berlin";
                                 error: root.timezone-error;
                                 accepted => { if root.timezone-error == "" { root.timezone-editing = false; } }
+                            }
+
+                            HorizontalLayout {
+                                spacing: Theme.sp-3;
+                                Text {
+                                    text: "Thinking";
+                                    width: 130px;
+                                    color: Theme.text-dim;
+                                    font-size: Theme.fs-body;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: root.ai-choice != "" ? root.ai-choice : "Not chosen yet; asked at first start";
+                                    horizontal-stretch: 1;
+                                    color: root.ai-choice != "" ? Theme.text-primary : Theme.text-secondary;
+                                    font-size: Theme.fs-body;
+                                    font-weight: root.ai-choice != "" ? 500 : 400;
+                                    horizontal-alignment: right;
+                                    vertical-alignment: center;
+                                    wrap: word-wrap;
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    LinkText {
+                                        text: root.ai-choice != "" ? "Change" : "Choose";
+                                        strong: true;
+                                        focusable: true;
+                                        focus-when: root.ai-returned;
+                                        clicked => { root.choose-ai(); }
+                                    }
+                                }
                             }
 
                             Rectangle { height: 1px; background: Theme.separator; }
