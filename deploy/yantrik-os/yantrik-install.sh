@@ -375,9 +375,12 @@ chown -R "$UID_NUM:$GID_NUM" "$UHOME"
 ok "Desktop configured"
 
 # ── 12. Auto-login ──
+# Quietly, as the desktop installer does (installer.rs, AUTOLOGIN_FLAGS): no issue, hostname or
+# "automatic login" line from agetty, and with ~/.hushlogin no motd or last login from login.
 mkdir -p "$M/etc/systemd/system/getty@tty1.service.d"
-printf '[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin %s --noclear %%I $TERM\n' "$USERNAME" \
+printf '[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin %s --skip-login --noissue --nohostname --nonewline %%I $TERM\n' "$USERNAME" \
     > "$M/etc/systemd/system/getty@tty1.service.d/autologin.conf"
+touch "$UHOME/.hushlogin" && chown "$UID_NUM:$GID_NUM" "$UHOME/.hushlogin"
 printf 'd /run/user/%s 0700 %s %s -\n' "$UID_NUM" "$USERNAME" "$USERNAME" \
     > "$M/etc/tmpfiles.d/yantrik-xdg.conf"
 
@@ -447,7 +450,13 @@ step "Installing bootloader..."
 # This installer never encrypts, so there is nothing to ask for at boot: the desktop installer's
 # unencrypted line (installer_unlock.rs, cmdline_default(false)). plymouth is in the image for the
 # encrypted pre-boot screen and stays off here; `splash` would start it at every boot and shutdown.
-printf 'GRUB_DEFAULT=0\nGRUB_TIMEOUT=3\nGRUB_DISTRIBUTOR="Yantrik OS"\nGRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3 plymouth.enable=0"\nGRUB_CMDLINE_LINUX=""\n' > "$M/etc/default/grub"
+printf 'GRUB_DEFAULT=0\nGRUB_TIMEOUT=3\nGRUB_DISTRIBUTOR="Yantrik OS"\nGRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3 plymouth.enable=0"\nGRUB_CMDLINE_LINUX=""\nGRUB_TERMINAL_OUTPUT="gfxterm"\nGRUB_GFXMODE=auto\n' > "$M/etc/default/grub"
+# The boot menu's theme, as the desktop installer copies it (installer.rs, install_grub_theme).
+if [ -f "$M/usr/share/yantrik/grub-theme/theme.txt" ]; then
+    mkdir -p "$M/boot/grub/themes" && rm -rf "$M/boot/grub/themes/yantrik" \
+        && cp -a "$M/usr/share/yantrik/grub-theme" "$M/boot/grub/themes/yantrik" \
+        && echo 'GRUB_THEME="/boot/grub/themes/yantrik/theme.txt"' >> "$M/etc/default/grub"
+fi
 
 if $IS_EFI; then
     # Two installs, as the desktop installer does (crates/yantrik-ui/src/wire/installer.rs). The

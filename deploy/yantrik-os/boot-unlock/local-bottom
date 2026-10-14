@@ -11,7 +11,8 @@
 # it always has.
 #
 # Never a marker when the root could have been opened without the person at the keyboard: a key
-# file or another keyscript in crypttab, clevis (TPM, network), or a remote unlock over dropbear.
+# file or another keyscript in crypttab, clevis (TPM, network), or a remote unlock over an SSH
+# server in the initramfs (dropbear, tinyssh, openssh).
 PREREQ=""
 prereqs() { echo "$PREREQ"; }
 case "${1:-}" in prereqs) prereqs; exit 0 ;; esac
@@ -38,9 +39,16 @@ person_only_crypttab() {
 }
 
 # Anything in this initramfs that could feed the disk a key without a person typing it here.
+#
+# Not cryptroot-unlock. cryptsetup-initramfs puts it in every initramfs that has cryptsetup's
+# askpass, which is every one this keyscript is in, and listing it here meant no installed machine
+# ever got a marker: the person typed the password at the pre-boot screen and again at the lock
+# screen. By itself it only hands a passphrase to a prompt that is already asking, from a shell
+# inside the initramfs; nobody gets such a shell without the keyboard (and then the person is
+# there) or one of the SSH servers below, which are what is checked.
 other_unlockers() {
-    for f in usr/bin/clevis bin/clevis usr/sbin/dropbear sbin/dropbear bin/cryptroot-unlock \
-             usr/bin/cryptroot-unlock lib/cryptsetup/scripts/decrypt_keyctl; do
+    for f in usr/bin/clevis bin/clevis usr/sbin/dropbear sbin/dropbear usr/sbin/tinysshd sbin/tinysshd \
+             usr/sbin/sshd sbin/sshd lib/cryptsetup/scripts/decrypt_keyctl; do
         [ -e "$ROOT/$f" ] && return 0
     done
     ls "$ROOT"/scripts/local-top/*clevis* >/dev/null 2>&1 && return 0

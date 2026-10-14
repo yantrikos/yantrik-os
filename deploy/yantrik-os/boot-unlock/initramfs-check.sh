@@ -123,6 +123,15 @@ for applet in awk grep sed mv mkdir chmod cat; do
         && ok "$applet for the marker" || bad "$applet for the marker"
 done
 lacks "boot-unlock\.conf|shadow" "nothing about the account's password goes in"
+# The marker script run over this real initramfs, as the initramfs runs it. The selftest's
+# hand-made initramfs lacked what cryptsetup adds by itself (cryptroot-unlock), and the marker
+# script counted that as a remote unlock: a real one never left a marker, so every installed
+# machine asked for the password twice.
+mkdir -p "$T/run/yantrik-unlock"; : > "$T/run/yantrik-unlock/asked"; : > "$T/mapper"
+YANTRIK_UNLOCK_RUN="$T/run/yantrik-unlock" YANTRIK_UNLOCK_INITRD="$ROOT" YANTRIK_UNLOCK_MAPPER="$T/mapper" \
+    busybox sh "$ROOT/scripts/local-bottom/yantrik-unlock"
+[ -f "$T/run/yantrik-unlock/typed" ] && ok "a typed unlock leaves the signed-in marker in a real initramfs" \
+    || bad "a typed unlock leaves the signed-in marker in a real initramfs"
 
 echo "── text (no label plugin)"
 label=""

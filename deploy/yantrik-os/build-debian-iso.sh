@@ -419,6 +419,15 @@ sudo chroot "$ROOTFS" getent group yantrik-boot-unlock >/dev/null \
     || fail "group yantrik-boot-unlock missing from the image — the boot-unlock socket would not start"
 ok "Pre-boot unlock screen, keyscript and signed-in marker staged"
 
+# ── The boot menu's theme ──
+# Made here once, from the image's own DejaVu Sans: the live image's menu is copied from it below,
+# and the installer copies it to the installed machine's /boot/grub/themes/yantrik. Without it
+# GRUB draws with its built-in ASCII font, and every box line and dash was a missing glyph.
+sudo sh "$SCRIPT_DIR/stage-grub-theme.sh" "$ROOTFS/usr/share/yantrik/grub-theme" \
+        "$ROOTFS/usr/share/fonts/truetype/dejavu" \
+    || fail "stage-grub-theme.sh failed — the boot menu would be drawn in missing-glyph boxes"
+ok "Boot menu theme staged, with fonts that draw it"
+
 # ── The live system's shutdown says nothing about removing its medium ──
 # live-tools' system-shutdown hook ejected the disk the medium is on and waited for ENTER after
 # "Please remove the live-medium". On a Mac the installer is a partition of the internal disk
@@ -1073,11 +1082,20 @@ ok "labwc + foot configured"
 # ── Auto-login via systemd ──
 # Override getty@tty1 to auto-login as yantrik and start labwc
 sudo mkdir -p "$ROOTFS/etc/systemd/system/getty@tty1.service.d"
+# Nothing on the screen before the desktop: no /etc/issue ("Debian GNU/Linux 13"), no hostname,
+# no "login: yantrik (automatic login)", and the boot's leftover lines cleared (no --noclear).
+# The same flags as the installer writes (installer.rs, AUTOLOGIN_FLAGS). The kernel's console
+# and the serial line keep their text; only the screen the person looks at is quiet.
 sudo tee "$ROOTFS/etc/systemd/system/getty@tty1.service.d/autologin.conf" > /dev/null <<'AUTOLOGIN'
 [Service]
 ExecStart=
-ExecStart=-/sbin/agetty --autologin yantrik --noclear %I $TERM
+ExecStart=-/sbin/agetty --autologin yantrik --skip-login --noissue --nohostname --nonewline %I $TERM
 AUTOLOGIN
+# And nothing from login itself: with ~/.hushlogin it opens the session silently (PAM_SILENT), so
+# neither the motd ("ABSOLUTELY NO WARRANTY", the kernel's uname) nor the last login is printed.
+# In /etc/skel too, so an account the installer makes starts with it.
+sudo touch "$ROOTFS/home/yantrik/.hushlogin" "$ROOTFS/etc/skel/.hushlogin"
+sudo chown 1000:1000 "$ROOTFS/home/yantrik/.hushlogin"
 
 # .bash_profile — auto-start labwc on tty1, with installer mode + crash guard
 sudo tee "$ROOTFS/home/yantrik/.bash_profile" > /dev/null <<'PROFILE'
@@ -1117,7 +1135,7 @@ if [ "$(tty)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
             echo
             echo "  labwc (Wayland compositor) crashed on startup."
             echo "  Common fixes:"
-            echo "    1. Reboot and select 'Safe Mode' from the menu"
+            echo "    1. Reboot and choose 'Install Yantrik OS with safe graphics' from the menu"
             echo "    2. Check GPU: lspci | grep -i vga"
             echo "    3. Try: WLR_RENDERER_ALLOW_SOFTWARE=1 labwc"
             echo "    4. View logs: cat /opt/yantrik/logs/labwc.log"
@@ -1477,14 +1495,27 @@ sudo mksquashfs "$ROOTFS" "$ISO_DIR/live/filesystem.squashfs" \
 ok "Squashfs created ($(du -h "$ISO_DIR/live/filesystem.squashfs" | cut -f1))"
 
 # ── GRUB config (BIOS + EFI) ──
+# The menu's theme and fonts, made into the image above (stage-grub-theme.sh).
+sudo mkdir -p "$ISO_DIR/boot/grub/themes"
+sudo cp -a "$ROOTFS/usr/share/yantrik/grub-theme" "$ISO_DIR/boot/grub/themes/yantrik"
 sudo tee "$ISO_DIR/boot/grub/grub.cfg" > /dev/null <<'GRUBCFG'
 set timeout=5
 set default=0
 
 insmod all_video
 insmod gfxterm
+insmod gfxmenu
+insmod png
 set gfxmode=auto
+# The theme's fonts first, so the terminal draws with DejaVu Sans rather than GRUB's built-in
+# font, which has ASCII and nothing else; then GRUB's own unicode font behind them.
+loadfont /boot/grub/themes/yantrik/dejavusans_16.pf2
+loadfont /boot/grub/themes/yantrik/dejavusans_20.pf2
+loadfont /boot/grub/themes/yantrik/dejavusans_bold_28.pf2
+loadfont unicode
 terminal_output gfxterm
+set theme=/boot/grub/themes/yantrik/theme.txt
+export theme
 
 # Speak on the serial line AS WELL AS the screen, and accept input from both.
 # `--append`, so this adds the serial line to the screen rather than replacing it.
@@ -1501,28 +1532,36 @@ terminal_input --append serial
 set menu_color_normal=cyan/black
 set menu_color_highlight=white/blue
 
+# Entry names in plain words and in ASCII: the serial line, and a GRUB without the theme, draw
+# them too (stage-grub-theme.sh selftest holds every menuentry in this script to it).
+#
 # `yantrik.install=true` is what .bash_profile reads to put the Slint onboarding into
 # installer mode. Both entries used to pass it, so there was no way to boot this image and
 # simply try the desktop — an ISO that can only be installed is one nobody evaluates first.
+#
+# The screen is quiet in the first three: `loglevel=3` keeps the kernel's lines below errors off
+# it, and `live-config.nottyautologin` stops live-config's own tty autologin, whose drop-in sorts
+# after the image's and would put back the banner and "login: yantrik (automatic login)". The
+# image's own autologin on tty1 is what starts the desktop.
 menuentry "Install Yantrik OS" {
-    linux /live/vmlinuz boot=live yantrik.install=true live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 plymouth.enable=0 quiet
+    linux /live/vmlinuz boot=live yantrik.install=true live-config.username=yantrik live-config.user-fullname=yantrik live-config.nottyautologin console=tty1 console=ttyS0,115200 plymouth.enable=0 quiet loglevel=3
     initrd /live/initrd
 }
 
-menuentry "Try Yantrik OS (live, no install)" {
-    linux /live/vmlinuz boot=live live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 plymouth.enable=0 quiet
+menuentry "Try Yantrik OS without installing" {
+    linux /live/vmlinuz boot=live live-config.username=yantrik live-config.user-fullname=yantrik live-config.nottyautologin console=tty1 console=ttyS0,115200 plymouth.enable=0 quiet loglevel=3
     initrd /live/initrd
 }
 
-menuentry "Install Yantrik OS (Safe Mode — software rendering)" {
-    linux /live/vmlinuz boot=live yantrik.install=true live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 plymouth.enable=0 nomodeset quiet
+menuentry "Install Yantrik OS with safe graphics" {
+    linux /live/vmlinuz boot=live yantrik.install=true live-config.username=yantrik live-config.user-fullname=yantrik live-config.nottyautologin console=tty1 console=ttyS0,115200 plymouth.enable=0 nomodeset quiet loglevel=3
     initrd /live/initrd
 }
 
 # No `quiet`, so the kernel and systemd say what they are doing on the serial line. This is
 # the entry a bug report is made from, and the one an automated boot check selects.
-menuentry "Try Yantrik OS (verbose, serial console)" {
-    linux /live/vmlinuz boot=live live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 plymouth.enable=0 nomodeset systemd.log_level=info
+menuentry "Try Yantrik OS, showing every boot message" {
+    linux /live/vmlinuz boot=live live-config.username=yantrik live-config.user-fullname=yantrik live-config.nottyautologin console=tty1 console=ttyS0,115200 plymouth.enable=0 nomodeset systemd.log_level=info
     initrd /live/initrd
 }
 GRUBCFG

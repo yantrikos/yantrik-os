@@ -136,9 +136,9 @@ The boot menu has four entries:
 | Entry | What it does |
 |---|---|
 | **Install Yantrik OS** | Boots live *and* puts first-run setup into installer mode, so it offers to write to a disk at the end |
-| **Try Yantrik OS (live, no install)** | Boots live. Nothing offers to touch a disk |
-| **Install Yantrik OS (Safe Mode)** | The same as the first, with `nomodeset` — use this if the screen stays black |
-| **Try Yantrik OS (verbose, serial console)** | No `quiet`, so the kernel and systemd say what they are doing. This is the entry to boot from when you are filing a bug |
+| **Try Yantrik OS without installing** | Boots live. Nothing offers to touch a disk |
+| **Install Yantrik OS with safe graphics** | The same as the first, with `nomodeset` — use this if the screen stays black |
+| **Try Yantrik OS, showing every boot message** | No `quiet`, so the kernel and systemd say what they are doing (on the serial line too). This is the entry to boot from when you are filing a bug |
 
 Either way the machine boots to a live desktop first. Nothing is written to any disk until
 you tell the installer to erase one.
@@ -326,7 +326,7 @@ desktop through the same path a person uses. See [app-control.md](app-control.md
 
 ### Black screen after boot
 
-Boot the **Safe Mode** entry, which adds `nomodeset`. If you have installed to disk already,
+Boot the **Install Yantrik OS with safe graphics** entry, which adds `nomodeset`. If you have installed to disk already,
 the renderer settings are in `~/.config/labwc/environment` —
 `WLR_RENDERER=pixman`, `LIBGL_ALWAYS_SOFTWARE=1` and `SLINT_BACKEND=winit` are what a machine
 with no usable GPU wants.

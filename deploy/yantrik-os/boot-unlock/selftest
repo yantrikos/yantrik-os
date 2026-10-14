@@ -10,7 +10,7 @@
 #     up and the console prompt, with the same words, when it is not or when it fails;
 #   - the password goes to the keyscript's standard output and is written nowhere else;
 #   - the marker is written only after a person was asked, the root is open, and crypttab and the
-#     initramfs leave no other way in (key file, other keyscript, clevis, dropbear); root's only;
+#     initramfs leave no other way in (key file, other keyscript, clevis, an SSH server); root's only;
 #   - the session's helper answers `typed <user>` once, to that account only, in the boot that
 #     wrote the marker, within its window, while the disk's LUKS header still has only the one
 #     keyslot enrolled and no token; `no` to everything else; an unused marker expires;
@@ -107,10 +107,14 @@ for case in \
     initrd "${case#*|}"; : > "$T/run/yantrik-unlock/asked"; bottom
     check "${case%%|*}: no marker" '[ ! -e "$T/run/yantrik-unlock/typed" ]'
 done
-for other in usr/bin/clevis usr/sbin/dropbear bin/cryptroot-unlock scripts/local-top/clevis; do
+for other in usr/bin/clevis usr/sbin/dropbear usr/sbin/tinysshd usr/sbin/sshd scripts/local-top/clevis; do
     initrd "$GOOD" "$other"; : > "$T/run/yantrik-unlock/asked"; bottom
     check "$other in the initramfs: no marker" '[ ! -e "$T/run/yantrik-unlock/typed" ]'
 done
+# cryptsetup-initramfs adds cryptroot-unlock to every initramfs with its askpass. Counted as a way
+# in, it kept every installed machine from ever starting signed in (13 Oct 2026).
+initrd "$GOOD" usr/bin/cryptroot-unlock bin/cryptroot-unlock; : > "$T/run/yantrik-unlock/asked"; bottom
+check "cryptroot-unlock, which cryptsetup puts in every initramfs, still leaves the marker" '[ -f "$T/run/yantrik-unlock/typed" ]'
 initrd "$GOOD
 $GOOD"; : > "$T/run/yantrik-unlock/asked"; bottom
 check "two crypttab lines for the root: no marker" '[ ! -e "$T/run/yantrik-unlock/typed" ]'

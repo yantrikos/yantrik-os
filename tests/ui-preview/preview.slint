@@ -669,6 +669,7 @@ export component InstallerProbe inherits Window {
     in property <bool> boot-first-offered;
     in-out property <bool> boot-first;
     out property <bool> disk-ok: screen.disk-ok;
+    in-out property <bool> encrypt: true;
     in-out property <string> timezone;
     in-out property <bool> installing;
     in-out property <int> install-progress;
@@ -692,6 +693,7 @@ export component InstallerProbe inherits Window {
     pure callback check-timezone(string) -> string;
     pure callback is-macos-disk(string, string) -> bool;
     pure callback target-listed(string, string) -> bool;
+    pure callback layout-after([KeyboardChoice], string, int) -> string;
 
     screen := InstallerScreen {
         width: 100%; height: 100%;
@@ -720,6 +722,7 @@ export component InstallerProbe inherits Window {
         install-target <=> root.install-target;
         boot-first-offered: root.boot-first-offered;
         boot-first <=> root.boot-first;
+        encrypt <=> root.encrypt;
         timezone <=> root.timezone;
         installing <=> root.installing;
         install-progress <=> root.install-progress;
@@ -738,6 +741,7 @@ export component InstallerProbe inherits Window {
         check-timezone(t) => { return root.check-timezone(t); }
         is-macos-disk(d, l) => { return root.is-macos-disk(d, l); }
         target-listed(t, l) => { return root.target-listed(t, l); }
+        layout-after(c, k, by) => { return root.layout-after(c, k, by); }
     }
 }
 

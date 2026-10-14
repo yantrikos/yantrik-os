@@ -3,7 +3,7 @@
 //! This runs the same operations as the text-based `yantrik-install` script but
 //! from within the Slint UI (installer.slint), reporting progress back via a callback.
 
-use slint::{ComponentHandle, ModelRc, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::process::Command;
 
 use crate::app_context::AppContext;
@@ -217,6 +217,10 @@ fn wire_rules(ui: &App) {
     });
     ui.on_installer_is_macos_disk(|disk, list| installer_rules::disk_in_list(&disk, &list));
     ui.on_installer_target_listed(|target, list| installer_rules::disk_in_list(&target, &list));
+    ui.on_installer_layout_after(|choices, current, step| {
+        let codes: Vec<String> = choices.iter().map(|c| c.code.to_string()).collect();
+        installer_rules::layout_after(&codes, &current, step).into()
+    });
 }
 
 /// What the installer finds before anyone asks: the disks, the keyboard in use, and where the
@@ -628,9 +632,13 @@ fn install_to_target(
         ),
     );
 
+    // The boot menu's theme, from the image (stage-grub-theme.sh) to /boot, where GRUB can read it
+    // on an encrypted install too: /usr is inside the encryption, /boot is not.
+    let themed = install_grub_theme(mount_dir);
+
     // Configure GRUB defaults. The kernel's line is installer_unlock's: the pre-boot screen on an
     // encrypted install, and the quiet that keeps kernel lines off the password prompt.
-    let _ = sudo_write(&format!("{mount_dir}/etc/default/grub"), &grub_defaults(layout.encrypted()));
+    let _ = sudo_write(&format!("{mount_dir}/etc/default/grub"), &grub_defaults(layout.encrypted(), themed));
 
     progress(85, "Updating GRUB configuration...");
     // grub-mkconfig names the root by UUID only once udev has made its /dev/disk/by-uuid link,
@@ -851,6 +859,10 @@ fi
         "installed\n",
     )?;
 
+    // login opens the session silently with this (PAM_SILENT): no motd, no kernel version, no
+    // "ABSOLUTELY NO WARRANTY" and no last login on the screen before the desktop.
+    sudo_write(&format!("{dst_home}/.hushlogin"), "")?;
+
     // Fix ownership of everything in home
     let _ = chroot_cmd(mount_dir, &["chown", "-R", &format!("{username}:{username}"), &format!("/home/{username}")]);
 
@@ -870,16 +882,11 @@ fi
 
     // /opt/yantrik is made root's right after this returns (installer_ownership.rs, #397).
 
-    // Autologin to start labwc + yantrik-ui automatically (no TTY shown to user).
-    // Yantrik UI shows its own graphical login screen (screen 32) for authentication.
+    // Autologin on tty1 starts the session, which starts behind the lock screen or signed in by
+    // the disk's password (session_lock.rs). Quietly: see AUTOLOGIN_FLAGS, and .hushlogin below.
     let autologin_dir = format!("{mount_dir}/etc/systemd/system/getty@tty1.service.d");
     let _ = run_cmd("mkdir", &["-p", &autologin_dir]);
-    let _ = sudo_write(
-        &format!("{autologin_dir}/autologin.conf"),
-        &format!(
-            "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin {username} --noclear %I $TERM\n"
-        ),
-    );
+    let _ = sudo_write(&format!("{autologin_dir}/autologin.conf"), &autologin_dropin(username));
 
     Ok(())
 }
@@ -1554,6 +1561,42 @@ fn fallback_candidate(name: &str, dtype: &str, ro: &str, rm: &str, live: Option<
         && live != Some(name)
 }
 
+/// How agetty logs the account in on tty1, without a word on the screen: no /etc/issue (it said
+/// "Debian GNU/Linux 13"), no hostname, no "login: <name> (automatic login)", and the boot's
+/// leftover lines cleared. The live image's drop-in (build-debian-iso.sh) and the text installer's
+/// (yantrik-install.sh) use the same flags.
+const AUTOLOGIN_FLAGS: &str = "--skip-login --noissue --nohostname --nonewline";
+
+/// The getty@tty1 drop-in that logs `username` in at boot.
+fn autologin_dropin(username: &str) -> String {
+    format!("[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin {username} {AUTOLOGIN_FLAGS} %I $TERM\n")
+}
+
+/// Where the image keeps the boot menu's theme, and where the installed machine's GRUB reads it.
+const GRUB_THEME_SOURCE: &str = "/usr/share/yantrik/grub-theme";
+const GRUB_THEME_DIR: &str = "/boot/grub/themes/yantrik";
+
+/// Copy the boot menu's theme into the installed /boot. False when the image has none or the copy
+/// fails: GRUB then draws its plain menu, in GRUB's own unicode font, and the install goes on.
+fn install_grub_theme(mount_dir: &str) -> bool {
+    let source = format!("{mount_dir}{GRUB_THEME_SOURCE}");
+    if !std::path::Path::new(&format!("{source}/theme.txt")).is_file() {
+        tracing::warn!("Installer: the image has no boot menu theme; the plain menu it is");
+        return false;
+    }
+    let target = format!("{mount_dir}{GRUB_THEME_DIR}");
+    let copied = run_cmd("mkdir", &["-p", &format!("{mount_dir}/boot/grub/themes")])
+        .and_then(|_| run_cmd("rm", &["-rf", &target]))
+        .and_then(|_| run_cmd("cp", &["-a", &source, &target]));
+    match copied {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!(error = %e, "Installer: could not copy the boot menu theme; the plain menu it is");
+            false
+        }
+    }
+}
+
 /// /etc/default/grub for an installed machine.
 ///
 /// The kernel's console is the screen only. The live image also says `console=ttyS0`, because the
@@ -1563,9 +1606,14 @@ fn fallback_candidate(name: &str, dtype: &str, ro: &str, rm: &str, live: Option<
 /// fresh-install VM (12 Oct). GRUB keeps its serial terminal, which costs nothing without a port,
 /// so a machine that does have one still shows the boot menu there; add `console=ttyS0,115200` to
 /// GRUB_CMDLINE_LINUX by hand to debug one over serial.
-fn grub_defaults(encrypted: bool) -> String {
+///
+/// The screen is gfxterm, not the firmware's console, so the menu is drawn with a font that has
+/// its characters (GRUB's unicode font, or the theme's) and, `themed`, in the theme the live
+/// image's menu has.
+fn grub_defaults(encrypted: bool, themed: bool) -> String {
+    let theme = if themed { format!("GRUB_THEME=\"{GRUB_THEME_DIR}/theme.txt\"\n") } else { String::new() };
     format!(
-        "GRUB_DEFAULT=0\nGRUB_TIMEOUT=3\nGRUB_DISTRIBUTOR=\"Yantrik OS\"\nGRUB_CMDLINE_LINUX_DEFAULT=\"{}\"\nGRUB_CMDLINE_LINUX=\"console=tty1\"\nGRUB_TERMINAL=\"console serial\"\nGRUB_SERIAL_COMMAND=\"serial --speed=115200\"\n",
+        "GRUB_DEFAULT=0\nGRUB_TIMEOUT=3\nGRUB_DISTRIBUTOR=\"Yantrik OS\"\nGRUB_CMDLINE_LINUX_DEFAULT=\"{}\"\nGRUB_CMDLINE_LINUX=\"console=tty1\"\nGRUB_TERMINAL_INPUT=\"console serial\"\nGRUB_TERMINAL_OUTPUT=\"gfxterm serial\"\nGRUB_GFXMODE=auto\nGRUB_SERIAL_COMMAND=\"serial --speed=115200\"\n{theme}",
         installer_unlock::cmdline_default(encrypted)
     )
 }
@@ -1948,18 +1996,49 @@ mod tests {
 
 #[cfg(test)]
 mod grub_defaults_tests {
-    use super::grub_defaults;
+    use super::{autologin_dropin, grub_defaults, AUTOLOGIN_FLAGS};
 
     /// No serial console on the kernel's line of an installed machine: without a port, systemd's
     /// serial login prompt failed and restarted every ten seconds for as long as it ran.
     #[test]
     fn an_installed_machine_has_no_serial_console_on_its_kernel_line() {
         for encrypted in [false, true] {
-            let text = grub_defaults(encrypted);
+            let text = grub_defaults(encrypted, true);
             let line = text.lines().find(|l| l.starts_with("GRUB_CMDLINE_LINUX=")).expect("the line");
             assert_eq!(line, "GRUB_CMDLINE_LINUX=\"console=tty1\"", "{text}");
             assert!(!text.contains("ttyS0"), "{text}");
             assert!(text.contains("GRUB_CMDLINE_LINUX_DEFAULT=\""), "the unlock screen's own line is still there");
+        }
+    }
+
+    /// The installed menu is drawn in the theme, on gfxterm, when the theme was copied, and on
+    /// gfxterm in GRUB's unicode font when it was not: never the firmware console's.
+    #[test]
+    fn an_installed_machine_draws_its_boot_menu_in_the_theme_when_it_has_one() {
+        let themed = grub_defaults(true, true);
+        assert!(themed.lines().any(|l| l == "GRUB_THEME=\"/boot/grub/themes/yantrik/theme.txt\""), "{themed}");
+        let plain = grub_defaults(true, false);
+        assert!(!plain.contains("GRUB_THEME"), "{plain}");
+        for text in [themed, plain] {
+            assert!(text.lines().any(|l| l == "GRUB_TERMINAL_OUTPUT=\"gfxterm serial\""), "{text}");
+            assert!(!text.lines().any(|l| l.starts_with("GRUB_TERMINAL=")), "GRUB_TERMINAL would override both: {text}");
+            assert!(text.is_ascii(), "{text}");
+        }
+    }
+
+    /// Nothing on tty1 before the desktop, on the live image and on both installers' machines.
+    #[test]
+    fn every_autologin_on_tty1_is_quiet_and_the_same() {
+        let dropin = autologin_dropin("ada");
+        assert!(dropin.contains("--autologin ada --skip-login --noissue --nohostname --nonewline %I"), "{dropin}");
+        assert!(!dropin.contains("--noclear"), "the boot's leftover lines are cleared: {dropin}");
+        let iso = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/yantrik-os/build-debian-iso.sh"));
+        let text = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/yantrik-os/yantrik-install.sh"));
+        for (name, script) in [("build-debian-iso.sh", iso), ("yantrik-install.sh", text)] {
+            let lines: Vec<&str> = script.lines().filter(|l| l.contains("agetty --autologin")).collect();
+            assert_eq!(lines.len(), 1, "{name}: {lines:?}");
+            assert!(lines[0].contains(AUTOLOGIN_FLAGS) && !lines[0].contains("--noclear"), "{name}: {}", lines[0]);
+            assert!(script.contains(".hushlogin"), "{name} leaves login's motd and last login on the screen");
         }
     }
 }

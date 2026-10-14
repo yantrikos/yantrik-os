@@ -1333,6 +1333,7 @@ export component App inherits Window {
     pure callback installer-check-timezone(string) -> string;
     pure callback installer-is-macos-disk(string, string) -> bool;
     pure callback installer-target-listed(string, string) -> bool;
+    pure callback installer-layout-after([KeyboardChoice], string, int) -> string;
 
     // The onboarding form, mirrored up to the window so the control surface can read and fill
     // it. `OnboardingScreen` lives inside a conditional element, so Rust cannot reach into it;
@@ -1700,6 +1701,7 @@ export component App inherits Window {
             check-timezone(timezone) => { return root.installer-check-timezone(timezone); }
             is-macos-disk(disk, list) => { return root.installer-is-macos-disk(disk, list); }
             target-listed(target, list) => { return root.installer-target-listed(target, list); }
+            layout-after(choices, current, by) => { return root.installer-layout-after(choices, current, by); }
         }
 
         // Lock screen
