@@ -2,7 +2,8 @@
 // Shows the usage-derived level, how it was counted, and the plain counts it was counted from.
 // Headed "Interaction history", not "Bond", and the level labelled as derived from use (review of
 // the UI overhaul by GPT-6 Astra, H): it counts conversation, and says nothing about whether a
-// mind understands the person, can be relied on, or may do anything. The scoring is unchanged.
+// mind understands the person, can be relied on, or may do anything. #753 later took the streak
+// and the disclosure out of the scoring, and the tally of disclosures off this screen with them.
 
 import { Theme } from "theme.slint";
 import { Icons } from "components/icon.slint";
@@ -130,8 +131,6 @@ export component BondScreen inherits Rectangle {
                                 "How this is counted:",
                                 "Each conversation turn adds 0.01 to a score.",
                                 "A longer message adds up to 0.03 more.",
-                                "One that says how you feel (\"I'm worried\", \"I miss…\") adds 0.05 more.",
-                                "The first turn of each day in a run of days adds up to 0.035 more.",
                                 "Laughing at a joke (\"haha\", \"lol\") adds 0.02.",
                                 "The score stops at 5.0 and sets the level:",
                                 "Stranger below 0.5, Acquaintance below 1.5, Friend below 2.5, Confidant below 3.5, Partner-in-Crime from 3.5.",
@@ -228,28 +227,10 @@ export component BondScreen inherits Rectangle {
                                     font-size: Theme.font-small;
                                 }
                             }
-                        }
 
-                        // Row 3
-                        HorizontalLayout {
-                            spacing: 16px;
-
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                Text {
-                                    text: data.vulnerability-events;
-                                    color: Theme.text-primary;
-                                    font-size: Theme.fs-display;
-                                    font-weight: 600;
-                                }
-                                // A plain count of what the scoring counted, not a stage reached.
-                                Text {
-                                    text: "messages that said how you felt";
-                                    color: Theme.text-secondary;
-                                    font-size: Theme.font-small;
-                                }
-                            }
-
+                            // The tally of messages that said how you felt stood here until #753
+                            // took it off: a count of the person's disclosures, shown back to them,
+                            // reads as a score for opening up. shared refs moved up into this row.
                             VerticalLayout {
                                 horizontal-stretch: 1;
                                 Text {

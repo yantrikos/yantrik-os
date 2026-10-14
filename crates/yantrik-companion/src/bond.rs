@@ -1,7 +1,10 @@
 //! Bond tracking — measures and evolves the relationship between companion and user.
 //!
-//! Bond score grows through interaction signals: frequency, depth, vulnerability,
-//! memory callbacks, and daily streaks. Bond level unlocks personality behaviors:
+//! Bond score grows through interaction signals: frequency, depth, and memory
+//! callbacks. A daily streak and emotional disclosure no longer pay — the bond is
+//! not a game the person is being scored at, and disclosure is not a currency
+//! (#753). Both are still counted in the store, as facts rather than rewards.
+//! Bond level unlocks personality behaviors:
 //!
 //! | Level | Score   | Name             | Behavior                                    |
 //! |-------|---------|------------------|---------------------------------------------|
@@ -185,13 +188,14 @@ impl BondTracker {
         let mem_bonus = (memories_recalled.min(3) as f64) * 0.01;
         delta += mem_bonus;
 
-        // Vulnerability detection
+        // Vulnerability detection — counted, never rewarded (#753): disclosure
+        // is not a currency, so the match only feeds the store count and the
+        // logged event, not the score.
         let user_lower = user_text.to_lowercase();
         let is_vulnerable = VULNERABILITY_PATTERNS
             .iter()
             .any(|p| user_lower.contains(p));
         if is_vulnerable {
-            delta += 0.05;
             Self::log_event(conn, "vulnerability", delta, "{}");
             conn.execute(
                 "UPDATE bond_state SET vulnerability_events = vulnerability_events + 1 WHERE id = 1",
@@ -220,10 +224,12 @@ impl BondTracker {
             )
             .ok();
 
-        let (new_streak, streak_bonus) = match last_date {
+        // The streak is counted and stored, but buys no score (#753) — a run
+        // of days is not a reason the relationship is deeper.
+        let new_streak = match last_date {
             Some(ref d) if d == &today => {
                 // Same day — no streak change
-                (old_state.current_streak_days, 0.0)
+                old_state.current_streak_days
             }
             Some(ref d) => {
                 // Check if yesterday
@@ -231,15 +237,13 @@ impl BondTracker {
                     .format("%Y-%m-%d")
                     .to_string();
                 if d == &yesterday {
-                    let new = old_state.current_streak_days + 1;
-                    (new, 0.005 * new.min(7) as f64) // Streak bonus caps at 7 days
+                    old_state.current_streak_days + 1
                 } else {
-                    (1, 0.0) // Streak broken
+                    1 // Streak broken
                 }
             }
-            None => (1, 0.0), // First interaction
+            None => 1, // First interaction
         };
-        delta += streak_bonus;
 
         // Compute new score (capped at 5.0)
         let new_score = (old_state.bond_score + delta).min(5.0);
@@ -499,6 +503,67 @@ mod tests {
         assert!(
             (last - two_days_ago).abs() < 1.0,
             "the last interaction was two days ago and reads as two days ago, got {last}"
+        );
+    }
+
+    #[test]
+    fn a_message_about_feelings_earns_no_more_than_one_without() {
+        // "i feel awful about this" used to grow the score 0.05 ahead of a
+        // message of the same length that said nothing: emotional disclosure
+        // was a currency (#753).
+        let score_of = |text: &str| {
+            let conn = conn_with_first_interaction(None);
+            BondTracker::score_interaction(&conn, text, "ok", 0);
+            BondTracker::get_state(&conn).bond_score
+        };
+        let disclosed = score_of("i feel awful about this");
+        let plain = score_of("i ran the tests on this");
+        assert!(
+            disclosed <= plain,
+            "saying how you feel grew the score {disclosed} against {plain} \
+             for a message of the same length"
+        );
+
+        // The count stays: the store may hold the fact, it just buys nothing.
+        let conn = conn_with_first_interaction(None);
+        BondTracker::score_interaction(&conn, "i feel awful about this", "ok", 0);
+        assert_eq!(BondTracker::get_state(&conn).vulnerability_events, 1);
+    }
+
+    #[test]
+    fn a_day_in_a_run_adds_no_more_than_a_day_on_its_own() {
+        // The first turn of each day in a run used to add 0.005 * streak
+        // (capped at 7 days): the streak was a game the person kept score
+        // in, not a fact about use (#753).
+        let seed = |last_date: &str| {
+            let conn = conn_with_first_interaction(None);
+            conn.execute(
+                "UPDATE bond_state SET current_streak_days = 6, last_interaction_date = ?1 WHERE id = 1",
+                params![last_date],
+            )
+            .unwrap();
+            BondTracker::score_interaction(&conn, "still here", "ok", 0);
+            conn
+        };
+
+        let yesterday = (chrono::Utc::now() - chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+        let conn = seed(&yesterday);
+        let after_new_day = BondTracker::get_state(&conn).bond_score;
+        assert_eq!(
+            BondTracker::get_state(&conn).current_streak_days, 7,
+            "the streak is still counted, it just no longer pays"
+        );
+
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let conn = seed(&today);
+        let after_same_day = BondTracker::get_state(&conn).bond_score;
+
+        assert!(
+            after_new_day <= after_same_day,
+            "a day in a run grew the score {after_new_day} against {after_same_day} \
+             for a turn on the same day"
         );
     }
 
