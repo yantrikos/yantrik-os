@@ -302,6 +302,18 @@ class ProofTests(MemoryCase):
         (config / "pi.json").write_text('{"memory": "yantrikdb"}')
         self.assertIsNone(proofs.harness_wiring("pi"))
 
+    def test_mind_without_its_service_running_is_said(self):
+        # The Mind's memory waits under the Mind's own account; the proof is its service state.
+        row = proofs.prove_remember("mind", mind_up=lambda: False)
+        self.assertFalse(row["ok"])
+        self.assertEqual(row["says"], "no memory: the Mind's memory service is not running")
+        self.assertEqual(row["fix"], proofs.restart_fix("mind"))
+
+    def test_mind_with_its_service_running_keeps_the_says_it_always_printed(self):
+        row = proofs.prove_remember("mind", mind_up=lambda: True)
+        self.assertTrue(row["ok"])
+        self.assertEqual(row["says"], "memory · YantrikDB (the Mind's own)")
+
     def test_no_memory_in_the_image_is_a_failure_that_says_install_again(self):
         row = proofs.remember_through_mcp("pi", command=[str(self.work / "nothing")], env={})
         self.assertFalse(row["ok"])

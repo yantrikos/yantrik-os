@@ -379,7 +379,21 @@ def harness_wiring(harness: str, run: Callable[..., subprocess.CompletedProcess]
     return None
 
 
-def prove_remember(harness: str) -> Dict[str, Any]:
+def mind_memory_up(run: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> bool:
+    """Whether the Mind's memory service is up. Its YantrikDB waits under the Mind's own account,
+    which this process may not open and must not, so the proof is the state of the unit that
+    holds it: yantrik-update's migrate-minds enables yantrik-mind.service, whose files include
+    the memory binary; the standalone yantrik-memory.service Conflicts with the Mind and keeps
+    the file only when no Mind runs. The same check mind.sh makes."""
+    try:
+        done = run(["systemctl", "is-active", "--quiet", "yantrik-mind.service"],
+                   capture_output=True, text=True, timeout=20, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return done.returncode == 0
+
+
+def prove_remember(harness: str, mind_up: Callable[[], bool] = mind_memory_up) -> Dict[str, Any]:
     if harness == "hermes":
         return remember_through_hermes()
     if harness in MCP_MEMORY:
@@ -388,8 +402,11 @@ def prove_remember(harness: str) -> Dict[str, Any]:
             return row("remember", REMEMBER, False, "failed", "no memory: %s" % reason, INSTALL_FIX)
         return remember_through_mcp(harness)
     if harness == "mind":
-        # The Mind's memory is the person's YantrikDB itself, kept by yantrik-memory under the
-        # Mind's own account; this process may not open it, and must not.
+        # The Mind's memory is a YantrikDB of its own, kept under the Mind's account; this
+        # process may not open it, and must not. Seen by service state instead.
+        if not mind_up():
+            return row("remember", REMEMBER, False, "failed",
+                       "no memory: the Mind's memory service is not running", restart_fix("mind"))
         return row("remember", REMEMBER, True, "own", "memory · YantrikDB (the Mind's own)")
     return row("remember", REMEMBER, False, "failed", "no memory path for %s" % harness, INSTALL_FIX)
 
