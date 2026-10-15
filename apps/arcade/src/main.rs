@@ -322,7 +322,7 @@ fn arg_str(args: &serde_json::Value, name: &str, what: &str) -> Result<String, S
 /// on `delete` above all. The window's buttons pass their selection explicitly, as they always
 /// have, so nothing that worked stops working.
 fn game_arg(args: &serde_json::Value) -> Result<String, String> {
-    arg_str(args, "game", "the title or slug of the game, as `describe` lists under `games`")
+    arg_str(args, "game", "the title or slug of the game, as `describe` lists under `games`. Arcade does not choose one for you")
 }
 
 // ── The slow three: workers ────────────────────────────────────────
@@ -629,23 +629,23 @@ fn specs() -> Vec<Action> {
                 "The whole character JSON, same grammar as new_character; its name says which saved character it replaces. Games that inline a copy are untouched.",
             )),
         Action::new("build", "Compile a saved game into its one HTML file")
-            .arg(Param::text("game").describe("Title or slug of a saved game")),
+            .arg(Param::text("game").describe("Title or slug of a saved game, as `describe` lists under `games`. Required: Arcade does not fall back to the window's selection, so the game is the one the caller named")),
         Action::new("play", "Open a built game in the desktop Browser and confirm it draws; if the Browser has no WebGL, say so and take a headless screenshot instead")
             .defers()
-            .arg(Param::text("game").describe("Title or slug of a built game")),
+            .arg(Param::text("game").describe("Title or slug of a built game, as `describe` lists under `games`. Required: Arcade does not fall back to the window's selection, so the game is the one the caller named")),
         Action::new("verify", "Run the headless gates: boots, clean console, frame renders, input moves, bot wins, bot loses, frame budget. Each gate ends passed, failed or inconclusive; inconclusive means this machine could not settle it (too slow to run a bot to the end of its simulated budget, or too slow for the frame budget to judge the game at all) and is not a verdict on the game, though it is not a pass either")
             .defers()
-            .arg(Param::text("game").describe("Title or slug of a built game")),
+            .arg(Param::text("game").describe("Title or slug of a built game, as `describe` lists under `games`. Required: Arcade does not fall back to the window's selection, so the game is the one the caller named")),
         Action::new("screenshot", "Take a headless PNG of a built game")
             .defers()
-            .arg(Param::text("game").describe("Title or slug of a built game")),
+            .arg(Param::text("game").describe("Title or slug of a built game, as `describe` lists under `games`. Required: Arcade does not fall back to the window's selection, so the game is the one the caller named")),
         // Sensitive, like Notes' own `trash` and unlike everything else here: a built game
         // is work somebody asked for, and the Trash is a recovery a person has to know
         // about. Not `dangerous` — that grade is for deleting a path the caller names,
         // which is what Files does; this one can only reach Arcade's own library.
         Action::new("delete", "Move a game to the Trash, where Files can bring it back")
             .risk("sensitive")
-            .arg(Param::text("game").describe("Title or slug of a saved game")),
+            .arg(Param::text("game").describe("Title or slug of a saved game, as `describe` lists under `games`. Required: Arcade does not fall back to the window's selection, so the game is the one the caller named")),
     ]
 }
 
@@ -754,6 +754,7 @@ mod tests {
     fn a_call_with_no_game_is_refused_rather_than_answered_from_the_window() {
         let err = game_arg(&serde_json::json!({})).unwrap_err();
         assert!(err.contains("`game` is required"), "{err}");
+        assert!(err.contains("does not choose"), "refusal leaves room to retry empty: {err}");
         let err = game_arg(&serde_json::json!({"game": "   "})).unwrap_err();
         assert!(err.contains("`game` is required"), "{err}");
         assert_eq!(game_arg(&serde_json::json!({"game": " meadow-run "})).unwrap(), "meadow-run");
@@ -761,11 +762,13 @@ mod tests {
 
     /// The declarations say the same: `game` is required wherever the handler needs one, and
     /// optional only where the handler has always coped without it (`update_game` reads the
-    /// game to replace off the spec's own title).
+    /// game to replace off the spec's own title). Each required one says so in the words it
+    /// shows the caller, so a mind is not tempted to send an empty `game` expecting the
+    /// window's selection.
     #[test]
     fn the_published_game_argument_says_which_actions_need_one() {
         let specs = specs();
-        let param = |action: &str| {
+        let param = |action: &str| -> &Param {
             specs
                 .iter()
                 .find(|spec| spec.name == action)
@@ -774,11 +777,16 @@ mod tests {
                 .iter()
                 .find(|param| param.name == "game")
                 .unwrap_or_else(|| panic!("`{action}` takes no `game`"))
-                .required
         };
         for action in ["build", "play", "verify", "screenshot", "delete"] {
-            assert!(param(action), "`{action}`'s `game` is optional again");
+            let game = param(action);
+            assert!(game.required, "`{action}`'s `game` is optional again");
+            assert!(
+                game.description.contains("Required"),
+                "`{action}`'s `game` does not say it is required: {}",
+                game.description
+            );
         }
-        assert!(!param("update_game"), "update_game's own description says `game` is optional");
+        assert!(!param("update_game").required, "update_game's own description says `game` is optional");
     }
 }
