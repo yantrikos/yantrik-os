@@ -1498,6 +1498,12 @@ OUTBOUND = {"web_type", "web_go"}
 # Reads a mind makes through os_act, because they are the shell's actions: a display's text, read
 # from its pixels (#257). Private the way os_screen is — everything on the display is in them.
 SCREEN_READS = {("shell", "read_screen"), ("shell", "read_mind_view")}
+# Surfaces whose every act answers with the person's own data: the calendar's `list_events` is
+# their events, and every act's envelope carries the calendar's state, which lists the week ahead.
+# A mind reaches calendar-service at its door since 16 Oct 2026 (VM 541, #411), so a calendar read
+# is private the way os_describe is: marked after a call that answered, because one that failed
+# saw nothing. The window (`app-calendar`) folds to the same name and is marked the same.
+PRIVATE_ACT_SURFACES = {"calendar"}
 
 _SAW_PRIVATE = []          # what tainted this conversation, in order, for the refusal message
 TAINT_OFF = os.environ.get("YOS_MCP_NO_TAINT") == "1"
@@ -2929,6 +2935,8 @@ def run_tool(tool, args, present=None):
     if tool["name"] in PRIVATE_READS and p.returncode == 0:
         # Recorded after the call, not before: a read that failed saw nothing.
         saw_private(tool["name"])
+    if tool["name"] == "os_act" and p.returncode == 0 and surface_name(app) in PRIVATE_ACT_SURFACES:
+        saw_private("%s.%s" % (surface_name(app), args.get("action")))
     if (tool["name"] == "os_act" and p.returncode == 0 and surface_name(app) == "shell"
             and args.get("action") == "hand_off" and (args.get("args") or {}).get("wait_seconds")):
         # A hand-off that waited hands back what the role said — whatever it read on the way —

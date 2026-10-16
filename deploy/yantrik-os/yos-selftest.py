@@ -446,6 +446,53 @@ def main():
         check("and so is every source that could not start, whatever the limit",
               "needs CAP_NET_ADMIN" in out and "needs CAP_SYS_ADMIN" in out, out)
 
+        print("yos act calendar list_events, with the calendar service never started (#411)")
+        # Found 16 Oct 2026 on VM 541: the Mind's `upcoming` asked the calendar and was told it
+        # was closed. Asking an on-demand service with a door is the demand that starts it, and a
+        # mind's start carries its agent token, without which the shell refuses a mind's act.
+        started.clear()
+        shell.calls.clear()
+        os.environ["YANTRIK_AGENT_TOKEN"] = "tok-mind"
+        try:
+            out, err, code = run(lambda: yos.cmd_act(["calendar", "list_events"]))
+        finally:
+            del os.environ["YANTRIK_AGENT_TOKEN"]
+        check("asking the calendar started it", started == ["calendar"],
+              "start_service was asked for %r" % (started,))
+        acts = [c for c in shell.calls if c["method"] == "app.act"]
+        check("through start_service, the agent's token beside the arguments",
+              acts and acts[0]["params"] == {"action": "start_service", "args": {"name": "calendar"},
+                                             "agent_token": "tok-mind"},
+              "sent %s" % json.dumps(acts[0]["params"] if acts else None))
+        calendar = services[-1]
+        asked = [c["params"].get("action") for c in calendar.calls if c["method"] == "app.act"]
+        check("and the read reached the started service", asked == ["list_events"], asked)
+        check("with no failure", code is None, "stderr=%r exit=%r" % (err, code))
+        started.clear()
+        out, err, code = run(lambda: yos.cmd_act(["calendar", "list_events"]))
+        check("an answering calendar is not started a second time", started == [], started)
+        # A token given on the command line, not in the environment, is the one the start carries
+        # (security review of #833, note 2).
+        calendar.stopping = True
+        calendar.listener.close()
+        os.unlink(calendar.path)
+        services.remove(calendar)
+        shell.calls.clear()
+        out, err, code = run(lambda: yos.cmd_act(["calendar", "list_events", "--agent-token", "tok-flag"]))
+        acts = [c for c in shell.calls if c["method"] == "app.act"]
+        check("a --agent-token start carries that token",
+              started == ["calendar"] and acts and acts[0]["params"].get("agent_token") == "tok-flag",
+              "started %r, sent %s" % (started, json.dumps(acts[0]["params"] if acts else None)))
+        calendar = services[-1]
+        started.clear()
+        out, err, code = run(lambda: yos.cmd_act(["app-calendar", "list_events"]))
+        check("and naming the window starts no service", started == [] and code == 1, (started, err))
+        # The cases below put their own calendar here.
+        calendar.stopping = True
+        calendar.listener.close()
+        os.unlink(calendar.path)
+        services.remove(calendar)
+
         print("yos act, against the types the app publishes")
         # `parse_args` ran every value through `json.loads`, so `dismiss id=67` sent the number
         # 67 to an action that publishes `id: string` and the service answered "missing `id`" —

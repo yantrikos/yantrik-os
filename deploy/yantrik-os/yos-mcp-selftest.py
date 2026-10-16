@@ -1545,6 +1545,23 @@ with tempfile.TemporaryDirectory() as d:
     check("the bridge folds names the way yos does",
           [module.surface_name(n) for n in ("App Shell", "container_manager", "app-notes", " Weather ")]
           == ["shell", "container-manager", "notes", "weather"])
+    # 15d'. A calendar read is the person's data, whether it is the Calendar window or, since a
+    # mind reaches calendar-service at its door (16 Oct 2026, VM 541, #411), the service: an
+    # os_act on it taints the session the way os_describe does, and a refused one does not.
+    for spelling in ("calendar", "app-calendar", "Calendar"):
+        module, state = case(tmp, "taint-calendar", mode="auto", machine_ceiling="dangerous",
+                             ceiling=None)
+        text, is_error = module.run_tool(module.BY_NAME["web_type"], {"ref": 1, "text": "x"})
+        check("before a calendar read, typing into a page is not refused by the taint",
+              not text.startswith("REFUSED"), text)
+        act(module, spelling, "list_events", {})
+        text, is_error = module.run_tool(module.BY_NAME["web_type"], {"ref": 1, "text": "Dallas"})
+        check("after os_act %s list_events it is, naming the read" % spelling,
+              text.startswith("REFUSED") and "calendar.list_events" in text, text)
+    module, state = case(tmp, "taint-calendar-refused", mode="plan", machine_ceiling="dangerous",
+                         ceiling=None)
+    act(module, "calendar", "add_event", {"title": "Dentist", "date": "2026-10-02"})
+    check("a calendar act that never ran taints nothing", module._SAW_PRIVATE == [], module._SAW_PRIVATE)
     # 15e. The taint's scope is the person's conversation, as the desktop counts it — not this
     # process. Hermes keeps one bridge across every Lens "+ new conversation", so one calendar
     # read used to taint every conversation after it, and the refusal sent the person to "a fresh
