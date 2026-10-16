@@ -1,6 +1,6 @@
 //! The wire between a harness and this OS.
 //!
-//! Seven methods, spoken by the harness to the `harness` socket. That is the whole interface, and
+//! Eight methods, spoken by the harness to the `harness` socket. That is the whole interface, and
 //! its smallness is the point: a harness already knows how to be itself — `yantrik-mind` has its
 //! own models and config, hermes-agent has its own — and none of that is the OS's business. The
 //! OS offers somewhere to attach and a way to be handed turns.
@@ -31,7 +31,22 @@
 //!   chunk {session, turn_id, delta}     → {}          … as many as you like
 //!   event {session, turn_id, event}     → {}          … optional: what the agent is doing
 //!   complete {session, turn_id}         → {}
+//!
+//! outside any turn, when attach answered features: ["notice_inbox_v1"]:
+//!   notice {session, notice}            → {stored, notice_id, duplicate?, clamped?}
+//!                                         | {stored: false, retry_after_secs, why}
+//!                                         | {stored: false, refused}
 //! ```
+//!
+//! # Notices and the person's initiative settings
+//!
+//! When this desktop takes notices, the `attach` reply carries `features: ["notice_inbox_v1"]`
+//! and `initiative: {quiet, off, inbox_only}`, the person's settings. Every `poll` answer carries
+//! `initiative` too, so a change reaches a mind within one poll, and, when the person has
+//! responded to one of THIS harness's cards, `notice_feedback: [{seq, notice_id, kind, seen_at,
+//! opened_at, at}]`. Feedback comes again on every poll until one says `feedback_ack: <seq>`, and
+//! across restarts. No harness sees another's. See [`crate::notice`] and
+//! design/initiative-inbox-2026-10-16.md.
 //!
 //! The session is opaque (`s<n>-<random>` today; parse nothing out of it) and answers only whoever
 //! attached it: over a socket where the kernel names the caller, every call on it must come from
@@ -85,9 +100,11 @@ pub const DETACH: &str = "harness.detach";
 /// What the agent is doing, beside the text: a tool call opening, its output, its end. See
 /// [`crate::event`].
 pub use crate::event::EVENT;
+/// A card for the person, outside any turn. See [`crate::notice`].
+pub use crate::notice::NOTICE;
 
 /// Every method this service answers, for the error when something else is called.
-pub const METHODS: &[&str] = &[ATTACH, POLL, CHUNK, EVENT, COMPLETE, FAIL, DETACH];
+pub const METHODS: &[&str] = &[ATTACH, POLL, CHUNK, EVENT, NOTICE, COMPLETE, FAIL, DETACH];
 
 /// The most one [`EVENT`] may weigh, as JSON. A command's output travels as many small
 /// `tool_output` events, not one large one; an event past this is refused and counted, and the
@@ -553,6 +570,12 @@ mod tests {
         let attach: Attach =
             serde_json::from_str(r#"{"id":"pi","name":"Pi","conversations":true}"#).unwrap();
         assert!(attach.conversations);
+    }
+
+    #[test]
+    fn the_notice_method_is_one_of_the_methods() {
+        assert!(METHODS.contains(&NOTICE));
+        assert_eq!(NOTICE, "harness.notice");
     }
 
     #[test]

@@ -35,14 +35,46 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use yantrik_ipc_contracts::notifications::*;
 
+use crate::archive;
+
 /// The file as it is written. A struct rather than a bare array because the revision and the id
 /// counter have to come back too: without them a restart would hand out id "1" again for a
 /// notification the shell already has, and `since` would go backwards.
+///
+/// The notice fields (design/initiative-inbox-2026-10-16.md) are all optional on read, so a file
+/// written before notices existed loads as it always did.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct OnDisk {
-    revision: u64,
-    next_id: u64,
-    notifications: Vec<Notification>,
+pub(crate) struct OnDisk {
+    pub(crate) revision: u64,
+    pub(crate) next_id: u64,
+    pub(crate) notifications: Vec<Notification>,
+    /// Interrupts granted today, across every harness: counted here so the count survives a
+    /// restart and is shared by every mind.
+    #[serde(default)]
+    pub(crate) budget: crate::notices::Budget,
+    /// The person's initiative settings, which the grant decision reads.
+    #[serde(default)]
+    pub(crate) initiative: notice::Initiative,
+    /// Feedback each harness has not acknowledged yet, oldest first.
+    #[serde(default)]
+    pub(crate) feedback_queue: Vec<crate::notices::Queued>,
+    /// What each harness has acknowledged, by harness id. Kept here, so it survives a restart of
+    /// the shell, of this service and of the machine.
+    #[serde(default)]
+    pub(crate) feedback_cursor: std::collections::BTreeMap<String, u64>,
+    #[serde(default = "first_seq")]
+    pub(crate) next_feedback_seq: u64,
+    /// Which account and program each harness id belongs to: the first to store a notice under
+    /// it. See [`crate::notices::Binding`].
+    #[serde(default)]
+    pub(crate) bindings: std::collections::BTreeMap<String, crate::notices::Binding>,
+    /// Bumped by every change, never written: which snapshot is newer, for [`Store::persist`].
+    #[serde(skip)]
+    pub(crate) generation: u64,
+}
+
+fn first_seq() -> u64 {
+    1
 }
 
 impl Default for OnDisk {
@@ -51,6 +83,13 @@ impl Default for OnDisk {
             revision: 0,
             next_id: 1,
             notifications: Vec::new(),
+            budget: Default::default(),
+            initiative: Default::default(),
+            feedback_queue: Vec::new(),
+            feedback_cursor: Default::default(),
+            next_feedback_seq: 1,
+            bindings: Default::default(),
+            generation: 0,
         }
     }
 }
@@ -59,6 +98,9 @@ impl Default for OnDisk {
 pub struct Store {
     path: PathBuf,
     state: Mutex<OnDisk>,
+    /// The generation last written, so an older snapshot finishing its write after a newer one
+    /// cannot put the file back to before a notice that was answered `stored`.
+    written: Mutex<u64>,
     /// Why the file could not be read at start, if it could not. Reported in `describe` rather
     /// than only logged: a store that silently began empty is exactly the failure this service
     /// was rewritten to stop hiding.
@@ -115,6 +157,7 @@ impl Store {
         Self {
             path,
             state: Mutex::new(state),
+            written: Mutex::new(0),
             load_notice,
         }
     }
@@ -184,9 +227,9 @@ impl Store {
                 existing.dismissed = false;
                 existing.revision = revision;
                 let replaced = existing.clone();
-                let snapshot = state.clone();
+                let snapshot = snapshot(&mut state);
                 drop(state);
-                self.persist(&snapshot);
+                let _ = self.persist(&snapshot);
                 return replaced;
             }
             // An id nobody knows. The spec leaves this to the server, and the useful answer is a
@@ -209,31 +252,54 @@ impl Store {
             source: req.source,
             replaces_id: req.replaces_id,
             sender,
+            notice: None,
             revision,
         };
         state.notifications.push(notification.clone());
-        prune(&mut state);
-        let snapshot = state.clone();
+        prune(&mut state, &self.archive_path());
+        let snapshot = snapshot(&mut state);
         drop(state);
-        self.persist(&snapshot);
+        let _ = self.persist(&snapshot);
         notification
     }
 
     /// Everything still showing, newest first.
     pub fn list(&self) -> Vec<Notification> {
+        self.list_for(true)
+    }
+
+    /// Everything still showing, newest first, as `desktop` or any other caller may read it.
+    ///
+    /// The person's feedback on a mind's notice goes only to the harness that sent it, and a card's
+    /// evidence and button are for the person's eyes on the desktop. Any other caller — a mind's
+    /// tool on the socket — gets the card without them.
+    pub fn list_for(&self, desktop: bool) -> Vec<Notification> {
         let state = self.lock();
         let mut out: Vec<Notification> = state
             .notifications
             .iter()
             .filter(|n| !n.dismissed)
             .cloned()
+            .map(|mut n| {
+                if let (false, Some(record)) = (desktop, n.notice.as_mut()) {
+                    record.feedback.clear();
+                    record.evidence.clear();
+                    record.action = None;
+                }
+                n
+            })
             .collect();
         out.reverse();
         out
     }
 
     /// What changed since `revision`, and where the store is now.
+    ///
+    /// A notice past its `useful_until` leaves the inbox here, on the shell's own poll, and its
+    /// sender is told it `expired`: the poll runs once a second for as long as the desktop is up,
+    /// so this is the clock the store already has.
     pub fn since(&self, revision: u64) -> Since {
+        self.expire_due(Utc::now());
         let state = self.lock();
         Since {
             revision: state.revision,
@@ -243,6 +309,7 @@ impl Store {
                 .filter(|n| n.revision > revision)
                 .cloned()
                 .collect(),
+            initiative: Some(state.initiative.clone()),
         }
     }
 
@@ -279,58 +346,96 @@ impl Store {
             .cloned()
     }
 
-    /// Dismiss one. `false` when there was nothing by that id to dismiss — the caller is told,
-    /// rather than being answered "done" over a notification that never existed.
+    /// Dismiss one, as the desktop. `false` when there was nothing by that id to dismiss — the
+    /// caller is told, rather than being answered "done" over a notification that never existed.
     pub fn dismiss(&self, id: &str) -> bool {
+        self.dismiss_by(id, true).unwrap_or(false)
+    }
+
+    /// Dismiss one, as `desktop` or any other caller.
+    ///
+    /// A mind's notice is the person's to dismiss, on the desktop: its sender hears `dismissed` as
+    /// the person's answer, and an obligation the OS acknowledged must not leave the inbox because
+    /// another mind asked. Any other caller is refused for a notice
+    /// (design/initiative-inbox-2026-10-16.md, decision 2).
+    pub fn dismiss_by(&self, id: &str, desktop: bool) -> Result<bool, String> {
         let mut state = self.lock();
+        if !desktop && state.notifications.iter().any(|n| n.id == id && n.notice.is_some()) {
+            return Err(format!("`{id}` is a mind's notice; only the person dismisses it, on the desktop"));
+        }
         let revision = state.revision + 1;
         let Some(n) = state
             .notifications
             .iter_mut()
             .find(|n| n.id == id && !n.dismissed)
         else {
-            return false;
+            return Ok(false);
         };
         n.dismissed = true;
         n.read = true;
         n.revision = revision;
         state.revision = revision;
-        let snapshot = state.clone();
+        let index = state.notifications.iter().position(|n| n.id == id).expect("found above");
+        crate::notices::push_feedback(&mut state, index, notice::FeedbackKind::Dismissed, Utc::now());
+        let snapshot = snapshot(&mut state);
         drop(state);
-        self.persist(&snapshot);
-        true
+        let _ = self.persist(&snapshot);
+        Ok(true)
     }
 
-    /// Dismiss everything showing. Answers how many actually changed.
-    pub fn dismiss_all(&self) -> usize {
+    /// Dismiss everything showing that `desktop` or any other caller may dismiss: from anything
+    /// but the desktop, a mind's notices stay (see [`Store::dismiss_by`]).
+    pub fn dismiss_all_by(&self, desktop: bool) -> usize {
         let mut state = self.lock();
         let revision = state.revision + 1;
-        let mut changed = 0;
-        for n in state.notifications.iter_mut().filter(|n| !n.dismissed) {
+        let mut changed = Vec::new();
+        for (index, n) in state
+            .notifications
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, n)| !n.dismissed && (desktop || n.notice.is_none()))
+        {
             n.dismissed = true;
             n.read = true;
             n.revision = revision;
-            changed += 1;
+            changed.push(index);
         }
-        if changed == 0 {
+        if changed.is_empty() {
             return 0;
         }
         state.revision = revision;
-        let snapshot = state.clone();
+        let now = Utc::now();
+        for &index in &changed {
+            crate::notices::push_feedback(&mut state, index, notice::FeedbackKind::Dismissed, now);
+        }
+        let changed = changed.len();
+        let snapshot = snapshot(&mut state);
         drop(state);
-        self.persist(&snapshot);
+        let _ = self.persist(&snapshot);
         changed
     }
 
-    /// Mark one read, or with `None` everything showing. Answers how many changed.
+    /// Mark one read, or with `None` everything showing, as the desktop. Answers how many changed.
     pub fn mark_read(&self, id: Option<&str>) -> usize {
+        self.mark_read_by(id, true).unwrap_or(0)
+    }
+
+    /// Mark read as `desktop` or any other caller. A read card is never toasted, so marking a
+    /// mind's notice read is hiding it: refused by id, and skipped by `None`, from anything but
+    /// the desktop.
+    pub fn mark_read_by(&self, id: Option<&str>, desktop: bool) -> Result<usize, String> {
         let mut state = self.lock();
+        if let (false, Some(want)) = (desktop, id) {
+            if state.notifications.iter().any(|n| n.id == want && n.notice.is_some()) {
+                return Err(format!("`{want}` is a mind's notice; only the person marks it read, on the desktop"));
+            }
+        }
         let revision = state.revision + 1;
         let mut changed = 0;
         for n in state.notifications.iter_mut() {
             let matches = match id {
                 Some(want) => n.id == want,
-                None => !n.dismissed,
+                None => !n.dismissed && (desktop || n.notice.is_none()),
             };
             if matches && !n.read {
                 n.read = true;
@@ -339,13 +444,13 @@ impl Store {
             }
         }
         if changed == 0 {
-            return 0;
+            return Ok(0);
         }
         state.revision = revision;
-        let snapshot = state.clone();
+        let snapshot = snapshot(&mut state);
         drop(state);
-        self.persist(&snapshot);
-        changed
+        let _ = self.persist(&snapshot);
+        Ok(changed)
     }
 
     /// Record that an action was invoked, and hand back the notification it was on.
@@ -378,9 +483,9 @@ impl Store {
         n.revision = revision;
         let invoked = n.clone();
         state.revision = revision;
-        let snapshot = state.clone();
+        let snapshot = snapshot(&mut state);
         drop(state);
-        self.persist(&snapshot);
+        let _ = self.persist(&snapshot);
         Ok(invoked)
     }
 
@@ -391,63 +496,133 @@ impl Store {
         (showing, state.notifications.len())
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, OnDisk> {
+    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, OnDisk> {
         // A poisoned lock means some other call panicked mid-mutation. The data is still a valid
         // `OnDisk` — every mutation above completes before it can unwind — and losing every
         // notification on the machine because one call panicked is the worse outcome.
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Write the file: temp beside it, then rename over.
+    /// Where acknowledged notices go before they leave the live file.
+    pub(crate) fn archive_path(&self) -> PathBuf {
+        archive::path_beside(&self.path)
+    }
+
+    /// Write the file: temp beside it, flushed to the disk, then renamed over, and the directory
+    /// flushed so the rename is on the disk too.
     ///
     /// Takes a snapshot rather than the guard so the lock is released before the disk write —
     /// a D-Bus `Notify` arriving during a 5 ms write should not have to wait for it.
-    fn persist(&self, state: &OnDisk) {
+    ///
+    /// Answers whether the snapshot is on disk. A notice is answered `stored` only on `Ok`
+    /// (design/initiative-inbox-2026-10-16.md, decision 5): it used to be enough that a write was
+    /// attempted, because nothing told a caller it had been kept. Writes are serialised, and a
+    /// snapshot older than one already written is not written again: the newer one holds it.
+    pub(crate) fn persist(&self, state: &OnDisk) -> Result<(), String> {
+        let mut written = self.written.lock().unwrap_or_else(|e| e.into_inner());
+        if state.generation != 0 && state.generation <= *written {
+            return Ok(());
+        }
         if let Some(dir) = self.path.parent() {
             if let Err(e) = std::fs::create_dir_all(dir) {
                 tracing::warn!(dir = %dir.display(), error = %e, "cannot create the notification store directory");
-                return;
+                return Err(format!("cannot create {}: {e}", dir.display()));
             }
         }
         let json = match serde_json::to_string(state) {
             Ok(j) => j,
             Err(e) => {
                 tracing::error!(error = %e, "cannot serialise the notification store");
-                return;
+                return Err(format!("cannot serialise the store: {e}"));
             }
         };
         // Named after the process, so two services started by mistake cannot rename each other's
         // half-written temp file over the real one.
         let temp = self.path.with_extension(format!("tmp{}", std::process::id()));
-        if let Err(e) = std::fs::write(&temp, json) {
+        if let Err(e) = archive::write_synced(&temp, json.as_bytes()) {
             tracing::warn!(path = %temp.display(), error = %e, "cannot write the notification store");
-            return;
+            let _ = std::fs::remove_file(&temp);
+            return Err(format!("cannot write {}: {e}", temp.display()));
         }
         if let Err(e) = std::fs::rename(&temp, &self.path) {
             tracing::warn!(path = %self.path.display(), error = %e, "cannot replace the notification store");
             let _ = std::fs::remove_file(&temp);
+            return Err(format!("cannot replace {}: {e}", self.path.display()));
         }
+        archive::sync_dir(&self.path);
+        *written = (*written).max(state.generation);
+        Ok(())
     }
+}
+
+/// A copy of the state to write, marked newer than every copy taken before it.
+pub(crate) fn snapshot(state: &mut OnDisk) -> OnDisk {
+    state.generation += 1;
+    state.clone()
 }
 
 /// Drop what the store is not allowed to keep: dismissed notifications older than a week, then
 /// the oldest of whatever is left over the cap.
-fn prune(state: &mut OnDisk) {
+///
+/// Notices are counted apart (design/initiative-inbox-2026-10-16.md): `notify-send` in a loop
+/// used to be able to push out the oldest record of all, and a notice the OS had answered
+/// `stored` is an obligation it acknowledged. Plain notifications keep their 500; notices have
+/// [`notice::MAX_NOTICES_STORED`] of their own. And a notice is never simply deleted: it is
+/// appended to `notices-archive.jsonl` first, and one that cannot be archived stays.
+pub(crate) fn prune(state: &mut OnDisk, archive_path: &Path) {
     let cutoff = Utc::now().timestamp() - DISMISSED_TTL_SECS;
-    state.notifications.retain(|n| {
-        if !n.dismissed {
-            return true;
-        }
-        match DateTime::parse_from_rfc3339(&n.created_at) {
-            Ok(t) => t.timestamp() > cutoff,
-            // A timestamp we cannot read is not a reason to delete somebody's history.
-            Err(_) => true,
-        }
-    });
-    if state.notifications.len() > MAX_STORED {
-        let excess = state.notifications.len() - MAX_STORED;
-        state.notifications.drain(0..excess);
+    let expired = |n: &Notification| {
+        n.dismissed
+            && match DateTime::parse_from_rfc3339(&n.created_at) {
+                Ok(t) => t.timestamp() <= cutoff,
+                // A timestamp we cannot read is not a reason to delete somebody's history.
+                Err(_) => false,
+            }
+    };
+    let mut leaving: Vec<String> = state.notifications.iter().filter(|n| expired(n)).map(|n| n.id.clone()).collect();
+
+    let plain: Vec<&Notification> = state.notifications.iter().filter(|n| n.notice.is_none() && !leaving.contains(&n.id)).collect();
+    if plain.len() > MAX_STORED {
+        let excess = plain.len() - MAX_STORED;
+        leaving.extend(plain.iter().take(excess).map(|n| n.id.clone()));
     }
+    let notices: Vec<&Notification> = state.notifications.iter().filter(|n| n.notice.is_some() && !leaving.contains(&n.id)).collect();
+    if notices.len() > notice::MAX_NOTICES_STORED {
+        let excess = notices.len() - notice::MAX_NOTICES_STORED;
+        // The dismissed go first, oldest first. Only then a card still showing, and then the
+        // oldest of whichever harness holds the most: one sender cannot push out the cards of
+        // another, an acknowledged reminder among them, by sending more.
+        let dismissed: Vec<String> = notices.iter().filter(|n| n.dismissed).take(excess).map(|n| n.id.clone()).collect();
+        let mut more = excess - dismissed.len();
+        leaving.extend(dismissed);
+        let mut showing: std::collections::BTreeMap<&str, std::collections::VecDeque<&str>> = Default::default();
+        for n in notices.iter().filter(|n| !n.dismissed) {
+            let harness = n.notice.as_ref().map_or("", |x| x.harness.id.as_str());
+            showing.entry(harness).or_default().push_back(n.id.as_str());
+        }
+        while more > 0 {
+            let Some(cards) = showing.values_mut().max_by_key(|cards| cards.len()) else { break };
+            let Some(id) = cards.pop_front() else { break };
+            leaving.push(id.to_string());
+            more -= 1;
+        }
+    }
+    if leaving.is_empty() {
+        return;
+    }
+
+    let archived = archive::append(
+        archive_path,
+        state.notifications.iter().filter(|n| n.notice.is_some() && leaving.contains(&n.id)),
+    );
+    if let Err(e) = &archived {
+        tracing::warn!(path = %archive_path.display(), error = %e, "cannot archive notices; they stay in the live store");
+    }
+    state.notifications.retain(|n| {
+        let goes = leaving.contains(&n.id);
+        // A notice leaves only once the archive holds it.
+        !goes || (n.notice.is_some() && archived.is_err())
+    });
 }
 
 #[cfg(test)]

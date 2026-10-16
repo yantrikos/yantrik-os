@@ -15,7 +15,7 @@
 //! harness already does properly.
 //!
 //! So the OS owns one thing: **which mind the person is talking to**. Everything else belongs to
-//! the harness, and the interface between them is [`protocol`] — seven methods, spoken by the
+//! the harness, and the interface between them is [`protocol`] — eight methods, spoken by the
 //! harness, over the socket bus this OS already has.
 //!
 //! # Adding a harness
@@ -47,6 +47,7 @@
 
 pub mod event;
 pub mod host;
+pub mod notice;
 pub mod protocol;
 pub mod redact;
 pub mod run_store;

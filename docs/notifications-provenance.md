@@ -56,6 +56,24 @@ Only the desktop gets the name `Yantrik` and the notification card's plain line
 real executable is named when it is not what the command line calls itself, a terminal origin
 is shown, and any claim follows, cut short.
 
+## Mind notices lean on the same judgment
+
+A mind's notice (design/initiative-inbox-2026-10-16.md) is posted by the harness host, inside the
+shell, as `notifications.add` with a `notice` beside it naming the harness the host established at
+attach. The service honours that `notice` only when the caller passes the three checks above;
+from anything else it strips it and stores the plain notification, so `yos notify` from a mind's
+tool cannot name another harness, supersede its cards or spend the day's interrupt budget. The
+same check guards the person's side: `notifications.notice_feedback`, `notice_shown`,
+`notice_feedback_poll` and `initiative_set` answer only the desktop, so a mind cannot mark its own
+card useful, read another mind's feedback or switch a family off.
+
+The stored notice's `sender` is the MIND (its claimed name and the verified process line the host
+resolved for its pid), never marked `desktop`, even though the desktop posted it.
+
+Everything below about what "verified desktop" does not hold against applies to notices too: a
+process running as the person's own user that passes as `yantrik-ui` could post a notice naming
+any harness.
+
 ## What this does NOT hold against
 
 "Verified desktop" does **not** hold against a process running as the person's own user.
