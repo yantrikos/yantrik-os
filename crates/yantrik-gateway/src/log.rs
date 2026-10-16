@@ -37,6 +37,10 @@ pub struct Call {
     /// `<account>/<model>` the call named, which was kept from private context.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lane_for: Option<String>,
+    /// Parameters the gateway took out of the call's body because the model refuses them
+    /// (`temperature`): their names, never their values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dropped: Vec<String>,
 }
 
 impl Call {
@@ -126,7 +130,7 @@ mod tests {
     use super::*;
 
     fn call(model: &str) -> Call {
-        Call { at: 1, harness: "pi".into(), account: "a".into(), model: model.into(), effort: None, status: 200, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None }
+        Call { at: 1, harness: "pi".into(), account: "a".into(), model: model.into(), effort: None, status: 200, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new() }
     }
 
     #[test]

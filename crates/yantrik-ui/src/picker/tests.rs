@@ -192,7 +192,7 @@ fn a_file_is_read_no_further_than_its_size_and_never_a_fifo() {
 }
 
 fn call(at: i64, status: u16, outcome: &str) -> Call {
-    Call { at, harness: "pi".into(), account: "openai".into(), model: "o4-mini".into(), effort: None, status, outcome: outcome.into(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None }
+    Call { at, harness: "pi".into(), account: "openai".into(), model: "o4-mini".into(), effort: None, status, outcome: outcome.into(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new() }
 }
 
 #[test]

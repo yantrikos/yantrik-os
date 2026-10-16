@@ -67,7 +67,15 @@ pub struct Gateway {
     /// A `custom` account is any endpoint the person typed, so a hosted service serving a Qwen3 can
     /// sit behind one; it is asked once more without the switch, and never sent it again this session.
     pub template_refused: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// Sampling parameters ([`body::DROPPABLE`]) a model's provider answered 400 to, by
+    /// `<account>/<model>`: "`temperature` is deprecated for this model". The call goes again
+    /// without it, once, and later calls to that model are sent none for as long as the gateway runs.
+    pub params_refused: Arc<Mutex<std::collections::HashMap<String, Vec<&'static str>>>>,
 }
+
+/// How much of a refusing upstream's body is read to see which parameter it names. An error body
+/// is a few hundred bytes; past this the rest is still passed through to the harness, unread.
+const ERROR_PEEK: u64 = 16 * 1024;
 
 /// The most connections served at once. The mind account can reach this port (its kernel loopback
 /// set opens it), and a thread per connection with no bound would let it, or anything else on this
@@ -246,6 +254,7 @@ impl Gateway {
             completion_tokens: 0,
             ms: 0,
             lane_for: None,
+            dropped: Vec::new(),
         };
         let result = self.forward(grant, req, out, &mut call);
         if let Err(refusal) = result {
@@ -286,11 +295,52 @@ impl Gateway {
         }
         let effort = body::rewrite(&mut body, &target)?;
         call.effort = effort.map(|e| e.as_str().to_string());
+        // What this model is known to refuse goes before the first send: from the model's caps, or
+        // from its provider's own 400 earlier in this run.
+        let model_id = format!("{}/{}", target.account, target.model);
+        let mut known: Vec<&'static str> = body::known_refused(&target).to_vec();
+        if let Ok(refused) = self.params_refused.lock() {
+            known.extend(refused.get(&model_id).into_iter().flatten().filter(|p| !known.contains(p)).collect::<Vec<_>>());
+        }
+        note_dropped(call, body::drop_params(&mut body, &known));
+        // Thinking, once the effort mapping turned it on, narrows what sampling the provider takes.
+        if let Some(map) = body.as_object_mut() {
+            note_dropped(call, body::fit_sampling_to_thinking(map));
+        }
         let bytes = serde_json::to_vec(&body).map_err(|_| Refusal::new(400, "bad_request", "The request could not be re-encoded."))?;
         let mut reply = self
             .upstream
             .chat(&target.base_url, target.key.as_deref(), &bytes)
             .map_err(|u| Refusal::new(502, u.code, u.message))?;
+        if reply.status == 400 {
+            // The 400 arrives whole before any stream starts, so a streamed call is asked again the
+            // same way. Its start is read to see what it refuses, and passed on as it was if not this.
+            let mut peek = Vec::new();
+            let _ = (&mut reply.body).take(ERROR_PEEK).read_to_end(&mut peek);
+            let refused = body::refused_params(&peek, &body);
+            let dropped = body::drop_params(&mut body, &refused);
+            if dropped.is_empty() {
+                let rest = std::mem::replace(&mut reply.body, Box::new(std::io::empty()));
+                reply.body = Box::new(std::io::Cursor::new(peek).chain(rest));
+            } else {
+                note_dropped(call, dropped.clone());
+                let bytes = serde_json::to_vec(&body).map_err(|_| Refusal::new(400, "bad_request", "The request could not be re-encoded."))?;
+                reply = self
+                    .upstream
+                    .chat(&target.base_url, target.key.as_deref(), &bytes)
+                    .map_err(|u| Refusal::new(502, u.code, u.message))?;
+                // Remembered for every harness only when dropping it was the difference. The error
+                // text can echo what a caller sent, so a 400 alone is one caller's word; a success
+                // without the parameter is the provider's.
+                if (200..300).contains(&reply.status) {
+                    if let Ok(mut remembered) = self.params_refused.lock() {
+                        let entry = remembered.entry(model_id.clone()).or_default();
+                        entry.extend(dropped.iter().filter(|p| !entry.contains(p)).collect::<Vec<_>>());
+                    }
+                    tracing::info!(model = %model_id, params = ?dropped, "the model's provider refused these parameters; they are sent no more this run");
+                }
+            }
+        }
         if reply.status == 400 && target.reasoning == switch && effort.is_some() {
             // The switch was the gateway's, not the caller's: the call goes again without it, once.
             body::drop_template_switch(&mut body);
@@ -372,6 +422,15 @@ fn lane(accounts: &dyn Accounts, meant: &Target) -> Result<Target, Refusal> {
         return Err(policy::not_shared(&meant.provider));
     }
     Ok(target)
+}
+
+/// Add what was taken out of a call's body to its log line: the parameter's name, never its value.
+fn note_dropped(call: &mut Call, dropped: Vec<&'static str>) {
+    for p in dropped {
+        if !call.dropped.iter().any(|d| d == p) {
+            call.dropped.push(p.to_string());
+        }
+    }
 }
 
 /// Copy the answer through as it arrives, counting the tokens it reports.

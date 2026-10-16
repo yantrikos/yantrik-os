@@ -85,7 +85,8 @@ impl Reasoning {
     }
 }
 
-/// Anthropic's thinking budget for each word, in tokens.
+/// Anthropic's thinking budget for each word, in tokens. Easy is not sent one: it is thinking off
+/// (see [`params`]); its value here is what a caller that sets a budget for easy itself would use.
 pub fn anthropic_budget(effort: Effort) -> u32 {
     match effort {
         Effort::Easy => 1_024,
@@ -131,6 +132,12 @@ pub fn params(reasoning: Reasoning, effort: Effort) -> EffortParams {
         Reasoning::ChatTemplateThinking => {
             set.insert("chat_template_kwargs".into(), json!({ "enable_thinking": effort != Effort::Easy }));
         }
+        // Easy is thinking off, as it is on every provider whose knob can be switched off: the Mind
+        // asks for easy on its tool steps and compose precisely so that they do not think (E.PACE1b,
+        // E.PACE2b: compose 33 s to 9 s at equal passes on Qwen). On Claude, easy used to mean a
+        // 1,024-token budget, so every such step paid for thinking it had asked not to do, and the
+        // thinking turned on underneath it made Claude refuse its sampling (542, 16 Oct 2026).
+        Reasoning::AnthropicBudget if effort == Effort::Easy => {}
         Reasoning::AnthropicBudget => {
             let budget = anthropic_budget(effort);
             set.insert("thinking".into(), json!({ "type": "enabled", "budget_tokens": budget }));
@@ -161,6 +168,18 @@ mod tests {
         assert_eq!(params(Reasoning::OpenAiEffort, Effort::Medium).set["reasoning_effort"], "medium");
         assert_eq!(params(Reasoning::OpenAiEffort, Effort::XHigh).set["reasoning_effort"], "high");
         assert_eq!(params(Reasoning::OpenRouter, Effort::High).set["reasoning"], json!({"effort": "high"}));
+    }
+
+    #[test]
+    fn claude_thinks_from_medium_up_and_easy_is_thinking_off() {
+        let easy = params(Reasoning::AnthropicBudget, Effort::Easy);
+        assert!(easy.set.get("thinking").is_none(), "easy sends no thinking field: thinking off");
+        assert_eq!(easy.min_max_tokens, None);
+        for (e, budget) in [(Effort::Medium, 4_096), (Effort::High, 16_384), (Effort::XHigh, 32_768)] {
+            let p = params(Reasoning::AnthropicBudget, e);
+            assert_eq!(p.set["thinking"], json!({"type": "enabled", "budget_tokens": budget}));
+            assert_eq!(p.min_max_tokens, Some(budget + 4_096));
+        }
     }
 
     #[test]

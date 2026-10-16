@@ -108,6 +108,7 @@ pub fn start(bridge: Arc<CompanionBridge>) {
         upstream: Arc::new(Http::default()),
         log: log(),
         template_refused: Default::default(),
+        params_refused: Default::default(),
     });
     if GATEWAY.set(gateway.clone()).is_ok() {
         let _ = std::thread::Builder::new().name("model-gateway".into()).spawn(move || gateway.serve(listener));
