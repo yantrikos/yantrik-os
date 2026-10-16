@@ -29,18 +29,49 @@ const BLOCKS: &[(&str, &str)] = &[
 /// The tool calls written as text in `text`: Qwen's JSON form, Claude's
 /// `<invoke name="..."><parameter name="...">` form, and `<tool_call><name>...` with parameters.
 pub fn calls_in(text: &str) -> Vec<ToolCall> {
+    // One block inside another is not a form any model writes, and reading it would count its
+    // parameters for both calls (security review of 181c5881, #830, item 4).
+    if nested(text) {
+        tracing::warn!("tool-call markup with one block inside another; read as no calls");
+        return Vec::new();
+    }
     let json = yantrik_ml::parse_tool_calls(text);
     if !json.is_empty() {
         return json;
     }
     let mut calls: Vec<ToolCall> = bodies(text, "<invoke", "</invoke>")
-        .filter_map(|(head, body)| Some(call(attr(head, "name")?, body)))
+        .filter_map(|(head, body)| Some(call(&decode(attr(head, "name")?), body)))
         .collect();
     calls.extend(
         bodies(text, "<tool_call>", "</tool_call>")
-            .filter_map(|(_, body)| Some(call(between(body, "<name>", "</name>")?.trim(), body))),
+            .filter_map(|(_, body)| Some(call(&decode(between(body, "<name>", "</name>")?.trim()), body))),
     );
     calls
+}
+
+/// Does a call block hold another opener before it closes? `<function_calls>` is the wrapper
+/// Claude puts around its `<invoke>`s, so only what is inside an `<invoke>` or a `<tool_call>`
+/// counts.
+fn nested(text: &str) -> bool {
+    [("<invoke", "</invoke>"), ("<tool_call>", "</tool_call>")].iter().any(|(open, close)| {
+        bodies(text, open, close).any(|(_, body)| {
+            ["<invoke", "<tool_call", "<function_calls"].iter().any(|o| tag_starts(body, o).is_some())
+        })
+    })
+}
+
+/// Where `tag` starts in `text` as a tag of that name: `<invoke` followed by a space or `>`, not
+/// `<invoked` or `<invoke_x` (#830 review, item 4). A tag that ends in `>` is matched as it is.
+fn tag_starts(text: &str, tag: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(at) = text[from..].find(tag).map(|i| from + i) {
+        let next = text[at + tag.len()..].chars().next();
+        if tag.ends_with('>') || next.is_some_and(|c| c == '>' || c == '/' || c.is_whitespace()) {
+            return Some(at);
+        }
+        from = at + tag.len();
+    }
+    None
 }
 
 /// `text` without any tool-call markup, trimmed. An unclosed block runs to the end.
@@ -94,7 +125,7 @@ pub fn adopt_text_calls(r: &mut LLMResponse, streamed: Option<&str>) {
 fn bodies<'a>(text: &'a str, open: &'a str, close: &'a str) -> impl Iterator<Item = (&'a str, &'a str)> {
     let mut rest = text;
     std::iter::from_fn(move || {
-        let start = rest.find(open)? + open.len();
+        let start = tag_starts(rest, open)? + open.len();
         let end = start + rest[start..].find(close)?;
         let block = &rest[start..end];
         rest = &rest[end + close.len()..];
@@ -114,16 +145,36 @@ fn call(name: &str, body: &str) -> ToolCall {
 
 /// A parameter's value: numbers, booleans, lists and objects as JSON, anything else as text.
 fn value_of(raw: &str) -> serde_json::Value {
-    let raw = raw.trim();
-    match serde_json::from_str::<serde_json::Value>(raw) {
+    let raw = decode(raw.trim());
+    match serde_json::from_str::<serde_json::Value>(&raw) {
         Ok(v) if !v.is_string() && !v.is_null() => v,
-        _ => serde_json::Value::String(raw.to_string()),
+        _ => serde_json::Value::String(raw),
     }
 }
 
-/// `key="value"` (or single-quoted) in a tag's attributes.
+/// XML's five entities, as a model writes them inside markup (#830 review, item 4): the value
+/// the tool gets is the text the model meant. `&amp;` last, so `&amp;lt;` stays `&lt;`.
+fn decode(raw: &str) -> String {
+    if !raw.contains('&') {
+        return raw.to_string();
+    }
+    raw.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'")
+        .replace("&#39;", "'").replace("&amp;", "&")
+}
+
+/// `key="value"` (or single-quoted) in a tag's attributes. The key must start the attributes
+/// or follow a space: `data-name="recall" name="run_command"` is `run_command`, so the tool a
+/// log shows is the tool that runs (#830 review, item 4).
 fn attr<'a>(head: &'a str, key: &str) -> Option<&'a str> {
-    let at = head.find(&format!("{key}="))? + key.len() + 1;
+    let pat = format!("{key}=");
+    let mut from = 0;
+    let at = loop {
+        let i = from + head[from..].find(&pat)?;
+        if head[..i].chars().next_back().map_or(true, char::is_whitespace) {
+            break i + pat.len();
+        }
+        from = i + pat.len();
+    };
     let quote = head[at..].chars().next().filter(|c| *c == '"' || *c == '\'')?;
     let value = &head[at + 1..];
     Some(&value[..value.find(quote)?])
@@ -178,6 +229,38 @@ mod tests {
         assert!(!is_markup_only("Your disk is 41% full."));
         assert!(!is_markup_only(""));
         assert_eq!(text_outside("Use <b>bold</b> here."), "Use <b>bold</b> here.");
+    }
+
+    /// Security review of 181c5881, #830, item 4.
+    #[test]
+    fn markup_that_only_looks_like_a_call_is_not_one() {
+        assert!(calls_in("<invoked name=\"recall\"><parameter name=\"query\">x</parameter></invoked></invoke>").is_empty());
+        assert!(calls_in("<invoke_x name=\"recall\"><parameter name=\"query\">x</parameter></invoke>").is_empty());
+        let c = calls_in("<invoke data-name=\"recall\" name=\"calculate\"><parameter name=\"expression\">1+1</parameter></invoke>");
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].name, "calculate", "the name attribute, not data-name");
+        let c = calls_in("<invoke data-name=\"recall\"><parameter name=\"query\">x</parameter></invoke>");
+        assert!(c.is_empty(), "data-name is not a name: {c:?}");
+        let c = calls_in("<invoke name=\"recall\"><parameter data-name=\"x\" name=\"query\">a</parameter></invoke>");
+        assert_eq!(c[0].arguments, serde_json::json!({"query": "a"}));
+    }
+
+    #[test]
+    fn a_block_inside_another_is_no_call() {
+        let nested = "<tool_call><name>recall</name><parameter name=\"query\">a</parameter>\
+            <invoke name=\"run_command\"><parameter name=\"command\">ls</parameter></invoke></tool_call>";
+        assert!(calls_in(nested).is_empty());
+        let nested = "<invoke name=\"recall\"><tool_call><name>run_command</name></tool_call></invoke>";
+        assert!(calls_in(nested).is_empty());
+        // Claude's own wrapper is not nesting.
+        let wrapped = format!("<function_calls>\n{WEATHER}\n</function_calls>");
+        assert_eq!(calls_in(&wrapped)[0].name, "recall");
+    }
+
+    #[test]
+    fn parameter_values_are_entity_decoded() {
+        let c = calls_in("<invoke name=\"calculate\"><parameter name=\"expression\">2 &lt; 3 &amp;&amp; &quot;a&quot; &amp;lt;</parameter></invoke>");
+        assert_eq!(c[0].arguments["expression"], "2 < 3 && \"a\" &lt;");
     }
 
     #[test]
