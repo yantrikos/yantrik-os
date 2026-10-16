@@ -2274,9 +2274,7 @@ impl CompanionService {
             );
             let turn = tool_markup::Turn::new(&messages, user_text).offering(&offered);
             // Calls a native-tool model wrote as text run as native ones (VM 542, 16 Oct 2026).
-            if self.use_native_tools {
-                turn.adopt(&mut llm_response, None);
-            }
+            let written_as_text = self.use_native_tools && turn.adopt(&mut llm_response, None);
 
             // Use native tool_calls if available, fall back to text parsing.
             // For StructuredJSON mode: parse via StructuredDecisionParser first.
@@ -2398,6 +2396,7 @@ impl CompanionService {
                 self.use_native_tools,
                 &llm_response.api_tool_calls,
                 &offered,
+                written_as_text,
                 &mut native_tools,
                 &mut agent_loop,
                 self.config.agent.error_recovery,
@@ -3169,9 +3168,8 @@ impl CompanionService {
                 );
                 let turn = tool_markup::Turn::new(&messages, user_text).offering(&offered);
                 // Calls a native-tool model wrote as text run as native ones (VM 542, 16 Oct 2026).
-                if self.use_native_tools {
-                    turn.adopt(&mut r, Some(&streamed_text).filter(|t| !t.is_empty()).map(String::as_str));
-                }
+                let written_as_text = self.use_native_tools
+                    && turn.adopt(&mut r, Some(&streamed_text).filter(|t| !t.is_empty()).map(String::as_str));
                 let full_text = if !streamed_text.is_empty() { &streamed_text } else { &r.text };
 
                 // Use native tool_calls if available, fall back to text parsing.
@@ -3270,6 +3268,7 @@ impl CompanionService {
                             self.use_native_tools,
                             &r.api_tool_calls,
                             &offered,
+                            written_as_text,
                             &mut native_tools,
                             &mut agent_loop,
                             self.config.agent.error_recovery,
@@ -3307,9 +3306,7 @@ impl CompanionService {
                                     &selected_tool_names, &injected_tool_names,
                                 );
                                 let turn = tool_markup::Turn::new(&messages, user_text).offering(&offered);
-                                if self.use_native_tools {
-                                    turn.adopt(&mut r2, None);
-                                }
+                                let written_as_text = self.use_native_tools && turn.adopt(&mut r2, None);
                                 let tc2: Vec<ToolCall> = if !r2.tool_calls.is_empty() {
                                     r2.tool_calls.clone()
                                 } else {
@@ -3391,6 +3388,7 @@ impl CompanionService {
                                     self.use_native_tools,
                                     &r2.api_tool_calls,
                                     &offered,
+                                    written_as_text,
                                     &mut native_tools,
                                     &mut agent_loop,
                                     self.config.agent.error_recovery,
@@ -4501,6 +4499,7 @@ fn execute_tool_round_tracked(
     use_native_tools: bool,
     api_tool_calls: &[yantrik_ml::ApiToolCall],
     offered: &std::collections::HashSet<String>,
+    written_as_text: bool,
     native_tools: &mut Vec<serde_json::Value>,
     agent_loop: &mut AgentLoop,
     error_recovery: bool,
@@ -4589,6 +4588,24 @@ fn execute_tool_round_tracked(
 
         // V25: Policy engine gate — check if this action is allowed
         let action_ctx = crate::policy_engine::ActionContext::from_tool(name);
+        // A call a native-tool model wrote as text instead of sending it as a tool call is never
+        // trusted more than a native one (security review of 181c5881, #830, item 1). The chat
+        // loop has no confirmation step to put it through, so a call that cannot be undone or
+        // that reaches outside (run_command, write_file, send_*, browser_type, the vault) is not
+        // run from text; the model is told to send it as a tool call. Read-only and memory calls,
+        // the forms VM 542 met, run as before, through the same policy, taint and audit path.
+        if written_as_text
+            && (action_ctx.irreversible || action_ctx.external_facing || action_ctx.touches_secrets || action_ctx.financial_legal)
+        {
+            tracing::warn!(tool = %name, "a call that cannot be undone, written as text; not run");
+            let result = format!(
+                "Not run: {name} was written as text, not sent as a tool call. A call that cannot be undone or that reaches outside runs only as a tool call."
+            );
+            agent_loop.record_step(name, args, &result, false);
+            let call_id = api_tool_calls.get(idx).map(|tc| tc.id.as_str()).unwrap_or("call_0");
+            messages.push(template_for_family(model_family).format_tool_result(call_id, name, &result));
+            continue;
+        }
         let policy_decision = policy_engine.evaluate(&action_ctx, trust_state);
         if let crate::policy_engine::PolicyDecision::Deny { ref reason } = policy_decision {
             tracing::warn!(tool = %name, reason = %reason, "Policy engine denied tool execution");
@@ -6861,6 +6878,25 @@ mod native_tool_reply_tests {
             assert!(r.tool_calls_made.is_empty(), "streaming={streaming}: ran {:?}", r.tool_calls_made);
             assert_eq!(r.message, crate::tool_markup::UNUSABLE_REPLY);
         }
+    }
+
+    /// Security review of 181c5881, #830, item 1: a call Claude writes as text is never trusted
+    /// more than a native one, so one that cannot be undone is not run from text.
+    #[test]
+    fn a_command_claude_writes_as_text_is_not_run() {
+        const RUN_TEXT: &str = "<invoke name=\"run_command\">\n<parameter name=\"command\">touch /tmp/yantrik-830-probe</parameter>\n</invoke>";
+        for streaming in [false, true] {
+            let (url, seen) = server(|request| {
+                if last_user_words(request).contains("Not run") { words("I won't run that from text.") } else { words(RUN_TEXT) }
+            });
+            let mut c = on_claude(url);
+            let (r, _) = if streaming { streamed(&mut c, "run touch /tmp/yantrik-830-probe") } else { (c.handle_message("run touch /tmp/yantrik-830-probe"), String::new()) };
+            assert_eq!(r.message, "I won't run that from text.", "streaming={streaming}");
+            assert!(!std::path::Path::new("/tmp/yantrik-830-probe").exists(), "the command did not run");
+            let seen = seen.lock().unwrap();
+            assert!(seen.iter().any(|q| last_user_words(q).contains("was written as text, not sent as a tool call")));
+        }
+        // Read-only calls written as text still run (a_call_claude_writes_as_text_runs_and_the_answer_follows).
     }
 
     fn streamed(c: &mut CompanionService, ask: &str) -> (AgentResponse, String) {
