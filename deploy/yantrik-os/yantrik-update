@@ -777,6 +777,7 @@ from it. Change it with: yantrik-update set-channel nightly" ;;
     reconcile_polkit || true
     reconcile_helpers || true
     reconcile_sysctl || true
+    reconcile_serial_console || true
     reconcile_registries || true
     reconcile_podman_socket || true
     reconcile_sudo_rule || true
@@ -1881,6 +1882,174 @@ reconcile_sysctl() {
     fi
     sudo -n sysctl -q -p "$dest" >/dev/null 2>&1 || warn "could not apply $dest now; it applies at the next boot"
   done
+}
+
+# The kernel's serial console, off on a machine installed before 12 Oct 2026. The installer used
+# to write `console=ttyS0,115200 console=tty1` into /etc/default/grub (see grub_defaults in
+# crates/yantrik-ui/src/wire/installer.rs). With no serial port, systemd starts a login prompt on
+# ttyS0 anyway, agetty fails ("failed to get terminal attributes: Input/output error") and the
+# unit restarts every ten seconds for as long as the machine runs: about 8,600 times a day on VM
+# 541 (16 Oct), installed 12 Oct and updated since, because nothing here ever touched the file.
+#
+# Only the exact line an old installer wrote is changed, to the line it writes now; git history
+# has no other form of it. Any other kernel line is someone's choice (a serial console added by
+# hand to debug a machine that has one) and is left as it is. GRUB_CMDLINE_LINUX_DEFAULT, which
+# carries the unlock screen and the quiet, is never read or written. The file is copied aside
+# first and kept; grub.cfg is regenerated as the installer does it, and if that fails both files
+# go back as they were, so the machine boots as it did before. Variables, so the selftest can
+# point them at a scratch directory.
+GRUB_DEFAULTS=/etc/default/grub
+GRUB_CFG=/boot/grub/grub.cfg
+GRUB_CMDLINE_OLD='GRUB_CMDLINE_LINUX="console=ttyS0,115200 console=tty1"'
+GRUB_CMDLINE_NEW='GRUB_CMDLINE_LINUX="console=tty1"'
+
+# The installer's own command (installer.rs runs update-grub in the new system); on Debian that is
+# grub-mkconfig -o /boot/grub/grub.cfg, which writes grub.cfg.new and moves it over only once it
+# has checked it.
+grub_can_regenerate() { command -v update-grub >/dev/null 2>&1 || command -v grub-mkconfig >/dev/null 2>&1; }
+grub_regenerate() {
+  if command -v update-grub >/dev/null 2>&1; then update-grub; else grub-mkconfig -o "$GRUB_CFG"; fi
+}
+
+# Does a grub.cfg start the kernel with its root named by the disk's port (root=/dev/sda2) rather
+# than its UUID? The installer refuses such a menu (installer_rules::root_by_device): the disk
+# would not boot once another is plugged in ahead of it.
+grub_cfg_by_device() {
+  grep -qE '^[[:space:]]*linux[^[:space:]]*[[:space:]].*[[:space:]]root=/dev/(sd|nvme|vd|hd|mmcblk)' "$1" 2>/dev/null
+}
+
+# Does a grub.cfg still start the kernel with the old line's serial console?
+grub_cfg_has_old_serial() {
+  grep -qE '^[[:space:]]*linux[^[:space:]]*[[:space:]].*[[:space:]]console=ttyS0,115200' "$1" 2>/dev/null
+}
+
+# The .before- copy this code rewrote $1 from, if $1 is exactly that copy with the old line
+# swapped for the new: proof the new line is this code's doing, not someone's own edit.
+grub_defaults_rewritten_from() {
+  local c
+  for c in "$1".before-*; do
+    [ -f "$c" ] || continue
+    awk -v old="$GRUB_CMDLINE_OLD" -v new="$GRUB_CMDLINE_NEW" '$0 == old { print new; next } { print }' "$c" \
+      | cmp -s - "$1" && { printf '%s\n' "$c"; return 0; }
+  done
+  return 1
+}
+
+migrate_grub_cmdline() {
+  local f="$GRUB_DEFAULTS" cfg="$GRUB_CFG" lines note copy tmp cfg_copy out rc resume="" kept put_back
+  [ -f "$f" ] || return 0
+  # A run killed part way leaves its temp files here; every name with this suffix is one this
+  # function made, and nothing else runs it at the same time (security review of 5f826b95,
+  # #829, item 2).
+  rm -f -- "$f".yantrik-?????? "$cfg".yantrik-??????
+  lines="$(grep -E '^[[:space:]]*(export[[:space:]]+)?GRUB_CMDLINE_LINUX=' "$f")"
+  kept="$f keeps console=ttyS0"
+  if [ "$lines" = "$GRUB_CMDLINE_NEW" ]; then
+    # Already the new line. Done, unless a run was stopped between rewriting $f and finishing
+    # the menu (killed, or its put-back failed): then grub.cfg still starts the kernel on
+    # ttyS0, and stopping here would leave the getty loop at every boot until some kernel
+    # update happened to regenerate it (#829 review, item 2). Resumed only when this code
+    # made the change (a .before- copy that $f is the rewrite of), and when nothing in $f or
+    # its grub.d asks for that console, so a menu that would carry it anyway is not
+    # regenerated at every update.
+    grub_cfg_has_old_serial "$cfg" || return 0
+    grep -qs -- 'console=ttyS0,115200' "$f" "$f".d/*.cfg && return 0
+    copy="$(grub_defaults_rewritten_from "$f")" || return 0
+    resume=1; kept="$cfg still starts the kernel with console=ttyS0"
+  elif [ "$lines" != "$GRUB_CMDLINE_OLD" ]; then
+    # Said once per line, not at every update: it is not a fault, only worth knowing about.
+    note="$UPDATES_DIR/grub-cmdline-left-alone"
+    if [ "$(cat "$note" 2>/dev/null)" != "$lines" ]; then
+      info "$f: the kernel line is not one a Yantrik installer wrote; left as it is: ${lines:-(none)}"
+      # Written beside it and renamed over it, never through it: updates/ was the desktop
+      # user's before cmd_migrate_ownership, and a link left there from then would have root
+      # truncate whatever it points at, sudoers or grub.cfg (security review of 5f826b95, #829,
+      # item 1). The rename replaces the link itself; -T so a link to a directory is not
+      # moved into.
+      tmp="$(mktemp "$note.XXXXXX" 2>/dev/null)" \
+        && { { printf '%s\n' "$lines" > "$tmp" && mv -fT "$tmp" "$note"; } 2>/dev/null || rm -f "$tmp"; }
+    fi
+    return 0
+  fi
+  grub_can_regenerate || { warn "no update-grub on this machine; $kept"; return 0; }
+  # A menu somewhere else (/boot not mounted, another loader) is not one this can put back.
+  [ -f "$cfg" ] || { warn "no $cfg on this machine; $kept"; return 0; }
+
+  cfg_copy="$(mktemp "$cfg.yantrik-XXXXXX")" || { warn "could not write beside $cfg; $kept"; return 0; }
+  cp -p "$cfg" "$cfg_copy" || { rm -f "$cfg_copy"; warn "could not copy $cfg aside; $kept"; return 0; }
+  if [ -z "$resume" ]; then
+    # One copy of the old file, however many runs it takes: a run whose regeneration failed put the
+    # file back as it was, and its copy still stands for it.
+    copy=""
+    for tmp in "$f".before-*; do
+      [ -f "$tmp" ] && cmp -s "$tmp" "$f" && copy="$tmp"
+    done
+    [ -n "$copy" ] || copy="$f.before-$(date -u +%Y%m%dT%H%M%SZ)"
+    [ -f "$copy" ] || cp -p "$f" "$copy" || { rm -f "$cfg_copy"; warn "could not copy $f aside; it keeps console=ttyS0"; return 0; }
+    tmp="$(mktemp "$f.yantrik-XXXXXX")" || { rm -f "$cfg_copy"; warn "could not write beside $f; it keeps console=ttyS0"; return 0; }
+    if ! awk -v old="$GRUB_CMDLINE_OLD" -v new="$GRUB_CMDLINE_NEW" '$0 == old { print new; next } { print }' "$f" > "$tmp" \
+       || ! chmod --reference="$f" "$tmp" || ! chown --reference="$f" "$tmp" || ! mv -f "$tmp" "$f"; then
+      rm -f "$tmp" "$cfg_copy"
+      warn "could not rewrite $f; it keeps console=ttyS0"
+      return 0
+    fi
+  fi
+  out="$(grub_regenerate 2>&1)"; rc=$?
+  if [ "$rc" = 0 ] && grub_cfg_by_device "$cfg" && ! grub_cfg_by_device "$cfg_copy"; then
+    out="the new menu names the root by its device, not its UUID"; rc=1
+  fi
+  if [ "$rc" != 0 ]; then
+    # Back as it was, each by a rename, so no reader ever sees half a file. A step that fails
+    # takes its temp file with it, and the last line says "as they were" only when both did go
+    # back (security review of 5f826b95, #829, item 3).
+    put_back=yes
+    if ! tmp="$(mktemp "$f.yantrik-XXXXXX")"; then
+      warn "could not put $f back; the copy is $copy"; put_back=""
+    elif ! cp -p "$copy" "$tmp" || ! mv -f "$tmp" "$f"; then
+      rm -f "$tmp"; warn "could not put $f back; the copy is $copy"; put_back=""
+    fi
+    mv -f "$cfg_copy" "$cfg" || { warn "could not put $cfg back; the copy is $cfg_copy"; put_back=""; }
+    if [ -n "$put_back" ]; then
+      warn "could not regenerate the boot menu ($(printf '%s' "$out" | tail -n 1)); $f and $cfg are as they were"
+    else
+      warn "could not regenerate the boot menu ($(printf '%s' "$out" | tail -n 1)), nor put everything back; see above"
+    fi
+    return 0
+  fi
+  rm -f "$cfg_copy"
+  info "kernel console is the screen only from the next start (was console=ttyS0 too); the old $f is $copy"
+}
+
+# And the loop running now, without waiting for that start: stopped only when the port gives an
+# I/O error, which is what agetty fails on. Stopped, never masked: a machine that does have a port
+# and is started with console=ttyS0 by hand still gets its prompt there.
+# The probe is held to a few seconds: stty opens the port without blocking, but a stuck UART or
+# USB-serial driver could still hang it, and this runs as root in the middle of an update with
+# the other reconciles still to come (security review of 5f826b95, #829, item 4). A port that
+# does not answer in time is left running. A variable, so the selftest need not wait 5 s.
+SERIAL_PROBE_SECS=5
+stop_serial_getty_loop() {
+  local unit=serial-getty@ttyS0.service err rc
+  case "$(systemctl is-active "$unit" 2>/dev/null)" in active|activating|reloading) ;; *) return 0 ;; esac
+  err="$(timeout -k 2 "$SERIAL_PROBE_SECS" stty -F /dev/ttyS0 2>&1 >/dev/null)"; rc=$?
+  [ "$rc" = 0 ] && return 0
+  if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+    info "/dev/ttyS0 did not answer within ${SERIAL_PROBE_SECS}s; $unit left running"
+    return 0
+  fi
+  case "$err" in *"Input/output error"*) ;; *) return 0 ;; esac
+  if systemctl stop "$unit" >/dev/null 2>&1; then
+    info "stopped $unit: this machine has no serial port, and it was restarting every ten seconds"
+  else
+    warn "could not stop $unit; it restarts every ten seconds until the next start"
+  fi
+}
+
+reconcile_serial_console() {
+  [ "$(id -u)" = 0 ] || return 0
+  tree_is_roots || return 0
+  migrate_grub_cmdline
+  stop_serial_getty_loop
 }
 
 # Where podman resolves a short image name (#401), from share/containers into
@@ -3488,6 +3657,7 @@ cmd_reconcile() {
   reconcile_polkit
   reconcile_helpers
   reconcile_sysctl
+  reconcile_serial_console
   reconcile_sudo_rule
   reconcile_minds
   reconcile_devtools_guard
@@ -4837,6 +5007,157 @@ c.sendall((json.dumps({"ok": True, "seeded": req["rules"]}) + "\n").encode())' "
   rm -rf "$rbk/memory"; printf 'build-d\n' > "$rb/memory/VERSIONS"
   ( PREFIX="$rb" BIN_DIR="$rb/bin" SHARE_DIR="$rb/share" BUILD_FILE="$rb/BUILD"; restore_backup "$rbk" ) >/dev/null 2>&1
   is "memory: a backup from before memory/ shipped leaves the installed one" "build-d" "$(head -n 1 "$rb/memory/VERSIONS" 2>/dev/null)"
+
+  # The kernel's serial console on a machine installed before 12 Oct 2026 (VM 541, 16 Oct): the
+  # old installer's line becomes the new one, anything else is left, a second run does nothing,
+  # and a failed regeneration puts both files back.
+  local gd="$root/grub"
+  mkdir -p "$gd/default" "$gd/boot" "$gd/updates"
+  gr_old() {
+    printf '%s\n' 'GRUB_DEFAULT=0' 'GRUB_TIMEOUT=3' 'GRUB_DISTRIBUTOR="Yantrik OS"' \
+      'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=3 console=ttyS0"' "$1" \
+      'GRUB_TERMINAL="console serial"' 'GRUB_SERIAL_COMMAND="serial --speed=115200"' > "$gd/default/grub"
+    chmod 0644 "$gd/default/grub"
+    printf 'linux /vmlinuz root=UUID=1234 console=ttyS0,115200 console=tty1\n' > "$gd/boot/grub.cfg"
+    rm -f "$gd/default/grub".before-* "$gd/calls" "$gd/updates/grub-cmdline-left-alone"
+  }
+  gr_run() { # gr_run <ok|fail|by-device>: what migrate_grub_cmdline said; GR_CP_FAIL=1, the put-back's copy fails
+    ( GRUB_DEFAULTS="$gd/default/grub" GRUB_CFG="$gd/boot/grub.cfg" UPDATES_DIR="$gd/updates" GR_MODE="$1"
+      cp() { [ -n "${GR_CP_FAIL:-}" ] && case "${3:-}" in "$GRUB_DEFAULTS".yantrik-*) true ;; *) false ;; esac \
+               && { echo "cp: error writing: No space left on device" >&2; return 1; }; command cp "$@"; }
+      grub_can_regenerate() { [ "$GR_MODE" != no-update-grub ]; }
+      grub_regenerate() {
+        printf 'regenerate\n' >> "$gd/calls"
+        case "$GR_MODE" in
+          ok) printf 'linux /vmlinuz root=UUID=1234 %s\n' "$(sed -n 's/^GRUB_CMDLINE_LINUX="\(.*\)"$/\1/p' "$GRUB_DEFAULTS")" > "$GRUB_CFG" ;;
+          by-device) printf 'linux /vmlinuz root=/dev/sda2 console=tty1\n' > "$GRUB_CFG" ;;
+          *) printf 'half a menu\n' > "$GRUB_CFG"; echo "grub-mkconfig: error: syntax error"; return 1 ;;
+        esac
+      }
+      migrate_grub_cmdline 2>&1 )
+  }
+  local gwas
+  gr_old "$GRUB_CMDLINE_OLD"; gwas="$(grep -v '^GRUB_CMDLINE_LINUX=' "$gd/default/grub")"
+  out="$(gr_run ok)"
+  is "serial console: the old installer's line becomes the new one" "$GRUB_CMDLINE_NEW" \
+    "$(grep '^GRUB_CMDLINE_LINUX=' "$gd/default/grub")"
+  is "serial console: ... and every other line, the DEFAULT line too, is as it was" "$gwas" \
+    "$(grep -v '^GRUB_CMDLINE_LINUX=' "$gd/default/grub")"
+  is "serial console: ... the file keeps its mode" "644" "$(stat -c %a "$gd/default/grub")"
+  is "serial console: ... the old file is kept beside it" "$GRUB_CMDLINE_OLD" \
+    "$(grep -h '^GRUB_CMDLINE_LINUX=' "$gd/default/grub".before-* 2>/dev/null)"
+  is "serial console: ... the menu is regenerated from it" "linux /vmlinuz root=UUID=1234 console=tty1" "$(cat "$gd/boot/grub.cfg")"
+  is "serial console: ... and nothing is left beside the two files" "" \
+    "$(find "$gd/default" "$gd/boot" -name '*.yantrik-*')"
+  t "serial console: ... and it says so" "the screen only from the next start" "$out"
+  out="$(gr_run ok)"
+  is "serial console: a second run does nothing" "regenerate|1|" \
+    "$(cat "$gd/calls")|$(find "$gd/default" -name 'grub.before-*' | wc -l)|$out"
+
+  gr_old 'GRUB_CMDLINE_LINUX="console=ttyS0,115200 console=tty1 nomodeset"'; cp -p "$gd/default/grub" "$gd/hand"
+  out="$(gr_run ok)"
+  is "serial console: a line someone edited is left as it is" "yes|no|none" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$([ -e "$gd/calls" ] && echo yes || echo no)|$(ls "$gd/default"/grub.before-* 2>/dev/null || echo none)"
+  t "serial console: ... and said so" "not one a Yantrik installer wrote" "$out"
+  is "serial console: ... once, not at every update" "" "$(gr_run ok)"
+  # A link planted in updates/ while it was the desktop user's (#829 review, item 1).
+  gr_old 'GRUB_CMDLINE_LINUX="console=ttyS0,115200 console=tty1 nomodeset"'
+  printf 'keep\n' > "$gd/victim"; mkdir -p "$gd/victim-dir"
+  ln -s "$gd/victim" "$gd/updates/grub-cmdline-left-alone"
+  gr_run ok >/dev/null
+  is "serial console: a note file that is a link leaves what it points at alone" "keep" "$(cat "$gd/victim")"
+  is "serial console: ... and the note is a file of its own" "yes|$(grep '^GRUB_CMDLINE_LINUX=' "$gd/default/grub")" \
+    "$([ -f "$gd/updates/grub-cmdline-left-alone" ] && ! [ -L "$gd/updates/grub-cmdline-left-alone" ] && echo yes || echo no)|$(cat "$gd/updates/grub-cmdline-left-alone")"
+  gr_old 'GRUB_CMDLINE_LINUX="console=ttyS0,115200 console=tty1 nomodeset"'
+  ln -s "$gd/victim-dir" "$gd/updates/grub-cmdline-left-alone"
+  gr_run ok >/dev/null
+  is "serial console: ... a link to a directory puts nothing in it" "" "$(ls -A "$gd/victim-dir")"
+  rm -rf "$gd/victim" "$gd/victim-dir"
+  gr_old 'GRUB_CMDLINE_LINUX="console=ttyS0,115200 console=tty1"'
+  printf 'GRUB_CMDLINE_LINUX="console=ttyS0,115200"\n' >> "$gd/default/grub"; cp -p "$gd/default/grub" "$gd/hand"
+  gr_run ok >/dev/null
+  is "serial console: the old line with a second one after it is left as it is" "yes" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)"
+
+  local gcfg
+  for gm in fail by-device; do
+    gr_old "$GRUB_CMDLINE_OLD"; cp -p "$gd/default/grub" "$gd/hand"; gcfg="$(cat "$gd/boot/grub.cfg")"
+    out="$(gr_run "$gm")"
+    is "serial console: regeneration $gm: the file is put back" "yes" \
+      "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)"
+    is "serial console: ... and the old menu" "$gcfg" "$(cat "$gd/boot/grub.cfg")"
+    is "serial console: ... nothing is left beside them" "" "$(find "$gd/default" "$gd/boot" -name '*.yantrik-*')"
+    t "serial console: ... and it says so" "are as they were" "$out"
+  done
+  gr_run fail >/dev/null
+  is "serial console: a second failed run keeps the one copy" "1" "$(find "$gd/default" -name 'grub.before-*' | wc -l)"
+  # The put-back of the file failing, /etc full (#829 review, item 3).
+  gr_old "$GRUB_CMDLINE_OLD"; out="$(GR_CP_FAIL=1 gr_run fail)"
+  is "serial console: a put-back that fails leaves no temp file" "" "$(find "$gd/default" "$gd/boot" -name '*.yantrik-*')"
+  t "serial console: ... says which file did not go back" "could not put $gd/default/grub back" "$out"
+  is "serial console: ... and does not say both are as they were" "no" "$(printf '%s' "$out" | grep -q 'are as they were' && echo yes || echo no)"
+
+  # A machine with no update-grub, and one whose menu is not at $GRUB_CFG (#829 review, item 5):
+  # nothing is touched and it says why.
+  gr_old "$GRUB_CMDLINE_OLD"; cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run no-update-grub)"
+  is "serial console: no update-grub: nothing is touched" "yes||none" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$(cat "$gd/calls" 2>/dev/null)|$(ls "$gd/default"/grub.before-* 2>/dev/null || echo none)"
+  t "serial console: ... and it says why" "no update-grub on this machine" "$out"
+  gr_old "$GRUB_CMDLINE_OLD"; cp -p "$gd/default/grub" "$gd/hand"; rm -f "$gd/boot/grub.cfg"; out="$(gr_run ok)"
+  is "serial console: no grub.cfg: nothing is touched or made" "yes||none|no" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$(cat "$gd/calls" 2>/dev/null)|$(ls "$gd/default"/grub.before-* 2>/dev/null || echo none)|$([ -e "$gd/boot/grub.cfg" ] && echo yes || echo no)"
+  t "serial console: ... and it says why" "no $gd/boot/grub.cfg on this machine" "$out"
+
+  # A run killed after $f was rewritten and before the menu was (#829 review, item 2): the next
+  # one finishes the job instead of stopping at "already the new line".
+  gr_killed() { # the state such a run leaves: $f rewritten, its copy kept, the old menu, temp files
+    gr_old "$GRUB_CMDLINE_OLD"; cp -p "$gd/default/grub" "$gd/default/grub.before-20261016T000000Z"
+    sed -i "s/^GRUB_CMDLINE_LINUX=.*/$(printf '%s' "$GRUB_CMDLINE_NEW" | sed 's/[&/]/\\&/g')/" "$gd/default/grub"
+    printf 'half\n' > "$gd/boot/grub.cfg.yantrik-AbC123"; printf 'half\n' > "$gd/default/grub.yantrik-dEf456"
+  }
+  gr_killed; out="$(gr_run ok)"
+  is "serial console: an interrupted run is finished by the next one" "regenerate|linux /vmlinuz root=UUID=1234 console=tty1" \
+    "$(cat "$gd/calls" 2>/dev/null)|$(cat "$gd/boot/grub.cfg")"
+  is "serial console: ... its temp files are cleared" "" "$(find "$gd/default" "$gd/boot" -name '*.yantrik-*')"
+  is "serial console: ... and a run after that does nothing" "" "$(rm -f "$gd/calls"; gr_run ok; cat "$gd/calls" 2>/dev/null)"
+  gr_killed; gcfg="$(cat "$gd/boot/grub.cfg")"; out="$(gr_run fail)"
+  is "serial console: an interrupted run whose finish fails puts back the old file and menu" "$GRUB_CMDLINE_OLD|$gcfg" \
+    "$(grep '^GRUB_CMDLINE_LINUX=' "$gd/default/grub")|$(cat "$gd/boot/grub.cfg")"
+  gr_killed; rm -f "$gd/default"/grub.before-*; out="$(gr_run ok)"
+  is "serial console: the new line with no copy of ours beside it is not regenerated" "" "$(cat "$gd/calls" 2>/dev/null)$out"
+  gr_killed; mkdir -p "$gd/default/grub.d"
+  printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet console=ttyS0,115200"\n' > "$gd/default/grub.d/serial.cfg"
+  out="$(gr_run ok)"; rm -rf "$gd/default/grub.d"
+  is "serial console: ... nor is a machine whose grub.d asks for that console itself" "" "$(cat "$gd/calls" 2>/dev/null)"
+  is "serial console: the new line is the installer's" "yes" \
+    "$(! [ -f "$here/../../crates/yantrik-ui/src/wire/installer.rs" ] \
+       || grep -qF -- "$(printf '%s' "$GRUB_CMDLINE_NEW" | sed 's/"/\\"/g')" "$here/../../crates/yantrik-ui/src/wire/installer.rs" && echo yes || echo no)"
+
+  # The loop running now: stopped only when the port gives the I/O error agetty fails on.
+  # stty is a program on PATH here, not a function, because the probe runs it under timeout.
+  mkdir -p "$gd/bin"
+  # shellcheck disable=SC2016  # the stub's own script, expanded when it runs
+  printf '%s\n' '#!/bin/sh' '[ -z "$SG_SLEEP" ] || sleep "$SG_SLEEP"' \
+    '[ -z "$SG_ERR" ] || { printf "stty: /dev/ttyS0: %s\n" "$SG_ERR" >&2; exit 1; }' > "$gd/bin/stty"
+  chmod +x "$gd/bin/stty"
+  sg_run() { # sg_run <is-active answer> <stty's error, empty when it answers> [seconds stty hangs]: the systemctl stop made
+    ( SG_STATE="$1"; export SG_ERR="$2" SG_SLEEP="${3:-}"; PATH="$gd/bin:$PATH"; SERIAL_PROBE_SECS=1
+      systemctl() { if [ "$1" = is-active ]; then printf '%s\n' "$SG_STATE"; else printf '%s\n' "$*" >> "$gd/sg"; fi; }
+      rm -f "$gd/sg"; stop_serial_getty_loop >/dev/null 2>&1; cat "$gd/sg" 2>/dev/null )
+  }
+  is "serial getty: restarting on a port with no UART: stopped" "stop serial-getty@ttyS0.service" \
+    "$(sg_run activating 'Input/output error')"
+  is "serial getty: ... running: stopped" "stop serial-getty@ttyS0.service" "$(sg_run active 'Input/output error')"
+  is "serial getty: a port that answers: left running" "" "$(sg_run active '')"
+  is "serial getty: another error: left running" "" "$(sg_run active 'No such file or directory')"
+  is "serial getty: not running: nothing to stop" "" "$(sg_run inactive 'Input/output error')"
+  # A probe that hangs (#829 review, item 4): given up on after SERIAL_PROBE_SECS, port left running.
+  local sg_t0; sg_t0="$(date +%s)"
+  is "serial getty: a port whose probe hangs: left running" "" "$(sg_run active 'Input/output error' 10)"
+  is "serial getty: ... and the update is not held up" "yes" "$([ $(( $(date +%s) - sg_t0 )) -lt 6 ] && echo yes || echo no)"
+  is "serial getty: never masked" "no" "$(declare -f stop_serial_getty_loop | grep -q mask && echo yes || echo no)"
+  is "serial console: reconcile and an up-to-date apply both run it" "yes" \
+    "$(declare -f cmd_reconcile | grep -q reconcile_serial_console && declare -f cmd_apply | grep -q reconcile_serial_console && echo yes || echo no)"
 
   if [ "$fails" = 0 ]; then
     printf '%sall selftest checks passed%s\n' "$c_grn" "$c_off"

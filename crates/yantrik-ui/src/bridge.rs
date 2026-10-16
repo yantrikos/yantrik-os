@@ -41,11 +41,24 @@ const ANSWER_CHECK_RESULT: &str = "391";
 pub enum Served {
     /// A model's words.
     Model,
-    /// The shell's own words: no model is set up, or the one set up could not be reached.
+    /// The shell's own words: no model is set up, or none produced these words.
     NoModel,
+    /// A model is set up and could not be reached: the offline responder answered, and this is
+    /// why (the backend's error), so nobody is told it is not set up.
+    Unreachable(String),
     /// A model was reached and failed the turn (it thought and gave no answer); the streamed
     /// text is the sentence saying so, and this is why, for the log.
     ModelFailed(String),
+}
+
+/// Who produced a finished turn's words.
+fn served(response: &yantrik_companion::types::AgentResponse) -> Served {
+    match &response.model_failure {
+        Some(why) if response.offline_mode => Served::Unreachable(why.clone()),
+        Some(why) => Served::ModelFailed(why.clone()),
+        None if !response.offline_mode && !response.without_model => Served::Model,
+        None => Served::NoModel,
+    }
 }
 
 /// Why an [`CompanionHandle::ask`] did not produce an answer.
@@ -56,8 +69,10 @@ pub enum Served {
 /// offered to replace a document with it. The canned text does not leave the shell.
 #[derive(Debug)]
 pub enum AskError {
-    /// The shell answered, and no model did — none set up, or the one set up did not answer.
+    /// The shell answered, and no model did — none is set up.
     NoModel,
+    /// The shell answered because the model set up could not be reached: why.
+    Unreachable(String),
     /// No answer at all: no worker, a timeout, a failure on the way, or a turn that panicked
     /// mid-stream — the reason then carries its failure text.
     Failed(String),
@@ -409,7 +424,8 @@ impl CompanionHandle {
     /// stream is drained here. `__REPLACE__` means the next token supersedes everything so far,
     /// which is how the worker reports an error mid-stream.
     ///
-    /// A turn the offline responder served comes back as [`AskError::NoModel`], not as its
+    /// A turn the offline responder served comes back as [`AskError::NoModel`] (or
+    /// [`AskError::Unreachable`] when a model is set up and did not answer), not as its
     /// canned text: the caller would show that text as the answer, and apps acted on it. A
     /// turn that panicked comes back as [`AskError::Failed`] carrying the failure text, for
     /// the same reason: `Ok` from here is always a model's words.
@@ -458,6 +474,7 @@ impl CompanionHandle {
         match model_rx.try_recv() {
             Ok(Served::Model) => Ok(answer),
             Ok(Served::NoModel) => Err(AskError::NoModel),
+            Ok(Served::Unreachable(why)) => Err(AskError::Unreachable(why)),
             // The text is the sentence about the failure, which is what the person should read.
             Ok(Served::ModelFailed(_)) => Err(AskError::Failed(answer)),
             // No signal: the turn never reached the point where the worker knows — it panicked
@@ -1500,12 +1517,7 @@ fn worker_loop(
                         // Nor the not-set-up sentence, a guard warning or a router reply:
                         // no model produced those, so they prove nothing.
                         if let Some(tx) = &model {
-                            let served = match (&response.model_failure, ok && !response.without_model) {
-                                (Some(why), _) => Served::ModelFailed(why.clone()),
-                                (None, true) => Served::Model,
-                                (None, false) => Served::NoModel,
-                            };
-                            let _ = tx.send(served);
+                            let _ = tx.send(served(&response));
                         }
                         if ok {
                             execute_suppression_logged = false;
@@ -3602,6 +3614,33 @@ mod ask_tests {
         match handle.ask("anything".to_string(), std::time::Duration::from_secs(10)) {
             Err(AskError::Failed(reason)) => assert_eq!(reason, yantrik_ml::THOUGHT_WITHOUT_ANSWER),
             other => panic!("a failed turn must not come back as an answer; got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_turn_says_whether_no_model_is_set_up_or_the_one_set_up_did_not_answer() {
+        let turn = |offline_mode, without_model, model_failure: Option<&str>| yantrik_companion::types::AgentResponse {
+            message: String::new(),
+            memories_recalled: 0,
+            urges_delivered: vec![],
+            tool_calls_made: vec![],
+            offline_mode,
+            without_model,
+            model_failure: model_failure.map(str::to_string),
+        };
+        assert!(matches!(served(&turn(false, false, None)), Served::Model));
+        assert!(matches!(served(&turn(false, true, None)), Served::NoModel), "the not-set-up sentence");
+        let refused = "Claude refused the request: `temperature` is deprecated for this model";
+        assert!(matches!(served(&turn(false, false, Some(refused))), Served::ModelFailed(w) if w == refused));
+        assert!(matches!(served(&turn(true, false, Some("connection refused"))), Served::Unreachable(w) if w == "connection refused"));
+
+        let handle = stub(|token_tx, model| {
+            let _ = token_tx.send("Here is a canned reply.".to_string());
+            served_by(token_tx, model, Served::Unreachable("connection refused".into()));
+        });
+        match handle.ask("anything".to_string(), std::time::Duration::from_secs(10)) {
+            Err(AskError::Unreachable(why)) => assert_eq!(why, "connection refused"),
+            other => panic!("{other:?}"),
         }
     }
 

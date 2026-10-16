@@ -11,6 +11,8 @@ use std::io::{BufRead, BufReader};
 use anyhow::{Context, Result};
 
 use crate::chat_template;
+// The host an error names, and the provider's words cut and masked: shared with ApiLLM.
+use crate::refusal::{excerpt as error_excerpt, host_of as error_host};
 use crate::traits::LLMBackend;
 use crate::types::{ApiToolCall, ApiToolCallFunction, ChatMessage, GenerationConfig, LLMResponse, ToolCall};
 
@@ -99,24 +101,6 @@ pub struct GenericOpenAIBackend {
     meta: Option<MetaSink>,
     /// HTTPS only, and no redirect followed (`strict_transport`).
     strict: bool,
-}
-
-/// The host an error names: never a path (Cloudflare's carries the account id), a query (a key, at
-/// some providers) or `user:pass@`.
-fn error_host(url: &str) -> String {
-    let authority = url.split("://").nth(1).and_then(|r| r.split(['/', '?', '#']).next()).unwrap_or("");
-    let host = authority.rsplit('@').next().unwrap_or("");
-    if host.is_empty() { "the provider".to_string() } else { host.to_string() }
-}
-
-/// A provider's error body, short enough to say what went wrong: the key masked first, then cut,
-/// so a key echoed across the cut cannot leave its head behind.
-fn error_excerpt(body: &str, key: Option<&str>) -> String {
-    let masked = match key.filter(|k| k.len() >= 8) {
-        Some(k) => body.replace(k, "<key>"),
-        None => body.to_string(),
-    };
-    masked.chars().take(200).collect()
 }
 
 impl GenericOpenAIBackend {
@@ -486,6 +470,8 @@ impl GenericOpenAIBackend {
             }
         }
 
+        // What this provider takes, as in ApiLLM (crate::refusal).
+        crate::refusal::prepare(&self.base_url, &self.model, config, &mut body);
         body
     }
 
@@ -493,7 +479,32 @@ impl GenericOpenAIBackend {
         format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
     }
 
+    /// Send `body`, once more without a sampling parameter the model says it will not take
+    /// (crate::refusal), and any other refusal as an error naming the host and what it said.
     fn send_openai_request(&self, body: &serde_json::Value) -> Result<ureq::Body> {
+        match crate::refusal::send_dropping_refused(&self.base_url, &self.model, body, |b| self.post_openai(b))? {
+            Ok(resp) => Ok(resp),
+            Err((status, text)) => Err(self.refused(status, &text)),
+        }
+    }
+
+    /// The error for a request the provider did not answer: a 4xx refusal is
+    /// [`crate::ProviderRefused`], its reason in the provider's own words, cleaned, as `ApiLLM`
+    /// gives it. Anything else names the host and an excerpt: a provider's error can echo what it
+    /// was sent, so the key is masked and the rest cleaned and cut short enough to say what went
+    /// wrong without carrying the conversation into a log.
+    fn refused(&self, status: u16, text: &str) -> anyhow::Error {
+        match crate::ProviderRefused::of(status, &self.base_url, text, self.api_key.as_deref()) {
+            Some(refused) => refused.into(),
+            None => {
+                let host = error_host(&self.openai_endpoint_url());
+                anyhow::anyhow!("HTTP {status} from {host}: {}", error_excerpt(text, self.api_key.as_deref()))
+            }
+        }
+    }
+
+    /// One POST to the chat endpoint: the body to read on a 2xx, else the status and the body.
+    fn post_openai(&self, body: &serde_json::Value) -> Result<std::result::Result<ureq::Body, (u16, String)>> {
         let url = self.openai_endpoint_url();
         let body_str = serde_json::to_string(body)?;
 
@@ -530,14 +541,11 @@ impl GenericOpenAIBackend {
             *sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(ResponseMeta { status, headers });
         }
         if !(200..300).contains(&status) {
-            let mut body = resp.into_body();
-            let text = body.read_to_string().unwrap_or_default();
-            // A provider's error can echo what it was sent: the key is masked, and the rest is cut
-            // short enough to say what went wrong without carrying the conversation into a log.
-            anyhow::bail!("HTTP {status} from {host}: {}", error_excerpt(&text, self.api_key.as_deref()));
+            let text = resp.into_body().read_to_string().unwrap_or_default();
+            return Ok(Err((status, text)));
         }
 
-        Ok(resp.into_body())
+        Ok(Ok(resp.into_body()))
     }
 
     fn openai_chat(
@@ -862,5 +870,18 @@ mod error_text_tests {
         assert!(!excerpt.contains("gsk_0123"), "{excerpt}");
         assert!(excerpt.contains("<key>"));
         assert!(excerpt.chars().count() <= 200);
+    }
+
+    #[test]
+    fn a_4xx_is_the_providers_cleaned_reason_and_anything_else_a_cleaned_excerpt() {
+        let key = "gsk_0123456789abcdefghijklmnopqrstuvwxyz";
+        let be = super::GenericOpenAIBackend::for_provider("groq", "https://api.groq.com/openai/v1".to_string(), Some(key.to_string()), "m");
+        let body = format!("{{\"error\":{{\"message\":\"\u{202e}no\\u001b[2J such\\nmodel {key}\"}}}}");
+        let e = be.refused(404, &body);
+        let refused = e.downcast_ref::<crate::ProviderRefused>().expect("a 4xx is ProviderRefused");
+        assert_eq!(refused.reason, "no[2J such model <key>");
+        let e = be.refused(503, "upstream\u{1b}[2J\ndown\u{202e}");
+        assert!(e.downcast_ref::<crate::ProviderRefused>().is_none());
+        assert_eq!(e.to_string(), "HTTP 503 from api.groq.com: upstream[2J down");
     }
 }
