@@ -315,6 +315,113 @@ pub fn routing_stats(conn: &Connection, since_hours: f64) -> RoutingStats {
     }
 }
 
+/// One intent's share of the routing log.
+#[derive(Debug, Clone)]
+pub struct IntentCount {
+    pub intent: String,
+    pub count: u64,
+    pub offline: u64,
+}
+
+/// The routing log read whole: headline numbers, per-intent breakdown, quality.
+#[derive(Debug, Clone)]
+pub struct RoutingReport {
+    pub stats: RoutingStats,
+    /// Highest count first.
+    pub by_intent: Vec<IntentCount>,
+    pub avg_duration_ms: f64,
+    pub failures: u64,
+    pub window_hours: f64,
+}
+
+pub fn routing_report(conn: &Connection, since_hours: f64) -> RoutingReport {
+    let since = now_ts() - since_hours * 3600.0;
+
+    RoutingReport {
+        stats: routing_stats(conn, since_hours),
+        by_intent: intent_counts(conn, since),
+        avg_duration_ms: conn
+            .query_row(
+                "SELECT AVG(duration_ms) FROM nlp_routing_log WHERE created_at >= ?1",
+                params![since],
+                |r| r.get::<_, Option<f64>>(0),
+            )
+            .unwrap_or(None)
+            .unwrap_or(0.0),
+        failures: conn
+            .query_row(
+                "SELECT COUNT(*) FROM nlp_routing_log WHERE created_at >= ?1 AND success = 0",
+                params![since],
+                |r| r.get(0),
+            )
+            .unwrap_or(0),
+        window_hours: since_hours,
+    }
+}
+
+/// Per-intent counts over the window, highest count first.
+fn intent_counts(conn: &Connection, since: f64) -> Vec<IntentCount> {
+    let mut stmt = match conn.prepare(
+        "SELECT intent,
+                COUNT(*),
+                COALESCE(SUM(CASE WHEN decision = 'offline' THEN 1 ELSE 0 END), 0)
+         FROM nlp_routing_log
+         WHERE created_at >= ?1
+         GROUP BY intent
+         ORDER BY COUNT(*) DESC, intent ASC",
+    ) {
+        Ok(stmt) => stmt,
+        Err(_) => return Vec::new(),
+    };
+
+    let rows = match stmt.query_map(params![since], |r| {
+        Ok(IntentCount {
+            intent: r.get(0)?,
+            count: r.get(1)?,
+            offline: r.get(2)?,
+        })
+    }) {
+        Ok(rows) => rows,
+        Err(_) => return Vec::new(),
+    };
+
+    rows.flatten().collect()
+}
+
+/// Plain-text routing report — the shape the routing log was always meant to be read in.
+pub fn routing_report_text(conn: &Connection, since_hours: f64) -> String {
+    let report = routing_report(conn, since_hours);
+
+    let window = if report.window_hours.fract() == 0.0 {
+        format!("{:.0}h", report.window_hours)
+    } else {
+        format!("{:.1}h", report.window_hours)
+    };
+
+    let mut out = format!(
+        "Routing, last {}: {} queries, {:.0}% offline, avg {:.0}ms, {} failures\n",
+        window,
+        report.stats.total_queries,
+        report.stats.offline_pct,
+        report.avg_duration_ms,
+        report.failures,
+    );
+
+    if report.by_intent.is_empty() {
+        out.push_str("  no routing decisions recorded\n");
+        return out;
+    }
+
+    for row in &report.by_intent {
+        out.push_str(&format!(
+            "  {:<16} {:>3}  {} offline\n",
+            row.intent, row.count, row.offline
+        ));
+    }
+
+    out
+}
+
 fn now_ts() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -406,5 +513,86 @@ mod tests {
         assert_eq!(stats.offline_count, 1);
         assert_eq!(stats.full_llm_count, 1);
         assert!((stats.offline_pct - 50.0).abs() < 0.1);
+    }
+
+    /// One offline-routed check_email through the real writer.
+    fn log_offline_email(conn: &Connection) {
+        log_routing(
+            conn,
+            "check my email",
+            &RoutingDecision::Offline {
+                plan: Plan {
+                    intent: Intent::CheckEmail,
+                    confidence: 0.9,
+                    root: PlanNode::DirectResponse("test".into()),
+                    slots: offline_nlp::extract_slots(""),
+                    source: PlanSource::Classified,
+                },
+                reason: "test".into(),
+            },
+            Intent::CheckEmail,
+            0.9,
+        );
+    }
+
+    #[test]
+    fn routing_report_groups_by_intent() {
+        let conn = setup();
+        log_offline_email(&conn);
+        log_offline_email(&conn);
+        log_routing(
+            &conn,
+            "what is the meaning of life",
+            &RoutingDecision::FullLlm { reason: "unknown".into() },
+            Intent::Unknown,
+            0.1,
+        );
+
+        let report = routing_report(&conn, 1.0);
+        assert_eq!(report.stats.total_queries, 3);
+        assert_eq!(report.by_intent.len(), 2);
+        assert_eq!(report.by_intent[0].intent, "check_email");
+        assert_eq!(report.by_intent[0].count, 2);
+        assert_eq!(report.by_intent[0].offline, 2);
+        assert_eq!(report.by_intent[1].intent, "unknown");
+        assert_eq!(report.by_intent[1].count, 1);
+        assert_eq!(report.window_hours, 1.0);
+    }
+
+    #[test]
+    fn routing_report_text_is_readable() {
+        let conn = setup();
+        log_offline_email(&conn);
+        log_offline_email(&conn);
+        log_routing(
+            &conn,
+            "what is the meaning of life",
+            &RoutingDecision::FullLlm { reason: "unknown".into() },
+            Intent::Unknown,
+            0.1,
+        );
+
+        let text = routing_report_text(&conn, 24.0);
+        assert!(text.contains("3 queries"), "{text}");
+        assert!(text.contains("check_email"), "{text}");
+        assert!(text.contains("2 offline"), "{text}");
+        assert!(!text.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn routing_report_empty_window() {
+        let conn = setup();
+
+        let report = routing_report(&conn, 24.0);
+        assert_eq!(report.stats.total_queries, 0);
+        assert!(report.by_intent.is_empty());
+        assert_eq!(report.failures, 0);
+        assert!(!report.avg_duration_ms.is_nan());
+        assert!(!report.avg_duration_ms.is_infinite());
+
+        let text = routing_report_text(&conn, 24.0);
+        assert!(text.contains("0 queries"), "{text}");
+        assert!(text.contains("no routing decisions recorded"), "{text}");
+        assert!(!text.contains('\u{1b}'));
     }
 }

@@ -13,6 +13,7 @@ pub mod mcp;
 pub mod memory;
 pub mod open_loops;
 pub mod recipe;
+pub mod router_report;
 pub mod scheduler;
 pub mod spawn_agents;
 pub mod task_queue;
@@ -72,6 +73,7 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
     recipe::register(&mut reg);
     spawn_agents::register(&mut reg);
     open_loops::register(&mut reg);
+    router_report::register(&mut reg);
 
     // Network tools — web_fetch gets LLM for AI extraction
     {
