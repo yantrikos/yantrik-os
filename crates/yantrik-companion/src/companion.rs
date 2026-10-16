@@ -2266,8 +2266,13 @@ impl CompanionService {
                 }
             };
 
-            // Markup in the reply is a call only by this turn's rules (#830 review, item 1).
-            let turn = tool_markup::Turn::new(&messages, user_text);
+            // Markup in the reply is a call only by this turn's rules (#830 review, item 1), and
+            // only to a tool this round offered (item 1c).
+            let offered = offered_tools(
+                self.use_native_tools, &native_tools,
+                &selected_tool_names, &injected_tool_names,
+            );
+            let turn = tool_markup::Turn::new(&messages, user_text).offering(&offered);
             // Calls a native-tool model wrote as text run as native ones (VM 542, 16 Oct 2026).
             if self.use_native_tools {
                 turn.adopt(&mut llm_response, None);
@@ -2392,6 +2397,7 @@ impl CompanionService {
                 &mut injected_tool_names, max_perm, &self.task_manager,
                 self.use_native_tools,
                 &llm_response.api_tool_calls,
+                &offered,
                 &mut native_tools,
                 &mut agent_loop,
                 self.config.agent.error_recovery,
@@ -3155,8 +3161,13 @@ impl CompanionService {
         match llm_response {
             Ok(mut r) => {
                 self.note_llm_reachable();
-                // Markup in the reply is a call only by this turn's rules (#830 review, item 1).
-                let turn = tool_markup::Turn::new(&messages, user_text);
+                // Markup in the reply is a call only by this turn's rules (#830 review, item 1), and
+                // only to a tool this round offered (item 1c).
+                let offered = offered_tools(
+                    self.use_native_tools, &native_tools,
+                    &selected_tool_names, &injected_tool_names,
+                );
+                let turn = tool_markup::Turn::new(&messages, user_text).offering(&offered);
                 // Calls a native-tool model wrote as text run as native ones (VM 542, 16 Oct 2026).
                 if self.use_native_tools {
                     turn.adopt(&mut r, Some(&streamed_text).filter(|t| !t.is_empty()).map(String::as_str));
@@ -3258,6 +3269,7 @@ impl CompanionService {
                             &mut injected_tool_names, max_perm, &self.task_manager,
                             self.use_native_tools,
                             &r.api_tool_calls,
+                            &offered,
                             &mut native_tools,
                             &mut agent_loop,
                             self.config.agent.error_recovery,
@@ -3290,7 +3302,11 @@ impl CompanionService {
                         match self.llm.chat(&messages, &gen_config, tools_param) {
                             Ok(mut r2) => {
                                 self.note_llm_reachable();
-                                let turn = tool_markup::Turn::new(&messages, user_text);
+                                let offered = offered_tools(
+                                    self.use_native_tools, &native_tools,
+                                    &selected_tool_names, &injected_tool_names,
+                                );
+                                let turn = tool_markup::Turn::new(&messages, user_text).offering(&offered);
                                 if self.use_native_tools {
                                     turn.adopt(&mut r2, None);
                                 }
@@ -3374,6 +3390,7 @@ impl CompanionService {
                                     &mut injected_tool_names, max_perm, &self.task_manager,
                                     self.use_native_tools,
                                     &r2.api_tool_calls,
+                                    &offered,
                                     &mut native_tools,
                                     &mut agent_loop,
                                     self.config.agent.error_recovery,
@@ -4453,6 +4470,24 @@ fn execute_tool_round(
 /// Delegates to `execute_tool_round` for actual execution, then records each
 /// step in the `AgentLoop` tracker. On tool failure, optionally injects an
 /// error recovery hint suggesting alternatives.
+/// The tools a round offered the model: the schemas sent as `tools` on the native path, the
+/// tools selected for the prompt (and any discover_tools added) otherwise.
+/// Security review of 181c5881, #830, items 1c and 2: the registry runs any tool under the
+/// permission ceiling whether or not it was offered, and once calls are read from text any
+/// name the model types would be callable. A call to a tool outside this set is not run.
+fn offered_tools(
+    use_native_tools: bool,
+    native_tools: &[serde_json::Value],
+    described: &[&str],
+    injected: &std::collections::HashSet<String>,
+) -> std::collections::HashSet<String> {
+    if use_native_tools {
+        native_tools.iter().filter_map(|d| d["function"]["name"].as_str().map(str::to_string)).collect()
+    } else {
+        described.iter().map(|n| n.to_string()).chain(injected.iter().cloned()).collect()
+    }
+}
+
 fn execute_tool_round_tracked(
     registry: &ToolRegistry,
     guard: &mut SecurityGuard,
@@ -4465,6 +4500,7 @@ fn execute_tool_round_tracked(
     task_manager: &std::sync::Mutex<crate::task_manager::TaskManager>,
     use_native_tools: bool,
     api_tool_calls: &[yantrik_ml::ApiToolCall],
+    offered: &std::collections::HashSet<String>,
     native_tools: &mut Vec<serde_json::Value>,
     agent_loop: &mut AgentLoop,
     error_recovery: bool,
@@ -4533,6 +4569,23 @@ fn execute_tool_round_tracked(
         } else {
             None
         };
+
+        // Only a tool this round offered runs (`offered_tools`, #830 review, item 2). A name the
+        // registry does not have within the ceiling goes on to it, which says "Unknown tool".
+        if !offered.contains(name) && !registry.definitions_for(&[name.as_str()], max_perm).is_empty() {
+            tracing::warn!(tool = %name, "the model called a tool it was not offered this turn; not run");
+            let result = format!("Not run: {name} is not one of the tools offered this turn.");
+            agent_loop.record_step(name, args, &result, false);
+            if use_native_tools {
+                let call_id = api_tool_calls.get(idx).map(|tc| tc.id.as_str()).unwrap_or("call_0");
+                messages.push(template_for_family(model_family).format_tool_result(call_id, name, &result));
+            } else {
+                messages.push(ChatMessage::user(format!(
+                    "<data:tool_result name=\"{}\">{}", sanitize::escape_for_prompt(name), result
+                )));
+            }
+            continue;
+        }
 
         // V25: Policy engine gate — check if this action is allowed
         let action_ctx = crate::policy_engine::ActionContext::from_tool(name);
@@ -6776,6 +6829,37 @@ mod native_tool_reply_tests {
             if streaming {
                 assert_eq!(shown, crate::tool_markup::UNUSABLE_REPLY);
             }
+        }
+    }
+
+    /// Security review of 181c5881, #830, item 2: a native call to a tool the companion has but
+    /// did not offer this turn is not run, and the model is told so.
+    #[test]
+    fn a_native_call_to_a_tool_not_offered_this_turn_is_not_run() {
+        let (url, seen) = server(|request| {
+            let last = last_user_words(request);
+            if last.contains("Not run") { words("I can't do that.") } else { native_call("read_file", "{\"path\": \"/etc/shadow\"}") }
+        });
+        let mut c = on_claude(url);
+        let max = parse_permission(&c.config.tools.max_permission);
+        assert!(!c.registry.definitions_for(&["read_file"], max).is_empty(), "the companion has read_file");
+        let reply = c.handle_message(ASK);
+        assert_eq!(reply.message, "I can't do that.");
+        let seen = seen.lock().unwrap();
+        assert!(!seen[0]["tools"].to_string().contains("\"read_file\""), "read_file was not offered");
+        assert!(seen.iter().any(|r| last_user_words(r).contains("Not run: read_file is not one of the tools offered this turn.")));
+    }
+
+    /// The same for a call Claude wrote as text: nothing in that reply runs (item 1c).
+    #[test]
+    fn a_text_call_to_a_tool_not_offered_this_turn_runs_nothing() {
+        let reply = format!("<function_calls>\n{CLAUDE_CALL}\n<invoke name=\"read_file\"><parameter name=\"path\">/etc/shadow</parameter></invoke>\n</function_calls>");
+        for streaming in [false, true] {
+            let (url, _) = { let reply = reply.clone(); server(move |_| words(&reply)) };
+            let mut c = on_claude(url);
+            let (r, _) = if streaming { streamed(&mut c, ASK) } else { (c.handle_message(ASK), String::new()) };
+            assert!(r.tool_calls_made.is_empty(), "streaming={streaming}: ran {:?}", r.tool_calls_made);
+            assert_eq!(r.message, crate::tool_markup::UNUSABLE_REPLY);
         }
     }
 

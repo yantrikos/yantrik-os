@@ -51,6 +51,8 @@ pub enum Reading {
 pub struct Turn {
     /// The calls in what the person and the tools put into the conversation.
     quoted: Vec<ToolCall>,
+    /// The tools this round offered, when known: a call to any other makes the reply unusable.
+    offered: Option<std::collections::HashSet<String>>,
     /// Why the last reply read was unusable, until `refusal` takes it.
     refused: std::cell::RefCell<Option<String>>,
 }
@@ -65,7 +67,15 @@ impl Turn {
             let plain = m.content.replace('\u{FF1C}', "<").replace('\u{FF1E}', ">");
             quoted.extend(calls_in(&plain));
         }
-        Turn { quoted, refused: Default::default() }
+        Turn { quoted, offered: None, refused: Default::default() }
+    }
+
+    /// Only these tools may be called (#830 review, items 1c and 2). If a reply names any other,
+    /// none of its calls run: a reply that is half calls the companion would not make is not
+    /// one to act on in part.
+    pub fn offering(mut self, offered: &std::collections::HashSet<String>) -> Self {
+        self.offered = Some(offered.clone());
+        self
     }
 
     /// What `text` amounts to under this turn's rules.
@@ -119,6 +129,9 @@ impl Turn {
             }
             calls.extend(found);
             rest = &rest[end..];
+        }
+        if let Some(c) = calls.iter().find(|c| self.offered.as_ref().is_some_and(|o| !o.contains(&c.name))) {
+            return Reading::Unusable(format!("a call to {}, which was not offered this turn", c.name));
         }
         // (d) What the person pasted, or a tool returned, is theirs, not the model's.
         if let Some(c) = calls.iter().find(|c| self.quoted.iter().any(|q| q.name == c.name && q.arguments == c.arguments)) {
@@ -562,5 +575,24 @@ mod tests {
         // A call of the model's own, with other arguments, is its own.
         let turn = Turn::new(&[ChatMessage::user(&asked)], &asked);
         assert!(matches!(turn.read(WEATHER), Reading::Calls(_)));
+    }
+
+    /// Security review of 181c5881, #830, items 1c and 2.
+    #[test]
+    fn a_call_to_a_tool_not_offered_this_turn_runs_nothing() {
+        let offered: std::collections::HashSet<String> = ["recall".to_string(), "remember".to_string()].into();
+        let turn = Turn::default().offering(&offered);
+        assert!(matches!(turn.read(WEATHER), Reading::Calls(_)));
+        assert!(matches!(turn.read(RUN), Reading::Unusable(_)));
+        // Not the offered half of a mixed reply either.
+        let mixed = format!("<function_calls>\n{WEATHER}\n{RUN}\n</function_calls>");
+        assert!(turn.calls_in(&mixed).is_empty());
+        assert!(turn.refusal().is_some_and(|why| why.contains("run_command")));
+        let mut r = LLMResponse {
+            text: mixed, prompt_tokens: 0, completion_tokens: 0,
+            tool_calls: Vec::new(), api_tool_calls: Vec::new(), stop_reason: "stop".into(),
+        };
+        assert!(!turn.adopt(&mut r, None));
+        assert!(r.api_tool_calls.is_empty());
     }
 }
