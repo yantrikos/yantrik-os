@@ -51,6 +51,29 @@ calls), not by CPU. Step 0 below reproduces it with probes before anything is bu
   Minds call it at the start of most turns. The live Director polls it every 5 s, gates poll it, and
   nothing bounds how many callers or how often.
 
+## Step 0 results (15 Oct, VM 541, 4 vCPU, 5 GB, OS 76bb082b)
+
+- **The loads, one at a time and all together, did not reproduce the outage.** These were describe
+  every 0.4 s as the person, `grim` every 3 s, and `guest-exec` polling every 3 s, each for 3
+  minutes, then all three for 3 minutes.
+  - The guest agent answered 163 of 163 pings from outside, at its usual ~2 s in every phase.
+  - The load average stayed near 1, and CPU PSI some avg10 near 1%.
+  - The describe load cost about 43% of one CPU. That is real, but it starves nothing on its own.
+- **"One poller starved the machine" is not what happened, or not all of it** (Astra's point 1).
+  The guest agent's death on 561 is still unexplained. It came during one `guest-exec` that started
+  the recorder, then ran `new_chat` and `send_message`, and that call itself timed out. The next
+  look is at that call's children and the agent's state when 561 is reachable again.
+- **The publisher costs about two CPUs on its own.** A recorder run exactly as the live publisher is
+  (`wf-recorder -D -r 3`, x264 veryfast, CRF 30) used 11 min 9 s of CPU in 330 s on 541, about 200%.
+  Its output did not stall when grim and the describe load ran beside it. On 561, the publisher is
+  capped at `CPUQuota=100%` and set to `Nice=10`, so by this measure it runs at its cap and is
+  throttled before anything else. That is the most specific suspect for the stream going
+  "Offline" while the recorder ran.
+  - To confirm: `cpu.stat` (`nr_throttled`, `throttled_usec`) of `yantrik-live-publish.service` on
+    561, with and without load.
+  - To fix (PR C): drop `-D`, so only frames that changed are encoded; size the quota from the
+    measurement; remove `Nice=10`; add the frame-progress health check.
+
 ## Principles
 
 1. **The person's session is what is protected:** the compositor, the shell, input, and on the live
