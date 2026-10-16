@@ -30,6 +30,11 @@ const BLOCKS: &[(&str, &str)] = &[
 /// a sentence or two of why, not an essay with a call at the end of it (#830 review, item 1b).
 const LEAD_IN_MAX: usize = 600;
 
+/// The most calls one reply may write as text. More is not a model doing a task but a page
+/// telling it to: 500 blocks gave 500 calls, and the per-tool runaway limits add up across
+/// tools (security review of 181c5881, #830, item 3). Over this, none run.
+pub const MAX_TEXT_CALLS: usize = 6;
+
 /// What the text of one reply amounts to.
 #[derive(Debug)]
 pub enum Reading {
@@ -128,6 +133,9 @@ impl Turn {
                 return Reading::Words;
             }
             calls.extend(found);
+            if calls.len() > MAX_TEXT_CALLS {
+                return Reading::Unusable(format!("more than {MAX_TEXT_CALLS} tool calls written as text in one reply"));
+            }
             rest = &rest[end..];
         }
         if let Some(c) = calls.iter().find(|c| self.offered.as_ref().is_some_and(|o| !o.contains(&c.name))) {
@@ -594,5 +602,18 @@ mod tests {
         };
         assert!(!turn.adopt(&mut r, None));
         assert!(r.api_tool_calls.is_empty());
+    }
+
+    /// Security review of 181c5881, #830, item 3.
+    #[test]
+    fn a_reply_with_more_calls_than_the_cap_runs_none() {
+        let calls = |n: usize| format!("<function_calls>\n{}\n</function_calls>", WEATHER.repeat(n));
+        assert!(matches!(read(&calls(MAX_TEXT_CALLS)), Reading::Calls(c) if c.len() == MAX_TEXT_CALLS));
+        assert!(matches!(read(&calls(MAX_TEXT_CALLS + 1)), Reading::Unusable(_)));
+        let turn = Turn::default();
+        assert!(turn.calls_in(&calls(500)).is_empty(), "not a prefix of them either");
+        assert!(turn.refusal().is_some());
+        let json = "<tool_call>{\"name\": \"recall\", \"arguments\": {\"query\": \"a\"}}</tool_call>\n".repeat(MAX_TEXT_CALLS + 1);
+        assert!(matches!(read(&json), Reading::Unusable(_)), "the JSON form counts too");
     }
 }
