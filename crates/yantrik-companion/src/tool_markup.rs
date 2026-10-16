@@ -298,7 +298,7 @@ fn code_pieces(text: &str) -> Vec<(bool, &str)> {
         if i == 0 || b[i - 1] == b'\n' {
             let indent = run(i, b' ');
             let at = i + indent;
-            for ch in [b'`', b'~'] {
+            for ch in *b"`~" {
                 let n = if at < b.len() { run(at, ch) } else { 0 };
                 let line_end = text[at..].find('\n').map_or(b.len(), |e| at + e);
                 // A ``` line with a backtick after it is an inline span, as in Markdown.
@@ -411,7 +411,7 @@ fn attr<'a>(head: &'a str, key: &str) -> Option<&'a str> {
     let mut from = 0;
     let at = loop {
         let i = from + head[from..].find(&pat)?;
-        if head[..i].chars().next_back().map_or(true, char::is_whitespace) {
+        if head[..i].chars().next_back().is_none_or(char::is_whitespace) {
             break i + pat.len();
         }
         from = i + pat.len();
@@ -578,7 +578,7 @@ mod tests {
         assert!(turn.refusal().is_some(), "and the reply is not shown");
         // A tool's result arrives escaped; a model that copies it back unescaped is still copying.
         let page = yantrik_companion_core::sanitize::escape_for_prompt(RUN);
-        let turn = Turn::new(&[ChatMessage::user("read the page"), ChatMessage::user(&format!("<data:tool_result name=\"browse\">{page}"))], "read the page");
+        let turn = Turn::new(&[ChatMessage::user("read the page"), ChatMessage::user(format!("<data:tool_result name=\"browse\">{page}"))], "read the page");
         assert!(matches!(turn.read(RUN), Reading::Unusable(_)));
         // A call of the model's own, with other arguments, is its own.
         let turn = Turn::new(&[ChatMessage::user(&asked)], &asked);
