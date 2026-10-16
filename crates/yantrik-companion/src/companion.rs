@@ -2275,7 +2275,19 @@ impl CompanionService {
             // Use native tool_calls if available, fall back to text parsing.
             // For StructuredJSON mode: parse via StructuredDecisionParser first.
             let tool_calls: Vec<ToolCall> = if !llm_response.tool_calls.is_empty() {
-                llm_response.tool_calls.clone()
+                // A native call naming a tool this turn never offered is dropped: text calls have
+                // been checked against the offered set, native ones were run as they arrived (#832).
+                let (kept, dropped) = tool_markup::keep_offered(llm_response.tool_calls.clone(), &gate);
+                for name in &dropped {
+                    tracing::warn!(tool = %name, "native tool call outside the offered set; not run");
+                }
+                if kept.is_empty() {
+                    // Nothing may run this round; say which tools were on offer and go round.
+                    messages.push(ChatMessage::assistant(&llm_response.text));
+                    messages.push(ChatMessage::user(unoffered_call_note(&dropped, &gate)));
+                    continue;
+                }
+                kept
             } else if active_profile.tool_call_mode == ToolCallMode::StructuredJSON {
                 // Structured Decision Protocol: parse JSON decision from LLM output
                 match StructuredDecisionParser::parse(&llm_response.text) {
@@ -3152,8 +3164,18 @@ impl CompanionService {
 
                 // Use native tool_calls if available, fall back to text parsing.
                 // For StructuredJSON mode: parse via StructuredDecisionParser first.
+                // A native call naming a tool this turn never offered is dropped: text calls have
+                // been checked against the offered set, native ones were run as they arrived (#832).
+                let mut unoffered: Vec<String> = Vec::new();
                 let tool_calls: Vec<ToolCall> = if !r.tool_calls.is_empty() {
-                    r.tool_calls.clone()
+                    let (kept, dropped) = tool_markup::keep_offered(r.tool_calls.clone(), &gate);
+                    for name in &dropped {
+                        tracing::warn!(tool = %name, "native tool call outside the offered set; not run");
+                    }
+                    if kept.is_empty() {
+                        unoffered = dropped;
+                    }
+                    kept
                 } else if active_profile.tool_call_mode == ToolCallMode::StructuredJSON {
                     match StructuredDecisionParser::parse(full_text) {
                         Ok(decision) => {
@@ -3193,10 +3215,11 @@ impl CompanionService {
                         "Tool calls detected in streaming response"
                     );
                 }
-                // A native call that could not be read is not an answer either: the follow-up
-                // rounds below tell the model so and ask again.
+                // A native call that could not be read, or one naming a tool that was never
+                // offered, is not an answer either: the follow-up rounds below tell the model so
+                // and ask again.
                 let unread = tool_calls.is_empty() && r.is_unread_tool_call();
-                if tool_calls.is_empty() && !unread {
+                if tool_calls.is_empty() && !unread && unoffered.is_empty() {
                     response_text = if !streamed_text.is_empty() {
                         streamed_text.clone()
                     } else {
@@ -3213,16 +3236,20 @@ impl CompanionService {
                     };
 
                     on_token("__REPLACE__");
-                    let tool_names: Vec<&str> = if unread {
-                        r.api_tool_calls.iter().map(|c| c.function.name.as_str()).collect()
-                    } else {
-                        tool_calls.iter().map(|c| c.name.as_str()).collect()
-                    };
-                    let progress_msg = format_tool_progress(&tool_names, 1);
-                    if display_text.is_empty() {
-                        on_token(&format!("{}\n", progress_msg));
-                    } else {
-                        on_token(&format!("{}\n{}\n", display_text, progress_msg));
+                    // A call that was dropped for not being offered ran nothing, so it gets no
+                    // "Calling …" line: the person would wait for a tool that never started.
+                    if unoffered.is_empty() {
+                        let tool_names: Vec<&str> = if unread {
+                            r.api_tool_calls.iter().map(|c| c.function.name.as_str()).collect()
+                        } else {
+                            tool_calls.iter().map(|c| c.name.as_str()).collect()
+                        };
+                        let progress_msg = format_tool_progress(&tool_names, 1);
+                        if display_text.is_empty() {
+                            on_token(&format!("{}\n", progress_msg));
+                        } else {
+                            on_token(&format!("{}\n{}\n", display_text, progress_msg));
+                        }
                     }
 
                     // Execute first round of tool calls
@@ -3235,6 +3262,11 @@ impl CompanionService {
                         unread_calls += 1;
                         messages.push(ChatMessage::assistant(full_text));
                         messages.push(ChatMessage::user(unread_call_note(&r)));
+                    } else if !unoffered.is_empty() {
+                        // Nothing ran this round; the names on offer go to the model so the next
+                        // round has something to call instead of another invention.
+                        messages.push(ChatMessage::assistant(full_text));
+                        messages.push(ChatMessage::user(unoffered_call_note(&unoffered, &gate)));
                     } else {
                         messages.push(assistant_turn(full_text, &r, self.use_native_tools));
                         execute_tool_round_tracked(
@@ -3280,7 +3312,16 @@ impl CompanionService {
                                     tool_markup::adopt_text_calls(&mut r2, None, &gate);
                                 }
                                 let tc2: Vec<ToolCall> = if !r2.tool_calls.is_empty() {
-                                    r2.tool_calls.clone()
+                                    let (kept, dropped) = tool_markup::keep_offered(r2.tool_calls.clone(), &gate);
+                                    for name in &dropped {
+                                        tracing::warn!(tool = %name, "native tool call outside the offered set; not run");
+                                    }
+                                    if kept.is_empty() {
+                                        messages.push(ChatMessage::assistant(&r2.text));
+                                        messages.push(ChatMessage::user(unoffered_call_note(&dropped, &gate)));
+                                        continue;
+                                    }
+                                    kept
                                 } else {
                                     tool_markup::calls_in(&r2.text, &gate)
                                 };
@@ -4245,6 +4286,27 @@ fn unread_call_note(r: &yantrik_ml::LLMResponse) -> String {
                  or answer in words."
             .to_string(),
     }
+}
+
+/// What to tell the model when every native call it made named a tool this turn never offered.
+/// The names on offer are listed because a model that invents one usually wants one of them and
+/// only has the request's tool list to go on (`#832`).
+fn unoffered_call_note(dropped: &[String], gate: &tool_markup::Gate) -> String {
+    const MAX_LISTED: usize = 40;
+    let mut on_offer: Vec<&str> = gate.offered.iter().map(|s| s.as_str()).collect();
+    on_offer.sort_unstable();
+    let listed = if on_offer.len() > MAX_LISTED {
+        let more = on_offer.len() - MAX_LISTED;
+        let head = on_offer[..MAX_LISTED].join(", ");
+        format!("{head} (+{more} more)")
+    } else {
+        on_offer.join(", ")
+    };
+    format!(
+        "Your call to {} was not run: no tool of that name was offered this turn. Tools on \
+         offer: {listed}. Call one of these, or answer in words.",
+        dropped.join(", ")
+    )
 }
 
 /// The assistant's turn as the conversation keeps it. With the tools described in the prompt, a
@@ -6884,15 +6946,39 @@ mod native_tool_reply_tests {
         assert!(reply.model_failure.is_some());
     }
 
+    /// A tool the companion does not have is refused, and since #832 it is refused before the
+    /// executor is asked: the name was never offered this turn, so the call is dropped where a
+    /// call written as text would be dropped, and the model is told what was on offer.
     #[test]
     fn a_native_call_to_a_tool_the_companion_does_not_have_is_refused_as_before() {
-        let (url, seen) = server(|request| {
+        let invented = |request: &serde_json::Value| {
             let last = last_user_words(request);
-            if last.contains("Unknown tool") { words("I can't do that.") } else { native_call("format_disk", "{}") }
-        });
+            if last.contains("was not run") { words("I can't do that.") } else { native_call("format_disk", "{}") }
+        };
+        let (url, seen) = server(invented);
         let reply = companion(url).handle_message(ASK);
         assert_eq!(reply.message, "I can't do that.");
+        assert!(reply.tool_calls_made.is_empty(), "nothing ran");
         let seen = seen.lock().unwrap();
-        assert!(seen.iter().any(|r| last_user_words(r).contains("Unknown tool: format_disk")));
+        assert!(
+            seen.iter().any(|r| {
+                let last = last_user_words(r);
+                last.contains("format_disk") && last.contains("was not run")
+            }),
+            "the model was told its call did not run and why"
+        );
+        assert!(
+            !seen.iter().any(|r| last_user_words(r).contains("Unknown tool")),
+            "the executor was never asked to run it"
+        );
+        drop(seen);
+
+        // Streamed, the same: the person gets the model's words, not a "Calling format_disk"
+        // line for a call that never started.
+        let (url, _) = server(invented);
+        let mut c = companion(url);
+        let (reply, shown) = streamed(&mut c, ASK);
+        assert_eq!(reply.message, "I can't do that.");
+        assert!(!shown.contains("format_disk"), "{shown:?}");
     }
 }
