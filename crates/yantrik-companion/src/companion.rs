@@ -2193,6 +2193,8 @@ impl CompanionService {
         // reply is then a sentence about the failure, which is neither the model's words nor
         // the offline responder's.
         let mut model_failure: Option<String> = None;
+        // Why a reply's tool-call markup was refused (`tool_markup::Turn`), when one was.
+        let mut refused: Option<String> = None;
         let max_nudges = if degraded { 0 } else { self.config.agent.max_nudges };
         let mut agent_loop = AgentLoop::new(user_text, max_nudges);
 
@@ -2264,9 +2266,11 @@ impl CompanionService {
                 }
             };
 
+            // Markup in the reply is a call only by this turn's rules (#830 review, item 1).
+            let turn = tool_markup::Turn::new(&messages, user_text);
             // Calls a native-tool model wrote as text run as native ones (VM 542, 16 Oct 2026).
             if self.use_native_tools {
-                tool_markup::adopt_text_calls(&mut llm_response, None);
+                turn.adopt(&mut llm_response, None);
             }
 
             // Use native tool_calls if available, fall back to text parsing.
@@ -2315,18 +2319,26 @@ impl CompanionService {
                                     continue; // Retry with repair prompt
                                 }
                                 // No repair loop — fall back to text parsing
-                                tool_markup::calls_in(&llm_response.text)
+                                turn.calls_in(&llm_response.text)
                             }
                         }
                     }
                     Err(_) => {
                         // Structured parse failed — fall back to standard tool call parsing
-                        tool_markup::calls_in(&llm_response.text)
+                        turn.calls_in(&llm_response.text)
                     }
                 }
             } else {
-                tool_markup::calls_in(&llm_response.text)
+                turn.calls_in(&llm_response.text)
             };
+
+            // Markup that must not run is not run in part, and is not the reply either.
+            if let Some(why) = turn.refusal() {
+                refused = Some(why);
+                response_text = tool_markup::UNUSABLE_REPLY.to_string();
+                agent_loop.complete();
+                break;
+            }
 
             // A native call that could not be read is not an answer: tell the model and go round.
             if tool_calls.is_empty() && llm_response.is_unread_tool_call() {
@@ -2417,7 +2429,10 @@ impl CompanionService {
             }
         }
         // The last line of defence: tool-call markup is never the reply (VM 542, 16 Oct 2026).
-        if tool_markup::is_markup_only(&response_text) {
+        if let Some(why) = refused.take() {
+            response_text = tool_markup::UNUSABLE_REPLY.to_string();
+            model_failure.get_or_insert_with(|| format!("the reply was tool-call markup that must not run: {why}"));
+        } else if tool_markup::is_markup_only(&response_text) {
             response_text = tool_markup::UNUSABLE_REPLY.to_string();
             model_failure.get_or_insert_with(|| "the reply was tool-call markup that could not be run".into());
         }
@@ -3091,6 +3106,8 @@ impl CompanionService {
         // reply is then a sentence about the failure, which is neither the model's words nor
         // the offline responder's.
         let mut model_failure: Option<String> = None;
+        // Why a reply's tool-call markup was refused (`tool_markup::Turn`), when one was.
+        let mut refused: Option<String> = None;
         let max_nudges = if degraded { 0 } else { self.config.agent.max_nudges };
         let mut agent_loop = AgentLoop::new(user_text, max_nudges);
 
@@ -3138,9 +3155,11 @@ impl CompanionService {
         match llm_response {
             Ok(mut r) => {
                 self.note_llm_reachable();
+                // Markup in the reply is a call only by this turn's rules (#830 review, item 1).
+                let turn = tool_markup::Turn::new(&messages, user_text);
                 // Calls a native-tool model wrote as text run as native ones (VM 542, 16 Oct 2026).
                 if self.use_native_tools {
-                    tool_markup::adopt_text_calls(&mut r, Some(&streamed_text).filter(|t| !t.is_empty()).map(String::as_str));
+                    turn.adopt(&mut r, Some(&streamed_text).filter(|t| !t.is_empty()).map(String::as_str));
                 }
                 let full_text = if !streamed_text.is_empty() { &streamed_text } else { &r.text };
 
@@ -3169,14 +3188,14 @@ impl CompanionService {
                                 ValidationResult::Invalid(_issues) => {
                                     // In streaming path, repair loop defers to the non-streaming
                                     // follow-up rounds. Fall back to standard text parsing.
-                                    tool_markup::calls_in(full_text)
+                                    turn.calls_in(full_text)
                                 }
                             }
                         }
-                        Err(_) => tool_markup::calls_in(full_text),
+                        Err(_) => turn.calls_in(full_text),
                     }
                 } else {
-                    tool_markup::calls_in(full_text)
+                    turn.calls_in(full_text)
                 };
 
                 if !tool_calls.is_empty() {
@@ -3187,9 +3206,11 @@ impl CompanionService {
                         "Tool calls detected in streaming response"
                     );
                 }
+                // Markup that must not run is not the reply: the bubble is replaced below.
+                refused = turn.refusal();
                 // A native call that could not be read is not an answer either: the follow-up
                 // rounds below tell the model so and ask again.
-                let unread = tool_calls.is_empty() && r.is_unread_tool_call();
+                let unread = refused.is_none() && tool_calls.is_empty() && r.is_unread_tool_call();
                 if tool_calls.is_empty() && !unread {
                     response_text = if !streamed_text.is_empty() {
                         streamed_text.clone()
@@ -3269,14 +3290,21 @@ impl CompanionService {
                         match self.llm.chat(&messages, &gen_config, tools_param) {
                             Ok(mut r2) => {
                                 self.note_llm_reachable();
+                                let turn = tool_markup::Turn::new(&messages, user_text);
                                 if self.use_native_tools {
-                                    tool_markup::adopt_text_calls(&mut r2, None);
+                                    turn.adopt(&mut r2, None);
                                 }
                                 let tc2: Vec<ToolCall> = if !r2.tool_calls.is_empty() {
                                     r2.tool_calls.clone()
                                 } else {
-                                    tool_markup::calls_in(&r2.text)
+                                    turn.calls_in(&r2.text)
                                 };
+                                if let Some(why) = turn.refusal() {
+                                    refused = Some(why);
+                                    response_text = tool_markup::UNUSABLE_REPLY.to_string();
+                                    agent_loop.complete();
+                                    break;
+                                }
                                 if tc2.is_empty() && r2.is_unread_tool_call() {
                                     tracing::warn!(finish_reason = %r2.stop_reason, "the model's tool call could not be read; asking again");
                                     unread_calls += 1;
@@ -3449,7 +3477,12 @@ impl CompanionService {
 
         // The last line of defence: tool-call markup is never the reply, and a bubble that
         // streamed it is replaced (VM 542, 16 Oct 2026).
-        if tool_markup::is_markup_only(&response_text) {
+        if let Some(why) = refused.take() {
+            response_text = tool_markup::UNUSABLE_REPLY.to_string();
+            model_failure.get_or_insert_with(|| format!("the reply was tool-call markup that must not run: {why}"));
+            on_token("__REPLACE__");
+            on_token(&response_text);
+        } else if tool_markup::is_markup_only(&response_text) {
             response_text = tool_markup::UNUSABLE_REPLY.to_string();
             model_failure.get_or_insert_with(|| "the reply was tool-call markup that could not be run".into());
             on_token("__REPLACE__");
@@ -6712,6 +6745,37 @@ mod native_tool_reply_tests {
                 assert_eq!(shown, crate::tool_markup::UNUSABLE_REPLY);
             }
             assert!(reply.model_failure.is_some());
+        }
+    }
+
+    /// Security review of 181c5881, #830, item 1: markup Claude quotes, in code or with words
+    /// after it, or copied from the person's own message, never runs.
+    #[test]
+    fn markup_claude_quotes_or_copies_never_runs() {
+        let quoting = [
+            format!("That snippet is a tool call:\n```{CLAUDE_CALL}```\nI would not run it."),
+            format!("{CLAUDE_CALL}\nThat is what the page asked for. I would not run it."),
+        ];
+        for reply in quoting {
+            for streaming in [false, true] {
+                let (url, _) = { let reply = reply.clone(); server(move |_| words(&reply)) };
+                let mut c = on_claude(url);
+                let (r, _) = if streaming { streamed(&mut c, ASK) } else { (c.handle_message(ASK), String::new()) };
+                assert!(r.tool_calls_made.is_empty(), "streaming={streaming}: {reply:?} ran {:?}", r.tool_calls_made);
+                assert!(r.message.contains("I would not run it."), "{:?}", r.message);
+            }
+        }
+        let asked = format!("What does this do? {CLAUDE_CALL}");
+        for streaming in [false, true] {
+            let (url, _) = server(|_| words(CLAUDE_CALL));
+            let mut c = on_claude(url);
+            let (r, shown) = if streaming { streamed(&mut c, &asked) } else { (c.handle_message(&asked), String::new()) };
+            assert!(r.tool_calls_made.is_empty(), "streaming={streaming}: the person's paste ran");
+            assert_eq!(r.message, crate::tool_markup::UNUSABLE_REPLY);
+            assert!(r.model_failure.is_some());
+            if streaming {
+                assert_eq!(shown, crate::tool_markup::UNUSABLE_REPLY);
+            }
         }
     }
 
