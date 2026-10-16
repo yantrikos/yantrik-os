@@ -565,22 +565,35 @@ impl ApiLLM {
             }
         }
 
+        // What this provider takes: nothing the model refused, and on Anthropic's endpoint no
+        // sampling value nobody chose (crate::refusal, VM 542 16 Oct 2026).
+        crate::refusal::prepare(&self.base_url, &self.model, config, &mut body);
         body
+    }
+
+    /// The chat-completions body a turn with `config` sends, for a caller that sends it itself:
+    /// the first run's key test, so that a key that passes is a key a real turn works with.
+    pub fn chat_completions_body(&self, messages: &[ChatMessage], config: &GenerationConfig, stream: bool) -> serde_json::Value {
+        self.build_openai_body(messages, config, None, stream)
     }
 
     fn openai_endpoint_url(&self) -> String {
         format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
     }
 
-    /// Send `body`, and when the server refuses the thinking switch, once more without it.
+    /// Send `body`, dropping what the server refuses: a sampling parameter the model will not take
+    /// ([`crate::refusal::send_dropping_refused`]), or the thinking switch.
     ///
     /// A server that does not know `chat_template_kwargs` may answer 400 rather than ignore it.
     /// The switch is then dropped for this backend's life, so the next turn does not pay for
-    /// the refusal again.
+    /// the refusal again. Any other refusal is [`crate::ProviderRefused`], in the provider's words.
     fn send_openai_request(&self, body: &serde_json::Value) -> Result<ureq::Body> {
-        match self.post_openai(body)? {
-            Ok(resp) => Ok(resp),
-            Err(400) if body.get("chat_template_kwargs").is_some() => {
+        let send = |b: &serde_json::Value| {
+            crate::refusal::send_dropping_refused(&self.base_url, &self.model, b, |b| self.post_openai(b))
+        };
+        let refusal = match send(body)? {
+            Ok(resp) => return Ok(resp),
+            Err((400, _)) if body.get("chat_template_kwargs").is_some() => {
                 tracing::warn!(
                     model = %self.model,
                     "the server refused chat_template_kwargs (400); asking once more without it"
@@ -590,18 +603,23 @@ impl ApiLLM {
                 if let Some(fields) = without.as_object_mut() {
                     fields.remove("chat_template_kwargs");
                 }
-                match self.post_openai(&without)? {
-                    Ok(resp) => Ok(resp),
-                    Err(status) => anyhow::bail!("API request failed: http status: {status}"),
+                match send(&without)? {
+                    Ok(resp) => return Ok(resp),
+                    Err(refusal) => refusal,
                 }
             }
-            Err(status) => anyhow::bail!("API request failed: http status: {status}"),
+            Err(refusal) => refusal,
+        };
+        let (status, text) = refusal;
+        match crate::ProviderRefused::of(status, &self.base_url, &text, self.api_key.as_deref()) {
+            Some(refused) => Err(refused.into()),
+            None => anyhow::bail!("API request failed: http status: {status}"),
         }
     }
 
-    /// One POST to the chat endpoint: the body to read on a 200, the status otherwise (logged
-    /// with the server's own words here, where they are still at hand).
-    fn post_openai(&self, body: &serde_json::Value) -> Result<std::result::Result<ureq::Body, u16>> {
+    /// One POST to the chat endpoint: the body to read on a 200, else the status and what the
+    /// server said (logged here, where it is still at hand).
+    fn post_openai(&self, body: &serde_json::Value) -> Result<std::result::Result<ureq::Body, (u16, String)>> {
         let url = self.openai_endpoint_url();
         let body_str = serde_json::to_string(body)?;
 
@@ -626,14 +644,14 @@ impl ApiLLM {
         let status = resp.status();
         if status != 200 {
             let err_body = resp.into_body().read_to_string().unwrap_or_default();
-            let preview: String = err_body.chars().take(1000).collect();
+            let preview = crate::refusal::excerpt(&err_body, self.api_key.as_deref());
             tracing::error!(
                 status = status.as_u16(),
                 body_bytes = body_str.len(),
                 error_response = %preview,
                 "OpenAI-compatible API returned error"
             );
-            return Ok(Err(status.as_u16()));
+            return Ok(Err((status.as_u16(), err_body)));
         }
 
         Ok(Ok(resp.into_body()))
@@ -1204,5 +1222,65 @@ mod thinking_tests {
         let result = llm.chat_streaming(&[ChatMessage::user("hi")], &GenerationConfig::default(), None, &mut |_| {});
         assert!(result.is_err());
         assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    // Claude on Anthropic's OpenAI-compatible endpoint, as VM 542 met it on 16 Oct 2026.
+    const TEMPERATURE_DEPRECATED: &str = include_str!("testdata/anthropic_temperature_deprecated.json");
+
+    #[test]
+    fn a_model_that_refuses_temperature_is_asked_once_more_without_it_and_never_sent_it_again() {
+        let (url, seen) = server(vec![
+            (400, TEMPERATURE_DEPRECATED.to_string()),
+            (200, THINKS_THEN_ANSWERS.to_string()),
+            (200, THINKS_THEN_ANSWERS.to_string()),
+        ]);
+        let llm = ApiLLM::new(url, Some("sk-ant-test".into()), "claude-sonnet-5-5").for_provider("anthropic");
+        let chosen = GenerationConfig { temperature: 0.1, ..Default::default() };
+
+        let reply = llm.chat_streaming(&[ChatMessage::user("Make a note")], &chosen, None, &mut |_| {}).unwrap();
+        assert!(reply.text.contains("Groceries"));
+        llm.chat_streaming(&[ChatMessage::user("And another")], &chosen, None, &mut |_| {}).unwrap();
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 3, "the refusal, the retry, the next turn");
+        assert_eq!(seen[0]["temperature"], 0.1);
+        assert!(seen[1].get("temperature").is_none(), "the retry goes without it");
+        assert_eq!(seen[1]["messages"], seen[0]["messages"], "and is otherwise the same request");
+        assert!(seen[2].get("temperature").is_none(), "and so does every turn after it");
+    }
+
+    #[test]
+    fn any_other_refusal_is_the_providers_reason_and_not_an_offline_model() {
+        let refusal = r#"{"error":{"type":"invalid_request_error","message":"model: claude-sonnet-9 not found"}}"#;
+        let (url, seen) = server(vec![(404, refusal.to_string())]);
+        let llm = ApiLLM::new(url, None, "claude-sonnet-9");
+        let err = llm.chat_streaming(&[ChatMessage::user("hi")], &GenerationConfig::default(), None, &mut |_| {}).unwrap_err();
+        let refused = err.downcast_ref::<crate::ProviderRefused>().expect("the typed refusal");
+        assert_eq!(refused.status, 404);
+        assert_eq!(refused.reason, "model: claude-sonnet-9 not found");
+        assert_eq!(seen.lock().unwrap().len(), 1, "not retried");
+    }
+
+    #[test]
+    fn the_body_a_caller_sends_itself_is_the_body_a_turn_sends() {
+        let (url, seen) = server(vec![(200, THINKS_THEN_ANSWERS.to_string())]);
+        let llm = ApiLLM::new(url, None, "claude-sonnet-5-5").for_provider("anthropic");
+        let config = GenerationConfig { max_tokens: 1, ..Default::default() };
+        let asked = [ChatMessage::user("Reply with OK.")];
+        llm.chat_streaming(&asked, &config, None, &mut |_| {}).unwrap();
+        // As JSON on the wire: a float read back from text can differ in its last digit.
+        let wire = |v: &serde_json::Value| serde_json::from_str::<serde_json::Value>(&v.to_string()).unwrap();
+        assert_eq!(wire(&seen.lock().unwrap()[0]), wire(&llm.chat_completions_body(&asked, &config, true)));
+    }
+
+    #[test]
+    fn on_anthropics_endpoint_a_turn_sends_no_sampling_value_nobody_chose() {
+        let llm = ApiLLM::new("https://api.anthropic.com/v1", None, "claude-sonnet-5-5").for_provider("anthropic");
+        let body = llm.chat_completions_body(&[ChatMessage::user("hi")], &GenerationConfig::default(), true);
+        assert!(body.get("temperature").is_none() && body.get("top_p").is_none(), "{body}");
+        // Elsewhere the same turn still carries them.
+        let elsewhere = ApiLLM::new("https://api.openai.com/v1", None, "gpt-4o").for_provider("openai");
+        let body = elsewhere.chat_completions_body(&[ChatMessage::user("hi")], &GenerationConfig::default(), true);
+        assert!(body.get("temperature").is_some());
     }
 }

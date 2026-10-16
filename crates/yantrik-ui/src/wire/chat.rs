@@ -129,7 +129,11 @@ fn builtin_turn(
             Ok(Served::NoModel) if said.trim() == yantrik_ml::not_set_up::NOT_SET_UP.trim() => {
                 Err(super::onboarding::NOT_SET_UP_SENTENCE.to_string())
             }
+            // The streamed sentence is the failure in words: no answer after thinking, or the
+            // provider's own reason for refusing the request.
+            Ok(Served::ModelFailed(_)) if !said.trim().is_empty() => Err(said.trim().to_string()),
             Ok(Served::ModelFailed(_)) => Err(yantrik_ml::THOUGHT_WITHOUT_ANSWER.to_string()),
+            Ok(Served::Unreachable(why)) => Err(super::onboarding::unreachable_sentence(&why)),
             _ => Err(super::onboarding::NO_ANSWER_SENTENCE.to_string()),
         };
         super::onboarding::first_chat_ended(&weak, outcome);

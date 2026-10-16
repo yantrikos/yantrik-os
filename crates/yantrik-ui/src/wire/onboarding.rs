@@ -1380,6 +1380,12 @@ fn retry_pick(ui: &App) {
 /// What the chat says when the first reply came from the desktop, not a model.
 pub const NOT_SET_UP_SENTENCE: &str =
     "Yantrik Companion did not answer: it is not set up to think yet. Choose who does the thinking in Settings \u{2192} AI, then try again.";
+/// What the chat says when a model is set up and the offline responder answered because it could
+/// not be reached: why, not "not set up", which would send the person to choose again.
+pub fn unreachable_sentence(why: &str) -> String {
+    format!("Yantrik Companion did not answer: it could not reach its model ({}). Try again, or choose another model in Settings \u{2192} AI.", why.trim().trim_end_matches('.'))
+}
+
 /// What the chat says when the first reply failed or did not come.
 pub const NO_ANSWER_SENTENCE: &str = "Yantrik Companion did not answer this time.";
 
@@ -1491,9 +1497,14 @@ pub fn answer_proof(said: Result<String, crate::bridge::AskError>, ms: u128) -> 
             Proof::Passed { details: format!("Yantrik Companion answered in {ms} ms: \u{201c}{words}\u{201d}") }
         }
         Ok(_) => Proof::Attention { reason: "it answered with nothing".into(), details: format!("an empty reply after {ms} ms") },
+        // Only when no model is set up at all.
         Err(AskError::NoModel) => Proof::Attention {
             reason: "it is not set up to think yet".into(),
             details: "the reply came from the desktop, not from a model".into(),
+        },
+        Err(AskError::Unreachable(why)) => Proof::Attention {
+            reason: "it could not reach its model".into(),
+            details: format!("the reply came from the desktop, because the model did not answer: {}", why.trim().trim_end_matches('.')),
         },
         Err(AskError::Failed(why)) => {
             let why = why.trim().trim_end_matches('.').to_string();
@@ -1856,6 +1867,31 @@ mod tests {
             Proof::Attention { reason, .. } => assert_eq!(reason, "companion timed out"),
             p => panic!("{p:?}"),
         }
+        // VM 542, 16 Oct 2026: Claude refused every turn, and the check said "not set up".
+        let refused = yantrik_ml::ProviderRefused::of(
+            400,
+            "https://api.anthropic.com/v1",
+            r#"{"error":{"code":"invalid_request_error","message":"`temperature` is deprecated for this model."}}"#,
+            None,
+        )
+        .unwrap();
+        match answer_proof(Err(AskError::Failed(refused.said())), 900) {
+            Proof::Attention { reason, .. } => {
+                assert!(reason.starts_with("Claude refused the request: `temperature` is deprecated for this model"), "{reason}");
+            }
+            p => panic!("{p:?}"),
+        }
+        match answer_proof(Err(AskError::Unreachable("API request failed: connection refused".into())), 900) {
+            Proof::Attention { reason, details } => {
+                assert_eq!(reason, "it could not reach its model");
+                assert!(details.ends_with("API request failed: connection refused"), "{details}");
+            }
+            p => panic!("{p:?}"),
+        }
+        assert_eq!(
+            unreachable_sentence("connection refused."),
+            "Yantrik Companion did not answer: it could not reach its model (connection refused). Try again, or choose another model in Settings \u{2192} AI."
+        );
         assert!(matches!(answer_proof(Ok("  ".into()), 1), Proof::Attention { .. }));
         assert!(matches!(ask_the_mind("hermes"), Proof::Attention { .. }), "a mind it cannot ask is not passed");
     }

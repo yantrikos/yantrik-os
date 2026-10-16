@@ -232,8 +232,10 @@ pub struct AgentResponse {
     /// True if the response came from the offline responder (LLM was unavailable).
     #[serde(default)]
     pub offline_mode: bool,
-    /// Set when a model was reached and failed the turn (it thought and gave no answer): why,
-    /// for the log and for a caller that must not take `message` as the model's words.
+    /// Why no model's words answered the turn, for the log and for a caller that must not take
+    /// `message` as the model's words: a model reached that failed it (it thought and gave no
+    /// answer, or the provider refused the request, in its own words), or, with `offline_mode`,
+    /// why the model set up could not be reached.
     #[serde(default)]
     pub model_failure: Option<String>,
     /// True when no model produced these words: the not-set-up sentence, a SecurityGuard

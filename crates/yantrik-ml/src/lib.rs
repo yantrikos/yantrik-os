@@ -21,6 +21,9 @@ pub mod thinking;
 // An error a server sends inside a streamed reply, after its 200
 pub mod stream_error;
 
+// A provider that answered and refused the request, and the parameters a model will not take.
+pub mod refusal;
+
 // Chat template formatting (always compiled — used by candle + llamacpp backends)
 mod chat_template;
 pub mod chat_templates;
@@ -77,6 +80,7 @@ pub use traits::{LLMBackend, STTBackend, Embedder};
 pub use capability::{ModelCapabilityProfile, ModelFamily, ModelTier, ToolCallMode, SlotMode, ToolFamily};
 pub use thinking::{ThoughtWithoutAnswer, THOUGHT_WITHOUT_ANSWER};
 pub use stream_error::StreamError;
+pub use refusal::ProviderRefused;
 
 // ── Chat template exports ────────────────────────────────────────────
 

@@ -2258,6 +2258,7 @@ impl CompanionService {
                 }
                 Err(e) => {
                     self.note_llm_offline("", &e);
+                    model_failure = Some(e.to_string());
                     response_text = OfflineResponder::respond(
                         &self.db,
                         user_text,
@@ -2511,11 +2512,12 @@ impl CompanionService {
         // SecurityGuard: filter output for sensitive info leaks
         response_text = self.guard.check_response(&response_text, &self.db);
 
-        // Update conversation history
+        // Update conversation history. A failed turn's reply is about the failure, and can be
+        // the provider's own words: the model is shown a fixed line instead (`FAILED_TURN`).
         self.conversation_history
             .push(ChatMessage::user(user_text));
         self.conversation_history
-            .push(ChatMessage::assistant(&response_text));
+            .push(ChatMessage::assistant(history_reply(&response_text, &model_failure)));
 
         // Compress conversation history when it grows too long
         self.compress_history_if_needed();
@@ -3367,6 +3369,7 @@ impl CompanionService {
                             }
                             Err(e) => {
                                 self.note_llm_offline(" during tool follow-up", &e);
+                                model_failure = Some(e.to_string());
                                 response_text = OfflineResponder::respond(
                                     &self.db, user_text, &self.system_context,
                                     &memories, &urges, &self.config.user_name,
@@ -3425,6 +3428,7 @@ impl CompanionService {
             }
             Err(e) => {
                 self.note_llm_offline("", &e);
+                model_failure = Some(e.to_string());
                 response_text = OfflineResponder::respond(
                     &self.db,
                     user_text,
@@ -3513,10 +3517,10 @@ impl CompanionService {
         // SecurityGuard: filter output for sensitive info leaks
         response_text = self.guard.check_response(&response_text, &self.db);
 
-        // Update conversation history
+        // Update conversation history (a failed turn as a fixed line, as in `handle_message`).
         self.conversation_history.push(ChatMessage::user(user_text));
         self.conversation_history
-            .push(ChatMessage::assistant(&response_text));
+            .push(ChatMessage::assistant(history_reply(&response_text, &model_failure)));
 
         // Compress conversation history when it grows too long
         self.compress_history_if_needed();
@@ -4168,14 +4172,33 @@ impl CompanionService {
     }
 }
 
+/// What the conversation history holds for a turn the model failed, in place of what the person
+/// was told. That sentence can carry up to 200 characters an endpoint chose ("Claude refused the
+/// request: …"), and history is replayed to the model on every later turn as the companion's own
+/// words; after the person switches models, to a different provider. The person still reads the
+/// reason in the chat; the model never does (security review of #827, finding 2).
+pub const FAILED_TURN: &str = "(No answer: this turn failed before the model could reply.)";
+
+/// The assistant's side of a turn as the history keeps it: the reply, or [`FAILED_TURN`] when
+/// the model failed the turn.
+fn history_reply<'a>(response_text: &'a str, model_failure: &Option<String>) -> &'a str {
+    if model_failure.is_some() { FAILED_TURN } else { response_text }
+}
+
 /// What the person is told when a model call reached the model and still gave no answer: it
 /// thought and said nothing ([`ThoughtWithoutAnswer`]), or its server reported an error inside
-/// the streamed reply ([`yantrik_ml::StreamError`], VM 542: "malformed tool call"). That model is
+/// the streamed reply ([`yantrik_ml::StreamError`], VM 542: "malformed tool call"), or the
+/// provider refused the request in its own words ([`yantrik_ml::ProviderRefused`]). That model is
 /// reachable, so the turn is not offline; it failed, and the person is told so in words. None for
 /// any other failure, which is the offline path.
 fn answered_badly(e: &(dyn std::error::Error + Send + Sync + 'static)) -> Option<String> {
     if e.downcast_ref::<ThoughtWithoutAnswer>().is_some() {
         return Some(THOUGHT_WITHOUT_ANSWER.to_string());
+    }
+    // The provider answered and refused the request (VM 542, 16 Oct 2026: "`temperature` is
+    // deprecated for this model"): reached, so not offline, and its reason is the one to read.
+    if let Some(refused) = e.downcast_ref::<yantrik_ml::ProviderRefused>() {
+        return Some(refused.said());
     }
     e.downcast_ref::<yantrik_ml::StreamError>().map(yantrik_ml::stream_error::said)
 }
@@ -5651,8 +5674,13 @@ mod stream_error_tests {
 
     const SAID: &str = "malformed tool call: {\"name\": \"calculate\", \"arguments\": {\"expression\": \"17 * 23\"}}";
 
-    /// A model whose server answers 200 and then reports an error inside the stream.
-    struct ServerRefuses;
+    /// A model whose every call fails with the error `.0` makes: by default a server that answers
+    /// 200 and then reports an error inside the stream.
+    struct ServerRefuses(fn() -> anyhow::Error);
+
+    fn mid_stream() -> anyhow::Error {
+        StreamError { message: SAID.into() }.into()
+    }
 
     impl LLMBackend for ServerRefuses {
         fn chat(
@@ -5661,7 +5689,7 @@ mod stream_error_tests {
             _config: &GenerationConfig,
             _tools: Option<&[serde_json::Value]>,
         ) -> anyhow::Result<LLMResponse> {
-            Err(StreamError { message: SAID.into() }.into())
+            Err((self.0)())
         }
 
         fn chat_streaming(
@@ -5684,10 +5712,47 @@ mod stream_error_tests {
     }
 
     fn companion() -> CompanionService {
+        failing_with(mid_stream)
+    }
+
+    fn failing_with(error: fn() -> anyhow::Error) -> CompanionService {
         let db = YantrikDB::new(":memory:", 384).expect("in-memory database");
         let mut config = CompanionConfig::default();
         config.tools.enabled = false;
-        CompanionService::new(db, std::sync::Arc::new(ServerRefuses), config)
+        CompanionService::new(db, std::sync::Arc::new(ServerRefuses(error)), config)
+    }
+
+    /// VM 542, 16 Oct 2026, as Anthropic's endpoint said it.
+    fn claude_refuses() -> anyhow::Error {
+        let body = r#"{"error":{"code":"invalid_request_error","message":"`temperature` is deprecated for this model."}}"#;
+        yantrik_ml::ProviderRefused::of(400, "https://api.anthropic.com/v1", body, None).unwrap().into()
+    }
+
+    #[test]
+    fn a_request_the_provider_refused_says_the_providers_reason_and_is_not_offline() {
+        for streaming in [true, false] {
+            let mut c = failing_with(claude_refuses);
+            let ask = "What's on my calendar?";
+            let reply = if streaming { c.handle_message_streaming(ask, |_| {}) } else { c.handle_message(ask) };
+            let reason = "Claude refused the request: `temperature` is deprecated for this model";
+            assert!(reply.message.starts_with(reason), "{}", reply.message);
+            assert_eq!(reply.model_failure.as_deref(), Some(reason));
+            assert!(!reply.offline_mode, "the model was reached: this is not the offline responder");
+            // The person reads the provider's words; the model's history never holds them.
+            let said = c.conversation_history.last().expect("the turn is in the history");
+            assert_eq!(said.content, FAILED_TURN, "streaming: {streaming}");
+            assert!(c.conversation_history.iter().all(|m| !m.content.contains("temperature")));
+        }
+    }
+
+    #[test]
+    fn a_model_that_could_not_be_reached_is_offline_and_says_why() {
+        fn unreachable() -> anyhow::Error {
+            anyhow::anyhow!("API request failed: connection refused")
+        }
+        let reply = failing_with(unreachable).handle_message_streaming("What's on my calendar?", |_| {});
+        assert!(reply.offline_mode, "the offline responder answered");
+        assert_eq!(reply.model_failure.as_deref(), Some("API request failed: connection refused"));
     }
 
     #[test]

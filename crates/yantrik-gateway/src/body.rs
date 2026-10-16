@@ -107,65 +107,15 @@ pub fn drop_template_switch(body: &mut Value) {
 
 /// Sampling parameters a provider may refuse outright for a model ("`temperature` is deprecated for
 /// this model"). Every harness sends them, so the gateway takes them out rather than each harness
-/// learning which model refuses which.
-pub const DROPPABLE: [&str; 2] = ["temperature", "top_p"];
-
-/// What the provider's own words call deprecated or unsupported. A range error ("temperature must
-/// be at most 1") or a conflict ("`temperature` and `top_p` cannot both be specified") is not one of
-/// these: the parameter is allowed, the value or the pair is wrong, and the caller is shown it.
-const REFUSED: [&str; 7] =
-    ["is deprecated", "deprecated for this model", "not supported", "unsupported", "does not support", "unrecognized request argument", "unknown parameter"];
+/// learning which model refuses which. Which ones may go is decided in one place, for the gateway
+/// and the companion's own clients alike: [`yantrik_ml::refusal::SAMPLING_PARAMETERS`].
+pub use yantrik_ml::refusal::SAMPLING_PARAMETERS as DROPPABLE;
 
 /// The parameters of [`DROPPABLE`] that `sent` carries and an upstream's 400 body says the model
-/// refuses. The message must name the parameter as a word of its own and say it is deprecated or
-/// unsupported. Providers echo an unknown key's name in their 400, so when `sent` has another key
-/// holding the parameter's name (`"x temperature"`), the message may be that echo, and the
-/// parameter is not taken as refused.
-pub fn refused_params(error_body: &[u8], sent: &Value) -> Vec<&'static str> {
-    let Some(sent) = sent.as_object() else { return Vec::new() };
-    refused_in(error_body)
-        .into_iter()
-        .filter(|p| sent.contains_key(*p) && !sent.keys().any(|k| k != p && k.to_ascii_lowercase().contains(p)))
-        .collect()
-}
-
-fn refused_in(error_body: &[u8]) -> Vec<&'static str> {
-    let Ok(v) = serde_json::from_slice::<Value>(error_body) else { return Vec::new() };
-    let message = v
-        .pointer("/error/message")
-        .or_else(|| v.get("error").filter(|e| e.is_string()))
-        .or_else(|| v.get("message"))
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    if !REFUSED.iter().any(|w| message.contains(w)) {
-        return Vec::new();
-    }
-    // "`temperature` and `top_p` cannot both be specified, `top_p` is deprecated" names both, and
-    // refuses one: a parameter counts only when it is named in the same sentence as the refusal.
-    let mut found = Vec::new();
-    for sentence in message.split(['.', ';', '\n']) {
-        if !REFUSED.iter().any(|w| sentence.contains(w)) {
-            continue;
-        }
-        for p in DROPPABLE {
-            if names(sentence, p) && !found.contains(&p) {
-                found.push(p);
-            }
-        }
-    }
-    found
-}
-
-/// Whether `text` holds `word` with no identifier character either side (`top_p` is not `top_p2`).
-fn names(text: &str, word: &str) -> bool {
-    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
-    text.match_indices(word).any(|(i, _)| {
-        let before = text[..i].chars().next_back();
-        let after = text[i + word.len()..].chars().next();
-        !before.is_some_and(ident) && !after.is_some_and(ident)
-    })
-}
+/// refuses: the one matcher, shared with the companion's clients (sentence by sentence, deprecated
+/// or unsupported only, never a range error or a pair conflict, and not when the message may echo
+/// another key of the caller's).
+pub use yantrik_ml::refusal::refused_params;
 
 /// The parameters the gateway knows the target refuses before anything is sent: Claude 5 and later
 /// on Anthropic's own endpoint takes no `temperature`. [`Reasoning::AnthropicBudget`] is the knob
@@ -360,6 +310,19 @@ mod tests {
         let sent = json!({"model": "x", "messages": [], "temperature": 0.7, "top_p": 0.9});
         for (body, want) in cases {
             assert_eq!(refused_params(body.as_bytes(), &sent), *want, "{body}");
+        }
+    }
+
+    /// The security review's 16 inputs (PR #827), shared with `yantrik_ml::refusal`'s own test:
+    /// the gateway and the companion's clients answer each the same.
+    #[test]
+    fn the_gateway_answers_the_review_table_as_the_companion_does() {
+        let table: Vec<(String, Vec<String>)> = serde_json::from_str(include_str!("../../yantrik-ml/src/llm/testdata/refusal_table.json")).unwrap();
+        assert_eq!(table.len(), 16);
+        let sent = json!({"model": "m", "messages": [], "temperature": 0.7, "top_p": 0.9, "top_k": 40, "frequency_penalty": 0.1});
+        for (message, want) in table {
+            let body = json!({"error": {"message": message}}).to_string();
+            assert_eq!(refused_params(body.as_bytes(), &sent), want, "{message}");
         }
     }
 
