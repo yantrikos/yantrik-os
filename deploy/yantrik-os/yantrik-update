@@ -1884,24 +1884,43 @@ reconcile_sysctl() {
   done
 }
 
-# The kernel's serial console, off on a machine installed before 12 Oct 2026. The installer used
-# to write `console=ttyS0,115200 console=tty1` into /etc/default/grub (see grub_defaults in
-# crates/yantrik-ui/src/wire/installer.rs). With no serial port, systemd starts a login prompt on
-# ttyS0 anyway, agetty fails ("failed to get terminal attributes: Input/output error") and the
-# unit restarts every ten seconds for as long as the machine runs: about 8,600 times a day on VM
-# 541 (16 Oct), installed 12 Oct and updated since, because nothing here ever touched the file.
+# What an installer before 16 Oct 2026 wrote into /etc/default/grub, put right on a machine that
+# still has it (see grub_defaults in crates/yantrik-ui/src/wire/installer.rs). Two things:
 #
-# Only the exact line an old installer wrote is changed, to the line it writes now; git history
-# has no other form of it. Any other kernel line is someone's choice (a serial console added by
-# hand to debug a machine that has one) and is left as it is. GRUB_CMDLINE_LINUX_DEFAULT, which
-# carries the unlock screen and the quiet, is never read or written. The file is copied aside
-# first and kept; grub.cfg is regenerated as the installer does it, and if that fails both files
-# go back as they were, so the machine boots as it did before. Variables, so the selftest can
-# point them at a scratch directory.
+# The kernel's serial console, until 12 Oct: `console=ttyS0,115200 console=tty1`. With no serial
+# port, systemd starts a login prompt on ttyS0 anyway, agetty fails ("failed to get terminal
+# attributes: Input/output error") and the unit restarts every ten seconds for as long as the
+# machine runs: about 8,600 times a day on VM 541 (16 Oct), installed 12 Oct and updated since,
+# because nothing here ever touched the file.
+#
+# GRUB's serial terminal, 14 to 16 Oct: `GRUB_TERMINAL_INPUT="console serial"`,
+# `GRUB_TERMINAL_OUTPUT="gfxterm serial"` and `GRUB_SERIAL_COMMAND="serial --speed=115200"`. With
+# a second output GRUB draws its text menu, so the Yantrik theme never shows, and the screen is
+# black with a cursor for 7.5 s between Enter and plymouth (VM 543, 16 Oct; #820). The installer
+# writes gfxterm alone now. Not on a machine that starts by BIOS and has a theme line (installed
+# 14 to 15 Oct, before 4123296): there the serial terminal is what keeps GRUB from the themed
+# menu that stops it at "unaligned pointer", so it is left as it is.
+#
+# Only the exact lines an old installer wrote are changed, to the lines it writes now; git
+# history has no other form of either. The installer before 14 Oct wrote
+# `GRUB_TERMINAL="console serial"`, on a machine with no theme in /boot for gfxterm to draw, and
+# that is left as it is too. Any other terminal or kernel line is someone's choice (a serial
+# terminal or console added by hand to debug a machine that has a port) and is left as it is.
+# GRUB_CMDLINE_LINUX_DEFAULT, which carries the unlock screen and the quiet, is never read or
+# written. The file is copied aside first, once for both changes, and kept; grub.cfg is
+# regenerated as the installer does it, and if that fails both files go back as they were, so the
+# machine boots as it did before. Variables, so the selftest can point them at a scratch
+# directory.
 GRUB_DEFAULTS=/etc/default/grub
 GRUB_CFG=/boot/grub/grub.cfg
+GRUB_EFI_DIR=/sys/firmware/efi
 GRUB_CMDLINE_OLD='GRUB_CMDLINE_LINUX="console=ttyS0,115200 console=tty1"'
 GRUB_CMDLINE_NEW='GRUB_CMDLINE_LINUX="console=tty1"'
+GRUB_TERMINAL_INPUT_OLD='GRUB_TERMINAL_INPUT="console serial"'
+GRUB_TERMINAL_OUTPUT_OLD='GRUB_TERMINAL_OUTPUT="gfxterm serial"'
+GRUB_SERIAL_COMMAND_OLD='GRUB_SERIAL_COMMAND="serial --speed=115200"'
+GRUB_TERMINAL_INPUT_NEW='GRUB_TERMINAL_INPUT="console"'
+GRUB_TERMINAL_OUTPUT_NEW='GRUB_TERMINAL_OUTPUT="gfxterm"'
 
 # The installer's own command (installer.rs runs update-grub in the new system); on Debian that is
 # grub-mkconfig -o /boot/grub/grub.cfg, which writes grub.cfg.new and moves it over only once it
@@ -1923,52 +1942,112 @@ grub_cfg_has_old_serial() {
   grep -qE '^[[:space:]]*linux[^[:space:]]*[[:space:]].*[[:space:]]console=ttyS0,115200' "$1" 2>/dev/null
 }
 
-# The .before- copy this code rewrote $1 from, if $1 is exactly that copy with the old line
-# swapped for the new: proof the new line is this code's doing, not someone's own edit.
+# Does a grub.cfg still draw the menu on a serial terminal too?
+grub_cfg_has_serial_terminal() {
+  grep -qE '^[[:space:]]*terminal_(input|output)[[:space:]].*serial' "$1" 2>/dev/null
+}
+
+# The old installer's lines swapped for the new, stdin to stdout: <kernel line 0|1> <terminal 0|1>.
+grub_defaults_rewrite() {
+  awk -v cmd="$1" -v term="$2" -v cold="$GRUB_CMDLINE_OLD" -v cnew="$GRUB_CMDLINE_NEW" \
+      -v iold="$GRUB_TERMINAL_INPUT_OLD" -v inew="$GRUB_TERMINAL_INPUT_NEW" \
+      -v oold="$GRUB_TERMINAL_OUTPUT_OLD" -v onew="$GRUB_TERMINAL_OUTPUT_NEW" -v sold="$GRUB_SERIAL_COMMAND_OLD" '
+    cmd && $0 == cold { print cnew; next }
+    term && $0 == iold { print inew; next }
+    term && $0 == oold { print onew; next }
+    term && $0 == sold { next }
+    { print }'
+}
+
+# The .before- copy this code rewrote $1 from, if $1 is exactly that copy with one or both of the
+# old installer's forms swapped for the new: proof the new lines are this code's doing, not
+# someone's own edit.
 grub_defaults_rewritten_from() {
-  local c
+  local c m
   for c in "$1".before-*; do
     [ -f "$c" ] || continue
-    awk -v old="$GRUB_CMDLINE_OLD" -v new="$GRUB_CMDLINE_NEW" '$0 == old { print new; next } { print }' "$c" \
-      | cmp -s - "$1" && { printf '%s\n' "$c"; return 0; }
+    for m in "1 0" "0 1" "1 1"; do
+      # shellcheck disable=SC2086  # $m is the two flags
+      grub_defaults_rewrite $m < "$c" | cmp -s - "$1" && { printf '%s\n' "$c"; return 0; }
+    done
   done
   return 1
 }
 
-migrate_grub_cmdline() {
-  local f="$GRUB_DEFAULTS" cfg="$GRUB_CFG" lines note copy tmp cfg_copy out rc resume="" kept put_back
+# Said once per form of the lines, not at every update: it is not a fault, only worth knowing
+# about. grub_note_once <note name> <the lines> <what to say>
+grub_note_once() {
+  local note="$UPDATES_DIR/$1" tmp
+  [ "$(cat "$note" 2>/dev/null)" = "$2" ] && return 0
+  info "$3"
+  # Written beside it and renamed over it, never through it: updates/ was the desktop user's
+  # before cmd_migrate_ownership, and a link left there from then would have root truncate
+  # whatever it points at, sudoers or grub.cfg (security review of 5f826b95, #829, item 1). The
+  # rename replaces the link itself; -T so a link to a directory is not moved into.
+  tmp="$(mktemp "$note.XXXXXX" 2>/dev/null)" \
+    && { { printf '%s\n' "$2" > "$tmp" && mv -fT "$tmp" "$note"; } 2>/dev/null || rm -f "$tmp"; }
+}
+
+migrate_grub_defaults() {
+  local f="$GRUB_DEFAULTS" cfg="$GRUB_CFG" lines terms copy tmp cfg_copy out rc kept put_back done_what
+  local cmd=0 term=0 resume=""
   [ -f "$f" ] || return 0
   # A run killed part way leaves its temp files here; every name with this suffix is one this
   # function made, and nothing else runs it at the same time (security review of 5f826b95,
   # #829, item 2).
   rm -f -- "$f".yantrik-?????? "$cfg".yantrik-??????
   lines="$(grep -E '^[[:space:]]*(export[[:space:]]+)?GRUB_CMDLINE_LINUX=' "$f")"
-  kept="$f keeps console=ttyS0"
-  if [ "$lines" = "$GRUB_CMDLINE_NEW" ]; then
+  terms="$(grep -E '^[[:space:]]*(export[[:space:]]+)?GRUB_(TERMINAL|TERMINAL_INPUT|TERMINAL_OUTPUT|SERIAL_COMMAND)=' "$f")"
+
+  if [ "$lines" = "$GRUB_CMDLINE_OLD" ]; then
+    cmd=1
+  elif [ "$lines" = "$GRUB_CMDLINE_NEW" ]; then
     # Already the new line. Done, unless a run was stopped between rewriting $f and finishing
     # the menu (killed, or its put-back failed): then grub.cfg still starts the kernel on
     # ttyS0, and stopping here would leave the getty loop at every boot until some kernel
     # update happened to regenerate it (#829 review, item 2). Resumed only when this code
-    # made the change (a .before- copy that $f is the rewrite of), and when nothing in $f or
-    # its grub.d asks for that console, so a menu that would carry it anyway is not
-    # regenerated at every update.
-    grub_cfg_has_old_serial "$cfg" || return 0
-    grep -qs -- 'console=ttyS0,115200' "$f" "$f".d/*.cfg && return 0
-    copy="$(grub_defaults_rewritten_from "$f")" || return 0
-    resume=1; kept="$cfg still starts the kernel with console=ttyS0"
-  elif [ "$lines" != "$GRUB_CMDLINE_OLD" ]; then
-    # Said once per line, not at every update: it is not a fault, only worth knowing about.
-    note="$UPDATES_DIR/grub-cmdline-left-alone"
-    if [ "$(cat "$note" 2>/dev/null)" != "$lines" ]; then
-      info "$f: the kernel line is not one a Yantrik installer wrote; left as it is: ${lines:-(none)}"
-      # Written beside it and renamed over it, never through it: updates/ was the desktop
-      # user's before cmd_migrate_ownership, and a link left there from then would have root
-      # truncate whatever it points at, sudoers or grub.cfg (security review of 5f826b95, #829,
-      # item 1). The rename replaces the link itself; -T so a link to a directory is not
-      # moved into.
-      tmp="$(mktemp "$note.XXXXXX" 2>/dev/null)" \
-        && { { printf '%s\n' "$lines" > "$tmp" && mv -fT "$tmp" "$note"; } 2>/dev/null || rm -f "$tmp"; }
+    # made the change (a .before- copy that $f is the rewrite of, checked below), and when
+    # nothing in $f or its grub.d asks for that console, so a menu that would carry it anyway
+    # is not regenerated at every update.
+    grub_cfg_has_old_serial "$cfg" && ! grep -qs -- 'console=ttyS0,115200' "$f" "$f".d/*.cfg \
+      && resume="$cfg still starts the kernel with console=ttyS0"
+  else
+    grub_note_once grub-cmdline-left-alone "$lines" \
+      "$f: the kernel line is not one a Yantrik installer wrote; left as it is: ${lines:-(none)}"
+  fi
+
+  if [ "$terms" = "$(printf '%s\n' "$GRUB_TERMINAL_INPUT_OLD" "$GRUB_TERMINAL_OUTPUT_OLD" "$GRUB_SERIAL_COMMAND_OLD")" ]; then
+    if grep -qE '^[[:space:]]*(export[[:space:]]+)?GRUB_THEME=' "$f" && ! [ -d "$GRUB_EFI_DIR" ]; then
+      grub_note_once grub-terminal-left-alone "$terms" \
+        "$f: the menu has a theme and this machine starts by BIOS, where GRUB stops at a themed menu; its serial terminal, which keeps the theme off, is left as it is"
+    else
+      term=1
     fi
+  elif [ "$terms" = "$(printf '%s\n' "$GRUB_TERMINAL_INPUT_NEW" "$GRUB_TERMINAL_OUTPUT_NEW")" ]; then
+    # The same resume as the kernel line's, for a menu still drawn on a serial terminal too.
+    grub_cfg_has_serial_terminal "$cfg" \
+      && ! grep -qsE -- '^[[:space:]]*(export[[:space:]]+)?GRUB_(TERMINAL|TERMINAL_INPUT|TERMINAL_OUTPUT)=.*serial' "$f" "$f".d/*.cfg \
+      && resume="${resume:+$resume, and }$cfg still draws the menu on a serial terminal too"
+  elif [ "$terms" = "$(printf '%s\n' 'GRUB_TERMINAL="console serial"' "$GRUB_SERIAL_COMMAND_OLD")" ]; then
+    # The installer's before 14 Oct: no theme on the machine and GRUB's text menu. Left as it
+    # is, and nothing said: it is the installer's, not someone's edit.
+    :
+  else
+    # Only terminals with serial in them: those are what keep the theme off. A file with none, or
+    # gfxterm alone in another form (the text installer's), has nothing here worth saying.
+    case "$terms" in
+      *serial*) grub_note_once grub-terminal-left-alone "$terms" \
+                  "$f: the boot menu's terminals are not the ones a Yantrik installer wrote; left as they are: $(printf '%s' "$terms" | tr '\n' ' ')" ;;
+    esac
+  fi
+
+  if [ "$cmd" = 1 ] || [ "$term" = 1 ]; then
+    resume=""
+    kept="$f keeps $([ "$cmd" = 1 ] && printf 'console=ttyS0')$([ "$cmd$term" = 11 ] && printf ' and ')$([ "$term" = 1 ] && printf 'its serial terminal')"
+  elif [ -n "$resume" ]; then
+    copy="$(grub_defaults_rewritten_from "$f")" || return 0
+    kept="$resume"
+  else
     return 0
   fi
   grub_can_regenerate || { warn "no update-grub on this machine; $kept"; return 0; }
@@ -1978,19 +2057,20 @@ migrate_grub_cmdline() {
   cfg_copy="$(mktemp "$cfg.yantrik-XXXXXX")" || { warn "could not write beside $cfg; $kept"; return 0; }
   cp -p "$cfg" "$cfg_copy" || { rm -f "$cfg_copy"; warn "could not copy $cfg aside; $kept"; return 0; }
   if [ -z "$resume" ]; then
-    # One copy of the old file, however many runs it takes: a run whose regeneration failed put the
-    # file back as it was, and its copy still stands for it.
+    # One copy of the old file, however many runs it takes and however many of the changes it
+    # has: a run whose regeneration failed put the file back as it was, and its copy still
+    # stands for it.
     copy=""
     for tmp in "$f".before-*; do
       [ -f "$tmp" ] && cmp -s "$tmp" "$f" && copy="$tmp"
     done
     [ -n "$copy" ] || copy="$f.before-$(date -u +%Y%m%dT%H%M%SZ)"
-    [ -f "$copy" ] || cp -p "$f" "$copy" || { rm -f "$cfg_copy"; warn "could not copy $f aside; it keeps console=ttyS0"; return 0; }
-    tmp="$(mktemp "$f.yantrik-XXXXXX")" || { rm -f "$cfg_copy"; warn "could not write beside $f; it keeps console=ttyS0"; return 0; }
-    if ! awk -v old="$GRUB_CMDLINE_OLD" -v new="$GRUB_CMDLINE_NEW" '$0 == old { print new; next } { print }' "$f" > "$tmp" \
+    [ -f "$copy" ] || cp -p "$f" "$copy" || { rm -f "$cfg_copy"; warn "could not copy $f aside; $kept"; return 0; }
+    tmp="$(mktemp "$f.yantrik-XXXXXX")" || { rm -f "$cfg_copy"; warn "could not write beside $f; $kept"; return 0; }
+    if ! grub_defaults_rewrite "$cmd" "$term" < "$f" > "$tmp" \
        || ! chmod --reference="$f" "$tmp" || ! chown --reference="$f" "$tmp" || ! mv -f "$tmp" "$f"; then
       rm -f "$tmp" "$cfg_copy"
-      warn "could not rewrite $f; it keeps console=ttyS0"
+      warn "could not rewrite $f; $kept"
       return 0
     fi
   fi
@@ -2017,7 +2097,13 @@ migrate_grub_cmdline() {
     return 0
   fi
   rm -f "$cfg_copy"
-  info "kernel console is the screen only from the next start (was console=ttyS0 too); the old $f is $copy"
+  # What changed: from the lines, so a resumed run says what it finished.
+  done_what=""
+  grep -qxF -- "$GRUB_CMDLINE_OLD" "$copy" && grep -qxF -- "$GRUB_CMDLINE_NEW" "$f" \
+    && done_what="kernel console is the screen only from the next start (was console=ttyS0 too)"
+  grep -qxF -- "$GRUB_TERMINAL_OUTPUT_OLD" "$copy" && grep -qxF -- "$GRUB_TERMINAL_OUTPUT_NEW" "$f" \
+    && done_what="${done_what:+$done_what; }the boot menu is drawn on the screen alone from the next start, in its theme when it has one (was a serial terminal too)"
+  info "${done_what:-boot menu regenerated}; the old $f is $copy"
 }
 
 # And the loop running now, without waiting for that start: stopped only when the port gives an
@@ -2048,7 +2134,7 @@ stop_serial_getty_loop() {
 reconcile_serial_console() {
   [ "$(id -u)" = 0 ] || return 0
   tree_is_roots || return 0
-  migrate_grub_cmdline
+  migrate_grub_defaults
   stop_serial_getty_loop
 }
 
@@ -5019,22 +5105,25 @@ c.sendall((json.dumps({"ok": True, "seeded": req["rules"]}) + "\n").encode())' "
       'GRUB_TERMINAL="console serial"' 'GRUB_SERIAL_COMMAND="serial --speed=115200"' > "$gd/default/grub"
     chmod 0644 "$gd/default/grub"
     printf 'linux /vmlinuz root=UUID=1234 console=ttyS0,115200 console=tty1\n' > "$gd/boot/grub.cfg"
-    rm -f "$gd/default/grub".before-* "$gd/calls" "$gd/updates/grub-cmdline-left-alone"
+    rm -f "$gd/default/grub".before-* "$gd/calls" "$gd/updates/grub-cmdline-left-alone" "$gd/updates/grub-terminal-left-alone"
   }
-  gr_run() { # gr_run <ok|fail|by-device>: what migrate_grub_cmdline said; GR_CP_FAIL=1, the put-back's copy fails
+  mkdir -p "$gd/efi"
+  gr_run() { # gr_run <ok|fail|by-device>: what migrate_grub_defaults said; GR_CP_FAIL=1, the put-back's copy fails
     ( GRUB_DEFAULTS="$gd/default/grub" GRUB_CFG="$gd/boot/grub.cfg" UPDATES_DIR="$gd/updates" GR_MODE="$1"
+      GRUB_EFI_DIR="$gd/efi"
       cp() { [ -n "${GR_CP_FAIL:-}" ] && case "${3:-}" in "$GRUB_DEFAULTS".yantrik-*) true ;; *) false ;; esac \
                && { echo "cp: error writing: No space left on device" >&2; return 1; }; command cp "$@"; }
       grub_can_regenerate() { [ "$GR_MODE" != no-update-grub ]; }
       grub_regenerate() {
         printf 'regenerate\n' >> "$gd/calls"
         case "$GR_MODE" in
-          ok) printf 'linux /vmlinuz root=UUID=1234 %s\n' "$(sed -n 's/^GRUB_CMDLINE_LINUX="\(.*\)"$/\1/p' "$GRUB_DEFAULTS")" > "$GRUB_CFG" ;;
+          ok) printf 'linux /vmlinuz root=UUID=1234 %s\n' "$(sed -n 's/^GRUB_CMDLINE_LINUX="\(.*\)"$/\1/p' "$GRUB_DEFAULTS")" > "$GRUB_CFG"
+              sed -n 's/^GRUB_TERMINAL_OUTPUT="\(.*\)"$/terminal_output \1/p' "$GRUB_DEFAULTS" >> "$GRUB_CFG" ;;
           by-device) printf 'linux /vmlinuz root=/dev/sda2 console=tty1\n' > "$GRUB_CFG" ;;
           *) printf 'half a menu\n' > "$GRUB_CFG"; echo "grub-mkconfig: error: syntax error"; return 1 ;;
         esac
       }
-      migrate_grub_cmdline 2>&1 )
+      migrate_grub_defaults 2>&1 )
   }
   local gwas
   gr_old "$GRUB_CMDLINE_OLD"; gwas="$(grep -v '^GRUB_CMDLINE_LINUX=' "$gd/default/grub")"
@@ -5132,6 +5221,124 @@ c.sendall((json.dumps({"ok": True, "seeded": req["rules"]}) + "\n").encode())' "
   is "serial console: the new line is the installer's" "yes" \
     "$(! [ -f "$here/../../crates/yantrik-ui/src/wire/installer.rs" ] \
        || grep -qF -- "$(printf '%s' "$GRUB_CMDLINE_NEW" | sed 's/"/\\"/g')" "$here/../../crates/yantrik-ui/src/wire/installer.rs" && echo yes || echo no)"
+
+  # GRUB's serial terminal on a machine installed 14 to 16 Oct 2026 (VM 543, #820): the old
+  # installer's three lines become the two it writes now, so the menu is drawn in its theme;
+  # anything else is left, a second run does nothing, and a failed regeneration puts both back.
+  gt_old() { # the file an installer of 14 to 16 Oct wrote; $1, $2, $3 in place of its terminal lines
+    printf '%s\n' 'GRUB_DEFAULT=0' 'GRUB_TIMEOUT=3' 'GRUB_DISTRIBUTOR="Yantrik OS"' \
+      'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=3 plymouth.ignore-serial-consoles"' \
+      "${4:-$GRUB_CMDLINE_NEW}" "${1:-$GRUB_TERMINAL_INPUT_OLD}" "${2:-$GRUB_TERMINAL_OUTPUT_OLD}" 'GRUB_GFXMODE=auto' \
+      "${3:-$GRUB_SERIAL_COMMAND_OLD}" 'GRUB_THEME="/boot/grub/themes/yantrik/theme.txt"' > "$gd/default/grub"
+    chmod 0640 "$gd/default/grub"
+    printf '%s\n' 'linux /vmlinuz root=UUID=1234 console=tty1' 'terminal_output gfxterm serial' > "$gd/boot/grub.cfg"
+    rm -f "$gd/default/grub".before-* "$gd/calls" "$gd/updates/grub-cmdline-left-alone" "$gd/updates/grub-terminal-left-alone"
+  }
+  gt_terms() { grep -E '^GRUB_(TERMINAL|TERMINAL_INPUT|TERMINAL_OUTPUT|SERIAL_COMMAND)=' "$gd/default/grub" | tr '\n' '|'; }
+  gt_old; cp -p "$gd/default/grub" "$gd/hand"
+  gwas="$(grep -vE '^GRUB_(TERMINAL_INPUT|TERMINAL_OUTPUT|SERIAL_COMMAND)=' "$gd/default/grub")"
+  out="$(gr_run ok)"
+  is "serial terminal: the old installer's three lines become the two it writes now" \
+    "$GRUB_TERMINAL_INPUT_NEW|$GRUB_TERMINAL_OUTPUT_NEW|" "$(gt_terms)"
+  is "serial terminal: ... every other line, the DEFAULT line too, is as it was" "$gwas" \
+    "$(grep -vE '^GRUB_(TERMINAL_INPUT|TERMINAL_OUTPUT)=' "$gd/default/grub")"
+  is "serial terminal: ... the file keeps its mode" "640" "$(stat -c %a "$gd/default/grub")"
+  is "serial terminal: ... the old file is kept beside it, once" "1|yes" \
+    "$(find "$gd/default" -name 'grub.before-*' | wc -l)|$(cmp -s "$gd/hand" "$gd/default"/grub.before-* && echo yes || echo no)"
+  is "serial terminal: ... the menu is regenerated from it" "regenerate|terminal_output gfxterm" \
+    "$(cat "$gd/calls")|$(grep terminal_output "$gd/boot/grub.cfg")"
+  is "serial terminal: ... and nothing is left beside the two files" "" "$(find "$gd/default" "$gd/boot" -name '*.yantrik-*')"
+  t "serial terminal: ... and it says so" "drawn on the screen alone from the next start" "$out"
+  is "serial terminal: ... and not that the kernel line changed" "no" \
+    "$(printf '%s' "$out" | grep -q 'kernel console' && echo yes || echo no)"
+  out="$(gr_run ok)"
+  is "serial terminal: a second run does nothing" "regenerate|1|" \
+    "$(cat "$gd/calls")|$(find "$gd/default" -name 'grub.before-*' | wc -l)|$out"
+
+  # Both of the old installer's forms in one file: one copy, one regeneration, both said.
+  gt_old "" "" "" "$GRUB_CMDLINE_OLD"; cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run ok)"
+  is "old installer: both changes in one update: both made" "$GRUB_CMDLINE_NEW|$GRUB_TERMINAL_INPUT_NEW|$GRUB_TERMINAL_OUTPUT_NEW|" \
+    "$(grep '^GRUB_CMDLINE_LINUX=' "$gd/default/grub")|$(gt_terms)"
+  is "old installer: ... one copy, the file as it was, and one regeneration" "1|yes|regenerate" \
+    "$(find "$gd/default" -name 'grub.before-*' | wc -l)|$(cmp -s "$gd/hand" "$gd/default"/grub.before-* && echo yes || echo no)|$(cat "$gd/calls")"
+  t "old installer: ... says the kernel line changed" "kernel console is the screen only" "$out"
+  t "old installer: ... and the menu's terminal" "drawn on the screen alone" "$out"
+  out="$(gr_run ok)"
+  is "old installer: ... and a second run does nothing" "regenerate|1|" \
+    "$(cat "$gd/calls")|$(find "$gd/default" -name 'grub.before-*' | wc -l)|$out"
+
+  # Anything else is someone's choice: a serial terminal on a machine that has a port.
+  for gh in "|GRUB_TERMINAL_OUTPUT=\"gfxterm serial\"|GRUB_SERIAL_COMMAND=\"serial --unit=1 --speed=9600\"" \
+            "GRUB_TERMINAL_INPUT=\"serial console\"||" "|GRUB_TERMINAL_OUTPUT=\"serial gfxterm\"|" \
+            " GRUB_TERMINAL_INPUT=\"console serial\"||"; do
+    IFS='|' read -r g1 g2 g3 <<< "$gh"
+    gt_old "$g1" "$g2" "$g3"; cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run ok)"
+    is "serial terminal: a hand-edited line is left as it is (${g1:-${g2:-$g3}})" "yes|no|none" \
+      "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$([ -e "$gd/calls" ] && echo yes || echo no)|$(ls "$gd/default"/grub.before-* 2>/dev/null || echo none)"
+    t "serial terminal: ... and said so" "not the ones a Yantrik installer wrote" "$out"
+    is "serial terminal: ... once, not at every update" "" "$(gr_run ok)"
+  done
+  gt_old; printf '%s\n' "$GRUB_TERMINAL_OUTPUT_OLD" >> "$gd/default/grub"; cp -p "$gd/default/grub" "$gd/hand"
+  gr_run ok >/dev/null
+  is "serial terminal: the old lines with a second output line after them are left as they are" "yes" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)"
+  gr_old "$GRUB_CMDLINE_OLD"; out="$(gr_run ok)"
+  is "serial terminal: the installer's before 14 Oct (GRUB_TERMINAL) is left as it is, and not called an edit" \
+    "GRUB_TERMINAL=\"console serial\"|$GRUB_SERIAL_COMMAND_OLD|no" \
+    "$(gt_terms)$(printf '%s' "$out" | grep -q 'not the ones' && echo yes || echo no)"
+
+  # A machine that starts by BIOS with a theme line (installed 14 to 15 Oct, before 4123296): the
+  # serial terminal is what keeps GRUB off the themed menu that stops it, so it stays.
+  rmdir "$gd/efi"
+  gt_old; cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run ok)"
+  is "serial terminal: BIOS with a theme: left as it is" "yes|no|none" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$([ -e "$gd/calls" ] && echo yes || echo no)|$(ls "$gd/default"/grub.before-* 2>/dev/null || echo none)"
+  t "serial terminal: ... and said so" "starts by BIOS" "$out"
+  is "serial terminal: ... once" "" "$(gr_run ok)"
+  gt_old; sed -i '/^GRUB_THEME=/d' "$gd/default/grub"; gr_run ok >/dev/null
+  is "serial terminal: BIOS with no theme: gfxterm alone, as the installer writes it there" \
+    "$GRUB_TERMINAL_INPUT_NEW|$GRUB_TERMINAL_OUTPUT_NEW|" "$(gt_terms)"
+  mkdir -p "$gd/efi"
+
+  for gm in fail by-device; do
+    gt_old; cp -p "$gd/default/grub" "$gd/hand"; gcfg="$(cat "$gd/boot/grub.cfg")"
+    out="$(gr_run "$gm")"
+    is "serial terminal: regeneration $gm: the file is put back" "yes" \
+      "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)"
+    is "serial terminal: ... and the old menu" "$gcfg" "$(cat "$gd/boot/grub.cfg")"
+    is "serial terminal: ... nothing is left beside them" "" "$(find "$gd/default" "$gd/boot" -name '*.yantrik-*')"
+    t "serial terminal: ... and it says so" "are as they were" "$out"
+  done
+  gr_run fail >/dev/null
+  is "serial terminal: a second failed run keeps the one copy" "1" "$(find "$gd/default" -name 'grub.before-*' | wc -l)"
+  gt_old "" "" "" "$GRUB_CMDLINE_OLD"; cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run fail)"
+  is "old installer: both changes, regeneration fails: the file is put back, one copy" "yes|1" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$(find "$gd/default" -name 'grub.before-*' | wc -l)"
+  gt_old; cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run no-update-grub)"
+  is "serial terminal: no update-grub: nothing is touched, and it says why" "yes|none|yes" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$(ls "$gd/default"/grub.before-* 2>/dev/null || echo none)|$(printf '%s' "$out" | grep -q 'keeps its serial terminal' && echo yes || echo no)"
+
+  # A run killed after $f was rewritten and before the menu was: the next one finishes it.
+  gt_killed() {
+    gt_old; cp -p "$gd/default/grub" "$gd/default/grub.before-20261016T000000Z"
+    grub_defaults_rewrite 0 1 < "$gd/default/grub.before-20261016T000000Z" > "$gd/default/grub"
+  }
+  gt_killed; out="$(gr_run ok)"
+  is "serial terminal: an interrupted run is finished by the next one" "regenerate|terminal_output gfxterm" \
+    "$(cat "$gd/calls" 2>/dev/null)|$(grep terminal_output "$gd/boot/grub.cfg")"
+  t "serial terminal: ... and says what it finished" "drawn on the screen alone" "$out"
+  is "serial terminal: ... and a run after that does nothing" "" "$(rm -f "$gd/calls"; gr_run ok; cat "$gd/calls" 2>/dev/null)"
+  gt_killed; rm -f "$gd/default"/grub.before-*; out="$(gr_run ok)"
+  is "serial terminal: the new lines with no copy of ours beside them are not regenerated" "" "$(cat "$gd/calls" 2>/dev/null)$out"
+  gt_killed; mkdir -p "$gd/default/grub.d"
+  printf 'GRUB_TERMINAL_OUTPUT="gfxterm serial"\n' > "$gd/default/grub.d/serial.cfg"
+  out="$(gr_run ok)"; rm -rf "$gd/default/grub.d"
+  is "serial terminal: ... nor is a machine whose grub.d asks for a serial terminal itself" "" "$(cat "$gd/calls" 2>/dev/null)"
+  is "serial terminal: the new lines are the installer's" "yes" \
+    "$(! [ -f "$here/../../crates/yantrik-ui/src/wire/installer.rs" ] \
+       || grep -qF -- "$(printf '%s\\n%s' "$GRUB_TERMINAL_INPUT_NEW" "$GRUB_TERMINAL_OUTPUT_NEW" | sed 's/"/\\"/g')" "$here/../../crates/yantrik-ui/src/wire/installer.rs" && echo yes || echo no)"
+  is "serial terminal: GRUB_CMDLINE_LINUX_DEFAULT is never in the rewrite" "no" \
+    "$(declare -f grub_defaults_rewrite migrate_grub_defaults | grep -q 'CMDLINE_LINUX_DEFAULT' && echo yes || echo no)"
 
   # The loop running now: stopped only when the port gives the I/O error agetty fails on.
   # stty is a program on PATH here, not a function, because the probe runs it under timeout.
