@@ -93,6 +93,25 @@ impl<'a> Gate<'a> {
             && self.offered.contains(name)
             && !self.registry.definitions_for(&[name], PermissionLevel::Standard).is_empty()
     }
+
+    /// Whether `name` was one of the tools this turn offered. A native call is checked against
+    /// this alone: [`WRITTEN_CALLABLE`] narrows what a call written as text may reach, not a
+    /// native one, which the permission guard judges as it always has (#832).
+    pub(crate) fn offers(&self, name: &str) -> bool {
+        self.offered.contains(name)
+    }
+}
+
+/// The native calls this turn offered, and the names it did not offer, in order of first
+/// appearance. A model can name a tool that was never sent to it; text calls are checked
+/// against the offered set and native ones were taken as they arrived, so an invented name ran
+/// unchecked (#832). Dropping one can only remove a run, never add one.
+pub(crate) fn keep_offered(calls: Vec<ToolCall>, gate: &Gate) -> (Vec<ToolCall>, Vec<String>) {
+    let (kept, refused): (Vec<ToolCall>, Vec<ToolCall>) =
+        calls.into_iter().partition(|c| gate.offers(&c.name));
+    let mut dropped: Vec<String> = refused.into_iter().map(|c| c.name).collect();
+    dropped.dedup();
+    (kept, dropped)
 }
 
 /// The tool calls written as text in `text`. Qwen's `<tool_call>{json}</tool_call>`, the form
@@ -453,5 +472,34 @@ mod tests {
         let mut json = LLMResponse { text: fenced_json.into(), tool_calls: Vec::new(), api_tool_calls: Vec::new(), ..r };
         adopt_text_calls(&mut json, None, &g);
         assert!(json.tool_calls.is_empty());
+    }
+
+    fn native_call(name: &str) -> ToolCall {
+        ToolCall { name: name.into(), arguments: serde_json::Value::Null }
+    }
+
+    #[test]
+    fn native_calls_outside_the_offered_set_do_not_run() {
+        let reg = registry();
+        let g = gate(&reg, &["recall"]);
+        let (kept, dropped) = keep_offered(vec![native_call("recall"), native_call("run_command")], &g);
+        assert_eq!(kept.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["recall"]);
+        assert_eq!(dropped, ["run_command"]);
+        // A native call is judged only by what was offered: run_command is not written-callable,
+        // but offered natively it survives and the permission guard decides as it always did.
+        let (kept, dropped) = keep_offered(vec![native_call("run_command")], &gate(&reg, &["run_command"]));
+        assert_eq!(kept.len(), 1);
+        assert!(dropped.is_empty());
+    }
+
+    #[test]
+    fn a_round_of_only_unoffered_native_calls_executes_nothing() {
+        let reg = registry();
+        let g = gate(&reg, &["recall"]);
+        let (kept, dropped) =
+            keep_offered(vec![native_call("run_command"), native_call("no_such_tool")], &g);
+        // Empty survivors: the loop takes its existing empty-calls path, so nothing runs.
+        assert!(kept.is_empty());
+        assert_eq!(dropped, ["run_command", "no_such_tool"]);
     }
 }
