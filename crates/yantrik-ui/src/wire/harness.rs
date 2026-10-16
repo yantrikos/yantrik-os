@@ -191,6 +191,10 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     // A forget the person answered *Erase* to reaches the agent's pane and its saved session as
     // well as the run store, once the host's rule holds (`redact`, docs/harness.md).
     let host = host.with_redactor(crate::agents::Redactor);
+    // A mind's notice (`harness.notice`, or `{text}` with no turn in flight) goes to the one
+    // notification store through the shell, the one caller that store takes a notice from
+    // (design/initiative-inbox-2026-10-16.md).
+    let host = host.with_notice_desk(Arc::new(crate::notice_desk::ShellDesk::new()));
     // A mind the person has granted some use of their memory carries its credential with every
     // turn (#447); one with none carries nothing. Judged as `memory_validate` judges it: the
     // person's grants, with the first-party defaults only for the account that attached as the

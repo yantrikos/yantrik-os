@@ -15,13 +15,15 @@ one of the candidates.
 
 ## The whole thing
 
-Seven methods on the `harness` socket, all spoken by the harness:
+Eight methods on the `harness` socket, all spoken by the harness:
 
 ```text
-harness.attach   {id, name, detail?, tools?, memory?, conversations?}  → {session}
-harness.poll     {session}              → {turn_id, text, context, conversation, agent_token, origin?, options?} | {}
+harness.attach   {id, name, detail?, tools?, memory?, conversations?}  → {session, as, features?, initiative?}
+harness.poll     {session, feedback_ack?}  → {turn_id, text, context, conversation, agent_token, origin?, options?} | {}
                                           … either may also carry cancelled: [turn_id], ended: [conversation],
-                                            answers: [{turn_id, request_id, answer}]
+                                            answers: [{turn_id, request_id, answer}], initiative,
+                                            notice_feedback: [{seq, notice_id, kind, seen_at, opened_at, at}]
+harness.notice   {session, notice}                     → {stored, notice_id, …}  (only when attach said notice_inbox_v1)
 harness.chunk    {session, turn_id, delta}             → {}
 harness.event    {session, turn_id, event}             → {}      (optional — see below)
 harness.complete {session, turn_id}                    → {}
@@ -597,6 +599,53 @@ valid source under the egress rules, as the person's own words are. `path` is re
 harness running as the person; `content_b64` carries a file up to 1 MiB (4 MiB a turn) for one
 that runs as an account of its own. `harnesses/lib/yantrik_harness.py` gives a handler
 `turn.model`, `turn.effort` and `turn.attachments`.
+
+## Notices: a card for the person, outside any turn
+
+A mind that has something to say while no turn is running (a reminder the person asked for, the
+result of a job they handed over) sends a **notice**: a short card with an id, a family, a reason
+and at most one harmless button. It does so only when `harness.attach` answered with
+`features: ["notice_inbox_v1"]`; an older desktop sends no `features`, and that means no. The
+design, and why each rule is what it is, is design/initiative-inbox-2026-10-16.md.
+
+```json
+{"session": "s4-…",
+ "notice": {"notice_id": "rem-2026-10-16-0001", "family": "reminder", "title": "Stretch",
+            "body": "You asked me at 14:02 to remind you to stretch.",
+            "why": "You asked for this reminder.", "evidence": ["task:41"],
+            "attention": "interrupt", "useful_until": "2026-10-16T19:30:00Z", "supersedes": null,
+            "action": {"label": "Open note", "kind": "open_note", "ref": "n-7f3a"}}}
+```
+
+- `notice_id` is yours, 1–96 of `[A-Za-z0-9._:-]`, and the dedupe key: the same id again from
+  you is answered `{"stored": true, "duplicate": true}` and changes nothing. To change a card,
+  send a new id with `supersedes` naming the old one (only your own; anything else is ignored
+  and listed in `clamped`).
+- `family` is one of `reminder`, `delegated`, `machine`, `calendar`, `discovery`,
+  `start_of_day`; anything else is refused, because the person's settings could not apply to it.
+- `title` (one line, 80) and `why` (one line, 140, shown as "Why you got this") are required.
+  `body` is cut to 45 words and 400 characters; `evidence` to 5 refs of 300. What was cut comes
+  back in `clamped` (`["body", "evidence[2]"]`) and is kept on the card.
+- `attention` is what you ask for, `interrupt` or `inbox` (the default). The OS decides, against a
+  budget of two interrupts a day shared by every mind, the person's quiet hours and their
+  settings, and records why.
+- `action` only opens something, by the shell, as the person: `open_file` (a regular file under
+  their home), `open_event`, `open_note`, `open_url` (http/https; the button shows the host). Any
+  other kind is dropped, listed in `clamped`, and the card still lands.
+
+The answers are results, never errors: `{"stored": true, "notice_id"}` once it is on disk;
+`{"stored": false, "retry_after_secs": N, "why"}` to try again later (20 an hour and 200
+undismissed per harness, or the store is unavailable); `{"stored": false, "refused"}` not to.
+
+Every `poll` answer carries `initiative: {quiet, off, inbox_only}`, the person's settings, so a
+change reaches you within one poll. When the person responds to one of your cards (`useful`,
+`not_useful`, `not_now`, `never_family`, `inbox_only`, `wrong`, or `dismissed` and `expired`
+without a button), your next poll carries it in `notice_feedback`. It keeps coming, across
+restarts, until a poll sends `feedback_ack: <seq>`. No other harness sees it.
+
+A plain `{text}` notice through `harness.event` still works. With a turn in flight it is the
+agent's status line, as before. With none, it is stored as a `delegated` notice in the inbox,
+titled with its first line, and answered `{"kept": true, "stored": true, "notice_id": "os-…"}`.
 
 ## Rules worth knowing
 

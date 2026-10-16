@@ -146,6 +146,8 @@ impl Notification {
             actions: self.actions,
             source: Source::Yantrik,
             replaces_id: self.replaces_id,
+            // A mind's notice comes only through the harness host, never through an app.
+            notice: None,
         }
     }
 }

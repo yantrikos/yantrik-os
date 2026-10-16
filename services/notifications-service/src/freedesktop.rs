@@ -138,6 +138,8 @@ pub fn notify_to_request(
         actions: actions_from_pairs(actions),
         source: Source::Freedesktop,
         replaces_id: replaces_target(replaces_id),
+        // The bus has no notices: a mind's card comes only from the harness host.
+        notice: None,
     }
 }
 
@@ -289,7 +291,9 @@ impl Server {
             tracing::debug!(id, "CloseNotification for an id this store does not have");
             return;
         };
-        if self.store.dismiss(&key) {
+        // Not as the desktop: any program on the session bus can call this with any number, and a
+        // mind's notice is the person's to dismiss.
+        if self.store.dismiss_by(&key, false).unwrap_or(false) {
             self.link.closed(&n, CloseReason::ClosedByApi);
         }
     }
