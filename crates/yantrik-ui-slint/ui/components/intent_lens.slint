@@ -17,6 +17,7 @@ import { ChatTranscript } from "chat_transcript.slint";
 import { ChatComposer } from "chat_composer.slint";
 import { ChatHeader, ChatEmpty } from "chat_chrome.slint";
 import { YButton } from "y_button.slint";
+import { ForYouSection } from "for_you.slint";
 
 // A single result in the Intent Feed.
 export struct LensResult {
@@ -1984,6 +1985,11 @@ export component IntentLens inherits Rectangle {
                 if root.results.length == 0 && root.input-text == "" : VerticalLayout {
                     spacing: 4px;
 
+                    // ── FOR YOU: what minds have put in the person's inbox ──
+                    // First, above what the Lens suggests, because a card is something a mind
+                    // was asked to say or chose to; a suggestion is the Lens guessing.
+                    ForYouSection { }
+
                     // ── SUGGESTED section ──
                     if root.suggestions.length > 0 : VerticalLayout {
                         spacing: 0;
@@ -2286,6 +2292,10 @@ export component IntentLens inherits Rectangle {
                         overflow: elide;
                     }
                 }
+
+                // The inbox, folded to one line under the header: in a conversation the transcript
+                // needs the room, and the cards are a press away.
+                ForYouSection { foldable: true; }
 
                 // The conversation — fills the panel's height, down to `transcript-min` while a
                 // card is waiting (see the property at the top of the component). It follows the

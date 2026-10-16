@@ -1,0 +1,175 @@
+// Settings → Minds → Initiative (design/initiative-inbox-2026-10-16.md, "Controls").
+//
+// What a mind may put in front of the person on its own: a global Quiet initiative switch, one row
+// per kind of notice with On, Inbox only and Off, and quiet hours. The OS enforces all of it when
+// it stores a card, whether or not the mind listens. Reminders and jobs the person handed over are
+// things they asked for, so their rows offer On and Inbox only, never Off.
+//
+// Reads one global, InitiativeState, which the shell fills (crates/yantrik-ui/src/wire/initiative.rs)
+// from the notifications store, where the settings live.
+import { Theme } from "theme.slint";
+import { YButton } from "y_button.slint";
+import { YSwitch } from "y_switch.slint";
+
+export struct FamilyRowData {
+    family: string,
+    label: string,
+    description: string,
+    // "on", "inbox_only" or "off".
+    setting: string,
+    can-be-off: bool,
+}
+
+// A harness id and what it belongs to, with a Forget button.
+export struct BindingRowData {
+    id: string,
+    // "account 1000 · python3".
+    holder: string,
+}
+
+export global InitiativeState {
+    in property <bool> quiet: false;
+    in property <[FamilyRowData]> families: [];
+    // "Off", or "22:00–07:00".
+    in property <string> quiet-hours: "Off";
+    // Why a change did not take, said under the section.
+    in property <string> notice: "";
+    callback set-quiet(bool);
+    callback set-family(string, string);
+    callback next-quiet-hours();
+    // Harness ids and the account and program each belongs to (the first to post under it).
+    in property <[BindingRowData]> bindings: [];
+    callback forget(string);
+}
+
+// One choice of three, drawn as a button that shows whether it is the current one.
+component Choice inherits YButton {
+    in property <string> family;
+    in property <string> value;
+    in property <string> current;
+    variant: self.value == self.current ? 0 : 1;
+    size: 0;
+    accessible-checked: self.value == self.current;
+    clicked => { InitiativeState.set-family(self.family, self.value); }
+}
+
+export component InitiativeSettings inherits VerticalLayout {
+    spacing: Theme.sp-3;
+
+    Text {
+        text: "INITIATIVE";
+        color: Theme.accent;
+        font-size: Theme.fs-caption;
+        font-weight: 600;
+        letter-spacing: 3px;
+    }
+    Text {
+        text: "What a mind may put in front of you without being asked. At most two cards a day interrupt you, shared by every mind; the rest wait in For you, in the Lens.";
+        color: Theme.text-secondary;
+        font-size: Theme.fs-body;
+        wrap: word-wrap;
+    }
+
+    Rectangle {
+        background: Theme.bg-card;
+        border-radius: Theme.r-lg;
+        border-width: 1px;
+        border-color: Theme.border-subtle;
+        height: rows.preferred-height;
+
+        rows := VerticalLayout {
+            padding: Theme.sp-4;
+            spacing: Theme.sp-3;
+
+            HorizontalLayout {
+                spacing: Theme.sp-3;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 2px;
+                    Text { text: "Quiet initiative"; color: Theme.text-primary; font-size: Theme.fs-body; font-weight: 600; }
+                    Text {
+                        text: "Everything a mind notices on its own waits in For you. Reminders and jobs you handed over still arrive.";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-caption;
+                        wrap: word-wrap;
+                    }
+                }
+                YSwitch {
+                    label: "Quiet initiative";
+                    on: InitiativeState.quiet;
+                    toggled => { InitiativeState.set-quiet(!InitiativeState.quiet); }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: Theme.sp-3;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 2px;
+                    Text { text: "Quiet hours"; color: Theme.text-primary; font-size: Theme.fs-body; font-weight: 600; }
+                    Text {
+                        text: "Nothing interrupts you in these hours, reminders included. A card that would have is shown when they end, if it is still useful.";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-caption;
+                        wrap: word-wrap;
+                    }
+                }
+                YButton {
+                    label: InitiativeState.quiet-hours;
+                    variant: 1;
+                    size: 0;
+                    clicked => { InitiativeState.next-quiet-hours(); }
+                }
+            }
+
+            for row in InitiativeState.families : VerticalLayout {
+                spacing: Theme.sp-1;
+                Text { text: row.label; color: Theme.text-primary; font-size: Theme.fs-body; font-weight: 600; }
+                Text { text: row.description; color: Theme.text-dim; font-size: Theme.fs-caption; wrap: word-wrap; }
+                HorizontalLayout {
+                    spacing: Theme.sp-1;
+                    alignment: start;
+                    Choice { family: row.family; value: "on"; current: row.setting; label: "On"; }
+                    Choice { family: row.family; value: "inbox_only"; current: row.setting; label: "Inbox only"; }
+                    if row.can-be-off : Choice { family: row.family; value: "off"; current: row.setting; label: "Off"; }
+                }
+            }
+
+            if InitiativeState.bindings.length > 0 : VerticalLayout {
+                spacing: Theme.sp-1;
+                Text { text: "Who each mind's name belongs to"; color: Theme.text-primary; font-size: Theme.fs-body; font-weight: 600; }
+                Text {
+                    text: "A mind's cards are kept under the name it attached with, and only the account and program that first used that name may send under it. If something else took a name first, Forget it; the next mind to send under it keeps it.";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-caption;
+                    wrap: word-wrap;
+                }
+                for row in InitiativeState.bindings : HorizontalLayout {
+                    spacing: Theme.sp-3;
+                    Text {
+                        horizontal-stretch: 1;
+                        text: row.id + " — " + row.holder;
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-caption;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                    }
+                    YButton {
+                        label: "Forget";
+                        variant: 1;
+                        size: 0;
+                        tooltip: "Forget who " + row.id + " belongs to";
+                        clicked => { InitiativeState.forget(row.id); }
+                    }
+                }
+            }
+
+            if InitiativeState.notice != "" : Text {
+                text: InitiativeState.notice;
+                color: Theme.color-warning;
+                font-size: Theme.fs-caption;
+                wrap: word-wrap;
+            }
+        }
+    }
+}

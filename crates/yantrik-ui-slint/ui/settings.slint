@@ -15,6 +15,7 @@ import { DecisionModelCard, DecisionPreset, DecisionUse } from "components/decis
 import { ProviderPresetGroup } from "provider_presets.slint";
 import { YDialog } from "components/y_dialog.slint";
 import { AccountList, ProviderGroup, AddChoice } from "components/minds_panel.slint";
+import { InitiativeSettings } from "components/initiative_settings.slint";
 import { FreeAiCard } from "components/free_ai_card.slint";
 import { AiAccountsCard } from "components/ai_accounts_card.slint";
 export { DecisionPreset, DecisionUse }
@@ -3889,6 +3890,11 @@ SettingRow{label:"About this device";description:"Detailed information about thi
                                 }
                             }
                         }
+
+                        // What the minds may put in front of the person on their own
+                        // (design/initiative-inbox-2026-10-16.md). On this page because it is the
+                        // minds' page; the rows are the person's, whichever mind is answering.
+                        InitiativeSettings { }
                     }
                 }
 

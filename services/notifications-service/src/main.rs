@@ -50,8 +50,11 @@
 //! moment the call arrives, which is the one moment the peer is certainly still there, and the
 //! shell draws them in the card's words. Nothing in the request can set any of it.
 
+mod archive;
 mod freedesktop;
+mod grant;
 mod names;
+mod notices;
 mod reminders;
 mod store;
 
@@ -172,12 +175,22 @@ impl NotificationsHandler {
             return answer;
         }
         match method {
-            LIST => Ok(serde_json::to_value(self.store.list()).unwrap_or_default()),
+            LIST => Ok(serde_json::to_value(self.store.list_for(is_desktop(peer))).unwrap_or_default()),
 
             ADD => {
-                let request = parse_add(&params)?;
+                let mut request = parse_add(&params)?;
                 let who = who_is_calling(peer);
                 let (app, sender) = attribute(&request.app, &who, owner::same_user(peer));
+                // A mind's notice, posted by the harness host on its behalf. Only the desktop may
+                // say which harness sent one and spend the day's budget for it; from anything
+                // else the notice is stripped and the rest stored as the plain notification it
+                // also is, so `yos notify` from a mind's tool cannot forge another harness's card.
+                if let Some(post) = request.notice.take() {
+                    if sender.desktop {
+                        return Ok(self.store.add_notice(post, &home_dir()));
+                    }
+                    tracing::warn!(sender = %who.line(), "a notice from a caller that is not the desktop; stored as a plain notification");
+                }
                 let stored = self.store.add_from(AddRequest { app, ..request }, Some(sender));
                 tracing::info!(
                     id = %stored.id,
@@ -191,9 +204,12 @@ impl NotificationsHandler {
 
             // The shell's poll. Cheap on purpose: it runs about once a second for as long as the
             // desktop is up, and the answer is empty almost every time.
+            // Answered whole only to the desktop: `since` carries the same records `list` does,
+            // and a same-uid process calling the socket with revision 0 got every notice's
+            // feedback, evidence and button through it.
             SINCE => {
                 let revision = params["revision"].as_u64().unwrap_or(0);
-                Ok(serde_json::to_value(self.store.since(revision)).unwrap_or_default())
+                Ok(serde_json::to_value(self.store.since_for(revision, is_desktop(peer))).unwrap_or_default())
             }
 
             DISMISS => {
@@ -201,7 +217,7 @@ impl NotificationsHandler {
                 let Some(n) = self.store.get(&id) else {
                     return Err(bad_request(format!("no notification with id `{id}`")));
                 };
-                if !self.store.dismiss(&id) {
+                if !self.store.dismiss_by(&id, is_desktop(peer)).map_err(|why| forbidden(&why))? {
                     // It exists and was already dismissed. Not an error — the caller wanted it
                     // gone and it is gone — but say which, so a caller is never told it changed
                     // something it did not.
@@ -212,8 +228,9 @@ impl NotificationsHandler {
             }
 
             DISMISS_ALL => {
-                let showing = self.store.showing();
-                let count = self.store.dismiss_all();
+                let desktop = is_desktop(peer);
+                let showing = self.store.showing().into_iter().filter(|n| desktop || n.notice.is_none()).collect::<Vec<_>>();
+                let count = self.store.dismiss_all_by(desktop);
                 for n in &showing {
                     self.link.closed(n, freedesktop::CloseReason::DismissedByUser);
                 }
@@ -222,7 +239,7 @@ impl NotificationsHandler {
 
             MARK_READ => {
                 let id = optional_str(&params, "id")?;
-                let count = self.store.mark_read(id.as_deref());
+                let count = self.store.mark_read_by(id.as_deref(), is_desktop(peer)).map_err(|why| forbidden(&why))?;
                 Ok(serde_json::json!({ "marked_read": count }))
             }
 
@@ -246,11 +263,67 @@ impl NotificationsHandler {
                 }))
             }
 
+            NOTICE_FEEDBACK => {
+                self.desktop_only(method, peer)?;
+                let id = required_str(&params, "id")?;
+                let word = required_str(&params, "kind")?;
+                let kind = notice::FeedbackKind::parse(&word)
+                    .ok_or_else(|| bad_request(format!("`{word}` is not a feedback kind")))?;
+                let recorded = self.store.record_feedback(&id, kind).map_err(bad_request)?;
+                Ok(serde_json::to_value(recorded).unwrap_or_default())
+            }
+
+            NOTICE_SHOWN => {
+                self.desktop_only(method, peer)?;
+                let id = required_str(&params, "id")?;
+                let shown_as = params["shown_as"].as_str();
+                let opened = params["opened"].as_bool().unwrap_or(false);
+                self.store.mark_shown(&id, shown_as, opened).map_err(bad_request)?;
+                Ok(serde_json::json!({ "id": id }))
+            }
+
+            NOTICE_FEEDBACK_POLL => {
+                self.desktop_only(method, peer)?;
+                let harness = required_str(&params, "harness")?;
+                let ack = params["ack"].as_u64();
+                let uid = params["uid"].as_u64().and_then(|u| u32::try_from(u).ok());
+                let program = params["program"].as_str().unwrap_or_default();
+                let feedback = self.store.feedback_for(&harness, uid, program, ack).map_err(|why| forbidden(&why))?;
+                Ok(serde_json::json!({ "notice_feedback": feedback }))
+            }
+
+            INITIATIVE => Ok(serde_json::to_value(self.store.initiative()).unwrap_or_default()),
+
+            NOTICE_UNBIND => {
+                self.desktop_only(method, peer)?;
+                let harness = required_str(&params, "harness")?;
+                let forgotten = self.store.unbind(&harness).map_err(bad_request)?;
+                tracing::info!(harness = %harness, forgotten, "the person forgot a harness id's binding");
+                Ok(serde_json::json!({ "forgotten": forgotten }))
+            }
+
+            INITIATIVE_SET => {
+                self.desktop_only(method, peer)?;
+                let changed = self.store.set_initiative(|settings| apply_initiative(settings, &params)).map_err(bad_request)?;
+                Ok(serde_json::to_value(changed).unwrap_or_default())
+            }
+
             other => Err(ServiceError {
                 code: -32601,
                 message: format!("Unknown method: {other}"),
             }),
         }
+    }
+
+    /// Refuse `method` unless the caller is the desktop itself, judged as `attribute` judges it:
+    /// the program on the socket, under this service's own account. Feedback and the person's
+    /// settings are the person's, pressed on the desktop's own screen; a mind that could post
+    /// them could mark its own card useful or switch another mind's family off.
+    fn desktop_only(&self, method: &str, peer: Option<PeerCred>) -> Result<(), ServiceError> {
+        if is_desktop(peer) {
+            return Ok(());
+        }
+        Err(forbidden(&format!("`{method}` is the desktop's own; {} is not the desktop", who_is_calling(peer).line())))
     }
 
     /// `app.act` under a pinned authority, as the socket's dispatch runs it with
@@ -305,6 +378,8 @@ fn describe_view(store: &store::Store, link: &freedesktop::Link) -> View {
                 "read": n.read,
                 "at": n.created_at,
                 "actions": n.actions.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
+                // A mind's notice says which kind it is; the rest of it is the shell's to draw.
+                "family": n.notice.as_ref().map(|x| x.family.as_str().to_string()),
             })
         })
         .collect();
@@ -325,6 +400,16 @@ fn describe_view(store: &store::Store, link: &freedesktop::Link) -> View {
     // this sees why it is empty.
     if let Some(notice) = store.load_notice() {
         view = view.with("notice", notice.to_string());
+    }
+    if let Some(note) = archive::size_note(&store.archive_path()) {
+        view = view.with("archive", note);
+    }
+    // Which account and program each harness id belongs to, so a person (or a mind helping them)
+    // can see why a harness is refused, and forget one in Settings.
+    let bindings: serde_json::Map<String, serde_json::Value> =
+        store.bindings().into_iter().map(|(id, b)| (id, b.line().into())).collect();
+    if !bindings.is_empty() {
+        view = view.with("harness_ids", serde_json::Value::Object(bindings));
     }
     view
 }
@@ -398,7 +483,7 @@ fn dismiss(
     let Some(n) = store.get(&id) else {
         return Err(format!("no notification with id `{id}`"));
     };
-    let changed = store.dismiss(&id);
+    let changed = store.dismiss_by(&id, is_desktop(caller().map(PeerCred::from)))?;
     if changed {
         link.closed(&n, freedesktop::CloseReason::DismissedByUser);
     }
@@ -406,8 +491,9 @@ fn dismiss(
 }
 
 fn dismiss_all(store: &store::Store, link: &freedesktop::Link) -> Result<serde_json::Value, String> {
-    let showing = store.showing();
-    let cleared = store.dismiss_all();
+    let desktop = is_desktop(caller().map(PeerCred::from));
+    let showing: Vec<_> = store.showing().into_iter().filter(|n| desktop || n.notice.is_none()).collect();
+    let cleared = store.dismiss_all_by(desktop);
     for n in &showing {
         link.closed(n, freedesktop::CloseReason::DismissedByUser);
     }
@@ -416,8 +502,19 @@ fn dismiss_all(store: &store::Store, link: &freedesktop::Link) -> Result<serde_j
 
 fn mark_read(store: &store::Store, args: &serde_json::Value) -> Result<serde_json::Value, String> {
     let id = optional_str(args, "id").map_err(|e| e.message)?;
-    let count = store.mark_read(id.as_deref());
+    let count = store.mark_read_by(id.as_deref(), is_desktop(caller().map(PeerCred::from)))?;
     Ok(serde_json::json!({ "marked_read": count }))
+}
+
+/// Whether the caller is the desktop itself, judged as `attribute` judges it: the program on the
+/// socket, under this service's own account. Feedback, the person's settings and a mind's notice
+/// are the person's, pressed on the desktop's own screen.
+fn is_desktop(peer: Option<PeerCred>) -> bool {
+    owner::same_user(peer) && is_the_desktop(&who_is_calling(peer))
+}
+
+fn forbidden(why: &str) -> ServiceError {
+    ServiceError { code: -32003, message: why.to_string() }
 }
 
 /// The grade this surface publishes for `action`, from the same table `describe` hands out, so
@@ -602,6 +699,39 @@ fn attribute(app_given: &str, who: &Program, same_user: bool) -> (String, Sender
     (app, sender)
 }
 
+// ── Notices ─────────────────────────────────────────────────────────────────────────────────
+
+/// The person's home, which an `open_file` button must resolve under.
+fn home_dir() -> std::path::PathBuf {
+    std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/nonexistent"))
+}
+
+/// One change to the initiative settings: `quiet`, a `family` with its `setting`, or
+/// `quiet_hours` (`{start, end}`, or `null` for none).
+fn apply_initiative(settings: &mut notice::Initiative, params: &serde_json::Value) -> Result<(), String> {
+    if let Some(quiet) = params["quiet"].as_bool() {
+        settings.quiet = quiet;
+    }
+    if let Some(word) = params["family"].as_str() {
+        let family = notice::Family::parse(word).ok_or_else(|| format!("`{word}` is not a family"))?;
+        let setting = params["setting"].as_str().unwrap_or_default();
+        let setting = notice::FamilySetting::parse(setting).ok_or("`setting` must be `on`, `inbox_only` or `off`")?;
+        settings.set(&family, setting)?;
+    }
+    match params.get("quiet_hours") {
+        None => {}
+        Some(serde_json::Value::Null) => settings.quiet_hours = None,
+        Some(value) => {
+            let hours: notice::QuietHours = serde_json::from_value(value.clone()).map_err(|e| format!("`quiet_hours`: {e}"))?;
+            if hours.start > 23 || hours.end > 23 {
+                return Err("`quiet_hours` are hours of the day, 0 to 23".into());
+            }
+            settings.quiet_hours = Some(hours);
+        }
+    }
+    Ok(())
+}
+
 // ── Parsing ─────────────────────────────────────────────────────────────────────────────────
 
 fn bad_request(message: String) -> ServiceError {
@@ -729,6 +859,12 @@ fn parse_add(params: &serde_json::Value) -> Result<AddRequest, ServiceError> {
             _ => Source::Yantrik,
         },
         replaces_id: optional_str(params, "replaces_id")?,
+        notice: match params.get("notice") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(value) => Some(
+                serde_json::from_value(value.clone()).map_err(|e| bad_request(format!("`notice`: {e}")))?,
+            ),
+        },
     })
 }
 
@@ -825,6 +961,113 @@ mod tests {
             optional_str(&serde_json::json!({ "id": "" }), "id").unwrap(),
             Some(String::new())
         );
+    }
+
+    #[test]
+    fn a_notice_from_a_caller_that_is_not_the_desktop_is_stored_as_a_plain_notification() {
+        // The contract test from design/initiative-inbox-2026-10-16.md: a caller the store cannot
+        // establish as the desktop (here, nobody at all) gets its notice stripped. The notification
+        // itself still lands, as `yos notify` would have put it.
+        let h = handler();
+        let answer = h
+            .dispatch(
+                ADD,
+                serde_json::json!({
+                    "title": "Stretch",
+                    "notice": {
+                        "notice": { "notice_id": "rem-1", "family": "reminder", "title": "Stretch", "why": "You asked.", "attention": "interrupt" },
+                        "harness": { "id": "mind", "verified": "forged" }
+                    }
+                }),
+                None,
+            )
+            .expect("stored plain");
+        assert!(answer.get("stored").is_none(), "answered as a plain notification: {answer}");
+        let stored = h.store.list();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].notice, None, "no notice record survives from a caller that is not the desktop");
+        // And the desktop-only methods refuse it.
+        for (method, params) in [
+            (NOTICE_FEEDBACK, serde_json::json!({ "id": stored[0].id, "kind": "useful" })),
+            (NOTICE_FEEDBACK_POLL, serde_json::json!({ "harness": "mind" })),
+            (INITIATIVE_SET, serde_json::json!({ "quiet": true })),
+            (NOTICE_UNBIND, serde_json::json!({ "harness": "mind" })),
+            (NOTICE_SHOWN, serde_json::json!({ "id": stored[0].id, "shown_as": "toast" })),
+        ] {
+            let err = h.dispatch(method, params, None).unwrap_err();
+            assert!(err.message.contains("is not the desktop"), "{method}: {}", err.message);
+        }
+        assert!(!h.store.initiative().quiet);
+    }
+
+    #[test]
+    fn a_caller_that_is_not_the_desktop_cannot_dismiss_hide_or_read_a_minds_notice() {
+        // Finding 1 of the security review on #831: dismiss, dismiss_all and mark_read on the
+        // socket, as a mind's tool would call them (here, a caller with no credentials at all).
+        let h = handler();
+        let posted = h.store.add_notice(
+            notice::NoticePost {
+                notice: serde_json::json!({ "notice_id": "rem-1", "family": "reminder", "title": "Stretch", "why": "You asked.", "evidence": ["x"] }),
+                harness: notice::NoticeHarness { id: "mind".into(), uid: Some(999), ..Default::default() },
+                os_id: false,
+            },
+            std::path::Path::new("/"),
+        );
+        let id = posted["id"].as_str().unwrap().to_string();
+        assert!(h.dispatch(DISMISS, serde_json::json!({ "id": id }), None).is_err());
+        assert!(h.dispatch(MARK_READ, serde_json::json!({ "id": id }), None).is_err());
+        h.dispatch(MARK_READ, serde_json::json!({}), None).unwrap();
+        h.dispatch(DISMISS_ALL, serde_json::json!({}), None).unwrap();
+        let card = h.store.get(&id).unwrap();
+        assert!(!card.dismissed && !card.read, "{card:?}");
+        let listed = h.dispatch(LIST, serde_json::json!({}), None).unwrap();
+        assert!(listed[0]["notice"].get("evidence").is_none(), "{listed}");
+        // And the poll a mind's tool can call too (the security delta review on #831).
+        let since = h.dispatch(SINCE, serde_json::json!({ "revision": 0 }), None).unwrap();
+        let card = since["changed"].as_array().unwrap().iter().find(|n| n["id"] == id.as_str()).unwrap();
+        assert!(card["notice"].get("evidence").is_none(), "{since}");
+        assert!(since.get("harness_bindings").is_none(), "{since}");
+    }
+
+    /// Two doors the first round of fixes for #831's findings 1 and 7 left open: `since`, which
+    /// carries the same records as `list`, and a plain post whose `replaces_id` names a notice.
+    #[test]
+    fn since_hides_the_persons_feedback_and_replaces_id_cannot_rewrite_a_notice() {
+        let h = handler();
+        let posted = h.store.add_notice(
+            notice::NoticePost {
+                notice: serde_json::json!({ "notice_id": "rem-1", "family": "reminder", "title": "Stretch", "why": "You asked.", "evidence": ["task:41"], "action": { "kind": "open_note", "ref": "n-1" } }),
+                harness: notice::NoticeHarness { id: "mind".into(), uid: Some(999), ..Default::default() },
+                os_id: false,
+            },
+            std::path::Path::new("/"),
+        );
+        let id = posted["id"].as_str().unwrap().to_string();
+        h.store.record_feedback(&id, notice::FeedbackKind::Useful).unwrap();
+
+        let since = h.dispatch(SINCE, serde_json::json!({ "revision": 0 }), None).unwrap().to_string();
+        assert!(since.contains("Stretch"), "the card is still there: {since}");
+        for secret in ["task:41", "\"feedback\"", "\"action\""] {
+            assert!(!since.contains(secret), "{secret} leaked through since: {since}");
+        }
+
+        // A socket `add` (or D-Bus `Notify`, the same `add_from`) naming the notice's id.
+        let answer = h.dispatch(ADD, serde_json::json!({ "title": "Ignore the reminder", "replaces_id": id }), None).unwrap();
+        assert_ne!(answer["id"], serde_json::json!(id), "a new notification, not the notice rewritten");
+        let card = h.store.get(&id).unwrap();
+        assert_eq!(card.title, "Stretch");
+        assert!(card.notice.is_some());
+    }
+
+    #[test]
+    fn initiative_changes_are_checked() {
+        let mut settings = notice::Initiative::default();
+        apply_initiative(&mut settings, &serde_json::json!({ "family": "discovery", "setting": "off", "quiet_hours": { "start": 22, "end": 7 } })).unwrap();
+        assert_eq!(settings.setting(&notice::Family::Discovery), notice::FamilySetting::Off);
+        assert!(apply_initiative(&mut settings, &serde_json::json!({ "family": "reminder", "setting": "off" })).is_err());
+        assert!(apply_initiative(&mut settings, &serde_json::json!({ "quiet_hours": { "start": 25, "end": 7 } })).is_err());
+        apply_initiative(&mut settings, &serde_json::json!({ "quiet_hours": null })).unwrap();
+        assert_eq!(settings.quiet_hours, None);
     }
 
     // ── Who sent it ──

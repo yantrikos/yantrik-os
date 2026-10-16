@@ -61,6 +61,7 @@ use crate::run_store::{RunError, RunState, RunStore};
 use crate::{Answer, Capabilities, Chunk, Harness, Health, Turn};
 
 mod erase;
+mod notice;
 pub use erase::{Redactor, ShellErased, ShellErasure, ShellPlan, ShellRedactor};
 
 /// The summary a call gets when its turn ended before it did.
@@ -681,6 +682,9 @@ pub struct Host {
     /// Erases the shell's own copy of a conversation (the agent's pane transcript) once a `redact`
     /// is accepted, when the shell said how: see [`Host::with_redactor`].
     redactor: Option<Redactor>,
+    /// Where notices go and where their feedback comes from, when the shell gave the host one:
+    /// see [`Host::with_notice_desk`].
+    notice_desk: Option<Arc<dyn crate::notice::NoticeDesk>>,
 }
 
 /// How the host decides who carries a memory credential, and how it digests one. The decision
@@ -720,6 +724,7 @@ impl Host {
             paused: Arc::new(std::sync::RwLock::new(None)),
             late_answer: None,
             redactor: None,
+            notice_desk: None,
         }
     }
 
@@ -1510,6 +1515,7 @@ impl Host {
             protocol::POLL => self.poll(params, peer),
             protocol::CHUNK => self.chunk(params, peer),
             protocol::EVENT => self.event(params, peer),
+            protocol::NOTICE => self.notice(params, peer),
             protocol::COMPLETE => self.finish(params, peer, None),
             protocol::FAIL => {
                 let why = params["error"].as_str().unwrap_or("the harness reported a failure");
@@ -1550,6 +1556,8 @@ impl Host {
         // session's id says nothing about another's. A session answers only whoever attached it
         // (`Attached::admits`), so this is the second wall, not the only one.
         let salt = random_hex(SESSION_RANDOM_BYTES)?;
+        // Asked before the lock: the desk reads the person's settings, which are the shell's.
+        let notice_fields = self.notice_attach_fields();
         let mut state = self.lock();
         self.reap(&mut state);
         let session = format!("s{}-{salt}", state.next_session);
@@ -1641,6 +1649,12 @@ impl Host {
         }
 
         let mut reply = serde_json::json!({ "session": session, "as": id });
+        // A harness sends notices only when it sees the feature; an older desktop sends no
+        // `features` at all, and that means no (design/initiative-inbox-2026-10-16.md).
+        if let Some((features, initiative)) = notice_fields {
+            reply["features"] = features;
+            reply["initiative"] = initiative;
+        }
         if !resumed.is_empty() || !refused.is_empty() {
             reply["resumed"] = resumed.into();
             reply["refused"] = refused.into();
@@ -1868,6 +1882,22 @@ impl Host {
     /// takes it, not when it was queued: a grant given or taken away while the turn waited is
     /// the one that counts, and the turn goes only to a caller [`Attached::admits`].
     fn poll(&self, params: &serde_json::Value, peer: Peer) -> Result<serde_json::Value, String> {
+        // The person's settings, and the feedback on this harness's own cards, read from the
+        // shell off the host's lock and only for a caller this session admits: feedback goes to
+        // the harness that sent the card and to nobody else. Until a later poll says
+        // `feedback_ack`, it comes again.
+        let notice_fields = match &self.notice_desk {
+            None => None,
+            Some(_) => {
+                let (harness, pid, uid) = {
+                    let mut state = self.lock();
+                    self.reap(&mut state);
+                    let attached = Self::touch(&mut state.attached, params, peer, &*self.descends)?;
+                    (attached.announced.id.clone(), attached.pid, attached.uid)
+                };
+                self.notice_poll_fields(&harness, pid, uid, params["feedback_ack"].as_u64())
+            }
+        };
         // The person's grants are the shell's to read, from a file, so they are asked outside the
         // host's lock: every harness and the whole UI wait on that lock. Asked only when a turn is
         // ready to go, and of the mind as it attached (its id and the account the kernel named).
@@ -1953,6 +1983,12 @@ impl Host {
         }
         if !harness.answers.is_empty() {
             reply["answers"] = serde_json::json!(std::mem::take(&mut harness.answers));
+        }
+        if let Some((initiative, feedback)) = notice_fields {
+            reply["initiative"] = initiative;
+            if !feedback.is_empty() {
+                reply["notice_feedback"] = feedback.into();
+            }
         }
         Ok(reply)
     }
@@ -2043,32 +2079,42 @@ impl Host {
         };
 
         // A notice is not part of a turn's stream: it may come with no turn in flight at all
-        // (#396). It is taken, not dropped, but only forwarded to a reader when a turn is
-        // listening; otherwise it is logged and answered as kept.
+        // (#396). With a turn listening it is the agent's status line, as it always was. With none,
+        // it is stored as a notice in the one notification store (#806's case,
+        // design/initiative-inbox-2026-10-16.md), so it reaches the person rather than a log line.
         if let Event::Notice { text } = &event {
             if text.trim().is_empty() {
                 counts.malformed += 1;
                 tracing::warn!(harness = %who, turn = turn_id, "notice with empty `text`; refused");
                 return Ok(refused("a `notice` needs `text`".to_string()));
             }
-            match harness.in_flight.get_mut(&turn_id) {
-                // Recorded in a run only when the turn is this harness's own: turn ids are the
-                // host's, so one named by any other harness's session (the Mind's included) is
-                // never written into.
-                Some(flight) if flight.tx.is_some() => {
-                    self.record("notice", turn_id, |s| s.append(turn_id, "notice", raw));
-                    let tx = flight.tx.as_ref().expect("checked above");
-                    if tx.send(Chunk::Event(event)).is_err() {
-                        flight.abandon(None);
-                        flight.log_drop(&who, turn_id);
-                        return Ok(serde_json::json!({ "dropped": true }));
-                    }
+            // Recorded in a run only when the turn is this harness's own: turn ids are the
+            // host's, so one named by any other harness's session (the Mind's included) is
+            // never written into.
+            if let Some(flight) = harness.in_flight.get_mut(&turn_id).filter(|f| f.tx.is_some()) {
+                self.record("notice", turn_id, |s| s.append(turn_id, "notice", raw));
+                let tx = flight.tx.as_ref().expect("checked above");
+                if tx.send(Chunk::Event(event.clone())).is_err() {
+                    flight.abandon(None);
+                    flight.log_drop(&who, turn_id);
+                    return Ok(serde_json::json!({ "dropped": true }));
                 }
-                _ => {
-                    tracing::info!(harness = %who, turn = turn_id, "notice with no turn in flight; kept");
-                }
+                counts.accepted += 1;
+                return Ok(serde_json::json!({ "kept": true }));
             }
             counts.accepted += 1;
+            let sender = notice::Sender {
+                harness: who.clone(),
+                name: harness.announced.name.clone(),
+                pid: harness.pid,
+                uid: harness.uid,
+            };
+            // Off the lock: storing it is a call to the notifications service.
+            drop(state);
+            if let Some(answer) = self.text_notice(sender, text) {
+                return Ok(answer);
+            }
+            tracing::info!(harness = %who, turn = turn_id, "notice with no turn in flight; kept");
             return Ok(serde_json::json!({ "kept": true }));
         }
 

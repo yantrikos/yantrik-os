@@ -1209,3 +1209,41 @@ export component FirstRunChatProbe inherits Window {
         first-run-retry => { root.retries += 1; }
     }
 }
+
+// The For you inbox and Settings → Minds → Initiative (design/initiative-inbox-2026-10-16.md), the
+// production components as the Lens and the Harnesses page draw them, filled with fixture cards and
+// settings by src/for_you_tests.rs. `page` 0 draws both side by side; 1 and 2 draw one at a time
+// for a narrow window. Every press is recorded there and never acted on.
+import { ForYouSection } from "components/for_you.slint";
+import { InitiativeSettings } from "components/initiative_settings.slint";
+export { InboxState, NoticeCardData } from "components/for_you.slint";
+export { InitiativeState, FamilyRowData } from "components/initiative_settings.slint";
+export component ForYouProbe inherits Window {
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    default-font-family: Theme.font-ui;
+    background: Theme.bg-deep;
+    in property <bool> light: false;
+    changed light => { ThemeMode.dark = !root.light; }
+    in property <int> page: 0;
+    HorizontalLayout {
+        spacing: 0;
+        if root.page != 2 : Rectangle {
+            width: root.page == 0 ? 440px : root.width;
+            background: Theme.bg-surface;
+            VerticalLayout {
+                alignment: start;
+                padding-top: Theme.sp-3;
+                ForYouSection { }
+            }
+        }
+        if root.page != 1 : Rectangle {
+            horizontal-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                padding: Theme.sp-6;
+                InitiativeSettings { }
+            }
+        }
+    }
+}

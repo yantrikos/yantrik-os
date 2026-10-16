@@ -994,6 +994,9 @@ pub fn publish(
                 // for me" is a read of the shell rather than a second call to the notifications
                 // service — and so a mind can see what it has already said.
                 .with("notifications", crate::wire::notifications::describe_summary())
+                // What the For you inbox holds — how many cards, how many unread, the newest five
+                // ids and titles — so an agent test can read what the person sees there.
+                .with("inbox", crate::wire::for_you::describe())
                 // The ask bar, so "is the Lens up, and what is in it" is a read rather than a
                 // screenshot. `open_lens` and `close_lens` answer from these same properties.
                 .with(
