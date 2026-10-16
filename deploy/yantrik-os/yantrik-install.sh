@@ -448,9 +448,9 @@ esac
 # ── 15. GRUB ──
 step "Installing bootloader..."
 # This installer never encrypts, so there is nothing to ask for at boot: the desktop installer's
-# unencrypted line (installer_unlock.rs, cmdline_default(false)). plymouth is in the image for the
-# encrypted pre-boot screen and stays off here; `splash` would start it at every boot and shutdown.
-printf 'GRUB_DEFAULT=0\nGRUB_TIMEOUT=3\nGRUB_DISTRIBUTOR="Yantrik OS"\nGRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3 plymouth.enable=0"\nGRUB_CMDLINE_LINUX=""\nGRUB_TERMINAL_OUTPUT="gfxterm"\nGRUB_GFXMODE=auto\n' > "$M/etc/default/grub"
+# unencrypted line (installer_unlock.rs, cmdline_default(false)): the boot splash, from the kernel's
+# first frame to the shell's, and no prompt in it.
+printf 'GRUB_DEFAULT=0\nGRUB_TIMEOUT=3\nGRUB_DISTRIBUTOR="Yantrik OS"\nGRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=3 plymouth.use-simpledrm plymouth.ignore-serial-consoles"\nGRUB_CMDLINE_LINUX=""\nGRUB_TERMINAL_OUTPUT="gfxterm"\nGRUB_GFXMODE=auto\n' > "$M/etc/default/grub"
 # The boot menu's theme, as the desktop installer copies it (installer.rs, install_grub_theme).
 if [ -f "$M/usr/share/yantrik/grub-theme/theme.txt" ]; then
     mkdir -p "$M/boot/grub/themes" && rm -rf "$M/boot/grub/themes/yantrik" \

@@ -1,16 +1,40 @@
-# Yantrik OS — the pre-boot screen (plymouth script plugin).
+# Yantrik OS — the boot splash and the pre-boot screen (plymouth script plugin).
 #
-# Asks for the disk's password once: the person's name, the field, the words the keyscript
-# passes as the prompt ("Type your password to start Yantrik OS", or why the last one did not
-# open the disk), and the keyboard layout the installer set. Nothing typed is drawn but dots.
+# Two states, never both on the screen at once, because they are one program:
+#
+#   the splash   the Yantrik emblem, centred on the Lake ground (#0e1117), and nothing else.
+#                From the kernel's first frame to labwc's: before the disk's password is asked,
+#                after it is typed, and on a machine with nothing to ask. Before tty1's
+#                autologin plymouth lets go of tty1 and the DRM master and keeps this frame up;
+#                once labwc holds the display plymouth quits, with --retain-splash
+#                (boot-unlock/splash). labwc puts the same picture under the shell
+#                (config/labwc/autostart), and the shell's boot screen opens on the same emblem
+#                in the same place on the same ground (crates/yantrik-ui-slint/ui/boot.slint).
+#                No progress bar: plymouth's would be a guess from the last boot's timings, and
+#                the shell's boot screen shows the real stages.
+#
+#   the prompt   asks for the disk's password once: the person's name, the field, the words the
+#                keyscript passes as the prompt ("Type your password to start Yantrik OS", or
+#                why the last one did not open the disk), and the keyboard layout the installer
+#                set. Nothing typed is drawn but dots. The emblem is hidden while it shows, and
+#                the prompt is drawn exactly as it was before there was a splash.
 #
 # The two lines below are filled in by the initramfs hook (yantrik-unlock); left empty, the
 # screen draws neither.
 name_text = "";
 layout_text = "";
 
-Window.SetBackgroundTopColor(0.055, 0.063, 0.094);
-Window.SetBackgroundBottomColor(0.020, 0.024, 0.039);
+# The prompt's ground: the gradient it has always had.
+fun prompt_ground() {
+    Window.SetBackgroundTopColor(0.055, 0.063, 0.094);
+    Window.SetBackgroundBottomColor(0.020, 0.024, 0.039);
+}
+
+# The splash's ground: Lake's bg-deep, #0e1117, flat, the colour the shell's boot screen opens on.
+fun splash_ground() {
+    Window.SetBackgroundTopColor(0.0549, 0.0667, 0.0902);
+    Window.SetBackgroundBottomColor(0.0549, 0.0667, 0.0902);
+}
 
 screen_w = Window.GetWidth();
 screen_h = Window.GetHeight();
@@ -33,8 +57,17 @@ fun hidden(sprite) {
     sprite.SetOpacity(0);
 }
 
+# The emblem (brand/yantrik-emblem.svg at 132 px, rendered by brand/render.py), its centre on the
+# screen's centre: where the shell's boot screen draws it first.
+emblem_image = Image("emblem.png");
+emblem = Sprite();
+emblem.SetImage(emblem_image);
+emblem.SetX(cx - emblem_image.GetWidth() / 2);
+emblem.SetY(cy - emblem_image.GetHeight() / 2);
+emblem.SetZ(1);
+
 brand = Sprite();
-centred(brand, Image.Text("Yantrik OS", 0.62, 0.66, 0.76, 1, font_small), Window.GetY() + screen_h - 48, 1);
+brand_image = Image.Text("Yantrik OS", 0.62, 0.66, 0.76, 1, font_small);
 
 name_sprite = Sprite();
 field_sprite = Sprite();
@@ -44,6 +77,9 @@ layout_sprite = Sprite();
 field_image = Image("field.png");
 
 fun show_password(prompt, bullets) {
+    hidden(emblem);
+    prompt_ground();
+    centred(brand, brand_image, Window.GetY() + screen_h - 48, 1);
     if (name_text != "")
         centred(name_sprite, Image.Text(name_text, 0.93, 0.94, 0.97, 1, font_name), cy - 110, 2);
     centred(field_sprite, field_image, cy - 22, 2);
@@ -65,8 +101,14 @@ fun show_normal() {
     hidden(dots_sprite);
     hidden(prompt_sprite);
     hidden(layout_sprite);
+    hidden(brand);
+    splash_ground();
+    emblem.SetOpacity(1);
 }
 Plymouth.SetDisplayNormalFunction(show_normal);
+
+# From the first frame: the splash.
+show_normal();
 
 # No message function: cryptsetup's own lines ("cryptsetup: ERROR: ... bad password or
 # options?") are not drawn. The prompt already says what happened, in words a person reads.

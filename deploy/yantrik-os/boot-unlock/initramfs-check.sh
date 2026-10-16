@@ -12,7 +12,10 @@
 #              naming the theme;
 #   text       the same build with plymouth's label plugin hidden: plymouthd.conf names the
 #              text `details` theme, its plugin is there, and the keyscript and prompt still are;
-#   untouched  a crypttab without the keyscript: none of it, and cryptsetup's own prompt.
+#   untouched  a crypttab without the keyscript: none of it, and cryptsetup's own prompt;
+#   splash     no crypttab at all and the Yantrik theme the default, as the image sets it (an
+#              unencrypted install, the live ISO): plymouth's own hook carries the theme and the
+#              emblem the boot splash draws, and nothing of the prompt.
 #
 # It writes to /etc (crypttab is put back), /usr and /lib/modules, so it only runs where that is thrown away: a CI
 # runner or a scratch container, as root, with the packages the image installs:
@@ -32,7 +35,13 @@ KVER="0.0.0-yantrik-check"
 PLUGINS="$(plymouth --get-splash-plugin-path)"; PLUGINS="${PLUGINS%/}"
 HIDDEN=""
 LOOP=""
+THEME_SET=""
 cleanup() {
+    if [ -n "$THEME_SET" ]; then
+        rm -f /usr/share/plymouth/themes/default.plymouth /etc/plymouth/plymouthd.conf
+        [ -e "$T/default.plymouth" ] || [ -L "$T/default.plymouth" ] && mv "$T/default.plymouth" /usr/share/plymouth/themes/
+        [ -e "$T/plymouthd.conf" ] && mv "$T/plymouthd.conf" /etc/plymouth/
+    fi
     [ -n "$HIDDEN" ] && mv "$T/hidden/$HIDDEN" "$PLUGINS/$HIDDEN"
     [ -n "$LOOP" ] && losetup -d "$LOOP"
     if [ -e "$T/crypttab.orig" ]; then mv "$T/crypttab.orig" /etc/crypttab; else rm -f /etc/crypttab; fi
@@ -102,6 +111,7 @@ has "plymouth/details.so$" "the text plugin plymouth falls back to"
 has "plymouth/renderers/(drm|frame-buffer).so$" "a renderer for simpledrm or efifb"
 has "^usr/share/plymouth/themes/yantrik/yantrik.script$" "the Yantrik theme"
 has "^usr/share/plymouth/themes/yantrik/field.png$" "its password field"
+has "^usr/share/plymouth/themes/yantrik/emblem.png$" "and the emblem the splash draws before and after it"
 has "DejaVuSans.ttf$" "a font"
 has "^usr/share/X11/xkb/symbols/de$" "the XKB data for the layout"
 has "(etc/console-setup/cached_.*\.kmap(\.gz)?|etc/boottime\.kmap\.gz)$" "a console keymap"
@@ -113,6 +123,8 @@ grep -q 'XKBLAYOUT="de"' "$ROOT/etc/default/keyboard" 2>/dev/null \
     && ok "the layout is the one chosen" || bad "the layout is the one chosen"
 grep -qx 'Theme=yantrik' "$ROOT/etc/plymouth/plymouthd.conf" 2>/dev/null \
     && ok "plymouthd.conf names the Yantrik theme" || bad "plymouthd.conf names the Yantrik theme"
+grep -qx 'ShowDelay=0' "$ROOT/etc/plymouth/plymouthd.conf" 2>/dev/null \
+    && ok "and shows it without a delay" || bad "and shows it without a delay"
 grep -q "keyscript=$KS" "$ROOT/cryptroot/crypttab" 2>/dev/null \
     && ok "the initramfs crypttab names the keyscript" || bad "the initramfs crypttab names the keyscript"
 for s in "$ROOT$KS" "$ROOT/scripts/local-bottom/yantrik-unlock"; do
@@ -154,5 +166,35 @@ lacks "boot-unlock/askpass|themes/yantrik" "nothing of the Yantrik prompt"
 grep -q "keyscript" "$ROOT/cryptroot/crypttab" 2>/dev/null && bad "the initramfs crypttab is cryptsetup's own" || ok "the initramfs crypttab is cryptsetup's own"
 # The marker script is always there and does nothing without the keyscript (selftest holds it).
 has "cryptsetup/askpass$" "cryptsetup's own prompt"
+
+echo "── splash (no crypttab, the Yantrik theme the default)"
+# The default theme, both ways plymouth's hook reads it: plymouthd.conf (Debian, which the image
+# sets with plymouth-set-default-theme) and the default.plymouth link (Ubuntu, the CI runner).
+# Both put back afterwards.
+THEME_SET=1
+D=/usr/share/plymouth/themes/default.plymouth
+{ [ -e "$D" ] || [ -L "$D" ]; } && mv "$D" "$T/default.plymouth"
+[ -e /etc/plymouth/plymouthd.conf ] && cp -a /etc/plymouth/plymouthd.conf "$T/plymouthd.conf"
+mkdir -p /etc/plymouth
+if ln -s /usr/share/plymouth/themes/yantrik/yantrik.plymouth "$D" \
+    && printf '[Daemon]\nTheme=yantrik\n' > /etc/plymouth/plymouthd.conf; then
+    rm -f /etc/crypttab
+    rm -f "$T/initrd.img"
+    if mkinitramfs -o "$T/initrd.img" "$KVER" > "$T/mkinitramfs.log" 2>&1; then
+        lsinitramfs "$T/initrd.img" > "$T/list"
+        has "sbin/plymouthd$" "plymouth, with nothing to ask"
+        has "plymouth/script.so$" "the script plugin"
+        has "plymouth/renderers/(drm|frame-buffer).so$" "a renderer for simpledrm or efifb"
+        has "^usr/share/plymouth/themes/yantrik/yantrik.script$" "the Yantrik theme"
+        has "^usr/share/plymouth/themes/yantrik/emblem.png$" "the emblem the splash draws"
+        lacks "boot-unlock/askpass" "nothing of the prompt"
+        grep -q "I: yantrik-unlock: the boot splash" "$T/mkinitramfs.log" \
+            && ok "the build says the splash is in" || bad "the build says the splash is in"
+    else
+        cat "$T/mkinitramfs.log"; bad "mkinitramfs ran"
+    fi
+else
+    bad "the Yantrik theme made the default"
+fi
 
 [ "$FAILS" = 0 ] && echo "initramfs-check: all passed" || { echo "initramfs-check: $FAILS failed"; exit 1; }
