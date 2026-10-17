@@ -11763,6 +11763,8 @@ dependencies = [
 name = "yantrik-spreadsheet"
 version = "0.1.0"
 dependencies = [
+ "libc",
+ "png",
  "serde",
  "serde_json",
  "slint",
@@ -11773,6 +11775,7 @@ dependencies = [
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
  "yantrik-ui-kit",
+ "zbus",
 ]
 
 [[package]]

@@ -95,17 +95,21 @@ pub struct Shelved {
 
 /// The apps that are not shipped, and what each is waiting on.
 ///
-/// The rule this table enforces: an app with nothing under its screen is not shipped. Music and
-/// ySheets were both complete drawings over nothing — Music has no playback engine, no scanner
-/// and no library, so only `YANTRIK_MUSIC_DEMO=1` could ever put a song on screen; ySheets never
-/// sets `cell-grid`, `row-count` or `col-count`, so its 50x26 grid has no cells and every guard
-/// in cell-click, cell-edit and the formula bar fails. The decision and its reasoning are in
+/// The rule this table enforces: an app with nothing under its screen is not shipped. Music is a
+/// complete drawing over nothing — no playback engine, no scanner and no library, so only
+/// `YANTRIK_MUSIC_DEMO=1` could ever put a song on screen. The decision and its reasoning are in
 /// design/apps-plan-2026-09-20.md, Wave 3: build it or take it off the shelf. Shipping the
 /// drawing is the option that plan rules out.
 ///
-/// Shelved is not deleted. Both crates stay workspace members so they keep compiling and cannot
-/// rot in silence, both keep their entry in the lints' debt, and the `.desktop` files stay in the
-/// tree — they are simply not packaged, not routed, and not offered to anybody.
+/// ySheets was shelved beside it on 20 September 2026 for the same reason — a 50x26 grid with no
+/// cells under it — and came off in October, once it had a cell model, a formula engine, CSV open
+/// and save through the desktop's file picker, undo and a control surface (PR #727). Un-shelving
+/// was deleting its entry here and in tests/app-lints/shelved.toml; its .desktop file is what
+/// routes it.
+///
+/// Shelved is not deleted. The crate stays a workspace member so it keeps compiling and cannot
+/// rot in silence, it keeps its entry in the lints' debt, and the `.desktop` file stays in the
+/// tree — it is simply not packaged, not routed, and not offered to anybody.
 ///
 /// This table is the whole of the shelf. Routes, the catalogue filter, the Lens and the launch
 /// refusal all consult it rather than each carrying their own list of names to omit, because a
@@ -121,15 +125,6 @@ const SHELVED: &[Shelved] = &[
                  library behind the screen",
         returns_when: "mpv is driven over its JSON IPC socket, a folder scan fills a small \
                        library store, and play/pause/next/queue and `open <file>` work",
-    },
-    Shelved {
-        ids: &["spreadsheet", "ysheets"],
-        name: "ySheets",
-        binary: "yantrik-spreadsheet",
-        reason: "there is no cell model behind the grid, so nothing can be typed into it, by \
-                 mouse or by mind",
-        returns_when: "a cell model, CSV load and save, and arithmetic with references plus \
-                       SUM/AVG/MIN/MAX/COUNT are there",
     },
 ];
 
@@ -2171,10 +2166,6 @@ mod tests {
             let shelf = shelved(spelling).unwrap_or_else(|| panic!("`{spelling}` is not shelved"));
             assert_eq!(shelf.binary, "yantrik-music-player", "{spelling}");
         }
-        for spelling in ["spreadsheet", "Spreadsheet", "ySheets", "ysheets", "yantrik-spreadsheet"] {
-            let shelf = shelved(spelling).unwrap_or_else(|| panic!("`{spelling}` is not shelved"));
-            assert_eq!(shelf.binary, "yantrik-spreadsheet", "{spelling}");
-        }
     }
 
     /// Opening a shelved app is refused, and never answered "launching".
@@ -2186,9 +2177,8 @@ mod tests {
     fn a_shelved_app_does_not_open_even_with_its_desktop_file_on_disk() {
         let stale = [
             stale_entry("yantrik-music-player", "Music", "/opt/yantrik/bin/yantrik-music-player"),
-            stale_entry("yantrik-spreadsheet", "ySheets", "/opt/yantrik/bin/yantrik-spreadsheet"),
         ];
-        for name in ["music", "music-player", "Music", "spreadsheet", "ySheets"] {
+        for name in ["music", "music-player", "Music"] {
             assert!(!is_launchable(name, &stale), "`{name}` must not open");
             assert!(
                 matches!(availability(name, &stale), Availability::Shelved(_)),
@@ -2207,12 +2197,9 @@ mod tests {
         assert!(!entry_is_launchable(&stale_entry(
             "yantrik-music-player", "Music", "/opt/yantrik/bin/yantrik-music-player"
         )));
-        assert!(!entry_is_launchable(&stale_entry(
-            "yantrik-spreadsheet", "ySheets", "/opt/yantrik/bin/yantrik-spreadsheet"
-        )));
         // Renamed by hand, or installed somewhere else: the program is what gives it away.
         assert!(!entry_is_launchable(&stale_entry(
-            "sheets-old", "Sheets", "/usr/local/bin/yantrik-spreadsheet %f"
+            "tunes-old", "Tunes", "/usr/local/bin/yantrik-music-player %f"
         )));
         // And an app that is not shelved is untouched by any of it.
         assert!(entry_is_launchable(&stale_entry("shell", "Shell", "/bin/sh")));
@@ -2261,7 +2248,12 @@ mod tests {
     #[test]
     fn un_shelved_apps_are_unaffected() {
         let shipped = shipped();
-        for id in ["notes", "terminal", "files", "calendar", "email", "documents", "presentation"] {
+        // ySheets came off the shelf with a cell model, CSV and a surface (PR #727): every name it
+        // was refused under now opens it.
+        for id in [
+            "notes", "terminal", "files", "calendar", "email", "documents", "presentation",
+            "spreadsheet", "ysheets", "ySheets", "yantrik-spreadsheet",
+        ] {
             assert!(shelved(id).is_none(), "`{id}` is not shelved");
             assert!(!matches!(resolve(id, &shipped), Resolved::Unknown), "`{id}` still opens");
             assert!(is_known_app(id, &shipped), "`{id}` is still known");

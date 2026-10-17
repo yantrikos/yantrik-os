@@ -1,1245 +1,263 @@
-// Spreadsheet — full-featured spreadsheet app for Yantrik OS.
-// Screen 29. Opens from dock "ySheets" icon or app grid.
-// Features: formulas, multi-sheet, formatting, sort/filter, freeze panes,
-// find/replace, cell colors, comments, charts, number formatting.
+// ySheets — the spreadsheet's screen.
+//
+// Everything drawn here is backed (design/apps-plan-2026-09-20.md, contract item 7: no dead
+// controls). The screen this replaced drew a ribbon of formatting, sort, filter, freeze, chart,
+// comment, clipboard and AI controls over a grid that was never filled; 44 of its 47 handlers
+// were log lines. What is left is what the app does: one sheet, typed into from the formula
+// bar, worked out, opened from and saved to CSV, with undo and redo. Rust owns every value on
+// it — the grid, the size, the column names, the selection — and the screen only asks.
 
 import { Theme } from "theme.slint";
-import { ScrollView, LineEdit } from "std-widgets.slint";
-import { RibbonToolButton, RibbonToolButtonWide, RibbonSeparator, RibbonTabButton, RibbonQuickAction, RibbonGroupLabel, RibbonColorButton, RibbonDropdown } from "components/app_ribbon.slint";
+import { ListView } from "std-widgets.slint";
 import { Icons } from "components/icon.slint";
-import { YButton } from "components/y_button.slint";
 import { AppHeader } from "components/app_header.slint";
-import { AppColor, AppIdentity } from "components/app_color.slint";
+import { AppIdentity } from "components/app_color.slint";
 
 export struct SpreadsheetCell {
+    // What the cell shows: its value, or its error code.
     text: string,
-    is-formula: bool,
-    is-bold: bool,
-    is-italic: bool,
-    align: int,       // 0=left, 1=center, 2=right
-    bg-color: brush,
-    text-color: brush,
-    has-comment: bool,
-    number-format: int, // 0=general,1=number,2=currency,3=percent,4=date,5=scientific
+    is-number: bool,
+    is-error: bool,
 }
 
-export struct SheetTab {
-    name: string,
-    is-active: bool,
-}
-
-export struct ChartData {
-    chart-type: int,   // 0=bar, 1=line, 2=pie
-    title: string,
-    labels: string,    // comma-separated
-    values: string,    // comma-separated
+export struct SheetRow {
+    cells: [SpreadsheetCell],
 }
 
 component CellView inherits Rectangle {
-    in property <string> cell-text: "";
-    in property <bool> is-bold: false;
-    in property <bool> is-italic: false;
-    in property <int> align: 0;
-    in property <brush> cell-bg: Theme.bg-deep;
-    in property <brush> cell-text-color: Theme.text-primary;
-    in property <bool> is-selected: false;
-    in property <bool> is-header: false;
-    in property <bool> has-comment: false;
-    in property <bool> is-active-row: false;
-    in property <bool> is-active-col: false;
-
+    in property <SpreadsheetCell> cell;
+    in property <bool> selected;
     callback clicked();
 
     width: 100px;
     height: 28px;
-    background: is-header
-        ? (is-active-col ? Theme.bg-card : Theme.bg-elevated)
-        : is-selected
-            ? AppIdentity.accent.transparentize(80%)
-            : (is-active-row || is-active-col)
-                ? Theme.hover-fill
-                : cell-bg;
-    border-width: is-selected ? 2px : 1px;
-    border-color: is-selected ? AppIdentity.accent : Theme.border-subtle;
+    background: root.selected ? AppIdentity.accent.transparentize(80%) : Theme.bg-deep;
+    border-width: root.selected ? 2px : 1px;
+    border-color: root.selected ? AppIdentity.accent : Theme.border-subtle;
 
-    // Selected cell highlight
-    Rectangle {
-        visible: root.is-selected;
-        width: parent.width;
+    TouchArea { clicked => { root.clicked(); } }
+    Text {
+        x: 6px;
+        width: parent.width - 12px;
         height: parent.height;
-        border-width: 1px;
-        border-color: Theme.accent.transparentize(40%);
-    }
-
-    touch := TouchArea {
-        clicked => { root.clicked(); }
-    }
-
-    txt := Text {
-        x: 4px;
-        y: 0px;
-        width: parent.width - 8px;
-        height: parent.height;
-        text: root.cell-text;
-        color: is-header ? Theme.text-primary : root.cell-text-color;
-        font-size: is-header ? Theme.fs-caption : Theme.fs-caption;
-        font-weight: root.is-bold ? 700 : (is-header ? 700 : 400);
-        font-italic: root.is-italic;
-        horizontal-alignment: root.align == 1 ? center : (root.align == 2 ? right : left);
+        text: root.cell.text;
+        color: root.cell.is-error ? Theme.color-warning : Theme.text-primary;
+        font-size: Theme.fs-caption;
+        horizontal-alignment: (root.cell.is-number || root.cell.is-error) ? right : left;
         vertical-alignment: center;
         overflow: elide;
     }
-
-    // Comment indicator (red triangle in top-right)
-    Rectangle {
-        visible: root.has-comment;
-        x: parent.width - 8px;
-        y: 0px;
-        width: 8px;
-        height: 8px;
-        // Use a colored rectangle as indicator
-        Rectangle {
-            width: 6px;
-            height: 6px;
-            x: 2px;
-            y: 0px;
-            background: Theme.color-danger;
-            border-radius: 1px;
-        }
-    }
 }
 
-// Color picker palette (8 colors)
-component ColorPalette inherits Rectangle {
-    in property <bool> show: false;
-    callback color-selected(int);
-
-    visible: show;
-    width: 148px;
-    height: 44px;
-    background: Theme.bg-card;
-    border-radius: 6px;
+component HeaderCell inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    width: 100px;
+    height: 28px;
+    background: root.active ? Theme.bg-card : Theme.bg-elevated;
     border-width: 1px;
     border-color: Theme.border-subtle;
-    drop-shadow-blur: 8px;
-    drop-shadow-color: Theme.bg-deep.transparentize(25%);
-
-    HorizontalLayout {
-        padding: 6px;
-        spacing: 4px;
-
-        // None
-        Rectangle {
-            width: 14px; height: 14px; border-radius: 3px;
-            background: transparent; border-width: 1px; border-color: Theme.border-subtle;
-            TouchArea { clicked => { root.color-selected(0); } }
-            Text { text: "x"; font-size: Theme.fs-micro; color: Theme.text-dim; horizontal-alignment: center; vertical-alignment: center; }
-        }
-        // Red
-        Rectangle { width: 14px; height: 14px; border-radius: 3px; background: #e74c3c;
-            TouchArea { clicked => { root.color-selected(1); } } }
-        // Orange
-        Rectangle { width: 14px; height: 14px; border-radius: 3px; background: #f39c12;
-            TouchArea { clicked => { root.color-selected(2); } } }
-        // Yellow
-        Rectangle { width: 14px; height: 14px; border-radius: 3px; background: #f1c40f;
-            TouchArea { clicked => { root.color-selected(3); } } }
-        // Green
-        Rectangle { width: 14px; height: 14px; border-radius: 3px; background: #2ecc71;
-            TouchArea { clicked => { root.color-selected(4); } } }
-        // Blue
-        Rectangle { width: 14px; height: 14px; border-radius: 3px; background: #3498db;
-            TouchArea { clicked => { root.color-selected(5); } } }
-        // Purple
-        Rectangle { width: 14px; height: 14px; border-radius: 3px; background: #9b59b6;
-            TouchArea { clicked => { root.color-selected(6); } } }
-        // Gray
-        Rectangle { width: 14px; height: 14px; border-radius: 3px; background: #95a5a6;
-            TouchArea { clicked => { root.color-selected(7); } } }
+    Text {
+        text: root.label;
+        color: root.active ? AppIdentity.accent : Theme.text-secondary;
+        font-size: Theme.fs-caption;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
     }
 }
 
 export component SpreadsheetScreen inherits Rectangle {
-    // The app's window-bar (#256): this screen's header is its window's one title bar when
-    // the screen fills an app window; the shell's copy leaves it off.
+    // The app's window-bar (#256): this screen's header is its window's one title bar.
     in property <bool> window-bar: false;
     background: Theme.bg-deep;
 
-    // Grid data — flat array, indexed as [row * col-count + col]
-    in property <[SpreadsheetCell]> cell-grid: [];
+    // ── What Rust tells it ──
+    in property <string> file-name: "Untitled";
+    in property <bool> modified: false;
+    in property <[SheetRow]> rows: [];
+    in property <[string]> col-names: [];
+    in property <int> active-row: 0;
+    in property <int> active-col: 0;
+    in property <string> active-ref: "A1";
+    in property <string> status-text: "";
+    in property <bool> status-is-problem: false;
+    in property <bool> can-undo: false;
+    in property <bool> can-redo: false;
 
-    // Active cell
-    in-out property <int> active-row: 0;
-    in-out property <int> active-col: 0;
-
-    // Formula bar content
+    // The formula bar's text: the selected cell's typed text, until the person changes it.
     in-out property <string> cell-data: "";
 
-    // Sheet tabs
-    in property <[SheetTab]> sheet-tabs: [{ name: "Sheet 1", is-active: true }];
-
-    // Status bar
-    in property <string> status-text: "Ready";
-
-    // AI Assist
-    in-out property <bool> show-ai-panel: false;
-    in property <bool> sheet-ai-working: false;
-    in property <string> sheet-ai-response: "";
-    in-out property <string> sheet-ai-prompt: "";
-    callback sheet-ai-submit(string);
-    callback sheet-ai-apply();
-    callback sheet-ai-dismiss();
-    callback sheet-ai-formula(string);
-    callback sheet-ai-analyze();
-    callback sheet-ai-suggest-chart();
-    callback sheet-ai-insights();
-    callback sheet-ai-generate-data(string);
-
-    // Grid dimensions
-    in property <int> row-count: 50;
-    in property <int> col-count: 26;
-
-    // Formatting state for toolbar toggles
-    in property <bool> fmt-bold-active: false;
-    in property <bool> fmt-italic-active: false;
-    in property <int> fmt-align-active: 0;
-
-    // Number format of active cell
-    in property <int> fmt-number-format: 0;
-
-    // Freeze panes
-    in property <int> freeze-rows: 0;
-    in property <int> freeze-cols: 0;
-
-    // Find/Replace state
-    in-out property <bool> show-find: false;
-    in-out property <string> find-query: "";
-    in-out property <string> replace-text: "";
-    in property <string> find-status: "";
-
-    // Comment for active cell
-    in property <string> active-comment: "";
-    in-out property <bool> show-comment-panel: false;
-    in-out property <string> comment-input: "";
-
-    // Chart data
-    in property <ChartData> chart-data: { chart-type: 0, title: "", labels: "", values: "" };
-    in-out property <bool> show-chart: false;
-
-    // Color picker state
-    property <bool> show-bg-picker: false;
-    property <bool> show-text-picker: false;
-
-    // Filter active
-    in property <bool> filter-active: false;
-
-    // Sort indicator
-    in property <int> sort-col: -1;
-    in property <bool> sort-ascending: true;
-
-    // Formula help
-    in property <string> sheet-formula-error: "";
-    in property <[string]> sheet-formula-hints: [];
-    in-out property <bool> sheet-formula-help-open: false;
-
-    // Callbacks — existing
+    // ── What it asks ──
     callback cell-clicked(int, int);
-    callback cell-edited(int, int, string);
-    callback formula-submitted(string);
-    callback switch-sheet(int);
-    callback add-sheet();
-    callback format-bold();
-    callback format-italic();
-    callback format-align(int);
-    callback import-csv();
-    callback export-csv();
+    // The typed text, and where the selection goes next: "down", "up", "right", "left", "stay".
+    callback formula-submitted(string, string);
+    // Escape: put the formula bar back to what the cell holds.
+    callback formula-cancelled();
+    // A header command: "open", "save", "save-as", "undo", "redo".
+    callback command(string);
 
-    // Callbacks — new
-    callback sort-column(int, bool);       // col, ascending
-    callback filter-column(int, string);   // col, filter-text
-    callback clear-filter();
-    callback insert-row(int);              // after-row
-    callback delete-row(int);
-    callback insert-col(int);              // after-col
-    callback delete-col(int);
-    callback format-number(int);           // format-type
-    callback set-bg-color(int);            // color-idx
-    callback set-text-color(int);          // color-idx
-    callback find-text(string);
-    callback find-next();
-    callback replace-one(string, string);
-    callback replace-all(string, string);
-    callback copy-cell();
-    callback paste-cell();
-    callback cut-cell();
-    callback undo();
-    callback redo();
-    callback key-pressed(string);
-    callback add-comment(string);
-    callback delete-comment();
-    callback merge-cells(int, int, int, int);
-    callback unmerge-cells();
-    callback freeze-panes(int, int);       // rows, cols
-    callback save-sheet();
-    callback load-sheet();
-    callback create-chart(int, string);    // type, range
-    callback sheet-show-formula-help();
-
-    // Helper: column letter from index
-    pure function col-letter(col: int) -> string {
-        col == 0 ? "A" : col == 1 ? "B" : col == 2 ? "C" : col == 3 ? "D"
-        : col == 4 ? "E" : col == 5 ? "F" : col == 6 ? "G" : col == 7 ? "H"
-        : col == 8 ? "I" : col == 9 ? "J" : col == 10 ? "K" : col == 11 ? "L"
-        : col == 12 ? "M" : col == 13 ? "N" : col == 14 ? "O" : col == 15 ? "P"
-        : col == 16 ? "Q" : col == 17 ? "R" : col == 18 ? "S" : col == 19 ? "T"
-        : col == 20 ? "U" : col == 21 ? "V" : col == 22 ? "W" : col == 23 ? "X"
-        : col == 24 ? "Y" : "Z";
+    // Put the typing cursor in the formula bar with its text selected, so typing replaces it.
+    public function edit-cell() {
+        formula-input.focus();
+        formula-input.select-all();
     }
 
-    // Ribbon tab state: 0=Home, 1=Data, 2=Insert
-    property <int> ribbon-tab: 0;
-
     VerticalLayout {
-        // -- Header --
         AppHeader {
+            z: 1;
             window-bar: root.window-bar;
             app-id: "spreadsheet";
             icon: Icons.sheets;
             title: "ySheets";
-            subtitle: root.status-text;
+            subtitle: root.file-name;
+            modified: root.modified;
             leading-actions: [
-                { id: "save", icon: Icons.save, label: "Save", emphasis: 2 },
-                { id: "undo", icon: Icons.rotate-ccw },
-                { id: "redo", icon: Icons.rotate-cw },
+                { id: "open", icon: Icons.folder, label: "Open", tooltip: "Open a CSV file (Ctrl+O)" },
+                { id: "save", icon: Icons.save, label: "Save", emphasis: 2, tooltip: "Save (Ctrl+S)" },
+                { id: "save-as", label: "Save as", tooltip: "Save to another CSV file (Ctrl+Shift+S)" },
+                { id: "undo", icon: Icons.rotate-ccw, disabled: !root.can-undo, tooltip: root.can-undo ? "Undo (Ctrl+Z)" : "Nothing to undo" },
+                { id: "redo", icon: Icons.rotate-cw, disabled: !root.can-redo, tooltip: root.can-redo ? "Redo (Ctrl+Y)" : "Nothing to redo" },
             ];
-            actions: [
-                { id: "find", icon: Icons.search, label: "Find", active: root.show-find },
-                { id: "ai",   icon: Icons.spark,  label: "AI", emphasis: 1, active: root.show-ai-panel },
-            ];
-            action(id) => {
-                if (id == "save") { root.save-sheet(); }
-                else if (id == "undo") { root.undo(); }
-                else if (id == "redo") { root.redo(); }
-                else if (id == "find") { root.show-find = !root.show-find; }
-                else if (id == "ai") { root.show-ai-panel = !root.show-ai-panel; }
-            }
+            action(id) => { root.command(id); }
         }
-        // ═══ Row 1: Tab strip + Quick Actions (36px) ═══
-        Rectangle {
-            height: 36px;
-            background: Theme.bg-surface;
 
+        // ── Formula bar ──
+        Rectangle {
+            height: 40px;
+            background: Theme.bg-surface;
             HorizontalLayout {
+                padding: 4px;
                 padding-left: 8px;
                 padding-right: 8px;
-                spacing: 0px;
-
-                // The ribbon's tab strip, and nothing else.
-                //
-                // It used to open with Save / Undo / Redo and close with Find and AI -- all five of which
-                // are already in the AppHeader one row above, doing the same thing to the same document.
-                // Converting this app to the SDK header gave it the commands and left the old row intact,
-                // so the window opened with two command bars stacked, the top one and the bottom one
-                // offering the same five buttons eighteen pixels apart. The tabs are the part that was
-                // never anywhere else.
-
-                Rectangle { width: 12px; }
-
-                // Tab strip
-                RibbonTabButton { label: "Home"; is-active: root.ribbon-tab == 0; clicked => { root.ribbon-tab = 0; } }
-                RibbonTabButton { label: "Data"; is-active: root.ribbon-tab == 1; clicked => { root.ribbon-tab = 1; } }
-                RibbonTabButton { label: "Insert"; is-active: root.ribbon-tab == 2; clicked => { root.ribbon-tab = 2; } }
-
-                Rectangle {}
-            }
-
-            Rectangle { y: parent.height - 1px; height: 1px; background: Theme.separator; }
-        }
-
-        // ═══ Row 2: Grouped command band (44px) ═══
-        Rectangle {
-            height: 44px;
-            background: Theme.bg-card;
-
-            // ── HOME tab: Format + Alignment + Number + Clipboard ──
-            if root.ribbon-tab == 0 : HorizontalLayout {
-                padding-left: 10px;
-                padding-right: 10px;
-                spacing: 3px;
-                alignment: start;
-
-                RibbonGroupLabel { label: "FONT"; }
-                RibbonToolButton { icon-path: Icons.bold; is-active: root.fmt-bold-active; tooltip-text: "Bold"; clicked => { root.format-bold(); } }
-                RibbonToolButton { icon-path: Icons.italic; is-active: root.fmt-italic-active; tooltip-text: "Italic"; clicked => { root.format-italic(); } }
-
-                RibbonColorButton {
-                    label: "A";
-                    swatch-color: #f39c12;
-                    tooltip-text: "Cell background";
-                    clicked => { root.show-bg-picker = !root.show-bg-picker; root.show-text-picker = false; }
-                }
-                RibbonColorButton {
-                    label: "A";
-                    swatch-color: #e74c3c;
-                    tooltip-text: "Text color";
-                    clicked => { root.show-text-picker = !root.show-text-picker; root.show-bg-picker = false; }
-                }
-
-                RibbonSeparator {}
-
-                RibbonGroupLabel { label: "ALIGN"; }
-                RibbonToolButton { icon-path: Icons.align-left; is-active: root.fmt-align-active == 0; tooltip-text: "Align left"; clicked => { root.format-align(0); } }
-                RibbonToolButton { icon-path: Icons.align-center; is-active: root.fmt-align-active == 1; tooltip-text: "Center"; clicked => { root.format-align(1); } }
-                RibbonToolButton { icon-path: Icons.align-right; is-active: root.fmt-align-active == 2; tooltip-text: "Align right"; clicked => { root.format-align(2); } }
-
-                RibbonSeparator {}
-
-                RibbonGroupLabel { label: "NUMBER"; }
-                RibbonDropdown {
-                    value: root.fmt-number-format == 0 ? "General"
-                        : root.fmt-number-format == 1 ? "Number"
-                        : root.fmt-number-format == 2 ? "Currency"
-                        : root.fmt-number-format == 3 ? "Percent"
-                        : root.fmt-number-format == 4 ? "Date"
-                        : "Scientific";
-                    clicked => { root.format-number(mod(root.fmt-number-format + 1, 6)); }
-                }
-
-                RibbonSeparator {}
-
-                RibbonGroupLabel { label: "CLIPBOARD"; }
-                RibbonToolButtonWide { label: "Copy"; icon-path: Icons.copy; tooltip-text: "Copy cell"; clicked => { root.copy-cell(); } }
-                RibbonToolButtonWide { label: "Paste"; icon-path: Icons.clipboard; tooltip-text: "Paste"; clicked => { root.paste-cell(); } }
-                RibbonToolButtonWide { label: "Cut"; icon-path: Icons.scissors; tooltip-text: "Cut cell"; clicked => { root.cut-cell(); } }
-            }
-
-            // ── DATA tab: Sort + Filter + Freeze + Import/Export ──
-            if root.ribbon-tab == 1 : HorizontalLayout {
-                padding-left: 10px;
-                padding-right: 10px;
-                spacing: 3px;
-                alignment: start;
-
-                RibbonGroupLabel { label: "SORT & FILTER"; }
-                RibbonToolButtonWide { label: "Sort"; icon-path: Icons.arrow-up; tooltip-text: "Sort ascending"; clicked => { root.sort-column(root.active-col, true); } }
-                RibbonToolButtonWide { label: "Sort"; icon-path: Icons.arrow-down; tooltip-text: "Sort descending"; clicked => { root.sort-column(root.active-col, false); } }
-                RibbonToolButtonWide {
-                    label: "Filter";
-                    is-active: root.filter-active;
-                    tooltip-text: "Toggle filter";
-                    clicked => { if root.filter-active { root.clear-filter(); } }
-                }
-
-                RibbonSeparator {}
-
-                RibbonGroupLabel { label: "VIEW"; }
-                RibbonToolButtonWide {
-                    label: root.freeze-rows > 0 || root.freeze-cols > 0 ? "Unfreeze" : "Freeze";
-                    is-active: root.freeze-rows > 0 || root.freeze-cols > 0;
-                    tooltip-text: "Freeze panes";
-                    clicked => {
-                        if root.freeze-rows > 0 || root.freeze-cols > 0 {
-                            root.freeze-panes(0, 0);
-                        } else {
-                            root.freeze-panes(root.active-row + 1, root.active-col + 1);
-                        }
-                    }
-                }
-
-                RibbonSeparator {}
-
-                RibbonGroupLabel { label: "FILE"; }
-                RibbonToolButtonWide { label: "Import"; icon-path: Icons.import; tooltip-text: "Import CSV"; clicked => { root.import-csv(); } }
-                RibbonToolButtonWide { label: "Export"; icon-path: Icons.export; tooltip-text: "Export CSV"; clicked => { root.export-csv(); } }
-            }
-
-            // ── INSERT tab: Rows/Cols + Chart + Comment + Merge ──
-            if root.ribbon-tab == 2 : HorizontalLayout {
-                padding-left: 10px;
-                padding-right: 10px;
-                spacing: 3px;
-                alignment: start;
-
-                RibbonGroupLabel { label: "CELLS"; }
-                RibbonToolButtonWide { label: "+Row"; tooltip-text: "Insert row"; clicked => { root.insert-row(root.active-row); } }
-                RibbonToolButtonWide { label: "-Row"; tooltip-text: "Delete row"; clicked => { root.delete-row(root.active-row); } }
-                RibbonToolButtonWide { label: "+Col"; tooltip-text: "Insert column"; clicked => { root.insert-col(root.active-col); } }
-                RibbonToolButtonWide { label: "-Col"; tooltip-text: "Delete column"; clicked => { root.delete-col(root.active-col); } }
-
-                RibbonSeparator {}
-
-                RibbonGroupLabel { label: "OBJECTS"; }
-                RibbonToolButtonWide {
-                    label: "Chart";
-                    tooltip-text: "Insert chart";
-                    clicked => { root.create-chart(0, root.col-letter(root.active-col) + "1:" + root.col-letter(root.active-col) + "50"); }
-                }
-                RibbonToolButtonWide {
-                    label: "Note";
-                    is-active: root.show-comment-panel;
-                    tooltip-text: "Cell comment";
-                    clicked => { root.show-comment-panel = !root.show-comment-panel; }
-                }
-            }
-
-            // Color palettes (float above ribbon)
-            ColorPalette {
-                x: 200px;
-                y: 0px;
-                show: root.show-bg-picker;
-                color-selected(idx) => {
-                    root.set-bg-color(idx);
-                    root.show-bg-picker = false;
-                }
-            }
-
-            ColorPalette {
-                x: 232px;
-                y: 0px;
-                show: root.show-text-picker;
-                color-selected(idx) => {
-                    root.set-text-color(idx);
-                    root.show-text-picker = false;
-                }
-            }
-
-            Rectangle { y: parent.height - 1px; height: 1px; background: Theme.separator; }
-        }
-
-        // ── Row 3: Formula Bar (32px) ── ySheets-specific
-        // (Formula bar follows below — kept from original)
-
-        // ── Find/Replace Bar ──
-        Rectangle {
-            height: root.show-find ? 34px : 0px;
-            visible: root.show-find;
-            background: Theme.bg-card;
-
-            HorizontalLayout {
-                padding-left: 12px;
-                padding-right: 12px;
                 spacing: 8px;
-                alignment: start;
-
-                Text { text: "Find:"; color: Theme.text-primary; font-size: Theme.fs-caption; vertical-alignment: center; }
-
-                find-input := LineEdit {
-                    width: 160px;
-                    text <=> root.find-query;
-                    placeholder-text: "Search cells...";
-                    accepted => { root.find-text(root.find-query); }
-                }
-
-                RibbonToolButtonWide { label: "Next"; clicked => { root.find-next(); } }
-
-                RibbonSeparator {}
-
-                Text { text: "Replace:"; color: Theme.text-primary; font-size: Theme.fs-caption; vertical-alignment: center; }
-
-                replace-input := LineEdit {
-                    width: 140px;
-                    text <=> root.replace-text;
-                    placeholder-text: "Replace with...";
-                }
-
-                RibbonToolButtonWide { label: "One"; clicked => { root.replace-one(root.find-query, root.replace-text); } }
-                RibbonToolButtonWide { label: "All"; clicked => { root.replace-all(root.find-query, root.replace-text); } }
-
-                RibbonSeparator {}
-
-                Text { text: root.find-status; color: Theme.text-dim; font-size: Theme.fs-caption; vertical-alignment: center; }
-            }
-        }
-
-        // Separator (only if find visible)
-        Rectangle { height: root.show-find ? 1px : 0px; background: Theme.separator; }
-
-        // ── Formula Bar — prominent ──
-        Rectangle {
-            height: 38px;
-            background: Theme.bg-surface;
-
-            HorizontalLayout {
-                padding-left: 8px;
-                padding-right: 8px;
-                spacing: 0px;
-
-                // Cell reference label (e.g. "A1")
                 Rectangle {
                     width: 64px;
-                    height: 32px;
                     border-radius: 4px;
                     background: Theme.bg-card;
                     border-width: 1px;
                     border-color: Theme.border-subtle;
-
                     Text {
-                        text: root.col-letter(root.active-col) + "\{root.active-row + 1}";
+                        text: root.active-ref;
                         font-size: Theme.fs-body;
                         font-weight: 700;
-                        color: Theme.accent;
+                        color: AppIdentity.accent;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
                 }
-
-                // Separator between cell ref and formula
-                Rectangle {
-                    width: 1px;
-                    height: 24px;
-                    background: Theme.separator;
-                }
-
-                // fx label — clickable to toggle formula help
-                Rectangle {
-                    width: 32px;
-                    height: 32px;
-                    border-radius: 4px;
-                    background: fx-ta.has-hover ? Theme.hover-fill : (root.sheet-formula-help-open ? AppIdentity.accent.transparentize(0.8) : transparent);
-
-                    fx-ta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { root.sheet-show-formula-help(); }
-                    }
-
-                    Text {
-                        width: 32px;
-                        text: "fx";
-                        font-size: Theme.fs-headline;
-                        font-italic: true;
-                        font-weight: 600;
-                        color: root.sheet-formula-help-open ? AppIdentity.accent : Theme.text-secondary;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-
-                // Formula input — lighter background to stand out
-                Rectangle {
-                    height: 30px;
-                    border-radius: 4px;
-                    background: Theme.bg-deep; clip: true;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
-
-                    formula-input := TextInput {
-                        x: 8px;
-                        y: 0px;
-                        width: parent.width - 16px;
-                        height: parent.height;
-                        text <=> root.cell-data;
-                        font-size: Theme.fs-caption;
-                        color: Theme.text-primary;
-                        vertical-alignment: center;
-
-                        accepted => {
-                            root.formula-submitted(self.text);
-                        }
-                    }
-                }
-            }
-        }
-
-        // ── Formula error display ──
-        Rectangle {
-            height: root.sheet-formula-error != "" ? 26px : 0px;
-            visible: root.sheet-formula-error != "";
-            background: Theme.color-warning-dim;
-            border-width: 0px;
-
-            HorizontalLayout {
-                padding-left: Theme.sp-3;
-                spacing: Theme.sp-1;
-                alignment: start;
-
                 Text {
-                    text: root.sheet-formula-error;
-                    color: Theme.color-warning;
-                    font-size: Theme.fs-micro;
-                    font-weight: 500;
+                    text: "fx";
+                    font-italic: true;
+                    font-weight: 600;
+                    color: Theme.text-secondary;
                     vertical-alignment: center;
                 }
-            }
-        }
-
-        // ── Formula help panel ──
-        Rectangle {
-            height: root.sheet-formula-help-open ? 160px : 0px;
-            visible: root.sheet-formula-help-open;
-            background: Theme.bg-card;
-            border-width: 1px;
-            border-color: Theme.accent.transparentize(0.7);
-            border-radius: 0px;
-
-            VerticalLayout {
-                padding: 10px;
-                spacing: 4px;
-
-                Text {
-                    text: "Available Functions";
-                    color: Theme.accent;
-                    font-size: Theme.fs-caption;
-                    font-weight: 700;
-                }
-
-                ScrollView {
-                    VerticalLayout {
-                        spacing: 2px;
-
-                        for hint in root.sheet-formula-hints: Rectangle {
-                            height: 18px;
-
-                            Text {
-                                x: 8px;
-                                text: hint;
-                                color: Theme.text-primary;
-                                font-size: Theme.fs-micro;
-                                font-family: Theme.font-mono;
-                                vertical-alignment: center;
+                Rectangle {
+                    border-radius: 4px;
+                    background: Theme.bg-deep;
+                    border-width: 1px;
+                    border-color: formula-input.has-focus ? AppIdentity.accent : Theme.border-subtle;
+                    clip: true;
+                    keys := FocusScope {
+                        // Keys that move the selection are taken before the text field sees them;
+                        // everything else is typing.
+                        capture-key-pressed(event) => {
+                            if (event.modifiers.control) {
+                                if (event.text == "z" && !event.modifiers.shift) { root.command("undo"); return accept; }
+                                if (event.text == "y" || (event.text == "Z") || (event.text == "z" && event.modifiers.shift)) { root.command("redo"); return accept; }
+                                if (event.text == "s" && !event.modifiers.shift) { root.command("save"); return accept; }
+                                if (event.text == "S" || (event.text == "s" && event.modifiers.shift)) { root.command("save-as"); return accept; }
+                                if (event.text == "o") { root.command("open"); return accept; }
+                                return reject;
                             }
+                            if (event.text == Key.Return) { root.formula-submitted(root.cell-data, event.modifiers.shift ? "up" : "down"); formula-input.select-all(); return accept; }
+                            if (event.text == Key.Tab) { root.formula-submitted(root.cell-data, "right"); formula-input.select-all(); return accept; }
+                            if (event.text == Key.Backtab) { root.formula-submitted(root.cell-data, "left"); formula-input.select-all(); return accept; }
+                            if (event.text == Key.UpArrow) { root.formula-submitted(root.cell-data, "up"); formula-input.select-all(); return accept; }
+                            if (event.text == Key.DownArrow) { root.formula-submitted(root.cell-data, "down"); formula-input.select-all(); return accept; }
+                            if (event.text == Key.Escape) { root.formula-cancelled(); formula-input.select-all(); return accept; }
+                            reject
+                        }
+                        formula-input := TextInput {
+                            x: 8px;
+                            width: parent.width - 16px;
+                            height: parent.height;
+                            text <=> root.cell-data;
+                            single-line: true;
+                            font-size: Theme.fs-caption;
+                            color: Theme.text-primary;
+                            vertical-alignment: center;
                         }
                     }
                 }
             }
         }
-
-        // Separator
         Rectangle { height: 1px; background: Theme.separator; }
 
-        // ── Main area: Grid + optional comment panel ──
-        HorizontalLayout {
-            // ── Grid Area ──
-            Rectangle {
-                ScrollView {
-                    width: 100%;
-                    height: 100%;
-
-                    VerticalLayout {
-                        // Column header row
-                        HorizontalLayout {
-                            // Top-left corner cell (empty)
-                            Rectangle {
-                                width: 48px;
-                                height: 28px;
-                                background: Theme.bg-elevated;
-                                border-width: 1px;
-                                border-color: Theme.border-subtle;
-                            }
-
-                            // Column headers A-Z
-                            for col-idx in root.col-count : CellView {
-                                width: 100px;
-                                height: 28px;
-                                cell-text: root.col-letter(col-idx);
-                                is-header: true;
-                                is-selected: col-idx == root.active-col;
-                                is-active-col: col-idx == root.active-col;
-
-                                clicked => {
-                                    // Click header to sort
-                                    root.sort-column(col-idx, root.sort-col != col-idx ? true : !root.sort-ascending);
-                                }
-                            }
-                        }
-
-                        // Data rows
-                        for row-idx in root.row-count : HorizontalLayout {
-                            // Row header
-                            Rectangle {
-                                width: 48px;
-                                height: 28px;
-                                background: row-idx == root.active-row ? Theme.bg-card : Theme.bg-elevated;
-                                border-width: 1px;
-                                border-color: Theme.border-subtle;
-
-                                Text {
-                                    text: "\{row-idx + 1}";
-                                    font-size: Theme.fs-caption;
-                                    font-weight: row-idx == root.active-row ? 700 : 600;
-                                    color: row-idx == root.active-row ? AppIdentity.accent : Theme.text-secondary;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                            }
-
-                            // Data cells
-                            for col-idx in root.col-count : CellView {
-                                width: 100px;
-                                height: 28px;
-                                cell-text: (row-idx == root.active-row && col-idx == root.active-col)
-                                    ? root.cell-data
-                                    : ((row-idx * root.col-count + col-idx) < root.cell-grid.length
-                                        ? root.cell-grid[row-idx * root.col-count + col-idx].text : "");
-                                is-bold: (row-idx * root.col-count + col-idx) < root.cell-grid.length
-                                    ? root.cell-grid[row-idx * root.col-count + col-idx].is-bold : false;
-                                is-italic: (row-idx * root.col-count + col-idx) < root.cell-grid.length
-                                    ? root.cell-grid[row-idx * root.col-count + col-idx].is-italic : false;
-                                align: (row-idx * root.col-count + col-idx) < root.cell-grid.length
-                                    ? root.cell-grid[row-idx * root.col-count + col-idx].align : 0;
-                                cell-bg: (row-idx * root.col-count + col-idx) < root.cell-grid.length
-                                    ? root.cell-grid[row-idx * root.col-count + col-idx].bg-color : Theme.bg-deep;
-                                cell-text-color: (row-idx * root.col-count + col-idx) < root.cell-grid.length
-                                    ? root.cell-grid[row-idx * root.col-count + col-idx].text-color : Theme.text-primary;
-                                has-comment: (row-idx * root.col-count + col-idx) < root.cell-grid.length
-                                    ? root.cell-grid[row-idx * root.col-count + col-idx].has-comment : false;
-                                is-selected: row-idx == root.active-row && col-idx == root.active-col;
-                                is-active-row: row-idx == root.active-row;
-                                is-active-col: col-idx == root.active-col;
-
-                                clicked => {
-                                    root.active-row = row-idx;
-                                    root.active-col = col-idx;
-                                    root.cell-clicked(row-idx, col-idx);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ── Comment panel (right sidebar) ──
-            Rectangle {
-                visible: root.show-comment-panel;
-                width: root.show-comment-panel ? 220px : 0px;
-                background: Theme.bg-surface;
-
-                // Left border
+        // ── Grid ──
+        // Rows are a ListView, so only the rows in view are drawn: a 10,000-row CSV opens as fast
+        // as a 50-row one. The column header scrolls sideways with the rows.
+        Rectangle {
+            clip: true;
+            VerticalLayout {
                 Rectangle {
-                    width: 1px;
-                    height: 100%;
-                    background: Theme.separator;
-                }
-
-                VerticalLayout {
-                    padding: 12px;
-                    spacing: 8px;
-
-                    Text {
-                        text: "Cell Comment";
-                        color: Theme.text-secondary;
-                        font-size: Theme.fs-caption;
-                        font-weight: 600;
-                    }
-
-                    Text {
-                        text: root.col-letter(root.active-col) + "\{root.active-row + 1}";
-                        color: Theme.accent;
-                        font-size: Theme.fs-body;
-                        font-weight: 600;
-                    }
-
-                    Rectangle { height: 1px; background: Theme.separator; }
-
-                    // Existing comment
-                    Rectangle {
-                        visible: root.active-comment != "";
-                        height: 60px;
-                        background: Theme.bg-card;
-                        border-radius: 6px;
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
-
-                        Text {
-                            x: 8px;
-                            y: 4px;
-                            width: parent.width - 16px;
-                            text: root.active-comment;
-                            color: Theme.text-primary;
-                            font-size: Theme.fs-caption;
-                            wrap: word-wrap;
-                            overflow: elide;
-                        }
-                    }
-
-                    // Comment input
-                    Rectangle {
-                        height: 60px;
-                        background: Theme.bg-input; clip: true;
-                        border-radius: 6px;
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
-
-                        comment-ti := TextInput {
-                            x: 8px;
-                            y: 4px;
-                            width: parent.width - 16px;
-                            height: parent.height - 8px;
-                            text <=> root.comment-input;
-                            color: Theme.text-primary;
-                            font-size: Theme.fs-caption;
-                            wrap: word-wrap;
-                            vertical-alignment: top;
-                        }
-                    }
-
+                    height: 28px;
                     HorizontalLayout {
-                        spacing: 8px;
-
+                        x: list.viewport-x;
+                        width: 48px + root.col-names.length * 100px;
+                        Rectangle { width: 48px; background: Theme.bg-elevated; border-width: 1px; border-color: Theme.border-subtle; }
+                        for name[c] in root.col-names : HeaderCell { label: name; active: c == root.active-col; }
+                    }
+                }
+                list := ListView {
+                    viewport-width: max(self.visible-width, 48px + root.col-names.length * 100px);
+                    for row[r] in root.rows : HorizontalLayout {
+                        height: 28px;
                         Rectangle {
-                            height: 28px;
-                            border-radius: 4px;
-                            background: add-cmt-ta.has-hover ? Theme.accent-button-hover : Theme.accent;
-
-                            add-cmt-ta := TouchArea {
-                                clicked => {
-                                    root.add-comment(root.comment-input);
-                                    root.comment-input = "";
-                                }
-                            }
-
+                            width: 48px;
+                            background: r == root.active-row ? Theme.bg-card : Theme.bg-elevated;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
                             Text {
-                                text: root.active-comment != "" ? "Update" : "Add";
-                                color: Theme.text-on-accent;
+                                text: r + 1;
                                 font-size: Theme.fs-caption;
-                                font-weight: 600;
+                                font-weight: r == root.active-row ? 700 : 600;
+                                color: r == root.active-row ? AppIdentity.accent : Theme.text-secondary;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
                         }
-
-                        YButton {
-                            visible: root.active-comment != "";
-                            label: "Delete";
-                            variant: 3;
-                            size: 0;
-                            clicked => { root.delete-comment(); }
+                        for cell[c] in row.cells : CellView {
+                            cell: cell;
+                            selected: r == root.active-row && c == root.active-col;
+                            clicked => {
+                                root.cell-clicked(r, c);
+                                root.edit-cell();
+                            }
                         }
+                        Rectangle {}
                     }
-
-                    // Fill remaining space
-                    Rectangle {}
                 }
             }
         }
 
-        // Separator
+        // ── Status line ──
         Rectangle { height: 1px; background: Theme.separator; }
-
-        // ── Bottom bar: Sheet tabs + Status ──
         Rectangle {
-            height: 32px;
-            background: Theme.bg-surface;
-
+            height: 30px;
+            background: root.status-is-problem ? Theme.color-warning-dim : Theme.bg-surface;
             HorizontalLayout {
-                padding-left: 4px;
-                padding-right: 8px;
-                spacing: 0px;
-
-                // Sheet tabs
-                for tab[tab-idx] in root.sheet-tabs : Rectangle {
-                    width: 100px;
-                    height: 30px;
-                    border-radius: 4px;
-                    background: tab.is-active ? Theme.bg-card : (tab-touch.has-hover ? Theme.hover-fill : transparent);
-                    border-width: tab.is-active ? 1px : 0px;
-                    border-color: tab.is-active ? AppIdentity.accent : transparent;
-
-                    tab-touch := TouchArea {
-                        clicked => { root.switch-sheet(tab-idx); }
-                    }
-
-                    Text {
-                        text: tab.name;
-                        font-size: Theme.fs-caption;
-                        color: tab.is-active ? AppIdentity.accent : Theme.text-secondary;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-
-                // Add sheet button
-                Rectangle {
-                    width: 32px;
-                    height: 30px;
-                    border-radius: 4px;
-                    background: add-touch.has-hover ? Theme.hover-fill : transparent;
-
-                    add-touch := TouchArea { clicked => { root.add-sheet(); } }
-
-                    Text {
-                        text: "+";
-                        font-size: Theme.fs-title-2;
-                        font-weight: 700;
-                        color: Theme.text-dim;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-
-                // Spacer
-                Rectangle { }
-
-                // Freeze indicator
-                Rectangle {
-                    visible: root.freeze-rows > 0 || root.freeze-cols > 0;
-                    width: 80px;
-                    height: 22px;
-                    border-radius: 3px;
-                    background: Theme.accent.transparentize(80%);
-
-                    Text {
-                        text: "Frozen " + root.freeze-rows + "R " + root.freeze-cols + "C";
-                        font-size: Theme.fs-micro;
-                        color: Theme.accent;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-
-                // Filter indicator
-                Rectangle {
-                    visible: root.filter-active;
-                    width: 60px;
-                    height: 22px;
-                    border-radius: 3px;
-                    background: Theme.color-warning-dim;
-
-                    Text {
-                        text: "Filtered";
-                        font-size: Theme.fs-micro;
-                        color: Theme.color-warning;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-
-                // Status text
+                padding-left: 12px;
+                padding-right: 12px;
                 Text {
-                    width: 300px;
                     text: root.status-text;
                     font-size: Theme.fs-caption;
-                    color: Theme.text-dim;
-                    horizontal-alignment: right;
+                    color: root.status-is-problem ? Theme.color-warning : Theme.text-secondary;
                     vertical-alignment: center;
+                    overflow: elide;
                 }
             }
-        }
-    }
-
-    // AI Assist Panel (right sidebar)
-    Rectangle {
-        visible: root.show-ai-panel;
-        x: parent.width - 280px;
-        y: 0px;
-        width: 280px;
-        height: parent.height;
-        background: Theme.bg-card;
-        border-width: 1px;
-        border-color: Theme.separator;
-
-        VerticalLayout {
-            padding: 10px;
-            spacing: 8px;
-
-            // Header
-            HorizontalLayout {
-                spacing: 6px;
-                height: 28px;
-
-                Text {
-                    text: "AI Assistant";
-                    color: Theme.accent;
-                    font-size: Theme.fs-body;
-                    font-weight: 600;
-                    vertical-alignment: center;
-                }
-
-                Rectangle { }
-
-                Rectangle {
-                    width: 24px; height: 24px; border-radius: 4px;
-                    background: close-ai-ta.has-hover ? Theme.hover-fill : transparent;
-                    close-ai-ta := TouchArea { clicked => { root.show-ai-panel = false; } }
-                    Text { text: "x"; color: Theme.text-dim; font-size: Theme.fs-body; horizontal-alignment: center; vertical-alignment: center; }
-                }
-            }
-
-            Rectangle { height: 1px; background: Theme.separator; }
-
-            // Quick actions
-            Text { text: "Quick Actions"; color: Theme.text-secondary; font-size: Theme.fs-micro; }
-
-            HorizontalLayout {
-                spacing: 4px;
-
-                Rectangle {
-                    height: 28px;
-                    border-radius: 4px;
-                    background: formula-ta.has-hover ? AppIdentity.accent.transparentize(0.8) : Theme.bg-elevated;
-                    border-width: 1px;
-                    border-color: Theme.accent.transparentize(0.6);
-
-                    formula-ta := TouchArea {
-                        clicked => { root.sheet-ai-formula(root.sheet-ai-prompt); }
-                    }
-                    Text { text: "Formula"; color: Theme.accent; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
-                }
-
-                Rectangle {
-                    height: 28px;
-                    border-radius: 4px;
-                    background: analyze-ta.has-hover ? AppIdentity.accent.transparentize(0.8) : Theme.bg-elevated;
-                    border-width: 1px;
-                    border-color: Theme.accent.transparentize(0.6);
-
-                    analyze-ta := TouchArea {
-                        clicked => { root.sheet-ai-analyze(); }
-                    }
-                    Text { text: "Analyze"; color: Theme.accent; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
-                }
-
-                Rectangle {
-                    height: 28px;
-                    border-radius: 4px;
-                    background: chart-ta.has-hover ? AppIdentity.accent.transparentize(0.8) : Theme.bg-elevated;
-                    border-width: 1px;
-                    border-color: Theme.accent.transparentize(0.6);
-
-                    chart-ta := TouchArea {
-                        clicked => { root.sheet-ai-suggest-chart(); }
-                    }
-                    Text { text: "Chart"; color: Theme.accent; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
-                }
-
-                Rectangle {
-                    height: 28px;
-                    border-radius: 4px;
-                    background: insights-ta.has-hover ? AppIdentity.accent.transparentize(20%) : Theme.accent.transparentize(50%);
-                    border-width: 1px;
-                    border-color: Theme.accent;
-
-                    insights-ta := TouchArea {
-                        clicked => { root.sheet-ai-insights(); }
-                    }
-                    Text { text: "Insights"; color: Theme.accent-light; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
-                }
-
-                Rectangle {
-                    height: 28px;
-                    border-radius: 4px;
-                    background: gen-data-ta.has-hover ? Theme.amber.transparentize(20%) : Theme.amber.transparentize(50%);
-                    border-width: 1px;
-                    border-color: Theme.amber;
-
-                    gen-data-ta := TouchArea {
-                        clicked => { root.sheet-ai-generate-data(root.sheet-ai-prompt); }
-                    }
-                    Text { text: "Generate"; color: Theme.amber-light; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
-                }
-            }
-
-            Rectangle { height: 1px; background: Theme.separator; }
-
-            // Prompt input
-            Text { text: "Ask AI"; color: Theme.text-secondary; font-size: Theme.fs-micro; }
-
-            Rectangle {
-                height: 60px;
-                border-radius: 6px;
-                background: Theme.bg-elevated; clip: true;
-                border-width: 1px;
-                border-color: Theme.separator;
-
-                ai-input := TextInput {
-                    x: 8px; y: 6px;
-                    width: parent.width - 16px;
-                    height: parent.height - 12px;
-                    color: Theme.text-primary;
-                    font-size: Theme.fs-micro;
-                    wrap: word-wrap;
-                    single-line: false;
-                    text <=> root.sheet-ai-prompt;
-                    accepted => { root.sheet-ai-submit(self.text); }
-                }
-            }
-
-            // Submit button
-            Rectangle {
-                height: 28px;
-                border-radius: 4px;
-                background: root.sheet-ai-working ? Theme.text-dim : (submit-ai-ta.has-hover ? Theme.accent-button-hover : Theme.accent);
-
-                submit-ai-ta := TouchArea {
-                    enabled: !root.sheet-ai-working;
-                    clicked => { root.sheet-ai-submit(root.sheet-ai-prompt); }
-                }
-                Text {
-                    text: root.sheet-ai-working ? "Thinking..." : "Ask";
-                    color: Theme.text-on-accent;
-                    font-size: Theme.fs-micro;
-                    font-weight: 600;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-            }
-
-            Rectangle { height: 1px; background: Theme.separator; }
-
-            // Response area
-            ScrollView {
-                Rectangle {
-                    background: transparent;
-
-                    ai-response-text := Text {
-                        text: root.sheet-ai-response;
-                        color: Theme.text-primary;
-                        font-size: Theme.fs-micro;
-                        wrap: word-wrap;
-                        width: parent.width;
-                    }
-                }
-            }
-
-            // Apply/Dismiss buttons (visible when there's a response)
-            HorizontalLayout {
-                visible: root.sheet-ai-response != "";
-                spacing: 6px;
-                height: 28px;
-
-                Rectangle {
-                    border-radius: 4px;
-                    background: apply-ta.has-hover ? Theme.color-success : Theme.color-success.transparentize(20%);
-
-                    apply-ta := TouchArea { clicked => { root.sheet-ai-apply(); } }
-                    Text { text: "Apply"; color: Theme.text-on-accent; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
-                }
-
-                Rectangle {
-                    border-radius: 4px;
-                    background: dismiss-ta.has-hover ? Theme.color-danger : Theme.color-danger.transparentize(20%);
-
-                    dismiss-ta := TouchArea { clicked => { root.sheet-ai-dismiss(); } }
-                    Text { text: "Dismiss"; color: Theme.text-on-danger; font-size: Theme.fs-micro; horizontal-alignment: center; vertical-alignment: center; }
-                }
-            }
-        }
-    }
-
-    // Keyboard handler (captures focus for the whole screen)
-    key-handler := FocusScope {
-        width: 0px;
-        height: 0px;
-
-        key-pressed(event) => {
-            if event.text == "\u{001b}" {
-                // Escape — close panels
-                root.show-find = false;
-                root.show-comment-panel = false;
-                root.show-bg-picker = false;
-                root.show-text-picker = false;
-                root.show-ai-panel = false;
-                root.sheet-formula-help-open = false;
-                accept
-            } else if event.text == Key.UpArrow { root.key-pressed("Up"); accept }
-            else if event.text == Key.DownArrow { root.key-pressed("Down"); accept }
-            else if event.text == Key.LeftArrow { root.key-pressed("Left"); accept }
-            else if event.text == Key.RightArrow { root.key-pressed("Right"); accept }
-            else if event.text == Key.Tab { root.key-pressed("Tab"); accept }
-            else if event.text == Key.Return { root.key-pressed("Enter"); accept }
-            else if event.text == Key.Home { root.key-pressed("Home"); accept }
-            else if event.text == Key.End { root.key-pressed("End"); accept }
-            else if event.text == Key.Delete { root.key-pressed("Delete"); accept }
-            else { reject }
         }
     }
 }

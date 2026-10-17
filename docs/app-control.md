@@ -642,6 +642,7 @@ publishes right now is `yos describe <name>`; whether it keeps the protocol, `yo
 | `presentation` | `app-presentation.sock` | `slides` | slide decks |
 | `shell` | `app-shell.sock` | — | the desktop itself: screens, windows, files, opening apps, approvals |
 | `snippets` | `app-snippets.sock` | `snippet-manager` | reusable pieces of code and text |
+| `spreadsheet` | `app-spreadsheet.sock` | `ysheets`, `sheets` | a sheet of numbers and formulas, opened from and saved to CSV files |
 | `studio` | `app-studio.sock` | — | make pictures from a sentence, on your own GPU or a hosted service; they land as files |
 | `system-monitor` | `app-system-monitor.sock` | `sysmonitor` | CPU, memory, disk and processes |
 | `terminal` | `app-terminal.sock` | — | a shell: run commands |
@@ -658,6 +659,10 @@ them, so describe never waits on the network for them. For somewhere else, `act 
 with the place, then describe (the act's own answer already carries the new place's state).
 Blender's surface is served by a Python addon inside Blender (`apps/blender/addon`), a port of the
 runtime's dispatch.
+
+ySheets saves what was typed, formulas included, so a cell of an opened CSV that starts with
+`=` (`=HYPERLINK(...)`, `=cmd|...`) is saved back unchanged, and Excel or LibreOffice reads it
+as a formula when the file is opened there later.
 
 Windows from other applications are not in this list unless their `.desktop` file declares a
 surface (above) — an adapter is how one gets there. The rest publish through AT-SPI, and

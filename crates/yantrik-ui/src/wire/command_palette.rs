@@ -43,9 +43,10 @@ fn build_commands() -> Vec<CommandItem> {
     // Images, Text Editor and Media Player went the same way in #253, with the Editor's two
     // rows: the shell drew its own copy of each, and those copies are gone.
 
-    // Music and ySheets are shelved, so the palette does not offer them. "Go to Music",
-    // "Go to Spreadsheet", "New Spreadsheet" and "Import CSV" were here; see
-    // wire::dock::SHELVED for why, and put them back with the apps.
+    // Music is shelved, so the palette does not offer it. "Go to Music", "Go to Spreadsheet",
+    // "New Spreadsheet" and "Import CSV" were here; see wire::dock::SHELVED for why. ySheets
+    // came off the shelf (#727) and is opened like the apps below, from the launcher or open_app,
+    // not from rows that navigated to the shell's old in-process screen.
     //
     // Email, Calendar, Notes, Terminal, Document and Presentation had rows here too — "Compose
     // New Email", "New Calendar Event", "New Note", "New Terminal Tab" (advertising Ctrl+T),

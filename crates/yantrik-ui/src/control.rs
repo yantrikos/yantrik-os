@@ -2431,7 +2431,7 @@ mod screen_table_tests {
     /// built, and an agent reading it can stop instead of retrying four spellings.
     #[test]
     fn opening_a_shelved_app_is_refused_with_its_reason() {
-        for name in ["music", "music-player", "Music Player", "spreadsheet", "ySheets"] {
+        for name in ["music", "music-player", "Music Player"] {
             let err = check_launchable(name, &[]).expect_err("a shelved app must not open");
             assert!(err.contains("not part of this build"), "{name}: {err}");
             assert!(err.contains("shelved"), "{name}: {err}");

@@ -659,25 +659,27 @@ class RealRepo(unittest.TestCase):
     the last app here is fixed, the fixtures above are what is left to prove the lint still
     sees, and that is how it should end.
 
-    Spreadsheet and Music are shelved and they stay here. A shelved app is still linted -- that
-    is the whole point of keeping it a workspace member -- and while Network Manager is being
-    fixed they are the last real instances of the unset `in` property in the tree. Each lint must
-    keep at least one entry that is not network-manager's, or the day Network Manager is finished
-    is the day this test stops looking at anything.
+    Music is shelved and it stays here. A shelved app is still linted -- that is the whole point
+    of keeping it a workspace member -- and it holds the last real instances of the unset `in`
+    property in the tree. Each lint must keep at least one entry that is not network-manager's,
+    or the day Network Manager is finished is the day this test stops looking at anything.
+
+    Spreadsheet was here until October 2026, when it came off the shelf (PR #727): its
+    cell-grid, row-count and col-count are set now, and none of its handlers only logs. It moved
+    to the fixed apps below, which is how an entry here is meant to leave.
     """
 
     MUST_FLAG_PROPERTIES = {
-        "spreadsheet": ["cell-grid", "row-count", "col-count"],
+        "music-player": ["is-scanning", "scan-progress", "scan-status"],
     }
     MUST_FLAG_HANDLERS = {
-        "spreadsheet": ["save_sheet", "load_sheet"],
         "music-player": ["play_track_index"],
     }
 
     @classmethod
     def setUpClass(cls):
         cls.apps = {a.name: a for a in appscan.discover_apps(appscan.repo_root())}
-        if "spreadsheet" not in cls.apps:
+        if "music-player" not in cls.apps:
             raise unittest.SkipTest("not run from inside the yantrik-os checkout")
 
     def test_each_lint_is_guarded_by_something_other_than_network_manager(self):
@@ -717,11 +719,11 @@ class RealRepo(unittest.TestCase):
                 self.assertIn(name, flagged, "%s %s" % (app_name, name))
 
     def test_the_apps_that_were_fixed_have_no_dead_handlers(self):
-        for app_name in ("notes", "terminal", "text-editor", "snippet-manager", "document-editor", "presentation", "network-manager", "email"):
+        for app_name in ("notes", "terminal", "text-editor", "snippet-manager", "document-editor", "presentation", "network-manager", "email", "spreadsheet"):
             self.assertEqual([], dead.check_app(self.apps[app_name]), app_name)
 
     def test_the_apps_that_were_fixed_have_no_unset_in_properties(self):
-        for app_name in ("notes", "terminal", "text-editor", "snippet-manager", "document-editor", "presentation", "network-manager", "email"):
+        for app_name in ("notes", "terminal", "text-editor", "snippet-manager", "document-editor", "presentation", "network-manager", "email", "spreadsheet"):
             errors = [
                 f for f in unset.check_app(self.apps[app_name]) if f["severity"] == "error"
             ]

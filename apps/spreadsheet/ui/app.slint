@@ -1,151 +1,63 @@
-// Yantrik Spreadsheet — standalone app window.
-// Wraps the shared SpreadsheetScreen component in its own Window.
+// Yantrik Spreadsheet — standalone app window: the screen, and the dialog over it.
 
 import { Theme, ThemeMode, AccentPreset } from "theme.slint";
 import { AppWindow } from "app_window.slint";
 export { WindowChrome } from "app_window.slint";
 import { AppIdentity } from "app_color.slint";
-import { SpreadsheetScreen, SpreadsheetCell, SheetTab, ChartData } from "spreadsheet.slint";
+import { SpreadsheetScreen, SpreadsheetCell, SheetRow } from "spreadsheet.slint";
+import { SheetDialogView, SheetDialog } from "sheet_dialog.slint";
 
-export { SpreadsheetCell, SheetTab, ChartData, ThemeMode, AccentPreset }
+export { SpreadsheetCell, SheetRow, SheetDialog, ThemeMode, AccentPreset }
 
 export component SpreadsheetApp inherits AppWindow {
     // The screen's own header is this window's title bar (#256).
     show-bar: false;
-    // What app this window is.
-    //
-    // Set on the WINDOW and not on AppHeader, which is where it lived first: a header covers
-    // the screens that have one, and Email's account-setup screen has none -- so the app that
-    // most needs to look like itself on first run was the one screen still drawing the house
-    // teal. The window is the only element every screen of an app is inside.
+    // What app this window is (set on the window, which every screen of an app is inside).
     init => { AppIdentity.id = "spreadsheet"; }
 
     default-font-family: Theme.font-ui;
     title: "ySheets";
-    // preferred-, not fixed: a fixed size makes the window unresizable, and the content
-    // stays this size even when the compositor maximises or fullscreens the window.
+    // preferred-, not fixed: a fixed size makes the window unresizable.
     preferred-width: 1300px;
     preferred-height: 800px;
     min-width: 640px;
     min-height: 400px;
     background: Theme.bg-deep;
 
-    // ── Grid data ──
-    in property <[SpreadsheetCell]> cell-grid <=> sheet.cell-grid;
-
-    // ── Active cell ──
-    in-out property <int> active-row <=> sheet.active-row;
-    in-out property <int> active-col <=> sheet.active-col;
-
-    // ── Formula bar ──
+    in property <string> file-name <=> sheet.file-name;
+    in property <bool> modified <=> sheet.modified;
+    in property <[SheetRow]> rows <=> sheet.rows;
+    in property <[string]> col-names <=> sheet.col-names;
+    in property <int> active-row <=> sheet.active-row;
+    in property <int> active-col <=> sheet.active-col;
+    in property <string> active-ref <=> sheet.active-ref;
+    in property <string> status-text <=> sheet.status-text;
+    in property <bool> status-is-problem <=> sheet.status-is-problem;
+    in property <bool> can-undo <=> sheet.can-undo;
+    in property <bool> can-redo <=> sheet.can-redo;
     in-out property <string> cell-data <=> sheet.cell-data;
 
-    // ── Sheet tabs ──
-    in property <[SheetTab]> sheet-tabs <=> sheet.sheet-tabs;
-
-    // ── Status bar ──
-    in property <string> status-text <=> sheet.status-text;
-
-    // ── AI Assist ──
-    in-out property <bool> show-ai-panel <=> sheet.show-ai-panel;
-    in property <bool> sheet-ai-working <=> sheet.sheet-ai-working;
-    in property <string> sheet-ai-response <=> sheet.sheet-ai-response;
-    in-out property <string> sheet-ai-prompt <=> sheet.sheet-ai-prompt;
-    callback sheet-ai-submit <=> sheet.sheet-ai-submit;
-    callback sheet-ai-apply <=> sheet.sheet-ai-apply;
-    callback sheet-ai-dismiss <=> sheet.sheet-ai-dismiss;
-    callback sheet-ai-formula <=> sheet.sheet-ai-formula;
-    callback sheet-ai-analyze <=> sheet.sheet-ai-analyze;
-    callback sheet-ai-suggest-chart <=> sheet.sheet-ai-suggest-chart;
-    callback sheet-ai-insights <=> sheet.sheet-ai-insights;
-    callback sheet-ai-generate-data <=> sheet.sheet-ai-generate-data;
-
-    // ── Grid dimensions ──
-    in property <int> row-count <=> sheet.row-count;
-    in property <int> col-count <=> sheet.col-count;
-
-    // ── Formatting state ──
-    in property <bool> fmt-bold-active <=> sheet.fmt-bold-active;
-    in property <bool> fmt-italic-active <=> sheet.fmt-italic-active;
-    in property <int> fmt-align-active <=> sheet.fmt-align-active;
-    in property <int> fmt-number-format <=> sheet.fmt-number-format;
-
-    // ── Freeze panes ──
-    in property <int> freeze-rows <=> sheet.freeze-rows;
-    in property <int> freeze-cols <=> sheet.freeze-cols;
-
-    // ── Find/Replace ──
-    in-out property <bool> show-find <=> sheet.show-find;
-    in-out property <string> find-query <=> sheet.find-query;
-    in-out property <string> replace-text <=> sheet.replace-text;
-    in property <string> find-status <=> sheet.find-status;
-
-    // ── Comment ──
-    in property <string> active-comment <=> sheet.active-comment;
-    in-out property <bool> show-comment-panel <=> sheet.show-comment-panel;
-    in-out property <string> comment-input <=> sheet.comment-input;
-
-    // ── Chart ──
-    in property <ChartData> chart-data <=> sheet.chart-data;
-    in-out property <bool> show-chart <=> sheet.show-chart;
-
-    // ── Filter / Sort ──
-    in property <bool> filter-active <=> sheet.filter-active;
-    in property <int> sort-col <=> sheet.sort-col;
-    in property <bool> sort-ascending <=> sheet.sort-ascending;
-
-    // ── Formula help ──
-    in property <string> sheet-formula-error <=> sheet.sheet-formula-error;
-    in property <[string]> sheet-formula-hints <=> sheet.sheet-formula-hints;
-    in-out property <bool> sheet-formula-help-open <=> sheet.sheet-formula-help-open;
-
-    // ── Callbacks ──
     callback cell-clicked <=> sheet.cell-clicked;
-    callback cell-edited <=> sheet.cell-edited;
     callback formula-submitted <=> sheet.formula-submitted;
-    callback switch-sheet <=> sheet.switch-sheet;
-    callback add-sheet <=> sheet.add-sheet;
-    callback format-bold <=> sheet.format-bold;
-    callback format-italic <=> sheet.format-italic;
-    callback format-align <=> sheet.format-align;
-    callback import-csv <=> sheet.import-csv;
-    callback export-csv <=> sheet.export-csv;
-    callback sort-column <=> sheet.sort-column;
-    callback filter-column <=> sheet.filter-column;
-    callback clear-filter <=> sheet.clear-filter;
-    callback insert-row <=> sheet.insert-row;
-    callback delete-row <=> sheet.delete-row;
-    callback insert-col <=> sheet.insert-col;
-    callback delete-col <=> sheet.delete-col;
-    callback format-number <=> sheet.format-number;
-    callback set-bg-color <=> sheet.set-bg-color;
-    callback set-text-color <=> sheet.set-text-color;
-    callback find-text <=> sheet.find-text;
-    callback find-next <=> sheet.find-next;
-    callback replace-one <=> sheet.replace-one;
-    callback replace-all <=> sheet.replace-all;
-    callback copy-cell <=> sheet.copy-cell;
-    callback paste-cell <=> sheet.paste-cell;
-    callback cut-cell <=> sheet.cut-cell;
-    callback undo <=> sheet.undo;
-    callback redo <=> sheet.redo;
-    callback key-pressed <=> sheet.key-pressed;
-    callback add-comment <=> sheet.add-comment;
-    callback delete-comment <=> sheet.delete-comment;
-    callback merge-cells <=> sheet.merge-cells;
-    callback unmerge-cells <=> sheet.unmerge-cells;
-    callback freeze-panes <=> sheet.freeze-panes;
-    callback save-sheet <=> sheet.save-sheet;
-    callback load-sheet <=> sheet.load-sheet;
-    callback create-chart <=> sheet.create-chart;
-    callback sheet-show-formula-help <=> sheet.sheet-show-formula-help;
+    callback formula-cancelled <=> sheet.formula-cancelled;
+    callback command <=> sheet.command;
+
+    in property <SheetDialog> dialog <=> dialog-view.kind;
+    in property <string> dialog-message <=> dialog-view.message;
+    in-out property <string> dialog-path <=> dialog-view.path;
+    callback dialog-confirm <=> dialog-view.confirm;
+    callback dialog-cancel <=> dialog-view.cancel;
+    callback dialog-discard <=> dialog-view.discard;
+
+    public function edit-cell() { sheet.edit-cell(); }
 
     sheet := SpreadsheetScreen {
         window-bar: true;
         // Fills the window (no explicit size: Slint forbids width/height next to max-*).
-        // The screen's own layouts may report a bounded maximum (a stretch layout of fixed rows);
-        // the window must still open at its preferred size and grow with the user.
         max-width: 100000px;
         max-height: 100000px;
     }
+
+    // Over the whole screen; its size is left unset so it fills the space below the bar.
+    dialog-view := SheetDialogView {}
 }

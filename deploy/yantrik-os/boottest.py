@@ -223,7 +223,12 @@ rc = ask("XDG_RUNTIME_DIR=/run/user/1000 timeout 900 /opt/yantrik/bin/release-ch
          timeout=960)
 check("release-check (tier ci) passes inside the booted image", "exit=0" in rc, rc)
 
-shelved = ask("ls /opt/yantrik/bin | grep -c -E 'music-player|spreadsheet'")
+# The shelf is SHELVED in dock.rs, read by shelved-bins.sh beside this file. This used to name
+# music-player and spreadsheet itself, so ySheets coming off the shelf would have failed the
+# nightly for shipping it.
+SHELF = subprocess.run([os.path.join(os.path.dirname(os.path.abspath(__file__)), "shelved-bins.sh")],
+                       capture_output=True, text=True, check=True).stdout.split()
+shelved = ask("ls /opt/yantrik/bin | grep -c -x -E '%s'" % "|".join(SHELF)) if SHELF else "0"
 check("no shelved app was packaged", shelved.splitlines()[-1].strip() == "0", shelved)
 
 essentials = ask("for b in yantrik-ui yantrik yos yantrik-update yantrik-session yantrik-notes "

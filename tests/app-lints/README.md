@@ -41,9 +41,9 @@ read by everyone as a measurement.
 
 The three that motivated it, all still in the tree:
 
-- **Spreadsheet** never populates `cell-grid`, `row-count` or `col-count`. `row_count() == 0`, so
-  the guards in cell-click, cell-edit and the formula bar all fail, behind a perfect blank 50x26
-  grid nobody can type into.
+- **Spreadsheet** never populated `cell-grid`, `row-count` or `col-count`. `row_count() == 0`, so
+  the guards in cell-click, cell-edit and the formula bar all failed, behind a perfect blank 50x26
+  grid nobody could type into. (Fixed in October 2026, PR #727: the app is clean under both lints.)
 - **Network Manager** never sets `firewall-enabled` or `wifi-enabled`. "Firewall: Off", drawn in
   warning colour and recorded by the September audit as a finding, is a hardcoded default the app
   never looked up.
