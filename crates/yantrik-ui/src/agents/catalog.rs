@@ -319,7 +319,7 @@ impl Role {
                 if one.len() == 1 { "holds" } else { "each hold" }
             ));
         }
-        said.push_str(". Start one of its minds in Settings → Harnesses, or pick another role.");
+        said.push_str(". Start one of its minds in Settings → Minds, or pick another role.");
         Err(said)
     }
 

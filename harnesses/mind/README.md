@@ -13,7 +13,7 @@ Its model is never set by an install. "Use Yantrik models" on its row, with its 
 way it is offered the gateway (yantrik-mind E.PROV2: loopback only, kept as a provider of its
 own, never as its local private lane); until then it keeps the provider the person chose for it.
 
-**Settings → Harnesses** lists it with *Install*, which runs `harnesses/lib/install/mind.sh`:
+**Settings → Minds** lists it with *Install*, which runs `harnesses/lib/install/mind.sh`:
 it checks the service is running and that the Mind has attached to the desktop, and records it
 as installed only then. When the first boot did not set it up, the row says to run, once:
 

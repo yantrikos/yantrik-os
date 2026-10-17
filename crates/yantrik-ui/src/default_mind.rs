@@ -7,7 +7,7 @@
 //!
 //! What this file decides:
 //! - **When the install starts by itself.** Once, after the first run's model step, through the
-//!   same job Settings → Harnesses runs (`crate::wire::harness::install`): no second installer.
+//!   same job Settings → Minds runs (`crate::wire::harness::install`): no second installer.
 //!   A restart in the middle starts it once more (the installer is idempotent), and that is the
 //!   only retry: a failure after it waits for Install again.
 //! - **When the conversation moves to it.** Only once its three proofs have passed, which the

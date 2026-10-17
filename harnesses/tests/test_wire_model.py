@@ -55,7 +55,7 @@ class WireModelTests(unittest.TestCase):
         self.assertEqual(self.state("deepseek"), "failed")
 
     def test_a_wired_harness_is_recorded_as_picked(self):
-        self.fake_ui("pi now uses your model (Revert in Settings → Harnesses puts its own file back)", 0)
+        self.fake_ui("pi now uses your model (Revert in Settings → Minds puts its own file back)", 0)
         r = self.install("pi")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.state("pi"), "picked")

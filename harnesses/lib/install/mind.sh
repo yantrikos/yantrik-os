@@ -1,5 +1,5 @@
 #!/bin/sh
-# Yantrik Mind, from Settings → Harnesses: mind.sh
+# Yantrik Mind, from Settings → Minds: mind.sh
 #
 # Nothing to fetch and nothing written: the Mind's first-boot setup (yantrik-update migrate-minds,
 # armed by #749) installs and starts its service under its own account, which this, running as

@@ -237,4 +237,13 @@ mod tests {
         assert_eq!(resolve(&rows(), "   "), None);
         assert_eq!(resolve(&[], "web"), None);
     }
+
+    #[test]
+    fn an_image_row_opens_with_a_plain_name_not_a_registry_path() {
+        use super::runtime::plain_image_name;
+        assert_eq!(plain_image_name("docker.io/library/alpine:latest"), "alpine, the latest version");
+        assert_eq!(plain_image_name("ghcr.io/acme/web:1.4"), "web, version 1.4");
+        assert_eq!(plain_image_name("localhost:5000/tools"), "tools, the latest version");
+        assert_eq!(plain_image_name("<none>:<none>"), "An image with no name");
+    }
 }

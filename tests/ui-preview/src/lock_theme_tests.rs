@@ -294,7 +294,7 @@ pub fn run_themes(w: &MinimalSoftwareWindow, output: &str, width: u32, height: u
     let ui = SettingsProbe::new()?;
     ui.set_canvas_width(width as f32);
     ui.set_canvas_height(height as f32);
-    let all: Vec<_> = ["Appearance", "AI & Intelligence", "Desktop", "Network", "Accounts", "Privacy & Security", "System", "Skills", "Harnesses"]
+    let all: Vec<_> = ["Appearance", "AI & Intelligence", "Desktop", "Network", "Accounts", "Privacy & Security", "System", "Skills", "Minds"]
         .iter().enumerate().map(|(i, s)| SettingsCategoryItem { id: i as i32, label: (*s).into(), icon: "".into() }).collect();
     ui.set_categories(ModelRc::new(VecModel::from(all)));
     ui.set_themes(ModelRc::new(VecModel::from(vec![

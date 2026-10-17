@@ -126,7 +126,7 @@ export component PackageManager inherits Rectangle {
             title: "Packages";
             subtitle: "Debian packages and Flathub apps";
             show-search: true;
-            search-placeholder: "Search packages and apps";
+            search-placeholder: "Search packages";
             search-text <=> root.search-query;
             search-edited(text) => { root.search(text); }
             actions: root.upgradable-count > 0 ? root.actions-with-upgrade : root.actions-plain;

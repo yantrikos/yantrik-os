@@ -239,6 +239,7 @@ fn read_images(rt: &str) -> Vec<ImageData> {
     runtime::parse_images(stdout)
         .into_iter()
         .map(|i| ImageData {
+            title: runtime::plain_image_name(&i.repo_tag).into(),
             id: i.id.into(),
             repo_tag: i.repo_tag.into(),
             size_text: i.size_text.into(),

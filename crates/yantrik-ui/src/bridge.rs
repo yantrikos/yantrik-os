@@ -272,19 +272,17 @@ pub struct StateSnapshot {
     pub has_pending_urges: bool,
 }
 
-/// Bond screen data.
+/// What Interaction history and `describe shell` read from the bond store. The streak, the humor
+/// rate, the count of messages that said how the person felt and the shared references are still
+/// kept in the store, where the companion's own wording reads them; nothing on a screen draws them
+/// (design/ui-sweep-2026-10-17.md, root cause 2), so they are not copied out here.
 #[derive(Debug, Clone)]
 pub struct BondSnapshot {
+    /// For `describe shell` only.
     pub bond_score: f64,
     pub bond_level: String,
-    /// Which of the five levels, 1 to 5, so the screen can say "Level 4 of 5".
-    pub level_number: i64,
     pub total_interactions: i64,
     pub days_together: i64,
-    pub current_streak: i64,
-    pub humor_rate: f64,
-    pub vulnerability_events: i64,
-    pub shared_references: i64,
 }
 
 impl BondSnapshot {
@@ -295,13 +293,8 @@ impl BondSnapshot {
             loaded: true,
             bond_score: self.bond_score as f32,
             bond_level: self.bond_level.clone().into(),
-            level_number: self.level_number as i32,
             total_interactions: self.total_interactions as i32,
             days_together: self.days_together as i32,
-            current_streak: self.current_streak as i32,
-            humor_rate: self.humor_rate as f32,
-            vulnerability_events: self.vulnerability_events as i32,
-            shared_references: self.shared_references as i32,
         }
     }
 }
@@ -3051,22 +3044,11 @@ fn build_snapshot(companion: &CompanionService) -> StateSnapshot {
 /// The bond as the store has it right now.
 fn bond_snapshot(companion: &CompanionService) -> BondSnapshot {
     let bond = BondTracker::get_state(&companion.db.conn());
-    let humor_rate = if bond.humor_attempts > 0 {
-        bond.humor_successes as f64 / bond.humor_attempts as f64
-    } else {
-        0.0
-    };
     BondSnapshot {
         bond_score: bond.bond_score,
         bond_level: bond.bond_level.name().to_string(),
-        // Stranger is 1 and Partner-in-Crime 5 (yantrik-companion-core's `BondLevel`).
-        level_number: bond.bond_level.as_u8() as i64,
         total_interactions: bond.total_interactions,
         days_together: bond.days_together as i64,
-        current_streak: bond.current_streak_days,
-        humor_rate,
-        vulnerability_events: bond.vulnerability_events,
-        shared_references: bond.shared_references,
     }
 }
 

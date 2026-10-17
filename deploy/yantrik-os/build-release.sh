@@ -184,7 +184,7 @@ echo "   + yantrik-browser (the browser's surface, with yantrik_surface vendored
 
 # The harnesses, staged by the same script as the image. The updater installs share/ with
 # --delete, and before this the bundle had no share/harnesses: every update removed what the
-# image had put in /opt/yantrik/share/harnesses — the manifests Settings → Harnesses reads, the
+# image had put in /opt/yantrik/share/harnesses — the manifests Settings → Minds reads, the
 # installers its buttons run, and the scripts each harness unit starts.
 sh "$SCRIPT_DIR/stage-harnesses.sh" "$PROJECT_ROOT" "$ROOT/share/harnesses" >/dev/null \
   || fail "the harnesses did not stage — an update would remove every harness from the machine"

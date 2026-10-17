@@ -591,7 +591,8 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     // The version on Settings → System. Nothing ever set this, so the row showed the Slint
     // property's own default, `0.1.0`, on every machine this OS has ever run on — a third
     // answer beside About's 0.3.0 and the BUILD marker's git describe.
-    ui.set_settings_version(yantrik_version::version().into());
+    // In words in Settings; About keeps the exact string, for reporting a problem.
+    ui.set_settings_version(yantrik_version::plain(yantrik_version::version()).into());
 
     // YANTRIK_AGENT_MODE wins over the file so an agent harness or a kiosk image can
     // force either face without rewriting a user's settings.
@@ -897,7 +898,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         },
         SettingsCategoryItem {
             icon: "".into(),
-            label: "Harnesses".into(),
+            label: "Minds".into(),
             id: 8,
         },
     ];

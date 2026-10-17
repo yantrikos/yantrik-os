@@ -113,8 +113,8 @@ pub fn caps_words(caps: &ModelCaps) -> String {
 pub fn reason(mind: &MindSeen, account: &Account, consent: &Consent, private_mode: bool) -> Option<String> {
     if !mind.on_gateway {
         return Some(match &mind.builtin_runs_on {
-            Some(_) => format!("{} runs on {}. Use Yantrik models (Settings → Harnesses) to pick here.", mind.name, mind.runs_on_words()),
-            None => format!("{} uses its own models. Use Yantrik models (Settings → Harnesses) to pick here.", mind.name),
+            Some(_) => format!("{} runs on {}. Use Yantrik models (Settings → Minds) to pick here.", mind.name, mind.runs_on_words()),
+            None => format!("{} uses its own models. Use Yantrik models (Settings → Minds) to pick here.", mind.name),
         });
     }
     if private_mode && !account.local {
@@ -152,8 +152,8 @@ pub fn model_rows(
     }
     if !mind.on_gateway {
         out.push(ModelRow::note(match &mind.builtin_runs_on {
-            Some(_) => format!("{} runs on {}. Use Yantrik models on its row in Settings → Harnesses to pick from these.", mind.name, mind.runs_on_words()),
-            None => format!("{} uses its own models. Use Yantrik models on its row in Settings → Harnesses to pick from these.", mind.name),
+            Some(_) => format!("{} runs on {}. Use Yantrik models on its row in Settings → Minds to pick from these.", mind.name, mind.runs_on_words()),
+            None => format!("{} uses its own models. Use Yantrik models on its row in Settings → Minds to pick from these.", mind.name),
         }));
     }
     let row = |m: &crate::ai_accounts::models::CatalogueModel, a: &Account| {

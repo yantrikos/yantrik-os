@@ -65,8 +65,13 @@
 
     The proper fix is for the panel to speak layer-shell and declare its own exclusive zone; this
     is the honest workaround until it does, and it is the one labwc recommends.
+
+    The right edge is the mind panel's strip, 44px (`mind-panel-reserve` in app.slint). While an
+    app window is in front the panel folds to that strip, so this margin is all it needs; app
+    windows cut its words in half before (crates/yantrik-ui/src/mind_panel_room.rs says why the
+    open card's 334px is not reserved instead).
   -->
-  <margin top="36" bottom="48" left="0" right="0" />
+  <margin top="36" bottom="48" left="0" right="44" />
 
   <!-- Focus follows the click, not the pointer: an agent moving the pointer must not change
        which window receives what the person types next. -->

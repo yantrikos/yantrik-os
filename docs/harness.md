@@ -63,7 +63,7 @@ The OS never connects to you. That is deliberate, and three useful things follow
 ## …and the one place that rule is wrong
 
 "Being attached is what makes you exist" is right for the *answering* list — you cannot be handed
-a turn if you are not there — and it was wrong for **Settings → Harnesses**, which is the page a
+a turn if you are not there — and it was wrong for **Settings → Minds**, which is the page a
 person opens *because* a mind is missing. A harness the image ships but nobody installed, or one
 whose unit died with a shell restart, was simply absent from it: no hint that the machine carries
 it, that it needs an `npm install`, that it needs a config file, or that a unit merely needs
@@ -560,7 +560,7 @@ POST /v1/chat/completions    → OpenAI chat completions; "stream": true streams
   effort the person picked for that harness, so one that never reads `options` still thinks as
   hard as was picked.
 - **The token is the harness's own.** A harness is wired when it is installed (by the ISO, the
-  installer or Settings → Harnesses → Install), with no question: a token is minted and written
+  installer or Settings → Minds → Install), with no question: a token is minted and written
   into that harness's own config, the harness's way, with `picked` as its model, and its own file
   kept for Revert. The installers' step is `yantrik-ui --wire-model <harness>` (idempotent, no
   TTY; `wire_model` in harnesses/lib/install/common.sh). "Use its own models" on the row puts the

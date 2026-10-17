@@ -30,7 +30,8 @@ export struct ShotRow {
     name: string,
     prompt: string,
     meta: string,
-    path: string,
+    path: string,       // what the row's buttons act on; shown only in the record pane
+    place: string,      // "in Pictures › Studio": what the row says
     has-thumb: bool,
     thumb: image,
     selected: bool,
@@ -198,7 +199,7 @@ export component StudioApp inherits AppWindow {
                             // Beside the primary rather than down in the record pane, which a
                             // narrow window does not draw: what the button makes depends on it.
                             YButton {
-                                label: "Change…";
+                                label: "Change where it runs";
                                 variant: 1;
                                 size: 0;
                                 clicked => { root.action("backend"); }
@@ -342,10 +343,9 @@ export component StudioApp inherits AppWindow {
                                             overflow: elide;
                                         }
                                         Text {
-                                            text: shot.path;
+                                            text: shot.place;
                                             color: Theme.text-dim;
-                                            font-size: 10px;
-                                            font-family: Theme.font-mono;
+                                            font-size: 11px;
                                             overflow: elide;
                                         }
                                     }
@@ -454,7 +454,7 @@ export component StudioApp inherits AppWindow {
                         }
                         Text {
                             text: root.detail == ""
-                                ? "Choose a picture from the gallery and its record is read back here, from the small JSON file saved beside it."
+                                ? "Choose a picture from the gallery to read how it was made, from the note saved beside it."
                                 : root.detail;
                             color: root.detail == "" ? Theme.text-dim : Theme.text-secondary;
                             font-size: 12px;

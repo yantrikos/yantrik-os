@@ -69,7 +69,9 @@ component ContextRow inherits TouchArea {
     // Whether a click on the row does anything. Off, the row is a line of text: no pointer, no
     // hover, no click — it does not dress up as a button nothing answers.
     in property <bool> opens: false;
-    height: 38px;
+    // At least one row, taller when a label needs two lines: rows cut to "No supported firewall
+    // manager de…" on every app's rail in the sweep of 17 October.
+    height: max(38px, context-row.preferred-height + 8px);
     enabled: root.opens;
     mouse-cursor: root.opens ? pointer : default;
 
@@ -79,7 +81,7 @@ component ContextRow inherits TouchArea {
         border-radius: Theme.r-sm;
         background: root.opens && parent.has-hover ? Theme.hover-fill : transparent;
 
-        HorizontalLayout {
+        context-row := HorizontalLayout {
             padding-left: Theme.sp-2;
             padding-right: Theme.sp-2;
             spacing: Theme.sp-2;
@@ -104,13 +106,13 @@ component ContextRow inherits TouchArea {
                     text: root.item.label;
                     color: Theme.text-primary;
                     font-size: Theme.fs-caption;
-                    overflow: elide;
+                    wrap: word-wrap;
                 }
                 if root.item.detail != "" : Text {
                     text: root.item.detail;
                     color: Theme.text-dim;
                     font-size: Theme.fs-micro;
-                    overflow: elide;
+                    wrap: word-wrap;
                 }
             }
 
@@ -128,7 +130,7 @@ component ContextRow inherits TouchArea {
 
 component SuggestionRow inherits TouchArea {
     in property <AgentSuggestion> item;
-    height: root.item.detail != "" ? 42px : 32px;
+    height: max(root.item.detail != "" ? 42px : 32px, suggestion-row.preferred-height + 8px);
     mouse-cursor: pointer;
 
     Rectangle {
@@ -137,7 +139,7 @@ component SuggestionRow inherits TouchArea {
         border-radius: Theme.r-sm;
         background: parent.has-hover ? AppIdentity.tint : transparent;
 
-        HorizontalLayout {
+        suggestion-row := HorizontalLayout {
             padding-left: Theme.sp-2;
             padding-right: Theme.sp-2;
             spacing: Theme.sp-2;
@@ -161,13 +163,13 @@ component SuggestionRow inherits TouchArea {
                     text: root.item.running ? "Working…" : root.item.label;
                     color: Theme.text-primary;
                     font-size: Theme.fs-caption;
-                    overflow: elide;
+                    wrap: word-wrap;
                 }
                 if root.item.detail != "" : Text {
                     text: root.item.detail;
                     color: Theme.text-dim;
                     font-size: Theme.fs-micro;
-                    overflow: elide;
+                    wrap: word-wrap;
                 }
             }
 

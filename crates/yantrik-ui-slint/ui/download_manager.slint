@@ -27,7 +27,9 @@ export struct DownloadItem {
     checksum-expected: string,   // user-supplied expected hash
     checksum-status: string,     // "none", "verifying", "pass", "fail"
     // Per-download save location
-    save-dir: string,            // custom save directory
+    save-dir: string,            // custom save directory; shown in Details only
+    place: string,               // "in Downloads": where it is, in words (yantrik_app_runtime::place)
+    site: string,                // "hn.algolia.com": where it came from; the full URL is in Details
     // Detail fields
     start-time: string,          // "2026-03-09 14:32:01"
     end-time: string,            // "2026-03-09 14:35:12"
@@ -898,37 +900,23 @@ export component DownloadManagerScreen inherits Rectangle {
                                 }
                             }
 
-                            // Row 2: URL preview + save dir
+                            // Row 2: where it came from and where it is, in words. The full URL
+                            // and path were here, cut off mid-word; they are in Details below.
                             HorizontalLayout {
-                                spacing: 12px;
-
-                                // URL preview (truncated)
+                                spacing: 4px;
+                                Icon {
+                                    commands: Icons.folder;
+                                    size: 12px;
+                                    tint: Theme.text-dim;
+                                    y: (parent.height - self.height) / 2;
+                                }
                                 Text {
-                                    text: dl.url;
+                                    text: (dl.site != "" ? "From " + dl.site + ", " : "") + dl.place;
                                     font-size: Theme.fs-micro;
                                     color: Theme.text-dim;
-                                    overflow: elide;
+                                    wrap: word-wrap;
                                     horizontal-stretch: 1;
                                     vertical-alignment: center;
-                                }
-
-                                // Save directory indicator
-                                if dl.save-dir != "" : HorizontalLayout {
-                                    spacing: 4px;
-                                    Icon {
-                                        commands: Icons.folder;
-                                        size: 12px;
-                                        tint: Theme.text-dim;
-                                        y: (parent.height - self.height) / 2;
-                                    }
-                                    Text {
-                                        text: dl.save-dir;
-                                        font-size: Theme.fs-micro;
-                                        color: Theme.text-dim;
-                                        overflow: elide;
-                                        max-width: 200px;
-                                        vertical-alignment: center;
-                                    }
                                 }
                             }
 
@@ -960,11 +948,11 @@ export component DownloadManagerScreen inherits Rectangle {
 
                             // ── Expanded Details Panel ──
                             if root.dl-expanded-id == dl.id : Rectangle {
-                                height: 100px;
+                                height: dl-details.preferred-height;
                                 background: Theme.bg-deep;
                                 border-radius: 8px;
 
-                                VerticalLayout {
+                                dl-details := VerticalLayout {
                                     padding: 10px;
                                     padding-left: 14px;
                                     padding-right: 14px;
@@ -985,7 +973,7 @@ export component DownloadManagerScreen inherits Rectangle {
                                             text: dl.url;
                                             font-size: Theme.fs-micro;
                                             color: Theme.text-secondary;
-                                            overflow: elide;
+                                            wrap: word-wrap;
                                             horizontal-stretch: 1;
                                             vertical-alignment: center;
                                         }
@@ -995,7 +983,7 @@ export component DownloadManagerScreen inherits Rectangle {
                                     HorizontalLayout {
                                         spacing: 8px;
                                         Text {
-                                            text: "Save Path:";
+                                            text: "Saved in:";
                                             font-size: Theme.fs-micro;
                                             font-weight: 600;
                                             color: Theme.text-dim;
@@ -1006,7 +994,7 @@ export component DownloadManagerScreen inherits Rectangle {
                                             text: dl.save-dir != "" ? dl.save-dir : "~/Downloads";
                                             font-size: Theme.fs-micro;
                                             color: Theme.text-secondary;
-                                            overflow: elide;
+                                            wrap: word-wrap;
                                             horizontal-stretch: 1;
                                             vertical-alignment: center;
                                         }

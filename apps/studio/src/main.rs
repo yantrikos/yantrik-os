@@ -446,6 +446,13 @@ fn row(record: &Record, chosen: &str) -> ShotRow {
         },
         meta: meta_line(record).into(),
         path: engine::display(&record.path).into(),
+        // What the row says: the folder in words. The path is the record pane's last line.
+        place: record
+            .path
+            .parent()
+            .map(|dir| yantrik_app_runtime::place::place_of(dir, &yantrik_app_runtime::place::home()))
+            .unwrap_or_default()
+            .into(),
         has_thumb: record.thumbnail.is_some(),
         thumb: record.thumbnail.as_ref().map(pixels).unwrap_or_default(),
         selected: path == chosen,

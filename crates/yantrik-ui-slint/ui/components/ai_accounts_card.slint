@@ -174,7 +174,10 @@ export component AiAccountsCard inherits Rectangle {
             }
         }
         Text {
-            text: "Add a provider once and every mind can use its models through the picker in the ask bar. Keys stay in the vault and the saved provider; minds are given a token for the local gateway, never a key.";
+            // How a mind reaches these accounts without a key (a token for the desktop's gateway on
+            // 127.0.0.1:7460) was this sentence, and read as jargon in the sweep of 17 October; the
+            // address is in each mind's Details under What runs on what.
+            text: "Add an account once and every mind can use its models, through the picker in the ask bar. Keys are kept in this computer\u{2019}s vault; a mind is never given one.";
             color: Theme.text-dim;
             font-size: Theme.fs-caption;
             wrap: word-wrap;
