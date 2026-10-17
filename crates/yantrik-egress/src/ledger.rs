@@ -155,7 +155,7 @@ mod tests {
         }
         let mut p = Policy { mode: Mode::Enforce, rules: vec![] };
         assert_eq!(l.proposals(&p).len(), 1, "fifty tries, one card");
-        p.allow(Rule { host: "new.example".into(), ports: vec![443], http: false, lan: false, why: "asked".into(), seeded: false }).unwrap();
+        p.allow(Rule { host: "new.example".into(), ports: vec![443], http: false, lan: false, why: "asked".into(), seeded: false, search_queries: Vec::new() }).unwrap();
         assert!(l.proposals(&p).is_empty());
     }
 
