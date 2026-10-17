@@ -363,6 +363,45 @@ fn is_root(facts: &ProcessFacts) -> bool {
     ROOTS.contains(&basename(&facts.exe)) || ROOTS.contains(&basename(argv0))
 }
 
+/// What an approval card for ending `pid` names it as: the program and its command line, read
+/// from `/proc` now — or `None` when no process has that pid (or `/proc` would not say), and the
+/// card cannot be allowed. Its identity is the pid with the time that process started
+/// ([`process_identity`]), so a pid reused by another program after the Allow is not the one the
+/// grant names. System Monitor's window and its service both answer `kill_process`'s
+/// `app.name_target` with this, so the two doors name a process alike.
+pub fn process_target(pid: i32) -> Option<yantrik_ipc_contracts::control_surface::Target> {
+    if pid <= 0 {
+        return None;
+    }
+    let facts = walk(pid).into_iter().next().filter(|f| f.pid == pid)?;
+    Some(target_of(&facts))
+}
+
+/// The identity [`process_target`] gives `pid`, read from `/proc` now: the pid and its start time
+/// (field 22 of `/proc/<pid>/stat`). What `kill_process` holds its grant to before it signals
+/// (`held_to_grant`); `None` when no process has that pid.
+pub fn process_identity(pid: i32) -> Option<String> {
+    let started = crate::gate::proc_start_ticks(u32::try_from(pid).ok().filter(|p| *p > 0)?)?;
+    Some(identity_of(pid, started))
+}
+
+fn identity_of(pid: i32, started: u64) -> String {
+    format!("pid {pid} started {started}")
+}
+
+fn target_of(facts: &ProcessFacts) -> yantrik_ipc_contracts::control_surface::Target {
+    let name = name_of(facts);
+    let mut rows = vec![("Process".to_string(), format!("{name}, pid {}", facts.pid))];
+    if !facts.short_cmdline.is_empty() {
+        rows.push(("Command".to_string(), facts.short_cmdline.clone()));
+    }
+    yantrik_ipc_contracts::control_surface::Target {
+        rows,
+        series: false,
+        identity: identity_of(facts.pid, facts.started),
+    }
+}
+
 // ── Reading /proc ────────────────────────────────────────────────────
 
 /// Walk up from `pid`, deepest first, tolerating everything.
@@ -422,6 +461,34 @@ fn facts(pid: i32) -> Option<(ProcessFacts, i32)> {
         },
         before.ppid,
     ))
+}
+
+#[cfg(test)]
+mod process_target_tests {
+    use super::*;
+
+    #[test]
+    fn a_process_is_named_by_its_program_and_command_and_a_missing_pid_by_nothing() {
+        let facts = ProcessFacts {
+            pid: 4242,
+            exe: "/usr/lib/firefox/firefox".into(),
+            short_cmdline: "firefox --new-window".into(),
+            started: 1,
+        };
+        let t = target_of(&facts);
+        assert_eq!(t.rows[0], ("Process".to_string(), "firefox, pid 4242".to_string()));
+        assert_eq!(t.rows[1].1, "firefox --new-window");
+        assert_eq!(t.identity, "pid 4242 started 1", "the pid and when that process started");
+        assert!(process_target(0).is_none());
+        assert!(process_target(i32::MAX).is_none(), "no such pid");
+        assert!(process_identity(i32::MAX).is_none());
+        #[cfg(target_os = "linux")]
+        {
+            let me = std::process::id() as i32;
+            let named = process_target(me).expect("this test's own process");
+            assert_eq!(Some(named.identity), process_identity(me), "the namer and the handler agree");
+        }
+    }
 }
 
 // ── The text parsers ─────────────────────────────────────────────────
