@@ -532,8 +532,8 @@ mod tests {
         let ids: Vec<&str> = declared.iter().map(|d| d.id.as_str()).collect();
         for want in [
             "arcade", "blender", "calendar", "containers", "documents", "download-manager",
-            "editor", "email", "image-viewer", "network", "notes", "presentation", "snippets",
-            "studio", "system-monitor", "terminal", "weather",
+            "editor", "email", "image-viewer", "music", "network", "notes", "presentation", "snippets",
+            "spreadsheet", "studio", "system-monitor", "terminal", "weather",
         ] {
             assert!(ids.contains(&want), "no shipped .desktop file declares `{want}`: {ids:?}");
         }
@@ -555,6 +555,7 @@ mod tests {
         assert_eq!(names("download-manager"), ["downloads"]);
         assert_eq!(names("editor"), ["text-editor"]);
         assert_eq!(names("image-viewer"), ["images", "image"]);
+        assert_eq!(names("music"), ["music-player"]);
         assert_eq!(names("network"), ["network-manager"]);
         assert_eq!(names("presentation"), ["slides"]);
         assert_eq!(names("snippets"), ["snippet-manager"]);
@@ -606,7 +607,10 @@ mod tests {
         // Not an app: the desktop's own names are kept as written by the caller.
         assert_eq!(surface_id("shell"), None);
         assert_eq!(surface_id("files"), None);
-        assert_eq!(surface_id("music"), None, "a shelved app declares nothing");
+        assert_eq!(surface_id("music-player").as_deref(), Some("music"));
+        // Both were shelved, and declared nothing while they were; both came off it (#727, #728).
+        assert_eq!(surface_id("spreadsheet").as_deref(), Some("spreadsheet"));
+        assert_eq!(surface_id("ysheets").as_deref(), Some("spreadsheet"));
     }
 
     /// A name the desktop answers to, or that another app holds, is not handed out twice.
@@ -646,9 +650,19 @@ mod tests {
     /// An app this build has shelved declares nothing, whatever its old file on the disk says.
     #[test]
     fn a_shelved_app_declares_nothing() {
-        let stale = entry("yantrik-music-player", "Music", "music", "songs");
-        assert!(declared(std::slice::from_ref(&stale)).is_empty());
-        assert!(find("songs", &[stale]).is_none());
+        // Music and ySheets were the whole shelf and both came off it (#727, #728), so this is
+        // asked of whatever the shelf holds next.
+        for shelf in crate::wire::dock::shelved_table() {
+            let stale = entry(shelf.binary, shelf.name, "shelved-surface", "shelved-alias");
+            assert!(declared(std::slice::from_ref(&stale)).is_empty(), "{}", shelf.binary);
+            assert!(find("shelved-alias", &[stale]).is_none(), "{}", shelf.binary);
+        }
+        // And the two that came off it declare again, from the same kind of file.
+        for (stem, name) in [("yantrik-spreadsheet", "ySheets"), ("yantrik-music-player", "Music")] {
+            let back = entry(stem, name, "back", "back-alias");
+            assert_eq!(declared(std::slice::from_ref(&back)).len(), 1, "{stem}");
+            assert!(find("back-alias", &[back]).is_some(), "{stem}");
+        }
     }
 
     /// Aliases are linked at their surface's socket, relative, whether or not it is running; a

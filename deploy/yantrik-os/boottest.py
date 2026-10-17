@@ -224,12 +224,19 @@ rc = ask("XDG_RUNTIME_DIR=/run/user/1000 timeout 900 /opt/yantrik/bin/release-ch
 check("release-check (tier ci) passes inside the booted image", "exit=0" in rc, rc)
 
 # The shelf is SHELVED in dock.rs, read by shelved-bins.sh beside this file. This used to name
-# music-player and spreadsheet itself, so ySheets coming off the shelf would have failed the
-# nightly for shipping it.
+# music-player and spreadsheet itself, so either coming off the shelf would have failed the
+# nightly for shipping it. Both have (#727, #728), so the shelf is empty and this checks nothing
+# until it holds something again.
 SHELF = subprocess.run([os.path.join(os.path.dirname(os.path.abspath(__file__)), "shelved-bins.sh")],
                        capture_output=True, text=True, check=True).stdout.split()
 shelved = ask("ls /opt/yantrik/bin | grep -c -x -E '%s'" % "|".join(SHELF)) if SHELF else "0"
 check("no shelved app was packaged", shelved.splitlines()[-1].strip() == "0", shelved)
+
+# Music came off the shelf (#728): it ships, and so does the mpv it plays through.
+music = ask("[ -x /opt/yantrik/bin/yantrik-music-player ] && echo app; command -v mpv >/dev/null && echo mpv; "
+            "grep -q '%f' /opt/yantrik/share/applications/yantrik-music-player.desktop && echo desktop; echo checked")
+check("Music is packaged with mpv and a .desktop that takes a file",
+      all(w in music for w in ("app", "mpv", "desktop", "checked")), music)
 
 essentials = ask("for b in yantrik-ui yantrik yos yantrik-update yantrik-session yantrik-notes "
                  "yantrik-email yantrik-calendar network-service email-service; do "

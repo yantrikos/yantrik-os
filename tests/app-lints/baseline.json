@@ -6,16 +6,9 @@
     "dead-handler"
   ],
   "apps": {
-    "calendar": {
-      "dead-handler": [
-        "agent_context_activated"
-      ]
-    },
     "container-manager": {
       "dead-handler": [
-        "agent_context_activated",
-        "ct_tab",
-        "proposal_applied"
+        "ct_tab"
       ]
     },
     "download-manager": {
@@ -25,57 +18,6 @@
         "agent-unavailable",
         "proposal",
         "proposal-working"
-      ]
-    },
-    "image-viewer": {
-      "unset-property": [
-        "ai-is-working",
-        "ai-response",
-        "proposal-working"
-      ],
-      "dead-handler": [
-        "agent_context_activated",
-        "agent_suggestion_activated",
-        "proposal_applied"
-      ]
-    },
-    "music-player": {
-      "unset-property": [
-        "agent-context",
-        "agent-suggestions",
-        "agent-unavailable",
-        "ai-is-working",
-        "ai-response",
-        "is-scanning",
-        "proposal",
-        "proposal-working",
-        "scan-progress",
-        "scan-status"
-      ],
-      "dead-handler": [
-        "add_to_queue",
-        "ai_dismiss",
-        "ai_explain_pressed",
-        "browse_filter_changed",
-        "browse_item_selected",
-        "music_toggle_folder_watch",
-        "next_track",
-        "play_next",
-        "play_track_index",
-        "playlist_add_track",
-        "playlist_create",
-        "playlist_delete",
-        "playlist_remove_track",
-        "playlist_rename",
-        "prev_track",
-        "queue_clear",
-        "queue_move_down",
-        "queue_move_up",
-        "queue_play_index",
-        "queue_remove",
-        "scan_add_folder",
-        "scan_remove_folder",
-        "scan_rescan"
       ]
     },
     "system-monitor": {
@@ -90,19 +32,6 @@
         "ai-tokens-today",
         "cpu-frequency",
         "cpu-model"
-      ],
-      "dead-handler": [
-        "agent_context_activated",
-        "back_pressed",
-        "process_search_changed",
-        "proposal_applied"
-      ]
-    },
-    "weather": {
-      "dead-handler": [
-        "agent_context_activated",
-        "back_pressed",
-        "proposal_applied"
       ]
     }
   }

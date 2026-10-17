@@ -1,9 +1,13 @@
 [Desktop Entry]
 Type=Application
 Name=Music
-Comment=Music player with library management
-Exec=/opt/yantrik/bin/yantrik-music-player
+Comment=Plays the music in your folders, through mpv
+Exec=/opt/yantrik/bin/yantrik-music-player %f
 # One mark for now: brand/yantrik-icon.svg, installed as hicolor `yantrik`.
 Icon=yantrik
 Categories=AudioVideo;Audio;Player;
-Keywords=music;audio;player;
+Keywords=music;audio;player;songs;
+# The control surface this app publishes: docs/surface-protocol.md, section 3.
+X-Yantrik-Surface=music
+X-Yantrik-Purpose=play the music in your library folders, or one sound file, through mpv
+X-Yantrik-Aliases=music-player

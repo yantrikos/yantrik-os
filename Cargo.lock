@@ -11586,6 +11586,7 @@ dependencies = [
 name = "yantrik-music-player"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
  "slint",
@@ -11595,6 +11596,7 @@ dependencies = [
  "yantrik-design-tokens",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
+ "yantrik-surface",
  "yantrik-ui-kit",
 ]
 

@@ -642,6 +642,7 @@ publishes right now is `yos describe <name>`; whether it keeps the protocol, `yo
 | `editor` | `app-editor.sock` | `text-editor` | write a new text or code file (new with its text, then save_as a path), or open and edit one by path |
 | `email` | `app-email.sock` | — | read and send mail |
 | `image-viewer` | `app-image-viewer.sock` | `images`, `image` | view pictures |
+| `music` | `app-music.sock` | `music-player` | play the music in your library folders, or one sound file, through mpv |
 | `network` | `app-network.sock` | `network-manager` | this machine's connections, Wi-Fi and firewall state |
 | `notes` | `app-notes.sock` | — | quick markdown notes kept in the notes library, not files you name |
 | `presentation` | `app-presentation.sock` | `slides` | slide decks |

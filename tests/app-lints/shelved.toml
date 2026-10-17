@@ -21,9 +21,11 @@
 # crates/yantrik-ui/src/wire/dock.rs. design/shelved-2026-09-20.md is the account.
 # Un-shelving an app is deleting its entry here and there.
 
-[music-player]
-reason = """
-Nothing plays audio. There is no playback engine, no scanner and no library behind the \
-screen: double-clicking a song logs "(stub)", and only YANTRIK_MUSIC_DEMO=1 can put a \
-track on it. 2168 lines of Slint over 312 of Rust.\
-"""
+# Nothing is shelved. Music (#728) and ySheets (#727) were the two entries, and both came
+# off the shelf in October 2026 once there was something under their screens. An entry
+# looks like this:
+#
+#   [app-dir-name]
+#   reason = """
+#   What is missing under the screen, in a sentence or two.\
+#   """

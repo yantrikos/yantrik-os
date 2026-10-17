@@ -229,14 +229,18 @@ mod tests {
     /// `publish` filters on `is_launchable`, which the shelf answers no to — so a person who
     /// pinned Music before it was shelved keeps the line in their settings and loses the tile,
     /// which is the same thing that happens to a pin for an app they uninstalled. Un-shelve it
-    /// and the pin comes back on its own, as ySheets' did when it came off the shelf.
+    /// and the pin comes back on its own, as Music's and ySheets' did when they came off it.
     #[test]
     fn a_shelved_app_is_never_on_start() {
         for pin in DEFAULT_PINS {
             assert!(super::super::dock::shelved(pin).is_none(), "default pin `{pin}` is shelved");
         }
-        for id in ["music", "music-player"] {
-            assert!(!super::super::dock::is_launchable(id, &[]), "`{id}` would draw a START tile");
+        // Music and ySheets were the whole shelf and both came off it (#727, #728). A pin for
+        // either is no longer refused; whether it draws is up to the catalogue, as for any app.
+        // That a shelved id never reaches `is_launchable` is checked against the shelf itself
+        // in dock.rs (`a_shelved_app_does_not_open_even_with_its_desktop_file_on_disk`).
+        for id in ["music", "music-player", "spreadsheet", "ySheets"] {
+            assert!(super::super::dock::shelved(id).is_none(), "`{id}` came off the shelf");
         }
     }
 

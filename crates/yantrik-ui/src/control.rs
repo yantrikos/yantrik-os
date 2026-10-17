@@ -51,19 +51,29 @@ fn check_launchable(name: &str, installed: &[crate::apps::DesktopEntry]) -> Resu
         // spelling. This build does not have the app and no action on this machine will produce
         // it, so the refusal says that, says what is missing under the screen, and says what
         // would have to be built. An agent reading it can stop, or go and write the missing half.
-        Availability::Shelved(shelf) => Err(format!(
-            "`{name}` is not part of this build. {} is shelved: {}. It comes back when {} \
-             — see design/shelved-2026-09-20.md. It can open: {}",
-            shelf.name,
-            shelf.reason,
-            shelf.returns_when,
-            launchable_app_ids(installed).join(", ")
-        )),
+        Availability::Shelved(shelf) => Err(shelved_refusal(name, shelf, installed)),
         Availability::Unknown => Err(format!(
             "no app `{name}` on this machine; it can open: {}",
             launchable_app_ids(installed).join(", ")
         )),
     }
+}
+
+/// The refusal `check_launchable` gives for a shelved app: why it is not in this build, what
+/// would bring it back, and what can be opened instead.
+fn shelved_refusal(
+    name: &str,
+    shelf: &crate::wire::dock::Shelved,
+    installed: &[crate::apps::DesktopEntry],
+) -> String {
+    format!(
+        "`{name}` is not part of this build. {} is shelved: {}. It comes back when {} \
+         — see design/shelved-2026-09-20.md. It can open: {}",
+        shelf.name,
+        shelf.reason,
+        shelf.returns_when,
+        crate::wire::dock::launchable_app_ids(installed).join(", ")
+    )
 }
 
 /// Open the Apps launcher where a person can see it, and answer with what is observed.
@@ -2437,8 +2447,14 @@ mod screen_table_tests {
     /// built, and an agent reading it can stop instead of retrying four spellings.
     #[test]
     fn opening_a_shelved_app_is_refused_with_its_reason() {
-        for name in ["music", "music-player", "Music Player"] {
-            let err = check_launchable(name, &[]).expect_err("a shelved app must not open");
+        // Music and ySheets were the whole shelf and both came off it (#727, #728), so the
+        // refusal is checked on a fixture entry, and on whatever the real shelf holds next.
+        let fixture = crate::wire::dock::Shelved { ids: &["tunes"], name: "Tunes", binary: "yantrik-tunes", reason: "nothing plays", returns_when: "something plays" };
+        let refusals = std::iter::once(("tunes".to_string(), shelved_refusal("tunes", &fixture, &[])))
+            .chain(crate::wire::dock::shelved_table().iter().flat_map(|s| s.ids.iter()).map(|id| {
+                (id.to_string(), check_launchable(id, &[]).expect_err("a shelved app must not open"))
+            }));
+        for (name, err) in refusals {
             assert!(err.contains("not part of this build"), "{name}: {err}");
             assert!(err.contains("shelved"), "{name}: {err}");
             assert!(err.contains("It comes back when"), "{name}: {err}");
@@ -2449,6 +2465,9 @@ mod screen_table_tests {
                 !offered.split(", ").any(|id| crate::wire::dock::shelved(id).is_some()),
                 "{name} was refused and then offered something shelved: {offered}"
             );
+        }
+        for name in ["music", "music-player", "Music Player", "spreadsheet", "ySheets", "yantrik-spreadsheet"] {
+            assert!(crate::wire::dock::shelved(name).is_none(), "`{name}` came off the shelf");
         }
         assert!(check_launchable("files", &[]).is_ok(), "a shipped app still opens");
     }

@@ -202,7 +202,9 @@ Nothing plays audio. There is no playback engine, no scanner and no library behi
 A shelved app is in the tree and not in the build. Music and ySheets were taken off the shelf on
 20 September 2026 -- removed from the launcher, the Lens, the command palette, the pins, the
 release bundle and every name a mind could open them by, because neither had anything under its
-screen. See `design/shelved-2026-09-20.md`, and `SHELVED` in
+screen. ySheets came back in October 2026 (#727) and Music on 16 October 2026 (#728); both are
+linted like any shipped app again and both are clean on both lints. The file holds no entry
+today, and the example above is Music's old one. See `design/shelved-2026-09-20.md`, and `SHELVED` in
 `crates/yantrik-ui/src/wire/dock.rs`, which is the list the shell itself consults.
 
 They are still workspace members, they still compile, and they are still linted. What this file

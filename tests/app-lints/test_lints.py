@@ -659,21 +659,28 @@ class RealRepo(unittest.TestCase):
     the last app here is fixed, the fixtures above are what is left to prove the lint still
     sees, and that is how it should end.
 
-    Music is shelved and it stays here. A shelved app is still linted -- that is the whole point
-    of keeping it a workspace member -- and it holds the last real instances of the unset `in`
-    property in the tree. Each lint must keep at least one entry that is not network-manager's,
-    or the day Network Manager is finished is the day this test stops looking at anything.
+    Music and Spreadsheet held these lists while they were shelved: a shelved app is still
+    linted -- that is the whole point of keeping it a workspace member -- and they held the last
+    real instances of the unset `in` property and the dead handler outside Network Manager. Both
+    came off the shelf in October 2026, Spreadsheet in PR #727 and Music in PR #728: Spreadsheet's
+    cell-grid, row-count and col-count are set now, Music sets is-scanning and gave
+    play-track-index a handler that plays (scan-progress and scan-status left the screen), and
+    neither has a handler that only logs. Both moved to the fixed apps below, which is how an
+    entry here is meant to leave.
 
-    Spreadsheet was here until October 2026, when it came off the shelf (PR #727): its
-    cell-grid, row-count and col-count are set now, and none of its handlers only logs. It moved
-    to the fixed apps below, which is how an entry here is meant to leave.
+    Each lint must keep at least one entry that is not network-manager's, or the day Network
+    Manager is finished is the day this test stops looking at anything. What is left, on 17
+    October 2026: Download Manager's agent and proposal properties and System Monitor's CPU and
+    AI ones, which Rust never sets, and Container Manager's `ct_tab`, the only dead handler in the
+    tree. When those are fixed too, the fixtures above are what proves the lints still see.
     """
 
     MUST_FLAG_PROPERTIES = {
-        "music-player": ["is-scanning", "scan-progress", "scan-status"],
+        "download-manager": ["agent-context", "proposal", "proposal-working"],
+        "system-monitor": ["cpu-model", "cpu-frequency", "ai-model-name"],
     }
     MUST_FLAG_HANDLERS = {
-        "music-player": ["play_track_index"],
+        "container-manager": ["ct_tab"],
     }
 
     @classmethod
@@ -719,11 +726,11 @@ class RealRepo(unittest.TestCase):
                 self.assertIn(name, flagged, "%s %s" % (app_name, name))
 
     def test_the_apps_that_were_fixed_have_no_dead_handlers(self):
-        for app_name in ("notes", "terminal", "text-editor", "snippet-manager", "document-editor", "presentation", "network-manager", "email", "spreadsheet"):
+        for app_name in ("notes", "terminal", "text-editor", "snippet-manager", "document-editor", "presentation", "network-manager", "email", "spreadsheet", "music-player"):
             self.assertEqual([], dead.check_app(self.apps[app_name]), app_name)
 
     def test_the_apps_that_were_fixed_have_no_unset_in_properties(self):
-        for app_name in ("notes", "terminal", "text-editor", "snippet-manager", "document-editor", "presentation", "network-manager", "email", "spreadsheet"):
+        for app_name in ("notes", "terminal", "text-editor", "snippet-manager", "document-editor", "presentation", "network-manager", "email", "spreadsheet", "music-player"):
             errors = [
                 f for f in unset.check_app(self.apps[app_name]) if f["severity"] == "error"
             ]
