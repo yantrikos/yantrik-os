@@ -237,6 +237,7 @@ mod tests {
             source: Source::Yantrik,
             replaces_id: None,
             sender: None,
+            image: None,
             notice: Some(Notice {
                 notice_id: format!("n-{id}"),
                 family: Family::Reminder,

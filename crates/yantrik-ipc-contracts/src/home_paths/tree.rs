@@ -48,6 +48,38 @@ pub fn may_land(src: &Path, landing: &Path, home: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Refuse `src` - a file, or a folder and everything below it, links not followed - being read
+/// whole by an agent (packed into an archive, say) when a protected place is anywhere inside it.
+/// Checking the top alone let `~/Pictures` carry the person's screenshots out, and `~` their
+/// keys (security review of #828, finding 1). A tree too large to look through is refused.
+pub fn may_read_tree(src: &Path) -> Result<(), String> {
+    const READS: &str = "an agent reads a folder whole only when nothing protected is inside it";
+    if is_protected(src) {
+        return Err(format!("{READS}; {} is protected", src.display()));
+    }
+    let mut budget = MAX_CHECKED;
+    let mut stack = vec![src.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let meta = std::fs::symlink_metadata(&dir).map_err(|e| format!("{} cannot be read: {e}", dir.display()))?;
+        if !meta.is_dir() {
+            continue;
+        }
+        let entries = std::fs::read_dir(&dir).map_err(|e| format!("{} cannot be looked through: {e}", dir.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("{} cannot be looked through: {e}", dir.display()))?;
+            budget = budget
+                .checked_sub(1)
+                .ok_or_else(|| format!("more than {MAX_CHECKED} entries below {}; too many to check", src.display()))?;
+            let child = entry.path();
+            if is_protected(&child) {
+                return Err(format!("{READS}; {} is protected", child.display()));
+            }
+            stack.push(child);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 fn links(meta: &std::fs::Metadata) -> u64 {
     std::os::unix::fs::MetadataExt::nlink(meta)

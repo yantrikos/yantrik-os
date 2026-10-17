@@ -420,6 +420,8 @@ impl Store {
                 args: a.args,
             })
             .collect();
+        // A path, absolute and short; whatever else came is dropped rather than stored.
+        let image = req.image.filter(|p| p.starts_with('/') && p.len() <= MAX_IMAGE_PATH && !p.contains('\0'));
 
         // Replacing reuses the id, because the freedesktop spec promises the sender that the id
         // it passed as `replaces_id` is the id it can go on closing. Our own senders get the
@@ -442,6 +444,7 @@ impl Store {
                 // Whoever replaced it is who is speaking now. "downloading…" from the download
                 // manager and "finished" from something else are not one line about one file.
                 existing.sender = sender;
+                existing.image = image;
                 existing.created_at = now;
                 existing.read = false;
                 existing.dismissed = false;
@@ -472,6 +475,7 @@ impl Store {
             source: req.source,
             replaces_id: req.replaces_id,
             sender,
+            image,
             notice: None,
             revision,
         };
@@ -926,6 +930,16 @@ mod tests {
             title: title.into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_picture_is_kept_only_as_a_short_absolute_path() {
+        let (store, path) = temp_store();
+        let with = |image: &str| store.add(AddRequest { image: Some(image.into()), ..req("Yantrik", "Screenshot saved") }).image;
+        assert_eq!(with("/home/p/Pictures/Screenshots/a.png").as_deref(), Some("/home/p/Pictures/Screenshots/a.png"));
+        assert_eq!(with("relative.png"), None);
+        assert_eq!(with(&format!("/{}", "a".repeat(600))), None);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

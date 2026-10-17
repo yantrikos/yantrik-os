@@ -859,6 +859,8 @@ fn parse_add(params: &serde_json::Value) -> Result<AddRequest, ServiceError> {
             _ => Source::Yantrik,
         },
         replaces_id: optional_str(params, "replaces_id")?,
+        // A screenshot's thumbnail, as a path; anything but a string is left out.
+        image: params["image"].as_str().map(str::to_string),
         notice: match params.get("notice") {
             None | Some(serde_json::Value::Null) => None,
             Some(value) => Some(

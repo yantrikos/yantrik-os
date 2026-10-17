@@ -1,0 +1,58 @@
+// The capture bar's own window.
+//
+// Like the on-screen display (osd_window.slint), it is a window of its own because the shell's
+// window sits behind every app, and a bar drawn there would be under the window the person
+// wants to photograph. The labwc windowRule for this title (config/labwc/rc.xml) keeps it above
+// the others, without a title bar, out of the taskbar and Alt+Tab, and at the bottom centre
+// above the dock: a client cannot place its own window on Wayland. Unlike the OSD it takes the
+// keyboard, because it is driven from it (Tab, Space, Enter, Esc).
+import { Theme } from "theme.slint";
+import { CaptureBar } from "components/capture_bar.slint";
+
+export component CaptureBarWindow inherits Window {
+    // Must equal windows::CAPTURE_WINDOW_TITLE and the windowRule's title in rc.xml.
+    title: "Yantrik Capture";
+    no-frame: true;
+    background: transparent;
+    default-font-family: Theme.font-ui;
+    width: bar.width;
+    height: bar.height;
+
+    in property <int> kind: 0;
+    in property <int> area: 0;
+    in property <int> timer: 0;
+    in property <int> pointer: 0;
+    in property <int> audio: 0;
+    in property <bool> recording: false;
+    in property <bool> compact: false;
+
+    callback chose-kind(int);
+    callback chose-area(int);
+    callback chose-timer(int);
+    callback chose-pointer(int);
+    callback chose-audio(int);
+    callback go();
+    // `dismiss`, not `close`: a Window has a builtin `close` this would shadow.
+    callback dismiss();
+
+    public function focus-bar() { bar.focus-bar(); }
+
+    bar := CaptureBar {
+        x: 0px;
+        y: 0px;
+        kind: root.kind;
+        area: root.area;
+        timer: root.timer;
+        pointer: root.pointer;
+        audio: root.audio;
+        recording: root.recording;
+        compact: root.compact;
+        chose-kind(i) => { root.chose-kind(i); }
+        chose-area(i) => { root.chose-area(i); }
+        chose-timer(i) => { root.chose-timer(i); }
+        chose-pointer(i) => { root.chose-pointer(i); }
+        chose-audio(i) => { root.chose-audio(i); }
+        go => { root.go(); }
+        close => { root.dismiss(); }
+    }
+}

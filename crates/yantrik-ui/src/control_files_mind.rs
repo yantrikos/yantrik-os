@@ -196,9 +196,31 @@ pub fn open_verdict(path: &str, home: &Path) -> Result<(), String> {
         (serde_json::Value::Bool(true), _) => Err(format!("{path} is not a folder")),
         (serde_json::Value::Bool(false), _) => Err(no_folder_at(path, home)),
         _ => Err(format!(
-            "a mind's Files stays in the person's home, outside its protected places; {path} is {}",
+            "{}a mind's Files stays in the person's home, outside its protected places; {path} is {}",
+            way_to_captures(path, home),
             answer["reason"].as_str().unwrap_or("not one it may open")
         )),
+    }
+}
+
+/// The way past a refusal in the person's screenshots or recordings, which are protected because
+/// each is a picture of their desktop (security review of #828, finding 1): `open_capture`, graded
+/// as reading the screen. Said first, as every refusal here ends with its reason; empty for any
+/// other place.
+fn way_to_captures(path: &str, home: &Path) -> &'static str {
+    use crate::capture::names::Kind;
+    let Some(full) = home_paths::expand(path, home) else { return "" };
+    let lowered = |p: &Path| p.to_string_lossy().to_lowercase();
+    let under = [Kind::Screenshot, Kind::Recording].into_iter().any(|kind| {
+        let dir = lowered(&kind.dir(home));
+        let full = lowered(&full);
+        full == dir || full.starts_with(&format!("{dir}/"))
+    });
+    if under {
+        "the person's screenshots and recordings open for a mind only through the shell's \
+         open_capture, which asks them every time; "
+    } else {
+        ""
     }
 }
 
@@ -235,7 +257,8 @@ pub fn entry_verdict(label: &str, name: &str, home: &Path) -> Result<(), String>
         serde_json::Value::Bool(true) => Ok(()),
         serde_json::Value::Bool(false) => Err(format!("nothing is at {path}")),
         _ => Err(format!(
-            "a mind opens only what is in the person's home, outside its protected places; {path} is {}",
+            "{}a mind opens only what is in the person's home, outside its protected places; {path} is {}",
+            way_to_captures(&path, home),
             answer["reason"].as_str().unwrap_or("not one it may open")
         )),
     }

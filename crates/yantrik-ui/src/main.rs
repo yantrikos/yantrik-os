@@ -79,6 +79,10 @@ mod wifi_reconnect;
 mod control_update;
 mod control_files;
 mod control_screen;
+/// Screenshots and screen recording (design/capture-2026-10-15.md); `control_capture` is its
+/// surface, `wire::capture_bar` its bar.
+mod capture;
+mod control_capture;
 /// The decision model, asked by the person's own surfaces (the browser's commitment check).
 mod control_decide;
 /// Private mode: the Mind off and nothing recorded, until the person turns it off.

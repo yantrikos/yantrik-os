@@ -48,6 +48,11 @@ import { DeviceDashboardScreen, UsbDeviceData, PciDeviceData, InputDeviceData, S
 import { PermissionDashboardScreen, UserData, GroupData, PermFileData } from "permission_dashboard.slint";
 import { ToastBanner, ToastData, ToastActionData } from "components/toast_banner.slint";
 export { OsdWindow } from "osd_window.slint";
+// The capture bar (Print) is a window of its own too, and its state a global the status bar's red
+// dot and the toasts read (wire/capture_bar.rs).
+export { CaptureBarWindow } from "capture_bar_window.slint";
+import { CaptureState } from "components/bar/capture_state.slint";
+export { CaptureState }
 import { ProblemReportScreen, ProblemRow } from "problem_report.slint";
 // Agents (screen 34), and the window one agent pops out into. The window and the global it reads
 // are exported so the shell can create a window per agent and fill each one.
@@ -3529,7 +3534,8 @@ export component App inherits Window {
         }
 
         // Toast notification banners (top-right, stacking)
-        if toast-queue.length > 0 : ToastBanner {
+        // Not while a screenshot is being taken: a toast is never in the picture.
+        if toast-queue.length > 0 && !CaptureState.hiding : ToastBanner {
             width: 100%; height: 100%;
             toasts: root.toast-queue;
             overflow: root.toast-overflow;

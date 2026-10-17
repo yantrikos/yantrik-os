@@ -211,11 +211,11 @@ fn wire_selected(ui: &App, ctx: &AppContext) {
             ui.set_lens_open(true);
             ui.invoke_open_lens();
         } else if action == "system:screenshot" {
-            // The same capture the Print key does: a timestamped file in ~/Pictures/Screenshots
-            // and a notification naming it. This used to run grim straight at
+            // The same capture the Print keys do: a dated file in ~/Pictures/Screenshots, the
+            // clipboard, and a notification naming it. This used to run grim straight at
             // /tmp/screenshot.png — one fixed name, readable by every account, overwritten by the
             // next one, and never mentioned to the person who asked for it.
-            crate::wire::screenshot::take_screenshot(ui.as_weak(), yantrik_os::screenshot::CaptureMode::FullScreen);
+            crate::wire::screenshot::take_screenshot();
         } else if action == "system:toggle-theme" {
             // The Quick Settings tile's own callback (wired in `wire::settings`), so the flag,
             // the theme's colours and the saved setting move together. Setting the flag here

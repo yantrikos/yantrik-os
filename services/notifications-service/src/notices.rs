@@ -299,6 +299,8 @@ impl Store {
                 exe: String::new(),
                 desktop: false,
             }),
+            // A picture is the desktop's own capture thumbnail; a mind's card never carries one.
+            image: None,
             notice: Some(Notice {
                 notice_id: checked.notice_id.clone(),
                 family: checked.family,

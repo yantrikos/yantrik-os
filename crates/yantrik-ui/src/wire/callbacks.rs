@@ -67,6 +67,9 @@ fn wire_lock(ui: &App, ctx: &AppContext) {
         // screen — anything already running as this user could read every credential out of the
         // process for as long as the machine stayed on.
         crate::vault_unlock::on_screen_lock();
+        // Nothing is captured while locked: the bar goes, and a recording is finished cleanly
+        // rather than left recording the lock screen.
+        crate::capture::on_screen_lock();
         if let Some(ui) = ui_weak_lock.upgrade() {
             // What this lock covers, unless it covers a lock already (a second lock asked for
             // while locked keeps the first one's answer).

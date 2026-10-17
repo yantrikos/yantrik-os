@@ -94,8 +94,11 @@
       Super+E            files                    (Windows Explorer)
       Super+L            lock                     (Windows, GNOME)
       Ctrl+Alt+T         terminal                 (Ubuntu)
-      Print              whole screen             (all three)
-      Super+Shift+S      region                   (Windows Snip)
+      Print              the capture bar          (GNOME's Print opens its own)
+      Shift+Print        region screenshot        (GNOME)
+      Ctrl+Print         screen to clipboard      (GNOME, KDE)
+      Super+Shift+S      region screenshot        (Windows Snip)
+      Super+Shift+R      start or stop recording
 
     Where labwc has no action of its own — opening the launcher, the lens, locking — the
     binding calls `yos`, the OS's own control surface. That is the same path an agent uses, so
@@ -287,22 +290,45 @@
       </action>
     </keybind>
 
-    <!-- ── Screenshots ────────────────────────────────────────────────────────────────── -->
+    <!-- ── Capture (design/capture-2026-10-15.md) ────────────────────────────────────── -->
     <!--
-      Into ~/Pictures with a sortable name, which is what every desktop does. `slurp` draws the
-      region selector; without it the second binding does nothing, so it ships in the package
-      set beside grim rather than being assumed.
+      Each goes to the shell, which hides its bar and the toasts before the frame is taken,
+      saves to ~/Pictures/Screenshots as "Screenshot <date> at <time>.png", copies to the
+      clipboard and says so with Open / Show in Files / Delete. Recordings go to
+      ~/Videos/Recordings, with a red dot on the status bar while they run.
+
+      No `||` fallback behind these, unlike the media keys: when the shell cannot answer, or the
+      screen is locked (the shell's state rule refuses every act then), a key takes nothing. A
+      direct grim behind `||` would photograph whatever the lock covers.
     -->
-    <!-- @help group="Capture" text="Screenshot of the whole screen" -->
+    <!-- @help group="Capture" text="Screenshot or recording: open the capture bar" -->
     <keybind key="Print">
       <action name="Execute">
-        <command>sh -c 'mkdir -p ~/Pictures &amp;&amp; grim ~/Pictures/Screenshot-$(date +%Y%m%d-%H%M%S).png'</command>
+        <command>/opt/yantrik/bin/yos act shell capture_open</command>
+      </action>
+    </keybind>
+    <!-- @help group="Capture" text="Screenshot of a region you drag" -->
+    <keybind key="S-Print">
+      <action name="Execute">
+        <command>/opt/yantrik/bin/yos act shell capture_region</command>
       </action>
     </keybind>
     <!-- @help group="Capture" text="Screenshot of a region you drag" -->
     <keybind key="W-S-s">
       <action name="Execute">
-        <command>sh -c 'mkdir -p ~/Pictures &amp;&amp; grim -g "$(slurp)" ~/Pictures/Screenshot-$(date +%Y%m%d-%H%M%S).png'</command>
+        <command>/opt/yantrik/bin/yos act shell capture_region</command>
+      </action>
+    </keybind>
+    <!-- @help group="Capture" text="Screenshot of the whole screen, to the clipboard only" -->
+    <keybind key="C-Print">
+      <action name="Execute">
+        <command>/opt/yantrik/bin/yos act shell capture_screen_to_clipboard</command>
+      </action>
+    </keybind>
+    <!-- @help group="Capture" text="Start or stop recording the screen" -->
+    <keybind key="W-S-r">
+      <action name="Execute">
+        <command>/opt/yantrik/bin/yos act shell capture_record_toggle</command>
       </action>
     </keybind>
 
@@ -553,6 +579,18 @@
       <action name="AutoPlace" policy="center" />
       <action name="MoveToEdge" direction="down" snapWindows="no" />
       <action name="MoveRelative" x="0" y="-80" />
+    </windowRule>
+    <!--
+      The capture bar (Print) is a window of its own, so it is above the window being
+      photographed: always on top, no title bar, not in the taskbar or Alt+Tab, at the bottom
+      centre 16px above the dock (the same placing as the OSD above). Unlike the OSD it takes the
+      keyboard, which is how it is driven. capture_bar.rs holds the title to this rule.
+    -->
+    <windowRule title="Yantrik Capture" serverDecoration="no" skipTaskbar="yes" skipWindowSwitcher="yes">
+      <action name="ToggleAlwaysOnTop" />
+      <action name="AutoPlace" policy="center" />
+      <action name="MoveToEdge" direction="down" snapWindows="no" />
+      <action name="MoveRelative" x="0" y="-16" />
     </windowRule>
     <!-- The shell is the desktop itself: present on every workspace, never switched away from. -->
     <windowRule title="Yantrik OS">

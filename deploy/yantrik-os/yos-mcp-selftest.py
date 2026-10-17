@@ -1543,6 +1543,30 @@ with tempfile.TemporaryDirectory() as d:
         text, is_error = module.run_tool(module.BY_NAME["web_type"], {"ref": 1, "text": "x"})
         check("a read through %r taints the session as shell's does" % spelling,
               text.startswith("REFUSED") and "shell.read_mind_view" in text, text)
+    # A picture of a display taints as reading it does: the person's desktop exactly as
+    # read_screen, Mind View as read_mind_view (design/capture-2026-10-15.md).
+    for shot, read_as in (("screenshot_screen", "read_screen"), ("screenshot_mind_view", "read_mind_view")):
+        module, state = case(tmp, "taint-" + shot, mode="auto", machine_ceiling="dangerous",
+                             ceiling=None)
+        act(module, "shell", shot, {})
+        text, is_error = module.run_tool(module.BY_NAME["web_type"], {"ref": 1, "text": "what I saw"})
+        check("after os_act shell %s typing into a page is refused, as after %s" % (shot, read_as),
+              text.startswith("REFUSED") and ("shell.%s" % shot) in text, text)
+    check("both screenshots are screen reads to the bridge, beside the reads",
+          {("shell", "screenshot_screen"), ("shell", "screenshot_mind_view"),
+           ("shell", "read_screen"), ("shell", "read_mind_view")} <= module.SCREEN_READS,
+          sorted(module.SCREEN_READS))
+    # A saved capture opened again is the desktop seen again: open_capture, a mind's one way to
+    # a screenshot or recording in the person's home, taints as read_screen (security review of
+    # #828, finding 1).
+    module, state = case(tmp, "taint-open_capture", mode="auto", machine_ceiling="dangerous",
+                         ceiling=None)
+    act(module, "shell", "open_capture", {"name": "Screenshot 2026-10-15 at 14.32.07.png"})
+    text, is_error = module.run_tool(module.BY_NAME["web_type"], {"ref": 1, "text": "what I saw"})
+    check("after os_act shell open_capture typing into a page is refused, as after read_screen",
+          text.startswith("REFUSED") and "shell.open_capture" in text, text)
+    check("open_capture is a screen read to the bridge",
+          ("shell", "open_capture") in module.SCREEN_READS, sorted(module.SCREEN_READS))
     check("the bridge folds names the way yos does",
           [module.surface_name(n) for n in ("App Shell", "container_manager", "app-notes", " Weather ")]
           == ["shell", "container-manager", "notes", "weather"])

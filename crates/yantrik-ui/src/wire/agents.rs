@@ -32,9 +32,9 @@ use crate::agents::{self, feed, launch, AgentId, Store};
 use crate::app_context::AppContext;
 use super::agents_workroom as workroom;
 use crate::{
-    AccentPreset, AgentDetailsData, AgentHeaderData, AgentItemData, AgentMindData, AgentRoleData,
+    AgentDetailsData, AgentHeaderData, AgentItemData, AgentMindData, AgentRoleData,
     AgentRunData, AgentWindow, AgentsState, App, ApprovalRequest, ChangeRowData, ChildRunData, DecisionData,
-    DeskCardData, ResultData, RunFactData, ThemeMode, ThemeOverrides, ToolCallData, WorkNavData,
+    DeskCardData, ResultData, RunFactData, ToolCallData, WorkNavData,
 };
 use super::lens_work;
 
@@ -2072,30 +2072,10 @@ fn held_for_test(notice: &Notice, test_run: bool) -> bool {
     test_run && matches!(notice, Notice::Finished { .. })
 }
 
-/// A window has its own copy of every global, so it takes the shell's theme — dark or light, the
-/// accent, any community theme — from the shell, and keeps taking it.
+/// A window has its own copy of every global, so it takes the shell's theme from the shell, and
+/// keeps taking it. The copy is `wire::theme::sync_window_theme`, shared with the capture bar.
 fn sync_theme(ui: &App, window: &AgentWindow) {
-    macro_rules! copy {
-        ($global:ty, $get:ident, $set:ident) => {{
-            let want = ui.global::<$global>().$get();
-            if window.global::<$global>().$get() != want {
-                window.global::<$global>().$set(want);
-            }
-        }};
-    }
-    copy!(ThemeMode, get_dark, set_dark);
-    copy!(AccentPreset, get_index, set_index);
-    copy!(ThemeOverrides, get_enabled, set_enabled);
-    copy!(ThemeOverrides, get_bg_deep_override, set_bg_deep_override);
-    copy!(ThemeOverrides, get_bg_surface_override, set_bg_surface_override);
-    copy!(ThemeOverrides, get_bg_card_override, set_bg_card_override);
-    copy!(ThemeOverrides, get_bg_elevated_override, set_bg_elevated_override);
-    copy!(ThemeOverrides, get_amber_override, set_amber_override);
-    copy!(ThemeOverrides, get_cyan_override, set_cyan_override);
-    copy!(ThemeOverrides, get_text_primary_override, set_text_primary_override);
-    copy!(ThemeOverrides, get_text_secondary_override, set_text_secondary_override);
-    copy!(ThemeOverrides, get_text_dim_override, set_text_dim_override);
-    copy!(ThemeOverrides, get_accent_override, set_accent_override);
+    crate::wire::theme::sync_window_theme!(ui, window);
 }
 
 /// All of a call's output, in the Editor: written to a file beside the sessions and opened there.

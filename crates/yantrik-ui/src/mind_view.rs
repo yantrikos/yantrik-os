@@ -209,6 +209,44 @@ pub fn requester_now() -> Requester {
     classify(&CallerFacts { pid, agent, attached_mind, mind_account }, std::process::id())
 }
 
+/// Which mind the call being dispatched on this thread is, for a rule that must tell one mind
+/// from another ("only the recording you started"): `agent:<id>` for a token the shell believed,
+/// `mind:<name>` for a caller whose ancestry belongs to an attached mind, `companion` for this
+/// process. `None` when the shell cannot tell - a token it did not believe, the mind account
+/// with no attached mind, the person - which no such rule may read as anyone's. Read where
+/// [`requester_now`] is.
+pub fn mind_id_now() -> Option<String> {
+    if let Some(agent) = crate::control_agent_terminal::calling_agent() {
+        return agent.ok().map(|id| format!("agent:{}", id.0));
+    }
+    let caller = yantrik_app_runtime::control::caller();
+    let pid = caller.as_ref().and_then(|c| u32::try_from(c.pid).ok()).filter(|p| *p > 0)?;
+    if pid == std::process::id() {
+        return Some("companion".to_string());
+    }
+    crate::caller_identity::resolve(pid as i32).attached_mind.map(|mind| format!("mind:{mind}"))
+}
+
+/// The agent calling now, as the person reads it, when a token the shell believed came with the
+/// call: its role and mind ("Reviewer on pi"), or its mind, or its id. [`requester_now`] calls
+/// every such caller "an agent", which told the person nothing about which one.
+pub fn agent_words_now() -> Option<String> {
+    let id = crate::control_agent_terminal::calling_agent()?.ok()?;
+    let known = crate::agents::store().read(|s| {
+        s.agent(&id).map(|a| agent_words(&a.meta.mind, a.meta.role.as_ref().map(|r| r.name.as_str())))
+    });
+    Some(known.unwrap_or_else(|| agent_words(id.harness(), None)))
+}
+
+/// "Reviewer on pi", "pi", or "an agent" when there is nothing to name it by.
+pub fn agent_words(mind: &str, role: Option<&str>) -> String {
+    match (mind.trim(), role.map(str::trim).filter(|r| !r.is_empty())) {
+        ("", _) => "an agent".to_string(),
+        (mind, Some(role)) => format!("{role} on {mind}"),
+        (mind, None) => mind.to_string(),
+    }
+}
+
 /// Where one launch goes, decided while the call that asked for it is still on this thread.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Route {
@@ -769,6 +807,19 @@ mod tests {
 
     fn facts(pid: Option<u32>, agent: Option<bool>, mind: Option<&str>) -> CallerFacts {
         CallerFacts { pid, agent, attached_mind: mind.map(str::to_string), mind_account: false }
+    }
+
+    /// Security review of #828, finding 4: the person is told which agent took a picture, not
+    /// "an agent".
+    #[test]
+    fn an_agent_is_named_by_its_role_and_mind() {
+        assert_eq!(agent_words("pi", Some("Reviewer")), "Reviewer on pi");
+        assert_eq!(agent_words("Hermes", None), "Hermes");
+        assert_eq!(agent_words("pi", Some("  ")), "pi");
+        assert_eq!(agent_words(" ", Some("Reviewer")), "an agent");
+        // Outside a dispatch there is no caller, so no mind to tell apart.
+        assert_eq!(mind_id_now(), None);
+        assert_eq!(agent_words_now(), None);
     }
 
     #[test]

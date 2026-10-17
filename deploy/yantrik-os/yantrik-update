@@ -1537,7 +1537,10 @@ and this is running as $(id -un). Run: sudo yantrik-update set-channel $new"
 # a machine installed before the image carried it could search Flathub for nothing.
 # vim-tiny: muscle memory and scripts call `vi`, and the fresh-install audit found
 # `command not found: vi` on the shipped image (#678).
-REQUIRED_PACKAGES="iproute2 iputils-ping grim curl python3 nano htop vim-tiny swaybg xdg-desktop-portal-gtk flatpak git bash-completion podman uidmap passt fuse-overlayfs nftables upower power-profiles-daemon"
+# slurp, wl-clipboard, wf-recorder, vainfo: the capture bar's region, its clipboard copy and its
+# recordings (design/capture-2026-10-15.md); a machine installed before the image gained the
+# recorder could not record at all.
+REQUIRED_PACKAGES="iproute2 iputils-ping grim curl python3 nano htop vim-tiny swaybg xdg-desktop-portal-gtk flatpak git bash-completion podman uidmap passt fuse-overlayfs nftables upower power-profiles-daemon slurp wl-clipboard wf-recorder vainfo"
 
 # Is this package installed, per dpkg? Prints dpkg's own status word, or nothing.
 pkg_installed() {
@@ -4368,7 +4371,7 @@ cmd_selftest() {
   printf '#!/bin/sh\ncase "$1" in iproute2|curl|python3|grim) echo installed ;; esac\n' > "$old"
   chmod +x "$old"
   out="$(missing_packages "$old")"
-  want="iputils-ping nano htop vim-tiny swaybg xdg-desktop-portal-gtk flatpak git bash-completion podman uidmap passt fuse-overlayfs nftables upower power-profiles-daemon"
+  want="iputils-ping nano htop vim-tiny swaybg xdg-desktop-portal-gtk flatpak git bash-completion podman uidmap passt fuse-overlayfs nftables upower power-profiles-daemon slurp wl-clipboard wf-recorder vainfo"
   if [ "$out" = "$want" ]; then
     printf '  %sok%s   a 520-style machine is named package by package\n' "$c_grn" "$c_off"
   else
@@ -4383,7 +4386,7 @@ cmd_selftest() {
   printf '#!/bin/sh\ncase "$1" in iproute2|iputils-ping|grim|curl|python3|nano|htop|swaybg|xdg-desktop-portal-gtk|flatpak) echo installed ;; esac\n' > "$pre401"
   chmod +x "$pre401"
   out="$(missing_packages "$pre401")"
-  want="vim-tiny git bash-completion podman uidmap passt fuse-overlayfs nftables upower power-profiles-daemon"
+  want="vim-tiny git bash-completion podman uidmap passt fuse-overlayfs nftables upower power-profiles-daemon slurp wl-clipboard wf-recorder vainfo"
   if [ "$out" = "$want" ]; then
     printf '  %sok%s   a machine from before #401 is given git, completion and rootless podman\n' "$c_grn" "$c_off"
   else

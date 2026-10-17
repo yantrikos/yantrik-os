@@ -142,6 +142,8 @@ pub(crate) fn wire_after_install(harness: &str) {
                         urgency: 1,
                         icon_char: name.chars().next().unwrap_or('M').to_string().into(),
                         actions: slint::ModelRc::new(slint::VecModel::from(vec![crate::ToastActionData { id: "undo".into(), label: "Undo".into() }])),
+                        thumbnail: Default::default(),
+                        has_thumbnail: false,
                     },
                     1,
                 );
@@ -172,6 +174,8 @@ pub(crate) fn not_wired_toast(name: &str, why: &str) -> crate::ToastData {
         urgency: 1,
         icon_char: name.chars().next().unwrap_or('M').to_string().into(),
         actions: slint::ModelRc::new(slint::VecModel::<crate::ToastActionData>::default()),
+        thumbnail: Default::default(),
+        has_thumbnail: false,
     }
 }
 

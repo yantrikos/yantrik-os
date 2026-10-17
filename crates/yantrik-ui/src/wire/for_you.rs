@@ -169,6 +169,9 @@ fn toast(ui: &App, n: &Notification) {
             // is beside it; a toast's buttons forward to an app's control surface, which a
             // mind's card never may.
             actions: ModelRc::new(VecModel::from(Vec::new())),
+            // A picture is only the desktop's own capture; a mind's card never shows one.
+            thumbnail: Default::default(),
+            has_thumbnail: false,
         },
         1,
     );

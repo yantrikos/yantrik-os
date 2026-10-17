@@ -282,6 +282,11 @@ fn search_dir(
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
+        // The protected places below the folder asked for, which validate_path checked only at
+        // the top: ~/Pictures holds the person's screenshots (security review of #828).
+        if yantrik_ipc_contracts::home_paths::is_protected(&path) {
+            continue;
+        }
 
         if path.is_dir() {
             // Skip hidden dirs

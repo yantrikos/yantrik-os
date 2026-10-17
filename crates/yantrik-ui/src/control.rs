@@ -990,6 +990,9 @@ pub fn publish(
                     ),
                 )
                 .with("do_not_disturb", ui.get_dnd_mode())
+                // Whether the screen is being recorded, since when, of what, by whom, and where
+                // it will be saved: the red dot as data. `control_capture`.
+                .with("capture", crate::capture::for_describe())
                 // What the machine is trying to tell the person, so that "is anything waiting
                 // for me" is a read of the shell rather than a second call to the notifications
                 // service — and so a mind can see what it has already said.
@@ -2195,6 +2198,9 @@ pub fn publish(
     let surface = crate::control_files::actions(surface, ui);
     // Reading a display's text from its pixels, for windows that publish nothing else (#257).
     let surface = crate::control_screen::actions(surface);
+    // Pictures and recordings: the person's capture keys, and what a mind may take, graded as
+    // reading the screen is. See `control_capture`.
+    let surface = crate::control_capture::actions(surface, ui);
     // Asking the person. Three actions, all `safe`, none of which decides anything — the
     // decision is a button in the Lens. See `control_approvals` for why that split is the
     // whole point.

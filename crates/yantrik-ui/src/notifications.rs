@@ -481,6 +481,7 @@ mod tests {
             source: Source::Yantrik,
             replaces_id: None,
             sender: None,
+            image: None,
             notice: None,
             revision: 1,
         }

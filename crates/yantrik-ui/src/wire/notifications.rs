@@ -358,7 +358,7 @@ fn invoke_action(weak: &slint::Weak<App>, id: &str, action_id: &str) {
             n.actions
                 .iter()
                 .find(|a| a.id == action_id)
-                .map(|a| (n.app.clone(), a.args.clone()))
+                .map(|a| (n.app.clone(), a.args.clone(), n.sender.as_ref().is_some_and(|s| s.desktop)))
         })
     })
     .flatten();
@@ -369,8 +369,16 @@ fn invoke_action(weak: &slint::Weak<App>, id: &str, action_id: &str) {
     if let Some(ui) = weak.upgrade() {
         crate::wire::toast::remove(&ui, id);
         resync(&ui);
-        if let Some((app, args)) = ours {
-            forward_to_app(&ui, &app, action_id, args);
+        if let Some((app, args, from_desktop)) = ours {
+            // A capture's Open, Show in Files and Delete act on a file in the person's home, so
+            // they are carried out here, as the person's press, not as a call on the control
+            // surface any caller could make; `capture::notice` checks who filed it and what it
+            // names.
+            if crate::capture::notice::handles(action_id) {
+                crate::capture::notice::press(&ui, action_id, args.as_ref(), from_desktop);
+            } else {
+                forward_to_app(&ui, &app, action_id, args);
+            }
         }
     }
     tracing::info!(id, action_id, "notification action pressed");
@@ -526,6 +534,7 @@ fn maybe_toast(ui: &App, n: &Notification) {
     // not verified" when there is no record): a toast had no sender line at all, and a name the
     // caller chose was the only thing on it (security reviews of #614).
     let app_name = notifications::sender_name(n);
+    let thumbnail = thumbnail_for(n);
 
     crate::wire::toast::push(
         ui,
@@ -543,9 +552,33 @@ fn maybe_toast(ui: &App, n: &Notification) {
                 .to_string()
                 .into(),
             actions: ModelRc::new(VecModel::from(actions)),
+            thumbnail: thumbnail.clone().unwrap_or_default(),
+            has_thumbnail: thumbnail.is_some(),
         },
         notifications::urgency_int(n.urgency),
     );
+}
+
+/// The largest picture a toast loads for its thumbnail. A screenshot of a 4K desktop is a few
+/// megabytes of PNG; past this it is not one of ours, and decoding it would hold up the UI thread.
+const THUMBNAIL_MAX_BYTES: u64 = 24 << 20;
+
+/// The thumbnail a toast may draw: only on a notification the desktop itself sent (the service
+/// says so from the socket's own process, `Sender::desktop`), only for a capture this desktop
+/// saved, and only a file of a sane size. Anyone else's `image` is kept in the store and never
+/// loaded, so a caller cannot make the shell decode a file of its choosing.
+fn thumbnail_for(n: &yantrik_ipc_contracts::notifications::Notification) -> Option<slint::Image> {
+    let from_desktop = n.sender.as_ref().is_some_and(|s| s.desktop);
+    let path = std::path::PathBuf::from(n.image.as_deref().filter(|_| from_desktop)?);
+    let home = crate::capture::names::home().ok()?;
+    if !crate::capture::names::is_capture(&path, &home) {
+        return None;
+    }
+    let size = std::fs::metadata(&path).ok().filter(|m| m.is_file())?.len();
+    if size == 0 || size > THUMBNAIL_MAX_BYTES {
+        return None;
+    }
+    slint::Image::load_from_path(&path).ok()
 }
 
 // ── The poll ────────────────────────────────────────────────────────────────────────────────
@@ -1354,7 +1387,17 @@ mod tests {
     /// added here because its words are the desktop's.
     #[test]
     fn model_text_reaches_a_notification_only_through_post_companion() {
-        const DESKTOPS_OWN_WORDS: [(&str, &str); 11] = [
+        const DESKTOPS_OWN_WORDS: [(&str, &str); 19] = [
+            // Capture: fixed sentences, a file name this desktop chose, the requester's mind name.
+            ("capture/notice.rs", "screenshot_saved"),
+            ("capture/notice.rs", "screenshot_copied"),
+            ("capture/notice.rs", "screenshot_by_mind"),
+            ("capture/notice.rs", "recording_by_mind"),
+            ("capture/notice.rs", "capture_opened_by_mind"), // "<mind> opened <capture>"
+            ("capture/notice.rs", "screenshot_failed"),
+            ("capture/notice.rs", "recording_failed"),
+            ("capture/notice.rs", "recording_finished"),
+            ("capture/notice.rs", "leftover_stopped"),
             ("default_mind.rs", "handed_over"),            // "Hermes is ready; it answers from now on."
             ("focus.rs", "start"),                         // "Session complete. Nice work."
             ("wire/agents.rs", "notification"),            // turn titles, "You asked: …"
@@ -1364,7 +1407,6 @@ mod tests {
             ("wire/notifications.rs", "bypass_ended"),     // "Bypass ended"
             ("wire/notifications.rs", "private_mode_notice"),
             ("wire/notifications.rs", "post_companion"),   // the one door for model text
-            ("wire/screenshot.rs", "take_screenshot"),     // "Screenshot saved"
             ("wire/wifi_reconnect.rs", "observe"),          // "Wi-Fi disconnected", DropWatch's words
         ];
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

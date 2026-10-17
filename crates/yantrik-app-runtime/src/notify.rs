@@ -75,6 +75,7 @@ pub struct Notification {
     urgency: Urgency,
     actions: Vec<NotificationAction>,
     replaces_id: Option<String>,
+    image: Option<String>,
 }
 
 impl Notification {
@@ -87,6 +88,7 @@ impl Notification {
             urgency: Urgency::Normal,
             actions: Vec::new(),
             replaces_id: None,
+            image: None,
         }
     }
 
@@ -137,6 +139,13 @@ impl Notification {
         self
     }
 
+    /// A picture of what this is about, as an absolute path: a screenshot's thumbnail. The shell
+    /// draws it only for the desktop's own captures; anyone else's is kept and not drawn.
+    pub fn image(mut self, path: impl Into<String>) -> Self {
+        self.image = Some(path.into());
+        self
+    }
+
     fn into_request(self) -> AddRequest {
         AddRequest {
             app: self.app,
@@ -146,6 +155,7 @@ impl Notification {
             actions: self.actions,
             source: Source::Yantrik,
             replaces_id: self.replaces_id,
+            image: self.image,
             // A mind's notice comes only through the harness host, never through an app.
             notice: None,
         }

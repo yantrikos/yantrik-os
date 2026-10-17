@@ -138,6 +138,7 @@ pub fn notify_to_request(
         actions: actions_from_pairs(actions),
         source: Source::Freedesktop,
         replaces_id: replaces_target(replaces_id),
+        image: None,
         // The bus has no notices: a mind's card comes only from the harness host.
         notice: None,
     }

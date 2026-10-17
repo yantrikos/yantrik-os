@@ -176,7 +176,10 @@ worth knowing on the first day:
 | `Super`+`L` | Lock |
 | `Alt`+`Tab` / `Alt`+`F4` | Cycle windows / close |
 | `Super`+`←`/`→`/`↑`/`↓` | Snap, maximize, minimize |
-| `Print` / `Super`+`Shift`+`S` | Screenshot: whole screen / a region, into `~/Pictures` |
+| `Print` | The capture bar: a screenshot or a recording, of a region or the whole screen |
+| `Shift`+`Print` / `Super`+`Shift`+`S` | Screenshot of a region you drag, into `~/Pictures/Screenshots` and the clipboard |
+| `Ctrl`+`Print` | Screenshot of the whole screen, to the clipboard only |
+| `Super`+`Shift`+`R` | Start or stop a screen recording (saved in `~/Videos/Recordings`) |
 
 ---
 
