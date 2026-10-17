@@ -254,6 +254,12 @@ jobs:
       - name: The updater agrees with itself about channel and version
         run: YANTRIK_NFT_OUT="$RUNNER_TEMP/mind-egress-nft" bash deploy/yantrik-os/yantrik-update selftest
 
+      # The image refuses a Mind bundle without a capability this OS relies on (agent_token,
+      # cmd_answer: mind-capabilities.sh), with build-debian-iso.sh's own lines against fake bundles.
+      # install-mind's use of the same check is in the updater's selftest above.
+      - name: The image refuses a Mind without the capabilities this OS relies on
+        run: bash deploy/yantrik-os/mind-capabilities-selftest.sh
+
       # The boot test's check that no real network address ships: config.yaml and update.conf
       # name no private address, the updater only ranges in CIDR and its marked selftest's made-up
       # fixtures, and nothing anywhere is on the developer's LAN. Held here against the updater in

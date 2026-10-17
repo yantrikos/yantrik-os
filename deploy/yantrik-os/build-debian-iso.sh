@@ -830,11 +830,16 @@ else
     # its account is moved (yantrik-update migrate-minds), every act from it must name a live
     # token (#423's MIND rule); an older mind has none, so each of its acts is refused, on a
     # machine that looks fine until it is asked to do something. The bundle says so in its
-    # manifest: its ancestry cannot be checked from here.
+    # manifest and its binary in a compiled-in marker: its ancestry cannot be checked from here.
     [ -f "$MIND_UNPACK/BUILD" ] \
         || fail "mind bundle carries no BUILD manifest — cannot tell which mind it is or whether it carries an agent token"
-    grep -qx 'agent_token=1' "$MIND_UNPACK/BUILD" \
-        || fail "mind bundle $(sed -n 's/^commit=//p' "$MIND_UNPACK/BUILD") does not declare agent_token=1 — a mind older than yantrik-mind bae1353 has every act refused by the MIND rule"
+    # That, and everything else this OS relies on (command answers, #566), each declared in BUILD
+    # and named in the binary's ym-capabilities marker. The list is in mind-capabilities.sh, shared
+    # with `yantrik-update install-mind`.
+    # shellcheck source=deploy/yantrik-os/mind-capabilities.sh
+    . "$SCRIPT_DIR/mind-capabilities.sh"
+    MIND_REFUSAL="$(mind_capabilities_check "$MIND_UNPACK")" \
+        || fail "mind bundle $(sed -n 's/^commit=//p' "$MIND_UNPACK/BUILD"): $MIND_REFUSAL"
 
     sudo mkdir -p "$ROOTFS/opt/yantrik-mind/bin" "$ROOTFS/etc/systemd/user"
     sudo cp -a "$MIND_UNPACK/bin/." "$ROOTFS/opt/yantrik-mind/bin/"

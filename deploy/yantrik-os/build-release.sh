@@ -208,6 +208,9 @@ if [ -f "$SCRIPT_DIR/yantrik-update" ]; then
   cp "$SCRIPT_DIR/yantrik-update" "$ROOT/bin/yantrik-update"
   chmod +x "$ROOT/bin/yantrik-update"
   echo "   + yantrik-update"
+  # What install-mind requires of a Mind, the same list the image checks: sourced beside it.
+  install -m 0644 "$SCRIPT_DIR/mind-capabilities.sh" "$ROOT/bin/mind-capabilities.sh" \
+    || fail "no mind-capabilities.sh: install-mind would refuse every Mind"
 else
   echo "   (no yantrik-update script found — image will not self-update)"
 fi

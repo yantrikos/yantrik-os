@@ -1733,10 +1733,11 @@ source_is_roots() {
   [ -z "$(find "$f" "$d" "$SHARE_DIR" "$PREFIX" -maxdepth 0 ! -type l -perm /022 2>/dev/null)" ]
 }
 
-# The updater and the list it trusts, which roll forward only: neither a rollback nor an older
-# bundle puts back an updater from before content was checked (#419).
+# The updater and the lists it trusts, which roll forward only: neither a rollback nor an older
+# bundle puts back an updater from before content was checked (#419), or a Mind capability list
+# from before a capability was required.
 is_updater_file() {
-  [ "$1" = yantrik-update ] || [ "$1" = yantrik-root-files.sha256 ]
+  [ "$1" = yantrik-update ] || [ "$1" = yantrik-root-files.sha256 ] || [ "$1" = mind-capabilities.sh ]
 }
 
 # The hashes of everything this updater installs as root, shipped in bin/ (#419). Ownership says
@@ -3691,7 +3692,8 @@ cmd_reconcile() {
 #   2. Only plain files at plain paths; bin/yantrik-mind, bin/yantrik-memory and BUILD present.
 #   3. BUILD names its commit, and that commit is in the Mind binary's own bytes. It is never
 #      run to ask: a Mind started here would be a second one beside the service.
-#      BUILD must say agent_token=1: an older mind has every act refused by the MIND rule.
+#      Every capability in mind-capabilities.sh (agent_token, cmd_answer) must be declared in
+#      BUILD and named in the binary's ym-capabilities marker: the image's own check, shared.
 #   4. Staged beside the target and renamed over it, root's, with the previous files kept as
 #      *.before-<commit>.
 #   5. If the Mind was running, it is restarted and must attach to the desktop ("[harness]
@@ -3802,8 +3804,15 @@ cmd_install_mind() {
   build="$stage/BUILD"
   commit="$(sed -n 's/^commit=\([0-9a-f]\{7,40\}\)$/\1/p' "$build" | head -1)"
   [ -n "$commit" ] || fail "the bundle's BUILD names no commit; nothing was changed"
-  grep -qx 'agent_token=1' "$build" \
-    || fail "mind $commit does not declare agent_token=1: every act from it would be refused by the MIND rule; nothing was changed"
+  # What this OS relies on, held by the same check as the image (mind-capabilities.sh, beside
+  # this script): declared in BUILD and named in the binary's ym-capabilities marker.
+  local caps_lib refusal
+  caps_lib="$(dirname "$(readlink -f "$0")")/mind-capabilities.sh"
+  [ -f "$caps_lib" ] || fail "no $caps_lib to check the Mind's capabilities with; nothing was changed"
+  # shellcheck source=deploy/yantrik-os/mind-capabilities.sh
+  . "$caps_lib"
+  refusal="$(mind_capabilities_check "$stage")" \
+    || fail "mind $commit: $refusal; nothing was changed"
   grep -a -q -F "$commit" "$stage/bin/yantrik-mind" \
     || fail "BUILD says $commit, but the Mind binary does not carry that commit; nothing was changed"
 
@@ -4186,10 +4195,12 @@ case "$1" in upower|power-profiles-daemon) ;; *) echo installed ;; esac
     printf '  skip install-mind checks: they run as an ordinary account, never as root\n'
   elif command -v zstd >/dev/null 2>&1; then
     local im="$root/install-mind" md out sha
-    mk_bundle() { # mk_bundle <name> <commit-in-BUILD> <commit-in-binary> <agent_token line>
+    # The capability lines and marker of a Mind that has everything this OS requires (fc5aa7b's).
+    local caps_ok=$'agent_token=1\ncmd_answer=1' marker_ok='ym-capabilities: agent_token cmd_answer;'
+    mk_bundle() { # mk_bundle <name> <commit-in-BUILD> <commit-in-binary> <capability lines> [marker]
       local d="$im/src-$1/yantrik-mind-$2-linux-amd64"
       mkdir -p "$d/bin" "$d/systemd/user"
-      printf 'ELF...stamp %s...\n' "$3" > "$d/bin/yantrik-mind"
+      printf 'ELF...stamp %s...%s\n' "$3" "${5-$marker_ok}" > "$d/bin/yantrik-mind"
       printf 'memory\n' > "$d/bin/yantrik-memory"
       printf 'name=yantrik-mind-%s-linux-amd64\ncommit=%s\nbuilt=2026-09-30T00:00:00Z\n%s\n' "$2" "$2" "$4" > "$d/BUILD"
       tar --zstd -cf "$im/$1.tar.zst" -C "$im/src-$1" "yantrik-mind-$2-linux-amd64"
@@ -4203,7 +4214,7 @@ case "$1" in upower|power-profiles-daemon) ;; *) echo installed ;; esac
     printf 'old mind\n' > "$md/bin/yantrik-mind"; printf 'old memory\n' > "$md/bin/yantrik-memory"
     printf 'commit=1111111\nagent_token=1\n' > "$md/BUILD"
 
-    mk_bundle good abc1234 abc1234 agent_token=1
+    mk_bundle good abc1234 abc1234 "$caps_ok"
     sha="$(sha256sum "$im/good.tar.zst" | cut -d' ' -f1)"
     out="$(env YANTRIK_MIND_DIR="$md" YANTRIK_MIND_HEALTH=ok "$0" install-mind "$im/good.tar.zst" "$sha" 2>&1; printf ' [exit %s]' "$?")"
     t "install-mind: outside the selftest its stand-ins are ignored: an ordinary account is refused" "runs as root" "$out"
@@ -4213,11 +4224,30 @@ case "$1" in upower|power-profiles-daemon) ;; *) echo installed ;; esac
     t "install-mind: a bundle whose sha256 is not the one given is refused, both named" "is $sha, not the 0000" "$out"
     is "install-mind: ... and nothing changed" "old mind" "$(cat "$md/bin/yantrik-mind")"
 
-    mk_bundle notoken abc1234 abc1234 agent_token=0
+    mk_bundle notoken abc1234 abc1234 $'agent_token=0\ncmd_answer=1'
     out="$(im_run "$md" "$im/notoken.tar.zst" "$(sha256sum "$im/notoken.tar.zst" | cut -d' ' -f1)")"
     t "install-mind: a mind without agent_token=1 is refused" "does not declare agent_token=1" "$out"
 
-    mk_bundle lying abc1234 fff9999 agent_token=1
+    # Capabilities (mind-capabilities.sh): each declared in BUILD and named in the binary's marker.
+    # 6a6006c: agent_token but no cmd_answer line, and no marker (it predates the marker).
+    mk_bundle m6a6006c 6a6006c 6a6006c agent_token=1 ''
+    out="$(im_run "$md" "$im/m6a6006c.tar.zst" "$(sha256sum "$im/m6a6006c.tar.zst" | cut -d' ' -f1)")"
+    t "install-mind: a 6a6006c-style mind (no cmd_answer) is refused, the capability and the fix named" \
+      "mind 6a6006c: it does not declare cmd_answer=1: it misreads" "$out"
+    t "install-mind: ... the fix named" "yantrik-mind fc5aa7b or later" "$out"
+    mk_bundle handedit abc1234 abc1234 "$caps_ok" ''
+    out="$(im_run "$md" "$im/handedit.tar.zst" "$(sha256sum "$im/handedit.tar.zst" | cut -d' ' -f1)")"
+    t "install-mind: BUILD says cmd_answer=1 but the binary has no marker (hand-edited BUILD): refused" \
+      "marker does not name agent_token" "$out"
+    mk_bundle nocmdmark abc1234 abc1234 "$caps_ok" 'ym-capabilities: agent_token;'
+    out="$(im_run "$md" "$im/nocmdmark.tar.zst" "$(sha256sum "$im/nocmdmark.tar.zst" | cut -d' ' -f1)")"
+    t "install-mind: marker present but without cmd_answer: refused" "marker does not name cmd_answer" "$out"
+    mk_bundle noterm abc1234 abc1234 "$caps_ok" 'ym-capabilities: agent_token cmd_answer'
+    out="$(im_run "$md" "$im/noterm.tar.zst" "$(sha256sum "$im/noterm.tar.zst" | cut -d' ' -f1)")"
+    t "install-mind: a marker without its closing ; is no marker: refused" "marker does not name agent_token" "$out"
+    is "install-mind: ... no capability refusal touched the installed Mind" "old mind" "$(cat "$md/bin/yantrik-mind")"
+
+    mk_bundle lying abc1234 fff9999 "$caps_ok"
     out="$(im_run "$md" "$im/lying.tar.zst" "$(sha256sum "$im/lying.tar.zst" | cut -d' ' -f1)")"
     t "install-mind: BUILD naming a commit the binary does not carry is refused" "does not carry that commit" "$out"
 
@@ -4245,18 +4275,27 @@ with tarfile.open(sys.argv[1], "w") as t:
     out="$(im_run "$md" "$im/good.tar.zst" "$sha" YANTRIK_MIND_HEALTH=ok)"
     t "install-mind: a good bundle is installed and reported in one line" "installed abc1234 $(printf '%s' "$sha" | cut -c1-16) attached" "$out"
     t "install-mind: ... with a clean exit" "[exit 0]" "$out"
-    is "install-mind: ... the new Mind in place" "ELF...stamp abc1234..." "$(cat "$md/bin/yantrik-mind")"
+    is "install-mind: ... the new Mind in place" "ELF...stamp abc1234...$marker_ok" "$(cat "$md/bin/yantrik-mind")"
     is "install-mind: ... the previous one kept beside it" "old mind" "$(cat "$md/bin/yantrik-mind.before-abc1234")"
     t "install-mind: ... the BUILD with it" "commit=abc1234" "$(cat "$md/BUILD")"
     is "install-mind: ... and no staging left behind" "" "$(find "$md" -maxdepth 1 -name '.install.*')"
 
-    mk_bundle next def5678 def5678 agent_token=1
+    # fc5aa7b, as built (BUILD commit=fc5aa7b agent_token=1 cmd_answer=1, the binary's marker), with
+    # more lowercase bytes straight after the `;`, as a Rust string has no terminator: accepted.
+    mk_bundle fc5aa7b fc5aa7b fc5aa7b "$caps_ok" 'ym-capabilities: agent_token cmd_answer;rustc_more_bytes'
+    out="$(im_run "$md" "$im/fc5aa7b.tar.zst" "$(sha256sum "$im/fc5aa7b.tar.zst" | cut -d' ' -f1)" YANTRIK_MIND_HEALTH=ok)"
+    t "install-mind: the fc5aa7b bundle (agent_token, cmd_answer, marker) is installed" "installed fc5aa7b" "$out"
+    t "install-mind: ... with a clean exit" "[exit 0]" "$out"
+    out="$(im_run "$md" "$im/good.tar.zst" "$sha" YANTRIK_MIND_HEALTH=ok)"
+    t "install-mind: ... and abc1234 put back over it" "installed abc1234" "$out"
+
+    mk_bundle next def5678 def5678 "$caps_ok"
     local next_sha; next_sha="$(sha256sum "$im/next.tar.zst" | cut -d' ' -f1)"
     out="$(im_run "$md" "$im/next.tar.zst" "$next_sha" YANTRIK_MIND_HEALTH=rollback-only)"
     t "install-mind: a Mind that does not attach is rolled back, and the previous one proven back" \
       "ROLLED BACK def5678: it did not attach within 30 s; the previous Mind is back and attached" "$out"
     t "install-mind: ... with a failing exit" "[exit 1]" "$out"
-    is "install-mind: ... the previous Mind back in place" "ELF...stamp abc1234..." "$(cat "$md/bin/yantrik-mind")"
+    is "install-mind: ... the previous Mind back in place" "ELF...stamp abc1234...$marker_ok" "$(cat "$md/bin/yantrik-mind")"
     t "install-mind: ... and its BUILD" "commit=abc1234" "$(cat "$md/BUILD")"
     out="$(im_run "$md" "$im/next.tar.zst" "$next_sha" YANTRIK_MIND_HEALTH=never)"
     t "install-mind: when the previous Mind does not attach either, it says so" "the previous Mind is back but did NOT attach either" "$out"
@@ -4264,7 +4303,7 @@ with tarfile.open(sys.argv[1], "w") as t:
 
     local c csha
     for c in aaa0001 aaa0002 aaa0003; do
-      mk_bundle "$c" "$c" "$c" agent_token=1
+      mk_bundle "$c" "$c" "$c" "$caps_ok"
       csha="$(sha256sum "$im/$c.tar.zst" | cut -d' ' -f1)"
       im_run "$md" "$im/$c.tar.zst" "$csha" YANTRIK_MIND_HEALTH=ok >/dev/null
       sleep 1
@@ -4274,7 +4313,7 @@ with tarfile.open(sys.argv[1], "w") as t:
       "$(cd "$md/bin" && ls -1d yantrik-mind.before-* | sort | tr '\n' ' ' | sed 's/ $//')"
     is "install-mind: ... and of its BUILD" "BUILD.before-aaa0002 BUILD.before-aaa0003" \
       "$(cd "$md" && ls -1d BUILD.before-* | sort | tr '\n' ' ' | sed 's/ $//')"
-    is "install-mind: ... the newest one still the Mind it replaced" "ELF...stamp aaa0002..." \
+    is "install-mind: ... the newest one still the Mind it replaced" "ELF...stamp aaa0002...$marker_ok" \
       "$(cat "$md/bin/yantrik-mind.before-aaa0003")"
   else
     printf '  skip install-mind checks: no zstd here\n'
