@@ -617,6 +617,7 @@ cmd_migrate_ownership() {
   reconcile_minds
   reconcile_devtools_guard
   reconcile_mind_egress
+  arm_minds_first_boot || warn "could not arm $MINDS_FIRSTBOOT_UNIT; run 'sudo yantrik-update migrate-minds' once after the first boot"
   return "$rc"
 }
 
@@ -3645,6 +3646,67 @@ cmd_migrate_minds() {
   fi
 }
 
+# A fresh install had the mind's account and nothing else (#713): no yantrik-mind.service and
+# yantrik-egress inactive, until someone ran `migrate-minds` by hand. The installers make the
+# machine in a chroot, where nothing can be started, so they arm this one-shot instead: on the
+# first boot it runs migrate-minds itself, with systemd up, the same steps a person would run.
+# It runs once: whatever its result, it turns itself off afterwards (ExecStopPost runs on success,
+# failure and timeout alike). A migrate-minds that cannot succeed (no home for the person, two
+# memories) would otherwise run again at every boot and hold up the login each time; instead it
+# says in the journal how to run it by hand, as the mind's own unit does when it cannot start.
+MINDS_FIRSTBOOT_UNIT=yantrik-minds-firstboot.service
+minds_firstboot_text() {
+  cat <<'EOF'
+# Made by yantrik-update when this machine was installed (#713): on its first boot, Yantrik Mind
+# gets its own account's unit and the egress proxy is turned on, as `yantrik-update migrate-minds`
+# does. Runs once, then turns itself off.
+#
+# Before anyone can log in (systemd-user-sessions.service gates getty, the autologin included):
+# the image enables the person-level yantrik-mind.service for every user, and a user manager that
+# started it while migrate-minds read the person's home would make the move fail ("counts
+# changed") or leave a second memory there. No ordering cycle: yantrik-egress and yantrik-mind
+# are ordered only after network-online.target, which is not after user sessions. It does mean
+# the first login waits while migrate-minds starts them, network-online included (bounded by the
+# network's own wait-online timeout, and by TimeoutStartSec below).
+#
+# Not ordered against cloud-init: on Debian cloud-final.service is After=multi-user.target, so
+# this unit (wanted by multi-user.target) always finishes before cloud-final starts, and
+# After=cloud-final.service here would be an ordering cycle.
+[Unit]
+Description=Yantrik OS: set up Yantrik Mind and its egress proxy on the first boot
+After=local-fs.target nftables.service
+Before=systemd-user-sessions.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/yantrik/bin/yantrik-update migrate-minds
+TimeoutStartSec=10min
+ExecStopPost=/bin/sh -c '[ "$$SERVICE_RESULT" = success ] || echo "Yantrik Mind was not set up on the first boot ($$SERVICE_RESULT). Run once: sudo yantrik-update migrate-minds" >&2; /bin/systemctl disable yantrik-minds-firstboot.service'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+# Arm that one-shot in the system under <root> (empty: this one), only while it is being made:
+# where systemd runs, the machine is in use, and moving a mind out of a person's home is theirs to
+# start. Nor once the mind's unit is enabled: migrate-minds has run. Run by migrate-ownership,
+# which every installer runs on the target (yantrik-install.sh and cloud-init through
+# yantrik-lockdown, the desktop installer through installer_ownership.rs).
+arm_minds_first_boot() { # [<root>]
+  local root="${1:-}" sys
+  sys="$root/etc/systemd/system"
+  # Relies on the installers not bind-mounting /run into the target: there it is empty.
+  [ -d "$root/run/systemd/system" ] && return 0
+  [ -e "$sys/multi-user.target.wants/yantrik-mind.service" ] && return 0
+  [ -L "$sys/multi-user.target.wants/yantrik-mind.service" ] && return 0
+  mkdir -p "$sys/multi-user.target.wants" || return 1
+  minds_firstboot_text > "$sys/$MINDS_FIRSTBOOT_UNIT" && chmod 0644 "$sys/$MINDS_FIRSTBOOT_UNIT" || return 1
+  # The link systemctl enable would make; made by hand, as systemctl may not be usable here.
+  ln -sfn "../$MINDS_FIRSTBOOT_UNIT" "$sys/multi-user.target.wants/$MINDS_FIRSTBOOT_UNIT" || return 1
+  info "Yantrik Mind and its egress proxy are set up on the first boot ($MINDS_FIRSTBOOT_UNIT)"
+}
+
 cmd_reconcile() {
   migrate_if_needed
   elevate
@@ -4760,6 +4822,75 @@ d = json.load(sys.stdin); print(d["public_proxy"], d["proxy"].split(":")[0])')"
        && [ "$(declare -f cmd_migrate_minds | grep -n -m1 'reconcile_egress$\|reconcile_egress;' | cut -d: -f1)" \
             -lt "$(declare -f cmd_migrate_minds | grep -n -m1 'reconcile_mind_egress;\|reconcile_mind_egress$' | cut -d: -f1)" ] \
        && echo yes || echo no)"
+
+  # A fresh install gets the mind's unit and a running egress proxy with no step by hand (#713).
+  # No VM here: what is checked is that every installer reaches migrate-minds on the first boot,
+  # and that migrate-minds is what installs the mind's unit, turns it on and starts the proxy.
+  local fb="$root/firstboot" fbw ud lk
+  fbw="$fb/etc/systemd/system/multi-user.target.wants"
+  arm_minds_first_boot "$fb" >/dev/null 2>&1
+  t "first boot (#713): a machine being made gets the one-shot" "ExecStart=/opt/yantrik/bin/yantrik-update migrate-minds" \
+    "$(cat "$fb/etc/systemd/system/$MINDS_FIRSTBOOT_UNIT" 2>/dev/null)"
+  is "first boot: ... enabled, as systemctl enable would" "../$MINDS_FIRSTBOOT_UNIT" "$(readlink "$fbw/$MINDS_FIRSTBOOT_UNIT" 2>/dev/null)"
+  local fbt; fbt="$(minds_firstboot_text)"
+  is "first boot: ... before any login, so the person's own mind cannot start mid-move" "Before=systemd-user-sessions.service" \
+    "$(printf '%s\n' "$fbt" | grep '^Before=')"
+  is "first boot: ... never ordered after cloud-final (After=multi-user there: a cycle)" "" \
+    "$(printf '%s\n' "$fbt" | grep '^After=.*cloud-final')"
+  local fbu; fbu="$(dirname "$0")/../../config/systemd"
+  if [ -f "$fbu/yantrik-egress.service" ] && [ -f "$fbu/yantrik-mind.service" ]; then
+    is "first boot: ... the mind's units it starts are not ordered after user sessions (no deadlock)" "" \
+      "$(grep -h '^After=' "$fbu/yantrik-egress.service" "$fbu/yantrik-mind.service" \
+         | grep 'systemd-user-sessions\|multi-user.target\|getty')"
+  fi
+  is "first boot: ... a bounded start" "TimeoutStartSec=10min" "$(printf '%s\n' "$fbt" | grep '^TimeoutStartSec=')"
+  t "first boot: ... runs once: turned off after any result, not only success" \
+    "/bin/systemctl disable $MINDS_FIRSTBOOT_UNIT'" "$(printf '%s\n' "$fbt" | grep '^ExecStopPost=')"
+  t "first boot: ... and a failure says how to run it by hand" "Run once: sudo yantrik-update migrate-minds" \
+    "$(printf '%s\n' "$fbt" | grep '^ExecStopPost=')"
+  is "first boot: ... no ExecStartPost (that would retry a failure at every boot)" "" \
+    "$(printf '%s\n' "$fbt" | grep '^ExecStartPost=')"
+  # shellcheck disable=SC2016  # the unit's own text, not expanded here
+  is "first boot: ... \$\$ in the unit, so the shell (not systemd) reads SERVICE_RESULT" "2" \
+    "$(printf '%s\n' "$fbt" | grep -o '\$\$SERVICE_RESULT' | wc -l | tr -d ' ')"
+  rm -rf "$fb"; mkdir -p "$fb/run/systemd/system"
+  arm_minds_first_boot "$fb" >/dev/null 2>&1
+  is "first boot: not on a machine in use (systemd runs there)" "no" \
+    "$([ -e "$fb/etc/systemd/system/$MINDS_FIRSTBOOT_UNIT" ] && echo yes || echo no)"
+  rm -rf "$fb"; mkdir -p "$fbw"; ln -s /etc/systemd/system/yantrik-mind.service "$fbw/yantrik-mind.service"
+  arm_minds_first_boot "$fb" >/dev/null 2>&1
+  is "first boot: not once the mind's unit is on (migrate-minds ran)" "no" \
+    "$([ -e "$fb/etc/systemd/system/$MINDS_FIRSTBOOT_UNIT" ] && echo yes || echo no)"
+  is "first boot: migrate-ownership arms it, after the mind's account is made" "yes" \
+    "$([ "$(declare -f cmd_migrate_ownership | grep -n -m1 'reconcile_minds;\|reconcile_minds$' | cut -d: -f1)" \
+          -lt "$(declare -f cmd_migrate_ownership | grep -n -m1 'arm_minds_first_boot' | cut -d: -f1)" ] \
+       && echo yes || echo no)"
+  is "first boot: migrate-minds installs the mind's unit, starts the proxy, then turns the mind on" "yes" \
+    "$(declare -f cmd_migrate_minds | grep -q 'reconcile_mind_units' \
+       && declare -f cmd_migrate_minds | grep -q 'reconcile_egress' \
+       && declare -f reconcile_egress | grep -q 'systemctl start yantrik-egress.service' \
+       && declare -f cmd_migrate_minds | grep -q 'systemctl enable --now yantrik-mind.service' \
+       && echo yes || echo no)"
+  # Each way of making a machine reaches migrate-ownership on the target, or runs migrate-minds
+  # itself on its first boot.
+  lk="$(dirname "$0")/yantrik-lockdown"
+  ud="$(dirname "$0")/cloud-init/user-data.yaml"
+  if [ -f "$lk" ] && [ -f "$ud" ]; then
+    # shellcheck disable=SC2016  # the scripts' own text, not expanded here
+    t "first boot: yantrik-lockdown runs migrate-ownership" '"$PREFIX/bin/yantrik-update" migrate-ownership' "$(cat "$lk")"
+    # shellcheck disable=SC2016  # the scripts' own text, not expanded here
+    t "first boot: the text installer runs yantrik-lockdown on the target" 'chroot "$M" /opt/yantrik/bin/yantrik-lockdown secure' \
+      "$(cat "$(dirname "$0")/yantrik-install.sh")"
+    t "first boot: the desktop installer runs migrate-ownership on the target" '"migrate-ownership"' \
+      "$(cat "$(dirname "$0")/../../crates/yantrik-ui/src/wire/installer_ownership.rs" 2>/dev/null)"
+    is "first boot: cloud-init runs migrate-minds after the tree is root's" "yes" \
+      "$(l1="$(grep -n -m1 'yantrik-lockdown secure' "$ud" | cut -d: -f1)"; l2="$(grep -n -m1 'yantrik-update migrate-minds' "$ud" | cut -d: -f1)"
+         [ -n "$l1" ] && [ -n "$l2" ] && [ "$l1" -lt "$l2" ] && echo yes || echo no)"
+    is "first boot: cloud-init never starts the one-shot again (it already ran before cloud-final)" "" \
+      "$(grep -v '^[[:space:]]*#' "$ud" | grep 'systemctl start yantrik-minds-firstboot')"
+    t "first boot: ... and turns it off after its own migrate-minds" "systemctl disable yantrik-minds-firstboot.service" \
+      "$(grep -v '^[[:space:]]*#' "$ud")"
+  fi
 
   # Seeded lan rules: the endpoints the person and root configured, never the mind's own.
   local sd="$root/seed" cands plan
