@@ -70,5 +70,42 @@
     "what": "a step sequencer called Beatgrid",
     "details": "A grid of sixteen steps for six sounds (kick, snare, closed hat, open hat, clap and a tone), every sound made in code with the Web Audio API, with no sample files. Clicking a cell turns it on or off, a playhead sweeps across at the tempo, the tempo can be changed, and there are a few preset beats. Sound stays off until the player presses Start, and the grid lights up as it plays, so it reads on a silent screen too.",
     "plan": "a finished sequencer with all six sounds, the playhead, tempo, presets and the Start button"
+  },
+  {
+    "id": "anthill",
+    "title": "Anthill, an ant colony that forages on its own",
+    "name": "Anthill",
+    "folder": "anthill",
+    "what": "an ant colony simulation called Anthill",
+    "details": "A nest sits in the middle of a canvas and a few hundred ants wander out from it. An ant that finds food carries a crumb home and lays a scent trail on the way, trails fade over time, and other ants follow the strongest scent, so paths to the food form by themselves and can be watched forming. The viewer clicks to drop food and drags to draw walls, and counters show the ants, the food carried home and the food left.",
+    "plan": "a finished simulation with wandering ants, food, fading scent trails drawn on the ground, walls, play and pause, a speed control and the counters"
+  },
+  {
+    "id": "aurora",
+    "title": "Aurora, music that draws itself",
+    "name": "Aurora",
+    "folder": "aurora",
+    "what": "a generative music visualiser called Aurora",
+    "details": "Aurora composes a slow piece on its own from a pentatonic scale, a melody and a bass line chosen at random within simple rules, and plays it with tones made in code with the Web Audio API, with no sample files. Each note draws on a canvas as it plays: rings that grow from where the note sits on the scale, colours by instrument, a slowly shifting background. Sound stays off until the viewer presses Start; with it off the notes are still drawn on time, so it reads on a silent screen too. Buttons pick the mood (calm, bright or dark) and the tempo.",
+    "plan": "a finished visualiser with the composer, the synthesised voices, the drawing, the moods, the tempo and the Start button"
+  },
+  {
+    "id": "tumble",
+    "title": "Tumble, a physics sandbox",
+    "name": "Tumble",
+    "folder": "tumble",
+    "what": "a physics sandbox called Tumble",
+    "details": "Balls and boxes fall under gravity, bounce off each other and the walls, and come to rest in heaps, with the physics written in plain JavaScript and no library. The viewer clicks to drop a shape, picks ball or box and its size, flings one by dragging it, sets the gravity and the bounciness with sliders, and can tilt the floor. A counter shows how many shapes are in the world, and a Clear button empties it.",
+    "plan": "a finished sandbox with falling and colliding balls and boxes, dragging and flinging, the sliders, the tilted floor, the counter and Clear"
+  },
+  {
+    "id": "matein",
+    "title": "Mate In, a chess-puzzle trainer",
+    "name": "Mate In",
+    "folder": "mate-in",
+    "what": "a chess-puzzle trainer called Mate In",
+    "details": "A board shows a position from a set of twelve mate-in-one and mate-in-two puzzles written into the code. The player moves a piece by clicking it and then its square or by dragging it; only legal moves are allowed, the opponent's reply in a mate in two is played by the page, and a wrong move is shown, explained in a line and taken back. The pieces are drawn with the chess symbols in Unicode, so no image files are needed. A counter shows puzzles solved and the current streak, and there are buttons for a hint, the next puzzle and the previous one.",
+    "plan": "a finished trainer with the board, legal moves for every piece, all twelve puzzles, the replies, hints, the counters and the puzzle buttons",
+    "steps": 10
   }
 ]

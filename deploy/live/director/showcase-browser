@@ -1,0 +1,60 @@
+#!/bin/sh
+# The live instance's showcase window: a locked-down Chromium showing the frame page that
+# `director.py showcase` writes (a caption bar over the game the Mind is building), beside Mind
+# View on the stream. Run by yantrik-live-showcase-browser.service under the person's Wayland
+# session, as an account of its own (yantrik-showcase), not the Mind's.
+#
+# The Director's window, never the Mind's. The Mind's own browser refuses file:// and new local
+# addresses (check-page says why) and still does: this is not a browser the Mind can drive, and
+# it opens one page, the frame, which root writes. The frame holds a copy of the Mind's game,
+# taken out of ~/Projects by the publisher; the showcase gives that code a screen and nothing else:
+#   - nothing else on disk to show: a file:// page can embed any file it can name, so the unit
+#     hides /home, /var, /opt, /etc/yantrik and the rest, and binds back only the published
+#     games, read-only (yantrik-live-showcase-browser.service);
+#   - no network: the unit has IPAddressDeny=any, every request goes to a proxy on a closed port
+#     (127.0.0.1:9, loopback included), and every host name resolves to nothing;
+#   - a throwaway profile, removed on exit, which is HOME too: no cookies, history or storage
+#     outlive it, and nobody's profile is read;
+#   - no extensions, no component extensions, no sync, no background networking, no
+#     remote-debugging port, so nothing on the machine can attach to it;
+#   - no downloads, pop-ups, modal dialogs or navigation of the window: the game runs in an
+#     iframe sandboxed with scripts and its own storage only (frame_page in director.py). Never
+#     add --allow-file-access-from-files: frame_page says why.
+# 561 is sealed and holds no personal data (yos-mcp-sealed).
+#
+# Usage: showcase-browser FRAME.html
+set -u
+frame=${1:?usage: showcase-browser FRAME.html}
+command -v chromium >/dev/null || { echo "chromium is not installed"; exit 2; }
+# The socket bound into the unit must be the one wayland-grant checked and noted, as root, before
+# the unit started: not whatever the desktop's account left at that path in between.
+sock=${XDG_RUNTIME_DIR:?}/${WAYLAND_DISPLAY:?}
+[ -S "$sock" ] && [ "$(stat -c %d:%i "$sock")" = "$(cat "$XDG_RUNTIME_DIR/wayland.id" 2>/dev/null)" ] \
+    || { echo "$sock is not the Wayland socket wayland-grant noted"; exit 2; }
+
+profile=$(mktemp -d)
+export HOME="$profile"
+pid=
+# Chromium stopped first, then its profile removed, however this script ends.
+cleanup() {
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null && wait "$pid" 2>/dev/null
+    rm -rf "$profile"
+}
+trap cleanup EXIT
+trap 'exit 143' TERM INT HUP
+
+# Not exec: this script must outlive Chromium to remove its profile.
+chromium --ozone-platform=wayland --user-data-dir="$profile" \
+    --app="file://$frame" --window-size=960,1080 \
+    --proxy-server="http://127.0.0.1:9" --proxy-bypass-list="<-loopback>" \
+    --host-resolver-rules="MAP * ~NOTFOUND" \
+    --disable-extensions --disable-component-extensions-with-background-pages \
+    --disable-background-networking --disable-sync --disable-default-apps \
+    --disable-features=Translate,MediaRouter,OptimizationHints,AutofillServerCommunication \
+    --no-first-run --no-default-browser-check --no-pings --disable-breakpad \
+    --password-store=basic --mute-audio --noerrdialogs --deny-permission-prompts &
+pid=$!
+wait "$pid"
+status=$?
+pid=
+exit "$status"
