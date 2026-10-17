@@ -605,6 +605,7 @@ fn publish_catalogue(ui: &App, entries: &[yantrik_harness::Entry]) {
             row
         })
         .map(|row| HarnessRowData {
+            details: harness_details(&row.id, &row.detail, &row.docs, &super::runs_on_card::row_details(&runs_on, &row.id)).into(),
             id: row.id.into(),
             name: row.name.into(),
             detail: row.detail.into(),
@@ -818,6 +819,24 @@ fn first_party_claim_refused(
         "`{}` is the id of the person's own Yantrik Mind, which attaches from its own account; attach under a different id",
         crate::memory_grants::FIRST_PARTY_MIND
     ))
+}
+
+/// A Minds card's Details: its id (what `yos act shell use_harness` takes), its own words as it
+/// attached, where its files are, and the exact line of what it runs on. All of it was on the
+/// card's face until the sweep of 17 October; none of it is something a person needs to read
+/// first.
+fn harness_details(id: &str, said: &str, docs: &str, runs_on: &str) -> String {
+    let mut lines = vec![format!("Id: {id}")];
+    if !said.trim().is_empty() {
+        lines.push(format!("It said: {}", said.trim()));
+    }
+    if !docs.trim().is_empty() {
+        lines.push(format!("Files: {}", docs.trim()));
+    }
+    if !runs_on.trim().is_empty() {
+        lines.push(runs_on.trim().to_string());
+    }
+    lines.join("\n")
 }
 
 #[cfg(test)]

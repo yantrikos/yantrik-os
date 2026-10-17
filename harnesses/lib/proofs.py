@@ -10,7 +10,7 @@
 
 A harness is never reported installed until all three pass (design/onboarding-one-model-one-
 memory-2026-10-10.md, "The flow" 2.4). Every installer in lib/install ends with this, and the
-Settings → Harnesses row and the onboarding summary call the same thing:
+Settings → Minds row and the onboarding summary call the same thing:
 
     python3 /opt/yantrik/share/harnesses/lib/proofs.py hermes --json
 

@@ -810,6 +810,13 @@ pub fn in_front() -> Option<String> {
     }
 }
 
+/// The person just clicked the shell, so labwc has raised it over every app window: say so before
+/// the next reading. The mind panel folds to its strip while an app window is in front
+/// (`mind_panel_room`), and a click on the strip must open it at once, not seconds later.
+pub fn note_shell_clicked() {
+    SHELL_FRONT.store(1, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// [`shell_in_front`]'s last reading: 0 not knowable, 1 the shell, 2 an app window.
 static SHELL_FRONT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 

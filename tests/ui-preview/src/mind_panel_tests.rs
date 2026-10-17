@@ -53,9 +53,9 @@ fn fill(ui: &App) {
         model_named: true,
         state: "connected".into(),
         project: "".into(),
-        memory: "YantrikDB · 1,234 memories".into(),
+        memory: "Remembers 1,234 things".into(),
         memory_known: true,
-        minds: "3 minds · 2 keep memory".into(),
+        minds: "3 can answer · 2 remember".into(),
         running: 2,
         needs_you: 1,
         more_agents: 0,
@@ -81,11 +81,16 @@ fn fill(ui: &App) {
         step: "step 2 of 3 · running web_search".into(),
         status: "running".into(),
     }])));
-    let act = |what: &str, when: &str, outcome: &str| MindPanelAct { what: what.into(), when: when.into(), outcome: outcome.into() };
+    let act = |what: &str, id: &str, when: &str, outcome: &str| MindPanelAct {
+        what: what.into(),
+        detail: format!("{id} \u{b7} {outcome}").into(),
+        when: when.into(),
+        outcome: outcome.into(),
+    };
     g.set_acts(ModelRc::new(VecModel::from(vec![
-        act("files.move", "4m ago", "ok"),
-        act("notes.create", "12m ago", "ok"),
-        act("calendar.add_event", "1h ago", "failed"),
+        act("Moved in your files", "files.move", "4m ago", "ok"),
+        act("Wrote a note", "notes.create_note", "12m ago", "ok"),
+        act("Couldn\u{2019}t add an event to your calendar", "calendar.add_event", "1h ago", "failed"),
     ])));
 }
 
@@ -248,7 +253,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         initial: "?".into(),
         model: "unknown".into(),
         state: "unknown".into(),
-        memory: "YantrikDB · count not known yet".into(),
+        memory: "Not counted yet".into(),
         minds: "not known yet".into(),
         services: "none registered".into(),
         ..Default::default()

@@ -2820,6 +2820,26 @@ mod bond_not_loaded_tests {
         }
     }
 
+    /// Interaction history is plain counts. The level, its formula, the streak, the count of
+    /// messages that said how the person felt and the humor rate are banned by the design rules
+    /// (no manufactured pull) and were still drawn in the sweep of 17 October.
+    #[test]
+    fn interaction_history_draws_no_level_score_streak_or_feelings_count() {
+        let code: String = slint("bond.slint")
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for banned in [
+            "Level \"", "of 5", "adds 0.0", "in a row", "how you felt", "humor", "Partner-in-Crime",
+            "days together", "data.bond-level", "data.bond-score", "current-streak", "vulnerability",
+        ] {
+            assert!(!code.contains(banned), "Interaction history must not draw {banned:?}");
+        }
+        assert!(code.contains("data.total-interactions") && code.contains("data.days-together"));
+        assert!(code.contains("Not read yet"), "before the first push it says so, not zeros");
+    }
+
     /// The `describe shell` side.
     #[test]
     fn before_the_first_push_describe_says_not_loaded_not_stranger() {

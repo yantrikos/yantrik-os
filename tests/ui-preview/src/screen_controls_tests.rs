@@ -11,7 +11,7 @@ use super::*;
 /// The screens app.slint draws inside a WindowFrame (`if current-screen == N : WindowFrame`).
 /// Images, Editor and Media were here until #253 made each of them a window of its own.
 const FRAMED: &[(i32, &str)] = &[
-    (4, "Bond"), (5, "Personality"), (6, "Memory"), (7, "Settings"), (8, "Files"),
+    (4, "Interaction history"), (5, "Personality"), (6, "Memory"), (7, "Settings"), (8, "Files"),
     (9, "Notifications"), (10, "System"), (16, "About"), (21, "Packages"), (27, "Devices"), (28, "Permissions"), (33, "Problems"),
     (34, "Agents"), (35, "Recipes"),
 ];

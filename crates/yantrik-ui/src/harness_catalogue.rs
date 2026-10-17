@@ -3,7 +3,7 @@
 //! "A harness exists because it is attached" is the right rule for the *answering* list — you
 //! cannot talk to a mind that is not there — and it was the wrong rule for the Settings page. A
 //! harness that had never been installed, or whose unit had died with a shell restart, was
-//! simply absent from Settings → Harnesses. To the person the minds the image ships were just
+//! simply absent from Settings → Minds. To the person the minds the image ships were just
 //! *gone*: no hint that they exist, that one needs an `npm install`, that another needs a config
 //! file, that a third only needs its unit started.
 //!

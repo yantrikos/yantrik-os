@@ -646,17 +646,19 @@ export component SnippetManagerScreen inherits Rectangle {
                     x: (parent.width - self.width) / 2;
                 }
 
+                // Secondary, not dim: dim on the dark ground was the lowest contrast on the screen
+                // (sweep of 17 October), on the one line that says what to do.
                 Text {
                     text: "Select a snippet";
                     font-size: Theme.font-title;
-                    color: Theme.text-dim;
+                    color: Theme.text-secondary;
                     horizontal-alignment: center;
                 }
 
                 Text {
                     text: "or create a new one to get started";
                     font-size: Theme.font-small;
-                    color: Theme.text-dim;
+                    color: Theme.text-secondary;
                     horizontal-alignment: center;
                 }
             }

@@ -1151,7 +1151,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     ui.on_fr_add_mind({
         let weak = ui.as_weak();
         move || {
-            // Settings → Harnesses, where every mind installs with the model and memory chosen
+            // Settings → Minds, where every mind installs with the model and memory chosen
             // here; the first run is done once a mind can be added there.
             let Some(ui) = weak.upgrade() else { return };
             crate::onboarding::write_marker();
@@ -1335,7 +1335,7 @@ fn show_new_backend(ui: &App) {
 }
 
 /// The model step is done and the gateway has a pick: set the default mind up in the background,
-/// through the job Settings → Harnesses runs. The first run does not wait on it; the built-in
+/// through the job Settings → Minds runs. The first run does not wait on it; the built-in
 /// answers until it is proven (`crate::default_mind`). Not from the installer's own screens: what
 /// the live image downloads is gone at reboot, and the first boot starts it instead.
 fn set_up_default_mind(ui: &App) {

@@ -170,7 +170,7 @@ export component SystemMonitor inherits Rectangle {
     property <bool> ai-has-measurements: root.ai-model-name != "" || root.ai-tokens-per-sec > 0.0
         || root.ai-tokens-today > 0 || root.ai-provider-latency-ms >= 0 || root.ai-request-active;
     out property <string> ai-no-source-text: root.ai-has-measurements ? ""
-        : "Nothing measured: no source on this machine reports model or token activity.";
+        : "Nothing measured: nothing on this computer reports how its AI models are being used.";
 
     // ── Geometry mirrored out for the ui-preview checks (#220) ──
     //

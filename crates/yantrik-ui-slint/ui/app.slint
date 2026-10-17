@@ -328,8 +328,13 @@ export component App inherits Window {
     property <bool> mind-panel-shown: root.current-screen == 1
         || (root.current-screen >= 4 && root.current-screen <= 31)
         || root.current-screen == 33 || root.current-screen == 34 || root.current-screen == 35;
+    // An app window is in front of the shell (crates/yantrik-ui/src/mind_panel_room.rs). The panel
+    // is then its strip, which labwc's <margin right> keeps clear, so no app window cuts its
+    // words; the person's choice comes back when the desktop is in front again.
+    in property <bool> app-window-in-front: false;
     property <bool> mind-panel-open: root.mind-panel-shown
         && !(root.current-screen == 1 && root.focus-mode)
+        && !root.app-window-in-front
         && (root.current-screen == 1 ? MindPanelState.desktop-expanded : MindPanelState.elsewhere-expanded);
     // Below this width the open card floats over the screen instead of taking its room, so a
     // compact display keeps its working area and can still open the panel to look.
@@ -415,10 +420,6 @@ export component App inherits Window {
         bond-level: "",
         total-interactions: 0,
         days-together: 0,
-        current-streak: 0,
-        humor-rate: 0.0,
-        vulnerability-events: 0,
-        shared-references: 0,
     };
 
     // Personality state
@@ -3364,7 +3365,7 @@ export component App inherits Window {
                 root.navigate(35);
                 RecipesState.show(id);
             }
-            // Straight to Settings > Harnesses, as the status bar's mind chip does.
+            // Straight to Settings > Minds, as the status bar's mind chip does.
             open-mind => {
                 root.settings-category = 8;
                 root.current-screen = 7;
@@ -3403,7 +3404,7 @@ export component App inherits Window {
         // boolean and the desktop did not move. This is the panel that toggle was always meant to
         // open, and switching minds is the thing it should have been switching.
         //
-        // The fast path, deliberately: Settings > Harnesses is where you read about a mind, and
+        // The fast path, deliberately: Settings > Minds is where you read about a mind, and
         // this is where you change to one without leaving what you were doing.
         if root.ai-quick-switcher-open : Rectangle {
             width: 100%;

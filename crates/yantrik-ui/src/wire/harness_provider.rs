@@ -1,4 +1,4 @@
-//! Settings → Harnesses: "Use a provider" and "Revert provider" on a harness row, and the same
+//! Settings → Minds: "Use a provider" and "Revert provider" on a harness row, and the same
 //! two for agents (`assign_provider`, `revert_provider` in control.rs).
 //!
 //! What the person answers is the plan's own card (`provider_handoff::Plan::card`). Between the
@@ -71,7 +71,7 @@ fn install_offer(harness: &str) -> Result<provider_handoff::Offer, String> {
 /// The model step of installing a harness, with no question (the install-time default): its own
 /// config pointed at the gateway with a token and `"model": "picked"`, its own file kept for
 /// Revert. Idempotent; a harness the person gave a saved provider or "Use its own models" is left
-/// alone. What `yantrik-ui --wire-model <harness>` and Settings → Harnesses → Install call.
+/// alone. What `yantrik-ui --wire-model <harness>` and Settings → Minds → Install call.
 pub(crate) fn wire_installed(harness: &str) -> Result<provider_handoff::Wired, String> {
     // Only the shell's own host knows what an attached Mind announced; another process (the
     // installer's `--wire-model`) reads false, and the Mind is asked first, as before.
@@ -97,7 +97,7 @@ pub fn wire_model_cli(args: &[String]) -> i32 {
         return 1;
     }
     match wire_installed(harness) {
-        Ok(provider_handoff::Wired::Now) => println!("{harness} now uses your model (Revert in Settings → Harnesses puts its own file back)"),
+        Ok(provider_handoff::Wired::Now) => println!("{harness} now uses your model (Revert in Settings → Minds puts its own file back)"),
         Ok(provider_handoff::Wired::Already) => println!("{harness} already uses your model"),
         Ok(provider_handoff::Wired::OwnModels) => println!("{harness} uses its own models, as you chose"),
         Ok(provider_handoff::Wired::SavedProvider(p)) => println!("{harness} uses {p}, as you chose"),
@@ -170,7 +170,7 @@ pub(crate) fn not_wired_toast(name: &str, why: &str) -> crate::ToastData {
         id: format!("local:not-wired:{name}").into(),
         app_name: name.into(),
         summary: format!("{name} still uses its own models").into(),
-        body: format!("{}. Settings → Harnesses → Use Yantrik models tries again.", why.trim_end_matches('.')).into(),
+        body: format!("{}. Settings → Minds → Use Yantrik models tries again.", why.trim_end_matches('.')).into(),
         urgency: 1,
         icon_char: name.chars().next().unwrap_or('M').to_string().into(),
         actions: slint::ModelRc::new(slint::VecModel::<crate::ToastActionData>::default()),
@@ -375,7 +375,7 @@ mod tests {
         assert_eq!(t.summary.as_str(), "Yantrik Mind still uses its own models");
         assert_eq!(
             t.body.as_str(),
-            "The Mind did not take it (HTTP 422): it may not take Yantrik models this way yet. Settings → Harnesses → Use Yantrik models tries again."
+            "The Mind did not take it (HTTP 422): it may not take Yantrik models this way yet. Settings → Minds → Use Yantrik models tries again."
         );
         assert_eq!(slint::Model::row_count(&t.actions), 0, "nothing to undo");
     }

@@ -441,7 +441,11 @@ pub(crate) fn marker(home: &Path, harness: &str) -> Option<Marker> {
 /// The row's line: "Provider: NVIDIA NIM · nvidia/nemotron-…" once assigned, else its own.
 pub(crate) fn row_line(home: &Path, harness: &str) -> String {
     match (adapter_for(harness), marker(home, harness)) {
-        (_, Some(m)) if m.provider_id == GATEWAY_ID => format!("Provider: {} · {} (through the desktop's gateway)", m.provider_name, m.model),
+        // A mind on the gateway asks for "picked": whatever the person picks in the ask bar.
+        (_, Some(m)) if m.provider_id == GATEWAY_ID && m.model.trim() == "picked" => {
+            format!("Provider: {}, the model you pick in the ask bar", m.provider_name)
+        }
+        (_, Some(m)) if m.provider_id == GATEWAY_ID => format!("Provider: {} · {}", m.provider_name, m.model),
         (_, Some(m)) => format!("Provider: {} · {} (from your saved providers)", m.provider_name, m.model),
         (Some(_), None) if uses_own_models(home, harness) => "Provider: its own models (your choice)".into(),
         (Some(_), None) => "Provider: its own settings".into(),

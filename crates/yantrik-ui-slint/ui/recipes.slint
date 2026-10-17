@@ -47,7 +47,7 @@ export struct RecipeStepData {
     state-label: string,   // "done", "waiting for you", "not run"…
     result: string,        // the head of what it produced, or the error it failed with
     path: string,          // JumpIf / Branch: the way it went
-    unbound: string,       // "{{topic}} has no value — it is sent as written"
+    unbound: string,       // "The blank “topic” was empty when it ran"
     agent: string,         // an Agent step's agent: "the Chair on deepseek (deepseek:c-02be44)"
     detail: string,        // its whole definition, a line per field
 }
@@ -79,7 +79,7 @@ export struct RecipeRowData {
     question: string,
     choices: [string],
     template: bool,
-    unbound: string,       // "Needs {{person}} and {{date}} — sent as written until set"
+    unbound: string,       // "To fill in: person and date. Until then it is sent with the blanks as written."
     can-answer: bool,
     can-pause: bool,
     can-resume: bool,

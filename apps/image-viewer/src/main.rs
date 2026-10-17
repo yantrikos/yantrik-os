@@ -210,7 +210,7 @@ fn show_current(ui: &ImageViewerApp, state: &State, screen: &Screen) {
         ui.set_current_image(slint::Image::default());
         ui.set_file_name(SharedString::new());
         ui.set_counter_text(SharedString::new());
-        ui.set_notice("Open a picture from Files, or pass one on the command line.".into());
+        ui.set_notice("Open a picture from Files to see it here.".into());
         apply_info(ui, &ImageInfo::default());
         refresh_agent_rail(ui);
         return;

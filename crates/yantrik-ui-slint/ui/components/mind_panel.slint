@@ -19,6 +19,7 @@
 import { Theme } from "theme.slint";
 import { BoundPicker } from "picker_state.slint";
 import { Icon, Icons } from "icon.slint";
+import { YTooltip } from "y_tooltip.slint";
 
 // One of the machine's out-of-process services. Moved here from the machine rail, whose LOAD and
 // SERVICES sections this panel now holds (agent mode only, as they were).
@@ -48,7 +49,8 @@ export struct MindPanelRecipe {
 
 // One thing the mind did, from the mind audit (the ledger, #148, when it lands).
 export struct MindPanelAct {
-    what: string,      // "files.move"
+    what: string,      // "Ran a command": the plain sentence (mind_panel_words.rs)
+    detail: string,    // "terminal.run · ok": the raw id, shown only in the row's tooltip
     when: string,      // "4m ago"
     outcome: string,   // ok | failed | whatever the reporter said
 }
@@ -63,9 +65,9 @@ export struct MindPanelNow {
     model-named: bool,    // `model` is a model, not a sentence about one
     state: string,        // connected | checking | not-set-up | key-missing | unreachable | not-allowed | own | thinking | offline | unknown
     project: string,      // "" when nothing has detected one
-    memory: string,       // "YantrikDB · 1,234 memories"
+    memory: string,       // "Remembers 1,234 things"
     memory-known: bool,
-    minds: string,        // "3 minds · 2 keep memory"
+    minds: string,        // "3 can answer · 2 remember"
     running: int,         // agents at work, including those waiting for the person
     needs-you: int,
     more-agents: int,     // at work but not listed here
@@ -107,7 +109,9 @@ component KeyValue inherits HorizontalLayout {
     in property <string> key;
     in property <string> value;
     in property <bool> dim: false;
-    height: 22px;
+    // At least a line, and taller when the value needs two: the sweep of 17 October found values
+    // cut mid-word on every screen, and a value is a sentence now, not a code.
+    min-height: 22px;
     spacing: Theme.sp-2;
     Text {
         text: root.key;
@@ -124,7 +128,7 @@ component KeyValue inherits HorizontalLayout {
         horizontal-alignment: right;
         vertical-alignment: center;
         horizontal-stretch: 1;
-        overflow: elide;
+        wrap: word-wrap;
     }
 }
 
@@ -240,6 +244,27 @@ component MindCard inherits Rectangle {
 
     property <MindPanelNow> now: MindPanelState.now;
 
+    // What the mode means, said as what the mind will do. The machine's ceiling bounds every mode,
+    // so a ceiling of `safe` (look, never change) is said instead of a mode it would contradict.
+    // The ceiling itself is in the tooltip and in Settings > Privacy; `ceiling sensitive` on every
+    // screen was a finding on every screen in the sweep of 17 October.
+    pure function mode-meaning(mode: string, ceiling: string) -> string {
+        if (ceiling == "safe") { return "Only looks; it cannot change anything"; }
+        if (mode == "plan") { return "Looks and proposes; changes nothing"; }
+        if (mode == "ask") { return "Asks before anything that matters"; }
+        if (mode == "auto") { return "Asks only before risky things"; }
+        if (mode == "bypass") { return "Runs most things without asking"; }
+        if (mode == "bypass_all") { return "Runs everything allowed without asking"; }
+        return "Mode not known yet";
+    }
+    pure function ceiling-meaning(ceiling: string) -> string {
+        if (ceiling == "safe") { return "The most it may ever do: look"; }
+        if (ceiling == "standard") { return "The most it may ever do: changes that can be undone"; }
+        if (ceiling == "sensitive") { return "The most it may ever do: change settings, never destroy"; }
+        if (ceiling == "dangerous") { return "The most it may ever do: anything, deleting included"; }
+        return "The most it may do is not known yet";
+    }
+
     width: 302px;
     // As tall as what it holds, like the rail it replaces: a card that ran to the taskbar over
     // nothing would be a dark rectangle claiming something lived there.
@@ -331,12 +356,14 @@ component MindCard inherits Rectangle {
             Rectangle { horizontal-stretch: 1; }
         }
         Rectangle { height: 10px; }
-        // The mode and the machine's ceiling, side by side because neither means much alone.
+        // The mode, and what it means bounded by the machine's ceiling, side by side because
+        // neither means much alone.
         HorizontalLayout {
-            height: 24px;
+            min-height: 24px;
             spacing: Theme.sp-2;
             mode-ta := TouchArea {
                 width: mode-row.preferred-width;
+                height: 24px;
                 mouse-cursor: pointer;
                 clicked => { root.open-mode(); }
                 Rectangle {
@@ -370,13 +397,24 @@ component MindCard inherits Rectangle {
                     }
                 }
             }
-            Text {
-                text: root.ceiling != "" ? "ceiling " + root.ceiling : "ceiling not known";
-                color: Theme.text-secondary;
-                font-size: Theme.fs-micro;
-                vertical-alignment: center;
+            meaning := Rectangle {
                 horizontal-stretch: 1;
-                overflow: elide;
+                min-height: meaning-text.preferred-height;
+                meaning-ta := TouchArea {}
+                YTooltip {
+                    text: root.ceiling-meaning(root.ceiling);
+                    hovered: meaning-ta.has-hover;
+                    x: parent.width - self.width;
+                    y: parent.height + 2px;
+                }
+                meaning-text := Text {
+                    width: 100%;
+                    text: root.mode-meaning(root.mode, root.ceiling);
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-micro;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                }
             }
         }
 
@@ -535,7 +573,7 @@ component MindCard inherits Rectangle {
                 // Which record this is, so nobody takes it for everything the mind did: the audit
                 // keeps what ran without anyone being asked.
                 Text {
-                    text: "unasked · mind audit";
+                    text: "done without asking";
                     color: Theme.text-dim;
                     font-size: Theme.fs-micro;
                     vertical-alignment: center;
@@ -550,40 +588,49 @@ component MindCard inherits Rectangle {
             height: 22px;
             vertical-alignment: center;
         }
-        for act in MindPanelState.acts : HorizontalLayout {
-            height: 22px;
-            padding-left: 6px;
-            padding-right: 6px;
-            spacing: 8px;
-            Icon {
-                commands: act.outcome == "ok" ? Icons.check : act.outcome == "failed" ? Icons.warning : Icons.clock;
-                size: 11px;
-                thickness: 1.8px;
-                tint: act.outcome == "ok" ? Theme.color-success : act.outcome == "failed" ? Theme.color-danger : Theme.text-dim;
-                y: (parent.height - self.height) / 2;
-            }
-            Text {
-                text: act.what;
-                color: Theme.text-primary;
-                font-size: Theme.fs-caption;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
-                overflow: elide;
-            }
-            if act.outcome != "ok" : Text {
-                text: act.outcome;
-                color: act.outcome == "failed" ? Theme.color-danger : Theme.text-secondary;
-                font-size: Theme.fs-micro;
-                vertical-alignment: center;
-                max-width: 70px;
-                overflow: elide;
-            }
-            Text {
-                text: act.when;
-                color: Theme.text-dim;
-                font-size: Theme.fs-micro;
-                horizontal-alignment: right;
-                vertical-alignment: center;
+        // Each row is a sentence ("Ran a command"); its raw id is in the tooltip, and the whole record,
+        // older failures included, is one click away in the audit view.
+        for act in MindPanelState.acts : Rectangle {
+            min-height: act-row.preferred-height;
+            act-ta := TouchArea {}
+            YTooltip { text: act.detail; hovered: act-ta.has-hover; x: parent.width - self.width; y: -self.height - 2px; }
+            act-row := HorizontalLayout {
+                min-height: 22px;
+                padding-left: 6px;
+                padding-right: 6px;
+                spacing: 8px;
+                Icon {
+                    commands: act.outcome == "ok" ? Icons.check : act.outcome == "failed" ? Icons.warning : Icons.clock;
+                    size: 11px;
+                    thickness: 1.8px;
+                    tint: act.outcome == "ok" ? Theme.color-success : act.outcome == "failed" ? Theme.color-danger : Theme.text-dim;
+                    y: (parent.height - self.height) / 2;
+                }
+                Text {
+                    text: act.what;
+                    color: act.outcome == "failed" ? Theme.color-danger : Theme.text-primary;
+                    font-size: Theme.fs-caption;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    wrap: word-wrap;
+                }
+                // A failure says so in its sentence ("Couldn't run a command"); anything else that is
+                // not plainly ok is said as reported.
+                if act.outcome != "ok" && act.outcome != "failed" : Text {
+                    text: act.outcome;
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-micro;
+                    vertical-alignment: center;
+                    max-width: 70px;
+                    overflow: elide;
+                }
+                Text {
+                    text: act.when;
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-micro;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                }
             }
         }
 
