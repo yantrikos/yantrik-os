@@ -46,8 +46,16 @@
     border, white selection ring). No thumbnails and no outlines: labwc would have to activate or
     outline each window to draw them, and a plain row of titles costs nothing to show. Every
     workspace is listed, so a window is never unreachable from the keyboard.
+
+    The row is the title alone. labwc's default fields put the protocol first, so every row began
+    "[xdg-shell]", and the app id after it, which is empty for the shell's own apps (seen on 520,
+    17 Oct 2026).
   -->
-  <windowSwitcher show="yes" preview="no" outlines="no" allWorkspaces="yes" />
+  <windowSwitcher show="yes" preview="no" outlines="no" allWorkspaces="yes">
+    <fields>
+      <field content="title" width="100%" />
+    </fields>
+  </windowSwitcher>
 
   <!--
     Keep the shell's own furniture visible.
@@ -554,8 +562,10 @@
       <action name="MoveToEdge" direction="down" snapWindows="no" />
       <action name="MoveRelative" x="0" y="-80" />
     </windowRule>
-    <!-- The shell is the desktop itself: present on every workspace, never switched away from. -->
-    <windowRule title="Yantrik OS">
+    <!-- The shell is the desktop itself: present on every workspace, never switched away from, and
+         not a row in the Alt+Tab list. Listed, choosing it raised the fullscreen desktop over
+         every app; the desktop is reached with Super+D. -->
+    <windowRule title="Yantrik OS" skipWindowSwitcher="yes">
       <action name="ToggleOmnipresent" />
     </windowRule>
   </windowRules>
