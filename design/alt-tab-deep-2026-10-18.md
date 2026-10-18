@@ -173,7 +173,38 @@ Astra's full answer: `design/alt-tab-deep-astra-review-2026-10-18.md`.
 
 - **Current desktop first,** then the others behind a divider (Pranab, 18 Oct).
 
+## Keys and the time line: what the research says (18 Oct)
+
+Pranab asked for quick research rather than a guess. This is what other switchers and the HCI literature show, and what we take from them.
+
+**Keys other switchers use while open**
+- **macOS:** ↑ or ↓ on an app in Cmd+Tab opens that app's windows in Exposé. Cmd+` cycles one app's windows. ([Intego](https://www.intego.com/mac-security-blog/unlock-the-full-power-of-the-macos-app-switcher/))
+- **GNOME:** ↓ shows previews at once, ←/→ move between them, and Alt+` (the key above Tab) cycles the current app's windows. ([GNOME cheat sheet](https://wiki.gnome.org/Projects/GnomeShell/CheatSheet))
+- **Windows 11:** Tab or the arrow keys move the selection. Delete (Alt still held) closes the selected window. ([Windows Digitals](https://www.windowsdigitals.com/how-to-close-a-window-while-alt-tab-windows-11))
+- **Fathom:** 1–9 picks a workspace, and Space keeps the overlay open.
+
+**Decision: arrows move in space, and ↑ goes to Likely next.**
+- The Likely next chip and the minds lane are drawn *above* the stack, so ↑ moves the selection up into them, ←/→ move along a lane, and ↓ comes back to the stack. That's the Windows and GNOME idea (arrows navigate what you see), and no new key to learn.
+- Digits stay free for filtering, which typing already does.
+- We also adopt the shared Alt+` convention: the selected app's windows only.
+- macOS uses ↑ for "this app's windows". That's the one conflict, and we take it, because Alt+` covers that need here.
+
+**Recency order versus stable positions**
+- Tak, Cockburn and colleagues found that switchers with **spatially stable** layouts are faster than recency-ordered ones, because people revisit a small set of windows and learn where they are ([Improving window switching interfaces, 2009](https://research-portal.uu.nl/en/publications/improving-window-switching-interfaces/); [SCOTZ, 2011](https://dl.ifip.org/IFIP-LNCS-6946/hal-01590560)).
+- Gajos et al. found adaptive "split" interfaces work when the adaptive part is a **separate, predictable** area and the guess is accurate. Accuracy mattered even more than predictability ([CHI 2008](https://kgajos.seas.harvard.edu/papers/kgajos-chi08-predictability.pdf)).
+
+So:
+1. The guess stays a separate chip, as decided above, and is only shown when a rule is confident. Accuracy is the thing to measure (chip taken vs ignored).
+2. The stack keeps recency for the first two cards, the quick back-and-forth everyone relies on. The 5-card depth is fine for a handful of windows, but slow past that: Warr et al. (CHI 2016) found card-style switchers scaled worse than a recency grid as windows grew. So with more than 6 windows, the filter, Alt+` and clicking a dot on the time line are the fast ways deeper. We measure Tabs per session, and if deep dives are common, the next design step is a stable grid (the Super+Tab overview) one key away.
+
+**The time line's units**
+- Practitioner guidance agrees: relative times ("4 min ago") are easiest to scan for recent items, absolute times for old ones, and big relative numbers ("340 minutes") slow people down ([Cloudscape](https://cloudscape.design/patterns/general/timestamps/); [UX Movement](https://uxmovement.com/content/absolute-vs-relative-timestamps-when-to-use-which/)). There are no controlled studies, so this is heuristic.
+- **Decision: relative, on a log scale, with old windows collapsed.**
+  - Ticks read *now · 1 min · 10 min · 1 h*.
+  - Anything older than 2 h sits in one band at the bottom, "earlier", with the clock time ("since 09:40") in the caption when selected.
+  - The caption under the front card always says it exactly: "used 4 min ago".
+  - No clock times on the line itself, so nobody has to subtract.
+
 ## Open questions for Pranab
 
-- The time line in real minutes, or only *now / earlier / long ago*?
-- The Likely next key: ↑, or a number?
+None for now.
