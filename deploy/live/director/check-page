@@ -38,12 +38,15 @@ command -v chromium >/dev/null || { echo "chromium is not installed, so the page
 profile=$(mktemp -d)
 trap 'rm -rf "$profile"' EXIT
 export HOME="$profile"
+# And TMPDIR: Chromium puts its url_fetcher files there, and the CI runner's Chrome left two in
+# /tmp on every run.
+export TMPDIR="$profile"
 # Its path goes into a sed replacement and a URL below, so only plain characters are taken.
 case "$profile" in *[!A-Za-z0-9/._-]*) echo "the throwaway directory's path is not plain: $profile"; exit 2 ;; esac
 
 # The page's folder, copied: regular files only (never a link, FIFO or device), no dot-files,
 # four levels deep, at most MAX_FILES files of MAX_KB each. A page whose folder is bigger is not
-# checked rather than half copied. Each step of the copy has 5 seconds.
+# checked rather than half copied. Each step of the copy has 3 seconds.
 MAX_FILES=200
 MAX_KB=4096
 dir=$(dirname "$page")
@@ -53,14 +56,14 @@ case "$name" in *[#?%]*) echo "the page's name has # ? or % in it, so it cannot 
 copy="$profile/page"
 mkdir "$copy"
 list="$profile/files"
-{ (cd "$dir" && timeout 5 find . -mindepth 1 -maxdepth 4 -name '.*' -prune -o -type f -print0); echo $? > "$list.status"; } \
+{ (cd "$dir" && timeout 3 find . -mindepth 1 -maxdepth 4 -name '.*' -prune -o -type f -print0); echo $? > "$list.status"; } \
     | head -z -n $((MAX_FILES + 1)) > "$list"
 [ "$(tr -cd '\0' < "$list" | wc -c)" -le "$MAX_FILES" ] \
     || { echo "the page's folder has over $MAX_FILES files, so the page was not checked"; exit 2; }
 [ "$(cat "$list.status")" = 0 ] || { echo "the page's folder could not be listed, so the page was not checked"; exit 2; }
-(cd "$dir" && timeout 5 find . -mindepth 1 -maxdepth 4 -name '.*' -prune -o -type f -size +${MAX_KB}k -print -quit) \
+(cd "$dir" && timeout 3 find . -mindepth 1 -maxdepth 4 -name '.*' -prune -o -type f -size +${MAX_KB}k -print -quit) \
     | grep -q . && { echo "a file in the page's folder is over $MAX_KB KB, so the page was not checked"; exit 2; }
-(cd "$dir" && timeout 5 xargs -0 -r cp -P --parents --no-preserve=all -t "$copy" < "$list") 2>/dev/null \
+(cd "$dir" && timeout 3 xargs -0 -r cp -P --parents --no-preserve=all -t "$copy" < "$list") 2>/dev/null \
     && [ -f "$copy/$name" ] && [ ! -L "$copy/$name" ] \
     || { echo "the page's folder could not be copied, so the page was not checked"; exit 2; }
 
@@ -114,18 +117,37 @@ else
   sed -i "1s#^#$tag#" "$copy/$name"
 fi
 
-# The viewport is the window less 87 px of headless Chromium's frame: 1280x887 gives 1280x800.
-# The probe reports the viewport it saw, and the lines below say that size, not this one.
-load() {  # load BUDGET_MS CAPTURE: the copy with ?demo=1, its log on stdout
-  timeout 15 chromium --headless=new --disable-gpu --no-first-run --user-data-dir="$profile/chrome" \
-      --window-size=1280,887 --hide-scrollbars --virtual-time-budget="$1" \
-      --enable-logging=stderr --v=0 --screenshot="$2" "file://$copy/$name?demo=1" 2>&1 >/dev/null
+# The viewport is the window less the frame headless Chromium keeps for itself, which differs
+# between builds (87 px in Chromium 141, 143 px in the CI runner's Chrome). The first load guesses
+# 87 px and the probe reports the viewport it got; when that is not 1280x800, the window is
+# corrected by the difference and the page loaded again, once. The lines below say the viewport
+# the probe saw, not an assumed one. The first load may start a cold Chromium (the CI runner's
+# took over 15 s), so it gets 30 s; the others start a warm one and get 10 s.
+viewport() {  # viewport LOG: "W H" from the probe's own line, or nothing
+  printf '%s\n' "$1" | grep -F "source: file://$probe (" \
+      | sed -nE 's/^.*:CONSOLE:[0-9]+\] "check-page-probe viewport ([0-9]{1,4}) ([0-9]{1,4})", source: .*$/\1 \2/p' | head -1
 }
-log=$(load 3000 "$profile/a.png")
-[ $? = 124 ] && { echo "the page did not finish loading in 15 seconds"; exit 2; }
+ww=1280
+wh=887
+load() {  # load SECONDS BUDGET_MS CAPTURE: the copy with ?demo=1, its log on stdout
+  timeout "$1" chromium --headless=new --disable-gpu --no-first-run --user-data-dir="$profile/chrome" \
+      --window-size="$ww,$wh" --hide-scrollbars --virtual-time-budget="$2" \
+      --enable-logging=stderr --v=0 --screenshot="$3" "file://$copy/$name?demo=1" 2>&1 >/dev/null
+}
+log=$(load 30 3000 "$profile/a.png")
+[ $? = 124 ] && { echo "the page did not finish loading in 30 seconds"; exit 2; }
+seen=$(viewport "$log")
+if [ -n "$seen" ] && [ "$seen" != "1280 800" ]; then
+  ww=$((ww + 1280 - ${seen% *}))
+  wh=$((wh + 800 - ${seen#* }))
+  if [ "$ww" -ge 1280 ] && [ "$ww" -le 2560 ] && [ "$wh" -ge 800 ] && [ "$wh" -le 1600 ]; then
+    log=$(load 10 3000 "$profile/a.png")
+    [ $? = 124 ] && { echo "the page did not finish loading in 10 seconds"; exit 2; }
+  fi
+fi
 if [ "$demo" = yes ]; then
-  log2=$(load 5000 "$profile/b.png")
-  [ $? = 124 ] && { echo "the page did not finish loading in 15 seconds"; exit 2; }
+  log2=$(load 10 5000 "$profile/b.png")
+  [ $? = 124 ] && { echo "the page did not finish loading in 10 seconds"; exit 2; }
   log="$log
 $log2"
 fi
@@ -175,7 +197,7 @@ onload = function () {
 READ
     printf '</script>\n'
   } > "$reader"
-  pixels=$(timeout 10 chromium --headless=new --disable-gpu --no-first-run --user-data-dir="$profile/chrome" \
+  pixels=$(timeout 8 chromium --headless=new --disable-gpu --no-first-run --user-data-dir="$profile/chrome" \
       --enable-logging=stderr --v=0 --dump-dom "file://$reader" 2>&1 >/dev/null \
       | grep -F "source: file://$reader (" | sed -nE 's/^.*:CONSOLE:[0-9]+\] "check-page-pixels ([a-z ]*)".*$/\1/p' | head -1)
 fi
