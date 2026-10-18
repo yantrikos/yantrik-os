@@ -223,7 +223,8 @@ def _mode_file():
 # nothing else, so a package the image gained after an install never reaches the base system
 # until the updater reconciles it (#210: VM 520 had no `ip`, `ss` or `ping`). The names here
 # are commands, not packages — they are what the shipped code and the person at the keyboard
-# actually run — and they must stay in step with REQUIRED_PACKAGES in yantrik-update.
+# actually run — and the package behind each must be in deploy/yantrik-os/packages.list, the one
+# list the image installs and yantrik-update reconciles (#854).
 IMAGE_COMMANDS = {
     "ip": "the network tools and every `ip addr` a person types (iproute2)",
     "ss": "socket listings the mind runs (iproute2)",

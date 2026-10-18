@@ -229,6 +229,11 @@ if [ -f "$SCRIPT_DIR/yantrik-session" ]; then
   cp "$SCRIPT_DIR/yantrik-shell" "$ROOT/bin/yantrik-shell"
   chmod +x "$ROOT/bin/yantrik-shell"
   echo "   + yantrik-shell"
+  # The chrome copy the session runs at login and the updater runs as the person after an update
+  # that changed the keys (#854).
+  cp "$SCRIPT_DIR/yantrik-session-chrome" "$ROOT/bin/yantrik-session-chrome"
+  chmod +x "$ROOT/bin/yantrik-session-chrome"
+  echo "   + yantrik-session-chrome"
 else
   fail "missing $SCRIPT_DIR/yantrik-session -- a release without a session does not boot"
 fi
@@ -309,12 +314,16 @@ cp "$PROJECT_ROOT/config/systemd/"*.service "$ROOT/share/systemd/"
 sh "$SCRIPT_DIR/stage-grub-theme.sh" "$ROOT/share/grub-theme" >/dev/null \
   || fail "the boot menu's theme did not stage (stage-grub-theme.sh needs grub-mkfont and fonts-dejavu-core) — an update would leave an old machine's menu unthemed"
 echo "   + share/grub-theme (the boot menu's theme and fonts)"
+# The Debian packages every Yantrik machine has (#854): the list the image installs, which
+# `yantrik-update` reads after an apply to install whatever an older machine lacks. Root acts on
+# it (apt), so it is hash-listed below like everything else root installs from share/.
+install -m 0644 "$SCRIPT_DIR/packages.list" "$ROOT/share/packages.list"
 # What the updater installs as root, by content: every file under share/ it copies into /usr/lib,
-# /etc/polkit-1, /etc/sysctl.d, /etc/containers, /etc/systemd/system or /boot/grub/themes, with
-# its sha256. It rides in bin/, which the
+# /etc/polkit-1, /etc/sysctl.d, /etc/containers, /etc/systemd/system or /boot/grub/themes, and the
+# package list it runs apt from, with its sha256. It rides in bin/, which the
 # updater installs with plain cp as root, so it is root's on the machine whoever could write
 # share/; the updater installs nothing as root whose hash is not in it (#419).
-(cd "$ROOT/share" && sha256sum root-helpers/* polkit/* sysctl/* containers/* systemd/* grub-theme/*) > "$ROOT/bin/yantrik-root-files.sha256"
+(cd "$ROOT/share" && sha256sum packages.list root-helpers/* polkit/* sysctl/* containers/* systemd/* grub-theme/*) > "$ROOT/bin/yantrik-root-files.sha256"
 [ "$(wc -l < "$ROOT/bin/yantrik-root-files.sha256")" -ge 4 ] || fail "the root-files list is short: $(cat "$ROOT/bin/yantrik-root-files.sha256")"
 mkdir -p "$ROOT/share/labwc-mind"
 cp "$PROJECT_ROOT/config/labwc-mind/rc.xml" "$ROOT/share/labwc-mind/rc.xml"

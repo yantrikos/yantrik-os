@@ -22,7 +22,8 @@
 #   yantrik-update rollback                                  restore the most recent backup
 #   yantrik-update status      [--porcelain]                 channel, host, build, backups
 #   yantrik-update set-channel nightly|beta|stable           change the channel, once, here
-#   yantrik-update reconcile                                 base packages the image ships and this machine lacks, harness plugins
+#   yantrik-update reconcile                                 packages the image ships (share/packages.list) and this machine lacks, harness plugins
+#   yantrik-update package-list FILE                         the names in a package list, checked; what the image build installs
 #   yantrik-update migrate-minds                             move Yantrik Mind into its own account (#411), memory counted twice
 #   yantrik-update mind-egress apply                         hold the mind account to its egress proxy, in the kernel (root)
 #   yantrik-update selftest                                  offline checks of the two above
@@ -1001,12 +1002,12 @@ EOF
   # The binaries are current; the base system may not be. Never fails the update over it —
   # reconcile_packages says in words what it could not do and how to finish it.
   #
-  # With the NEW build's list: this process is still the updater that was installed before, and
-  # its REQUIRED_PACKAGES is the old one. VM 520 went a08a47f → 0f3e733 and was told "base system
-  # reconciled" without swaybg, which only the new list names, so a package a build adds reached
-  # machines one update late. The installed file is the new build's by now, whatever path this
-  # process was started from, so it reconciles, as a process of its own; this one's list stands
-  # in only when that file cannot run.
+  # With the NEW build's code: this process is still the updater that was installed before. VM 520
+  # went a08a47f → 0f3e733 and was told "base system reconciled" without swaybg, which only the
+  # new build named, so a package a build adds reached machines one update late. The list itself
+  # is the new build's share/packages.list either way (#854); the installed updater is the new
+  # build's by now, whatever path this process was started from, so it reconciles, as a process
+  # of its own, and this one stands in only when that file cannot run.
   if [ -x "$BIN_DIR/yantrik-update" ]; then
     YANTRIK_PREFIX="$PREFIX" "$BIN_DIR/yantrik-update" reconcile || true
   else
@@ -1019,8 +1020,11 @@ EOF
   fi
   if [ "$restart" = 1 ]; then
     restart_and_verify "$backup"
+    # Only after the new build answered: restart_and_verify does not return from a rollback. Not
+    # with --no-restart either, where new keys could name actions the running shell does not have.
+    refresh_session_chrome "$backup/share" || true
   else
-    info "not restarting (--no-restart); the new build takes effect on next session start"
+    info "not restarting (--no-restart); the new build, and any new keys, take effect on next session start"
   fi
 }
 
@@ -1246,7 +1250,7 @@ restart_and_verify() {
     runtime="$(session_runtime_dir)"
     info "restarting $SESSION_UNIT"
     if sudo -n systemctl restart "$SESSION_UNIT" 2>/dev/null; then
-      wait_for_shell "$runtime" && return 0
+      wait_for_shell "$runtime" && { SESSION_RESTARTED=1; return 0; }
       warn "the session restarted but the shell did not answer"
       restore_backup "$backup"
       sudo -n systemctl restart "$SESSION_UNIT" 2>/dev/null
@@ -1373,6 +1377,97 @@ restore_backup() {
   info "restored from $backup"
 }
 
+# ── The compositor's keys, without a new login (#854) ──
+#
+# labwc reads its keys from the person's ~/.config/labwc/rc.xml, which yantrik-session copies
+# from share/labwc only at login. So after #828 an updated machine's Print still ran plain `grim`
+# until the person logged out and in. When the session unit was restarted, its new
+# yantrik-session already copied them; otherwise this runs the same copy, yantrik-session-chrome,
+# as the session's owner (never as root, and it writes nothing through a link), then sends that
+# owner's labwc SIGHUP, which is what `labwc --reconfigure` sends: it re-reads rc.xml in place,
+# with every window left open.
+SESSION_RESTARTED=0
+
+# Did share/labwc change between OLD and NEW (each a share/ directory)? Any file added, removed
+# or different counts: rc.xml holds the keys, and the theme and menu beside it are copied with it.
+labwc_chrome_changed() { # <old share> <new share>
+  local old="$1/labwc" new="$2/labwc" f
+  [ -d "$new" ] || return 1
+  [ -d "$old" ] || return 0
+  for f in "$new"/* "$old"/*; do
+    [ -e "$f" ] || continue
+    cmp -s -- "$new/${f##*/}" "$old/${f##*/}" || return 0
+  done
+  return 1
+}
+
+# The labwc processes of the account with uid $1. A mind's own labwc runs as its own account
+# (#411), so this never reaches it. $2 is the process name, for the selftest's stand-in.
+session_labwc_pids() { # <uid> [name]
+  pgrep -u "$1" -x "${2:-labwc}" 2>/dev/null || true
+}
+
+# Ask each labwc in $2.. (pids of the account named $1) to re-read its config. As that account
+# when this is root, so a pid that is no longer its labwc can only be one of its own processes.
+reload_labwc() { # <owner> <pid>...
+  local owner="$1" pid ok=0 as=()
+  shift
+  [ "$(id -u)" = 0 ] && as=(runuser -u "$owner" --)
+  for pid in "$@"; do
+    if "${as[@]}" kill -HUP "$pid" 2>/dev/null; then
+      info "labwc (pid $pid) was asked to re-read its config (SIGHUP, as labwc --reconfigure sends)"
+    else
+      warn "could not ask labwc (pid $pid) to re-read its config; the new keys work after the next login"
+      ok=1
+    fi
+  done
+  return "$ok"
+}
+
+refresh_session_chrome() { # <share/ as it was before>
+  labwc_chrome_changed "$1" "$SHARE_DIR" || return 0
+  say "The compositor's keys and theme changed"
+  if [ "$SESSION_RESTARTED" = 1 ]; then
+    info "the session was restarted, and it put them in place as it started"
+    return 0
+  fi
+  local owner uid home pids
+  owner="$(desktop_owner)"
+  case "$owner" in ''|root|[!a-z_]*|*[!a-z0-9_-]*)
+    warn "cannot tell whose desktop this is; the new keys work after the next login"; return 1 ;;
+  esac
+  uid="$(id -u "$owner" 2>/dev/null)" || { warn "no account $owner; the new keys work after the next login"; return 1; }
+  pids="$(session_labwc_pids "$uid")"
+  if [ -z "$pids" ]; then
+    info "no desktop is running for $owner; the session puts them in place at the next login"
+    return 0
+  fi
+  home="$(getent passwd "$owner" | cut -d: -f6)"
+  [ -n "$home" ] && [ -d "$home" ] || { warn "$owner has no home directory; the new keys work after the next login"; return 1; }
+  local as=()
+  if [ "$(id -u)" = 0 ]; then
+    as=(runuser -u "$owner" --)
+  elif [ "$(id -u)" != "$uid" ]; then
+    warn "the desktop is $owner's and this runs as $(id -un); the new keys work after the next login"
+    return 1
+  fi
+  local out rc=0
+  # A time limit like every other process this runs: the copy is a few files and an fc-cache.
+  out="$("${as[@]}" env -i HOME="$home" PATH=/usr/bin:/bin LANG=C.UTF-8 \
+          timeout --kill-after=10 120 "$BIN_DIR/yantrik-session-chrome" "$SHARE_DIR" 2>&1)" || rc=$?
+  [ -z "$out" ] || printf '%s\n' "$out" | LC_ALL=C tr -cd '\012\040-\176' | while IFS= read -r line; do info "$line"; done
+  if [ "$rc" = 0 ]; then
+    info "copied into $home/.config/labwc as $owner"
+  else
+    warn "not all of the chrome could be put in $home as $owner (above); labwc is asked to re-read what did land"
+  fi
+  # shellcheck disable=SC2086  # pgrep's pids, one per line, split on purpose
+  reload_labwc "$owner" $pids || rc=1
+  # Claimed only when the copy and the reload both happened.
+  [ "$rc" = 0 ] && info "the new keys work now, with no new login"
+  return "$rc"
+}
+
 # ── rollback ────────────────────────────────────────────────────────────────────────────
 cmd_rollback() {
   elevate "$@"
@@ -1383,8 +1478,14 @@ cmd_rollback() {
   }
   [ -n "$backup" ] && [ -d "$backup" ] || fail "no backup to roll back to"
   say "Rolling back to $backup"
+  # The keys as they are now, so the ones the rollback brings back can be put in the person's
+  # home too: the same gap as an update, the other way round (#854).
+  local before; before="$(mktemp -d)"
+  [ -d "$SHARE_DIR/labwc" ] && cp -a "$SHARE_DIR/labwc" "$before/labwc"
   restore_backup "$backup"
   restart_and_verify "$backup"
+  refresh_session_chrome "$before" || true
+  rm -rf "$before"
 }
 
 # ── status ──────────────────────────────────────────────────────────────────────────────
@@ -1519,77 +1620,314 @@ and this is running as $(id -un). Run: sudo yantrik-update set-channel $new"
 # no `ss`, no `ping`, no editor and no htop, because the ISO gained those packages after 520
 # was installed and no update path ever looked at a Debian package (#210). The fix is not to
 # reinstall the machine every time a package list moves — it is for the updater, which is what
-# the machine trusts to keep it current, to also reconcile the small list below: every package
-# whose command the shipped code shells out to or tells a person to run. release-check
-# (tier ci) asserts the same commands on a booted image, so the two lists cannot drift apart
-# without a nightly turning red.
+# the machine trusts to keep it current, to also install what the image's own package list has
+# and this machine lacks. release-check (tier ci) asserts the commands that matter most on a
+# booted image.
 
-# Package names, not command names: `ip` and `ss` are both in iproute2, `ping` is in
-# iputils-ping. A package the image's own lists all install. xdg-desktop-portal-gtk has no
-# command: it is the file picker behind every Save and Upload the browser offers (#33), and a
-# machine installed before the image gained it could not save a page or attach a file.
-# The developer's baseline (#401): git, bash-completion (Debian's ~/.bashrc loads it once it is
-# there), and rootless podman for the Container Manager with what rootless needs beside it —
-# uidmap, passt, fuse-overlayfs — named here because this installs without Recommends. Debian
-# package names only: root runs this list through apt. mise is not here: Debian does not package
-# it, and this updater downloads nothing but its own bundle, so it comes with the image.
-# flatpak: the Package Manager installs Flathub apps with it, per-user and without root (#399);
-# a machine installed before the image carried it could search Flathub for nothing.
-# vim-tiny: muscle memory and scripts call `vi`, and the fresh-install audit found
-# `command not found: vi` on the shipped image (#678).
-# slurp, wl-clipboard, wf-recorder, vainfo: the capture bar's region, its clipboard copy and its
-# recordings (design/capture-2026-10-15.md); a machine installed before the image gained the
-# recorder could not record at all.
-REQUIRED_PACKAGES="iproute2 iputils-ping grim curl python3 nano htop vim-tiny swaybg xdg-desktop-portal-gtk flatpak git bash-completion podman uidmap passt fuse-overlayfs nftables upower power-profiles-daemon slurp wl-clipboard wf-recorder vainfo"
+# ── The list (#854) ──
+#
+# There used to be a second list here, REQUIRED_PACKAGES, typed in beside the ISO's own, and the
+# two drifted: mpv went into the image for #255 and never into this one, so a machine installed
+# before it never got a player and Music could not play (#854). Now there is one list,
+# deploy/yantrik-os/packages.list. The image build installs it (build-debian-iso.sh, through
+# `yantrik-update package-list`, the same parser as below), and the release bundle ships it as
+# share/packages.list, hash-listed in bin/yantrik-root-files.sha256 like everything else root acts
+# on from share/ (#419). This reads that copy only: root's, in a share/ only root can write, with
+# the content this build shipped. Never a path someone else could have written, and never a
+# list typed into this file, which is how the second list began.
+PACKAGE_LIST_REL="packages.list"
+# Generous for a list of ~60 names, and checked before the file is read.
+PACKAGE_LIST_MAX_BYTES=65536
+PACKAGE_LIST_MAX_NAMES=512
+
+# read_package_list FILE: the names in a package list, one per line. A line that is not exactly
+# one Debian package name refuses the whole file (exit 1, the line named on stderr), because a
+# list that is partly applied is a machine nobody can predict. Names go to apt as separate
+# arguments, so with this check nothing in the file can become an option, a path or a command.
+read_package_list() { # <file>
+  local f="$1" n=0 count=0 line size out=""
+  if [ -L "$f" ] || [ ! -f "$f" ]; then
+    printf '%s is not a regular file\n' "$f" >&2; return 1
+  fi
+  size="$(stat -c %s -- "$f" 2>/dev/null)" || { printf 'cannot read %s\n' "$f" >&2; return 1; }
+  if [ "$size" -gt "$PACKAGE_LIST_MAX_BYTES" ]; then
+    printf '%s is %s bytes; a package list is at most %s\n' "$f" "$size" "$PACKAGE_LIST_MAX_BYTES" >&2
+    return 1
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    line="${line%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -n "$line" ] || continue
+    if ! [[ "$line" =~ ^[a-z0-9][a-z0-9+.-]+$ ]]; then
+      printf '%s line %s is not one Debian package name: %s\n' "$f" "$n" \
+        "$(printf '%s' "$line" | LC_ALL=C tr -cd '\040-\176' | cut -c1-80)" >&2
+      return 1
+    fi
+    count=$((count + 1))
+    if [ "$count" -gt "$PACKAGE_LIST_MAX_NAMES" ]; then
+      printf '%s names more than %s packages\n' "$f" "$PACKAGE_LIST_MAX_NAMES" >&2; return 1
+    fi
+    out="$out$line"$'\n'
+  done < "$f"
+  [ "$count" -gt 0 ] || { printf '%s names no packages\n' "$f" >&2; return 1; }
+  printf '%s' "$out"
+}
+
+# The installed list, only when this build shipped it and only root could have written it. Prints
+# the names, or the reason it is not trusted on stderr.
+trusted_package_list() {
+  local f="$SHARE_DIR/$PACKAGE_LIST_REL"
+  if [ ! -e "$f" ] && [ ! -L "$f" ]; then
+    printf 'this build ships no %s\n' "$f" >&2; return 1
+  fi
+  if ! root_file_ok "$PACKAGE_LIST_REL" "$f"; then
+    printf '%s is not root'"'"'s alone to write, or is not the list this build shipped (%s); not trusted\n' \
+      "$f" "$ROOT_FILES" >&2
+    return 1
+  fi
+  read_package_list "$f"
+}
 
 # Is this package installed, per dpkg? Prints dpkg's own status word, or nothing.
 pkg_installed() {
   dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true
 }
 
-# The REQUIRED_PACKAGES that the status command $1 does not report installed. Split from the
-# apt run and from dpkg itself so the selftest can hand it a whole machine that is missing
-# things and check, package by package, which ones it names — the one decision here that can
-# be wrong in a way a person feels.
-missing_packages() { # <status-command>
-  local pkg missing=""
-  for pkg in $REQUIRED_PACKAGES; do
+# The names (after the status command) that the status command does not report installed. Split
+# from the apt run and from dpkg itself so the selftest can hand it a whole machine that is
+# missing things and check, package by package, which ones it names — the one decision here that
+# can be wrong in a way a person feels.
+missing_packages() { # <status-command> <name>...
+  local status="$1" pkg missing=""
+  shift
+  for pkg in "$@"; do
     # power-profiles-daemon conflicts with tlp on Debian: apt would remove tlp to install it, and
     # someone who installed tlp chose it. Their machine is left as it is.
-    if [ "$pkg" = power-profiles-daemon ] && [ "$("$1" tlp)" = "installed" ]; then continue; fi
-    [ "$("$1" "$pkg")" = "installed" ] || missing="$missing $pkg"
+    if [ "$pkg" = power-profiles-daemon ] && [ "$("$status" tlp)" = "installed" ]; then continue; fi
+    [ "$("$status" "$pkg")" = "installed" ] || missing="$missing $pkg"
   done
   printf '%s' "${missing# }"
 }
 
-# Install what this machine drifted from, and never fail the caller over it: a good build is
-# already installed by the time this runs, and a missing `ping` must not read as a failed
-# update. On machines this cannot sudo, it prints the one command that finishes the job.
+# ── Running apt ──
+#
+# Only as root, or through `sudo -n` on a tree from before #397. Never with a prompt
+# (DEBIAN_FRONTEND=noninteractive, and a changed config file keeps the machine's own), never
+# removing anything (--no-remove: apt stops rather than remove a package to make room), and with
+# only the names that are missing; apt upgrades an installed package only when a missing one
+# needs a newer version of it. Every run has a time limit. The download is a step of its own,
+# because killing a download costs nothing and killing dpkg half way leaves it to be finished.
+APT_UPDATE_SECS=180
+APT_DOWNLOAD_SECS=900
+APT_INSTALL_SECS=900
+# How long to wait for another apt or dpkg (unattended-upgrades, the Package Manager, a person's
+# own apt) to let go of the package database before reporting it and installing nothing.
+APT_LOCK_WAIT=60
+APT_LOCKS="/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock"
+
+# Stand-ins for apt, dpkg, the lock files and the limits, so the selftest can drive the whole
+# install without a Debian machine. Honoured only in selftest mode (YANTRIK_SELFTEST=1) and never
+# for root, like install-mind's: a root run with any of these in its environment uses the real
+# apt and the real limits.
+apt_standins() { [ "${YANTRIK_SELFTEST:-}" = 1 ] && [ "$(id -u)" != 0 ]; }
+pkg_status_cmd() {
+  if apt_standins && [ -n "${YANTRIK_DPKG_STATUS:-}" ]; then printf '%s' "$YANTRIK_DPKG_STATUS"
+  else printf 'pkg_installed'; fi
+}
+apt_setting() { # <name> <default>
+  local v=""
+  apt_standins && v="$(printenv "YANTRIK_$1" 2>/dev/null)"
+  printf '%s' "${v:-$2}"
+}
+
+# The first apt or dpkg lock someone holds, or nothing. fcntl locks, as apt takes them; opened
+# without following a link and without blocking on anything that is not a file.
+apt_lock_held() {
+  # shellcheck disable=SC2046  # a list of fixed paths, split on purpose
+  python3 -I - $(apt_setting APT_LOCKS "$APT_LOCKS") <<'PY'
+import fcntl, os, sys
+for path in sys.argv[1:]:
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        continue
+    try:
+        fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print(path)
+        sys.exit(0)
+    finally:
+        os.close(fd)
+PY
+}
+
+# Wait up to APT_LOCK_WAIT seconds for the package database to be free. Prints the lock still
+# held when it gives up.
+apt_wait_for_lock() {
+  local waited=0 held limit
+  limit="$(apt_setting APT_LOCK_WAIT "$APT_LOCK_WAIT")"
+  while held="$(apt_lock_held)"; [ -n "$held" ]; do
+    if [ "$waited" -ge "$limit" ]; then printf '%s' "$held"; return 1; fi
+    # To stderr: stdout is the held lock's path, which the caller reads.
+    [ "$waited" = 0 ] && info "another apt or dpkg is using the package database ($held); waiting up to ${limit}s" >&2
+    sleep 2
+    waited=$((waited + 2))
+  done
+}
+
+# apt_run <seconds> <log> <apt-get args...>: apt-get, with nothing to answer and a time limit.
+# timeout's 124 (or 137 once it had to kill) means the limit was reached.
+apt_run() {
+  local secs="$1" log="$2"; shift 2
+  local apt=(apt-get)
+  if apt_standins && [ -n "${YANTRIK_APT:-}" ]; then apt=("$YANTRIK_APT")
+  elif [ "$(id -u)" != 0 ]; then apt=(sudo -n apt-get); fi
+  # sudo -n before env, when it is needed at all, so the environment reaches apt.
+  if [ "${apt[0]}" = sudo ]; then
+    # shellcheck disable=SC2024  # the log is this process's own temporary file, written as it
+    sudo -n env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30 "$secs" apt-get "$@" > "$log" 2>&1
+  else
+    env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30 "$secs" "${apt[@]}" "$@" > "$log" 2>&1
+  fi
+}
+
+# One line saying why apt failed, from what it printed and how it exited. The mirror and the lock
+# are said in words, because those are what a person can act on; anything else is apt's own
+# last error, reduced to printable ASCII and without any user:password@ a source line carried.
+apt_reason() { # <log> <exit> <seconds>
+  if [ "$2" = 124 ] || [ "$2" = 137 ]; then
+    printf 'apt-get did not finish within %ss and was stopped' "$3"; return 0
+  fi
+  if grep -qE 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to connect|Network is unreachable|Could not connect|No route to host|Connection timed out|Connection refused' "$1" 2>/dev/null; then
+    printf "couldn't reach the package mirror"; return 0
+  fi
+  if grep -qE 'Could not get lock|Unable to acquire the dpkg frontend lock|Unable to lock' "$1" 2>/dev/null; then
+    printf 'another apt or dpkg held the package database'; return 0
+  fi
+  local last
+  last="$(grep -E '^E: ' "$1" 2>/dev/null | tail -1)"
+  [ -n "$last" ] || last="$(grep -v '^[[:space:]]*$' "$1" 2>/dev/null | tail -1)"
+  [ -n "$last" ] || last="apt-get exited $2"
+  printf '%s' "$last" | sed 's/^E: //; s#//[^/@[:space:]]*@#//#g' | LC_ALL=C tr -cd '\040-\176' | cut -c1-200
+}
+
+# Download, then install, the named packages. 0, or 1 with APT_WHY set to one line saying why.
+APT_WHY=""
+apt_install() { # <name>...
+  local log rc dl inst
+  log="$(mktemp)"
+  dl="$(apt_setting APT_DOWNLOAD_SECS "$APT_DOWNLOAD_SECS")"
+  inst="$(apt_setting APT_INSTALL_SECS "$APT_INSTALL_SECS")"
+  local opts=(-y -q --no-install-recommends --no-remove --no-upgrade
+              -o "DPkg::Lock::Timeout=$(apt_setting APT_LOCK_WAIT "$APT_LOCK_WAIT")"
+              -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+  rc=0; apt_run "$dl" "$log" install --download-only "${opts[@]}" "$@" || rc=$?
+  if [ "$rc" != 0 ]; then APT_WHY="$(apt_reason "$log" "$rc" "$dl")"; rm -f "$log"; return 1; fi
+  rc=0; apt_run "$inst" "$log" install "${opts[@]}" "$@" || rc=$?
+  if [ "$rc" != 0 ]; then
+    APT_WHY="$(apt_reason "$log" "$rc" "$inst")"
+    if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+      APT_WHY="$APT_WHY; if dpkg was interrupted, finish with: sudo dpkg --configure -a"
+    fi
+    rm -f "$log"; return 1
+  fi
+  rm -f "$log"
+}
+
+# Install what this machine lacks from the list, and never fail the caller over it: a good build
+# is already installed by the time this runs, and a missing `ping` must not read as a failed
+# update. Says, in the apply's own output, what was installed, how many were already present, and
+# each package that could not be installed with the reason. Returns 1 when anything is still
+# missing.
 reconcile_packages() {
+  local status_cmd; status_cmd="$(pkg_status_cmd)"
   # dpkg is the Debian answer. A machine without it (a dev box on another distro, an Alpine
   # deploy) is not this list's machine, and `apply` must not die asking.
-  command -v dpkg-query >/dev/null 2>&1 || {
-    info "no dpkg-query here — the package reconcile is for Debian machines"
+  if [ "$status_cmd" = pkg_installed ] && ! command -v dpkg-query >/dev/null 2>&1; then
+    info "no dpkg-query here — the package list is for Debian machines"
     return 0
-  }
-  local missing; missing="$(missing_packages pkg_installed)"
-  if [ "$(pkg_installed tlp)" = "installed" ] && [ "$(pkg_installed power-profiles-daemon)" != "installed" ]; then
-    info "tlp is installed, so power-profiles-daemon is left out: they conflict and apt would remove tlp"
   fi
-  [ -n "$missing" ] || return 0
-  say "this machine is missing packages the image ships: $missing"
-  # shellcheck disable=SC2086  # a package list, split on purpose
-  if sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $missing; then
-    missing="$(missing_packages pkg_installed)"
-    if [ -z "$missing" ]; then
-      info "base system reconciled"
-      return 0
-    fi
-    warn "still missing after apt-get: $missing"
+  say "Packages a fresh install has (share/$PACKAGE_LIST_REL)"
+  local listed
+  if ! listed="$(trusted_package_list 2>&1)"; then
+    warn "no package list this updater can trust, so no package was installed: $listed"
     return 1
   fi
-  warn "could not run apt-get without a password. Finish it once with: sudo apt-get install -y --no-install-recommends $missing"
-  return 1
+  local -a want=()
+  mapfile -t want <<< "$listed"
+  local missing; missing="$(missing_packages "$status_cmd" "${want[@]}")"
+  local -a miss=()
+  # shellcheck disable=SC2206  # names checked by read_package_list, split on purpose
+  [ -z "$missing" ] || miss=($missing)
+  local skipped=0
+  if [ "$("$status_cmd" tlp)" = "installed" ] && [ "$("$status_cmd" power-profiles-daemon)" != "installed" ] \
+     && printf '%s\n' "${want[@]}" | grep -qx power-profiles-daemon; then
+    skipped=1
+    info "tlp is installed, so power-profiles-daemon is left out: they conflict and apt would remove tlp"
+  fi
+  info "already present: $(( ${#want[@]} - ${#miss[@]} - skipped )) of ${#want[@]}"
+  [ "${#miss[@]}" -gt 0 ] || return 0
+  info "missing: ${miss[*]}"
+
+  if [ "$(id -u)" != 0 ] && ! apt_standins && ! sudo -n true 2>/dev/null; then
+    warn "failed: ${miss[*]} — apt needs root, and this account cannot sudo without a password. Finish with: sudo yantrik-update reconcile"
+    return 1
+  fi
+  local held
+  if ! held="$(apt_wait_for_lock)"; then
+    warn "failed: ${miss[*]} — another apt or dpkg still holds the package database ($held) after $(apt_setting APT_LOCK_WAIT "$APT_LOCK_WAIT")s; nothing was installed. Run 'sudo yantrik-update reconcile' once it is done"
+    return 1
+  fi
+
+  # Fresh indexes, or an old machine asks the mirror for versions it no longer has. A failure
+  # here that is not the network (one third-party source, say) still lets the install try with
+  # the indexes there are.
+  local log rc=0 secs why
+  log="$(mktemp)"
+  secs="$(apt_setting APT_UPDATE_SECS "$APT_UPDATE_SECS")"
+  apt_run "$secs" "$log" update -q -o "DPkg::Lock::Timeout=$(apt_setting APT_LOCK_WAIT "$APT_LOCK_WAIT")" || rc=$?
+  if [ "$rc" != 0 ]; then
+    why="$(apt_reason "$log" "$rc" "$secs")"
+    rm -f "$log"
+    case "$why" in
+      "couldn't reach the package mirror"*|"another apt"*|"apt-get did not finish"*)
+        warn "failed: ${miss[*]} — $why (apt-get update); nothing was installed, and the next update tries again"
+        return 1 ;;
+    esac
+    info "apt-get update reported: $why; installing with the indexes this machine has"
+  fi
+  rm -f "$log"
+
+  # All at once, the usual case. If that fails for a reason that is not the whole machine's (the
+  # mirror, the lock, the time limit), one at a time, so one package that cannot be installed
+  # does not keep the rest away.
+  local pkg done_ok=() failed=()
+  if apt_install "${miss[@]}"; then
+    done_ok=("${miss[@]}")
+  else
+    case "$APT_WHY" in
+      "couldn't reach the package mirror"*|"another apt"*|"apt-get did not finish"*)
+        for pkg in "${miss[@]}"; do failed+=("$pkg — $APT_WHY"); done ;;
+      *)
+        for pkg in "${miss[@]}"; do
+          if apt_install "$pkg"; then done_ok+=("$pkg"); else failed+=("$pkg — $APT_WHY"); fi
+        done ;;
+    esac
+  fi
+  # apt's word is checked against dpkg's.
+  local ok=0
+  for pkg in "${done_ok[@]}"; do
+    if [ "$("$status_cmd" "$pkg")" = installed ]; then
+      info "installed: $pkg"; ok=$((ok + 1))
+    else
+      failed+=("$pkg — apt-get finished, but dpkg does not list it installed")
+    fi
+  done
+  for pkg in "${failed[@]}"; do warn "failed: $pkg"; done
+  info "packages: $ok installed, $(( ${#want[@]} - ${#miss[@]} - skipped )) already present, ${#failed[@]} failed"
+  [ "${#failed[@]}" = 0 ]
 }
 
 # Subordinate ids for rootless podman (#401). podman maps a container's users onto ids the
@@ -3976,7 +4314,6 @@ cmd_reconcile() {
   remove_blanket_sudo
   seal_share
   say "Reconciling the base system against what the image ships"
-  info "required: $REQUIRED_PACKAGES"
   reconcile_packages
   reconcile_subids
   reconcile_polkit
@@ -4360,88 +4697,326 @@ cmd_selftest() {
     "$(version_order nightly-2026-09-23 v0.1.0-456-gca376be)"
   t "and so is no version at all" "unknown" "$(version_order '' v0.1.0-456-gca376be)"
 
-  # 8. The base packages a machine can drift from while every Yantrik file on it is current (#210).
+  # 8. The base packages a machine can drift from while every Yantrik file on it is current (#210),
+  #    from the one list the image installs too (#854).
   #
   #    VM 520 was installed from an older image and kept "current" by deploys, which replace
-  #    /opt/yantrik and never a Debian package, so it had no ip, ss, ping, nano or htop. The
-  #    decision under test is which packages a given machine lacks — that one is pure, and a
-  #    fake status command stands in for dpkg. The apt run itself is only a caller of it and
-  #    needs a Debian machine, so nothing here touches apt.
+  #    /opt/yantrik and never a Debian package, so it had no ip, ss, ping, nano or htop, and later
+  #    no mpv, which only the ISO's list named. The decision under test is which packages a given
+  #    machine lacks — that one is pure, and a fake status command stands in for dpkg. The apt run
+  #    is driven further down with a stand-in apt, never the real one.
+  local here pkgs="" pl
+  here="$(dirname "$SELF_PATH")"
+  for pl in "$here/packages.list" "$here/../share/packages.list"; do
+    [ -f "$pl" ] && { pkgs="$pl"; break; }
+  done
+  local -a shipped=()
+  if [ -z "$pkgs" ]; then
+    printf '  %sFAIL%s no packages.list beside this updater (%s) or in its share/\n' "$c_red" "$c_off" "$here"
+    fails=$((fails + 1))
+  else
+    out="$(read_package_list "$pkgs" 2>&1)" || out="REFUSED: $out"
+    mapfile -t shipped <<< "$out"
+    is "the shipped package list parses" "" "$(printf '%s' "$out" | grep -E '^REFUSED' || true)"
+    t "and names mpv, which only the ISO had (#854)" "mpv" "$(printf '%s\n' "${shipped[@]}" | grep -x mpv)"
+    # Every package the updater's own list named before #854: the shared list drops none of them.
+    local old_list="iproute2 iputils-ping grim curl python3 nano htop vim-tiny swaybg xdg-desktop-portal-gtk flatpak git bash-completion podman uidmap passt fuse-overlayfs nftables upower power-profiles-daemon slurp wl-clipboard wf-recorder vainfo" p lost=""
+    for p in $old_list; do printf '%s\n' "${shipped[@]}" | grep -qx -- "$p" || lost="$lost $p"; done
+    is "it keeps every package the updater's old list had" "" "$lost"
+    # Nothing that must never reach an installed machine: the live system's boot, a second boot
+    # loader, the kernel.
+    is "it names no live-boot, boot loader or kernel package" "" \
+      "$(printf '%s\n' "${shipped[@]}" | grep -E '^(live-|grub|linux-image|initramfs-tools$)' || true)"
+  fi
+
+  # Both sides read that one file. Only where the build scripts sit beside this one (the repo).
+  if [ -f "$here/build-debian-iso.sh" ]; then
+    t "the ISO reads its packages through this parser" 'yantrik-update" package-list "$SCRIPT_DIR/packages.list"' \
+      "$(grep -F -- 'yantrik-update" package-list "$SCRIPT_DIR/packages.list"' "$here/build-debian-iso.sh")"
+    t "and installs every name, as separate arguments, with no || true" 'apt-get install -y -qq "${YANTRIK_PACKAGES[@]}"' \
+      "$(grep -x 'apt-get install -y -qq "${YANTRIK_PACKAGES\[@\]}"' "$here/build-debian-iso.sh")"
+    # A second list grows back the way the first one did: a package named on an ISO apt line.
+    is "the ISO names none of the list's packages on an apt line of its own" "" \
+      "$(grep -E '^apt-get install' "$here/build-debian-iso.sh" | grep -wE 'mpv|swaybg|nano|podman|chromium' || true)"
+    t "the bundle ships the list in share/" 'install -m 0644 "$SCRIPT_DIR/packages.list" "$ROOT/share/packages.list"' \
+      "$(grep -F -- 'install -m 0644 "$SCRIPT_DIR/packages.list" "$ROOT/share/packages.list"' "$here/build-release.sh")"
+    t "and lists its hash with what root installs" 'sha256sum packages.list ' \
+      "$(grep -F -- 'sha256sum packages.list ' "$here/build-release.sh")"
+    t "the bundle ships the session's chrome copy" 'cp "$SCRIPT_DIR/yantrik-session-chrome" "$ROOT/bin/yantrik-session-chrome"' \
+      "$(grep -F -- 'cp "$SCRIPT_DIR/yantrik-session-chrome" "$ROOT/bin/yantrik-session-chrome"' "$here/build-release.sh")"
+  fi
+
+  # The parser refuses a whole list for one bad line, and never prints a name from it.
+  local plt="$root/plist" bad
+  mkdir -p "$plt"
+  printf '# comment\n\nmpv   \n  nano # the editor\r\ncurl\n' > "$plt/good"
+  is "comments, blank lines, spaces and CRLF are allowed" "mpv nano curl" \
+    "$(read_package_list "$plt/good" | tr '\n' ' ' | sed 's/ $//')"
+  for bad in 'mpv; touch PWNED' '-oAPT::Get::Assume-Yes=1' 'mpv nano' '../../evil' 'Mpv' '$(touch PWNED)' 'mpv`touch PWNED`' 'https://x.example/a.deb' 'a'; do
+    printf 'mpv\n%s\nnano\n' "${bad//PWNED/$plt/pwned}" > "$plt/bad"
+    out="$(read_package_list "$plt/bad" 2>/dev/null; printf '[exit %s]' "$?")"
+    is "a list with the line '$bad' is refused whole" "[exit 1]" "$out"
+  done
+  is "and nothing in a refused line ran" "absent" "$([ -e "$plt/pwned" ] && echo present || echo absent)"
+  printf '# nothing\n\n' > "$plt/empty"
+  is "a list naming no packages is refused" "1" "$(read_package_list "$plt/empty" >/dev/null 2>&1; echo $?)"
+  ln -s "$plt/good" "$plt/link"
+  is "a list that is a link is refused" "1" "$(read_package_list "$plt/link" >/dev/null 2>&1; echo $?)"
+  head -c $((PACKAGE_LIST_MAX_BYTES + 1)) /dev/zero | tr '\0' 'a' > "$plt/huge"
+  is "a list over the size limit is refused before it is read" "1" "$(read_package_list "$plt/huge" >/dev/null 2>&1; echo $?)"
+  for p in $(seq 1 $((PACKAGE_LIST_MAX_NAMES + 1))); do printf 'p%s\n' "$p"; done > "$plt/many"
+  is "a list over the name limit is refused" "1" "$(read_package_list "$plt/many" >/dev/null 2>&1; echo $?)"
+
   local old want; old="$root/dpkg-520"
   printf '#!/bin/sh\ncase "$1" in iproute2|curl|python3|grim) echo installed ;; esac\n' > "$old"
   chmod +x "$old"
-  out="$(missing_packages "$old")"
-  want="iputils-ping nano htop vim-tiny swaybg xdg-desktop-portal-gtk flatpak git bash-completion podman uidmap passt fuse-overlayfs nftables upower power-profiles-daemon slurp wl-clipboard wf-recorder vainfo"
-  if [ "$out" = "$want" ]; then
-    printf '  %sok%s   a 520-style machine is named package by package\n' "$c_grn" "$c_off"
-  else
-    printf '  %sFAIL%s a 520-style machine: wanted %s, got %s\n' \
-      "$c_red" "$c_off" "$want" "${out:-nothing}"
-    fails=$((fails + 1))
-  fi
-
-  # A machine that was current until #401: every package the list named before it, and none of
-  # the developer's baseline. It is told exactly those, and nothing it already has.
-  local pre401; pre401="$root/dpkg-pre401"
-  printf '#!/bin/sh\ncase "$1" in iproute2|iputils-ping|grim|curl|python3|nano|htop|swaybg|xdg-desktop-portal-gtk|flatpak) echo installed ;; esac\n' > "$pre401"
-  chmod +x "$pre401"
-  out="$(missing_packages "$pre401")"
-  want="vim-tiny git bash-completion podman uidmap passt fuse-overlayfs nftables upower power-profiles-daemon slurp wl-clipboard wf-recorder vainfo"
-  if [ "$out" = "$want" ]; then
-    printf '  %sok%s   a machine from before #401 is given git, completion and rootless podman\n' "$c_grn" "$c_off"
-  else
-    printf '  %sFAIL%s a machine from before #401: wanted %s, got %s\n' \
-      "$c_red" "$c_off" "$want" "${out:-nothing}"
-    fails=$((fails + 1))
-  fi
+  out="$(missing_packages "$old" "${shipped[@]}")"
+  want="$(printf '%s\n' "${shipped[@]}" | grep -vxE 'iproute2|curl|python3|grim' | tr '\n' ' ' | sed 's/ $//')"
+  is "a 520-style machine is named package by package, in the list's order" "$want" "$out"
 
   # The battery and the power profile (story 1.4): a machine that has everything else but not
-  # UPower or power-profiles-daemon is told those two. Without them a laptop has no battery
-  # reading over D-Bus and no profile choice.
+  # UPower or power-profiles-daemon is told those two.
   local pre14; pre14="$root/dpkg-pre14"
-  printf '#!/bin/sh
-case "$1" in upower|power-profiles-daemon|tlp) ;; *) echo installed ;; esac
-' > "$pre14"
+  printf '#!/bin/sh\ncase "$1" in upower|power-profiles-daemon|tlp) ;; *) echo installed ;; esac\n' > "$pre14"
   chmod +x "$pre14"
-  out="$(missing_packages "$pre14")"
-  want="upower power-profiles-daemon"
-  if [ "$out" = "$want" ]; then
-    printf '  %sok%s   a machine without UPower or power-profiles-daemon is given both
-' "$c_grn" "$c_off"
-  else
-    printf '  %sFAIL%s a machine without UPower: wanted %s, got %s
-'       "$c_red" "$c_off" "$want" "${out:-nothing}"
-    fails=$((fails + 1))
-  fi
-
+  is "a machine without UPower or power-profiles-daemon is given both" "upower power-profiles-daemon" \
+    "$(missing_packages "$pre14" "${shipped[@]}")"
   # The same machine with tlp on it: power-profiles-daemon is skipped, because installing it
   # would make apt remove tlp. UPower is still given.
   local withtlp; withtlp="$root/dpkg-withtlp"
-  printf '#!/bin/sh
-case "$1" in upower|power-profiles-daemon) ;; *) echo installed ;; esac
-' > "$withtlp"
+  printf '#!/bin/sh\ncase "$1" in upower|power-profiles-daemon) ;; *) echo installed ;; esac\n' > "$withtlp"
   chmod +x "$withtlp"
-  out="$(missing_packages "$withtlp")"
-  want="upower"
-  if [ "$out" = "$want" ]; then
-    printf '  %sok%s   a machine with tlp is not given power-profiles-daemon, which would remove it
-' "$c_grn" "$c_off"
+  is "a machine with tlp is not given power-profiles-daemon, which would remove it" "upower" \
+    "$(missing_packages "$withtlp" "${shipped[@]}")"
+  local whole; whole="$root/dpkg-whole"
+  printf '#!/bin/sh\necho installed\n' > "$whole"
+  chmod +x "$whole"
+  is "a machine built from the current image is missing nothing" "" "$(missing_packages "$whole" "${shipped[@]}")"
+
+  # Only the installed copy, root's, with the hash this build shipped. ROOT_UID is this account
+  # here, so "root's" can be built without root.
+  local tp="$root/trusted"
+  mkdir -p "$tp/bin" "$tp/share"
+  printf 'mpv\nnano\n' > "$tp/share/packages.list"
+  (cd "$tp/share" && sha256sum packages.list) > "$tp/bin/yantrik-root-files.sha256"
+  chmod 0755 "$tp" "$tp/bin" "$tp/share"; chmod 0644 "$tp/share/packages.list"
+  trusted() { (PREFIX="$tp" SHARE_DIR="$tp/share" BIN_DIR="$tp/bin" ROOT_FILES="$tp/bin/yantrik-root-files.sha256" \
+               ROOT_UID="$(id -u)"; trusted_package_list 2>&1; printf '[exit %s]' "$?"); }
+  is "the list this build shipped is trusted" "mpv nano [exit 0]" "$(trusted | tr '\n' ' ')"
+  printf 'mpv\nnano\nevil-package\n' > "$tp/share/packages.list"
+  t "a list whose content is not what the build shipped is not" "not trusted" "$(trusted)"
+  printf 'mpv\nnano\n' > "$tp/share/packages.list"
+  chmod 0664 "$tp/share/packages.list"
+  t "nor one another account could write" "not trusted" "$(trusted)"
+  chmod 0644 "$tp/share/packages.list"; chmod 0777 "$tp/share"
+  t "nor one in a share/ another account could write" "not trusted" "$(trusted)"
+  chmod 0755 "$tp/share"
+  mv "$tp/share/packages.list" "$tp/real.list"; ln -s "$tp/real.list" "$tp/share/packages.list"
+  t "nor a link to a list" "[exit 1]" "$(trusted)"
+  rm -f "$tp/share/packages.list"
+  t "a build without one says so" "ships no" "$(trusted)"
+
+  # The install itself, with a stand-in apt and dpkg. Never as root: the stand-ins are refused to
+  # root, so as root this would run the real apt.
+  if [ "$(id -u)" = 0 ]; then
+    printf '  skip package install checks: they run as an ordinary account, never as root\n'
   else
-    printf '  %sFAIL%s a machine with tlp: wanted %s, got %s
-'       "$c_red" "$c_off" "$want" "${out:-nothing}"
+    local aptd="$root/apt" st
+    mkdir -p "$aptd/bin" "$aptd/share" "$aptd/state"
+    st="$aptd/state"
+    # dpkg: installed when the state directory holds a file of that name.
+    printf '#!/bin/sh\n[ -e "%s/$1" ] && echo installed\nexit 0\n' "$st" > "$aptd/dpkg"
+    # apt-get: every call recorded, one line per call; what it does decided by STUB_MODE.
+    cat > "$aptd/apt-get" <<STUB
+#!/bin/sh
+printf '%s\n' "\$*" >> "$st/apt-calls"
+case "\${STUB_MODE:-ok}" in
+  offline)
+    printf 'Err:1 http://deb.debian.org/debian trixie InRelease\n  Temporary failure resolving %s\n' "'deb.debian.org'"
+    printf 'E: Failed to fetch http://deb.debian.org/debian/dists/trixie/InRelease\n'
+    exit 100 ;;
+  slow)
+    case " \$* " in *" --download-only "*) sleep 5 ;; esac ;;
+esac
+[ "\$1" = update ] && exit 0
+for a in "\$@"; do
+  case "\$a" in
+    nosuchpkg) printf 'E: Unable to locate package nosuchpkg\n'; exit 100 ;;
+  esac
+done
+case " \$* " in *" --download-only "*) exit 0 ;; esac
+for a in "\$@"; do
+  case "\$a" in -*|install|*=*) ;; *) : > "$st/\$a" ;; esac
+done
+exit 0
+STUB
+    chmod +x "$aptd/dpkg" "$aptd/apt-get"
+    chmod 0755 "$aptd" "$aptd/bin" "$aptd/share"
+    aplist() { # the names given become the trusted, shipped list
+      printf '%s\n' "$@" > "$aptd/share/packages.list"; chmod 0644 "$aptd/share/packages.list"
+      (cd "$aptd/share" && sha256sum packages.list) > "$aptd/bin/yantrik-root-files.sha256"
+    }
+    reconcile_with() { # reconcile_with <STUB_MODE> [VAR=value...]
+      rm -f "$st/apt-calls"
+      ( export YANTRIK_SELFTEST=1 YANTRIK_APT="$aptd/apt-get" YANTRIK_DPKG_STATUS="$aptd/dpkg" \
+               YANTRIK_APT_LOCKS="$st/lock" YANTRIK_APT_LOCK_WAIT=2 STUB_MODE="$1"
+        shift
+        # shellcheck disable=SC2163  # VAR=value pairs, exported as given
+        [ "$#" = 0 ] || export "$@"
+        PREFIX="$aptd" SHARE_DIR="$aptd/share" BIN_DIR="$aptd/bin" ROOT_FILES="$aptd/bin/yantrik-root-files.sha256" \
+          ROOT_UID="$(id -u)"
+        reconcile_packages; printf '[exit %s]' "$?" ) 2>&1
+    }
+
+    aplist mpv nano curl
+    : > "$st/nano"
+    out="$(reconcile_with ok)"
+    t "a missing package from the list is installed (#854)" "installed: mpv" "$out"
+    t "and the other one" "installed: curl" "$out"
+    t "what was there is counted, not reinstalled" "already present: 1 of 3" "$out"
+    t "and the summary says so" "packages: 2 installed, 1 already present, 0 failed" "$out"
+    t "the whole run succeeds" "[exit 0]" "$out"
+    is "apt is asked for fresh indexes first" "update" "$(head -1 "$st/apt-calls" | cut -d' ' -f1)"
+    t "then downloads only the missing names, never removing, never upgrading" \
+      "install --download-only -y -q --no-install-recommends --no-remove --no-upgrade" "$(sed -n 2p "$st/apt-calls")"
+    t "with the names last, as separate arguments" "--force-confold mpv curl" "$(sed -n 3p "$st/apt-calls")"
+    is "and never runs upgrade, remove, purge or autoremove" "" \
+      "$(cut -d' ' -f1 "$st/apt-calls" | grep -xE 'upgrade|dist-upgrade|full-upgrade|remove|purge|autoremove' || true)"
+    is "nano, already there, is not named to apt" "" "$(grep -w nano "$st/apt-calls" || true)"
+
+    out="$(reconcile_with ok)"
+    t "a second run finds nothing to do" "already present: 3 of 3" "$out"
+    is "and calls apt not at all" "absent" "$([ -e "$st/apt-calls" ] && echo present || echo absent)"
+
+    rm -f "$st/mpv" "$st/curl"
+    out="$(reconcile_with offline)"
+    t "offline: it says it couldn't reach the package mirror" "couldn't reach the package mirror" "$out"
+    t "names what is still missing" "failed: mpv curl" "$out"
+    t "and returns a failure for the caller to ignore" "[exit 1]" "$out"
+    is "and tries no install after the mirror failed" "" "$(grep -E '^install' "$st/apt-calls" || true)"
+
+    # Another apt holds the lock: it waits, then reports, and apt is never run.
+    : > "$st/lock"
+    python3 -I -c 'import fcntl, os, sys, time
+fd = os.open(sys.argv[1], os.O_RDWR); fcntl.lockf(fd, fcntl.LOCK_EX); open(sys.argv[2], "w").close(); time.sleep(8)' \
+      "$st/lock" "$st/locked" &
+    local holder=$!
+    for _ in 1 2 3 4 5 6 7 8 9 10; do [ -e "$st/locked" ] && break; sleep 0.2; done
+    out="$(reconcile_with ok)"
+    kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+    t "with the package database locked, it says it is waiting" "is using the package database ($st/lock); waiting up to 2s" "$out"
+    t "then names the lock, once, in the failure" "still holds the package database ($st/lock) after 2s" "$out"
+    is "and runs no apt at all" "absent" "$([ -e "$st/apt-calls" ] && echo present || echo absent)"
+    out="$(reconcile_with ok)"
+    t "once the lock is free, the same run installs" "installed: mpv" "$out"
+
+    # One package apt cannot find does not keep the others away.
+    aplist mpv nosuchpkg nano
+    rm -f "$st/mpv"
+    out="$(reconcile_with ok)"
+    t "one bad package: the others are still installed" "installed: mpv" "$out"
+    t "and the bad one is named with apt's reason" "failed: nosuchpkg — Unable to locate package nosuchpkg" "$out"
+    t "and counted" "packages: 1 installed, 1 already present, 1 failed" "$out"
+
+    # A download that does not finish is stopped, and said.
+    aplist mpv
+    rm -f "$st/mpv"
+    out="$(reconcile_with slow YANTRIK_APT_DOWNLOAD_SECS=1)"
+    t "a download past its time limit is stopped and reported" "did not finish within 1s" "$out"
+    is "and nothing is installed after it" "absent" "$([ -e "$st/mpv" ] && echo present || echo absent)"
+
+    # A list that is not the shipped one: nothing at all is installed.
+    printf 'mpv\nevil\n' > "$aptd/share/packages.list"
+    out="$(reconcile_with ok)"
+    t "an untrusted list installs nothing" "no package list this updater can trust" "$out"
+    is "and apt is never called" "absent" "$([ -e "$st/apt-calls" ] && echo present || echo absent)"
+  fi
+  # An apply never fails, or rolls back, over a package: the reconcile it runs is `|| true`.
+  # Three: an up-to-date apply, the new build's reconcile after an install, and its stand-in.
+  is "apply runs the package reconcile as something that cannot fail it" "3" \
+    "$(sed -n '/^cmd_apply()/,/^}/p' "$SELF_PATH" | grep -cE '(yantrik-update" reconcile|reconcile_packages) \|\| true$')"
+
+  # 8b. The compositor's keys after an update (#854): the session's own copy, run as the person,
+  #     never through a link, and labwc asked to re-read them.
+  local chrome_helper=""
+  [ -f "$here/yantrik-session-chrome" ] && chrome_helper="$here/yantrik-session-chrome"
+  if [ -z "$chrome_helper" ]; then
+    printf '  %sFAIL%s no yantrik-session-chrome beside this updater\n' "$c_red" "$c_off"
     fails=$((fails + 1))
+  else
+    local cs="$root/chrome" ch="$root/chome"
+    mkdir -p "$cs/labwc" "$cs/fonts"
+    printf '<keys new/>\n' > "$cs/labwc/rc.xml"
+    printf '<menu/>\n' > "$cs/labwc/menu.xml"
+    printf 'theme\n' > "$cs/labwc/themerc"
+    printf '#!/bin/sh\n' > "$cs/labwc/autostart"
+    printf 'png\n' > "$cs/labwc/close-active.png"
+    printf 'ttf\n' > "$cs/fonts/house.ttf"
+    # A home with traps: rc.xml a link to a file elsewhere, menu.xml a FIFO, autostart a dangling
+    # link, and the theme directory a link to somewhere else.
+    mkdir -p "$ch/.config/labwc" "$ch/.local/share/themes/Yantrik" "$root/elsewhere"
+    printf 'victim\n' > "$root/victim"
+    ln -s "$root/victim" "$ch/.config/labwc/rc.xml"
+    mkfifo "$ch/.config/labwc/menu.xml"
+    ln -s "$root/dangling-target" "$ch/.config/labwc/autostart"
+    ln -s "$root/elsewhere" "$ch/.local/share/themes/Yantrik/labwc"
+    out="$(HOME="$ch" timeout 20 sh "$chrome_helper" "$cs" 2>&1; printf '[exit %s]' "$?")"
+    is "the file a planted rc.xml link pointed at is untouched" "victim" "$(cat "$root/victim")"
+    is "rc.xml is now the shipped one, as a plain file" "<keys new/> file" \
+      "$(cat "$ch/.config/labwc/rc.xml") $([ -f "$ch/.config/labwc/rc.xml" ] && [ ! -L "$ch/.config/labwc/rc.xml" ] && echo file)"
+    is "a FIFO at menu.xml is replaced, not written into (no hang)" "<menu/>" "$(cat "$ch/.config/labwc/menu.xml" 2>/dev/null)"
+    is "a dangling link at autostart creates nothing where it pointed" "absent" \
+      "$([ -e "$root/dangling-target" ] && echo present || echo absent)"
+    is "autostart lands executable" "yes" "$([ -x "$ch/.config/labwc/autostart" ] && [ ! -L "$ch/.config/labwc/autostart" ] && echo yes)"
+    is "a theme directory that is a link is refused" "" "$(ls -A "$root/elsewhere")"
+    t "and the refusal is said, with a failure status" "refusing" "$out"
+    t "and exits 1" "[exit 1]" "$out"
+    is "the fonts still land" "ttf" "$(cat "$ch/.local/share/fonts/house.ttf" 2>/dev/null)"
+    is "no temporary file is left behind" "" "$(find "$ch" -name '.*.??????' -type f)"
+    rm -rf "$ch"
+    out="$(HOME="$ch" sh "$chrome_helper" "$cs" 2>&1; printf '[exit %s]' "$?")"
+    is "a fresh home gets all of it" "[exit 0]" "$out"
+    is "the theme in place" "theme" "$(cat "$ch/.local/share/themes/Yantrik/labwc/themerc" 2>/dev/null)"
+    is "with its buttons" "png" "$(cat "$ch/.local/share/themes/Yantrik/labwc/close-active.png" 2>/dev/null)"
+  fi
+  if [ -f "$here/yantrik-session" ]; then
+    t "the session runs the same copy at login" "/opt/yantrik/bin/yantrik-session-chrome /opt/yantrik/share" \
+      "$(grep -F -- "/opt/yantrik/bin/yantrik-session-chrome /opt/yantrik/share" "$here/yantrik-session")"
+    is "and keeps no copy of its own" "" "$(grep -n 'cp -f "\$CHROME' "$here/yantrik-session" || true)"
   fi
 
-  # The list is apt's, run as root: package names, never a URL or a path (#401).
-  # shellcheck disable=SC2086  # a package list, split on purpose
-  out="$(printf '%s\n' $REQUIRED_PACKAGES | grep -vE '^[a-z0-9][a-z0-9+.-]+$' || true)"
-  if [ -z "$out" ]; then
-    printf '  %sok%s   every required package is a plain Debian package name\n' "$c_grn" "$c_off"
-  else
-    printf '  %sFAIL%s REQUIRED_PACKAGES holds what is not a package name: %s\n' \
-      "$c_red" "$c_off" "$(printf '%s' "$out" | tr '\n' ' ')"
-    fails=$((fails + 1))
-  fi
+  # Which applies count as a change to the keys.
+  local lo="$root/lold" ln="$root/lnew"
+  mkdir -p "$lo/labwc" "$ln/labwc"
+  printf 'a\n' > "$lo/labwc/rc.xml"; printf 'a\n' > "$ln/labwc/rc.xml"
+  printf 't\n' > "$lo/labwc/themerc"; printf 't\n' > "$ln/labwc/themerc"
+  is "the same labwc files: no change" "same" "$(labwc_chrome_changed "$lo" "$ln" && echo changed || echo same)"
+  printf 'b\n' > "$ln/labwc/rc.xml"
+  is "a new key in rc.xml: changed" "changed" "$(labwc_chrome_changed "$lo" "$ln" && echo changed || echo same)"
+  printf 'a\n' > "$ln/labwc/rc.xml"; rm "$ln/labwc/themerc"
+  is "a file dropped: changed" "changed" "$(labwc_chrome_changed "$lo" "$ln" && echo changed || echo same)"
+  is "a build before share/labwc existed: changed" "changed" "$(labwc_chrome_changed "$root/nolabwc" "$ln" && echo changed || echo same)"
+
+  # labwc is sent SIGHUP (what `labwc --reconfigure` sends), found by its owner's uid and name. A
+  # renamed `sleep` stands in for it: SIGHUP ends it with status 129.
+  local fake="$root/ylabwc-selftest" fpid
+  cp "$(command -v sleep)" "$fake"
+  "$fake" 30 & fpid=$!
+  sleep 0.3
+  t "the stand-in labwc is found by its owner's uid" "$fpid" "$(session_labwc_pids "$(id -u)" ylabwc-selftest)"
+  out="$(reload_labwc "$(id -un)" "$fpid" 2>&1)"
+  wait "$fpid" 2>/dev/null; local hup=$?
+  is "and is sent SIGHUP" "129" "$hup"
+  t "which the output says" "re-read its config" "$out"
+  is "a uid with no labwc has none" "" "$(session_labwc_pids 2147483646)"
+
+  # Where apply and rollback do it: after the new build answered, never with --no-restart.
+  local applyfn; applyfn="$(sed -n '/^cmd_apply()/,/^}/p' "$SELF_PATH")"
+  is "apply refreshes the keys right after the restart it verified" 'refresh_session_chrome "$backup/share" || true' \
+    "$(printf '%s\n' "$applyfn" | grep -A3 -F 'restart_and_verify "$backup"' | grep -F 'refresh_session_chrome' | sed 's/^ *//')"
+  is "and only there" "1" "$(printf '%s\n' "$applyfn" | grep -c 'refresh_session_chrome')"
+  t "rollback puts the older keys back the same way" 'refresh_session_chrome "$before"' \
+    "$(sed -n '/^cmd_rollback()/,/^}/p' "$SELF_PATH")"
 
   # 9. Subordinate ids for rootless podman (#401). Where a new range starts, and whether an
   #    account already has one, decide whether two accounts end up sharing ids; both are pure
@@ -4491,17 +5066,6 @@ case "$1" in upower|power-profiles-daemon) ;; *) echo installed ;; esac
       printf '  %sFAIL%s config/containers/50-yantrik-search.conf would be refused by reconcile\n' "$c_red" "$c_off"
       fails=$((fails + 1))
     fi
-  fi
-
-  local whole; whole="$root/dpkg-whole"
-  printf '#!/bin/sh\necho installed\n' > "$whole"
-  chmod +x "$whole"
-  out="$(missing_packages "$whole")"
-  if [ -z "$out" ]; then
-    printf '  %sok%s   a machine built from the current image is missing nothing\n' "$c_grn" "$c_off"
-  else
-    printf '  %sFAIL%s a current machine was told it lacks: %s\n' "$c_red" "$c_off" "$out"
-    fails=$((fails + 1))
   fi
 
   # N. install-mind: a bundle is checked whole before anything moves, and a Mind that does not
@@ -6009,7 +6573,8 @@ usage() {
     "  rollback                                  restore the most recent backup" \
     "  status      [--porcelain]                 channel, host, build, backups" \
     "  set-channel nightly|beta|stable           change the channel (writes $CONF)" \
-    "  reconcile                                 install base packages the image ships and this lacks" \
+    "  reconcile                                 install packages from share/packages.list this machine lacks" \
+    "  package-list FILE                         the package names in FILE, checked (the image build reads it)" \
     "  install-mind BUNDLE SHA256                put a Yantrik Mind bundle in place, and prove it attaches" \
     "  mind-egress apply                         hold the mind account to its egress proxy (root; its units run it)" \
     "  selftest                                  offline checks, no network" \
@@ -6029,6 +6594,9 @@ case "$CMD" in
   # person at a terminal types the hyphen.
   set-channel|set_channel) cmd_set_channel "$@" ;;
   reconcile) cmd_reconcile ;;
+  # The names in a package list, validated, one per line: what build-debian-iso.sh installs, read
+  # by the same parser that reads the installed copy here (#854). Reads only the file it is given.
+  package-list) [ "$#" = 1 ] || fail "usage: yantrik-update package-list FILE"; read_package_list "$1" ;;
   migrate-minds) cmd_migrate_minds "$@" ;;
   install-mind) cmd_install_mind "$@" ;;
   mind-egress) cmd_mind_egress "$@" ;;
