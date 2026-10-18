@@ -43,7 +43,7 @@ case "$profile" in *[!A-Za-z0-9/._-]*) echo "the throwaway directory's path is n
 
 # The page's folder, copied: regular files only (never a link, FIFO or device), no dot-files,
 # four levels deep, at most MAX_FILES files of MAX_KB each. A page whose folder is bigger is not
-# checked rather than half copied. The copy takes the same time limit as a load.
+# checked rather than half copied. Each step of the copy has 5 seconds.
 MAX_FILES=200
 MAX_KB=4096
 dir=$(dirname "$page")
