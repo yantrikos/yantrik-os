@@ -15,6 +15,31 @@ Evidence from the day this was written, all with the same model:
 
 These are fixes to plumbing, evidence and retrieval, not new reasoning. The point stands: competence is a property of the whole system. Hand-authored recipes and human corrections count as inputs, never as free intelligence.
 
+**The sharper bet (Claude Fable's review):** surviving a model *swap* is nearly free for any well-built system, and "never gains authority" is an invariant, not a result. The claim worth earning is that **Yantrik produces verified competence that neither the model nor Pranab wrote.** The first place it can happen is the compiler's challenge suite. When mutation testing finds a limit nobody wrote down ("this repair holds on schema v3, not v4"), that's knowledge the system made. Count every human edit to a compiled skill, so we never mistake our own authoring for the system's.
+
+## Standing concerns and the sensorium (what both earlier rounds missed)
+
+Every proposal so far starts from a task the person gave. Without **standing concerns**, "alive" collapses into "responsive": a superb tool. These are things Yantrik cares about when nobody asks:
+- unsaved work;
+- free disk;
+- a stale backup;
+- a service that should be up;
+- a promise made to the person and not kept.
+
+Each concern is a vital sign with a healthy range, a deviation signal, and typed restorative actions within its grant. None of it needs a model: it's the no-GPU tier given a heartbeat, and the natural first user of compiled skills.
+
+Its prerequisite is a **specified sensorium**: what the OS records continuously (file writes, process lifecycle, focus, idle, network, power), at what rate, and for how long. Everything else is matched against it, so it's designed, not assumed.
+
+## The betting ledger (anticipation that can be wrong in public)
+
+Every anticipation becomes a recorded bet: *"you'll open the editor within 10 minutes: 0.7"*, *"this build fails: 0.4"*, *"disk full by Thursday: 0.9"*. Each bet has a horizon, a probability, a resolution condition and an expiry, and is scored automatically when it resolves. The predictors are tiny (frequency tables, survival curves, thresholds), and the scoring needs no model either. It gives us:
+- **A system that visibly expects things and is visibly right or wrong.** That's what being alive looks like from outside.
+- **A calibration record you can ask for.** *"Yantrik, how well do you know me?"* answers with a number and its worst miss.
+- **A gate that keeps Halo 5 architectural.** A prediction can only lead to a proposed action once its calibration clears a bar set in advance.
+- **A feed to the compiler.** A well-calibrated prediction paired with a response the person keeps accepting is a skill candidate the pipeline found by itself. Nobody wrote down that the person opens the editor after their second coffee; the ledger noticed.
+
+A prediction is a hypothesis with an expiry and a resolution condition. It belongs beside the Mind's belief store (memory classes per Mind E.MEM3), not in a parallel table.
+
 ## Six contracts
 
 | Contract | What it guarantees | Grows out of |
@@ -54,9 +79,19 @@ The measure is **verified work done without fresh generative inference**, divide
 
 *"I did not get bigger. I got older"* then means something exact: less improvisation, more reusable competence, and no extra authority.
 
+### The hardest part is recognition, not execution (Fable)
+
+Running a compiled procedure is easy. Knowing, without a model, that *this* situation is the one it fits is the real problem. It's the 0.58 router again under another name: the compiler moves inference from "act" to "does this apply?" rather than removing it. So:
+- **For the first ten skills, applicability is literal, close to a hash:** exact exit code, exact log signature, schema fingerprint, process-tree shape. Anything else abstains.
+- **The oracle is derived from the original failure's observations** (the state that was lost, the process that didn't die), never from generated text. A model writing the acceptance check for its own skill rebuilds FINISHED one level up.
+
 ### The first skill
 
-**One app, one recorded save→restart→restore defect, one known repair pattern**, and only if that is a real recurring failure in the logged episodes. Not "add a feature" (too open), and not "fix a page-check failure" (it invites fixing the check instead of the product).
+Fable's correction, adopted. A code repair puts the compiler in direct competition with the model's strongest ability, and handling "renamed identifiers" quietly needs a small interpreter. So the first skill is one of:
+- **an operational repair:** a service that doesn't come back after an update, repaired through typed effects on the running system, where applicability and oracle are pure instrumentation; or
+- **a compiled reproducer and oracle for a recorded save→restart→restore defect:** the skill is "I can prove this defect is present, and prove it's gone", while the patch stays model work. Every compiled reproducer makes the next model visit cheaper and verified.
+
+In either case it must be a real recurring failure in the logged episodes. Not "add a feature" (too open), and not "fix a page-check failure" (it invites fixing the check instead of the product).
 
 **The package** is a versioned manifest with:
 - lineage (source episodes, accepted outcomes, authoring and correction cost);
@@ -99,7 +134,7 @@ It must repair the supported cases and abstain or fail safely on the rest. It ru
 ## The two-week pilot (feasibility, not proof)
 
 **Days 1–3: freeze.**
-- A VM snapshot bank around the chosen app: 4 exact repeats, 4 unseen in-scope variants, 4 unsupported cases.
+- A VM snapshot bank around the chosen skill: **2 exact repeats, 8 unseen in-scope variants, 4 unsupported cases** (Fable: 4/4/4 overfits by construction). Pre-register what counts as a variant (the same app with a different defect, or the same defect in a different app).
 - Freeze the oracle, and keep the evaluation cases away from the compiler.
 - Record day zero.
 
@@ -110,7 +145,9 @@ It must repair the supported cases and abstain or fail safely on the rest. It ru
 
 Log every model call, correction, manual patch and intervention, and price any unequal human help.
 
-**Days 11–14: sealed evaluation.** All three arms run with a large model, a small local model and **no model**, on 2 VM seeds: 216 episodes. The runtime budget is fixed in advance.
+**Days 11–14: sealed evaluation.** All three arms run with a large model, a small local model and **no model**, on 2 VM seeds: 252 episodes with the 14-case bank. The runtime budget is fixed in advance. Several of the nine cells are degenerate (a stateless adapter with no model does nothing). Say so up front, so the table isn't read as that many informative runs.
+
+**Linking episodes:** a Mind turn carries **`trace_id`** (the Mind's existing per-turn id), and a delegated job carries **`parent_trace_id`**. Both travel on every tool-call receipt, notice and contract evidence event, so the compiler can join a successful episode to its accepted outcome. Agreed with the Mind's owner on 18 Oct; contracts week 2 adds the field.
 - **Curve 1 (retained capability):** accepted success by model tier, alongside unauthorised effects, false completions, correct abstentions, human minutes, latency and compute. Repeats, transfer cases and exceptions are reported separately.
 - **Curve 2 (accumulated competence):** day 0 against day 14, and consolidation against retrieval-only, on work done without fresh inference.
 
