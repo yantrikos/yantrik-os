@@ -4722,7 +4722,11 @@ fn execute_tool_round_tracked(
         if is_error && error_recovery && name != "discover_tools" {
             let similar = registry.similar_tools(name, max_perm);
             let hint = AgentLoop::error_recovery_hint(name, &safe_result, &similar);
-            safe_result = format!("{}\n{}", safe_result, hint);
+            // Name the calls that already succeeded alongside the failure —
+            // without them the model re-checks them and then "corrects"
+            // itself for calls it never made. The failed call itself is not
+            // recorded yet, so this lists only earlier ones.
+            safe_result = format!("{}\n{}\n{}", safe_result, hint, agent_loop.called_so_far());
             tracing::debug!(tool = name, "Injected error recovery hint");
         }
 

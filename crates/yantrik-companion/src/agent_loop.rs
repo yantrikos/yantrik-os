@@ -122,6 +122,39 @@ impl AgentLoop {
         hint
     }
 
+    /// One line per call this loop has made, in call order: "{tool}: succeeded|failed".
+    ///
+    /// Handed back to the model on error recovery so it can see what already
+    /// worked instead of re-checking it and "correcting" itself for a call it
+    /// never made. Deliberately names only the tool and its outcome —
+    /// result_preview and args_summary hold tool output and user data, which
+    /// must not be echoed back as context the model did not ask for.
+    pub fn called_so_far(&self) -> String {
+        const MAX_LINES: usize = 12;
+        if self.steps.is_empty() {
+            return String::new();
+        }
+        let lines: Vec<String> = self
+            .steps
+            .iter()
+            .map(|s| {
+                format!(
+                    "{}: {}",
+                    s.tool_name,
+                    if s.success { "succeeded" } else { "failed" }
+                )
+            })
+            .collect();
+        if lines.len() > MAX_LINES {
+            // Past the cap the earliest calls are dropped; the marker says why.
+            let mut kept = vec!["…".to_string()];
+            kept.extend_from_slice(&lines[lines.len() - MAX_LINES..]);
+            kept.join("\n")
+        } else {
+            lines.join("\n")
+        }
+    }
+
     /// Mark the loop as completed.
     pub fn complete(&mut self) {
         self.status = LoopStatus::Completed;
@@ -159,13 +192,27 @@ impl AgentLoop {
     /// Check if the same tool has been called too many times (runaway detection).
     /// Returns Some(message) if the tool should be stopped.
     pub fn runaway_check(&self, tool_name: &str, max_per_tool: usize) -> Option<String> {
-        let count = self.steps.iter().filter(|s| s.tool_name == tool_name).count();
-        if count >= max_per_tool {
-            Some(format!(
+        let earlier: Vec<&AgentStep> = self
+            .steps
+            .iter()
+            .filter(|s| s.tool_name == tool_name)
+            .collect();
+        if earlier.len() >= max_per_tool {
+            let mut msg = format!(
                 "You've already called '{}' {} times. Stop calling it and give a final answer \
                  using the information you already have.",
-                tool_name, count,
-            ))
+                tool_name,
+                earlier.len(),
+            );
+            // Quote the first call's result so the model can answer from it
+            // instead of re-calling: it already received this same text as
+            // that tool's result, so nothing new leaks.
+            if let Some(first) = earlier.first() {
+                let preview = &first.result_preview;
+                let cut = &preview[..preview.floor_char_boundary(150)];
+                msg.push_str(&format!(" Your earlier call returned: {}", cut));
+            }
+            Some(msg)
         } else {
             None
         }
@@ -231,4 +278,88 @@ fn now_ts() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs_f64()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn json_args() -> serde_json::Value {
+        serde_json::json!({})
+    }
+
+    #[test]
+    fn called_so_far_empty_on_fresh_loop() {
+        let loop_ = AgentLoop::new("goal", 3);
+        assert_eq!(loop_.called_so_far(), "");
+    }
+
+    #[test]
+    fn called_so_far_names_each_step_in_order() {
+        let mut loop_ = AgentLoop::new("goal", 3);
+        loop_.record_step("recall", &json_args(), "found it", true);
+        loop_.record_step("calculate", &json_args(), "boom", false);
+        let s = loop_.called_so_far();
+        let lines: Vec<&str> = s.lines().collect();
+        assert_eq!(lines, vec!["recall: succeeded", "calculate: failed"]);
+    }
+
+    #[test]
+    fn called_so_far_never_leaks_results_or_args() {
+        let mut loop_ = AgentLoop::new("goal", 3);
+        loop_.record_step(
+            "recall",
+            &serde_json::json!({"query": "secret fact"}),
+            "top secret output",
+            true,
+        );
+        let s = loop_.called_so_far();
+        assert!(!s.contains("secret"));
+    }
+
+    #[test]
+    fn called_so_far_caps_and_marks_the_cut() {
+        let mut loop_ = AgentLoop::new("goal", 3);
+        for i in 0..15 {
+            loop_.record_step(&format!("tool{}", i), &json_args(), "ok", true);
+        }
+        let s = loop_.called_so_far();
+        let lines: Vec<&str> = s.lines().collect();
+        assert_eq!(lines[0], "…");
+        assert_eq!(lines.len(), 13); // cut marker + 12 most recent
+        assert!(s.contains("tool14: succeeded"));
+        assert!(s.contains("tool3: succeeded"));
+        assert!(!s.contains("tool2: succeeded"));
+    }
+
+    #[test]
+    fn runaway_check_quotes_the_earlier_result() {
+        let mut loop_ = AgentLoop::new("goal", 3);
+        loop_.record_step("recall", &json_args(), "the answer is 42", true);
+        loop_.record_step("recall", &json_args(), "the answer is 42", true);
+        let msg = loop_.runaway_check("recall", 2).expect("guard should fire");
+        assert!(msg.contains("recall"));
+        assert!(msg.contains("the answer is 42"));
+    }
+
+    #[test]
+    fn runaway_check_silent_below_threshold() {
+        let mut loop_ = AgentLoop::new("goal", 3);
+        loop_.record_step("recall", &json_args(), "ok", true);
+        assert!(loop_.runaway_check("recall", 2).is_none());
+    }
+
+    #[test]
+    fn error_hint_plus_called_so_far_names_failure_and_earlier_success() {
+        // Mirrors the companion.rs join: hint text + the loop's own record,
+        // appended to the failed tool's result the model reads.
+        let mut loop_ = AgentLoop::new("goal", 3);
+        loop_.record_step("recall", &json_args(), "found it", true);
+        let similar = vec!["recall_notes".to_string()];
+        let hint = AgentLoop::error_recovery_hint("calculate", "division by zero", &similar);
+        let message = format!("{}\n{}", hint, loop_.called_so_far());
+        assert!(message.contains("calculate"));
+        assert!(message.contains("recall_notes"));
+        assert!(message.contains("recall: succeeded"));
+    }
 }
