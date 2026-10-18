@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<!-- Tumble as delivered on 561 (contract c-2, 18 Oct 2026), cut down: the loop runs once and the
+     controls sit under a canvas of 100% height in a body that hides its overflow. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Tumble</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="world"></canvas>
+  <div id="controls">
+    <label>Gravity <input id="gravity" type="range" min="0" max="20" value="10"></label>
+    <label>Bounce <input id="bounce" type="range" min="0" max="100" value="60"></label>
+    <span id="count">0 shapes</span>
+    <button id="clear">Clear</button>
+  </div>
+  <script src="main.js"></script>
+</body>
+</html>

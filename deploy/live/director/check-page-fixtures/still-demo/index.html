@@ -1,0 +1,12 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Still</title>
+<style>body { margin: 0; background: #fff; font: 24px sans-serif; }</style>
+</head><body>
+<canvas id="c" width="1280" height="600"></canvas>
+<script>
+// Draws one picture and says it has a demo mode (?demo=1), but nothing in it ever moves.
+const demo = location.search.includes("demo=1");
+const ctx = document.getElementById("c").getContext("2d");
+ctx.fillStyle = "#c33";
+for (let i = 0; i < 12; i++) ctx.fillRect(Math.random() * 1200, Math.random() * 550, 40, 40);
+</script></body></html>

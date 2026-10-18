@@ -1,6 +1,8 @@
 #!/bin/sh
-# Load a page in headless Chromium and print the errors it throws, one per line. No output and
-# exit 0 means the page loaded clean; exit 1 means it threw; exit 2 means it could not be checked.
+# Load a page in headless Chromium and print what is wrong with it, one problem per line: the
+# errors it throws, and, since Tumble (18 Oct 2026), a page that draws nothing, does not move in
+# its demo mode, or has controls off screen. No output and exit 0 means the page passed; exit 1
+# means it did not; exit 2 means it could not be checked.
 #
 # One check for both sides of a live mission: the Mind runs it through its own terminal
 # (agent_run) to look at what it made, and the Director runs it after every turn so that a tick
@@ -8,7 +10,19 @@
 # the browser refuses file:// so a mind cannot read the person's files through it, and a session
 # that has read private state may not go to a new address, localhost included, since the mind
 # can start a server there that forwards anywhere. On 561 the Mind ticked all eight Starfall
-# steps over a game.js that did not parse (2 Oct 2026); nothing had ever loaded it.
+# steps over a game.js that did not parse (2 Oct 2026); nothing had ever loaded it. Tumble was
+# delivered twice over a loop that ran once and controls under the canvas (18 Oct 2026, #869):
+# neither throws.
+#
+# How it looks. The page's folder is copied (regular files only, capped) into a throwaway
+# directory, and the copy of the page gets one line first: a probe script, which runs inside the
+# page's own document before the page's scripts. The probe drives animation frames from timers,
+# since headless Chromium runs no frames in virtual time; seeds Math.random, so two loads differ
+# only by time; and at 2.5 s lists the visible controls whose box leaves the viewport. The copy
+# is loaded twice with ?demo=1 and captured at 3 s and 5 s of virtual time, and a third,
+# trusted page of our own (never the page) compares the two captures pixel by pixel from data:
+# URLs. No run gets a file-access flag: the page is a file:// page like any other and can read
+# no file, the copy, the probe and the captures included.
 #
 # Usage: check-page FILE.html
 set -u
@@ -20,19 +34,162 @@ command -v chromium >/dev/null || { echo "chromium is not installed, so the page
 # A throwaway profile: never the person's, and nothing left behind. HOME too: chromium reads
 # ~/.pki/nssdb (whose pkcs11.txt names libraries to load), and fontconfig and the wrapper read
 # from HOME, which is the Mind's account's when the Director runs this (security review of #857).
+# The copy, the probe and the captures live in it too, so nothing is written anywhere else.
 profile=$(mktemp -d)
 trap 'rm -rf "$profile"' EXIT
 export HOME="$profile"
-# The virtual-time budget runs the page's first 3 seconds of timers and animation frames, so an
-# error thrown by the game loop is caught as well as one thrown while the script parses.
-log=$(timeout 40 chromium --headless=new --disable-gpu --no-first-run --user-data-dir="$profile" \
-    --virtual-time-budget=3000 --enable-logging=stderr --v=0 --dump-dom "file://$page" 2>&1 >/dev/null)
-status=$?
-[ "$status" = 124 ] && { echo "the page did not finish loading in 40 seconds"; exit 2; }
+# Its path goes into a sed replacement and a URL below, so only plain characters are taken.
+case "$profile" in *[!A-Za-z0-9/._-]*) echo "the throwaway directory's path is not plain: $profile"; exit 2 ;; esac
+
+# The page's folder, copied: regular files only (never a link, FIFO or device), no dot-files,
+# four levels deep, at most MAX_FILES files of MAX_KB each. A page whose folder is bigger is not
+# checked rather than half copied. The copy takes the same time limit as a load.
+MAX_FILES=200
+MAX_KB=4096
+dir=$(dirname "$page")
+name=$(basename "$page")
+# The name goes into a file:// URL, where these would cut it short and load something else.
+case "$name" in *[#?%]*) echo "the page's name has # ? or % in it, so it cannot be loaded as a page"; exit 2 ;; esac
+copy="$profile/page"
+mkdir "$copy"
+list="$profile/files"
+{ (cd "$dir" && timeout 5 find . -mindepth 1 -maxdepth 4 -name '.*' -prune -o -type f -print0); echo $? > "$list.status"; } \
+    | head -z -n $((MAX_FILES + 1)) > "$list"
+[ "$(tr -cd '\0' < "$list" | wc -c)" -le "$MAX_FILES" ] \
+    || { echo "the page's folder has over $MAX_FILES files, so the page was not checked"; exit 2; }
+[ "$(cat "$list.status")" = 0 ] || { echo "the page's folder could not be listed, so the page was not checked"; exit 2; }
+(cd "$dir" && timeout 5 find . -mindepth 1 -maxdepth 4 -name '.*' -prune -o -type f -size +${MAX_KB}k -print -quit) \
+    | grep -q . && { echo "a file in the page's folder is over $MAX_KB KB, so the page was not checked"; exit 2; }
+(cd "$dir" && timeout 5 xargs -0 -r cp -P --parents --no-preserve=all -t "$copy" < "$list") 2>/dev/null \
+    && [ -f "$copy/$name" ] && [ ! -L "$copy/$name" ] \
+    || { echo "the page's folder could not be copied, so the page was not checked"; exit 2; }
+
+# A page has a demo mode when its HTML or scripts mention one; only then is it failed for being
+# still. Builds get theirs in their first polish round (DEMO_IDEA in director.py): missions.json
+# asks for none.
+demo=no
+grep -rqil --include='*.html' --include='*.htm' --include='*.js' --include='*.mjs' demo "$copy" && demo=yes
+
+probe="$profile/probe.js"
+cat > "$probe" <<'PROBE'
+(function () {
+  "use strict";
+  var log = console.log.bind(console), later = setTimeout, stop = clearTimeout,
+      now = performance.now.bind(performance), box = Element.prototype.getBoundingClientRect,
+      all = Document.prototype.querySelectorAll;
+  window.requestAnimationFrame = function (cb) { return later(function () { cb(now()); }, 16); };
+  window.cancelAnimationFrame = function (id) { stop(id); };
+  var seed = 869;
+  Math.random = function () {
+    seed = (seed + 0x6d2b79f5) | 0;
+    var t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  later(function () {
+    try {
+      var w = innerWidth, h = innerHeight, found = 0;
+      log("check-page-probe viewport " + w + " " + h);
+      var els = all.call(document, "input,select,button,textarea");
+      for (var i = 0; i < els.length && found < 5; i++) {
+        var el = els[i];
+        if (el.checkVisibility && !el.checkVisibility({ visibilityProperty: true })) continue;
+        var r = box.call(el);
+        if (r.width === 0 && r.height === 0) continue;
+        if (r.left >= -1 && r.top >= -1 && r.right <= w + 1 && r.bottom <= h + 1) continue;
+        var id = /^[A-Za-z0-9_-]{1,60}$/.test(el.id) ? "#" + el.id : el.tagName.toLowerCase();
+        log("check-page-probe offscreen " + id);
+        found++;
+      }
+    } catch (e) {}
+  }, 2500);
+})();
+PROBE
+# The probe goes in after the doctype, if there is one (before it, the page would be drawn in
+# quirks mode), else first.
+tag="<script src=\"file://$probe\"></script>"
+if grep -qi '<!doctype[^>]*>' "$copy/$name"; then
+  sed -i "0,/<!doctype[^>]*>/I s##&$tag#" "$copy/$name"
+else
+  sed -i "1s#^#$tag#" "$copy/$name"
+fi
+
+# The viewport is the window less 87 px of headless Chromium's frame: 1280x887 gives 1280x800.
+# The probe reports the viewport it saw, and the lines below say that size, not this one.
+load() {  # load BUDGET_MS CAPTURE: the copy with ?demo=1, its log on stdout
+  timeout 15 chromium --headless=new --disable-gpu --no-first-run --user-data-dir="$profile/chrome" \
+      --window-size=1280,887 --hide-scrollbars --virtual-time-budget="$1" \
+      --enable-logging=stderr --v=0 --screenshot="$2" "file://$copy/$name?demo=1" 2>&1 >/dev/null
+}
+log=$(load 3000 "$profile/a.png")
+[ $? = 124 ] && { echo "the page did not finish loading in 15 seconds"; exit 2; }
+if [ "$demo" = yes ]; then
+  log2=$(load 5000 "$profile/b.png")
+  [ $? = 124 ] && { echo "the page did not finish loading in 15 seconds"; exit 2; }
+  log="$log
+$log2"
+fi
 
 # Chromium writes console messages as `…:INFO:CONSOLE:<line>] "<message>", source: <url> (<line>)`.
 errors=$(printf '%s\n' "$log" | grep -E ':CONSOLE:[0-9]+\] "(Uncaught|Error|TypeError|ReferenceError|SyntaxError)' \
-    | sed -E 's/^.*:CONSOLE:[0-9]+\] //' | sed -E 's#file://[^ ]*/##' | cut -c1-240 | sort -u | head -10)
-[ -z "$errors" ] && exit 0
-printf '%s\n' "$errors"
+    | sed -E 's/^.*:CONSOLE:[0-9]+\] //' | sed -E 's#file://[^ ]*/##' | sort -u)
+# The probe's lines, only from the probe's own file: the page cannot print one for it.
+said=$(printf '%s\n' "$log" | grep -F "source: file://$probe (" \
+    | sed -nE 's/^.*:CONSOLE:[0-9]+\] "check-page-probe ([a-z]+ [^"]*)", source: .*$/\1/p')
+vw=$(printf '%s\n' "$said" | sed -nE 's/^viewport ([0-9]{1,5}) ([0-9]{1,5})$/\1/p' | head -1)
+vh=$(printf '%s\n' "$said" | sed -nE 's/^viewport ([0-9]{1,5}) ([0-9]{1,5})$/\2/p' | head -1)
+[ -n "$vw" ] && [ -n "$vh" ] || { vw=1280; vh=800; }
+controls=$(printf '%s\n' "$said" | sed -nE 's/^offscreen (#?[A-Za-z0-9_-]{1,60})$/control \1 is off screen at '"$vw"x"$vh"'/p' | sort -u)
+
+# The captures, read by a page of our own: data: URLs, so its canvas may read them with no flag.
+pixels=""
+if [ -s "$profile/a.png" ] && { [ "$demo" = no ] || [ -s "$profile/b.png" ]; }; then
+  reader="$profile/read.html"
+  {
+    printf '<!doctype html><img id="a" src="data:image/png;base64,'
+    base64 -w0 "$profile/a.png"
+    printf '"><img id="b" src="data:image/png;base64,'
+    [ "$demo" = yes ] && base64 -w0 "$profile/b.png"
+    printf '"><script>\nvar W = %s, H = %s;\n' "$vw" "$vh"
+    cat <<'READ'
+function px(img) {
+  var c = document.createElement("canvas");
+  c.width = Math.min(W, img.naturalWidth); c.height = Math.min(H, img.naturalHeight);
+  var x = c.getContext("2d"); x.drawImage(img, 0, 0);
+  return x.getImageData(0, 0, c.width, c.height).data;
+}
+function flat(d) {
+  for (var i = 4; i < d.length; i += 4)
+    if (d[i] !== d[0] || d[i + 1] !== d[1] || d[i + 2] !== d[2]) return false;
+  return true;
+}
+onload = function () {
+  var a = px(document.getElementById("a")), b = document.getElementById("b");
+  var still = "", f = flat(a);
+  if (b.naturalWidth) {
+    b = px(b); f = f && flat(b); still = "moves";
+    if (a.length === b.length) { still = "still"; for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) { still = "moves"; break; } }
+  }
+  console.log("check-page-pixels " + (f ? "flat" : "drawn") + " " + still);
+};
+READ
+    printf '</script>\n'
+  } > "$reader"
+  pixels=$(timeout 10 chromium --headless=new --disable-gpu --no-first-run --user-data-dir="$profile/chrome" \
+      --enable-logging=stderr --v=0 --dump-dom "file://$reader" 2>&1 >/dev/null \
+      | grep -F "source: file://$reader (" | sed -nE 's/^.*:CONSOLE:[0-9]+\] "check-page-pixels ([a-z ]*)".*$/\1/p' | head -1)
+fi
+
+problems=$(
+  printf '%s\n' "$errors" "$controls"
+  case "$pixels" in flat*) echo "the page draws nothing: the screen is one colour" ;; esac
+  case "$pixels" in *still) echo "nothing moves on the page in demo mode (?demo=1)" ;; esac
+)
+problems=$(printf '%s\n' "$problems" | grep -v '^$' | cut -c1-240 | head -10)
+if [ -z "$problems" ]; then
+  [ -n "$pixels" ] && exit 0
+  echo "the page could not be captured, so whether it draws was not checked"
+  exit 2
+fi
+printf '%s\n' "$problems"
 exit 1

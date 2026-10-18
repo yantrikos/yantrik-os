@@ -504,7 +504,7 @@ d.write_state(d.SHOWING, {"mission": "polish:" + specs[0]["id"], "at": d.time.ti
 live = d.live_request(builds, me)
 check("the publisher shows the Director's mission, with a turn line it makes and the caption made plain again",
       live is not None and live[0]["id"] == "polish:" + specs[0]["id"]
-      and live[1] == "turn 3 · the page throws an error, being fixed" and live[2] == "Added sound.", repr(live))
+      and live[1] == "turn 3 · the page fails its check, being fixed" and live[2] == "Added sound.", repr(live))
 check("the commands of the turn just ended are read from what the shell showed, after the Director's message",
       d.turn_calls({"conversation": [{"role": "assistant", "calls": [{"name": "old", "summary": "ls"}]},
                                      {"role": "user", "text": "keep going"},
