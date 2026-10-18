@@ -56,7 +56,7 @@ case "$name" in *[#?%]*) echo "the page's name has # ? or % in it, so it cannot 
 copy="$profile/page"
 mkdir "$copy"
 list="$profile/files"
-{ (cd "$dir" && timeout 3 find . -mindepth 1 -maxdepth 4 -name '.*' -prune -o -type f -print0); echo $? > "$list.status"; } \
+{ (cd "$dir" && timeout 3 find . -mindepth 1 -maxdepth 4 -name '.*' -prune -o -type f -print0 2>/dev/null); echo $? > "$list.status"; } \
     | head -z -n $((MAX_FILES + 1)) > "$list"
 [ "$(tr -cd '\0' < "$list" | wc -c)" -le "$MAX_FILES" ] \
     || { echo "the page's folder has over $MAX_FILES files, so the page was not checked"; exit 2; }
@@ -125,7 +125,7 @@ fi
 # took over 15 s), so it gets 30 s; the others start a warm one and get 10 s.
 viewport() {  # viewport LOG: "W H" from the probe's own line, or nothing
   printf '%s\n' "$1" | grep -F "source: file://$probe (" \
-      | sed -nE 's/^.*:CONSOLE:[0-9]+\] "check-page-probe viewport ([0-9]{1,4}) ([0-9]{1,4})", source: .*$/\1 \2/p' | head -1
+      | sed -nE 's/^.*:CONSOLE:[0-9]+\] "check-page-probe viewport ([0-9]{1,4}) ([0-9]{1,4})", source: .*$/\1 \2/p' | sed -n 1p
 }
 ww=1280
 wh=887
@@ -158,8 +158,8 @@ errors=$(printf '%s\n' "$log" | grep -E ':CONSOLE:[0-9]+\] "(Uncaught|Error|Type
 # The probe's lines, only from the probe's own file: the page cannot print one for it.
 said=$(printf '%s\n' "$log" | grep -F "source: file://$probe (" \
     | sed -nE 's/^.*:CONSOLE:[0-9]+\] "check-page-probe ([a-z]+ [^"]*)", source: .*$/\1/p')
-vw=$(printf '%s\n' "$said" | sed -nE 's/^viewport ([0-9]{1,5}) ([0-9]{1,5})$/\1/p' | head -1)
-vh=$(printf '%s\n' "$said" | sed -nE 's/^viewport ([0-9]{1,5}) ([0-9]{1,5})$/\2/p' | head -1)
+vw=$(printf '%s\n' "$said" | sed -nE 's/^viewport ([0-9]{1,5}) ([0-9]{1,5})$/\1/p' | sed -n 1p)
+vh=$(printf '%s\n' "$said" | sed -nE 's/^viewport ([0-9]{1,5}) ([0-9]{1,5})$/\2/p' | sed -n 1p)
 [ -n "$vw" ] && [ -n "$vh" ] || { vw=1280; vh=800; }
 controls=$(printf '%s\n' "$said" | sed -nE 's/^offscreen (#?[A-Za-z0-9_-]{1,60})$/control \1 is off screen at '"$vw"x"$vh"'/p' | sort -u)
 
@@ -199,7 +199,7 @@ READ
   } > "$reader"
   pixels=$(timeout 8 chromium --headless=new --disable-gpu --no-first-run --user-data-dir="$profile/chrome" \
       --enable-logging=stderr --v=0 --dump-dom "file://$reader" 2>&1 >/dev/null \
-      | grep -F "source: file://$reader (" | sed -nE 's/^.*:CONSOLE:[0-9]+\] "check-page-pixels ([a-z ]*)".*$/\1/p' | head -1)
+      | grep -F "source: file://$reader (" | sed -nE 's/^.*:CONSOLE:[0-9]+\] "check-page-pixels ([a-z ]*)".*$/\1/p' | sed -n 1p)
 fi
 
 problems=$(
@@ -207,7 +207,7 @@ problems=$(
   case "$pixels" in flat*) echo "the page draws nothing: the screen is one colour" ;; esac
   case "$pixels" in *still) echo "nothing moves on the page in demo mode (?demo=1)" ;; esac
 )
-problems=$(printf '%s\n' "$problems" | grep -v '^$' | cut -c1-240 | head -10)
+problems=$(printf '%s\n' "$problems" | grep -v '^$' | cut -c1-240 | sed -n '1,10p')
 if [ -z "$problems" ]; then
   [ -n "$pixels" ] && exit 0
   echo "the page could not be captured, so whether it draws was not checked"
