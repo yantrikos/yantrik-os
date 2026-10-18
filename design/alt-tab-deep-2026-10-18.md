@@ -30,6 +30,9 @@ Two things no other switcher has, each in **its own lane** beside the stack, nev
 Alt+Tab is muscle memory, so these rules are fixed:
 
 - **The first Alt+Tab always selects the previous window.** A quick tap and a held Alt start from the same selection, so how fast the screen draws never changes where the same gesture goes.
+- **The current desktop comes first** (Pranab, 18 Oct). The stack is this desktop's windows by recency, then a divider reading "Other desktops", then their windows by recency. "The previous window" means the previous window on this desktop. A desktop with only one window goes back to the last window on any desktop, so Alt+Tab never does nothing.
+  - Nothing is hidden: every window on every desktop stays reachable from the keyboard, as today.
+  - Going to a window on another desktop switches to that desktop.
 - **The order is frozen while the switcher is open.** A window that opens, a mind that starts or an approval that arrives mid-session doesn't reshuffle the stack.
 - **Nothing is ever inserted ahead of the current selection.** Minds and approvals have their lane. They never jump the queue: a mind could otherwise raise "waiting" events to keep itself first.
 
@@ -136,12 +139,13 @@ The rule "no key in the switcher approves" is necessary but not enough. A queued
 
 1. On 520 with 4 apps open, hold Alt and tap Tab: the stack draws within 150 ms. Releasing Alt commits the selected window in labwc, and the focused toplevel after release is that window.
 2. With the renderer killed (`pkill -x`), Alt+Tab works exactly as today, labwc OSD included.
-3. A quick tap goes to the previous window, every time, at any renderer speed.
-4. A window opening mid-session doesn't reorder the stack.
-5. An approval pending: it shows in the minds lane, never ahead of the selection. Going to it opens the details state with disabled buttons, and a held Enter doesn't approve.
-6. A window retitled "Yantrik OS" stays in the stack.
-7. Typing "tum" leaves only matching windows. Escape restores the frozen order.
-8. The Likely next chip appears only when a rule fired, and its reason names the event, never the content.
+3. A quick tap goes to the previous window on the current desktop, every time, at any renderer speed.
+4. With windows on two desktops, the current desktop's windows come first, then the "Other desktops" divider. Going to one past it switches desktop.
+5. A window opening mid-session doesn't reorder the stack.
+6. An approval pending: it shows in the minds lane, never ahead of the selection. Going to it opens the details state with disabled buttons, and a held Enter doesn't approve.
+7. A window retitled "Yantrik OS" stays in the stack.
+8. Typing "tum" leaves only matching windows. Escape restores the frozen order.
+9. The Likely next chip appears only when a rule fired, and its reason names the event, never the content.
 
 ## Order of work
 
@@ -165,8 +169,11 @@ Astra's full answer: `design/alt-tab-deep-astra-review-2026-10-18.md`.
 
 **Kept against its advice:** the time line, which only displays what labwc already knows, and the depth stack itself, which is the reason for doing this. Its other suggested cuts (prediction-first, approval-first, crop thumbnails, the pill) are taken.
 
+## Decided
+
+- **Current desktop first,** then the others behind a divider (Pranab, 18 Oct).
+
 ## Open questions for Pranab
 
-- Every workspace in the stack, as Alt+Tab does today, or the current one first?
 - The time line in real minutes, or only *now / earlier / long ago*?
 - The Likely next key: ↑, or a number?
