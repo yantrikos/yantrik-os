@@ -22,7 +22,7 @@
 #   yantrik-update rollback                                  restore the most recent backup
 #   yantrik-update status      [--porcelain]                 channel, host, build, backups
 #   yantrik-update set-channel nightly|beta|stable           change the channel, once, here
-#   yantrik-update reconcile                                 packages the image ships (share/packages.list) and this machine lacks, harness plugins
+#   yantrik-update reconcile   [--no-session-chrome]         packages the image ships (share/packages.list) and this machine lacks, harness plugins
 #   yantrik-update package-list FILE                         the names in a package list, checked; what the image build installs
 #   yantrik-update migrate-minds                             move Yantrik Mind into its own account (#411), memory counted twice
 #   yantrik-update mind-egress apply                         hold the mind account to its egress proxy, in the kernel (root)
@@ -1009,7 +1009,9 @@ EOF
   # build's by now, whatever path this process was started from, so it reconciles, as a process
   # of its own, and this one stands in only when that file cannot run.
   if [ -x "$BIN_DIR/yantrik-update" ]; then
-    YANTRIK_PREFIX="$PREFIX" "$BIN_DIR/yantrik-update" reconcile || true
+    # --no-session-chrome: this apply refreshes the keys itself, after the restart it verified. An
+    # updater from before #858 passes nothing, and that reconcile brings them (#858).
+    YANTRIK_PREFIX="$PREFIX" "$BIN_DIR/yantrik-update" reconcile --no-session-chrome || true
   else
     reconcile_packages || true
   fi
@@ -1424,25 +1426,74 @@ reload_labwc() { # <owner> <pid>...
   return "$ok"
 }
 
-refresh_session_chrome() { # <share/ as it was before>
-  labwc_chrome_changed "$1" "$SHARE_DIR" || return 0
-  say "The compositor's keys and theme changed"
-  if [ "$SESSION_RESTARTED" = 1 ]; then
-    info "the session was restarted, and it put them in place as it started"
-    return 0
-  fi
-  local owner uid home pids
+# The selftest's stand-ins for the parts of a session it cannot have: the person's home, and the
+# names labwc and the shell run under. Honoured only in selftest mode and never for root, like
+# apt_standins: a root run always reads the real account's home and the real process names.
+chrome_standins() { [ "${YANTRIK_SELFTEST:-}" = 1 ] && [ "$(id -u)" != 0 ]; }
+chrome_labwc_name() { if chrome_standins; then printf '%s' "${YANTRIK_LABWC_NAME:-labwc}"; else printf labwc; fi; }
+chrome_shell_name() { if chrome_standins; then printf '%s' "${YANTRIK_SHELL_NAME:-yantrik-ui}"; else printf yantrik-ui; fi; }
+
+# The desktop's owner and uid ("<name> <uid>"), checked the one way both callers use.
+chrome_owner() {
+  local owner uid
   owner="$(desktop_owner)"
   case "$owner" in ''|root|[!a-z_]*|*[!a-z0-9_-]*)
     warn "cannot tell whose desktop this is; the new keys work after the next login"; return 1 ;;
   esac
   uid="$(id -u "$owner" 2>/dev/null)" || { warn "no account $owner; the new keys work after the next login"; return 1; }
-  pids="$(session_labwc_pids "$uid")"
-  if [ -z "$pids" ]; then
-    info "no desktop is running for $owner; the session puts them in place at the next login"
+  printf '%s %s' "$owner" "$uid"
+}
+
+# Once per share/labwc (#858): the digest of the labwc files last put into the session. apply,
+# rollback and reconcile all check it, so whichever of them gets there first is the only one that
+# copies and reloads, and a later `reconcile` finds nothing to do. Written by a fresh mktemp name
+# renamed over it, and read only when it is a plain file, never through a link.
+CHROME_STAMP_REL="session-chrome"
+labwc_digest() { # <share>
+  [ -d "$1/labwc" ] || { printf 'none'; return 0; }
+  find "$1/labwc" -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort | while IFS= read -r f; do
+    printf '%s ' "$f"; sha256sum < "$1/labwc/$f" | cut -d' ' -f1
+  done | sha256sum | cut -d' ' -f1
+}
+chrome_stamp_matches() {
+  local f="$UPDATES_DIR/$CHROME_STAMP_REL" have
+  [ -f "$f" ] && [ ! -L "$f" ] || return 1
+  have="$(timeout 5 head -c 128 -- "$f" 2>/dev/null)" || return 1
+  [ "$have" = "$(labwc_digest "$SHARE_DIR")" ]
+}
+chrome_stamp_write() {
+  local tmp
+  mkdir -p "$UPDATES_DIR" 2>/dev/null
+  tmp="$(mktemp "$UPDATES_DIR/.$CHROME_STAMP_REL.XXXXXX" 2>/dev/null)" || return 0
+  if labwc_digest "$SHARE_DIR" > "$tmp" && chmod 0644 "$tmp" && mv -fT -- "$tmp" "$UPDATES_DIR/$CHROME_STAMP_REL"; then
     return 0
   fi
+  rm -f -- "$tmp"
+}
+
+refresh_session_chrome() { # <share/ as it was before>
+  labwc_chrome_changed "$1" "$SHARE_DIR" || return 0
+  chrome_stamp_matches && return 0
+  say "The compositor's keys and theme changed"
+  if [ "$SESSION_RESTARTED" = 1 ]; then
+    info "the session was restarted, and it put them in place as it started"
+    chrome_stamp_write
+    return 0
+  fi
+  local owner uid home pids who
+  who="$(chrome_owner)" || return 1
+  read -r owner uid <<< "$who"
+  pids="$(session_labwc_pids "$uid" "$(chrome_labwc_name)")"
+  if [ -z "$pids" ]; then
+    info "no desktop is running for $owner; the session puts them in place at the next login"
+    chrome_stamp_write
+    return 0
+  fi
+  # Forgotten before the copy starts: a copy that stops halfway leaves the home holding neither
+  # build's keys, and a later rollback must not take that for done.
+  rm -f -- "$UPDATES_DIR/$CHROME_STAMP_REL"
   home="$(getent passwd "$owner" | cut -d: -f6)"
+  chrome_standins && [ -n "${YANTRIK_CHROME_HOME:-}" ] && home="$YANTRIK_CHROME_HOME"
   [ -n "$home" ] && [ -d "$home" ] || { warn "$owner has no home directory; the new keys work after the next login"; return 1; }
   local as=()
   if [ "$(id -u)" = 0 ]; then
@@ -1463,20 +1514,108 @@ refresh_session_chrome() { # <share/ as it was before>
   fi
   # shellcheck disable=SC2086  # pgrep's pids, one per line, split on purpose
   reload_labwc "$owner" $pids || rc=1
-  # Claimed only when the copy and the reload both happened.
-  [ "$rc" = 0 ] && info "the new keys work now, with no new login"
+  # Claimed, and remembered, only when the copy and the reload both happened: a refresh that
+  # failed is tried again by the next apply, rollback or reconcile.
+  [ "$rc" = 0 ] && { info "the new keys work now, with no new login"; chrome_stamp_write; }
   return "$rc"
+}
+
+# The backup the last apply made, which rollback restores and reconcile compares share/ against:
+# the one updates/last-backup names, if that is a directory of its own in backups/, else the
+# newest there.
+last_backup() {
+  local b
+  b="$(timeout 5 head -c 4096 -- "$UPDATES_DIR/last-backup" 2>/dev/null | head -1)"
+  case "$b" in "$BACKUP_DIR"/*/*|*/..|*/../*) b="" ;; "$BACKUP_DIR"/?*) ;; *) b="" ;; esac
+  if [ -z "$b" ] || [ -L "$b" ] || [ ! -d "$b" ]; then
+    b="$(find "$BACKUP_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort | tail -1)"
+  fi
+  [ -n "$b" ] && [ -d "$b" ] && printf '%s' "$b"
+}
+
+# Is a shell running for uid $1 from the binary installed now? A shell started before the apply
+# runs a file that was renamed over since, so its /proc/<pid>/exe is another inode.
+shell_is_installed_build() { # <uid>
+  local name want pid
+  name="$(chrome_shell_name)"
+  want="$(stat -L -c '%d:%i' -- "$BIN_DIR/$name" 2>/dev/null)" || return 1
+  for pid in $(pgrep -u "$1" -x "$name" 2>/dev/null); do
+    [ "$(stat -L -c '%d:%i' "/proc/$pid/exe" 2>/dev/null)" = "$want" ] && return 0
+  done
+  return 1
+}
+shell_answers() { # <uid>
+  XDG_RUNTIME_DIR="/run/user/$1" timeout 10 "$BIN_DIR/yos" describe shell >/dev/null 2>&1
+}
+
+# ── The keys on the first update from an updater that predates #854 (#858) ──
+#
+# An apply runs in the updater that was installed before it. One from before this change calls the
+# new build for `reconcile` and nothing else (the 520 test of #858: packages arrived, keys did
+# not), so reconcile is the only hook that reaches the session on that first hop. It runs BEFORE
+# that apply restarts the shell, and new keys may name actions only the new shell has, so a
+# reconcile never reloads labwc under a shell from the old build. When the running shell is the
+# installed build (a `reconcile` run by hand, or the shell is down and no desktop is running),
+# it refreshes at once. Otherwise it leaves a waiter behind that refreshes once a shell from the
+# installed binary answers, and gives up, leaving the keys to the next login, when the build
+# changes under it (the old apply's rollback) or none answers within CHROME_WAIT seconds
+# (--no-restart). A new updater's apply passes --no-session-chrome and refreshes after its own
+# verified restart instead; the stamp above makes every path a no-op once one of them has run.
+CHROME_WAIT=240
+reconcile_session_chrome() {
+  local backup who owner uid pids git
+  backup="$(last_backup)" || return 0
+  labwc_chrome_changed "$backup/share" "$SHARE_DIR" || return 0
+  chrome_stamp_matches && return 0
+  who="$(chrome_owner)" || return 0
+  read -r owner uid <<< "$who"
+  pids="$(session_labwc_pids "$uid" "$(chrome_labwc_name)")"
+  if [ -z "$pids" ] || shell_is_installed_build "$uid"; then
+    refresh_session_chrome "$backup/share" || true
+    return 0
+  fi
+  git="$(installed_git)"
+  say "The compositor's keys and theme changed"
+  local log; log="$(mktemp "$UPDATES_DIR/.session-chrome-log.XXXXXX" 2>/dev/null)" || log=/dev/null
+  info "they go into $owner's session once the new shell answers (up to ${CHROME_WAIT}s; the result in $UPDATES_DIR/session-chrome.log)"
+  # Detached from this process's output, which the apply that called it may be reading, and from
+  # the terminal's hangup: the apply returns before the shell it restarts answers.
+  # shellcheck disable=SC2086  # pgrep's pids, one per line, split on purpose
+  ( trap '' HUP
+    session_chrome_after_shell "$backup/share" "$git" "$uid" $pids
+    [ "$log" = /dev/null ] || mv -fT -- "$log" "$UPDATES_DIR/session-chrome.log"
+  ) </dev/null >"$log" 2>&1 &
+  disown 2>/dev/null || true
+}
+
+session_chrome_after_shell() { # <old share> <git at the apply> <uid> <labwc pids then>...
+  local old="$1" git="$2" uid="$3" i p now same=0
+  shift 3
+  for ((i = 0; i < CHROME_WAIT; i++)); do
+    if [ "$(installed_git)" != "$git" ]; then
+      info "the installed build changed while waiting (rolled back?); the keys are left to the next login"
+      return 0
+    fi
+    if shell_is_installed_build "$uid" && shell_answers "$uid"; then
+      now=" $(session_labwc_pids "$uid" "$(chrome_labwc_name)" | tr '\n' ' ') "
+      for p in "$@"; do case "$now" in *" $p "*) same=1 ;; esac; done
+      # No labwc from before is left: the session itself was restarted, and its yantrik-session
+      # copied the keys as it started.
+      [ "$same" = 1 ] || SESSION_RESTARTED=1
+      refresh_session_chrome "$old"
+      return
+    fi
+    sleep 1
+  done
+  warn "no shell from the installed build answered within ${CHROME_WAIT}s; the new keys work after the next login"
+  return 1
 }
 
 # ── rollback ────────────────────────────────────────────────────────────────────────────
 cmd_rollback() {
   elevate "$@"
   local backup
-  backup="$(cat "$UPDATES_DIR/last-backup" 2>/dev/null)"
-  [ -n "$backup" ] && [ -d "$backup" ] || {
-    backup="$(find "$BACKUP_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort | tail -1)"
-  }
-  [ -n "$backup" ] && [ -d "$backup" ] || fail "no backup to roll back to"
+  backup="$(last_backup)" || fail "no backup to roll back to"
   say "Rolling back to $backup"
   # The keys as they are now, so the ones the rollback brings back can be put in the person's
   # home too: the same gap as an update, the other way round (#854).
@@ -4309,8 +4448,20 @@ cmd_migrate_minds() {
 }
 
 cmd_reconcile() {
+  local chrome=1 a
+  for a in "$@"; do
+    case "$a" in
+      --no-session-chrome) chrome=0 ;;
+      *) fail "unknown option '$a' for reconcile (--no-session-chrome)" ;;
+    esac
+  done
+  # The selftest's old-updater case runs only the keys step of a real `reconcile` (#858).
+  if chrome_standins && [ "${YANTRIK_RECONCILE_ONLY:-}" = session-chrome ]; then
+    [ "$chrome" = 1 ] && reconcile_session_chrome
+    return 0
+  fi
   migrate_if_needed
-  elevate
+  elevate "$@"
   remove_blanket_sudo
   seal_share
   say "Reconciling the base system against what the image ships"
@@ -4338,6 +4489,9 @@ cmd_reconcile() {
   audit_unowned /etc/polkit-1/rules.d '*.rules' polkit
   audit_unowned /etc/sysctl.d '*.conf' sysctl
   audit_unowned /etc/containers/registries.conf.d '*.conf' containers
+  # Last, after the packages: the compositor's keys, for an apply whose updater predates #858.
+  [ "$chrome" = 1 ] && reconcile_session_chrome
+  return 0
 }
 
 # ── install-mind ────────────────────────────────────────────────────────────────────────
@@ -4934,7 +5088,7 @@ fd = os.open(sys.argv[1], os.O_RDWR); fcntl.lockf(fd, fcntl.LOCK_EX); open(sys.a
   # An apply never fails, or rolls back, over a package: the reconcile it runs is `|| true`.
   # Three: an up-to-date apply, the new build's reconcile after an install, and its stand-in.
   is "apply runs the package reconcile as something that cannot fail it" "3" \
-    "$(sed -n '/^cmd_apply()/,/^}/p' "$SELF_PATH" | grep -cE '(yantrik-update" reconcile|reconcile_packages) \|\| true$')"
+    "$(sed -n '/^cmd_apply()/,/^}/p' "$SELF_PATH" | grep -cE '(yantrik-update" reconcile( --no-session-chrome)?|reconcile_packages) \|\| true$')"
 
   # 8b. The compositor's keys after an update (#854): the session's own copy, run as the person,
   #     never through a link, and labwc asked to re-read them.
@@ -5017,6 +5171,116 @@ fd = os.open(sys.argv[1], os.O_RDWR); fcntl.lockf(fd, fcntl.LOCK_EX); open(sys.a
   is "and only there" "1" "$(printf '%s\n' "$applyfn" | grep -c 'refresh_session_chrome')"
   t "rollback puts the older keys back the same way" 'refresh_session_chrome "$before"' \
     "$(sed -n '/^cmd_rollback()/,/^}/p' "$SELF_PATH")"
+
+  # The first update from an updater that predates #858: it calls the new build for `reconcile` and
+  # nothing else (the 520 test), before it restarts the shell. The keys must reach the session
+  # anyway, once, and never while the shell running is the old build.
+  is "a new apply tells reconcile it refreshes the keys itself" "1" \
+    "$(printf '%s\n' "$applyfn" | grep -c -F '"$BIN_DIR/yantrik-update" reconcile --no-session-chrome || true')"
+  t "rollback finds its backup the way reconcile does" 'backup="$(last_backup)"' \
+    "$(sed -n '/^cmd_rollback()/,/^}/p' "$SELF_PATH")"
+  if [ "$(id -u)" = 0 ]; then
+    printf '  skip session-key reconcile checks: their stand-ins work only for an ordinary account\n'
+  elif [ -z "$chrome_helper" ]; then
+    printf '  %sFAIL%s session-key reconcile checks: no yantrik-session-chrome\n' "$c_red" "$c_off"
+    fails=$((fails + 1))
+  else
+    local sc_lab="$root/ylabwc-st" sc_upd="$root/old-updater" sc_p sc_h sc_n sc_lpid sc_spid sc_out sc_i
+    # A labwc stand-in that counts the SIGHUPs it is sent and keeps running, as labwc does.
+    printf '#!/bin/bash\ntrap '\''echo hup >> "$1"'\'' HUP\nwhile :; do sleep 0.2 & wait $!; done\n' > "$sc_lab"
+    chmod 755 "$sc_lab"
+    # Prefix, session and home for one run, labwc and an old-build shell running.
+    sc_setup() { # <name>
+      sc_p="$root/$1"; sc_h="$root/$1-home"; sc_n="$root/$1-hups"
+      mkdir -p "$sc_p/bin" "$sc_p/share/labwc" "$sc_p/backups" "$sc_p/updates" "$sc_p/logs" "$sc_h/.config/labwc"
+      cp "$SELF_PATH" "$sc_p/bin/yantrik-update"; cp "$chrome_helper" "$sc_p/bin/yantrik-session-chrome"
+      printf '#!/bin/sh\nexit 0\n' > "$sc_p/bin/yos"
+      chmod 755 "$sc_p/bin/"*
+      cp "$(command -v sleep)" "$sc_p/bin/ysh-st"
+      printf '<keys old/>\n' > "$sc_p/share/labwc/rc.xml"; printf 'theme\n' > "$sc_p/share/labwc/themerc"
+      printf '<keys old/>\n' > "$sc_h/.config/labwc/rc.xml"
+      printf 'git=aaa\nversion=1\n' > "$sc_p/BUILD"
+      : > "$sc_n"
+      "$sc_lab" "$sc_n" & sc_lpid=$!
+      "$sc_p/bin/ysh-st" 120 & sc_spid=$!
+      sleep 0.3
+    }
+    # What every apply does before it calls reconcile: back up, put the new share/ and binaries in.
+    sc_install() { # <keys> <git>
+      local b; b="$sc_p/backups/$(date -u +%Y%m%d-%H%M%S)-$RANDOM"
+      mkdir -p "$b"; cp -a "$sc_p/share" "$b/share"; echo "$b" > "$sc_p/updates/last-backup"
+      printf '%s\n' "$1" > "$sc_p/share/labwc/rc.xml"
+      cp "$(command -v sleep)" "$sc_p/bin/.ysh-st.new" && mv -f "$sc_p/bin/.ysh-st.new" "$sc_p/bin/ysh-st"
+      printf 'git=%s\nversion=2\n' "$2" > "$sc_p/BUILD"
+    }
+    sc_restart_shell() {
+      kill "$sc_spid" 2>/dev/null; wait "$sc_spid" 2>/dev/null
+      "$sc_p/bin/ysh-st" 120 & sc_spid=$!
+    }
+    sc_wait_keys() { # <keys>: up to 15 s for them to land in the home
+      for ((sc_i = 0; sc_i < 75; sc_i++)); do
+        [ "$(cat "$sc_h/.config/labwc/rc.xml" 2>/dev/null)" = "$1" ] && [ -s "$sc_n" ] && break
+        sleep 0.2
+      done
+      sleep 1.5   # and long enough for a second copy or SIGHUP to show, were one coming
+    }
+    sc_env=(env YANTRIK_SELFTEST=1 YANTRIK_RECONCILE_ONLY=session-chrome YANTRIK_LABWC_NAME=ylabwc-st
+            YANTRIK_SHELL_NAME=ysh-st)
+    sc_stop() { kill "$sc_lpid" "$sc_spid" 2>/dev/null; wait "$sc_lpid" "$sc_spid" 2>/dev/null; }
+
+    # An OLD updater: installs, calls `reconcile` on the new binary, restarts the shell. No more.
+    printf '#!/bin/bash\nYANTRIK_PREFIX="$1" "$1/bin/yantrik-update" reconcile 2>&1\n' > "$sc_upd"
+    chmod 755 "$sc_upd"
+    sc_setup oldupd
+    sc_install '<keys new/>' bbb
+    sc_out="$("${sc_env[@]}" YANTRIK_CHROME_HOME="$sc_h" "$sc_upd" "$sc_p")"
+    t "old updater: reconcile sees the keys changed and waits for the new shell" "once the new shell answers" "$sc_out"
+    is "old updater: nothing copied while the old build's shell runs" "<keys old/>" "$(cat "$sc_h/.config/labwc/rc.xml")"
+    is "old updater: and labwc not reloaded under it" "0" "$(grep -c hup "$sc_n")"
+    sc_restart_shell
+    sc_wait_keys '<keys new/>'
+    is "old updater: once the new shell answers, the new keys are in the home" "<keys new/>" "$(cat "$sc_h/.config/labwc/rc.xml")"
+    is "old updater: and that labwc is sent SIGHUP once" "1" "$(grep -c hup "$sc_n")"
+    is "old updater: the same labwc, reloaded in place" "yes" "$(kill -0 "$sc_lpid" 2>/dev/null && echo yes)"
+    t "old updater: the waiter's result is kept" "the new keys work now" "$(cat "$sc_p/updates/session-chrome.log" 2>/dev/null)"
+    sc_out="$("${sc_env[@]}" YANTRIK_CHROME_HOME="$sc_h" YANTRIK_PREFIX="$sc_p" "$sc_p/bin/yantrik-update" reconcile 2>&1)"
+    sleep 1
+    is "old updater: a later reconcile finds them done (no second copy or SIGHUP)" "1 " "$(grep -c hup "$sc_n") $sc_out"
+    # The old apply's rollback, while the waiter waits: the build changes under it, and it stops.
+    sc_install '<keys newer/>' ccc
+    "${sc_env[@]}" YANTRIK_CHROME_HOME="$sc_h" "$sc_upd" "$sc_p" >/dev/null
+    printf 'git=bbb\nversion=2\n' > "$sc_p/BUILD"
+    sc_restart_shell
+    sleep 3
+    is "old updater, rolled back: the keys are left as they were" "<keys new/> 1" \
+      "$(cat "$sc_h/.config/labwc/rc.xml") $(grep -c hup "$sc_n")"
+    t "old updater, rolled back: and it says why" "rolled back?" "$(cat "$sc_p/updates/session-chrome.log" 2>/dev/null)"
+    sc_stop
+
+    # A NEW updater: reconcile --no-session-chrome before the restart, its own refresh after.
+    sc_setup newupd
+    sc_install '<keys new/>' bbb
+    sc_out="$("${sc_env[@]}" YANTRIK_CHROME_HOME="$sc_h" YANTRIK_PREFIX="$sc_p" "$sc_p/bin/yantrik-update" reconcile --no-session-chrome 2>&1)"
+    is "new updater: its reconcile leaves the keys to the apply" "" "$sc_out"
+    sc_restart_shell
+    sleep 0.3
+    sc_out="$( export YANTRIK_SELFTEST=1 YANTRIK_LABWC_NAME=ylabwc-st YANTRIK_SHELL_NAME=ysh-st YANTRIK_CHROME_HOME="$sc_h"
+               PREFIX="$sc_p"; BIN_DIR="$sc_p/bin"; SHARE_DIR="$sc_p/share"; UPDATES_DIR="$sc_p/updates"
+               BACKUP_DIR="$sc_p/backups"; BUILD_FILE="$sc_p/BUILD"; LOG_DIR="$sc_p/logs"; SESSION_RESTARTED=0
+               refresh_session_chrome "$(cat "$sc_p/updates/last-backup")/share" 2>&1 )"
+    sc_wait_keys '<keys new/>'
+    is "new updater: apply's refresh puts the keys in" "<keys new/>" "$(cat "$sc_h/.config/labwc/rc.xml")"
+    is "new updater: and labwc is sent SIGHUP once" "1" "$(grep -c hup "$sc_n")"
+    sc_out="$("${sc_env[@]}" YANTRIK_CHROME_HOME="$sc_h" YANTRIK_PREFIX="$sc_p" "$sc_p/bin/yantrik-update" reconcile 2>&1)"
+    sleep 1
+    is "new updater: a reconcile afterwards does nothing more" "1 " "$(grep -c hup "$sc_n") $sc_out"
+    is "new updater: no waiter was ever left" "" "$(compgen -G "$sc_p/updates/.session-chrome-log.*" || true)"
+    sc_stop
+    # A reconcile never takes the selftest's keys-only shortcut for root, and refuses what it
+    # does not know.
+    t "reconcile refuses an unknown option" "unknown option '--bogus'" \
+      "$(YANTRIK_PREFIX="$sc_p" "$sc_p/bin/yantrik-update" reconcile --bogus 2>&1)"
+  fi
 
   # 9. Subordinate ids for rootless podman (#401). Where a new range starts, and whether an
   #    account already has one, decide whether two accounts end up sharing ids; both are pure
@@ -6573,7 +6837,7 @@ usage() {
     "  rollback                                  restore the most recent backup" \
     "  status      [--porcelain]                 channel, host, build, backups" \
     "  set-channel nightly|beta|stable           change the channel (writes $CONF)" \
-    "  reconcile                                 install packages from share/packages.list this machine lacks" \
+    "  reconcile [--no-session-chrome]           install packages from share/packages.list this machine lacks, and the keys an apply changed" \
     "  package-list FILE                         the package names in FILE, checked (the image build reads it)" \
     "  install-mind BUNDLE SHA256                put a Yantrik Mind bundle in place, and prove it attaches" \
     "  mind-egress apply                         hold the mind account to its egress proxy (root; its units run it)" \
@@ -6593,7 +6857,7 @@ case "$CMD" in
   # Both spellings, because the control surface names its action set_update_channel and a
   # person at a terminal types the hyphen.
   set-channel|set_channel) cmd_set_channel "$@" ;;
-  reconcile) cmd_reconcile ;;
+  reconcile) cmd_reconcile "$@" ;;
   # The names in a package list, validated, one per line: what build-debian-iso.sh installs, read
   # by the same parser that reads the installed copy here (#854). Reads only the file it is given.
   package-list) [ "$#" = 1 ] || fail "usage: yantrik-update package-list FILE"; read_package_list "$1" ;;
