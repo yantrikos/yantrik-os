@@ -1,0 +1,112 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# yantrik-session-chrome — put the desktop's own chrome into the person's home
+# ═══════════════════════════════════════════════════════════════════════════════════════
+#
+#   yantrik-session-chrome [SHARE]          put it in place; SHARE defaults to /opt/yantrik/share
+#   yantrik-session-chrome --check [SHARE]  change nothing; exit 0 when every file in the home
+#                                           already is SHARE's, 1 when any differs or is missing
+#
+# The compositor config (share/labwc/rc.xml: every key the desktop binds), the window menu, the
+# window theme and its titlebar buttons, the session autostart, and the house typeface. labwc
+# reads its config from the person's home, so this needs no root.
+#
+# Two callers, one copy logic (#854):
+#   yantrik-session   at every login, before labwc starts
+#   yantrik-update    in `reconcile` and after an apply or rollback, as the session's owner
+#                     (runuser): --check first, and only when the home differs, the copy and a
+#                     SIGHUP to that session's labwc so new keys work at once. Before this, only a
+#                     login copied rc.xml: after #828 Print kept running plain `grim` on an updated
+#                     machine until the person logged out and in again.
+#
+# Never through a link (pre-review checklist item 4). Each file is written to a fresh mktemp name
+# in its own directory and renamed over the target with `mv -fT`, which replaces a link, FIFO or
+# device standing at that name instead of writing through it. A destination directory that is
+# itself a link, or is not this account's, is refused and left alone, with the reason on stderr.
+# Links further up (a ~/.config kept in a dotfiles checkout) are followed as before: this runs as
+# the account whose home it is, so they lead only where that account can already write.
+#
+# Exits 0 when everything was put in place, 1 when anything was refused or failed; it carries on
+# past one failure so the rest of the chrome still lands.
+set -u
+
+CHECK=0
+if [ "${1:-}" = --check ]; then CHECK=1; shift; fi
+CHROME="${1:-/opt/yantrik/share}"
+status=0
+
+say() { printf 'yantrik-session-chrome: %s\n' "$*" >&2; }
+
+# A directory under $HOME this account owns and that is not a link, made if missing (not when
+# checking: then a missing one is a difference).
+dir_ok() {
+  if [ "$CHECK" = 1 ]; then
+    [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && return 0
+    status=1
+    return 1
+  fi
+  mkdir -p -- "$1" 2>/dev/null
+  if [ -L "$1" ] || [ ! -d "$1" ] || [ ! -O "$1" ]; then
+    say "refusing $1: it is a link, not a directory, or not this account's"
+    status=1
+    return 1
+  fi
+}
+
+# put <source> <destination> [mode]: the source's bytes at the destination, never through a link.
+put() {
+  src="$1" dst="$2" mode="${3:-0644}"
+  [ -f "$src" ] || return 0
+  if [ "$CHECK" = 1 ]; then
+    # The same bytes, in a plain file, executable where it must be.
+    if [ -L "$dst" ] || [ ! -f "$dst" ] || ! cmp -s -- "$src" "$dst" \
+       || { [ "$mode" = 0755 ] && [ ! -x "$dst" ]; }; then
+      status=1
+    fi
+    return 0
+  fi
+  tmp="$(mktemp "$(dirname -- "$dst")/.$(basename -- "$dst").XXXXXX" 2>/dev/null)" || {
+    say "could not write beside $dst"
+    status=1
+    return 1
+  }
+  if cat -- "$src" > "$tmp" && chmod "$mode" "$tmp" && mv -fT -- "$tmp" "$dst"; then
+    return 0
+  fi
+  rm -f -- "$tmp"
+  say "could not put $dst in place"
+  status=1
+  return 1
+}
+
+if [ -d "$CHROME/labwc" ]; then
+  conf="$HOME/.config/labwc"
+  theme="$HOME/.local/share/themes/Yantrik/labwc"
+  if dir_ok "$conf"; then
+    put "$CHROME/labwc/rc.xml" "$conf/rc.xml"
+    # The window menu (its Snap layouts); labwc falls back to its own when there is none.
+    put "$CHROME/labwc/menu.xml" "$conf/menu.xml"
+    # What starts with the desktop: the polkit agent. No notification daemon — the
+    # notifications service holds org.freedesktop.Notifications and is started by the shell;
+    # starting a second one here is what used to make half the machine's notifications vanish.
+    put "$CHROME/labwc/autostart" "$conf/autostart" 0755
+  fi
+  if dir_ok "$theme"; then
+    put "$CHROME/labwc/themerc" "$theme/themerc"
+    # The titlebar buttons live beside the themerc, because that is where labwc looks for them:
+    # <name>-active.png / <name>-inactive.png in the theme directory, replacing the built-ins.
+    for png in "$CHROME/labwc/"*.png; do
+      [ -f "$png" ] && put "$png" "$theme/$(basename -- "$png")"
+    done
+  fi
+fi
+if [ -d "$CHROME/fonts" ]; then
+  fonts="$HOME/.local/share/fonts"
+  if dir_ok "$fonts"; then
+    for ttf in "$CHROME/fonts/"*.ttf; do
+      [ -f "$ttf" ] && put "$ttf" "$fonts/$(basename -- "$ttf")"
+    done
+    [ "$CHECK" = 1 ] || fc-cache -f "$fonts" >/dev/null 2>&1 || true
+  fi
+fi
+exit "$status"

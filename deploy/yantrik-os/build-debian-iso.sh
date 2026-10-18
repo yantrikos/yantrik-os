@@ -195,6 +195,13 @@ sudo tee "$ROOTFS/etc/apt/sources.list" > /dev/null <<APT
 deb ${DEBIAN_MIRROR} ${DEBIAN_SUITE} main contrib non-free non-free-firmware
 APT
 
+# The packages every Yantrik machine has (#854): one list, read here and by yantrik-update. The
+# updater's own parser reads it, so a line one of them would refuse is refused by both, and the
+# build stops rather than ship an image the updater disagrees with.
+"$SCRIPT_DIR/yantrik-update" package-list "$SCRIPT_DIR/packages.list" > "$WORK_DIR/packages" \
+    || fail "deploy/yantrik-os/packages.list was refused (the line is named above)"
+sudo install -m 0644 -o root -g root "$WORK_DIR/packages" "$ROOTFS/tmp/yantrik-packages"
+
 sudo chroot "$ROOTFS" /bin/bash <<'CHROOT_PACKAGES'
 set -e
 export DEBIAN_FRONTEND=noninteractive
@@ -253,47 +260,26 @@ apt-get install -y -qq \
     speech-dispatcher libspeechd2 \
     2>/dev/null || true
 
-# ── The desktop's own runtime ──
-# What a machine built from cloud-init/user-data.yaml gets, because the same shell runs on both.
-# The ISO installed a handful of these and a different browser, so an installed machine had a
-# Browser pin that ran `chromium` and found nothing, no notification daemon, no portals, no
-# screenshots — each failing quietly. No `|| true`: a desktop missing its runtime is a failed
-# build, and the parity check after this step names anything user-data.yaml gains later.
-# mpv: Files opens sound and video in mpv's own window (#255); the image shipped no player.
-# flatpak: the Package Manager installs Flathub apps with it, per-user and without root (#399).
-# wf-recorder: the capture bar's Record (design/capture-2026-10-15.md); its libav libraries are
-# already here for mpv. vainfo: whether the GPU encodes H.264, asked before a recording starts.
-apt-get install -y -qq     seatd     libcap2-bin     chromium     pipewire-pulse wireplumber pulseaudio-utils     python3-websocket     fontconfig     grim slurp wf-recorder vainfo     qemu-guest-agent     libnotify-bin     xdg-desktop-portal xdg-desktop-portal-wlr xdg-desktop-portal-gtk     lxpolkit     udisks2     brightnessctl     upower power-profiles-daemon     bluez alsa-utils     mpv     flatpak     nftables
+# ── The desktop's own runtime, the shell's programs, the person's tools, the developer's ──
+# Every name in packages.list (deploy/yantrik-os/packages.list, which says what each is for),
+# validated on the host by the same parser yantrik-update reads it with, and handed to apt here
+# as separate arguments. That list is also what yantrik-update installs on a machine that lacks
+# any of it (#854), so a package added there reaches new images and updated machines alike.
+# No `|| true`: a desktop missing its runtime is a failed build, and the parity check after this
+# step names anything user-data.yaml gains later.
+mapfile -t YANTRIK_PACKAGES < /tmp/yantrik-packages
+[ "${#YANTRIK_PACKAGES[@]}" -gt 0 ] || { echo "the package list reached the chroot empty"; exit 1; }
+# Exact names only: apt-get reads a name with `.` or `+` that no package has exactly as a regex,
+# and would install whatever matched. yantrik-update makes the same check (apt_known_names).
+apt-cache pkgnames > /tmp/yantrik-known-packages
+for pkg in "${YANTRIK_PACKAGES[@]}"; do
+    grep -qxF -- "$pkg" /tmp/yantrik-known-packages \
+        || { echo "packages.list names $pkg, and the mirror has no package of exactly that name"; exit 1; }
+done
+rm -f /tmp/yantrik-known-packages
+apt-get install -y -qq "${YANTRIK_PACKAGES[@]}"
+rm -f /tmp/yantrik-packages
 
-# Three programs the shell shells out to by name, and did not have.
-#   swaybg     — yantrik-companion-tools/src/wallpaper.rs: setting a wallpaper did nothing
-#   xdg-utils  — mime_dispatch.rs and lens.rs call xdg-open to hand a file to its app
-#   espeak-ng  — the voice fallback when Piper is not the chosen engine
-# Each failed silently, which is why none of them was noticed from inside the desktop.
-apt-get install -y -qq     swaybg     xdg-utils     espeak-ng
-
-# ── The person's own tools ──
-# The first hour on a machine: the image had no text editor and no process viewer at all, so
-# the terminal could edit a file only through Python and list processes only through the
-# System Monitor app. nano is what yantrik-session exports as EDITOR, so `git commit`,
-# `crontab -e` and everything else that asks has something to open. htop complements, and
-# does not replace, the app. vim-tiny: muscle memory and scripts call `vi`, and the
-# fresh-install audit found `command not found: vi` on the shipped image (#678).
-# No `|| true`: release-check (tier ci) asserts these commands on the booted image, and
-# yantrik-update reconciles them on machines whose base system drifted from this list (#210).
-apt-get install -y -qq     nano     htop     vim-tiny
-
-# ── A developer's baseline (#401) ──
-# git: the image used to install it only to build llama.cpp and then remove it, so a machine
-# could not clone anything. bash-completion: Debian's ~/.bashrc loads it when it is there.
-# podman, rootless, for the Container Manager app, which runs the podman CLI as the person
-# (apps/container-manager/src/runtime.rs) and found no runtime at all. What rootless needs
-# beside it: uidmap (newuidmap/newgidmap, to map a container's users onto the account's
-# subordinate ids), passt (pasta, podman 5's rootless network), fuse-overlayfs (layered storage
-# where the kernel's own overlay cannot be used, as on the live session, whose home is itself an
-# overlay). Named rather than left to Recommends, because yantrik-update installs the same list
-# on older machines with --no-install-recommends. No `|| true`: release-check asserts them.
-apt-get install -y -qq     git     bash-completion     podman uidmap passt fuse-overlayfs
 # Nothing talks to podman's API: the app runs the CLI. So no socket for it is left listening, for
 # root or for anyone, whatever the package's defaults are.
 systemctl disable podman.socket 2>/dev/null || true
@@ -679,7 +665,8 @@ for conf in "$UNPACK/share/containers/"*.conf; do
     sudo install -m 0644 -o root -g root "$conf" "$ROOTFS/etc/containers/registries.conf.d/$(basename "$conf")"
 done
 [ -r "$UNPACK/share/shell/bashrc" ] || fail "release tarball carries no share/shell/bashrc — every new account's ~/.bashrc sources it"
-for required in share/labwc/rc.xml share/labwc/menu.xml share/labwc/autostart bin/yantrik-session bin/yantrik-shell \
+for required in share/labwc/rc.xml share/labwc/menu.xml share/labwc/autostart bin/yantrik-session bin/yantrik-session-chrome bin/yantrik-shell \
+                share/packages.list \
                 share/icons/hicolor/scalable/apps/yantrik.svg; do
     [ -e "$ROOTFS/opt/yantrik/$required" ] || fail "$required missing from the image — the desktop session would not be the shipped one"
 done
