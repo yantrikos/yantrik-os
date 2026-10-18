@@ -484,9 +484,29 @@ pub struct CallingAgent {
 /// How this process spends a grant: the id and the exact triple in, who the call arrived as
 /// (`None` for a caller that runs as no agent), and either it is burned or the reason it was not.
 type Spender =
-    dyn Fn(&str, &str, &str, &serde_json::Value, Option<&CallingAgent>) -> Result<(), String>
+    dyn Fn(&str, &str, &str, &serde_json::Value, Option<&CallingAgent>) -> Result<Spent, String>
         + Send
         + Sync;
+
+/// What a spent grant carries back besides "burned": the identity of the target its card named
+/// ([`Authority::target`]), `None` when the card named none. A spender that has nothing to say
+/// about targets answers `()`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Spent {
+    pub target: Option<String>,
+}
+
+impl From<()> for Spent {
+    fn from(_: ()) -> Spent {
+        Spent::default()
+    }
+}
+
+impl From<Option<String>> for Spent {
+    fn from(target: Option<String>) -> Spent {
+        Spent { target }
+    }
+}
 
 static SPENDER: OnceLock<Box<Spender>> = OnceLock::new();
 
@@ -504,13 +524,15 @@ const SHELL: &str = "app-shell";
 /// itself over its own socket from its own RPC thread is a call that cannot be answered until
 /// the call returns. Every other process leaves it unset and spends grants over the shell's
 /// socket. A second call changes nothing: the store does not move.
-pub fn spend_grants_with(
-    spend: impl Fn(&str, &str, &str, &serde_json::Value, Option<&CallingAgent>) -> Result<(), String>
+pub fn spend_grants_with<R: Into<Spent>>(
+    spend: impl Fn(&str, &str, &str, &serde_json::Value, Option<&CallingAgent>) -> Result<R, String>
         + Send
         + Sync
         + 'static,
 ) {
-    let _ = SPENDER.set(Box::new(spend));
+    let _ = SPENDER.set(Box::new(move |id, app, action, args, caller| {
+        spend(id, app, action, args, caller).map(Into::into)
+    }));
 }
 
 /// Burn `id` for exactly `app.action(args)`, or say why it could not be.
@@ -535,7 +557,7 @@ fn spend_grant(
     action: &str,
     args: &serde_json::Value,
     caller: Option<&CallingAgent>,
-) -> Result<(), String> {
+) -> Result<Spent, String> {
     if let Some(spend) = SPENDER.get() {
         return spend(id, app, action, args, caller);
     }
@@ -543,8 +565,14 @@ fn spend_grant(
         .with_timeout(GRANT_ROUNDTRIP)
         .expecting_peer(crate::owner::must_be_the_shell)
         .call("app.act", spend_params(id, app, action, args, caller))
-        .map(|_| ())
+        .map(|reply| spent_from(&reply))
         .map_err(|e| e.message)
+}
+
+/// The target identity in the shell's answer to a spend: `consume_approval`'s
+/// `target_identity`, inside the `app.act` envelope's `result`.
+fn spent_from(reply: &serde_json::Value) -> Spent {
+    Spent { target: reply["result"]["target_identity"].as_str().filter(|t| !t.is_empty()).map(str::to_string) }
 }
 
 /// The `app.act` that carries a spend to the shell: `consume_approval` with the grant's exact
@@ -629,6 +657,11 @@ pub struct Authority {
     /// answers for it: the agent calling is answering a turn from the person's phone
     /// (design/channels-2026-09-29.md), set from its reach. `None` for everyone else.
     pub asks_above: Option<usize>,
+    /// What the card the spent grant answered named as the call's target, as the app told it
+    /// apart (`control_surface::Target::identity`): the handler resolves its arguments again and
+    /// refuses when they now point at something else. `None` when no grant was spent, or the card
+    /// named nothing.
+    pub target: Option<String>,
 }
 
 impl Authority {
@@ -638,7 +671,7 @@ impl Authority {
     /// service builds it in its handler. Tests build the struct instead, so the machine running
     /// them lends them neither its ceiling nor its mode.
     pub fn now() -> Authority {
-        Authority { ceiling: configured_ceiling(), mode: configured_mode(), granted: false, asks_above: None }
+        Authority { ceiling: configured_ceiling(), mode: configured_mode(), granted: false, asks_above: None, target: None }
     }
 
     /// Hold the call to `reach`'s `asks_above`, when its agent's reach has one.
@@ -669,13 +702,14 @@ impl Authority {
         caller: Option<&CallingAgent>,
     ) -> Result<(), String> {
         within_ceiling(&self.ceiling, app_id, action, graded)?;
-        spend_grant(id, app_id, action, args, caller).map_err(|why| {
+        let spent = spend_grant(id, app_id, action, args, caller).map_err(|why| {
             format!(
                 "GRANT: `{id}` does not authorise {app_id}.{action} — {why} Nothing was run; \
                  a grant covers one action, once, with the arguments the person was shown."
             )
         })?;
         self.granted = true;
+        self.target = spent.target;
         Ok(())
     }
 }
@@ -1004,12 +1038,13 @@ mod tests {
             mode: Mode { name: "auto".into(), session_rules: vec![("notes".into(), "new_note".into())], standing_rules: Vec::new() },
             granted: false,
             asks_above: Some(0),
+            target: None,
         };
         assert!(decide(&ruled, "notes", "new_note", "standard", "Make a note").is_err());
     }
 
     fn at(ceiling: &str, mode: &str) -> Authority {
-        Authority { ceiling: ceiling.into(), mode: Mode::named(mode), granted: false, asks_above: None }
+        Authority { ceiling: ceiling.into(), mode: Mode::named(mode), granted: false, asks_above: None, target: None }
     }
 
     /// What System Monitor publishes for `kill_process`. Recoverable wording, so these tests are
@@ -1138,6 +1173,7 @@ mod tests {
             mode: Mode { name: "bypass".into(), session_rules: vec![("calendar".into(), "delete_event".into())], standing_rules: Vec::new() },
             granted: false,
             asks_above: None,
+            target: None,
         };
         assert!(decide(&ruled, "calendar", "delete_event", "sensitive", delete).is_err());
 
@@ -1193,6 +1229,7 @@ mod tests {
                     mode: Mode { name: mode.into(), session_rules: vec![("terminal".into(), "run".into())], standing_rules: Vec::new() },
                     granted: false,
                     asks_above: None,
+                    target: None,
                 };
                 assert!(decide(&ruled, "terminal", "run", graded, RUN).is_ok(), "{mode}/{graded}: the rule covers it");
             }
@@ -1221,6 +1258,7 @@ mod tests {
             mode: Mode { name: "bypass".into(), session_rules: vec![("terminal".into(), "run_and_clean".into())], standing_rules: Vec::new() },
             granted: false,
             asks_above: None,
+            target: None,
         };
         let err = decide(&ruled, "terminal", "run_and_clean", "sensitive", both).unwrap_err();
         assert!(err.contains("its own description says it cannot be undone"), "{err}");
@@ -1237,6 +1275,7 @@ mod tests {
             mode: Mode { name: "auto".into(), session_rules: vec![("terminal".into(), "run".into())], standing_rules: Vec::new() },
             granted: false,
             asks_above: Some(0),
+            target: None,
         };
         let err = decide(&held, "terminal", "run", "sensitive", RUN).unwrap_err();
         assert!(err.contains("person's phone"), "{err}");
@@ -1250,6 +1289,7 @@ mod tests {
             mode: Mode { name: mode.into(), session_rules: vec![("calendar".into(), action.into())], standing_rules: Vec::new() },
             granted: false,
             asks_above: None,
+            target: None,
         };
         assert!(decide(&with_rule("ask", "update_event"), "calendar", "update_event", "sensitive", "Move it").is_ok());
         let err = decide(&with_rule("ask", "delete_event"), "calendar", "delete_event", "sensitive", delete).unwrap_err();
@@ -1557,6 +1597,7 @@ mod tests {
                                     mode: Mode { name: mode.to_string(), session_rules: rules.clone(), standing_rules: Vec::new() },
                                     granted,
                                     asks_above: None,
+                                    target: None,
                                 };
                                 let decided = decide(&authority(granted), app, action, graded, purpose);
                                 let without = decide(&authority(false), app, action, graded, purpose);
