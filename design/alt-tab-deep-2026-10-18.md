@@ -22,7 +22,7 @@ Two things no other switcher has, each in **its own lane** beside the stack, nev
    - A pending approval appears there too, marked amber: "Waiting on you".
    - Going to an approval opens a **details view with nothing to press** (see "Approvals").
 2. **Likely next.** One small chip names the window Yantrik thinks you want, with its reason, e.g. "Likely next: Text Editor. You copied 2 lines from it and haven't pasted them."
-   - One key jumps to it: ↑, or its number.
+   - Space (with Alt held) jumps to it.
    - It never moves the selection by itself.
 
 ## Order never surprises you
@@ -183,11 +183,12 @@ Pranab asked for quick research rather than a guess. This is what other switcher
 - **Windows 11:** Tab or the arrow keys move the selection. Delete (Alt still held) closes the selected window. ([Windows Digitals](https://www.windowsdigitals.com/how-to-close-a-window-while-alt-tab-windows-11))
 - **Fathom:** 1–9 picks a workspace, and Space keeps the overlay open.
 
-**Decision: arrows move in space, and ↑ goes to Likely next.**
-- The Likely next chip and the minds lane are drawn *above* the stack, so ↑ moves the selection up into them, ←/→ move along a lane, and ↓ comes back to the stack. That's the Windows and GNOME idea (arrows navigate what you see), and no new key to learn.
-- Digits stay free for filtering, which typing already does.
-- We also adopt the shared Alt+` convention: the selected app's windows only.
-- macOS uses ↑ for "this app's windows". That's the one conflict, and we take it, because Alt+` covers that need here.
+**Decision: arrows keep labwc's meaning, and Space goes to Likely next.** (Revised the same day, after Step 0 read labwc 0.8.3's source.)
+- In switcher mode, labwc already handles ↑/← (back) and ↓/→ (forward) itself (`handle_cycle_view_key`, `src/input/keyboard.c`). With no renderer, the native path must behave exactly like the drawn one, so the arrows keep that meaning. An earlier draft put Likely next on ↑. That would have made the same key mean two things, depending on whether the renderer was up.
+- **Alt+Space jumps to the Likely next chip.** labwc doesn't consume Space in a switch session, and our `rc.xml` binds nothing to Alt+Space. With no renderer there is no chip, so Space does nothing, which is honest.
+- **Typing filters, and the minds lane is reached the same way:** typing "hermes" brings up its Mind View and approval cards. No extra keys.
+- **Alt+`** shows the selected app's windows only, the shared GNOME/macOS convention.
+- Space, letters, digits and ` are keys labwc leaves unconsumed in a session. The patch forwards them to the renderer, and only to it.
 
 **Recency order versus stable positions**
 - Tak, Cockburn and colleagues found that switchers with **spatially stable** layouts are faster than recency-ordered ones, because people revisit a small set of windows and learn where they are ([Improving window switching interfaces, 2009](https://research-portal.uu.nl/en/publications/improving-window-switching-interfaces/); [SCOTZ, 2011](https://dl.ifip.org/IFIP-LNCS-6946/hal-01590560)).
