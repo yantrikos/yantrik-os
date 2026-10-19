@@ -2,10 +2,13 @@
 # check-page against the fixture pages in check-page-fixtures, in a real headless Chromium. Each
 # fixture holds one kind of page the Director must not take as working (#869): Tumble's loop
 # that runs once under hidden controls, a button below the fold, a page of one colour, a page
-# with a demo mode in which nothing moves, a page that throws; and two it must pass: a static
-# page with no demo mode, and one that animates. Then the hostile cases: the page reads no file
-# (its own folder's, a link's, the probe's), cannot speak for the probe, writes nothing outside
-# the throwaway profile, and an oversized folder or a FIFO is not checked rather than hung on.
+# with a demo mode in which nothing moves, a page that throws; and three it must pass: a static
+# page with no demo mode, a static page that merely says "demo", and one that animates. Then the
+# hostile cases: the page reads no file (its own folder's, a link's, the probe's, one outside
+# through an error line), cannot speak for the probe (not even through a getter the probe would
+# call), writes nothing outside the throwaway profile; a file too big to copy is left out while
+# the page is still checked; a folder of too many files is not checked rather than half copied;
+# a FIFO is not hung on; and the whole check keeps to its time limit.
 #
 # Usage: check-page-selftest            (CHECK_PAGE=path runs another check-page, e.g. main's)
 # Chromium is found as `chromium`, `chromium-browser` or `google-chrome`; with
@@ -56,6 +59,8 @@ expect "a page with a demo mode in which nothing moves fails, though it draws (M
   "$fixtures/still-demo/index.html" 1 "nothing moves on the page in demo mode (?demo=1)"
 expect "a static page with no demo mode passes, silently" \
   "$fixtures/static-no-demo/index.html" 0 ""
+expect "a static page that only says \"demo\" (Demolition, a Demo label, a comment) has no demo mode, and passes" \
+  "$fixtures/demolition/index.html" 0 ""
 expect "a page that animates from requestAnimationFrame passes, silently" \
   "$fixtures/animating/index.html" 0 ""
 expect "a page that throws still reports its error, as before" \
@@ -63,9 +68,12 @@ expect "a page that throws still reports its error, as before" \
 
 # A hostile page: tries to read a file of its own folder, a link out of it, an absolute path,
 # the probe and the throwaway profile, and prints whatever it gets as an error, which
-# check-page would pass on. It also prints probe lines of its own.
+# check-page would pass on. It also prints probe lines of its own, directly and through getters
+# and a callback the probe would call, and loads a file from outside its folder as a script,
+# whose first word an error line would carry out.
 secret="$tmp/secret.txt"
 echo "SECRET-869" > "$secret"
+echo "TOPSECRETTOKEN869" > "$tmp/outside-key"
 h="$tmp/hostile"
 mkdir "$h"
 echo "OWN-FILE" > "$h/own.txt"
@@ -82,7 +90,15 @@ for (const s of document.scripts) if (s.src) fetch(s.src).then(r => r.text()).th
 console.log("check-page-probe offscreen #forged");
 console.log("check-page-probe viewport 9 9");
 console.log("check-page-pixels drawn moves");
-</script><button id="fine">Fine</button></body></html>
+const as = t => ({ get: console.log.bind(console, "check-page-probe " + t), configurable: true });
+Object.defineProperty(window, "innerHeight", as("offscreen #forgedgetter"));
+Object.defineProperty(window, "innerWidth", as("viewport 9 9"));
+Object.defineProperty(Element.prototype, "id", as("offscreen #forgedid"));
+Object.defineProperty(NodeList.prototype, "length", as("offscreen #forgedlength"));
+for (const k of ["left", "top", "right", "bottom", "width", "height"]) Object.defineProperty(DOMRectReadOnly.prototype, k, as("offscreen #forgedrect"));
+for (const k of ["checkOpacity", "opacityProperty", "contentVisibilityAuto"]) Object.defineProperty(Object.prototype, k, as("offscreen #forgedoption"));
+requestAnimationFrame(console.log.bind(console, "check-page-probe offscreen #forgedraf%c"));
+</script><script src="file://$tmp/outside-key"></script><button id="fine">Fine</button></body></html>
 EOF
 before=$(cd "$h" && ls -la --time-style=+%s . | sort; md5sum index.html own.txt)
 tmpdirs_before=$(ls "${TMPDIR:-/tmp}" | sort)
@@ -91,9 +107,9 @@ status=$?
 after=$(cd "$h" && ls -la --time-style=+%s . | sort; md5sum index.html own.txt)
 tmpdirs_after=$(ls "${TMPDIR:-/tmp}" | sort)
 case "$out" in
-  *SECRET-869*|*OWN-FILE*|*"read "*|*"xhr "*|*"probe "*|*forged*|*"9x9"*) bad "a hostile page reads no file and cannot speak for the probe" "exit $status, said:
+  *SECRET-869*|*TOPSECRET*|*OWN-FILE*|*"read "*|*"xhr "*|*"probe "*|*forged*|*"9x9"*) bad "a hostile page reads no file and cannot speak for the probe" "exit $status, said:
 $out" ;;
-  *) [ "$status" = 0 ] && ok "a hostile page reads no file (own, linked, absolute, the probe) and cannot speak for the probe; a FIFO is skipped, not hung on" \
+  *) [ "$status" = 0 ] && ok "a hostile page reads no file (own, linked, absolute, the probe, outside through an error) and cannot speak for the probe, getters and callbacks included; a FIFO is skipped, not hung on" \
        || bad "the hostile page, which draws and has a visible button, passes" "exit $status, said:
 $out" ;;
 esac
@@ -121,17 +137,44 @@ cp "$fixtures/static-no-demo/index.html" "$tmp/odd/a#b.html"
 expect "a page whose name has # in it is not checked (exit 2), never another file in its place" "$tmp/odd/a#b.html" 2 \
   "the page's name has # ? or % in it, so it cannot be loaded as a page"
 
-# Folders too big to copy are not checked, rather than half copied or filling the disk.
+# A folder of too many files is not checked, rather than half copied or filling the disk. The
+# Director refuses a FINISHED over a page that was not checked (director-selftest).
 mkdir "$tmp/many"
 cp "$fixtures/static-no-demo/index.html" "$tmp/many/"
 i=0; while [ $i -lt 200 ]; do : > "$tmp/many/f$i.js"; i=$((i + 1)); done
 expect "a folder of over 200 files is not checked (exit 2)" "$tmp/many/index.html" 2 \
   "the page's folder has over 200 files, so the page was not checked"
+# A game's 5 MB music file is left out of the copy, and the page is still checked: Tumble with
+# one audio file gets its lines, not exit 2 (review of #870).
 mkdir "$tmp/big"
-cp "$fixtures/static-no-demo/index.html" "$tmp/big/"
-head -c 4200000 /dev/zero > "$tmp/big/huge.bin"
-expect "a file over 4096 KB is not checked (exit 2)" "$tmp/big/index.html" 2 \
-  "a file in the page's folder is over 4096 KB, so the page was not checked"
+cp "$fixtures/tumble-dead-loop/"* "$tmp/big/"
+head -c 5000000 /dev/zero > "$tmp/big/music.ogg"
+expect "a file over 4096 KB is left out of the copy, and the page is still checked (Tumble with its music)" \
+  "$tmp/big/index.html" 1 "control #bounce is off screen at 1280x800
+control #clear is off screen at 1280x800
+control #gravity is off screen at 1280x800
+the page draws nothing: the screen is one colour
+nothing moves on the page in demo mode (?demo=1)"
+mkdir "$tmp/bigpage"
+{ cat "$fixtures/static-no-demo/index.html"; head -c 4200000 /dev/zero | tr '\0' ' '; } > "$tmp/bigpage/index.html"
+expect "a page itself over 4096 KB is not checked (exit 2)" "$tmp/bigpage/index.html" 2 \
+  "the page is over 4096 KB, so it was not checked"
+
+# The whole check keeps within its limit (75 s, under the Director's 90 s, so it is never
+# killed before it cleans up); CHECK_PAGE_LIMIT lowers it here. A page that never stops loading
+# is given up on in time, and leaves nothing behind.
+mkdir "$tmp/hang"
+printf '<!doctype html><h1>Hang</h1><script>for (;;) {}</script>\n' > "$tmp/hang/index.html"
+tmpdirs_before=$(ls "${TMPDIR:-/tmp}" | sort)
+start=$(date +%s)
+out=$(CHECK_PAGE_LIMIT=4 "$check_page" "$tmp/hang/index.html" 2>&1)
+status=$?
+took=$(($(date +%s) - start))
+tmpdirs_after=$(ls "${TMPDIR:-/tmp}" | sort)
+[ "$status" = 2 ] && [ "$took" -le 7 ] && [ "$tmpdirs_before" = "$tmpdirs_after" ] \
+  && ok "the check keeps to its time limit, and cleans up after a page that hangs" \
+  || bad "the check keeps to its time limit, and cleans up after a page that hangs" "exit $status after $took s, said:
+$out"
 
 # The script's own lines: no run is given a flag that widens what a file:// page may read.
 if grep -nE -- '--(allow-file-access|disable-web-security|allow-file-access-from-files|disable-site-isolation)' "$check_page" \

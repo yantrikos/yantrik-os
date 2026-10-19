@@ -13,7 +13,8 @@ person is needed; the Director logs that, leaves the card up for whoever is watc
 It does check the work. A mission may name a page (`check_page`), and after every turn the
 Director loads it with `check-page`, the same check the Mind is told to run. A page that fails it
 (it throws, draws nothing, stands still in its demo mode, or has controls off screen) puts the
-check's lines at the head of the next prompt, and a FINISHED is not taken while it fails. On
+check's lines at the head of the next prompt, and a FINISHED is not taken while it fails, nor
+over a page the check could not load (exit 2), which the Mind could otherwise bring about. On
 561 the Mind ticked all eight Starfall steps, and said every feature was in, over a game.js that
 did not parse (2 Oct 2026); Tumble was delivered twice over a loop that ran once (18 Oct 2026).
 A tick is the Mind's word; the page working is the evidence.
@@ -209,6 +210,13 @@ FIX_FIRST = (
     "action, and check it again by running `{check}`. Then read the code and {notes} side by side, and "
     "untick any line whose code is not really there yet: a line is ticked only when it works. Then carry "
     "on with the first line that is not ticked.")
+# A FINISHED over a page that could not be checked (check-page exit 2) is refused like one that
+# fails: a page the Mind can make uncheckable must never be delivered unchecked (review of #870).
+NOT_CHECKED = (
+    "You said FINISHED on {name}, but the Director could not check the page with `{check}`, and a page "
+    "is finished only over a clean check. It said:\n\n{errors}\n\nIf that is about the page or its "
+    "folder, change it so the page can be checked, through the shell's agent_run action. Run `{check}` "
+    "again, and say FINISHED on its own line only when it prints nothing.")
 NOTHING_CHANGED = (
     "You said FINISHED on {name}, but nothing in the {folder} folder has changed since this round "
     "started: none of its code changed (ticking a line or copying a file to a backup is not a "
@@ -850,7 +858,8 @@ def wait_for_turn(sent_at):
 
 def check_page(m):
     """Load the mission's page and return (clean, errors). clean is None when there is no page to
-    check or it could not be checked (no chromium, a hang), which neither holds up nor passes."""
+    check or it could not be checked (no chromium, a hang, a folder too big to copy): that holds up
+    no turn, but a FINISHED over a page that was named and not checked is refused."""
     page = m.get("check_page")
     if not page:
         return None, ""
@@ -1161,10 +1170,12 @@ def run_turns(m, contract, started, resuming, elsewhere, begun):
             contract.event("finished_refused", turn=turn, why="nothing in the folder changed",
                            mind_said=reply[-CONTRACT_TEXT:])
         elif said_finished(reply):
-            if clean is False:
-                # The Mind's word against the page's: the page wins, and the mission goes on.
-                log(mission=m["id"], event="finished refused", turn=turn, why="the page throws")
-                contract.event("finished_refused", turn=turn, why="the page throws", mind_said=reply[-CONTRACT_TEXT:])
+            if m.get("check_page") and clean is not True:
+                # The Mind's word against the page's: the page wins, and the mission goes on. A page
+                # that could not be checked never passes either: the Mind can make one uncheckable.
+                why = "the page fails its check" if clean is False else "the page could not be checked"
+                log(mission=m["id"], event="finished refused", turn=turn, why=why)
+                contract.event("finished_refused", turn=turn, why=why, mind_said=reply[-CONTRACT_TEXT:])
             else:
                 if not m["id"].startswith("polish:"):
                     mark_finished(m["id"])
@@ -1183,6 +1194,8 @@ def run_turns(m, contract, started, resuming, elsewhere, begun):
         time.sleep(BETWEEN_TURNS_SECS)
         if clean is False:
             text = prompt(FIX_FIRST, m, errors)
+        elif clean is None and m.get("check_page") and said_finished(reply) and not unchanged:
+            text = prompt(NOT_CHECKED, m, errors or "(nothing)")
         elif unchanged:
             text = prompt(NOTHING_CHANGED, m)
         else:

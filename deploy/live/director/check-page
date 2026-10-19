@@ -24,6 +24,10 @@
 # URLs. No run gets a file-access flag: the page is a file:// page like any other and can read
 # no file, the copy, the probe and the captures included.
 #
+# Exit 2 is for a page that could not be checked. The Director never takes a FINISHED over one
+# (review of #870), so a page made uncheckable on purpose gains nothing. The whole check keeps
+# within LIMIT seconds, under the Director's 90 s, so it is never killed before it cleans up.
+#
 # Usage: check-page FILE.html
 set -u
 page=${1:?usage: check-page FILE.html}
@@ -35,18 +39,33 @@ command -v chromium >/dev/null || { echo "chromium is not installed, so the page
 # ~/.pki/nssdb (whose pkcs11.txt names libraries to load), and fontconfig and the wrapper read
 # from HOME, which is the Mind's account's when the Director runs this (security review of #857).
 # The copy, the probe and the captures live in it too, so nothing is written anywhere else.
+LIMIT=75
+# CHECK_PAGE_LIMIT may only lower it (the selftest does, to show the limit holds).
+case "${CHECK_PAGE_LIMIT:-}" in [1-9]|[1-6][0-9]|7[0-4]) LIMIT=$CHECK_PAGE_LIMIT ;; esac
+deadline=$(($(date +%s) + LIMIT))
 profile=$(mktemp -d)
 trap 'rm -rf "$profile"' EXIT
+trap 'exit 2' HUP INT TERM
 export HOME="$profile"
 # And TMPDIR: Chromium puts its url_fetcher files there, and the CI runner's Chrome left two in
 # /tmp on every run.
 export TMPDIR="$profile"
-# Its path goes into a sed replacement and a URL below, so only plain characters are taken.
+# Its path goes into a sed replacement, a URL and a pattern below, so only plain characters are taken.
 case "$profile" in *[!A-Za-z0-9/._-]*) echo "the throwaway directory's path is not plain: $profile"; exit 2 ;; esac
 
+# within SECONDS: sets t to SECONDS, or to what is left before the deadline when that is less;
+# exits 2 once the time is spent.
+within() {
+  t=$((deadline - $(date +%s)))
+  [ "$t" -ge 1 ] || { echo "the check ran out of its $LIMIT seconds, so the page was not checked"; exit 2; }
+  [ "$t" -gt "$1" ] && t=$1
+  return 0
+}
+
 # The page's folder, copied: regular files only (never a link, FIFO or device), no dot-files,
-# four levels deep, at most MAX_FILES files of MAX_KB each. A page whose folder is bigger is not
-# checked rather than half copied. Each step of the copy has 3 seconds.
+# four levels deep, at most MAX_FILES files. A file over MAX_KB (a game's music, say) is left out
+# of the copy, so the page and its scripts are still checked; a page itself that big, or a folder
+# of more files, is not checked rather than half copied. Each step of the copy has 3 seconds.
 MAX_FILES=200
 MAX_KB=4096
 dir=$(dirname "$page")
@@ -56,58 +75,86 @@ case "$name" in *[#?%]*) echo "the page's name has # ? or % in it, so it cannot 
 copy="$profile/page"
 mkdir "$copy"
 list="$profile/files"
-{ (cd "$dir" && timeout 3 find . -mindepth 1 -maxdepth 4 -name '.*' -prune -o -type f -print0 2>/dev/null); echo $? > "$list.status"; } \
+within 3
+{ (cd "$dir" && timeout "$t" find . -mindepth 1 -maxdepth 4 -name '.*' -prune -o -type f ! -size +${MAX_KB}k -print0 2>/dev/null); echo $? > "$list.status"; } \
     | head -z -n $((MAX_FILES + 1)) > "$list"
 [ "$(tr -cd '\0' < "$list" | wc -c)" -le "$MAX_FILES" ] \
     || { echo "the page's folder has over $MAX_FILES files, so the page was not checked"; exit 2; }
 [ "$(cat "$list.status")" = 0 ] || { echo "the page's folder could not be listed, so the page was not checked"; exit 2; }
-(cd "$dir" && timeout 3 find . -mindepth 1 -maxdepth 4 -name '.*' -prune -o -type f -size +${MAX_KB}k -print -quit) \
-    | grep -q . && { echo "a file in the page's folder is over $MAX_KB KB, so the page was not checked"; exit 2; }
-(cd "$dir" && timeout 3 xargs -0 -r cp -P --parents --no-preserve=all -t "$copy" < "$list") 2>/dev/null \
+[ -n "$(find "$page" -prune -size +${MAX_KB}k)" ] \
+    && { echo "the page is over $MAX_KB KB, so it was not checked"; exit 2; }
+within 3
+(cd "$dir" && timeout "$t" xargs -0 -r cp -P --parents --no-preserve=all -t "$copy" < "$list") 2>/dev/null \
     && [ -f "$copy/$name" ] && [ ! -L "$copy/$name" ] \
     || { echo "the page's folder could not be copied, so the page was not checked"; exit 2; }
 
-# A page has a demo mode when its HTML or scripts mention one; only then is it failed for being
-# still. Builds get theirs in their first polish round (DEMO_IDEA in director.py): missions.json
-# asks for none.
+# A page has a demo mode when its HTML or scripts read the ?demo=1 that DEMO_IDEA in director.py
+# asks for: the text demo=1, or get("demo") / has("demo") on the query's URLSearchParams. Only
+# then is it failed for being still. A word with "demo" in it (Demolition, a "Demo" label, a
+# comment) is not a demo mode (review of #870). Behaviour cannot tell instead: a demo mode that
+# changes nothing on screen, Tumble's, looks exactly like no demo mode, and that is the page this
+# check is for. Builds get theirs in their first polish round: missions.json asks for none.
 demo=no
-grep -rqil --include='*.html' --include='*.htm' --include='*.js' --include='*.mjs' demo "$copy" && demo=yes
+grep -rqE --include='*.html' --include='*.htm' --include='*.js' --include='*.mjs' \
+    "demo=1|\.(get|has)\([[:space:]]*[\"'\`]demo[\"'\`][[:space:]]*\)" "$copy" && demo=yes
 
 probe="$profile/probe.js"
+# The probe's lines carry a token made for this run. The page shares the probe's JS world, but it
+# cannot read the probe's file (file:// pages read no file) and the token is in no function the
+# page can reach, so it cannot print a probe line: not with console.log, and not by making the
+# probe call a console.log bound to its words (a getter, a callback), which Chromium would put down
+# to the probe's file (review of #870). Everything the probe reads from the page's objects, it
+# reads through the browser's own functions, taken before any page script runs.
+token=$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')
+case "$token" in *[!0-9a-f]*|"") echo "no token could be made, so the page was not checked"; exit 2 ;; esac
 cat > "$probe" <<'PROBE'
-(function () {
+(function (token) {
   "use strict";
-  var log = console.log.bind(console), later = setTimeout, stop = clearTimeout,
-      now = performance.now.bind(performance), box = Element.prototype.getBoundingClientRect,
-      all = Document.prototype.querySelectorAll;
+  var call = Reflect.apply, own = Object.getOwnPropertyDescriptor, bare = Object.create,
+      log = console.log.bind(console), later = setTimeout, stop = clearTimeout,
+      now = performance.now.bind(performance), imul = Math.imul;
+  function getter(o, k) { for (; o; o = Object.getPrototypeOf(o)) { var d = own(o, k); if (d) return d.get; } }
+  var width = getter(window, "innerWidth"), height = getter(window, "innerHeight"),
+      all = Document.prototype.querySelectorAll, count = getter(NodeList.prototype, "length"),
+      item = NodeList.prototype.item, visible = Element.prototype.checkVisibility,
+      box = Element.prototype.getBoundingClientRect, idOf = getter(Element.prototype, "id"),
+      tagOf = getter(Element.prototype, "tagName"), lower = String.prototype.toLowerCase,
+      test = RegExp.prototype.test, plain = /^[A-Za-z0-9_-]{1,60}$/,
+      rect = DOMRectReadOnly.prototype, L = getter(rect, "left"), T = getter(rect, "top"),
+      R = getter(rect, "right"), B = getter(rect, "bottom"), W = getter(rect, "width"), H = getter(rect, "height");
+  var seen = bare(null);
+  seen.visibilityProperty = true; seen.opacityProperty = false; seen.contentVisibilityAuto = false;
+  seen.checkOpacity = false; seen.checkVisibilityCSS = true;
+  function say(text) { log("check-page-probe " + token + " " + text); }
   window.requestAnimationFrame = function (cb) { return later(function () { cb(now()); }, 16); };
   window.cancelAnimationFrame = function (id) { stop(id); };
   var seed = 869;
   Math.random = function () {
     seed = (seed + 0x6d2b79f5) | 0;
-    var t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    var t = imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
   later(function () {
     try {
-      var w = innerWidth, h = innerHeight, found = 0;
-      log("check-page-probe viewport " + w + " " + h);
-      var els = all.call(document, "input,select,button,textarea");
-      for (var i = 0; i < els.length && found < 5; i++) {
-        var el = els[i];
-        if (el.checkVisibility && !el.checkVisibility({ visibilityProperty: true })) continue;
-        var r = box.call(el);
-        if (r.width === 0 && r.height === 0) continue;
-        if (r.left >= -1 && r.top >= -1 && r.right <= w + 1 && r.bottom <= h + 1) continue;
-        var id = /^[A-Za-z0-9_-]{1,60}$/.test(el.id) ? "#" + el.id : el.tagName.toLowerCase();
-        log("check-page-probe offscreen " + id);
+      var w = call(width, window, []), h = call(height, window, []), found = 0;
+      say("viewport " + w + " " + h);
+      var els = call(all, document, ["input,select,button,textarea"]), n = call(count, els, []);
+      for (var i = 0; i < n && found < 5; i++) {
+        var el = call(item, els, [i]);
+        if (visible && !call(visible, el, [seen])) continue;
+        var r = call(box, el, []);
+        if (call(W, r, []) === 0 && call(H, r, []) === 0) continue;
+        if (call(L, r, []) >= -1 && call(T, r, []) >= -1 && call(R, r, []) <= w + 1 && call(B, r, []) <= h + 1) continue;
+        var id = call(idOf, el, []);
+        say("offscreen " + (call(test, plain, [id]) ? "#" + id : call(lower, call(tagOf, el, []), [])));
         found++;
       }
     } catch (e) {}
   }, 2500);
-})();
+})("@TOKEN@");
 PROBE
+sed -i "s/@TOKEN@/$token/" "$probe"
 # The probe goes in after the doctype, if there is one (before it, the page would be drawn in
 # quirks mode), else first.
 tag="<script src=\"file://$probe\"></script>"
@@ -125,39 +172,56 @@ fi
 # took over 15 s), so it gets 30 s; the others start a warm one and get 10 s.
 viewport() {  # viewport LOG: "W H" from the probe's own line, or nothing
   printf '%s\n' "$1" | grep -F "source: file://$probe (" \
-      | sed -nE 's/^.*:CONSOLE:[0-9]+\] "check-page-probe viewport ([0-9]{1,4}) ([0-9]{1,4})", source: .*$/\1 \2/p' | sed -n 1p
+      | sed -nE 's/^.*:CONSOLE:[0-9]+\] "check-page-probe '"$token"' viewport ([0-9]{1,4}) ([0-9]{1,4})", source: .*$/\1 \2/p' | sed -n 1p
 }
 ww=1280
 wh=887
+# Chromium's own requests (component and dictionary updates, the network clock, sign-in's account
+# list, search preconnects, metrics) are turned off, and the two it makes regardless go to names
+# under .invalid, which never resolve (RFC 2606). Under the Director's unit IPAddressDeny=any
+# stops them anyway, but when the Mind runs this they would go out under its egress policy.
+quiet="--disable-background-networking --disable-component-update --disable-default-apps
+  --disable-sync --disable-domain-reliability --disable-client-side-phishing-detection
+  --disable-spell-checking --disable-breakpad --no-pings --metrics-recording-only
+  --no-default-browser-check --gaia-url=https://gaia.invalid --google-base-url=https://google.invalid
+  --disable-features=NetworkTimeServiceQuerying,PreconnectToSearch,OptimizationHints,MediaRouter,Translate,AutofillServerCommunication"
 load() {  # load SECONDS BUDGET_MS CAPTURE: the copy with ?demo=1, its log on stdout
-  timeout "$1" chromium --headless=new --disable-gpu --no-first-run --user-data-dir="$profile/chrome" \
+  # shellcheck disable=SC2086 # $quiet is a list of flags with no spaces in any
+  timeout "$1" chromium --headless=new --disable-gpu --no-first-run $quiet --user-data-dir="$profile/chrome" \
       --window-size="$ww,$wh" --hide-scrollbars --virtual-time-budget="$2" \
       --enable-logging=stderr --v=0 --screenshot="$3" "file://$copy/$name?demo=1" 2>&1 >/dev/null
 }
-log=$(load 30 3000 "$profile/a.png")
-[ $? = 124 ] && { echo "the page did not finish loading in 30 seconds"; exit 2; }
+within 30
+log=$(load "$t" 3000 "$profile/a.png")
+[ $? = 124 ] && { echo "the page did not finish loading in $t seconds"; exit 2; }
 seen=$(viewport "$log")
 if [ -n "$seen" ] && [ "$seen" != "1280 800" ]; then
   ww=$((ww + 1280 - ${seen% *}))
   wh=$((wh + 800 - ${seen#* }))
   if [ "$ww" -ge 1280 ] && [ "$ww" -le 2560 ] && [ "$wh" -ge 800 ] && [ "$wh" -le 1600 ]; then
-    log=$(load 10 3000 "$profile/a.png")
-    [ $? = 124 ] && { echo "the page did not finish loading in 10 seconds"; exit 2; }
+    within 10
+    log=$(load "$t" 3000 "$profile/a.png")
+    [ $? = 124 ] && { echo "the page did not finish loading in $t seconds"; exit 2; }
   fi
 fi
 if [ "$demo" = yes ]; then
-  log2=$(load 10 5000 "$profile/b.png")
-  [ $? = 124 ] && { echo "the page did not finish loading in 10 seconds"; exit 2; }
+  within 10
+  log2=$(load "$t" 5000 "$profile/b.png")
+  [ $? = 124 ] && { echo "the page did not finish loading in $t seconds"; exit 2; }
   log="$log
 $log2"
 fi
 
 # Chromium writes console messages as `…:INFO:CONSOLE:<line>] "<message>", source: <url> (<line>)`.
+# Only errors from the page's own files are taken. A file from outside its folder, loaded as a
+# script, would otherwise hand its first word out through "X is not defined" (review of #870).
+qcopy=$(printf '%s' "$copy" | sed 's/\./\\./g')
 errors=$(printf '%s\n' "$log" | grep -E ':CONSOLE:[0-9]+\] "(Uncaught|Error|TypeError|ReferenceError|SyntaxError)' \
+    | grep -E "\", source: file://$qcopy/[^ ]* \([0-9]+\)\$" \
     | sed -E 's/^.*:CONSOLE:[0-9]+\] //' | sed -E 's#file://[^ ]*/##' | sort -u)
-# The probe's lines, only from the probe's own file: the page cannot print one for it.
+# The probe's lines: with this run's token, from the probe's own file. The page cannot print one.
 said=$(printf '%s\n' "$log" | grep -F "source: file://$probe (" \
-    | sed -nE 's/^.*:CONSOLE:[0-9]+\] "check-page-probe ([a-z]+ [^"]*)", source: .*$/\1/p')
+    | sed -nE 's/^.*:CONSOLE:[0-9]+\] "check-page-probe '"$token"' ([a-z]+ [^"]*)", source: .*$/\1/p')
 vw=$(printf '%s\n' "$said" | sed -nE 's/^viewport ([0-9]{1,5}) ([0-9]{1,5})$/\1/p' | sed -n 1p)
 vh=$(printf '%s\n' "$said" | sed -nE 's/^viewport ([0-9]{1,5}) ([0-9]{1,5})$/\2/p' | sed -n 1p)
 [ -n "$vw" ] && [ -n "$vh" ] || { vw=1280; vh=800; }
@@ -197,7 +261,9 @@ onload = function () {
 READ
     printf '</script>\n'
   } > "$reader"
-  pixels=$(timeout 8 chromium --headless=new --disable-gpu --no-first-run --user-data-dir="$profile/chrome" \
+  within 8
+  # shellcheck disable=SC2086
+  pixels=$(timeout "$t" chromium --headless=new --disable-gpu --no-first-run $quiet --user-data-dir="$profile/chrome" \
       --enable-logging=stderr --v=0 --dump-dom "file://$reader" 2>&1 >/dev/null \
       | grep -F "source: file://$reader (" | sed -nE 's/^.*:CONSOLE:[0-9]+\] "check-page-pixels ([a-z ]*)".*$/\1/p' | sed -n 1p)
 fi
