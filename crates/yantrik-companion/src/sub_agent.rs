@@ -94,6 +94,8 @@ impl SubAgent {
         // Select tools relevant to the task
         let selected = crate::companion::select_tools_for_query(&self.task, &self.db, 8);
         let native_tools = self.registry.definitions_for(&selected, max_perm);
+        // What this sub-agent offered; a call to anything else is answered, not run (#832).
+        let offered = crate::tool_markup::offered_in(&native_tools);
 
         let mut messages = vec![
             ChatMessage::system(&system),
@@ -194,8 +196,13 @@ impl SubAgent {
             };
 
             for (idx, call) in tc.iter().enumerate() {
-                tool_calls_made.push(call.name.clone());
-                let result = self.registry.execute(&ctx, &call.name, &call.arguments);
+                let result = match crate::tool_markup::refuse_unoffered(&call.name, &offered) {
+                    Some(refused) => refused,
+                    None => {
+                        tool_calls_made.push(call.name.clone());
+                        self.registry.execute(&ctx, &call.name, &call.arguments)
+                    }
+                };
 
                 tracing::debug!(
                     agent = %self.agent_id,
@@ -296,4 +303,52 @@ pub fn spawn_parallel_agents(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tool_markup::scripted::{Scripted, native_calls, words};
+
+    /// The security review of #836: a sub-agent offers the tools its task selected, then ran
+    /// whatever its model called. In a round with one offered call and one that was not, the
+    /// offered one runs and answers at its own id; the other is answered "not run" at its id.
+    #[test]
+    fn a_sub_agent_runs_only_the_tools_it_offered() {
+        let llm = Arc::new(Scripted::new(|messages, offered| {
+            if messages.iter().any(|m| m.role == "tool") {
+                return words("Done.");
+            }
+            assert!(!offered.is_empty(), "the task selected some tools");
+            assert!(!offered.iter().any(|t| t == "calendar_today"), "{offered:?}");
+            let pick = if offered.iter().any(|t| t == "calculate") { "calculate" } else { offered[0].as_str() };
+            native_calls(&[
+                ("call_A", "calendar_today", serde_json::json!({})),
+                ("call_B", pick, serde_json::json!({"expression": "17 * 23"})),
+            ])
+        }));
+        let config = SubAgentConfig {
+            max_steps: 3,
+            max_tokens: 200,
+            temperature: 0.0,
+            user_name: "Sam".into(),
+            db_path: ":memory:".into(),
+            embedding_dim: 384,
+            companion_config: CompanionConfig::default(),
+            ceiling: PermissionLevel::Sensitive,
+            incognito: true,
+        };
+        let task = "Work out 17 times 23 with the calculate tool.".to_string();
+        let result = SubAgent::new(task, "sub-1".into(), llm.clone(), config).unwrap().run();
+        assert!(!result.tool_calls_made.iter().any(|t| t == "calendar_today"), "{:?}", result.tool_calls_made);
+        assert_eq!(result.tool_calls_made.len(), 1, "{:?}", result.tool_calls_made);
+
+        let seen = llm.seen.lock().unwrap();
+        let follow_up = &seen.last().unwrap().messages;
+        let answer = |id: &str| follow_up.iter().find(|m| m.tool_call_id.as_deref() == Some(id)).unwrap_or_else(|| panic!("{id} answered"));
+        let refused = answer("call_A");
+        assert_eq!(refused.name.as_deref(), Some("calendar_today"));
+        assert!(refused.content.contains("calendar_today was not run"), "{}", refused.content);
+        assert_eq!(answer("call_B").name.as_deref(), Some(result.tool_calls_made[0].as_str()));
+    }
 }

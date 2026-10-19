@@ -2275,19 +2275,7 @@ impl CompanionService {
             // Use native tool_calls if available, fall back to text parsing.
             // For StructuredJSON mode: parse via StructuredDecisionParser first.
             let tool_calls: Vec<ToolCall> = if !llm_response.tool_calls.is_empty() {
-                // A native call naming a tool this turn never offered is dropped: text calls have
-                // been checked against the offered set, native ones were run as they arrived (#832).
-                let (kept, dropped) = tool_markup::keep_offered(llm_response.tool_calls.clone(), &gate);
-                for name in &dropped {
-                    tracing::warn!(tool = %name, "native tool call outside the offered set; not run");
-                }
-                if kept.is_empty() {
-                    // Nothing may run this round; say which tools were on offer and go round.
-                    messages.push(ChatMessage::assistant(&llm_response.text));
-                    messages.push(ChatMessage::user(unoffered_call_note(&dropped, &gate)));
-                    continue;
-                }
-                kept
+                llm_response.tool_calls.clone()
             } else if active_profile.tool_call_mode == ToolCallMode::StructuredJSON {
                 // Structured Decision Protocol: parse JSON decision from LLM output
                 match StructuredDecisionParser::parse(&llm_response.text) {
@@ -2407,6 +2395,7 @@ impl CompanionService {
                 &self.trust_state,
                 self.model_family,
                 active_profile.tier,
+                &gate.offered,
             );
 
             if !text_part.is_empty() {
@@ -3164,18 +3153,8 @@ impl CompanionService {
 
                 // Use native tool_calls if available, fall back to text parsing.
                 // For StructuredJSON mode: parse via StructuredDecisionParser first.
-                // A native call naming a tool this turn never offered is dropped: text calls have
-                // been checked against the offered set, native ones were run as they arrived (#832).
-                let mut unoffered: Vec<String> = Vec::new();
                 let tool_calls: Vec<ToolCall> = if !r.tool_calls.is_empty() {
-                    let (kept, dropped) = tool_markup::keep_offered(r.tool_calls.clone(), &gate);
-                    for name in &dropped {
-                        tracing::warn!(tool = %name, "native tool call outside the offered set; not run");
-                    }
-                    if kept.is_empty() {
-                        unoffered = dropped;
-                    }
-                    kept
+                    r.tool_calls.clone()
                 } else if active_profile.tool_call_mode == ToolCallMode::StructuredJSON {
                     match StructuredDecisionParser::parse(full_text) {
                         Ok(decision) => {
@@ -3215,11 +3194,10 @@ impl CompanionService {
                         "Tool calls detected in streaming response"
                     );
                 }
-                // A native call that could not be read, or one naming a tool that was never
-                // offered, is not an answer either: the follow-up rounds below tell the model so
-                // and ask again.
+                // A native call that could not be read is not an answer either: the follow-up
+                // rounds below tell the model so and ask again.
                 let unread = tool_calls.is_empty() && r.is_unread_tool_call();
-                if tool_calls.is_empty() && !unread && unoffered.is_empty() {
+                if tool_calls.is_empty() && !unread {
                     response_text = if !streamed_text.is_empty() {
                         streamed_text.clone()
                     } else {
@@ -3236,14 +3214,14 @@ impl CompanionService {
                     };
 
                     on_token("__REPLACE__");
-                    // A call that was dropped for not being offered ran nothing, so it gets no
+                    // A call to a tool this turn never offered will not run (#832), so it gets no
                     // "Calling …" line: the person would wait for a tool that never started.
-                    if unoffered.is_empty() {
-                        let tool_names: Vec<&str> = if unread {
-                            r.api_tool_calls.iter().map(|c| c.function.name.as_str()).collect()
-                        } else {
-                            tool_calls.iter().map(|c| c.name.as_str()).collect()
-                        };
+                    let tool_names: Vec<&str> = if unread {
+                        r.api_tool_calls.iter().map(|c| c.function.name.as_str()).collect()
+                    } else {
+                        tool_calls.iter().map(|c| c.name.as_str()).filter(|n| gate.offers(n)).collect()
+                    };
+                    if !tool_names.is_empty() {
                         let progress_msg = format_tool_progress(&tool_names, 1);
                         if display_text.is_empty() {
                             on_token(&format!("{}\n", progress_msg));
@@ -3262,11 +3240,6 @@ impl CompanionService {
                         unread_calls += 1;
                         messages.push(ChatMessage::assistant(full_text));
                         messages.push(ChatMessage::user(unread_call_note(&r)));
-                    } else if !unoffered.is_empty() {
-                        // Nothing ran this round; the names on offer go to the model so the next
-                        // round has something to call instead of another invention.
-                        messages.push(ChatMessage::assistant(full_text));
-                        messages.push(ChatMessage::user(unoffered_call_note(&unoffered, &gate)));
                     } else {
                         messages.push(assistant_turn(full_text, &r, self.use_native_tools));
                         execute_tool_round_tracked(
@@ -3287,6 +3260,7 @@ impl CompanionService {
                             &self.trust_state,
                             self.model_family,
                             active_profile.tier,
+                            &gate.offered,
                         );
                     }
 
@@ -3312,16 +3286,7 @@ impl CompanionService {
                                     tool_markup::adopt_text_calls(&mut r2, None, &gate);
                                 }
                                 let tc2: Vec<ToolCall> = if !r2.tool_calls.is_empty() {
-                                    let (kept, dropped) = tool_markup::keep_offered(r2.tool_calls.clone(), &gate);
-                                    for name in &dropped {
-                                        tracing::warn!(tool = %name, "native tool call outside the offered set; not run");
-                                    }
-                                    if kept.is_empty() {
-                                        messages.push(ChatMessage::assistant(&r2.text));
-                                        messages.push(ChatMessage::user(unoffered_call_note(&dropped, &gate)));
-                                        continue;
-                                    }
-                                    kept
+                                    r2.tool_calls.clone()
                                 } else {
                                     tool_markup::calls_in(&r2.text, &gate)
                                 };
@@ -3356,7 +3321,7 @@ impl CompanionService {
                                 }
 
                                 let round_text = tool_markup::text_outside(&r2.text);
-                                let names2: Vec<&str> = tc2.iter().map(|c| c.name.as_str()).collect();
+                                let names2: Vec<&str> = tc2.iter().map(|c| c.name.as_str()).filter(|n| gate.offers(n)).collect();
                                 tracing::info!(
                                     count = tc2.len(),
                                     names = %names2.join(", "),
@@ -3367,13 +3332,17 @@ impl CompanionService {
                                 } else {
                                     round_text.trim().to_string()
                                 };
-                                let step_num = tool_calls_made.len() + 1;
-                                let progress_msg2 = format_tool_progress(&names2, step_num);
-                                on_token("__REPLACE__");
-                                if round_display.is_empty() {
-                                    on_token(&format!("{}\n", progress_msg2));
-                                } else {
-                                    on_token(&format!("{}\n{}\n", round_display, progress_msg2));
+                                // Only offered calls will run (#832); a round of none shows no
+                                // "Calling …" line for a tool that never starts.
+                                if !names2.is_empty() {
+                                    let step_num = tool_calls_made.len() + 1;
+                                    let progress_msg2 = format_tool_progress(&names2, step_num);
+                                    on_token("__REPLACE__");
+                                    if round_display.is_empty() {
+                                        on_token(&format!("{}\n", progress_msg2));
+                                    } else {
+                                        on_token(&format!("{}\n{}\n", round_display, progress_msg2));
+                                    }
                                 }
 
                                 messages.push(assistant_turn(&r2.text, &r2, self.use_native_tools));
@@ -3384,9 +3353,11 @@ impl CompanionService {
                                     .collect();
 
                                 // Show progress before tool execution
-                                on_token("__REPLACE__");
-                                let run_progress = format_tool_progress(&names2, tool_calls_made.len());
-                                on_token(&format!("{}\n", run_progress));
+                                if !names2.is_empty() {
+                                    on_token("__REPLACE__");
+                                    let run_progress = format_tool_progress(&names2, tool_calls_made.len());
+                                    on_token(&format!("{}\n", run_progress));
+                                }
 
                                 execute_tool_round_tracked(
                                     &self.registry, &mut self.guard, &self.db,
@@ -3406,6 +3377,7 @@ impl CompanionService {
                                     &self.trust_state,
                                     self.model_family,
                                     active_profile.tier,
+                                    &gate.offered,
                                 );
 
                                 if !round_text.is_empty() {
@@ -4288,27 +4260,6 @@ fn unread_call_note(r: &yantrik_ml::LLMResponse) -> String {
     }
 }
 
-/// What to tell the model when every native call it made named a tool this turn never offered.
-/// The names on offer are listed because a model that invents one usually wants one of them and
-/// only has the request's tool list to go on (`#832`).
-fn unoffered_call_note(dropped: &[String], gate: &tool_markup::Gate) -> String {
-    const MAX_LISTED: usize = 40;
-    let mut on_offer: Vec<&str> = gate.offered.iter().map(|s| s.as_str()).collect();
-    on_offer.sort_unstable();
-    let listed = if on_offer.len() > MAX_LISTED {
-        let more = on_offer.len() - MAX_LISTED;
-        let head = on_offer[..MAX_LISTED].join(", ");
-        format!("{head} (+{more} more)")
-    } else {
-        on_offer.join(", ")
-    };
-    format!(
-        "Your call to {} was not run: no tool of that name was offered this turn. Tools on \
-         offer: {listed}. Call one of these, or answer in words.",
-        dropped.join(", ")
-    )
-}
-
 /// The assistant's turn as the conversation keeps it. With the tools described in the prompt, a
 /// call the server sent natively (llama.cpp with --jinja, vLLM: they read a `<tool_call>` the
 /// model wrote into `tool_calls` whether or not the request had tools) is written back as the
@@ -4534,6 +4485,7 @@ fn execute_tool_round_tracked(
     trust_state: &crate::trust_model::TrustState,
     model_family: ModelFamily,
     model_tier: yantrik_ml::ModelTier,
+    offered: &std::collections::HashSet<String>,
 ) {
     let agent_spawner_any = agent_spawner.map(|s| s as &dyn std::any::Any);
     let ctx = ToolContext {
@@ -4546,6 +4498,21 @@ fn execute_tool_round_tracked(
     };
 
     for (idx, (name, args)) in tool_calls.iter().enumerate() {
+        // A call naming a tool this turn never offered is answered at its own id and not run,
+        // whichever form it arrived in (#832). `offered` is the round's set, so a tool that
+        // `discover_tools` adds in this round can be called from the next.
+        if let Some(refused) = tool_markup::refuse_unoffered(name, offered) {
+            if use_native_tools {
+                let call_id = api_tool_calls.get(idx).map(|tc| tc.id.as_str()).unwrap_or("call_0");
+                let tmpl = template_for_family(model_family);
+                messages.push(tmpl.format_tool_result(call_id, name, &refused));
+            } else {
+                messages.push(ChatMessage::user(format!(
+                    "<data:tool_result name=\"{}\">{}", name, refused
+                )));
+            }
+            continue;
+        }
         tool_calls_made.push(name.clone());
 
         // Runaway detection: category-aware limits (browser=25, files=10, shell=15, etc.)
@@ -6947,8 +6914,8 @@ mod native_tool_reply_tests {
     }
 
     /// A tool the companion does not have is refused, and since #832 it is refused before the
-    /// executor is asked: the name was never offered this turn, so the call is dropped where a
-    /// call written as text would be dropped, and the model is told what was on offer.
+    /// registry is asked: the name was never offered this turn, so the round answers the call
+    /// "not run" at its own id and tells the model what was on offer.
     #[test]
     fn a_native_call_to_a_tool_the_companion_does_not_have_is_refused_as_before() {
         let invented = |request: &serde_json::Value| {
@@ -6980,5 +6947,133 @@ mod native_tool_reply_tests {
         let (reply, shown) = streamed(&mut c, ASK);
         assert_eq!(reply.message, "I can't do that.");
         assert!(!shown.contains("format_disk"), "{shown:?}");
+    }
+
+    fn native_calls(calls: &[(&str, &str, &str)]) -> (&'static str, String) {
+        let calls: Vec<serde_json::Value> = calls
+            .iter()
+            .map(|(id, name, arguments)| serde_json::json!({"id": id, "type": "function", "function": {"name": name, "arguments": arguments}}))
+            .collect();
+        let reply = serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "", "tool_calls": calls}, "finish_reason": "tool_calls"}],
+        });
+        ("application/json", reply.to_string())
+    }
+
+    fn offered_natively(request: &serde_json::Value) -> Vec<String> {
+        request["tools"].as_array().into_iter().flatten()
+            .filter_map(|t| t["function"]["name"].as_str().map(String::from))
+            .collect()
+    }
+
+    /// A tool the registry has and this turn never offered: the security review of #836 found
+    /// `calendar_today` ran from a native call on main.
+    const UNOFFERED: &str = "calendar_today";
+    const CALC: &str = r#"{"expression": "17 * 23"}"#;
+
+    /// #832: a native call to a registered tool that was not offered is not run, whether it
+    /// comes in the first round (streamed or not) or in a follow-up round, with the tools
+    /// described in the prompt as llama.cpp has them.
+    #[test]
+    fn a_native_call_to_a_registered_tool_that_was_not_offered_does_not_run() {
+        for (streaming, first_round) in [(false, true), (true, true), (false, false), (true, false)] {
+            let (url, seen) = server(move |request| {
+                let last = last_user_words(request);
+                if last.contains("was not run") {
+                    words("17 times 23 is 391.")
+                } else if first_round || last.contains("391") {
+                    native_call(UNOFFERED, "{}")
+                } else {
+                    native_call("calculate", CALC)
+                }
+            });
+            let mut c = companion(url);
+            let (reply, shown) = if streaming { streamed(&mut c, ASK) } else { (c.handle_message(ASK), String::new()) };
+            let case = format!("streaming={streaming} first_round={first_round}");
+            let ran: &[&str] = if first_round { &[] } else { &["calculate"] };
+            assert_eq!(reply.tool_calls_made, ran, "{case}");
+            assert_eq!(reply.message, "17 times 23 is 391.", "{case}");
+            assert!(!shown.contains("calendar"), "{case}: no \"Checking calendar\" line: {shown:?}");
+            let seen = seen.lock().unwrap();
+            let first = &seen[0];
+            assert!(first.get("tools").is_none(), "{case}: tools described in the prompt");
+            assert!(!first["messages"].to_string().contains(UNOFFERED), "{case}: {UNOFFERED} was not described");
+            assert!(
+                seen.iter().any(|r| last_user_words(r).contains(&format!("{UNOFFERED} was not run"))),
+                "{case}: the model was told its call did not run"
+            );
+        }
+    }
+
+    /// The security review of #836, finding 1: in a round with an offered and an unoffered
+    /// native call, each result goes back under its own call's id. Before, the offered call's
+    /// output went back under the dropped call's id and the offered call went unanswered.
+    #[test]
+    fn in_a_mixed_round_every_call_is_answered_at_its_own_id() {
+        for (streaming, first_round) in [(false, true), (true, true), (true, false), (false, false)] {
+            let (url, seen) = server(move |request| {
+                let tool_turns = request["messages"].as_array().unwrap().iter().filter(|m| m["role"] == "tool").count();
+                let mixed_at = if first_round { 0 } else { 1 };
+                if tool_turns > mixed_at {
+                    words("17 times 23 is 391.")
+                } else if tool_turns == mixed_at {
+                    assert!(!offered_natively(request).iter().any(|t| t == UNOFFERED), "{UNOFFERED} offered");
+                    native_calls(&[("call_A", UNOFFERED, "{}"), ("call_B", "calculate", CALC)])
+                } else {
+                    native_calls(&[("call_0", "calculate", CALC)])
+                }
+            });
+            let mut c = on_claude(url);
+            let (reply, _) = if streaming { streamed(&mut c, ASK) } else { (c.handle_message(ASK), String::new()) };
+            let case = format!("streaming={streaming} first_round={first_round}");
+            assert_eq!(reply.message, "17 times 23 is 391.", "{case}");
+            assert!(reply.tool_calls_made.iter().all(|t| t == "calculate"), "{case}: {:?}", reply.tool_calls_made);
+
+            let seen = seen.lock().unwrap();
+            // The turn's last round with the tools' results (requests after it extract memories).
+            let last = seen.iter().rev()
+                .map(|r| r["messages"].as_array().unwrap().clone())
+                .find(|m| m.iter().any(|t| t["role"] == "tool"))
+                .unwrap();
+            let answer = |id: &str| {
+                last.iter().find(|m| m["role"] == "tool" && m["tool_call_id"] == id).cloned()
+                    .unwrap_or_else(|| panic!("{case}: {id} has no answer: {last:?}"))
+            };
+            let a = answer("call_A");
+            assert!(a["content"].as_str().unwrap().contains(&format!("{UNOFFERED} was not run")), "{case}: {a}");
+            let b = answer("call_B");
+            assert!(b["content"].as_str().unwrap().contains("391"), "{case}: {b}");
+            // Every call the assistant turns carry is answered, so a strict server takes the next request.
+            for id in last.iter().flat_map(|m| m["tool_calls"].as_array().into_iter().flatten()).map(|c| c["id"].as_str().unwrap()) {
+                answer(id);
+            }
+        }
+    }
+
+    /// #832: a tool `discover_tools` added this turn is on offer from the next round, so a call
+    /// to it runs.
+    #[test]
+    fn a_tool_discover_tools_added_this_turn_still_runs() {
+        for streaming in [false, true] {
+            let (url, seen) = server(|request| {
+                let tool_turns = request["messages"].as_array().unwrap().iter().filter(|m| m["role"] == "tool").count();
+                match tool_turns {
+                    0 => {
+                        assert!(!offered_natively(request).iter().any(|t| t == UNOFFERED), "{UNOFFERED} offered at first");
+                        native_calls(&[("call_d", "discover_tools", r#"{"query": "calendar_today"}"#)])
+                    }
+                    1 => {
+                        assert!(offered_natively(request).iter().any(|t| t == UNOFFERED), "discover_tools offered it");
+                        native_calls(&[("call_c", UNOFFERED, "{}")])
+                    }
+                    _ => words("You have nothing on today."),
+                }
+            });
+            let mut c = on_claude(url);
+            let (reply, _) = if streaming { streamed(&mut c, ASK) } else { (c.handle_message(ASK), String::new()) };
+            assert!(reply.tool_calls_made.iter().any(|t| t == UNOFFERED), "streaming={streaming}: {:?}", reply.tool_calls_made);
+            let seen = seen.lock().unwrap();
+            assert!(!seen.iter().any(|r| r["messages"].to_string().contains("was not run")), "streaming={streaming}");
+        }
     }
 }

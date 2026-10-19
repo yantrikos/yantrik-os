@@ -78,10 +78,7 @@ impl<'a> Gate<'a> {
         injected: &HashSet<String>,
         extra: &[String],
     ) -> Self {
-        let mut offered: HashSet<String> = native_tools
-            .iter()
-            .filter_map(|t| t["function"]["name"].as_str().map(String::from))
-            .collect();
+        let mut offered = offered_in(native_tools);
         offered.extend(selected.iter().map(|s| s.to_string()));
         offered.extend(injected.iter().cloned());
         offered.extend(extra.iter().cloned());
@@ -102,16 +99,40 @@ impl<'a> Gate<'a> {
     }
 }
 
-/// The native calls this turn offered, and the names it did not offer, in order of first
-/// appearance. A model can name a tool that was never sent to it; text calls are checked
-/// against the offered set and native ones were taken as they arrived, so an invented name ran
-/// unchecked (#832). Dropping one can only remove a run, never add one.
-pub(crate) fn keep_offered(calls: Vec<ToolCall>, gate: &Gate) -> (Vec<ToolCall>, Vec<String>) {
-    let (kept, refused): (Vec<ToolCall>, Vec<ToolCall>) =
-        calls.into_iter().partition(|c| gate.offers(&c.name));
-    let mut dropped: Vec<String> = refused.into_iter().map(|c| c.name).collect();
-    dropped.dedup();
-    (kept, dropped)
+/// The names of the tools a request sent natively.
+pub(crate) fn offered_in(native_tools: &[serde_json::Value]) -> HashSet<String> {
+    native_tools
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str().map(String::from))
+        .collect()
+}
+
+/// The one check every tool call passes before it runs, whatever form it came in (native
+/// `tool_calls`, text the backend or the companion parsed, a structured decision) and whichever
+/// loop runs it: the companion's rounds, a sub-agent, a background automation. `None` when
+/// `name` was offered this turn, so the call goes on to the permission guard as it always did.
+/// Otherwise the tool result that stands in for the run, answered at the call's own id, so the
+/// model learns the call did not happen rather than reading another call's output (#832).
+/// A model can name a tool that was never sent to it; this can only remove a run, never add one.
+pub(crate) fn refuse_unoffered(name: &str, offered: &HashSet<String>) -> Option<String> {
+    if offered.contains(name) {
+        return None;
+    }
+    const MAX_LISTED: usize = 40;
+    const MAX_NAME: usize = 64;
+    tracing::warn!(tool = ?name, "tool call outside the offered set; not run");
+    let shown: String = name.chars().filter(|c| !c.is_control()).take(MAX_NAME).collect();
+    let mut on_offer: Vec<&str> = offered.iter().map(String::as_str).collect();
+    on_offer.sort_unstable();
+    let listed = match on_offer.len() {
+        0 => "none".to_string(),
+        n if n > MAX_LISTED => format!("{} (+{} more)", on_offer[..MAX_LISTED].join(", "), n - MAX_LISTED),
+        _ => on_offer.join(", "),
+    };
+    Some(format!(
+        "{shown} was not run: no tool of that name was offered this turn. Tools on offer: \
+         {listed}. Call one of these, or answer in words."
+    ))
 }
 
 /// The tool calls written as text in `text`. Qwen's `<tool_call>{json}</tool_call>`, the form
@@ -474,32 +495,129 @@ mod tests {
         assert!(json.tool_calls.is_empty());
     }
 
-    fn native_call(name: &str) -> ToolCall {
-        ToolCall { name: name.into(), arguments: serde_json::Value::Null }
+    #[test]
+    fn a_call_to_a_tool_that_was_not_offered_is_refused_whatever_its_form() {
+        let reg = registry();
+        let g = gate(&reg, &["recall"]);
+        assert_eq!(refuse_unoffered("recall", &g.offered), None);
+        let refused = refuse_unoffered("run_command", &g.offered).expect("not offered");
+        assert!(refused.starts_with("run_command was not run"), "{refused}");
+        assert!(refused.contains("Tools on offer: recall."), "{refused}");
+        // Judged by what was offered alone: run_command is not written-callable, but offered
+        // natively it goes on to the permission guard as it always did.
+        assert_eq!(refuse_unoffered("run_command", &gate(&reg, &["run_command"]).offered), None);
+        // Nothing offered (a background message with no EXECUTE urge): every call is refused.
+        assert!(refuse_unoffered("recall", &HashSet::new()).unwrap().contains("Tools on offer: none."));
     }
 
     #[test]
-    fn native_calls_outside_the_offered_set_do_not_run() {
-        let reg = registry();
-        let g = gate(&reg, &["recall"]);
-        let (kept, dropped) = keep_offered(vec![native_call("recall"), native_call("run_command")], &g);
-        assert_eq!(kept.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["recall"]);
-        assert_eq!(dropped, ["run_command"]);
-        // A native call is judged only by what was offered: run_command is not written-callable,
-        // but offered natively it survives and the permission guard decides as it always did.
-        let (kept, dropped) = keep_offered(vec![native_call("run_command")], &gate(&reg, &["run_command"]));
-        assert_eq!(kept.len(), 1);
-        assert!(dropped.is_empty());
+    fn a_refusal_does_not_echo_control_characters_or_a_long_invented_name() {
+        let offered = HashSet::from(["recall".to_string()]);
+        let name = format!("x\u{1b}[2J\n{}", "y".repeat(500));
+        let refused = refuse_unoffered(&name, &offered).unwrap();
+        assert!(!refused.chars().any(char::is_control), "{refused:?}");
+        assert!(refused.len() < 200, "{}", refused.len());
     }
 
     #[test]
-    fn a_round_of_only_unoffered_native_calls_executes_nothing() {
-        let reg = registry();
-        let g = gate(&reg, &["recall"]);
-        let (kept, dropped) =
-            keep_offered(vec![native_call("run_command"), native_call("no_such_tool")], &g);
-        // Empty survivors: the loop takes its existing empty-calls path, so nothing runs.
-        assert!(kept.is_empty());
-        assert_eq!(dropped, ["run_command", "no_such_tool"]);
+    fn the_note_lists_at_most_forty_tools() {
+        let offered: HashSet<String> = (0..50).map(|i| format!("t{i:02}")).collect();
+        let refused = refuse_unoffered("nope", &offered).unwrap();
+        assert!(refused.contains("(+10 more)"), "{refused}");
+        assert!(!refused.contains("t49"), "{refused}");
+    }
+}
+
+/// A backend that answers each request from a script and keeps what it was sent, for the loops
+/// that run tools outside the companion's own turn (a sub-agent, a background automation).
+#[cfg(test)]
+pub(crate) mod scripted {
+    use std::sync::Mutex;
+
+    use yantrik_ml::{ApiToolCall, ApiToolCallFunction, ChatMessage, GenerationConfig, LLMBackend, LLMResponse, ToolCall};
+
+    /// One request as the backend saw it: the conversation and the names of the tools sent.
+    pub(crate) struct Seen {
+        pub messages: Vec<ChatMessage>,
+        pub offered: Vec<String>,
+    }
+
+    /// The reply to a request, given its conversation and the names of the tools it sent.
+    type Reply = Box<dyn Fn(&[ChatMessage], &[String]) -> LLMResponse + Send + Sync>;
+
+    pub(crate) struct Scripted {
+        reply: Reply,
+        pub seen: Mutex<Vec<Seen>>,
+    }
+
+    impl Scripted {
+        pub(crate) fn new(reply: impl Fn(&[ChatMessage], &[String]) -> LLMResponse + Send + Sync + 'static) -> Self {
+            Self { reply: Box::new(reply), seen: Mutex::new(Vec::new()) }
+        }
+    }
+
+    /// A reply that is words only.
+    pub(crate) fn words(text: &str) -> LLMResponse {
+        LLMResponse {
+            text: text.into(),
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            tool_calls: Vec::new(),
+            api_tool_calls: Vec::new(),
+            stop_reason: "stop".into(),
+        }
+    }
+
+    /// A reply of native calls, each `(id, name, arguments)`.
+    pub(crate) fn native_calls(calls: &[(&str, &str, serde_json::Value)]) -> LLMResponse {
+        let api_tool_calls: Vec<ApiToolCall> = calls
+            .iter()
+            .map(|(id, name, args)| ApiToolCall {
+                id: id.to_string(),
+                call_type: "function".into(),
+                function: ApiToolCallFunction { name: name.to_string(), arguments: args.to_string() },
+            })
+            .collect();
+        LLMResponse {
+            tool_calls: api_tool_calls.iter().filter_map(ToolCall::from_api).collect(),
+            api_tool_calls,
+            stop_reason: "tool_calls".into(),
+            ..words("")
+        }
+    }
+
+    impl LLMBackend for Scripted {
+        fn chat(
+            &self,
+            messages: &[ChatMessage],
+            _config: &GenerationConfig,
+            tools: Option<&[serde_json::Value]>,
+        ) -> anyhow::Result<LLMResponse> {
+            let mut offered: Vec<String> = super::offered_in(tools.unwrap_or_default()).into_iter().collect();
+            offered.sort();
+            let reply = (self.reply)(messages, &offered);
+            self.seen.lock().unwrap().push(Seen { messages: messages.to_vec(), offered });
+            Ok(reply)
+        }
+
+        fn chat_streaming(
+            &self,
+            messages: &[ChatMessage],
+            config: &GenerationConfig,
+            tools: Option<&[serde_json::Value]>,
+            on_token: &mut dyn FnMut(&str),
+        ) -> anyhow::Result<LLMResponse> {
+            let r = self.chat(messages, config, tools)?;
+            on_token(&r.text);
+            Ok(r)
+        }
+
+        fn count_tokens(&self, text: &str) -> anyhow::Result<usize> {
+            Ok(text.len())
+        }
+
+        fn backend_name(&self) -> &str {
+            "scripted"
+        }
     }
 }
