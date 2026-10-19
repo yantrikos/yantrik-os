@@ -22,9 +22,7 @@
 //! when one is not. It now writes *through* the service — see `crate::calendar::sync`, which also
 //! says what that sync does not do.
 
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
 use super::{PermissionLevel, Tool, ToolContext, ToolRegistry};
 use crate::calendar::backend::{CalendarBackend, ServiceCalendar};
@@ -47,7 +45,6 @@ pub fn register(reg: &mut ToolRegistry, accounts: Vec<EmailAccountConfig>, cal_a
         accounts,
         preferred: cal_account,
         backend: Arc::new(ServiceCalendar),
-        creates: Mutex::new(VecDeque::new()),
     });
     reg.register(Box::new(CalendarTodayTool { cal: shared.clone() }));
     reg.register(Box::new(CalendarListEventsTool { cal: shared.clone() }));
@@ -56,65 +53,16 @@ pub fn register(reg: &mut ToolRegistry, accounts: Vec<EmailAccountConfig>, cal_a
     reg.register(Box::new(CalendarUpdateEventTool { cal: shared }));
 }
 
-/// How many `calendar_create_event` calls the companion may make inside [`CREATE_BURST_WINDOW`].
-/// Every stored event announces itself to the person through the notifications service, so a
-/// loop of creates is a loop of notifications. These numbers mirror the service's own cap on
-/// `calendar.add_event`; the companion's writes used to bypass it by going through the backend
-/// instead of the surface (#342).
-const CREATE_BURST_LIMIT: usize = 10;
-/// The window the cap counts over.
-const CREATE_BURST_WINDOW: Duration = Duration::from_secs(60);
-
 /// What every calendar tool needs: the store, and whatever Google account syncs with it.
 struct Calendars {
     accounts: Vec<EmailAccountConfig>,
     preferred: Option<String>,
     backend: Arc<dyn CalendarBackend>,
-    /// Recent `calendar_create_event` calls, oldest first.
-    creates: Mutex<VecDeque<Instant>>,
 }
 
 impl Calendars {
     fn google(&self) -> bool {
         sync::configured(&self.accounts)
-    }
-
-    /// Take a create slot at `now`: `Ok` while the companion is under the cap, `Err` with the
-    /// wait when it is not. Checked and recorded in one lock, so a caller racing itself cannot
-    /// take two slots at once. `now` is a parameter the way the service's `BurstGate::hit_at`
-    /// makes it one, so the window can be tested without waiting on it.
-    fn create_slot_at(&self, now: Instant) -> Result<(), String> {
-        let mut creates = self.creates.lock().unwrap_or_else(|e| e.into_inner());
-        while let Some(front) = creates.front() {
-            if now.saturating_duration_since(*front) > CREATE_BURST_WINDOW {
-                creates.pop_front();
-            } else {
-                break;
-            }
-        }
-        if creates.len() >= CREATE_BURST_LIMIT {
-            let retry = creates
-                .front()
-                .map(|oldest| {
-                    CREATE_BURST_WINDOW
-                        .saturating_sub(now.saturating_duration_since(*oldest))
-                        .as_secs()
-                        + 1
-                })
-                .unwrap_or(1);
-            return Err(format!(
-                "this companion added {CREATE_BURST_LIMIT} events in the last {window} seconds \
-                 and every stored event announces itself to the person: wait {retry} seconds \
-                 and add this one again",
-                window = CREATE_BURST_WINDOW.as_secs(),
-            ));
-        }
-        creates.push_back(now);
-        Ok(())
-    }
-
-    fn create_slot(&self) -> Result<(), String> {
-        self.create_slot_at(Instant::now())
     }
 
     fn token(&self) -> Result<String, String> {
@@ -637,15 +585,10 @@ impl CalendarCreateEventTool {
             Err(e) => return e,
         };
 
-        // The companion's own cap (#342), taken before the write so a refused create stores
-        // nothing — the service's surface caps its own `add_event`, but these writes go through
-        // the backend and never pass it.
-        if let Err(e) = self.cal.create_slot() {
-            return format!("The event was NOT created: {e}");
-        }
-
         // The service first, always. It owns the event, and its answer carries the id everything
-        // else on this machine will name the event by.
+        // else on this machine will name the event by. It also holds the cap on adds (#342):
+        // ten a minute for this program, shared by every registry in it — sub-agents included —
+        // and refused before anything is stored, so its refusal lands in the line below.
         let stored = match self.cal.backend.create(&params) {
             Ok(event) => event,
             Err(e) => return format!("The event was NOT created: {e}"),
@@ -744,9 +687,14 @@ struct CalendarDeleteEventTool {
 impl Tool for CalendarDeleteEventTool {
     fn name(&self) -> &'static str { "calendar_delete_event" }
     // #342: the event_id names any event in the store — the person's own, a Google-synced one,
-    // another caller's — and the service keeps delete off its surface entirely (#201), graded
-    // for a person to approve in the Calendar app's window. This door now matches that grade.
-    fn permission(&self) -> PermissionLevel { PermissionLevel::Sensitive }
+    // another caller's — and a delete cannot be undone. Nothing in the companion asks a person
+    // before a tool runs, and the shipped ceiling (`tools.max_permission: sensitive`) runs every
+    // `sensitive` tool unasked, so `dangerous` is the grade that keeps this tool off the model's
+    // list and refused at the registry under that ceiling. A delete is for the Calendar window,
+    // where its surface asks a person (`delete_event`) or lets a caller take off only what it
+    // made itself (`delete_own_event`, #201). An install that raises the ceiling to `dangerous`
+    // has chosen to let the companion delete unasked.
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Dangerous }
     fn category(&self) -> &'static str { "calendar" }
 
     fn definition(&self) -> serde_json::Value {
@@ -823,9 +771,12 @@ struct CalendarUpdateEventTool {
 impl Tool for CalendarUpdateEventTool {
     fn name(&self) -> &'static str { "calendar_update_event" }
     // #342: grade by the worst the arguments allow (#332's rule) — the id names any event in
-    // the store. The service already grades `update_event` sensitive for the same reason; this
-    // door used to be the lower-graded way in.
-    fn permission(&self) -> PermissionLevel { PermissionLevel::Sensitive }
+    // the store, and the companion's creates record no creator, so there is no event it can
+    // call its own. The service grades `update_event` sensitive because its gate asks a person
+    // first; nothing in the companion asks, and the shipped ceiling runs `sensitive` unasked,
+    // so this door is `dangerous`: refused under that ceiling, and off the model's list.
+    // Changing an event is the Calendar's to do, where `update_event` asks a person first.
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Dangerous }
     fn category(&self) -> &'static str { "calendar" }
 
     fn definition(&self) -> serde_json::Value {
@@ -989,6 +940,7 @@ impl CalendarUpdateEventTool {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+    use super::super::parse_permission;
     use yantrik_ipc_contracts::calendar::{UpsertRemoteEventParams, DEFAULT_REMINDER_MINUTES};
 
     /// A calendar that lives in memory and can be told to refuse.
@@ -1120,12 +1072,7 @@ mod tests {
 
     /// The tools over a given calendar, with no Google account configured.
     fn calendars(backend: Arc<dyn CalendarBackend>) -> Arc<Calendars> {
-        Arc::new(Calendars {
-            accounts: Vec::new(),
-            preferred: None,
-            backend,
-            creates: Mutex::new(VecDeque::new()),
-        })
+        Arc::new(Calendars { accounts: Vec::new(), preferred: None, backend })
     }
 
     fn create_args() -> serde_json::Value {
@@ -1424,55 +1371,49 @@ mod tests {
         assert!(report.failed[0].contains("Sometime"), "{:?}", report.failed);
     }
 
-    // ── The grade and the cap on the companion's own door (#342) ─────
+    // ── The grade on the companion's own door (#342) ─────
 
+    /// Under the ceiling the companion ships with (`tools.max_permission: sensitive`), an edit
+    /// or a delete of any stored event — here one with no creator on record, which is what a
+    /// person's form entry, a sync and the companion's own create all store — is refused at the
+    /// registry and the event stays exactly as it was. Both tools are also off the list the
+    /// model is shown. `sensitive` did not do this: nothing in the companion asks a person, and
+    /// the shipped ceiling ran both tools unasked.
     #[test]
-    fn editing_and_deleting_an_event_are_graded_for_a_person_to_approve() {
-        // The event_id names any event in the store — the person's own, a Google-synced one,
-        // another caller's — and the service grades `update_event` sensitive and keeps
-        // `delete_event` off its surface for a person to approve. These tools used to be the
-        // lower-graded way in.
-        let cal = calendars(Arc::new(FakeCalendar::default()));
-        assert_eq!(
-            CalendarDeleteEventTool { cal: cal.clone() }.permission(),
-            PermissionLevel::Sensitive
-        );
-        assert_eq!(CalendarUpdateEventTool { cal }.permission(), PermissionLevel::Sensitive);
-    }
-
-    #[test]
-    fn the_eleventh_create_in_a_minute_is_refused_and_stores_nothing() {
-        // Every stored event announces itself to the person, so a loop of creates is a loop of
-        // notifications. The service caps its own `add_event` at ten a minute; these writes go
-        // through the backend and used to reach the store uncapped.
+    fn under_the_shipped_ceiling_the_companion_can_neither_edit_nor_delete_an_event() {
         let backend = Arc::new(FakeCalendar::default());
-        let tool = CalendarCreateEventTool { cal: calendars(backend.clone()) };
-        for _ in 0..CREATE_BURST_LIMIT {
-            let answer = tool.run(&create_args());
-            assert!(answer.contains("ID: stored"), "{answer}");
-        }
-        let answer = tool.run(&create_args());
-        assert!(answer.starts_with("The event was NOT created"), "{answer}");
-        assert!(answer.contains("announces itself to the person"), "{answer}");
-        assert!(answer.contains("wait"), "{answer}");
-        assert_eq!(backend.count(), CREATE_BURST_LIMIT, "a refused create must store nothing");
-    }
+        let cal = calendars(backend.clone());
+        let stored = CalendarCreateEventTool { cal: cal.clone() }.run(&create_args());
+        assert!(stored.contains("ID: stored-1"), "{stored}");
+        let mut reg = ToolRegistry::new();
+        reg.register(Box::new(CalendarUpdateEventTool { cal: cal.clone() }));
+        reg.register(Box::new(CalendarDeleteEventTool { cal }));
 
-    #[test]
-    fn the_create_cap_opens_once_the_oldest_add_leaves_the_window() {
-        // The counting on constructed instants the way the service's BurstGate is tested, so no
-        // test waits on a real minute.
-        let cal = calendars(Arc::new(FakeCalendar::default()));
-        let t0 = Instant::now();
-        for i in 0..CREATE_BURST_LIMIT {
-            cal.create_slot_at(t0 + Duration::from_secs(i as u64)).unwrap();
-        }
-        let err = cal.create_slot_at(t0 + Duration::from_secs(10)).unwrap_err();
-        assert!(err.contains("wait 51 seconds"), "{err}");
-        // One second past the window on the oldest add: it has left and exactly one create fits
-        // — the next is refused again, because the second-oldest is still inside.
-        let slid = t0 + Duration::from_secs(CREATE_BURST_WINDOW.as_secs() + 1);
-        cal.create_slot_at(slid).unwrap();
-        assert!(cal.create_slot_at(slid).is_err());
+        let db = yantrikdb_core::YantrikDB::new(":memory:", 64).expect("in-memory database");
+        let shipped = parse_permission(&crate::config::ToolsConfig::default().max_permission);
+        assert_eq!(shipped, PermissionLevel::Sensitive, "the ceiling this test is about");
+        let ctx = ToolContext {
+            db: &db,
+            max_permission: shipped,
+            registry_metadata: None,
+            task_manager: None,
+            incognito: true,
+            agent_spawner: None,
+        };
+
+        let update = reg.execute(
+            &ctx,
+            "calendar_update_event",
+            &serde_json::json!({ "event_id": "stored-1", "summary": "Taken" }),
+        );
+        assert!(update.starts_with("Permission denied: 'calendar_update_event'"), "{update}");
+        let delete =
+            reg.execute(&ctx, "calendar_delete_event", &serde_json::json!({ "event_id": "stored-1" }));
+        assert!(delete.starts_with("Permission denied: 'calendar_delete_event'"), "{delete}");
+
+        let events = backend.events.lock().unwrap().clone();
+        assert_eq!(events.len(), 1, "the delete must not have run");
+        assert_eq!(events[0].title, create_args()["summary"].as_str().unwrap(), "nor the edit");
+        assert!(reg.definitions(shipped).is_empty(), "neither tool is offered to the model");
     }
 }
