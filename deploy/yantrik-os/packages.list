@@ -1,0 +1,97 @@
+# The Debian packages a fresh Yantrik install has, and an updated one gets (#854).
+#
+# One list, read by both sides, so they cannot drift:
+#   build-debian-iso.sh  installs every name here into the image, with no `|| true`: a desktop
+#                        missing its runtime is a failed build.
+#   yantrik-update       after an apply (and on `reconcile`), installs whichever of these this
+#                        machine lacks. It reads the copy the release bundle ships at
+#                        /opt/yantrik/share/packages.list, and only when that file is root's and
+#                        its sha256 is the one in bin/yantrik-root-files.sha256.
+# Before this, the ISO had its list and yantrik-update had a second one typed into it, and mpv
+# was only in the first: a machine installed before #255 never got a player, and Music could not
+# play (#854).
+#
+# Format: one Debian package name per line; `#` starts a comment. A line that is not exactly one
+# name ([a-z0-9][a-z0-9+.-]+, not ending in `-`, which apt-get reads as "remove") makes the whole
+# list refused, by the image build and the updater alike. Both pass the names to apt as separate
+# arguments, never through a shell, and only names the mirror has exactly: apt-get would read
+# any other name with `.` or `+` in it as a regex.
+#
+# What is NOT here: the kernel, the boot loader, live-boot, firmware, mbpfan, guest tools and the
+# installer's own tools. The image installs those in its own steps, some only where they fit the
+# hardware, and an installed machine must never be given live-boot or the other boot loader.
+
+# ── The desktop's own runtime ──
+# What a machine built from cloud-init/user-data.yaml gets, because the same shell runs on both.
+seatd
+libcap2-bin
+chromium
+pipewire-pulse
+wireplumber
+pulseaudio-utils
+python3-websocket
+fontconfig
+# The capture bar (design/capture-2026-10-15.md): the screenshot, the region a person drags, the
+# recording, and whether the GPU encodes H.264, asked before a recording starts. wf-recorder's
+# libav libraries are mpv's too.
+grim
+slurp
+wf-recorder
+vainfo
+qemu-guest-agent
+libnotify-bin
+# xdg-desktop-portal-gtk is the file picker behind every Save and Upload the browser offers (#33).
+xdg-desktop-portal
+xdg-desktop-portal-wlr
+xdg-desktop-portal-gtk
+lxpolkit
+udisks2
+brightnessctl
+# The battery reading and the power profile (story 1.4). yantrik-update skips
+# power-profiles-daemon on a machine with tlp: they conflict, and apt would remove tlp.
+upower
+power-profiles-daemon
+bluez
+alsa-utils
+# Music and Files play sound and video in mpv (#255, #728).
+mpv
+# The Package Manager installs Flathub apps with it, per-user and without root (#399).
+flatpak
+nftables
+
+# ── Programs the shell shells out to by name ──
+#   swaybg     yantrik-companion-tools/src/wallpaper.rs, and the label Mind View shows while empty
+#   xdg-utils  mime_dispatch.rs and lens.rs call xdg-open to hand a file to its app
+#   espeak-ng  the voice fallback when Piper is not the chosen engine
+swaybg
+xdg-utils
+espeak-ng
+
+# ── The person's own tools ──
+# nano is what yantrik-session exports as EDITOR. vim-tiny: scripts and muscle memory call `vi`
+# (#678). release-check (tier ci) asserts these commands on the booted image.
+nano
+htop
+vim-tiny
+
+# ── A developer's baseline (#401) ──
+# Rootless podman for the Container Manager, with what rootless needs beside it: uidmap
+# (newuidmap/newgidmap), passt (pasta, podman 5's rootless network), fuse-overlayfs. Named rather
+# than left to Recommends, because yantrik-update installs with --no-install-recommends.
+git
+bash-completion
+podman
+uidmap
+passt
+fuse-overlayfs
+
+# ── Also installed by the image's earlier steps ──
+# The image installs these before the list (debootstrap's --include, the network and Wayland
+# steps), so naming them here changes nothing in a build that has them; they are here so an
+# updated machine is given them too (#210: VM 520 had no `ip`, `ss` or `ping`). release-check
+# asserts their commands on the booted image. python3 runs yos.
+iproute2
+iputils-ping
+wl-clipboard
+curl
+python3

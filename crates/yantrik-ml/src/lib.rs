@@ -16,9 +16,20 @@ pub mod types;
 pub mod traits;
 pub mod capability;
 
+// A Qwen3's thinking switch on a self-run server, and the all-thinking-no-answer failure
+pub mod thinking;
+// An error a server sends inside a streamed reply, after its 200
+pub mod stream_error;
+
+// A provider that answered and refused the request, and the parameters a model will not take.
+pub mod refusal;
+
 // Chat template formatting (always compiled — used by candle + llamacpp backends)
 mod chat_template;
 pub mod chat_templates;
+
+// Compact tool-schema compiler for small models (always compiled)
+pub mod compact_tools;
 
 // Candle-specific modules (gated behind candle-llm / candle-stt features)
 #[cfg(feature = "candle-llm")]
@@ -30,6 +41,12 @@ mod token_stream;
 
 // LLM backend modules
 mod llm;
+
+// The companion's model when none is chosen: its chat says how to choose one.
+pub mod not_set_up;
+
+// What each model can do and how hard it can be asked to think (the AI accounts catalogue).
+pub mod model_caps;
 
 // Provider registry (multi-provider management, key validation)
 #[cfg(feature = "api-llm")]
@@ -61,10 +78,13 @@ pub use model_loader::{GGUFFiles, ModelFiles};
 pub use types::{ApiToolCall, ApiToolCallFunction, ChatMessage, GenerationConfig, LLMResponse, ToolCall, TranscribeResult, VoiceParams, ProviderConfigEntry};
 pub use traits::{LLMBackend, STTBackend, Embedder};
 pub use capability::{ModelCapabilityProfile, ModelFamily, ModelTier, ToolCallMode, SlotMode, ToolFamily};
+pub use thinking::{ThoughtWithoutAnswer, THOUGHT_WITHOUT_ANSWER};
+pub use stream_error::StreamError;
+pub use refusal::ProviderRefused;
 
 // ── Chat template exports ────────────────────────────────────────────
 
-pub use chat_template::{extract_text_content, format_chat, format_tools, parse_tool_calls};
+pub use chat_template::{extract_text_content, format_chat, format_tools, format_tools_compact, parse_tool_calls};
 #[cfg(feature = "candle-llm")]
 pub use chat_template::Qwen2Tokens;
 pub use chat_templates::{ChatTemplate, template_for_family};
@@ -81,7 +101,7 @@ pub use llm::ClaudeCliLLM;
 pub use llm::LlamaCppLLM;
 #[cfg(feature = "cognitive-kernel")]
 pub use llm::CognitiveKernelLLM;
-pub use llm::{CognitiveRouter, RouteDecision, PlanShape};
+pub use llm::{CognitiveRouter, RouteDecision, PlanShape, RouteExplanation, RouteLayer};
 pub use llm::{FallbackLLM, FallbackConfig};
 
 // ── Provider registry exports ──────────────────────────────────────

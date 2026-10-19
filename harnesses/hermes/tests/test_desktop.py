@@ -79,6 +79,16 @@ class LedgerTests(unittest.TestCase):
         ledger.sent(turn, "hello")
         self.assertTrue(turn.said_anything)
 
+    def test_a_status_message_says_nothing_into_the_answer_and_dies_with_its_turn(self):
+        ledger = desktop.Ledger()
+        turn = ledger.open("1", "desktop", "compare flights")
+        status = ledger.quiet(turn)
+        self.assertIs(ledger.quiet_turn(status), turn)
+        self.assertFalse(turn.said_anything)
+        self.assertIsNone(ledger.edited(status, "⏳ Working — 6 min"), "not an answer to edit")
+        ledger.close("1")
+        self.assertIsNone(ledger.quiet_turn(status))
+
 
 class FakeDesktop:
     """A socket that answers like the shell: one JSON-RPC line in, one out, then close."""

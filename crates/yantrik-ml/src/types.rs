@@ -190,6 +190,26 @@ pub struct LLMResponse {
     pub stop_reason: String,
 }
 
+impl LLMResponse {
+    /// The native calls whose arguments are not JSON, so [`ToolCall::from_api`] could not read
+    /// them and they are missing from `tool_calls`.
+    pub fn unread_tool_calls(&self) -> Vec<&ApiToolCall> {
+        self.api_tool_calls
+            .iter()
+            .filter(|c| ToolCall::from_api(c).is_none())
+            .collect()
+    }
+
+    /// A reply with no words and no call a caller can run, that still meant to call a tool: a
+    /// native call whose arguments did not parse, or `finish_reason: tool_calls` with no call at
+    /// all. Read as an answer it is an empty one (VM 542, 14 Oct 2026), so a caller asks again.
+    pub fn is_unread_tool_call(&self) -> bool {
+        self.text.trim().is_empty()
+            && self.tool_calls.is_empty()
+            && (!self.api_tool_calls.is_empty() || self.stop_reason == "tool_calls")
+    }
+}
+
 // ── STT result ─────────────────────────────────────────────────────────
 
 /// Transcription result.

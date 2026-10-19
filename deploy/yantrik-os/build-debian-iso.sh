@@ -60,7 +60,7 @@ TARGET_DIR="${TARGET_DIR:-$( \
 # running `git describe` again for itself. Two describes a few minutes apart can differ — a tag
 # pushed between them is enough — and then the ISO's filename names one build while the BUILD
 # marker inside it names another.
-export YANTRIK_VERSION="${YANTRIK_VERSION:-$(git -C "$PROJECT_ROOT" describe --tags --always --dirty 2>/dev/null)}"
+export YANTRIK_VERSION="${YANTRIK_VERSION:-$(git -C "$PROJECT_ROOT" describe --tags --match "v[0-9]*" --always --dirty 2>/dev/null)}"
 [ -n "$YANTRIK_VERSION" ] || export YANTRIK_VERSION="0.0.0-unknown"
 DEBIAN_SUITE="trixie"
 DEBIAN_MIRROR="http://deb.debian.org/debian"
@@ -195,6 +195,13 @@ sudo tee "$ROOTFS/etc/apt/sources.list" > /dev/null <<APT
 deb ${DEBIAN_MIRROR} ${DEBIAN_SUITE} main contrib non-free non-free-firmware
 APT
 
+# The packages every Yantrik machine has (#854): one list, read here and by yantrik-update. The
+# updater's own parser reads it, so a line one of them would refuse is refused by both, and the
+# build stops rather than ship an image the updater disagrees with.
+"$SCRIPT_DIR/yantrik-update" package-list "$SCRIPT_DIR/packages.list" > "$WORK_DIR/packages" \
+    || fail "deploy/yantrik-os/packages.list was refused (the line is named above)"
+sudo install -m 0644 -o root -g root "$WORK_DIR/packages" "$ROOTFS/tmp/yantrik-packages"
+
 sudo chroot "$ROOTFS" /bin/bash <<'CHROOT_PACKAGES'
 set -e
 export DEBIAN_FRONTEND=noninteractive
@@ -253,45 +260,26 @@ apt-get install -y -qq \
     speech-dispatcher libspeechd2 \
     2>/dev/null || true
 
-# ── The desktop's own runtime ──
-# What a machine built from cloud-init/user-data.yaml gets, because the same shell runs on both.
-# The ISO installed a handful of these and a different browser, so an installed machine had a
-# Browser pin that ran `chromium` and found nothing, no notification daemon, no portals, no
-# screenshots — each failing quietly. No `|| true`: a desktop missing its runtime is a failed
-# build, and the parity check after this step names anything user-data.yaml gains later.
-# mpv: Files opens sound and video in mpv's own window (#255); the image shipped no player.
-# flatpak: the Package Manager installs Flathub apps with it, per-user and without root (#399).
-apt-get install -y -qq     seatd     libcap2-bin     chromium     pipewire-pulse wireplumber pulseaudio-utils     python3-websocket     fontconfig     grim slurp     qemu-guest-agent     libnotify-bin     xdg-desktop-portal xdg-desktop-portal-wlr xdg-desktop-portal-gtk     lxpolkit     udisks2     brightnessctl     upower power-profiles-daemon     bluez alsa-utils     mpv     flatpak     nftables
+# ── The desktop's own runtime, the shell's programs, the person's tools, the developer's ──
+# Every name in packages.list (deploy/yantrik-os/packages.list, which says what each is for),
+# validated on the host by the same parser yantrik-update reads it with, and handed to apt here
+# as separate arguments. That list is also what yantrik-update installs on a machine that lacks
+# any of it (#854), so a package added there reaches new images and updated machines alike.
+# No `|| true`: a desktop missing its runtime is a failed build, and the parity check after this
+# step names anything user-data.yaml gains later.
+mapfile -t YANTRIK_PACKAGES < /tmp/yantrik-packages
+[ "${#YANTRIK_PACKAGES[@]}" -gt 0 ] || { echo "the package list reached the chroot empty"; exit 1; }
+# Exact names only: apt-get reads a name with `.` or `+` that no package has exactly as a regex,
+# and would install whatever matched. yantrik-update makes the same check (apt_known_names).
+apt-cache pkgnames > /tmp/yantrik-known-packages
+for pkg in "${YANTRIK_PACKAGES[@]}"; do
+    grep -qxF -- "$pkg" /tmp/yantrik-known-packages \
+        || { echo "packages.list names $pkg, and the mirror has no package of exactly that name"; exit 1; }
+done
+rm -f /tmp/yantrik-known-packages
+apt-get install -y -qq "${YANTRIK_PACKAGES[@]}"
+rm -f /tmp/yantrik-packages
 
-# Three programs the shell shells out to by name, and did not have.
-#   swaybg     — yantrik-companion-tools/src/wallpaper.rs: setting a wallpaper did nothing
-#   xdg-utils  — mime_dispatch.rs and lens.rs call xdg-open to hand a file to its app
-#   espeak-ng  — the voice fallback when Piper is not the chosen engine
-# Each failed silently, which is why none of them was noticed from inside the desktop.
-apt-get install -y -qq     swaybg     xdg-utils     espeak-ng
-
-# ── The person's own tools ──
-# The first hour on a machine: the image had no text editor and no process viewer at all, so
-# the terminal could edit a file only through Python and list processes only through the
-# System Monitor app. nano is what yantrik-session exports as EDITOR, so `git commit`,
-# `crontab -e` and everything else that asks has something to open. htop complements, and
-# does not replace, the app. vim-tiny: muscle memory and scripts call `vi`, and the
-# fresh-install audit found `command not found: vi` on the shipped image (#678).
-# No `|| true`: release-check (tier ci) asserts these commands on the booted image, and
-# yantrik-update reconciles them on machines whose base system drifted from this list (#210).
-apt-get install -y -qq     nano     htop     vim-tiny
-
-# ── A developer's baseline (#401) ──
-# git: the image used to install it only to build llama.cpp and then remove it, so a machine
-# could not clone anything. bash-completion: Debian's ~/.bashrc loads it when it is there.
-# podman, rootless, for the Container Manager app, which runs the podman CLI as the person
-# (apps/container-manager/src/runtime.rs) and found no runtime at all. What rootless needs
-# beside it: uidmap (newuidmap/newgidmap, to map a container's users onto the account's
-# subordinate ids), passt (pasta, podman 5's rootless network), fuse-overlayfs (layered storage
-# where the kernel's own overlay cannot be used, as on the live session, whose home is itself an
-# overlay). Named rather than left to Recommends, because yantrik-update installs the same list
-# on older machines with --no-install-recommends. No `|| true`: release-check asserts them.
-apt-get install -y -qq     git     bash-completion     podman uidmap passt fuse-overlayfs
 # Nothing talks to podman's API: the app runs the CLI. So no socket for it is left listening, for
 # root or for anyone, whatever the package's defaults are.
 systemctl disable podman.socket 2>/dev/null || true
@@ -402,13 +390,31 @@ ok "mise ${MISE_VERSION} (sha256 checked) in /usr/local/bin"
 sudo sh "$SCRIPT_DIR/stage-boot-unlock.sh" "$ROOTFS" \
     || fail "stage-boot-unlock.sh failed — an encrypted install would ask for its password in plain text"
 sudo chroot "$ROOTFS" plymouth-set-default-theme yantrik \
-    || warn "plymouth could not select the Yantrik theme; the installed initramfs hook still names it"
+    || warn "plymouth-set-default-theme could not select the Yantrik theme; writing plymouthd.conf by hand"
+# The theme as the initramfs hooks read it (plymouthd.conf's Theme=, initramfs-hook's
+# default_is_yantrik), checked rather than assumed: without it the splash stays out of the initrd.
+if ! sudo grep -qsx 'Theme=yantrik' "$ROOTFS/etc/plymouth/plymouthd.conf"; then
+    sudo mkdir -p "$ROOTFS/etc/plymouth"
+    printf '[Daemon]\nTheme=yantrik\nShowDelay=0\n' | sudo tee "$ROOTFS/etc/plymouth/plymouthd.conf" >/dev/null
+fi
+# Again, now that the theme is chosen: the live initrd (and an unencrypted install's, copied from
+# it) carries plymouth with the theme it was built with, and the one built above predates it. This
+# is what draws the boot splash on the ISO's Install and Try entries and an unencrypted install.
+# Every kernel's, so whichever initrd is copied into live/ below is a rebuilt one.
+sudo chroot "$ROOTFS" update-initramfs -u -k all 2>&1 | tee "$WORK_DIR/update-initramfs-splash.log" \
+    || fail "update-initramfs failed after choosing the plymouth theme — the live initrd would be stale"
 # The socket's group. Empty in the image; enrol makes the installed account its one member.
 sudo chroot "$ROOTFS" groupadd -f --system yantrik-boot-unlock \
     || fail "could not make group yantrik-boot-unlock — the boot-unlock socket would not start"
 for required in usr/lib/yantrik/boot-unlock/askpass usr/lib/yantrik/boot-unlock/consume \
                 etc/initramfs-tools/hooks/yantrik-unlock etc/initramfs-tools/scripts/local-bottom/yantrik-unlock \
-                usr/share/plymouth/themes/yantrik/yantrik.script usr/sbin/plymouthd \
+                usr/share/plymouth/themes/yantrik/yantrik.script usr/share/plymouth/themes/yantrik/emblem.png \
+                usr/sbin/plymouthd usr/lib/yantrik/boot-unlock/splash \
+                etc/systemd/system/yantrik-splash-release.service \
+                etc/systemd/system/yantrik-splash-handoff.service \
+                etc/systemd/system/plymouth-quit.service.d/yantrik-splash.conf \
+                etc/systemd/system/plymouth-quit-wait.service.d/yantrik-splash.conf \
+                etc/systemd/system/getty@tty1.service.d/yantrik-splash.conf \
                 etc/systemd/system/sockets.target.wants/yantrik-boot-unlock.socket \
                 etc/systemd/system/multi-user.target.wants/yantrik-boot-unlock-expire.service \
                 usr/bin/jq usr/sbin/cryptsetup; do
@@ -417,7 +423,52 @@ for required in usr/lib/yantrik/boot-unlock/askpass usr/lib/yantrik/boot-unlock/
 done
 sudo chroot "$ROOTFS" getent group yantrik-boot-unlock >/dev/null \
     || fail "group yantrik-boot-unlock missing from the image — the boot-unlock socket would not start"
-ok "Pre-boot unlock screen, keyscript and signed-in marker staged"
+# The splash in the live initrd itself, read back rather than assumed: without it the Install and
+# Try entries boot black, as they did before there was one. Read with the image's own lsinitramfs,
+# in the chroot: the build host need not have initramfs-tools (the CI runner does not), and there
+# a missing or older lsinitramfs reads as "no splash". Fatal, so a black live boot cannot ship; the
+# lines above it say which theme the hooks saw and what they said. The same initrd the ISO copies.
+INITRD_NOW=$(ls "$ROOTFS/boot/initrd.img-"* 2>/dev/null | head -1)
+[ -n "$INITRD_NOW" ] || fail "no initrd in $ROOTFS/boot after update-initramfs"
+if sudo chroot "$ROOTFS" lsinitramfs "/boot/${INITRD_NOW##*/}" > "$WORK_DIR/live-initrd.list" 2>&1 \
+    && grep -q "usr/share/plymouth/themes/yantrik/emblem.png$" "$WORK_DIR/live-initrd.list"; then
+    ok "Boot splash (the Yantrik emblem) is in the live initrd (${INITRD_NOW##*/})"
+else
+    # What to look at, before failing: which theme the hooks saw, and what they said.
+    sudo cat "$ROOTFS/etc/plymouth/plymouthd.conf" 2>/dev/null | sed 's/^/  plymouthd.conf: /' || true
+    grep -E "yantrik|plymouth|^W:|^E:" "$WORK_DIR/update-initramfs-splash.log" | sed 's/^/  update-initramfs: /' || true
+    grep -E "plymouth" "$WORK_DIR/live-initrd.list" | head -20 | sed 's/^/  initrd: /' || true
+    fail "the live initrd (${INITRD_NOW##*/}) has no Yantrik splash (usr/share/plymouth/themes/yantrik/emblem.png) — the ISO would boot black until the shell draws"
+fi
+ok "Pre-boot unlock screen, boot splash, keyscript and signed-in marker staged"
+
+# ── The boot menu's theme ──
+# Made here once, from the image's own DejaVu Sans: the live image's menu is copied from it below,
+# and the installer copies it to the installed machine's /boot/grub/themes/yantrik. Without it
+# GRUB draws with its built-in ASCII font, and every box line and dash was a missing glyph.
+sudo sh "$SCRIPT_DIR/stage-grub-theme.sh" "$ROOTFS/usr/share/yantrik/grub-theme" \
+        "$ROOTFS/usr/share/fonts/truetype/dejavu" \
+    || fail "stage-grub-theme.sh failed — the boot menu would be drawn in missing-glyph boxes"
+ok "Boot menu theme staged, with fonts that draw it"
+
+# ── The installed boot menu's entries say nothing on the way ──
+# Debian builds GRUB with quiet_boot="0" written into /etc/grub.d/10_linux, and no
+# /etc/default/grub key turns it off, so the installed menu's every entry echoed "Loading Linux
+# 6.12… ..." and "Loading initial ramdisk ...": a black box of text under the theme before every
+# start (14 Oct 2026). Quiet, the plain entry says nothing; the Advanced options entries, recovery
+# mode among them, keep their lines (10_linux: quiet_boot = 0 || type != simple). Both installers
+# run the same expression again before update-grub (installer_boot.rs, QUIET_BOOT_SED).
+sudo sed -i 's/^quiet_boot="0"$/quiet_boot="1"/' "$ROOTFS/etc/grub.d/10_linux"
+sudo grep -qx 'quiet_boot="1"' "$ROOTFS/etc/grub.d/10_linux" \
+    || fail "10_linux has no quiet_boot switch — the installed boot menu would show GRUB's loading lines"
+ok "Installed boot menu's plain entry quiet"
+
+# ── The installed boot menu's terminal is its ground, not black ──
+# Between Enter and the kernel GRUB shows its terminal window, which gfxterm fills black unless
+# told otherwise: a black rectangle over the menu for about 3 s (#820, the OVMF film). update-grub
+# on the installed machine writes this after 00_header (grub-ground says how).
+sudo install -m 0755 "$SCRIPT_DIR/grub-ground" "$ROOTFS/etc/grub.d/06_yantrik_ground"
+ok "Installed boot menu's terminal in the ground"
 
 # ── The live system's shutdown says nothing about removing its medium ──
 # live-tools' system-shutdown hook ejected the disk the medium is on and waited for ENTER after
@@ -461,6 +512,8 @@ sudo chroot "$ROOTFS" systemctl enable mbpfan.service \
     || fail "could not enable mbpfan.service"
 for required in usr/lib/yantrik/yantrik-broadcom-wifi usr/lib/yantrik/yantrik-mac-fans \
                 etc/systemd/system/multi-user.target.wants/yantrik-broadcom-wifi.service \
+                etc/systemd/system/yantrik-broadcom-wifi-recover.service \
+                etc/systemd/system/timers.target.wants/yantrik-broadcom-wifi-recover.timer \
                 etc/systemd/system/mbpfan.service.d/yantrik-apple.conf \
                 etc/NetworkManager/dispatcher.d/90-yantrik-broadcom-wifi; do
     # Inside the chroot: a unit's enable link is absolute, and from the host it would resolve
@@ -474,7 +527,7 @@ if sudo chroot "$ROOTFS" dpkg-query -W -f='${db:Status-Status}\n' broadcom-sta-d
         | grep -qx installed; then
     fail "broadcom-sta-dkms or firmware-b43-installer is installed in the image — it cannot be published"
 fi
-ok "Intel Mac support: mbpfan (Apple hardware only), BCM4331 Wi-Fi fetched on first network"
+ok "Intel Mac support: mbpfan (Apple hardware only), BCM4331 Wi-Fi fetched on first network, wl reloaded if it wedges"
 
 # ═══════════════════════════════════════════════════════════════
 # STEP 3: Create yantrik user + directory structure
@@ -612,7 +665,8 @@ for conf in "$UNPACK/share/containers/"*.conf; do
     sudo install -m 0644 -o root -g root "$conf" "$ROOTFS/etc/containers/registries.conf.d/$(basename "$conf")"
 done
 [ -r "$UNPACK/share/shell/bashrc" ] || fail "release tarball carries no share/shell/bashrc — every new account's ~/.bashrc sources it"
-for required in share/labwc/rc.xml share/labwc/menu.xml share/labwc/autostart bin/yantrik-session bin/yantrik-shell \
+for required in share/labwc/rc.xml share/labwc/menu.xml share/labwc/autostart bin/yantrik-session bin/yantrik-session-chrome bin/yantrik-shell \
+                share/packages.list \
                 share/icons/hicolor/scalable/apps/yantrik.svg; do
     [ -e "$ROOTFS/opt/yantrik/$required" ] || fail "$required missing from the image — the desktop session would not be the shipped one"
 done
@@ -717,6 +771,32 @@ fi
 # symlink into default.target.wants and nothing here does.
 sudo sh "$SCRIPT_DIR/stage-harnesses.sh" "$PROJECT_ROOT" "$ROOTFS/opt/yantrik/share/harnesses"     "$ROOTFS/etc/systemd/user"     || fail "the harnesses did not stage — Settings would not know which minds this image ships"
 ok "Harnesses staged at /opt/yantrik/share/harnesses, units in /etc/systemd/user (not enabled)"
+
+# ── YantrikDB, every mind's memory (#677) ──
+#
+# From the release bundle, which bakes it (bake-memory.sh, called by build-release.sh): the same
+# tree an update installs, so a machine set up from this image and one set up by update have the
+# same memory. /opt/yantrik/memory, root-owned and outside share/. What is in it, and why, is in
+# bake-memory.sh.
+[ -d "$UNPACK/memory" ] \
+    || fail "release tarball carries no memory/ — every harness install would stop at \"no yantrikdb-mcp\" (build it with build-release.sh, which bakes it)"
+sh "$SCRIPT_DIR/bake-memory.sh" --check "$UNPACK/memory" \
+    || fail "the release tarball's memory/ is missing a file a harness install reads"
+IMAGE_PY=$(sudo chroot "$ROOTFS" python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])') \
+    || fail "the image has no python3 to run yantrikdb-mcp on"
+BUNDLE_PY=$(sed -n 's/^image-python=//p' "$UNPACK/memory/VERSIONS")
+[ "$IMAGE_PY" = "$BUNDLE_PY" ] \
+    || fail "the bundle's yantrikdb-mcp is for Python $BUNDLE_PY and this image has $IMAGE_PY; rebuild the bundle with YANTRIK_IMAGE_PYTHON=$IMAGE_PY"
+sudo rm -rf "$ROOTFS/opt/yantrik/memory"
+sudo mkdir -p "$ROOTFS/opt/yantrik/memory"
+sudo cp -a "$UNPACK/memory/." "$ROOTFS/opt/yantrik/memory/"
+sudo chown -R root:root "$ROOTFS/opt/yantrik/memory"
+sudo chmod -R go-w "$ROOTFS/opt/yantrik/memory"
+sudo chmod 755 "$ROOTFS/opt/yantrik/memory/bin/yantrikdb-mcp"
+# Asserted, not hoped: each harness's Install fails on a machine without these.
+sudo chroot "$ROOTFS" /usr/bin/python3 -I -c 'import sys; sys.path.insert(0, "/opt/yantrik/memory/mcp"); import yantrikdb, yantrikdb_mcp' \
+    || fail "yantrikdb-mcp does not import on the image's Python"
+ok "YantrikDB at /opt/yantrik/memory ($(sudo du -sh "$ROOTFS/opt/yantrik/memory" | cut -f1)), from the release bundle: $(head -n 2 "$UNPACK/memory/VERSIONS" | tr '\n' ' ')"
 
 # ── The mind, beside the OS ──
 #
@@ -918,7 +998,7 @@ HOST=releases.yantrikos.com
 SCHEME=https
 UPDATECONF
 
-ok "Default config installed from config-default.yaml (loopback model endpoint, no name, no key)"
+ok "Default config installed from config-default.yaml (no model chosen, no name, no key)"
 ok "Update channel: $UPDATE_CHANNEL via https://releases.yantrikos.com"
 
 # ═══════════════════════════════════════════════════════════════
@@ -971,10 +1051,22 @@ sudo tee "$LABWC_DIR/rc.xml" > /dev/null <<'RCXML'
     <keybind key="W-t">
       <action name="Execute"><command>foot</command></action>
     </keybind>
+    <!-- Capture goes to the shell, as in config/labwc/rc.xml, which the session copies over this
+         file at login: no grim here, which would also photograph a locked screen. -->
     <keybind key="Print">
-      <action name="Execute">
-        <command>sh -c 'mkdir -p ~/Pictures/Screenshots &amp;&amp; grim ~/Pictures/Screenshots/$(date +%Y%m%d_%H%M%S).png'</command>
-      </action>
+      <action name="Execute"><command>/opt/yantrik/bin/yos act shell capture_open</command></action>
+    </keybind>
+    <keybind key="S-Print">
+      <action name="Execute"><command>/opt/yantrik/bin/yos act shell capture_region</command></action>
+    </keybind>
+    <keybind key="W-S-s">
+      <action name="Execute"><command>/opt/yantrik/bin/yos act shell capture_region</command></action>
+    </keybind>
+    <keybind key="C-Print">
+      <action name="Execute"><command>/opt/yantrik/bin/yos act shell capture_screen_to_clipboard</command></action>
+    </keybind>
+    <keybind key="W-S-r">
+      <action name="Execute"><command>/opt/yantrik/bin/yos act shell capture_record_toggle</command></action>
     </keybind>
   </keyboard>
   <windowRules>
@@ -1047,11 +1139,20 @@ ok "labwc + foot configured"
 # ── Auto-login via systemd ──
 # Override getty@tty1 to auto-login as yantrik and start labwc
 sudo mkdir -p "$ROOTFS/etc/systemd/system/getty@tty1.service.d"
+# Nothing on the screen before the desktop: no /etc/issue ("Debian GNU/Linux 13"), no hostname,
+# no "login: yantrik (automatic login)", and the boot's leftover lines cleared (no --noclear).
+# The same flags as the installer writes (installer.rs, AUTOLOGIN_FLAGS). The kernel's console
+# and the serial line keep their text; only the screen the person looks at is quiet.
 sudo tee "$ROOTFS/etc/systemd/system/getty@tty1.service.d/autologin.conf" > /dev/null <<'AUTOLOGIN'
 [Service]
 ExecStart=
-ExecStart=-/sbin/agetty --autologin yantrik --noclear %I $TERM
+ExecStart=-/sbin/agetty --autologin yantrik --skip-login --noissue --nohostname --nonewline %I $TERM
 AUTOLOGIN
+# And nothing from login itself: with ~/.hushlogin it opens the session silently (PAM_SILENT), so
+# neither the motd ("ABSOLUTELY NO WARRANTY", the kernel's uname) nor the last login is printed.
+# In /etc/skel too, so an account the installer makes starts with it.
+sudo touch "$ROOTFS/home/yantrik/.hushlogin" "$ROOTFS/etc/skel/.hushlogin"
+sudo chown 1000:1000 "$ROOTFS/home/yantrik/.hushlogin"
 
 # .bash_profile — auto-start labwc on tty1, with installer mode + crash guard
 sudo tee "$ROOTFS/home/yantrik/.bash_profile" > /dev/null <<'PROFILE'
@@ -1084,6 +1185,10 @@ if [ "$(tty)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
         NOW=$(date +%s)
         # If crashed less than 10 seconds ago, stop looping
         if [ $((NOW - LAST_CRASH)) -lt 10 ]; then
+            # tty1 back in text mode, or none of this is seen: the boot splash leaves it in
+            # graphics mode for labwc (boot-unlock/splash), and a labwc that never took the
+            # screen never gave it back.
+            /usr/lib/yantrik/boot-unlock/splash console 2>/dev/null
             echo
             echo "============================================="
             echo "  Yantrik OS — Desktop failed to start"
@@ -1091,7 +1196,7 @@ if [ "$(tty)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
             echo
             echo "  labwc (Wayland compositor) crashed on startup."
             echo "  Common fixes:"
-            echo "    1. Reboot and select 'Safe Mode' from the menu"
+            echo "    1. Reboot and choose 'Install Yantrik OS with safe graphics' from the menu"
             echo "    2. Check GPU: lspci | grep -i vga"
             echo "    3. Try: WLR_RENDERER_ALLOW_SOFTWARE=1 labwc"
             echo "    4. View logs: cat /opt/yantrik/logs/labwc.log"
@@ -1109,6 +1214,7 @@ if [ "$(tty)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
     # If labwc ran less than 5 seconds, it probably crashed
     if [ $((EXIT_TIME - START_TIME)) -lt 5 ]; then
         echo "$EXIT_TIME" > "$CRASH_FILE"
+        /usr/lib/yantrik/boot-unlock/splash console 2>/dev/null
     else
         rm -f "$CRASH_FILE"
         # A session that ran and then ended (labwc crashed hours in, or was killed) ends the
@@ -1248,7 +1354,7 @@ After=network.target
 Type=simple
 User=yantrik
 ExecStart=/usr/local/bin/llama-server \
-    --model /opt/yantrik/models/llm/yantrik-4b.gguf \
+    --model /opt/yantrik/models/llm/yantrik-4b.gguf --alias qwen3.5-4b \
     --host 127.0.0.1 --port 8341 \
     --ctx-size 4096 --threads 2 --no-mmap
 Restart=on-failure
@@ -1262,6 +1368,54 @@ LLAMA_SVC
     sudo chroot "$ROOTFS" systemctl enable llama-server 2>/dev/null || true
 
     ok "llama-server configured (systemd, port 8341)"
+
+    # The model on this computer, as an AI account, the private lane and the pick — only when the
+    # GGUF and the server are really in the image. The config ships naming no model (a name
+    # nothing serves is a fake), so this is the one place a local model gets named, and it is
+    # named for what it is: "On this computer (Qwen 3.5 4B)", served as `qwen3.5-4b` (--alias
+    # above), never "yantrik-4b". LOCAL_ACCOUNT_ID is the AI accounts slug of the name
+    # (ai_accounts::account::slug; a test in crates/yantrik-ui holds the two together).
+    LOCAL_ACCOUNT_NAME="On this computer (Qwen 3.5 4B)"
+    LOCAL_ACCOUNT_ID="on-this-computer-qwen-3-5-4b"
+    LOCAL_MODEL="qwen3.5-4b"
+    if [ -s "$ROOTFS/opt/yantrik/models/llm/yantrik-4b.gguf" ] && [ -x "$ROOTFS/usr/local/bin/llama-server" ]; then
+        sudo sed -i \
+            -e "s|^  api_base_url: \"\"|  api_base_url: \"http://127.0.0.1:8341/v1\"|" \
+            -e "s|^  api_model: \"\"|  api_model: \"$LOCAL_MODEL\"|" \
+            "$ROOTFS/opt/yantrik/config.yaml"
+        grep -q "api_model: \"$LOCAL_MODEL\"" "$ROOTFS/opt/yantrik/config.yaml" \
+            || fail "config.yaml did not take the local model (its llm section changed shape?)"
+        for HOME_DIR in "$ROOTFS/etc/skel" "$ROOTFS/home/yantrik"; do
+            sudo mkdir -p "$HOME_DIR/.config/yantrik"
+            sudo tee "$HOME_DIR/.config/yantrik/providers.yaml" > /dev/null <<PROVIDERS
+entries:
+- id: local-llm
+  name: "$LOCAL_ACCOUNT_NAME"
+  provider_type: llamacpp
+  base_url: http://127.0.0.1:8341/v1
+  auth_type: none
+  is_primary: true
+  is_fallback: false
+  model: $LOCAL_MODEL
+PROVIDERS
+            sudo tee "$HOME_DIR/.config/yantrik/ai-accounts.json" > /dev/null <<ACCOUNTS
+{
+  "sharing": {},
+  "lane": "$LOCAL_ACCOUNT_ID/$LOCAL_MODEL"
+}
+ACCOUNTS
+            sudo tee "$HOME_DIR/.config/yantrik/picker.json" > /dev/null <<PICKER
+{
+  "model": "$LOCAL_ACCOUNT_ID/$LOCAL_MODEL"
+}
+PICKER
+            sudo chmod 600 "$HOME_DIR/.config/yantrik/providers.yaml" "$HOME_DIR/.config/yantrik/ai-accounts.json" "$HOME_DIR/.config/yantrik/picker.json"
+        done
+        sudo chown -R 1000:1000 "$ROOTFS/home/yantrik/.config/yantrik"
+        ok "$LOCAL_ACCOUNT_NAME: an AI account, the private lane and the pick"
+    else
+        info "No local model in the image: none is named, and the desktop reads Not set up"
+    fi
 else
     info "Skipping LLM server (no offline model)"
 fi
@@ -1403,14 +1557,43 @@ sudo mksquashfs "$ROOTFS" "$ISO_DIR/live/filesystem.squashfs" \
 ok "Squashfs created ($(du -h "$ISO_DIR/live/filesystem.squashfs" | cut -f1))"
 
 # ── GRUB config (BIOS + EFI) ──
+# The menu's theme and fonts, made into the image above (stage-grub-theme.sh).
+sudo mkdir -p "$ISO_DIR/boot/grub/themes"
+sudo cp -a "$ROOTFS/usr/share/yantrik/grub-theme" "$ISO_DIR/boot/grub/themes/yantrik"
 sudo tee "$ISO_DIR/boot/grub/grub.cfg" > /dev/null <<'GRUBCFG'
 set timeout=5
 set default=0
 
 insmod all_video
 insmod gfxterm
+insmod gfxmenu
+insmod png
 set gfxmode=auto
-terminal_output gfxterm
+# The theme's fonts first, so the terminal draws with DejaVu Sans rather than GRUB's built-in
+# font, which has ASCII and nothing else; then GRUB's own unicode font behind them.
+loadfont /boot/grub/themes/yantrik/dejavusans_16.pf2
+loadfont /boot/grub/themes/yantrik/dejavusans_20.pf2
+loadfont /boot/grub/themes/yantrik/dejavusans_bold_28.pf2
+loadfont unicode
+# The theme on UEFI only. On a legacy BIOS (SeaBIOS) the themed menu ran its countdown and then
+# GRUB stopped at "unaligned pointer 0x1e" instead of booting: CI's boot test of 6ebe7787 waited
+# 25 minutes for a login prompt (15 Oct 2026). The same image without the theme, fonts kept,
+# booted and passed all 15 checks. A BIOS machine gets the DejaVu menu without the theme.
+if [ "${grub_platform}" = "efi" ]; then
+    set theme=/boot/grub/themes/yantrik/theme.txt
+    export theme
+fi
+# The terminal window GRUB loads the kernel in, after Enter, in the menu's ground: gfxterm fills
+# it with black otherwise, a black rectangle over the menu for about 3 s (#820, the OVMF film).
+# Only once gfxterm is up: background_color needs a video mode. UEFI only, like the theme: a BIOS
+# menu has no themed ground to cover, and SeaBIOS is where GRUB's gfxterm last broke (review of
+# a6c728c5). Installed machines: grub-ground, which writes it only with the theme.
+if terminal_output gfxterm; then
+    if [ "${grub_platform}" = "efi" ]; then
+        insmod gfxterm_background
+        background_color "#0e1018"
+    fi
+fi
 
 # Speak on the serial line AS WELL AS the screen, and accept input from both.
 # `--append`, so this adds the serial line to the screen rather than replacing it.
@@ -1427,28 +1610,57 @@ terminal_input --append serial
 set menu_color_normal=cyan/black
 set menu_color_highlight=white/blue
 
+# Entry names in plain words and in ASCII: the serial line, and a GRUB without the theme, draw
+# them too (stage-grub-theme.sh selftest holds every menuentry in this script to it).
+#
 # `yantrik.install=true` is what .bash_profile reads to put the Slint onboarding into
 # installer mode. Both entries used to pass it, so there was no way to boot this image and
 # simply try the desktop — an ISO that can only be installed is one nobody evaluates first.
+#
+# The Install and Try entries draw the boot splash (plymouth, the Yantrik emblem, on the
+# firmware's framebuffer via simpledrm, never on the serial line) until tty1's autologin:
+# boot-unlock/theme/yantrik.script and boot-unlock/splash. The safe-graphics entry and the one
+# showing every message keep plymouth off: one is the way out when graphics misbehave, the other
+# shows every line, and neither should depend on a splash.
+#
+# From Enter to plymouth's first frame, the Install and Try entries keep the picture dark and
+# still (#820, the OVMF film: a black rectangle in GRUB, then about 2 s of black with a blinking
+# cursor):
+# - `set gfxpayload=keep`: the kernel starts in the mode the menu was drawn in. On BIOS it would
+#   otherwise start in VGA text mode, with no framebuffer for plymouth until a DRM driver loads;
+#   on UEFI GRUB would shut its video down and set it up again on the way.
+# - `vt.default_red=0x0e vt.default_grn=0x11 vt.default_blu=0x17`: the kernel console's black is
+#   the splash's ground (#0e1117), so the moment before plymouth draws is that colour, not black.
+# - `vt.global_cursor_default=0`: and no cursor blinks in it. Consoles opened after boot get their
+#   cursor back (boot-unlock/splash.d/cursor.conf), and tty1 does when the crash guard writes.
+# The same line as an installed machine's (installer_unlock.rs, cmdline_default). None of it is
+# on the serial line, which the boot test reads, or on the last two entries.
+#
+# The screen is quiet in the first three: `loglevel=3` keeps the kernel's lines below errors off
+# it, and `live-config.nottyautologin` stops live-config's own tty autologin, whose drop-in sorts
+# after the image's and would put back the banner and "login: yantrik (automatic login)". The
+# image's own autologin on tty1 is what starts the desktop.
 menuentry "Install Yantrik OS" {
-    linux /live/vmlinuz boot=live yantrik.install=true live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 plymouth.enable=0 quiet
+    set gfxpayload=keep
+    linux /live/vmlinuz boot=live yantrik.install=true live-config.username=yantrik live-config.user-fullname=yantrik live-config.nottyautologin console=tty1 console=ttyS0,115200 quiet splash loglevel=3 plymouth.use-simpledrm plymouth.ignore-serial-consoles vt.global_cursor_default=0 vt.default_red=0x0e vt.default_grn=0x11 vt.default_blu=0x17
     initrd /live/initrd
 }
 
-menuentry "Try Yantrik OS (live, no install)" {
-    linux /live/vmlinuz boot=live live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 plymouth.enable=0 quiet
+menuentry "Try Yantrik OS without installing" {
+    set gfxpayload=keep
+    linux /live/vmlinuz boot=live live-config.username=yantrik live-config.user-fullname=yantrik live-config.nottyautologin console=tty1 console=ttyS0,115200 quiet splash loglevel=3 plymouth.use-simpledrm plymouth.ignore-serial-consoles vt.global_cursor_default=0 vt.default_red=0x0e vt.default_grn=0x11 vt.default_blu=0x17
     initrd /live/initrd
 }
 
-menuentry "Install Yantrik OS (Safe Mode — software rendering)" {
-    linux /live/vmlinuz boot=live yantrik.install=true live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 plymouth.enable=0 nomodeset quiet
+menuentry "Install Yantrik OS with safe graphics" {
+    linux /live/vmlinuz boot=live yantrik.install=true live-config.username=yantrik live-config.user-fullname=yantrik live-config.nottyautologin console=tty1 console=ttyS0,115200 plymouth.enable=0 nomodeset quiet loglevel=3
     initrd /live/initrd
 }
 
 # No `quiet`, so the kernel and systemd say what they are doing on the serial line. This is
 # the entry a bug report is made from, and the one an automated boot check selects.
-menuentry "Try Yantrik OS (verbose, serial console)" {
-    linux /live/vmlinuz boot=live live-config.username=yantrik live-config.user-fullname=yantrik console=tty1 console=ttyS0,115200 plymouth.enable=0 nomodeset systemd.log_level=info
+menuentry "Try Yantrik OS, showing every boot message" {
+    linux /live/vmlinuz boot=live live-config.username=yantrik live-config.user-fullname=yantrik live-config.nottyautologin console=tty1 console=ttyS0,115200 plymouth.enable=0 nomodeset systemd.log_level=info
     initrd /live/initrd
 }
 GRUBCFG

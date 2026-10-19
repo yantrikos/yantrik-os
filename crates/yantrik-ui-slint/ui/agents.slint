@@ -20,7 +20,7 @@ import { YNoticeBar } from "components/notice_bar.slint";
 import { ToolCallData, ToolCallCard } from "components/tool_call.slint";
 import { ApprovalRequest, ApprovalCard } from "components/intent_lens.slint";
 import { QuestionCard } from "components/question_card.slint";
-import { WorkCardData } from "components/work_card.slint";
+import { ContentBlock } from "components/message_bubble.slint";
 import { JumpToPresent } from "jump_to_present.slint";
 import { YContextMenu } from "components/y_context_menu.slint";
 import {
@@ -133,11 +133,21 @@ export struct AgentDetailsData {
 }
 
 export global AgentsState {
-    // What the Lens's conversation shows of the runs it started (Chat v2): one card per run,
-    // the run the strip describes, how many are live, and how many of those wait on the person.
-    // Filled by wire/agents.rs from the same store as the workroom.
-    in-out property <[WorkCardData]> lens-cards: [];
-    in-out property <WorkCardData> lens-strip;
+    // What the Lens's conversation knows of the runs it started: how many are live, and how many
+    // of those wait on the person. Filled by wire/agents.rs from the same store as the workroom.
+    // The timeline of the Lens's open turn (wire/lens_timeline.rs), and the conversation row of
+    // the reply it belongs to (-1: no turn open).
+    in-out property <[ContentBlock]> lens-steps: [];
+    in-out property <int> lens-steps-row: -1;
+    // What the Lens's composer says Enter will do (wire/lens_queue.rs): "" sends, "queue" holds the
+    // message until the mind finishes, "answer" answers the question its run waits on, which
+    // `lens-composer-asks` says above the box. The placeholder names the mode.
+    in-out property <string> lens-composer-mode: "";
+    in-out property <string> lens-composer-placeholder: "";
+    in-out property <string> lens-composer-asks: "";
+    // The queued message's line: whose finishing sends it, and a note when it replaced another.
+    in-out property <string> lens-queued-mind: "";
+    in-out property <string> lens-queued-note: "";
     in-out property <int> lens-live: 0;
     in-out property <int> lens-waiting: 0;
     // "Built-in mind" or "Attached mind", for the conversation header.

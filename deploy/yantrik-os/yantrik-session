@@ -98,31 +98,14 @@ fi
 
 # ── The desktop's own chrome ────────────────────────────────────────────────────────────
 # For apps the answer is a themed frame rather than no frame. labwc reads its config from the
-# user's home, so this needs no root and re-applies on every start; a machine deployed before
-# the theme existed picks it up by rebooting. Both sources ride in the release payload.
-CHROME=/opt/yantrik/share
-if [ -d "$CHROME/labwc" ]; then
-  mkdir -p "$HOME/.config/labwc" "$HOME/.local/share/themes/Yantrik/labwc"
-  cp -f "$CHROME/labwc/rc.xml" "$HOME/.config/labwc/rc.xml"
-  # The window menu (its Snap layouts); labwc falls back to its own when there is none.
-  [ -f "$CHROME/labwc/menu.xml" ] && cp -f "$CHROME/labwc/menu.xml" "$HOME/.config/labwc/menu.xml"
-  cp -f "$CHROME/labwc/themerc" "$HOME/.local/share/themes/Yantrik/labwc/themerc"
-  # The titlebar buttons live beside the themerc, because that is where labwc looks for them:
-  # <name>-active.png / <name>-inactive.png in the theme directory, replacing the built-ins.
-  cp -f "$CHROME/labwc/"*.png "$HOME/.local/share/themes/Yantrik/labwc/" 2>/dev/null || true
-  # What starts with the desktop: the polkit agent. No notification daemon — the
-  # notifications service holds org.freedesktop.Notifications and is started by the shell;
-  # starting a second one here is what used to make half the machine's notifications vanish.
-  if [ -f "$CHROME/labwc/autostart" ]; then
-    cp -f "$CHROME/labwc/autostart" "$HOME/.config/labwc/autostart"
-    chmod +x "$HOME/.config/labwc/autostart"
-  fi
-fi
-if [ -d "$CHROME/fonts" ]; then
-  mkdir -p "$HOME/.local/share/fonts"
-  cp -f "$CHROME/fonts/"*.ttf "$HOME/.local/share/fonts/" 2>/dev/null || true
-  fc-cache -f "$HOME/.local/share/fonts" >/dev/null 2>&1 || true
-fi
+# user's home, so this needs no root and re-applies on every start. Both sources ride in the
+# release payload. The copy itself is yantrik-session-chrome, because yantrik-update runs the
+# same one as this account after an update that changed the keys, and then has labwc reload
+# them (#854); two copies of it would drift. It writes nothing through a link. A failure is said
+# on stderr (the journal) and does not stop the desktop: a session without its theme still
+# beats no session.
+/opt/yantrik/bin/yantrik-session-chrome /opt/yantrik/share \
+  || echo "yantrik-session: the desktop's chrome was not all put in place (see above)" >&2
 
 # ── Start the compositor, and keep what it says ──
 #

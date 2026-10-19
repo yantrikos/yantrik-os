@@ -28,6 +28,39 @@ use slint::ComponentHandle;
 
 use crate::{AccentPreset, App, ThemeCardData, ThemeMode, ThemeOverrides};
 
+/// Give a window of the shell's own (an agent's pop-out, the capture bar) the shell's theme:
+/// dark or light, the accent, any community theme. Every Slint window has its own copy of every
+/// global, so a window made without this draws the stock dark palette whatever the person chose.
+/// A macro because each window is its own generated type. Writes only what differs, so calling
+/// it on every open costs nothing.
+macro_rules! sync_window_theme {
+    ($ui:expr, $window:expr) => {{
+        use crate::{AccentPreset, ThemeMode, ThemeOverrides};
+        macro_rules! copy {
+            ($global:ty, $get:ident, $set:ident) => {{
+                let want = $ui.global::<$global>().$get();
+                if $window.global::<$global>().$get() != want {
+                    $window.global::<$global>().$set(want);
+                }
+            }};
+        }
+        copy!(ThemeMode, get_dark, set_dark);
+        copy!(AccentPreset, get_index, set_index);
+        copy!(ThemeOverrides, get_enabled, set_enabled);
+        copy!(ThemeOverrides, get_bg_deep_override, set_bg_deep_override);
+        copy!(ThemeOverrides, get_bg_surface_override, set_bg_surface_override);
+        copy!(ThemeOverrides, get_bg_card_override, set_bg_card_override);
+        copy!(ThemeOverrides, get_bg_elevated_override, set_bg_elevated_override);
+        copy!(ThemeOverrides, get_amber_override, set_amber_override);
+        copy!(ThemeOverrides, get_cyan_override, set_cyan_override);
+        copy!(ThemeOverrides, get_text_primary_override, set_text_primary_override);
+        copy!(ThemeOverrides, get_text_secondary_override, set_text_secondary_override);
+        copy!(ThemeOverrides, get_text_dim_override, set_text_dim_override);
+        copy!(ThemeOverrides, get_accent_override, set_accent_override);
+    }};
+}
+pub(crate) use sync_window_theme;
+
 // The file writers live beside this; re-exported so callers and the tests keep one path.
 pub use super::theme_files::*;
 

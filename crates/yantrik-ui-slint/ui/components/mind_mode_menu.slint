@@ -552,8 +552,9 @@ export component MindModeMenu inherits Rectangle {
             Rectangle { height: 1px; background: Theme.border-subtle; }
             ModeRow {
                 label: root.private ? "Private: on" : "Private";
-                means: root.private ? "The Mind is off and nothing is recorded. Press to end."
-                    : "Turn the Mind off and record nothing, until you end it.";
+                // Every mind, in those words: "the Mind" read as Yantrik Mind, on machines without it.
+                means: root.private ? "Every mind is off and nothing is recorded. Press to end."
+                    : "Turn every mind off and record nothing, until you end it.";
                 selected: root.private;
                 chosen => { root.private-chosen(!root.private); }
             }

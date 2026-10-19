@@ -39,7 +39,7 @@ dock.browser: "المتصفح"
 dock.files: "الملفات"
 dock.notes: "الملاحظات"
 dock.editor: "المحرر"
-dock.bond: "الرابطة"
+dock.bond: "سجل التفاعلات"
 dock.memory: "الذاكرة"
 dock.alerts: "التنبيهات"
 dock.system: "النظام"
@@ -374,12 +374,9 @@ notifications.no_notifications: "لا توجد إشعارات"
 notifications.clear_all: "مسح الكل"
 
 # ── Bond ──
-bond.title: "الرابطة"
-bond.score: "درجة الرابطة"
-bond.level: "المستوى"
+bond.title: "سجل التفاعلات"
 bond.interactions: "إجمالي التفاعلات"
-bond.days: "أيام معًا"
-bond.streak: "السلسلة الحالية"
+bond.days: "الأيام منذ محادثتك الأولى"
 
 # ── Power ──
 power.shutdown: "إيقاف التشغيل"

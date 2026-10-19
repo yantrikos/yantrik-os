@@ -31,15 +31,15 @@
 //! is. Pixels in, text out, approximate: the reply says so.
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use yantrik_app_runtime::control::{self, Action, App as ControlSurface, Param};
 
-/// How long a capture may take. A grim on the nested display once hung for good (Mind View,
-/// Sep 2026), and a read that never answers is worse than one that says it could not.
-const CAPTURE_LIMIT: Duration = Duration::from_secs(10);
+// The capture itself (grim, its deadline, the display and the region) is the shared one the
+// screenshot actions use too: `capture::grab`.
+use crate::capture::grab::{self, region_arg, run_bounded, seen_for_good, Display};
 
 /// How long the reading may take. 9 s measured on a 2013 Xeon without AVX2 (VM 520), 1.5 s on
 /// a current desktop CPU.
@@ -49,11 +49,6 @@ const READ_LIMIT: Duration = Duration::from_secs(60);
 /// of text a caller should narrow with `region`. The reader stops there itself, so its answer
 /// stays small whatever the display holds.
 const MAX_LINES: usize = 300;
-
-/// The largest region a caller may ask for, in pixels: a 4K display. grim allocates the whole
-/// rectangle and the reader holds it several times over; a 16384² ask was a gigabyte before a
-/// single character was read.
-const MAX_REGION_PIXELS: i64 = 3840 * 2160;
 
 /// Address space the reader may take. It needs a few hundred MB for a desktop; this is the
 /// ceiling that keeps a pathological image from taking the session with it.
@@ -78,90 +73,6 @@ impl Turn {
 impl Drop for Turn {
     fn drop(&mut self) {
         READING.store(false, Ordering::Release);
-    }
-}
-
-/// Which display to read.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Display {
-    Desktop,
-    MindView,
-}
-
-impl Display {
-    fn name(self) -> &'static str {
-        match self {
-            Display::Desktop => "desktop",
-            Display::MindView => "mind_view",
-        }
-    }
-
-    /// The Wayland display to capture.
-    fn wayland(self) -> Result<String, String> {
-        match self {
-            Display::Desktop => std::env::var("WAYLAND_DISPLAY")
-                .ok()
-                .filter(|d| !d.is_empty())
-                .ok_or_else(|| "the desktop has no Wayland display to read".to_string()),
-            Display::MindView => crate::mind_view::display_now().ok_or_else(|| {
-                "Mind View is not running, so there is nothing on it to read. A mind's app opens \
-                 it: shell.open_app"
-                    .to_string()
-            }),
-        }
-    }
-}
-
-/// `x,y,w,h` in the display's pixels, as grim's `-g` wants it: `x,y wxh`.
-fn region_arg(given: &str) -> Result<String, String> {
-    let parts: Vec<i64> = given
-        .split(',')
-        .map(|p| p.trim().parse::<i64>())
-        .collect::<Result<_, _>>()
-        .map_err(|_| format!("`region` is x,y,w,h in pixels, e.g. 0,0,640,400 — not `{given}`"))?;
-    match parts.as_slice() {
-        [x, y, w, h]
-            if (0..=65535).contains(x)
-                && (0..=65535).contains(y)
-                && (8..=16384).contains(w)
-                && (8..=16384).contains(h)
-                && w * h <= MAX_REGION_PIXELS =>
-        {
-            Ok(format!("{x},{y} {w}x{h}"))
-        }
-        _ => Err(format!(
-            "`region` is x,y,w,h in pixels with a width and height of at least 8, and no larger \
-             than a 4K display — not `{given}`"
-        )),
-    }
-}
-
-/// Run a command to its end or its deadline, whichever comes first; stdout on success.
-///
-/// The output is drained while the command runs, not after: a pipe holds 64 KiB, and a child
-/// that fills it waits for a reader forever — which, read only at exit, was every page of small
-/// text, killed at the deadline.
-fn run_bounded(mut cmd: Command, limit: Duration, what: &str) -> Result<Vec<u8>, String> {
-    let child = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("could not start {what}: {e}"))?;
-    let pid = child.id() as libc::pid_t;
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
-    });
-    match rx.recv_timeout(limit) {
-        Ok(Ok(out)) if out.status.success() => Ok(out.stdout),
-        Ok(Ok(out)) => Err(format!("{what} failed: {}", String::from_utf8_lossy(&out.stderr).trim())),
-        Ok(Err(e)) => Err(format!("{what}: {e}")),
-        Err(_) => {
-            // The waiting thread reaps it once it dies.
-            unsafe { libc::kill(pid, libc::SIGKILL) };
-            Err(format!("{what} did not finish in {} s", limit.as_secs()))
-        }
     }
 }
 
@@ -231,7 +142,6 @@ fn ocr_bin() -> PathBuf {
 /// Capture `display` (or a rectangle of it) and read its text. Blocking: seconds.
 fn read(display: Display, region: Option<String>) -> Result<serde_json::Value, String> {
     let _turn = Turn::take()?;
-    let wayland = display.wayland()?;
     let bin = ocr_bin();
     if !bin.exists() {
         return Err(format!(
@@ -240,15 +150,7 @@ fn read(display: Display, region: Option<String>) -> Result<serde_json::Value, S
         ));
     }
     let capture = Capture::new()?;
-    let mut grim = Command::new("grim");
-    // WAYLAND_SOCKET would win over WAYLAND_DISPLAY, and name whatever socket the shell was
-    // handed rather than the display asked for.
-    grim.env("WAYLAND_DISPLAY", &wayland).env_remove("WAYLAND_SOCKET").args(["-t", "ppm"]);
-    if let Some(g) = &region {
-        grim.args(["-g", g]);
-    }
-    grim.arg(&capture.0);
-    run_bounded(grim, CAPTURE_LIMIT, "the capture (grim)")?;
+    grab::grab(display, region.as_deref(), grab::Format::Ppm, false, &capture.0)?;
 
     let mut ocr = reader_command(&bin);
     ocr.args(["--max-lines", &MAX_LINES.to_string()]).arg(&capture.0);
@@ -291,10 +193,12 @@ fn answer(display: Display, args: &serde_json::Value) -> Result<serde_json::Valu
 /// What `read_screen` is for, as the card and the gate read it. "Cannot be undone" is not
 /// decoration: the gate's `unrecoverable` reads it, and it is what makes `auto` ask and keeps an
 /// "allow for this session" from covering the next read.
-const READ_SCREEN_PURPOSE: &str = "Read the text on the person's desktop: every line on every \
-    window, with its box, from the pixels. For a window with no describe and no accessibility \
-    tree (a terminal, a game). It shows everything they have open, and a read cannot be undone — \
-    what was on screen has been seen — so it asks them every time. Takes a few seconds";
+const READ_SCREEN_PURPOSE: &str = concat!(
+    "Read the text on the person's desktop: every line on every window, with its box, from the \
+     pixels. For a window with no describe and no accessibility tree (a terminal, a game). ",
+    seen_for_good!(),
+    ". Takes a few seconds"
+);
 
 fn region_param() -> Param {
     Param::text("region")
@@ -328,16 +232,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_region_is_four_numbers_and_becomes_grims_geometry() {
-        assert_eq!(region_arg("0,0,640,400").unwrap(), "0,0 640x400");
-        assert_eq!(region_arg(" 10, 20 ,30,40").unwrap(), "10,20 30x40");
-        assert_eq!(region_arg("0,0,3840,2160").unwrap(), "0,0 3840x2160");
-        for bad in [
-            "", "1,2,3", "a,b,c,d", "-1,0,100,100", "0,0,4,100", "0,0,100,99999", "0,0,640,400,1",
-            "0,0,16384,16384", "99999999999,0,100,100", "0,70000,100,100",
-        ] {
-            assert!(region_arg(bad).is_err(), "{bad:?} should be refused");
-        }
+    fn the_purpose_still_says_word_for_word_what_it_said() {
+        // The sentence is built from the shared macro now; a person and a gate read the same
+        // words as before the move.
+        assert_eq!(
+            READ_SCREEN_PURPOSE,
+            "Read the text on the person's desktop: every line on every window, with its box, \
+             from the pixels. For a window with no describe and no accessibility tree (a \
+             terminal, a game). It shows everything they have open, and a read cannot be undone \
+             — what was on screen has been seen — so it asks them every time. Takes a few seconds"
+        );
     }
 
     #[test]
@@ -357,15 +261,6 @@ mod tests {
     }
 
     #[test]
-    fn a_command_that_says_a_lot_is_not_stuck_behind_its_own_pipe() {
-        // 1 MiB, sixteen times what a pipe holds: read only at exit, this never exited.
-        let mut cmd = Command::new("head");
-        cmd.args(["-c", "1048576", "/dev/zero"]);
-        let out = run_bounded(cmd, Duration::from_secs(10), "head").unwrap();
-        assert_eq!(out.len(), 1 << 20);
-    }
-
-    #[test]
     fn a_capture_is_private_and_goes_when_the_read_ends() {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("yantrik-capture-test-{}", std::process::id()));
@@ -380,13 +275,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn a_command_that_hangs_is_ended_at_its_deadline() {
-        let mut cmd = Command::new("sleep");
-        cmd.arg("5");
-        let started = Instant::now();
-        let err = run_bounded(cmd, Duration::from_millis(300), "sleep").unwrap_err();
-        assert!(err.contains("did not finish"), "{err}");
-        assert!(started.elapsed() < Duration::from_secs(3));
-    }
 }

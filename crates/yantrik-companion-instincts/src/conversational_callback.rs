@@ -2,6 +2,10 @@
 //!
 //! Detects when current context echoes something discussed before and
 //! makes natural callbacks: "Remember when you were debugging that..."
+//!
+//! Absorbs serendipity (#755). A callback needs something happening now to connect to — it is
+//! never a reason by itself to start talking — and it names when the earlier thing was said
+//! rather than quoting private words back to seem deep.
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
@@ -56,34 +60,33 @@ impl Instinct for ConversationalCallbackInstinct {
             .map(|(desc, _, _)| desc.as_str())
             .collect();
 
-        let context_hint = if recent_context.is_empty() {
-            "No specific recent context — recall something interesting from past conversations.".to_string()
-        } else {
-            format!(
-                "Recent activity: [{}]. Look for connections to past conversations.",
-                recent_context.join("; ")
-            )
-        };
+        // Nothing happening now means nothing to connect to: stay quiet (#755).
+        if recent_context.is_empty() {
+            return vec![];
+        }
+        let context_hint = format!(
+            "Recent activity: [{}]. Look for connections to past conversations.",
+            recent_context.join("; ")
+        );
 
         let execute_msg = match state.model_tier {
             ModelTier::Large => format!(
                 "EXECUTE Search your memory for a past conversation or event that connects \
                      to the current moment. {}. Make a brief, natural callback — \
-                     'Remember when...' or 'This reminds me of...' or 'Didn't you mention...'. \
-                     Keep it to 1-2 sentences. If nothing connects naturally, don't force it — \
-                     just say nothing (return empty).",
+                     say when it came up ('On Tuesday you mentioned...', 'Back in March...'). \
+                     Keep it to 1-2 sentences. Never quote private or painful things back. \
+                     If nothing connects naturally, reply exactly \"Nothing to surface right now.\"",
                 context_hint
             ),
-            ModelTier::Tiny => format!(
-                "EXECUTE Pick one: greeting, mood check, or task nudge for . Time: (now). Output: 1 sentence.",
-            ),
+            ModelTier::Tiny => "EXECUTE SKIP".to_string(),
             _ => format!(
-                "EXECUTE Task: Send a short, natural check-in to .\n\
-             Input: time=(now).\n\
-             Tool: You may use recall once for one recent explicit user-mentioned detail.\n\
-             Rule: Use only details explicitly stated by the user or returned by recall. Do not imply the user is currently doing, feeling, or experiencing anything unless they said so.\n\
-             Fallback: Send a simple warm greeting.\n\
-             Output: 1 sentence, under 20 words.",
+                "EXECUTE Task: Connect what is happening now to one thing {user} said before.\n\
+             Input: {context_hint}\n\
+             Tool: You may use recall once.\n\
+             Rule: Use only details explicitly stated by the user or returned by recall, and say when it was said. Never quote private or painful things. Do not greet.\n\
+             Fallback: \"Nothing to surface right now.\"\n\
+             Output: 1 sentence, under 25 words.",
+                user = state.config_user_name,
             ),
         };
         vec![

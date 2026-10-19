@@ -8,6 +8,11 @@
 //! updates its current conditions every fifteen). Only a place nothing has been fetched for yet
 //! waits, and then for at most a second.
 //!
+//! What is kept is the whole outlook one Open-Meteo call returns: the current conditions and the
+//! days ahead. A mind asked about the weekend read `describe` and found only the current
+//! conditions, so it left the desktop for a weather site (E.REF1). The days were in the same
+//! answer the service already fetched; now they are kept beside the conditions and described.
+//!
 //! The keeping is the service SDK's (`yantrik_service_sdk::recent`), shared with System Monitor's
 //! service; what is here is how long a forecast stays an answer and how its age is told.
 
@@ -17,7 +22,33 @@ use yantrik_ipc_contracts::weather::{CurrentWeather, Location};
 use yantrik_service_sdk::recent::{Policy, Recent};
 
 /// The last forecast, by the place and unit it was fetched for.
-pub type Forecasts = Recent<Where, CurrentWeather>;
+pub type Forecasts = Recent<Where, Outlook>;
+
+/// One fetch's worth of weather for a place: how it is now, and the days ahead.
+#[derive(Clone, Debug)]
+pub struct Outlook {
+    pub current: CurrentWeather,
+    /// Today first, in the place's own calendar (Open-Meteo answers in the place's timezone).
+    pub days: Vec<Day>,
+}
+
+/// One day of the forecast, in the unit the outlook was fetched in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Day {
+    /// `YYYY-MM-DD`, the place's local date.
+    pub date: String,
+    pub weekday: &'static str,
+    pub min: f64,
+    pub max: f64,
+    /// The WMO weather code, and the words for it.
+    pub code: i32,
+    pub condition: String,
+    /// The day's highest chance of precipitation in percent, when the provider gave one.
+    pub precipitation_probability: Option<i64>,
+    pub precipitation_mm: f64,
+    pub sunrise: String,
+    pub sunset: String,
+}
 
 /// What a forecast is a forecast of: a point, in a unit. The place's name is not part of it — the
 /// same point asked for as "Dallas" and as "(pinned location)" has the same weather.
@@ -56,7 +87,7 @@ pub const POLICY: Policy = Policy {
 /// A forecast this old is reported as stale: two of Open-Meteo's updates have passed it by.
 pub const STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 
-pub fn forecasts(fetch: impl Fn(&Where) -> Result<CurrentWeather, String> + Send + Sync + 'static) -> Forecasts {
+pub fn forecasts(fetch: impl Fn(&Where) -> Result<Outlook, String> + Send + Sync + 'static) -> Forecasts {
     Recent::new(POLICY, fetch)
 }
 

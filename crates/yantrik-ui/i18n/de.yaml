@@ -38,7 +38,7 @@ dock.browser: "Browser"
 dock.files: "Dateien"
 dock.notes: "Notizen"
 dock.editor: "Editor"
-dock.bond: "Bindung"
+dock.bond: "Interaktionsverlauf"
 dock.memory: "Speicher"
 dock.alerts: "Meldungen"
 dock.system: "System"
@@ -373,12 +373,9 @@ notifications.no_notifications: "Keine Benachrichtigungen"
 notifications.clear_all: "Alle löschen"
 
 # ── Bindung ──
-bond.title: "Bindung"
-bond.score: "Bindungswert"
-bond.level: "Stufe"
+bond.title: "Interaktionsverlauf"
 bond.interactions: "Interaktionen gesamt"
-bond.days: "Gemeinsame Tage"
-bond.streak: "Aktuelle Serie"
+bond.days: "Tage seit Ihrem ersten Gespräch"
 
 # ── Energie ──
 power.shutdown: "Herunterfahren"

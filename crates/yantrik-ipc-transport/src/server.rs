@@ -302,12 +302,18 @@ impl RpcServer {
         if let Some(door_path) = crate::mind_door::serving_dir()
             .and_then(|door| crate::mind_door::door_for(path, &socket_dir(), &door))
         {
-            match self.bind_door(&door_path) {
-                Ok(door_listener) => {
-                    let handler = handler.clone();
-                    tokio::spawn(serve_door(door_listener, handler));
+            // What a mind may call there is the door table's word for this socket's name, the
+            // same entry that opened it (16 Oct 2026, VM 541): a service admitted surface-only
+            // never hears its other methods from a mind. No entry, no door.
+            let methods = door_path.file_name().and_then(|n| n.to_str()).and_then(crate::mind_door::mind_methods);
+            if let Some(methods) = methods {
+                match self.bind_door(&door_path) {
+                    Ok(door_listener) => {
+                        let handler = crate::door_methods::hold_to(methods, handler.clone());
+                        tokio::spawn(serve_door(door_listener, handler, crate::mind_door::is_mind));
+                    }
+                    Err(e) => tracing::warn!(door = %door_path.display(), error = %e, "the mind door could not be opened; minds cannot reach this service"),
                 }
-                Err(e) => tracing::warn!(door = %door_path.display(), error = %e, "the mind door could not be opened; minds cannot reach this service"),
             }
         }
 
@@ -504,8 +510,10 @@ const DOOR_CONNECTIONS: usize = 32;
 /// Serve the mind door: every connection whose peer the kernel does not say is the mind account
 /// is closed unread. The directory already keeps everyone else out; this is what makes the uid,
 /// not the path, the fact a handler is told.
+///
+/// `is_mind` is [`crate::mind_door::is_mind`]; a test names its own uid, having no mind account.
 #[cfg(unix)]
-async fn serve_door(listener: tokio::net::UnixListener, handler: Arc<dyn ServiceHandler>) {
+async fn serve_door(listener: tokio::net::UnixListener, handler: Arc<dyn ServiceHandler>, is_mind: fn(u32) -> bool) {
     // Private mode is asked on every request, not once per connection: turning it on reaches a
     // mind that is already connected (`crate::privacy`).
     let handler: Arc<dyn ServiceHandler> = Arc::new(PrivateDoor { inner: handler, private: crate::privacy::is_private });
@@ -527,7 +535,7 @@ async fn serve_door(listener: tokio::net::UnixListener, handler: Arc<dyn Service
             .ok()
             .map(|c| PeerCred { pid: c.pid().unwrap_or(0), uid: c.uid(), gid: c.gid() });
         match peer {
-            Some(p) if crate::mind_door::is_mind(p.uid) => {
+            Some(p) if is_mind(p.uid) => {
                 let handler = handler.clone();
                 tokio::spawn(async move {
                     let _slot = slot;
@@ -566,6 +574,108 @@ mod private_door_tests {
         }
         let open = PrivateDoor { inner: Arc::new(Echo), private: || false };
         assert_eq!(open.handle_from("app.describe", serde_json::json!({}), None).unwrap(), "app.describe");
+    }
+}
+
+/// A door as a mind meets it, over a real socket: the accept loop, the door table's policy and
+/// the service's handler, composed as `serve_unix` composes them (16 Oct 2026, VM 541; #411).
+#[cfg(all(test, unix))]
+mod door_tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+
+    /// Answers every method it is asked, so anything refused was refused by the door.
+    struct Calendarish;
+
+    impl ServiceHandler for Calendarish {
+        fn service_id(&self) -> &str {
+            "calendar"
+        }
+        fn handle(&self, method: &str, _: serde_json::Value) -> Result<serde_json::Value, yantrik_ipc_contracts::email::ServiceError> {
+            Ok(serde_json::json!({ "served": method }))
+        }
+    }
+
+    fn me(uid: u32) -> bool {
+        // SAFETY: getuid cannot fail.
+        uid == unsafe { libc::getuid() }
+    }
+
+    fn nobody(_: u32) -> bool {
+        false
+    }
+
+    /// A door for `socket` (its table entry's policy) in a directory of its own, with the mind
+    /// account played by `is_mind`. Answers its path.
+    fn door(socket: &str, is_mind: fn(u32) -> bool) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!("yantrik-door-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(socket);
+        let methods = crate::mind_door::mind_methods(socket).expect("a socket the door table admits");
+        let bound = path.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            rt.block_on(async move {
+                let listener = tokio::net::UnixListener::bind(&bound).unwrap();
+                let _ = ready_tx.send(());
+                serve_door(listener, crate::door_methods::hold_to(methods, Arc::new(Calendarish)), is_mind).await;
+            });
+        });
+        ready_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        path
+    }
+
+    /// One request, and the reply; `None` when the door closed the connection unanswered.
+    fn ask(path: &std::path::Path, method: &str) -> Option<serde_json::Value> {
+        let mut stream = std::os::unix::net::UnixStream::connect(path).expect("connect");
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        let _ = stream.write_all(format!("{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"{method}\",\"params\":{{}}}}\n").as_bytes());
+        let mut reply = String::new();
+        BufReader::new(stream).read_line(&mut reply).ok()?;
+        (!reply.is_empty()).then(|| serde_json::from_str(&reply).expect("one JSON object per line"))
+    }
+
+    #[test]
+    fn a_mind_at_the_calendar_door_reaches_the_surface_and_nothing_else() {
+        let path = door("calendar.sock", me);
+        for method in ["app.describe", "app.act", "app.explain"] {
+            let reply = ask(&path, method).unwrap();
+            assert_eq!(reply["result"]["served"], method, "{reply}");
+        }
+        for method in [
+            "calendar.events", "calendar.get_event", "calendar.create_event", "calendar.update_event",
+            "calendar.delete_event", "calendar.upsert_remote", "calendar.revision", "memory_validate",
+        ] {
+            let reply = ask(&path, method).unwrap();
+            assert_eq!(reply["error"]["code"], RPC_METHOD_NOT_FOUND, "{method}: {reply}");
+            assert!(reply["error"]["message"].as_str().unwrap().contains("not served to a mind at the calendar door"), "{reply}");
+            assert!(reply.get("result").is_none(), "{method} reached the handler: {reply}");
+        }
+        // The transport's own two questions, answered before any handler or policy.
+        assert_eq!(ask(&path, "rpc.ping").unwrap()["result"], "pong");
+        assert_eq!(ask(&path, "rpc.service_id").unwrap()["result"], "calendar");
+    }
+
+    #[test]
+    fn a_caller_that_is_not_the_mind_is_refused_at_the_door_as_before() {
+        let path = door("calendar.sock", nobody);
+        assert_eq!(ask(&path, "app.describe"), None, "closed unread");
+        let path = door("app-notes.sock", nobody);
+        assert_eq!(ask(&path, "app.describe"), None, "closed unread");
+    }
+
+    #[test]
+    fn the_harness_and_app_doors_still_serve_every_method() {
+        for socket in ["harness.sock", "app-notes.sock"] {
+            let path = door(socket, me);
+            for method in ["app.describe", "app.act", "calendar.delete_event", "memory_validate", "harness.attach"] {
+                assert_eq!(ask(&path, method).unwrap()["result"]["served"], method, "{socket} {method}");
+            }
+        }
     }
 }
 

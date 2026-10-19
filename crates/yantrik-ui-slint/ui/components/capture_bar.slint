@@ -1,0 +1,224 @@
+// CaptureBar — the bar Print opens: what to capture, and the button that does it
+// (design/capture-2026-10-15.md).
+//
+//   Screenshot | Record    Region | Screen    Timer Off | 3 s | 10 s    Pointer Hidden | Shown
+//   (Record: Audio None | System | Mic in place of Pointer)                    [Capture]  [x]
+//
+// Opaque, in the shell's own components: a translucent bar would be read through, and its
+// colours would change with whatever window was under it. Every control is a Tab stop and
+// Space or Enter chooses it; Esc closes the bar from anywhere in it. The choices are inputs the
+// owner keeps (`chose-*`), so a choice the shell could not keep is never drawn as kept — the
+// same rule YSegmented has.
+//
+// The pointer has no choice while recording: wf-recorder always draws it, and a switch that did
+// nothing would be the dead control this kit forbids. The bar says so in that place instead.
+//
+// `compact` stacks it in two rows, for a screen too narrow for one (the shell sets it).
+import { Theme } from "theme.slint";
+import { Icons } from "icon.slint";
+import { YSegmented } from "y_segmented.slint";
+import { YButton, YIconButton } from "y_button.slint";
+
+// The first two choices: what, and how much of the screen.
+component WhatChoices inherits HorizontalLayout {
+    in property <int> kind;
+    in property <int> area;
+    callback chose-kind(int);
+    callback chose-area(int);
+    spacing: Theme.sp-2;
+    alignment: start;
+
+    YSegmented {
+        label: "Capture";
+        items: ["Screenshot", "Record"];
+        selected: root.kind;
+        chosen(i) => { root.chose-kind(i); }
+    }
+    YSegmented {
+        label: "Area";
+        items: ["Region", "Screen"];
+        selected: root.area;
+        chosen(i) => { root.chose-area(i); }
+    }
+}
+
+// The timer, and the pointer (screenshots) or the sound (recordings).
+component HowChoices inherits HorizontalLayout {
+    in property <int> kind;
+    in property <int> timer;
+    in property <int> pointer;
+    in property <int> audio;
+    callback chose-timer(int);
+    callback chose-pointer(int);
+    callback chose-audio(int);
+    spacing: Theme.sp-2;
+    alignment: start;
+
+    Text {
+        text: "Timer";
+        color: Theme.text-secondary;
+        font-size: Theme.fs-caption;
+        vertical-alignment: center;
+    }
+    YSegmented {
+        label: "Timer";
+        items: ["Off", "3 s", "10 s"];
+        selected: root.timer;
+        chosen(i) => { root.chose-timer(i); }
+    }
+    if root.kind == 0 : Text {
+        text: "Pointer";
+        color: Theme.text-secondary;
+        font-size: Theme.fs-caption;
+        vertical-alignment: center;
+    }
+    if root.kind == 0 : YSegmented {
+        label: "Pointer";
+        items: ["Hidden", "Shown"];
+        selected: root.pointer;
+        chosen(i) => { root.chose-pointer(i); }
+    }
+    if root.kind == 1 : Text {
+        text: "Audio";
+        color: Theme.text-secondary;
+        font-size: Theme.fs-caption;
+        vertical-alignment: center;
+    }
+    if root.kind == 1 : YSegmented {
+        label: "Audio";
+        items: ["None", "System", "Mic"];
+        selected: root.audio;
+        chosen(i) => { root.chose-audio(i); }
+    }
+}
+
+// The button that does it, and the one that closes the bar.
+component BarActions inherits HorizontalLayout {
+    in property <int> kind;
+    in property <bool> recording;
+    callback go();
+    callback close();
+    spacing: Theme.sp-2;
+    alignment: end;
+
+    YButton {
+        variant: root.kind == 1 && root.recording ? 3 : 0;
+        label: root.kind == 0 ? "Capture" : root.recording ? "Stop recording" : "Start";
+        clicked => { root.go(); }
+    }
+    YIconButton {
+        variant: 1;
+        label: "Close";
+        icon-path: Icons.close;
+        clicked => { root.close(); }
+    }
+}
+
+export component CaptureBar inherits Rectangle {
+    // 0 screenshot, 1 record.
+    in property <int> kind: 0;
+    // 0 region, 1 screen.
+    in property <int> area: 0;
+    // 0 off, 1 three seconds, 2 ten seconds.
+    in property <int> timer: 0;
+    // 0 hidden, 1 shown (screenshots only).
+    in property <int> pointer: 0;
+    // 0 none, 1 system, 2 microphone (recordings only).
+    in property <int> audio: 0;
+    // A recording is running: Record's button stops it.
+    in property <bool> recording: false;
+    in property <bool> compact: false;
+
+    callback chose-kind(int);
+    callback chose-area(int);
+    callback chose-timer(int);
+    callback chose-pointer(int);
+    callback chose-audio(int);
+    callback go();
+    callback close();
+
+    // Where the keyboard starts when the bar opens, so Esc works before anything is clicked.
+    public function focus-bar() { keys.focus(); }
+
+    width: layout.preferred-width;
+    height: layout.preferred-height;
+    border-radius: Theme.r-lg;
+    background: Theme.bg-card;
+    border-width: 1px;
+    border-color: Theme.outline-border;
+    accessible-role: groupbox;
+    accessible-label: "Capture";
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.close();
+                return accept;
+            }
+            reject
+        }
+
+        layout := VerticalLayout {
+            padding: Theme.sp-3;
+            spacing: Theme.sp-2;
+
+            if !root.compact : HorizontalLayout {
+                spacing: Theme.sp-4;
+                WhatChoices {
+                    kind: root.kind;
+                    area: root.area;
+                    chose-kind(i) => { root.chose-kind(i); }
+                    chose-area(i) => { root.chose-area(i); }
+                }
+                HowChoices {
+                    kind: root.kind;
+                    timer: root.timer;
+                    pointer: root.pointer;
+                    audio: root.audio;
+                    chose-timer(i) => { root.chose-timer(i); }
+                    chose-pointer(i) => { root.chose-pointer(i); }
+                    chose-audio(i) => { root.chose-audio(i); }
+                }
+                BarActions {
+                    kind: root.kind;
+                    recording: root.recording;
+                    go => { root.go(); }
+                    close => { root.close(); }
+                }
+            }
+            if root.compact : VerticalLayout {
+                spacing: Theme.sp-2;
+                WhatChoices {
+                    kind: root.kind;
+                    area: root.area;
+                    chose-kind(i) => { root.chose-kind(i); }
+                    chose-area(i) => { root.chose-area(i); }
+                }
+                HowChoices {
+                    kind: root.kind;
+                    timer: root.timer;
+                    pointer: root.pointer;
+                    audio: root.audio;
+                    chose-timer(i) => { root.chose-timer(i); }
+                    chose-pointer(i) => { root.chose-pointer(i); }
+                    chose-audio(i) => { root.chose-audio(i); }
+                }
+                BarActions {
+                    kind: root.kind;
+                    recording: root.recording;
+                    go => { root.go(); }
+                    close => { root.close(); }
+                }
+            }
+            if root.kind == 1 : Text {
+                text: "Recordings always show the pointer. Super+Shift+R or the red dot in the status bar stops one.";
+                color: Theme.text-dim;
+                font-size: Theme.fs-micro;
+                wrap: word-wrap;
+                // Wrapped to the controls' width, never widening the bar to its own length.
+                preferred-width: 0px;
+                horizontal-stretch: 1;
+            }
+        }
+    }
+}

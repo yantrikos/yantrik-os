@@ -1,0 +1,55 @@
+// The capture bar (Print) as the shell draws it, over a magenta backdrop: any magenta inside the
+// bar's rectangle would be the backdrop showing through, and the bar is meant to be opaque. The
+// status bar sits at the top with the capture global, so the red dot can be drawn too.
+// src/capture_bar_tests.rs drives it.
+import { Theme, ThemeMode } from "theme.slint";
+import { CaptureBar } from "components/capture_bar.slint";
+import { StatusBar } from "components/status_bar.slint";
+import { CaptureState } from "components/bar/capture_state.slint";
+export { CaptureState }
+
+export component CaptureBarProbe inherits Window {
+    in property <bool> light: false;
+    changed light => { ThemeMode.dark = !root.light; }
+    in-out property <int> kind: 0;
+    in-out property <int> area: 0;
+    in-out property <int> timer: 0;
+    in-out property <int> pointer: 0;
+    in-out property <int> audio: 0;
+    in property <bool> compact: false;
+    in-out property <int> closes: 0;
+    in-out property <int> goes: 0;
+    out property <length> bar-x: bar.x;
+    out property <length> bar-y: bar.y;
+    out property <length> bar-w: bar.width;
+    out property <length> bar-h: bar.height;
+    background: #ff00ff;
+    default-font-family: Theme.font-ui;
+
+    public function focus-bar() { bar.focus-bar(); }
+
+    StatusBar {
+        x: 0;
+        y: 0;
+        width: 100%;
+        clock-text: "14:32";
+    }
+
+    bar := CaptureBar {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - self.height - Theme.taskbar-height - 16px;
+        kind: root.kind;
+        area: root.area;
+        timer: root.timer;
+        pointer: root.pointer;
+        audio: root.audio;
+        compact: root.compact;
+        chose-kind(i) => { root.kind = i; }
+        chose-area(i) => { root.area = i; }
+        chose-timer(i) => { root.timer = i; }
+        chose-pointer(i) => { root.pointer = i; }
+        chose-audio(i) => { root.audio = i; }
+        go => { root.goes += 1; }
+        close => { root.closes += 1; }
+    }
+}

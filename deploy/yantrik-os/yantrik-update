@@ -22,7 +22,8 @@
 #   yantrik-update rollback                                  restore the most recent backup
 #   yantrik-update status      [--porcelain]                 channel, host, build, backups
 #   yantrik-update set-channel nightly|beta|stable           change the channel, once, here
-#   yantrik-update reconcile                                 base packages the image ships and this machine lacks
+#   yantrik-update reconcile                                 packages the image ships (share/packages.list) and this machine lacks, harness plugins
+#   yantrik-update package-list FILE                         the names in a package list, checked; what the image build installs
 #   yantrik-update migrate-minds                             move Yantrik Mind into its own account (#411), memory counted twice
 #   yantrik-update mind-egress apply                         hold the mind account to its egress proxy, in the kernel (root)
 #   yantrik-update selftest                                  offline checks of the two above
@@ -53,6 +54,9 @@ set -uo pipefail
 # `sudo yantrik-update check`, ran their code as root through the password-free rule. Every
 # interpreter below is also started isolated (`python3 -I`: no working directory, no PYTHON*
 # variables, no user site).
+# This script's own path, absolute, before the line below moves the working directory: the
+# selftest reads the build scripts beside it.
+SELF_PATH="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
 [ "$(id -u)" = 0 ] && cd /
 
 # ── Where things live ───────────────────────────────────────────────────────────────────
@@ -586,7 +590,7 @@ cmd_migrate_ownership() {
   say "Making $PREFIX root's; $owner keeps logs/ and data/"
   chown root:root "$PREFIX" && chmod 0755 "$PREFIX"
   for d in "$BIN_DIR" "$SHARE_DIR" "$UPDATES_DIR" "$BACKUP_DIR" "$PREFIX/models" "$PREFIX/skills" \
-           "$PREFIX/i18n" "$PREFIX/ui-deployments"; do
+           "$PREFIX/i18n" "$PREFIX/ui-deployments" "$PREFIX/memory"; do
     [ -e "$d" ] || continue
     chown -R root:root "$d"
     chmod -R go-w "$d"
@@ -775,6 +779,7 @@ from it. Change it with: yantrik-update set-channel nightly" ;;
     reconcile_polkit || true
     reconcile_helpers || true
     reconcile_sysctl || true
+    reconcile_serial_console || true
     reconcile_registries || true
     reconcile_podman_socket || true
     reconcile_sudo_rule || true
@@ -784,7 +789,11 @@ from it. Change it with: yantrik-update set-channel nightly" ;;
     reconcile_private_dirs || true
     private_config || true
     reconcile_egress_seeds || true
+    reconcile_hermes_launcher || true
+    reconcile_harness_plugins || true
     reconcile_mind_egress || true
+    # Keys an earlier update left behind (#854); the running shell is this build.
+    refresh_session_chrome || true
     return 0
   fi
 
@@ -975,6 +984,11 @@ safely. Old backups live in $BACKUP_DIR."
     fi
   fi
 
+  if ! install_memory "$root" "$backup"; then
+    restore_backup "$backup"
+    fail "could not install memory/ (YantrikDB for the harnesses); rolled back to the previous build"
+  fi
+
   # Record the new build so `check` can prove currency next time.
   cat > "$BUILD_FILE" <<EOF
 name=${artifact%.tar.zst}
@@ -991,14 +1005,15 @@ EOF
   # The binaries are current; the base system may not be. Never fails the update over it —
   # reconcile_packages says in words what it could not do and how to finish it.
   #
-  # With the NEW build's list: this process is still the updater that was installed before, and
-  # its REQUIRED_PACKAGES is the old one. VM 520 went a08a47f → 0f3e733 and was told "base system
-  # reconciled" without swaybg, which only the new list names, so a package a build adds reached
-  # machines one update late. The installed file is the new build's by now, whatever path this
-  # process was started from, so it reconciles, as a process of its own; this one's list stands
-  # in only when that file cannot run.
+  # With the NEW build's code: this process is still the updater that was installed before. VM 520
+  # went a08a47f → 0f3e733 and was told "base system reconciled" without swaybg, which only the
+  # new build named, so a package a build adds reached machines one update late. The list itself
+  # is the new build's share/packages.list either way (#854); the installed updater is the new
+  # build's by now, whatever path this process was started from, so it reconciles, as a process
+  # of its own, and this one stands in only when that file cannot run.
   if [ -x "$BIN_DIR/yantrik-update" ]; then
-    YANTRIK_PREFIX="$PREFIX" "$BIN_DIR/yantrik-update" reconcile || true
+    # This apply refreshes the keys itself, after the new build answered (refresh_session_chrome).
+    YANTRIK_PREFIX="$PREFIX" YANTRIK_APPLY_REFRESHES_KEYS=1 "$BIN_DIR/yantrik-update" reconcile || true
   else
     reconcile_packages || true
   fi
@@ -1009,8 +1024,11 @@ EOF
   fi
   if [ "$restart" = 1 ]; then
     restart_and_verify "$backup"
+    # Only after the new build answered: restart_and_verify does not return from a rollback. Not
+    # with --no-restart either, where new keys could name actions the running shell does not have.
+    refresh_session_chrome || true
   else
-    info "not restarting (--no-restart); the new build takes effect on next session start"
+    info "not restarting (--no-restart); the new build, and any new keys, take effect on next session start"
   fi
 }
 
@@ -1347,9 +1365,115 @@ restore_backup() {
     seal_share
   fi
   [ -f "$backup/BUILD" ] && cp -a "$backup/BUILD" "$BUILD_FILE"
+  # The YantrikDB the build had (#677), which apply moved into the backup. Only from a tree root
+  # alone could write, as the binaries: a harness install feeds these wheels to pip. A backup
+  # taken before the bundle carried memory/ has none, and the one here now stays: the older
+  # build's installers read the same paths, and none would work without it.
+  if [ -d "$backup/memory" ]; then
+    if tree_is_roots && [ -n "$(find "$backup/memory" \( ! -user root -o \( ! -type l -perm /022 \) \) -print -quit 2>/dev/null)" ]; then
+      warn "backup $backup/memory is not root's alone to write; keeping the YantrikDB installed now"
+    else
+      swap_memory "$backup/memory" || warn "could not restore memory/ from $backup; keeping the YantrikDB installed now"
+    fi
+  fi
   # A rollback moves the version backwards, so the one-line copy has to move with it.
   stamp_version_file "$PREFIX" "$(installed_version)"
   info "restored from $backup"
+}
+
+# ── The compositor's keys, without a new login (#854) ──
+#
+# labwc reads its keys from the person's ~/.config/labwc/rc.xml, which yantrik-session copies
+# from share/labwc only at login. So after #828 an updated machine's Print still ran plain `grim`
+# until the person logged out and in. This asks the session's own copy, yantrik-session-chrome,
+# run as the session's owner (never as root, and it writes nothing through a link), whether the
+# home already has this build's files (--check). Only when it does not does it copy them, then
+# send that owner's labwc SIGHUP, which is what `labwc --reconfigure` sends: it re-reads rc.xml in
+# place, with every window left open.
+#
+# It compares the home with share/, not one build's share/ with the last, so it is the same answer
+# wherever it runs and running it twice changes nothing. That matters because of where it runs:
+#   reconcile   the hook every updater calls on the NEW build after installing it, including
+#               updaters from before #854, whose own apply has no step for the keys. Without this
+#               the first update of every machine already in the field brought the keys one update
+#               late (VM 520, 18 Oct). Run there, it happens before the shell is restarted; an old
+#               updater that then rolls back leaves the new keys with the old shell until the next
+#               login, which copies the old ones back.
+#   apply       this build's own apply does it after restart_and_verify returned (the new build
+#               answered; it never returns from a rollback) and tells its reconcile to leave it
+#               (YANTRIK_APPLY_REFRESHES_KEYS=1). Not with --no-restart: new keys could name actions
+#               the running shell does not have.
+#   rollback    after the restored build answered, the same way.
+
+# The labwc processes of the account with uid $1. A mind's own labwc runs as its own account
+# (#411), so this never reaches it. The selftest names a stand-in.
+session_labwc_pids() { # <uid>
+  local name=labwc
+  selftest_standins && [ -n "${YANTRIK_LABWC_NAME:-}" ] && name="$YANTRIK_LABWC_NAME"
+  pgrep -u "$1" -x "$name" 2>/dev/null || true
+}
+
+# Ask each labwc in $2.. (pids of the account named $1) to re-read its config. As that account
+# when this is root, so a pid that is no longer its labwc can only be one of its own processes.
+reload_labwc() { # <owner> <pid>...
+  local owner="$1" pid ok=0 as=()
+  shift
+  [ "$(id -u)" = 0 ] && as=(runuser -u "$owner" --)
+  for pid in "$@"; do
+    if "${as[@]}" kill -HUP "$pid" 2>/dev/null; then
+      info "labwc (pid $pid) was asked to re-read its config (SIGHUP, as labwc --reconfigure sends)"
+    else
+      warn "could not ask labwc (pid $pid) to re-read its config; the new keys work after the next login"
+      ok=1
+    fi
+  done
+  return "$ok"
+}
+
+refresh_session_chrome() {
+  [ -d "$SHARE_DIR/labwc" ] || return 0
+  local owner uid home pids
+  owner="$(desktop_owner)"
+  case "$owner" in ''|root|[!a-z_]*|*[!a-z0-9_-]*)
+    info "compositor keys: cannot tell whose desktop this is; the session puts them in place at the next login"; return 0 ;;
+  esac
+  uid="$(id -u "$owner" 2>/dev/null)" || { warn "compositor keys: no account $owner"; return 1; }
+  pids="$(session_labwc_pids "$uid")"
+  if [ -z "$pids" ]; then
+    info "compositor keys: no desktop is running for $owner; the session puts them in place at the next login"
+    return 0
+  fi
+  home="$(getent passwd "$owner" | cut -d: -f6)"
+  selftest_standins && [ -n "${YANTRIK_CHROME_HOME:-}" ] && home="$YANTRIK_CHROME_HOME"
+  [ -n "$home" ] && [ -d "$home" ] || { warn "compositor keys: $owner has no home directory"; return 1; }
+  local as=()
+  if [ "$(id -u)" = 0 ]; then
+    as=(runuser -u "$owner" --)
+  elif [ "$(id -u)" != "$uid" ]; then
+    warn "compositor keys: the desktop is $owner's and this runs as $(id -un); they apply at the next login"
+    return 1
+  fi
+  # A time limit like every other process this runs: the copy is a few files and an fc-cache.
+  local chrome=("${as[@]}" env -i HOME="$home" PATH=/usr/bin:/bin LANG=C.UTF-8
+                timeout --kill-after=10 120 "$BIN_DIR/yantrik-session-chrome")
+  if "${chrome[@]}" --check "$SHARE_DIR" >/dev/null 2>&1; then
+    info "compositor keys: $owner's are already this build's"
+    return 0
+  fi
+  say "The compositor's keys and theme in $home are not this build's"
+  local out rc=0
+  out="$("${chrome[@]}" "$SHARE_DIR" 2>&1)" || rc=$?
+  [ -z "$out" ] || printf '%s\n' "$out" | LC_ALL=C tr -cd '\012\040-\176' | while IFS= read -r line; do info "$line"; done
+  if [ "$rc" = 0 ]; then
+    info "copied into $home/.config/labwc as $owner"
+  else
+    warn "not all of the chrome could be put in $home as $owner (above); labwc is asked to re-read what did land"
+  fi
+  # shellcheck disable=SC2086  # pgrep's pids, one per line, split on purpose
+  reload_labwc "$owner" $pids || rc=1
+  # Claimed only when the copy and the reload both happened.
+  [ "$rc" = 0 ] && info "the new keys work now, with no new login"
+  return "$rc"
 }
 
 # ── rollback ────────────────────────────────────────────────────────────────────────────
@@ -1364,6 +1488,9 @@ cmd_rollback() {
   say "Rolling back to $backup"
   restore_backup "$backup"
   restart_and_verify "$backup"
+  # The restored build's keys into the person's home: the same gap as an update, the other way
+  # round (#854).
+  refresh_session_chrome || true
 }
 
 # ── status ──────────────────────────────────────────────────────────────────────────────
@@ -1498,74 +1625,347 @@ and this is running as $(id -un). Run: sudo yantrik-update set-channel $new"
 # no `ss`, no `ping`, no editor and no htop, because the ISO gained those packages after 520
 # was installed and no update path ever looked at a Debian package (#210). The fix is not to
 # reinstall the machine every time a package list moves — it is for the updater, which is what
-# the machine trusts to keep it current, to also reconcile the small list below: every package
-# whose command the shipped code shells out to or tells a person to run. release-check
-# (tier ci) asserts the same commands on a booted image, so the two lists cannot drift apart
-# without a nightly turning red.
+# the machine trusts to keep it current, to also install what the image's own package list has
+# and this machine lacks. release-check (tier ci) asserts the commands that matter most on a
+# booted image.
 
-# Package names, not command names: `ip` and `ss` are both in iproute2, `ping` is in
-# iputils-ping. A package the image's own lists all install. xdg-desktop-portal-gtk has no
-# command: it is the file picker behind every Save and Upload the browser offers (#33), and a
-# machine installed before the image gained it could not save a page or attach a file.
-# The developer's baseline (#401): git, bash-completion (Debian's ~/.bashrc loads it once it is
-# there), and rootless podman for the Container Manager with what rootless needs beside it —
-# uidmap, passt, fuse-overlayfs — named here because this installs without Recommends. Debian
-# package names only: root runs this list through apt. mise is not here: Debian does not package
-# it, and this updater downloads nothing but its own bundle, so it comes with the image.
-# flatpak: the Package Manager installs Flathub apps with it, per-user and without root (#399);
-# a machine installed before the image carried it could search Flathub for nothing.
-# vim-tiny: muscle memory and scripts call `vi`, and the fresh-install audit found
-# `command not found: vi` on the shipped image (#678).
-REQUIRED_PACKAGES="iproute2 iputils-ping grim curl python3 nano htop vim-tiny swaybg xdg-desktop-portal-gtk flatpak git bash-completion podman uidmap passt fuse-overlayfs nftables upower power-profiles-daemon"
+# ── The list (#854) ──
+#
+# There used to be a second list here, REQUIRED_PACKAGES, typed in beside the ISO's own, and the
+# two drifted: mpv went into the image for #255 and never into this one, so a machine installed
+# before it never got a player and Music could not play (#854). Now there is one list,
+# deploy/yantrik-os/packages.list. The image build installs it (build-debian-iso.sh, through
+# `yantrik-update package-list`, the same parser as below), and the release bundle ships it as
+# share/packages.list, hash-listed in bin/yantrik-root-files.sha256 like everything else root acts
+# on from share/ (#419). This reads that copy only: root's, in a share/ only root can write, with
+# the content this build shipped. Never a path someone else could have written, and never a
+# list typed into this file, which is how the second list began.
+PACKAGE_LIST_REL="packages.list"
+# Generous for a list of ~60 names, and checked before the file is read.
+PACKAGE_LIST_MAX_BYTES=65536
+PACKAGE_LIST_MAX_NAMES=512
+
+# read_package_list FILE: the names in a package list, one per line. A line that is not exactly
+# one Debian package name refuses the whole file (exit 1, the line named on stderr), because a
+# list that is partly applied is a machine nobody can predict. Names go to apt as separate
+# arguments, so with this check nothing in the file can become an option, a path or a command.
+# Two things apt-get makes of a name that this syntax alone allows are closed elsewhere: a name
+# with `.` or `+` and no package of exactly that name is read as a regex (`zst.` selected zutty
+# and a dozen others on apt 2.8), so only names apt knows exactly are installed
+# (apt_known_names); a trailing `-` means "remove", so it is refused here (security review of
+# #858). A trailing `+` only means "install", and real names end in it (g++).
+read_package_list() { # <file>
+  local f="$1" n=0 count=0 line size out=""
+  if [ -L "$f" ] || [ ! -f "$f" ]; then
+    printf '%s is not a regular file\n' "$f" >&2; return 1
+  fi
+  size="$(stat -c %s -- "$f" 2>/dev/null)" || { printf 'cannot read %s\n' "$f" >&2; return 1; }
+  if [ "$size" -gt "$PACKAGE_LIST_MAX_BYTES" ]; then
+    printf '%s is %s bytes; a package list is at most %s\n' "$f" "$size" "$PACKAGE_LIST_MAX_BYTES" >&2
+    return 1
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    line="${line%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -n "$line" ] || continue
+    # Debian's name syntax, minus a trailing `-`: apt-get reads `name-` as "remove name".
+    if ! [[ "$line" =~ ^[a-z0-9][a-z0-9+.-]*[a-z0-9+]$ ]]; then
+      printf '%s line %s is not one Debian package name: %s\n' "$f" "$n" \
+        "$(printf '%s' "$line" | LC_ALL=C tr -cd '\040-\176' | cut -c1-80)" >&2
+      return 1
+    fi
+    count=$((count + 1))
+    if [ "$count" -gt "$PACKAGE_LIST_MAX_NAMES" ]; then
+      printf '%s names more than %s packages\n' "$f" "$PACKAGE_LIST_MAX_NAMES" >&2; return 1
+    fi
+    out="$out$line"$'\n'
+  done < "$f"
+  [ "$count" -gt 0 ] || { printf '%s names no packages\n' "$f" >&2; return 1; }
+  printf '%s' "$out"
+}
+
+# The installed list, only when this build shipped it and only root could have written it. Prints
+# the names, or the reason it is not trusted on stderr.
+trusted_package_list() {
+  local f="$SHARE_DIR/$PACKAGE_LIST_REL"
+  if [ ! -e "$f" ] && [ ! -L "$f" ]; then
+    printf 'this build ships no %s\n' "$f" >&2; return 1
+  fi
+  if ! root_file_ok "$PACKAGE_LIST_REL" "$f"; then
+    printf '%s is not root'"'"'s alone to write, or is not the list this build shipped (%s); not trusted\n' \
+      "$f" "$ROOT_FILES" >&2
+    return 1
+  fi
+  read_package_list "$f"
+}
 
 # Is this package installed, per dpkg? Prints dpkg's own status word, or nothing.
 pkg_installed() {
   dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true
 }
 
-# The REQUIRED_PACKAGES that the status command $1 does not report installed. Split from the
-# apt run and from dpkg itself so the selftest can hand it a whole machine that is missing
-# things and check, package by package, which ones it names — the one decision here that can
-# be wrong in a way a person feels.
-missing_packages() { # <status-command>
-  local pkg missing=""
-  for pkg in $REQUIRED_PACKAGES; do
+# The names (after the status command) that the status command does not report installed. Split
+# from the apt run and from dpkg itself so the selftest can hand it a whole machine that is
+# missing things and check, package by package, which ones it names — the one decision here that
+# can be wrong in a way a person feels.
+missing_packages() { # <status-command> <name>...
+  local status="$1" pkg missing=""
+  shift
+  for pkg in "$@"; do
     # power-profiles-daemon conflicts with tlp on Debian: apt would remove tlp to install it, and
     # someone who installed tlp chose it. Their machine is left as it is.
-    if [ "$pkg" = power-profiles-daemon ] && [ "$("$1" tlp)" = "installed" ]; then continue; fi
-    [ "$("$1" "$pkg")" = "installed" ] || missing="$missing $pkg"
+    if [ "$pkg" = power-profiles-daemon ] && [ "$("$status" tlp)" = "installed" ]; then continue; fi
+    [ "$("$status" "$pkg")" = "installed" ] || missing="$missing $pkg"
   done
   printf '%s' "${missing# }"
 }
 
-# Install what this machine drifted from, and never fail the caller over it: a good build is
-# already installed by the time this runs, and a missing `ping` must not read as a failed
-# update. On machines this cannot sudo, it prints the one command that finishes the job.
+# ── Running apt ──
+#
+# Only as root, or through `sudo -n` on a tree from before #397. Never with a prompt
+# (DEBIAN_FRONTEND=noninteractive, and a changed config file keeps the machine's own), never
+# removing anything (--no-remove: apt stops rather than remove a package to make room), and with
+# only the names that are missing; apt upgrades an installed package only when a missing one
+# needs a newer version of it. Every run has a time limit. The download is a step of its own,
+# because killing a download costs nothing and killing dpkg half way leaves it to be finished.
+APT_UPDATE_SECS=180
+APT_DOWNLOAD_SECS=900
+APT_INSTALL_SECS=900
+# How long to wait for another apt or dpkg (unattended-upgrades, the Package Manager, a person's
+# own apt) to let go of the package database before reporting it and installing nothing.
+APT_LOCK_WAIT=60
+APT_LOCKS="/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock"
+
+# Stand-ins for apt, dpkg, the lock files and the limits, so the selftest can drive the whole
+# install without a Debian machine. Honoured only in selftest mode (YANTRIK_SELFTEST=1) and never
+# for root, like install-mind's: a root run with any of these in its environment uses the real
+# apt and the real limits.
+selftest_standins() { [ "${YANTRIK_SELFTEST:-}" = 1 ] && [ "$(id -u)" != 0 ]; }
+pkg_status_cmd() {
+  if selftest_standins && [ -n "${YANTRIK_DPKG_STATUS:-}" ]; then printf '%s' "$YANTRIK_DPKG_STATUS"
+  else printf 'pkg_installed'; fi
+}
+apt_setting() { # <name> <default>
+  local v=""
+  selftest_standins && v="$(printenv "YANTRIK_$1" 2>/dev/null)"
+  printf '%s' "${v:-$2}"
+}
+
+# Every package name apt knows, one per line: `apt-cache pkgnames` prints names as they are,
+# never matched as a pattern. One call (about a second and a half), then exact lookups in it.
+apt_known_names() { # <seconds>
+  local cache=(apt-cache)
+  if selftest_standins && [ -n "${YANTRIK_APT_CACHE:-}" ]; then cache=("$YANTRIK_APT_CACHE"); fi
+  timeout --kill-after=10 "$1" "${cache[@]}" pkgnames 2>/dev/null
+}
+
+# The first apt or dpkg lock someone holds, or nothing. fcntl locks, as apt takes them; opened
+# without following a link and without blocking on anything that is not a file.
+apt_lock_held() {
+  # shellcheck disable=SC2046  # a list of fixed paths, split on purpose
+  python3 -I - $(apt_setting APT_LOCKS "$APT_LOCKS") <<'PY'
+import fcntl, os, sys
+for path in sys.argv[1:]:
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        continue
+    try:
+        fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print(path)
+        sys.exit(0)
+    finally:
+        os.close(fd)
+PY
+}
+
+# Wait up to APT_LOCK_WAIT seconds for the package database to be free. Prints the lock still
+# held when it gives up.
+apt_wait_for_lock() {
+  local waited=0 held limit
+  limit="$(apt_setting APT_LOCK_WAIT "$APT_LOCK_WAIT")"
+  while held="$(apt_lock_held)"; [ -n "$held" ]; do
+    if [ "$waited" -ge "$limit" ]; then printf '%s' "$held"; return 1; fi
+    # To stderr: stdout is the held lock's path, which the caller reads.
+    [ "$waited" = 0 ] && info "another apt or dpkg is using the package database ($held); waiting up to ${limit}s" >&2
+    sleep 2
+    waited=$((waited + 2))
+  done
+}
+
+# apt_run <seconds> <log> <apt-get args...>: apt-get, with nothing to answer and a time limit.
+# timeout's 124 (or 137 once it had to kill) means the limit was reached.
+apt_run() {
+  local secs="$1" log="$2"; shift 2
+  local apt=(apt-get)
+  if selftest_standins && [ -n "${YANTRIK_APT:-}" ]; then apt=("$YANTRIK_APT")
+  elif [ "$(id -u)" != 0 ]; then apt=(sudo -n apt-get); fi
+  # sudo -n before env, when it is needed at all, so the environment reaches apt.
+  if [ "${apt[0]}" = sudo ]; then
+    # shellcheck disable=SC2024  # the log is this process's own temporary file, written as it
+    sudo -n env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30 "$secs" apt-get "$@" > "$log" 2>&1
+  else
+    env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30 "$secs" "${apt[@]}" "$@" > "$log" 2>&1
+  fi
+}
+
+# One line saying why apt failed, from what it printed and how it exited. The mirror and the lock
+# are said in words, because those are what a person can act on; anything else is apt's own
+# last error, reduced to printable ASCII and without any user:password@ a source line carried.
+apt_reason() { # <log> <exit> <seconds>
+  if [ "$2" = 124 ] || [ "$2" = 137 ]; then
+    printf 'apt-get did not finish within %ss and was stopped' "$3"; return 0
+  fi
+  if grep -qE 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to connect|Network is unreachable|Could not connect|No route to host|Connection timed out|Connection refused' "$1" 2>/dev/null; then
+    printf "couldn't reach the package mirror"; return 0
+  fi
+  if grep -qE 'Could not get lock|Unable to acquire the dpkg frontend lock|Unable to lock' "$1" 2>/dev/null; then
+    printf 'another apt or dpkg held the package database'; return 0
+  fi
+  local last
+  last="$(grep -E '^E: ' "$1" 2>/dev/null | tail -1)"
+  [ -n "$last" ] || last="$(grep -v '^[[:space:]]*$' "$1" 2>/dev/null | tail -1)"
+  [ -n "$last" ] || last="apt-get exited $2"
+  printf '%s' "$last" | sed 's/^E: //; s#//[^/@[:space:]]*@#//#g' | LC_ALL=C tr -cd '\040-\176' | cut -c1-200
+}
+
+# Download, then install, the named packages. 0, or 1 with APT_WHY set to one line saying why.
+APT_WHY=""
+apt_install() { # <name>...
+  local log rc dl inst
+  log="$(mktemp)"
+  dl="$(apt_setting APT_DOWNLOAD_SECS "$APT_DOWNLOAD_SECS")"
+  inst="$(apt_setting APT_INSTALL_SECS "$APT_INSTALL_SECS")"
+  local opts=(-y -q --no-install-recommends --no-remove --no-upgrade
+              -o "DPkg::Lock::Timeout=$(apt_setting APT_LOCK_WAIT "$APT_LOCK_WAIT")"
+              -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+  rc=0; apt_run "$dl" "$log" install --download-only "${opts[@]}" "$@" || rc=$?
+  if [ "$rc" != 0 ]; then APT_WHY="$(apt_reason "$log" "$rc" "$dl")"; rm -f "$log"; return 1; fi
+  rc=0; apt_run "$inst" "$log" install "${opts[@]}" "$@" || rc=$?
+  if [ "$rc" != 0 ]; then
+    APT_WHY="$(apt_reason "$log" "$rc" "$inst")"
+    if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+      APT_WHY="$APT_WHY; if dpkg was interrupted, finish with: sudo dpkg --configure -a"
+    fi
+    rm -f "$log"; return 1
+  fi
+  rm -f "$log"
+}
+
+# Install what this machine lacks from the list, and never fail the caller over it: a good build
+# is already installed by the time this runs, and a missing `ping` must not read as a failed
+# update. Says, in the apply's own output, what was installed, how many were already present, and
+# each package that could not be installed with the reason. Returns 1 when anything is still
+# missing.
 reconcile_packages() {
+  local status_cmd; status_cmd="$(pkg_status_cmd)"
   # dpkg is the Debian answer. A machine without it (a dev box on another distro, an Alpine
   # deploy) is not this list's machine, and `apply` must not die asking.
-  command -v dpkg-query >/dev/null 2>&1 || {
-    info "no dpkg-query here — the package reconcile is for Debian machines"
+  if [ "$status_cmd" = pkg_installed ] && ! command -v dpkg-query >/dev/null 2>&1; then
+    info "no dpkg-query here — the package list is for Debian machines"
     return 0
-  }
-  local missing; missing="$(missing_packages pkg_installed)"
-  if [ "$(pkg_installed tlp)" = "installed" ] && [ "$(pkg_installed power-profiles-daemon)" != "installed" ]; then
-    info "tlp is installed, so power-profiles-daemon is left out: they conflict and apt would remove tlp"
   fi
-  [ -n "$missing" ] || return 0
-  say "this machine is missing packages the image ships: $missing"
-  # shellcheck disable=SC2086  # a package list, split on purpose
-  if sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $missing; then
-    missing="$(missing_packages pkg_installed)"
-    if [ -z "$missing" ]; then
-      info "base system reconciled"
-      return 0
-    fi
-    warn "still missing after apt-get: $missing"
+  say "Packages a fresh install has (share/$PACKAGE_LIST_REL)"
+  local listed
+  if ! listed="$(trusted_package_list 2>&1)"; then
+    warn "no package list this updater can trust, so no package was installed: $listed"
     return 1
   fi
-  warn "could not run apt-get without a password. Finish it once with: sudo apt-get install -y --no-install-recommends $missing"
-  return 1
+  local -a want=()
+  mapfile -t want <<< "$listed"
+  local missing; missing="$(missing_packages "$status_cmd" "${want[@]}")"
+  local -a miss=()
+  # shellcheck disable=SC2206  # names checked by read_package_list, split on purpose
+  [ -z "$missing" ] || miss=($missing)
+  local skipped=0
+  if [ "$("$status_cmd" tlp)" = "installed" ] && [ "$("$status_cmd" power-profiles-daemon)" != "installed" ] \
+     && printf '%s\n' "${want[@]}" | grep -qx power-profiles-daemon; then
+    skipped=1
+    info "tlp is installed, so power-profiles-daemon is left out: they conflict and apt would remove tlp"
+  fi
+  info "already present: $(( ${#want[@]} - ${#miss[@]} - skipped )) of ${#want[@]}"
+  [ "${#miss[@]}" -gt 0 ] || return 0
+  info "missing: ${miss[*]}"
+
+  if [ "$(id -u)" != 0 ] && ! selftest_standins && ! sudo -n true 2>/dev/null; then
+    warn "failed: ${miss[*]} — apt needs root, and this account cannot sudo without a password. Finish with: sudo yantrik-update reconcile"
+    return 1
+  fi
+  local held
+  if ! held="$(apt_wait_for_lock)"; then
+    warn "failed: ${miss[*]} — another apt or dpkg still holds the package database ($held) after $(apt_setting APT_LOCK_WAIT "$APT_LOCK_WAIT")s; nothing was installed. Run 'sudo yantrik-update reconcile' once it is done"
+    return 1
+  fi
+
+  # Fresh indexes, or an old machine asks the mirror for versions it no longer has. A failure
+  # here that is not the network (one third-party source, say) still lets the install try with
+  # the indexes there are.
+  local log rc=0 secs why
+  log="$(mktemp)"
+  secs="$(apt_setting APT_UPDATE_SECS "$APT_UPDATE_SECS")"
+  apt_run "$secs" "$log" update -q -o "DPkg::Lock::Timeout=$(apt_setting APT_LOCK_WAIT "$APT_LOCK_WAIT")" || rc=$?
+  if [ "$rc" != 0 ]; then
+    why="$(apt_reason "$log" "$rc" "$secs")"
+    rm -f "$log"
+    case "$why" in
+      "couldn't reach the package mirror"*|"another apt"*|"apt-get did not finish"*)
+        warn "failed: ${miss[*]} — $why (apt-get update); nothing was installed, and the next update tries again"
+        return 1 ;;
+    esac
+    info "apt-get update reported: $why; installing with the indexes this machine has"
+  fi
+  rm -f "$log"
+
+  # Only names apt knows exactly: any other name with a `.` or `+` in it apt-get would read as a
+  # regex and install whatever matched.
+  local known pkg exact=() failed=()
+  known="$(mktemp)"
+  if ! apt_known_names "$(apt_setting APT_UPDATE_SECS "$APT_UPDATE_SECS")" > "$known"; then
+    rm -f "$known"
+    warn "failed: ${miss[*]} — apt-cache could not list the packages apt knows; nothing was installed"
+    return 1
+  fi
+  for pkg in "${miss[@]}"; do
+    if grep -qxF -- "$pkg" "$known"; then exact+=("$pkg")
+    else failed+=("$pkg — no package of exactly that name in this machine's apt sources"); fi
+  done
+  rm -f "$known"
+  local present=$(( ${#want[@]} - ${#miss[@]} - skipped ))
+  miss=("${exact[@]}")
+
+  # All at once, the usual case. If that fails for a reason that is not the whole machine's (the
+  # mirror, the lock, the time limit), one at a time, so one package that cannot be installed
+  # does not keep the rest away.
+  local done_ok=()
+  if [ "${#miss[@]}" = 0 ]; then
+    :
+  elif apt_install "${miss[@]}"; then
+    done_ok=("${miss[@]}")
+  else
+    case "$APT_WHY" in
+      "couldn't reach the package mirror"*|"another apt"*|"apt-get did not finish"*)
+        for pkg in "${miss[@]}"; do failed+=("$pkg — $APT_WHY"); done ;;
+      *)
+        for pkg in "${miss[@]}"; do
+          if apt_install "$pkg"; then done_ok+=("$pkg"); else failed+=("$pkg — $APT_WHY"); fi
+        done ;;
+    esac
+  fi
+  # apt's word is checked against dpkg's.
+  local ok=0
+  for pkg in "${done_ok[@]}"; do
+    if [ "$("$status_cmd" "$pkg")" = installed ]; then
+      info "installed: $pkg"; ok=$((ok + 1))
+    else
+      failed+=("$pkg — apt-get finished, but dpkg does not list it installed")
+    fi
+  done
+  for pkg in "${failed[@]}"; do warn "failed: $pkg"; done
+  info "packages: $ok installed, $present already present, ${#failed[@]} failed"
+  [ "${#failed[@]}" = 0 ]
 }
 
 # Subordinate ids for rootless podman (#401). podman maps a container's users onto ids the
@@ -1634,13 +2034,83 @@ seal_share() {
   chown -R root:root "$SHARE_DIR" && chmod -R go-w "$SHARE_DIR"
 }
 
+# YantrikDB, every mind's memory (#677): the bundle's memory/ (bake-memory.sh) at $PREFIX/memory,
+# where every harness install reads its wheels and yantrikdb-mcp. Before the bundle carried it,
+# only an imaged machine had it, and one that got its build by update (VM 520, build 1448) stopped
+# every harness install at "this image has no yantrikdb-mcp".
+#
+# install_memory ROOT BACKUP — the old tree is moved into BACKUP/memory (a rename on the same
+# disk, so it costs no space) and restore_backup puts it back with the rest of the build. A bundle
+# without memory/ (one built before this) leaves what is there alone. Returns 1 on failure, and
+# the caller rolls the whole build back.
+install_memory() {
+  local root="$1" backup="${2:-}" dest="$PREFIX/memory"
+  if [ ! -d "$root/memory" ]; then
+    warn "this build carries no memory/; harness installs use the YantrikDB already here, if any"
+    return 0
+  fi
+  swap_memory "$root/memory" "$backup" || return 1
+  local want have
+  want="$(sed -n 's/^image-python=//p' "$dest/VERSIONS" 2>/dev/null)"
+  have="$(python3 -I -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
+  if [ -n "$want" ] && [ "$want" != "$have" ]; then
+    warn "this build's yantrikdb-mcp is for Python $want and this machine's python3 is ${have:-missing}; Pi, DeepSeek and OpenClaw memory will not start"
+  fi
+  info "installed YantrikDB for the harnesses ($(head -n 1 "$dest/VERSIONS" 2>/dev/null))"
+}
+
+# swap_memory SRC [KEEP] — SRC's copy becomes $PREFIX/memory whole: copied beside it, sealed, then
+# two renames, so a harness install never reads half of one memory and half of another. The tree
+# it replaces goes to KEEP/memory when KEEP is given, and is deleted otherwise.
+#
+# Sealed as root: root:root and nothing writable by group or others, whoever owned SRC, on the
+# update path as on the ISO (build-debian-iso.sh). The harnesses run as the person and only read
+# it, so neither the person nor a harness can swap a wheel or yantrikdb-mcp under the next install.
+# The copy is a hard-link copy where it can be (a backup's tree back in place costs no space); a
+# shared file is never written, only replaced whole, and the seal applies to the backup's links too.
+swap_memory() {
+  local src="$1" keep="${2:-}" dest="$PREFIX/memory" new="$PREFIX/.memory.new" old="$PREFIX/.memory.old"
+  rm -rf "$new" "$old"
+  if ! { cp -al "$src" "$new" 2>/dev/null || { rm -rf "$new"; cp -a --no-preserve=ownership "$src" "$new"; }; }; then
+    rm -rf "$new"
+    warn "could not copy memory/ (YantrikDB for the harnesses) into place"
+    return 1
+  fi
+  if [ "$(id -u)" = 0 ]; then
+    chown -R root:root "$new" || { rm -rf "$new"; warn "could not make memory/ root's"; return 1; }
+  fi
+  # a+rX as well: tar unpacked the bundle under root's umask, and a sudo umask of 077 would leave
+  # a tree the harnesses (the person's) cannot read. Modes then match the ISO's copy of the bundle.
+  chmod -R go-w,a+rX "$new" || { rm -rf "$new"; warn "could not seal memory/"; return 1; }
+  if [ -e "$dest" ]; then
+    mv "$dest" "$old" || { rm -rf "$new"; warn "could not move the old memory/ aside"; return 1; }
+  fi
+  if ! mv "$new" "$dest"; then
+    [ -e "$old" ] && mv "$old" "$dest"
+    rm -rf "$new"
+    warn "could not put memory/ (YantrikDB for the harnesses) in place"
+    return 1
+  fi
+  if [ -e "$old" ]; then
+    if [ -n "$keep" ] && [ -d "$keep" ] && [ ! -e "$keep/memory" ] && mv "$old" "$keep/memory"; then
+      [ "$(id -u)" = 0 ] && chmod -R go-w "$keep/memory"
+    else
+      rm -rf "$old"
+    fi
+  fi
+  return 0
+}
+
 # Whether a file this updater is about to install as root came from where only root can write:
 # root's, not writable by group or others, in a directory (and a share/ and prefix) the same.
+# ROOT_UID is root's uid, a variable only so the selftest, which CI runs as an ordinary user, can
+# name its own; assigned here unconditionally, so nothing from the environment sets it.
+ROOT_UID=0
 source_is_roots() {
   local f="$1" d
   d="$(dirname "$f")"
   for p in "$f" "$d" "$SHARE_DIR" "$PREFIX"; do
-    [ "$(stat -c %u "$p" 2>/dev/null)" = 0 ] || return 1
+    [ "$(stat -c %u "$p" 2>/dev/null)" = "$ROOT_UID" ] || return 1
   done
   [ -z "$(find "$f" "$d" "$SHARE_DIR" "$PREFIX" -maxdepth 0 ! -type l -perm /022 2>/dev/null)" ]
 }
@@ -1796,6 +2266,493 @@ reconcile_sysctl() {
   done
 }
 
+# What an installer before 16 Oct 2026 wrote into /etc/default/grub, put right on a machine that
+# still has it (see grub_defaults in crates/yantrik-ui/src/wire/installer.rs). Two things:
+#
+# The kernel's serial console, until 12 Oct: `console=ttyS0,115200 console=tty1`. With no serial
+# port, systemd starts a login prompt on ttyS0 anyway, agetty fails ("failed to get terminal
+# attributes: Input/output error") and the unit restarts every ten seconds for as long as the
+# machine runs: about 8,600 times a day on VM 541 (16 Oct), installed 12 Oct and updated since,
+# because nothing here ever touched the file.
+#
+# GRUB's serial terminal, in two forms. 1 Apr (665c83d6) to 14 Oct: `GRUB_TERMINAL="console
+# serial"`, the firmware's text console and no gfxterm at all (VM 541, 16 Oct: Debian's blue text
+# menu, then 5.5 s of black before the unlock screen). 14 to 16 Oct:
+# `GRUB_TERMINAL_INPUT="console serial"` and `GRUB_TERMINAL_OUTPUT="gfxterm serial"`; with a second
+# output GRUB draws its text menu, so the Yantrik theme never shows, and the screen is black with
+# a cursor for 7.5 s between Enter and plymouth (VM 543, 16 Oct; #820). Both carry
+# `GRUB_SERIAL_COMMAND="serial --speed=115200"`. The installer writes gfxterm alone now, with
+# GRUB_GFXMODE=auto and GRUB_GFXPAYLOAD_LINUX=keep, and the first form gets those two as well
+# when it has none of its own. With either form the theme is added as the installer adds it
+# (installer.rs, theme_for_boot and install_grub_theme; yantrik-install.sh): on UEFI only, and
+# only when nothing names a theme yet, by copying it to /boot/grub/themes/yantrik and adding
+# GRUB_THEME. It comes from this build's share/grub-theme (build-release.sh stages it with
+# stage-grub-theme.sh, as the image's is made, and lists every file's hash), or failing that from
+# the image's /usr/share/yantrik/grub-theme (images from 93b3a3f, 14 Oct, on): VM 541, imaged
+# 12 Oct, has no theme but the build's (#835 driven retest). Not when that directory is already
+# there with something else in it: that is someone's own. Not on a machine that starts by BIOS
+# and has a theme line (installed 14 to 15 Oct, before 4123296): there the serial terminal is what
+# keeps GRUB from the themed menu that stops it at "unaligned pointer", so it is left as it is;
+# and a BIOS machine is never given a theme.
+#
+# And #820's console arguments, on UEFI and BIOS alike: an installer before 16 Oct wrote a
+# GRUB_CMDLINE_LINUX_DEFAULT without them, so between GRUB and plymouth the kernel console is
+# black with a blinking cursor (VM 541: 5.5 s before the disk's password prompt). The four
+# arguments are appended to that line, inside its quotes, when it is exactly one an installer
+# wrote (installer_unlock.rs's cmdline_default and the text installer, in git history: the
+# encrypted and unencrypted forms below) and nothing in grub.d sets it; nothing else on the line
+# changes. With them goes the image's tmpfiles line that gives every console opened after boot its
+# cursor back (boot-unlock/splash.d/cursor.conf), which an older image does not have.
+#
+# Only the exact lines an old installer wrote are changed, to the lines it writes now; git
+# history has no other forms. Any other terminal or kernel line is someone's choice (a serial
+# terminal or console added by hand to debug a machine that has a port, a disk's LUKS
+# arguments), as is one set in grub.d, and is left as it is. The file is copied aside first,
+# once for all the changes, and kept; grub.cfg is regenerated as the installer does it, and if
+# that fails both files go back as they were, and what this run added (the theme it copied, the
+# cursor line it wrote) is taken away again, and nothing else: the machine boots as it did
+# before. Variables, so the selftest can point them at a scratch directory.
+GRUB_DEFAULTS=/etc/default/grub
+GRUB_CFG=/boot/grub/grub.cfg
+GRUB_EFI_DIR=/sys/firmware/efi
+GRUB_SCRIPTS_DIR=/etc/grub.d
+GRUB_THEME_SOURCE=/usr/share/yantrik/grub-theme
+GRUB_THEME_BUNDLED="$SHARE_DIR/grub-theme"
+GRUB_THEME_DIR=/boot/grub/themes/yantrik
+GRUB_THEME_LINE='GRUB_THEME="/boot/grub/themes/yantrik/theme.txt"'
+GRUB_CMDLINE_OLD='GRUB_CMDLINE_LINUX="console=ttyS0,115200 console=tty1"'
+GRUB_CMDLINE_NEW='GRUB_CMDLINE_LINUX="console=tty1"'
+GRUB_TERMINAL_OLD='GRUB_TERMINAL="console serial"'
+GRUB_TERMINAL_INPUT_OLD='GRUB_TERMINAL_INPUT="console serial"'
+GRUB_TERMINAL_OUTPUT_OLD='GRUB_TERMINAL_OUTPUT="gfxterm serial"'
+GRUB_SERIAL_COMMAND_OLD='GRUB_SERIAL_COMMAND="serial --speed=115200"'
+GRUB_TERMINAL_INPUT_NEW='GRUB_TERMINAL_INPUT="console"'
+GRUB_TERMINAL_OUTPUT_NEW='GRUB_TERMINAL_OUTPUT="gfxterm"'
+# Every GRUB_CMDLINE_LINUX_DEFAULT an installer wrote before #820, one a line: the desktop
+# installer's from 1 Apr (and the text installer's until 5 Oct), with loglevel=3 from 28 Sep, its
+# encrypted and unencrypted lines from 5 Oct, and the text installer's from 5 Oct.
+GRUB_DEFAULT_OLD_FORMS='quiet splash
+quiet splash loglevel=3
+quiet splash loglevel=3 plymouth.use-simpledrm plymouth.ignore-serial-consoles
+quiet loglevel=3 plymouth.enable=0'
+# What #820 appends (installer_unlock.rs, cmdline_default): the console between GRUB and plymouth
+# in the splash's ground, with no cursor.
+GRUB_DEFAULT_CONSOLE='vt.global_cursor_default=0 vt.default_red=0x0e vt.default_grn=0x11 vt.default_blu=0x17'
+# The cursor back for every console opened after boot (the image's boot-unlock/splash.d/cursor.conf,
+# which the selftest holds this to), and the one line of it that matters.
+GRUB_CURSOR_CONF=/etc/tmpfiles.d/yantrik-splash-cursor.conf
+GRUB_CURSOR_LINE='w /sys/module/vt/parameters/global_cursor_default - - - - 1'
+
+# The installer's own command (installer.rs runs update-grub in the new system); on Debian that is
+# grub-mkconfig -o /boot/grub/grub.cfg, which writes grub.cfg.new and moves it over only once it
+# has checked it.
+grub_can_regenerate() { command -v update-grub >/dev/null 2>&1 || command -v grub-mkconfig >/dev/null 2>&1; }
+grub_regenerate() {
+  if command -v update-grub >/dev/null 2>&1; then update-grub; else grub-mkconfig -o "$GRUB_CFG"; fi
+}
+
+# Does a grub.cfg start the kernel with its root named by the disk's port (root=/dev/sda2) rather
+# than its UUID? The installer refuses such a menu (installer_rules::root_by_device): the disk
+# would not boot once another is plugged in ahead of it.
+grub_cfg_by_device() {
+  grep -qE '^[[:space:]]*linux[^[:space:]]*[[:space:]].*[[:space:]]root=/dev/(sd|nvme|vd|hd|mmcblk)' "$1" 2>/dev/null
+}
+
+# Does a grub.cfg still start the kernel with the old line's serial console?
+grub_cfg_has_old_serial() {
+  grep -qE '^[[:space:]]*linux[^[:space:]]*[[:space:]].*[[:space:]]console=ttyS0,115200' "$1" 2>/dev/null
+}
+
+# Does a grub.cfg still draw the menu on a serial terminal too?
+grub_cfg_has_serial_terminal() {
+  grep -qE '^[[:space:]]*terminal_(input|output)[[:space:]].*serial' "$1" 2>/dev/null
+}
+
+# The old installer's lines in file $3 swapped for the new, to stdout: <kernel line 0|1>
+# <terminal: 0, 1 the 14 to 16 Oct form, 2 the GRUB_TERMINAL form before it> <file> [<theme>]
+# [<console>]: theme 1 adds the installer's GRUB_THEME line, at the end, where the installer puts
+# it; console 1 appends #820's console arguments to a GRUB_CMDLINE_LINUX_DEFAULT line that is
+# exactly one of the old installers' (a whole-line match, so a line with anything else on it,
+# a disk's LUKS arguments say, is never one).
+grub_defaults_rewrite() {
+  local gfx=0 payload=0
+  grep -qE '^[[:space:]]*(export[[:space:]]+)?GRUB_GFXMODE=' "$3" && gfx=1
+  grep -qE '^[[:space:]]*(export[[:space:]]+)?GRUB_GFXPAYLOAD_LINUX=' "$3" && payload=1
+  awk -v cmd="$1" -v term="$2" -v gfx="$gfx" -v payload="$payload" -v theme="${4:-0}" -v tline="$GRUB_THEME_LINE" \
+      -v cold="$GRUB_CMDLINE_OLD" -v cnew="$GRUB_CMDLINE_NEW" -v told="$GRUB_TERMINAL_OLD" \
+      -v iold="$GRUB_TERMINAL_INPUT_OLD" -v inew="$GRUB_TERMINAL_INPUT_NEW" \
+      -v oold="$GRUB_TERMINAL_OUTPUT_OLD" -v onew="$GRUB_TERMINAL_OUTPUT_NEW" -v sold="$GRUB_SERIAL_COMMAND_OLD" \
+      -v console="${5:-0}" -v forms="$GRUB_DEFAULT_OLD_FORMS" -v vt="$GRUB_DEFAULT_CONSOLE" '
+    BEGIN { n = split(forms, form, "\n"); for (i = 1; i <= n; i++) dold["GRUB_CMDLINE_LINUX_DEFAULT=\"" form[i] "\""] = form[i] }
+    console && ($0 in dold) { print "GRUB_CMDLINE_LINUX_DEFAULT=\"" dold[$0] " " vt "\""; next }
+    cmd && $0 == cold { print cnew; next }
+    term == 1 && $0 == iold { print inew; next }
+    term == 1 && $0 == oold { print onew; next }
+    term == 2 && $0 == told {
+      print inew; print onew
+      if (!gfx) print "GRUB_GFXMODE=auto"
+      if (!payload) print "GRUB_GFXPAYLOAD_LINUX=keep"
+      next
+    }
+    term && $0 == sold { next }
+    { print }
+    END { if (theme) print tline }' "$3"
+}
+
+# The .before- copy this code rewrote $1 from, if $1 is exactly that copy with one or both of the
+# old installer's forms swapped for the new: proof the new lines are this code's doing, not
+# someone's own edit.
+grub_defaults_rewritten_from() {
+  local c a b th d
+  for c in "$1".before-*; do
+    [ -f "$c" ] || continue
+    # Kernel line, terminal form, theme, console arguments: the theme comes only with a terminal
+    # change, and at least one change is made.
+    for a in 0 1; do for b in 0 1 2; do for th in 0 1; do for d in 0 1; do
+      [ "$th" = 1 ] && [ "$b" = 0 ] && continue
+      [ "$a$b$th$d" = 0000 ] && continue
+      grub_defaults_rewrite "$a" "$b" "$c" "$th" "$d" | cmp -s - "$1" && { printf '%s\n' "$c"; return 0; }
+    done; done; done; done
+  done
+  return 1
+}
+
+# Said once per form of the lines, not at every update: it is not a fault, only worth knowing
+# about. grub_note_once <note name> <the lines> <what to say>
+grub_note_once() {
+  local note="$UPDATES_DIR/$1" tmp
+  [ "$(cat "$note" 2>/dev/null)" = "$2" ] && return 0
+  info "$3"
+  # Written beside it and renamed over it, never through it: updates/ was the desktop user's
+  # before cmd_migrate_ownership, and a link left there from then would have root truncate
+  # whatever it points at, sudoers or grub.cfg (security review of 5f826b95, #829, item 1). The
+  # rename replaces the link itself; -T so a link to a directory is not moved into.
+  tmp="$(mktemp "$note.XXXXXX" 2>/dev/null)" \
+    && { { printf '%s\n' "$2" > "$tmp" && mv -fT "$tmp" "$note"; } 2>/dev/null || rm -f "$tmp"; }
+}
+
+# The image's tmpfiles line that gives every console opened after boot its cursor back
+# (boot-unlock/splash.d/cursor.conf, which the selftest holds this to byte for byte).
+grub_cursor_conf_text() {
+  cat <<'CURSOR'
+# /etc/tmpfiles.d/yantrik-splash-cursor.conf — the text cursor back for every console opened
+# after boot.
+#
+# The splash's kernel line says vt.global_cursor_default=0, so the kernel console shows no
+# blinking cursor between GRUB and plymouth's first frame (#820, the OVMF film). That is the
+# default a console gets when it is first opened, so without this tty2's login, and any other
+# console, would have no cursor either. systemd-tmpfiles-setup writes it early in boot, before any
+# getty. tty1, opened before this, gets its cursor back when the crash guard writes there
+# (boot-unlock/splash console). Writing 1 on a boot that never hid it changes nothing.
+w /sys/module/vt/parameters/global_cursor_default - - - - 1
+CURSOR
+}
+
+# Put it in place for a machine whose kernel line is being given vt.global_cursor_default=0, unless
+# it is there already. 0: written now, so a failed regeneration takes it away again; 2: there
+# already; 1: something else of the same name is there (someone's own, kept), or it could not be
+# written. Beside it and renamed over it, so a link there is replaced and never written through.
+grub_cursor_place() {
+  local dst="$GRUB_CURSOR_CONF" tmp
+  if [ -e "$dst" ] || [ -L "$dst" ]; then
+    [ -f "$dst" ] && ! [ -L "$dst" ] && grep -qxF -- "$GRUB_CURSOR_LINE" "$dst" && return 2
+    grub_note_once grub-cursor-left-alone "$dst" "$dst is already there and is not the image's; it is left as it is, so a console opened after boot may have no cursor"
+    return 1
+  fi
+  if mkdir -p "${dst%/*}" && tmp="$(mktemp "$dst.yantrik-XXXXXX")"; then
+    if grub_cursor_conf_text > "$tmp" && chmod 0644 "$tmp" && mv -fT "$tmp" "$dst"; then
+      return 0
+    fi
+    rm -f "$tmp"
+  fi
+  warn "could not write $dst; a console opened after boot may have no cursor"
+  return 1
+}
+
+# Whether $1 is a theme tree root may copy into /boot: a directory, not a link, with a theme.txt,
+# and it and everything in it root's and writable by nobody else, its parent too, so the
+# guarantee does not rest on how the image lays out /usr/share (security delta review of
+# f27f9e04, #835, item 4). With <hashed> 1 (this build's share/grub-theme, which the desktop
+# account could write before #419), also only plain files, each one the build listed with its
+# hash, and every one it listed: share/ is checked as the root helpers are (root_file_ok).
+grub_theme_tree_ok() { # <tree> [hashed]
+  local src="$1" e rel n=0
+  { [ -d "$src" ] && ! [ -L "$src" ] && [ -f "$src/theme.txt" ]; } || return 1
+  if [ -n "$(find "$src" \( ! -user "$(id -u)" -o \( ! -type l -perm /022 \) \) -print -quit 2>/dev/null)" ] \
+     || [ -n "$(find "${src%/*}" -maxdepth 0 \( ! -user "$(id -u)" -o -perm /022 \) -print 2>/dev/null)" ]; then
+    grub_note_once grub-theme-left-alone "$src" "$src is not root's alone to write; the boot menu is given no theme from it"
+    return 1
+  fi
+  [ "${2:-0}" = 1 ] || return 0
+  # Every name in it, a dot-dot one (..x) too: cp -a "$src/." below copies them all (security
+  # delta review of f27f9e04..1d35edbc, #835).
+  for e in "$src"/* "$src"/.[!.]* "$src"/..?*; do
+    [ -e "$e" ] || [ -L "$e" ] || continue
+    rel="grub-theme/${e##*/}"
+    if ! [ -f "$e" ] || [ -L "$e" ] || ! root_file_ok "$rel" "$e"; then
+      grub_note_once grub-theme-left-alone "$src: $rel" "$src is not what this build ships ($rel); the boot menu is given no theme from it"
+      return 1
+    fi
+    n=$((n + 1))
+  done
+  if [ "$n" != "$(awk '$2 ~ /^\*?grub-theme\// { c++ } END { print c + 0 }' "$ROOT_FILES" 2>/dev/null)" ]; then
+    grub_note_once grub-theme-left-alone "$src: incomplete" "$src lacks files this build ships; the boot menu is given no theme from it"
+    return 1
+  fi
+}
+
+# The boot menu theme, put where the installer puts it, for a machine whose menu is being moved to
+# gfxterm alone (theme_for_boot and install_grub_theme in installer.rs). 0: copied now, so a failed
+# regeneration takes it away again; 2: already there, the same as this build's or the image's;
+# 1: no theme for this machine. Only on UEFI (a BIOS GRUB stops at the themed menu), only when
+# nothing in $1 or its grub.d names a theme, and only from a tree grub_theme_tree_ok passes, since
+# root copies it into /boot: this build's first, then the image's. A theme directory already there
+# with something else in it is someone's, and stays.
+grub_theme_place() {
+  local dst="$GRUB_THEME_DIR" src="" s h tmpd
+  [ -d "$GRUB_EFI_DIR" ] || return 1
+  grep -qsE '^[[:space:]]*(export[[:space:]]+)?GRUB_THEME=' "$1" "$1".d/*.cfg && return 1
+  for s in "$GRUB_THEME_BUNDLED" "$GRUB_THEME_SOURCE"; do
+    h=0; [ "$s" = "$GRUB_THEME_BUNDLED" ] && h=1
+    grub_theme_tree_ok "$s" "$h" || continue
+    [ -d "$dst" ] && ! [ -L "$dst" ] && diff -r --no-dereference "$s" "$dst" >/dev/null 2>&1 && return 2
+    [ -n "$src" ] || src="$s"
+  done
+  [ -n "$src" ] || return 1
+  if [ -e "$dst" ] || [ -L "$dst" ]; then
+    grub_note_once grub-theme-left-alone "$dst" "$dst is already there and is not the image's theme; it is left as it is, and the menu is given no theme"
+    return 1
+  fi
+  if ! mkdir -p "${dst%/*}" || ! tmpd="$(mktemp -d "$dst.yantrik-XXXXXX")"; then
+    warn "could not write beside $dst; the boot menu is given no theme"
+    return 1
+  fi
+  if cp -a "$src/." "$tmpd/" && chmod --reference="$src" "$tmpd" && mv -T "$tmpd" "$dst"; then
+    return 0
+  fi
+  rm -rf -- "$tmpd"
+  warn "could not copy the boot menu's theme to $dst; the menu is given no theme"
+  return 1
+}
+
+migrate_grub_defaults() {
+  local f="$GRUB_DEFAULTS" cfg="$GRUB_CFG" lines terms dterms tform copy tmp cfg_copy out rc kept put_back done_what
+  local dlines dform dnew cmd=0 term=0 theme=0 theme_made="" console=0 cursor_made="" resume=""
+  [ -f "$f" ] || return 0
+  # A run killed part way leaves its temp files here; every name with this suffix is one this
+  # function made, and nothing else runs it at the same time (security review of 5f826b95,
+  # #829, item 2).
+  rm -f -- "$f".yantrik-?????? "$cfg".yantrik-?????? "$GRUB_CURSOR_CONF".yantrik-??????
+  rm -rf -- "$GRUB_THEME_DIR".yantrik-??????
+  lines="$(grep -E '^[[:space:]]*(export[[:space:]]+)?GRUB_CMDLINE_LINUX=' "$f")"
+  terms="$(grep -E '^[[:space:]]*(export[[:space:]]+)?GRUB_(TERMINAL|TERMINAL_INPUT|TERMINAL_OUTPUT|SERIAL_COMMAND)=' "$f")"
+
+  if [ "$lines" = "$GRUB_CMDLINE_OLD" ]; then
+    cmd=1
+  elif [ "$lines" = "$GRUB_CMDLINE_NEW" ]; then
+    # Already the new line. Done, unless a run was stopped between rewriting $f and finishing
+    # the menu (killed, or its put-back failed): then grub.cfg still starts the kernel on
+    # ttyS0, and stopping here would leave the getty loop at every boot until some kernel
+    # update happened to regenerate it (#829 review, item 2). Resumed only when this code
+    # made the change (a .before- copy that $f is the rewrite of, checked below), and when
+    # nothing in $f or its grub.d asks for that console, so a menu that would carry it anyway
+    # is not regenerated at every update.
+    grub_cfg_has_old_serial "$cfg" && ! grep -qs -- 'console=ttyS0,115200' "$f" "$f".d/*.cfg \
+      && resume="$cfg still starts the kernel with console=ttyS0"
+  else
+    grub_note_once grub-cmdline-left-alone "$lines" \
+      "$f: the kernel line is not one a Yantrik installer wrote; left as it is: ${lines:-(none)}"
+  fi
+
+  # #820's console arguments, on a GRUB_CMDLINE_LINUX_DEFAULT that is exactly an old installer's,
+  # one line of it, and set nowhere in grub.d (which update-grub reads after $f).
+  dlines="$(grep -E '^[[:space:]]*(export[[:space:]]+)?GRUB_CMDLINE_LINUX_DEFAULT=' "$f")"
+  dform=""; dnew=""
+  while IFS= read -r tmp; do
+    [ "$dlines" = "GRUB_CMDLINE_LINUX_DEFAULT=\"$tmp\"" ] && dform="$tmp"
+    [ "$dlines" = "GRUB_CMDLINE_LINUX_DEFAULT=\"$tmp $GRUB_DEFAULT_CONSOLE\"" ] && dnew="$tmp"
+  done <<< "$GRUB_DEFAULT_OLD_FORMS"
+  if [ -n "$dform" ] || [ -n "$dnew" ]; then
+    if grep -qsE '^[[:space:]]*(export[[:space:]]+)?GRUB_CMDLINE_LINUX_DEFAULT=' "$f".d/*.cfg; then
+      [ -n "$dform" ] && grub_note_once grub-default-left-alone "$(printf '%s\n%s' "$dlines" "$f.d")" \
+        "$f.d sets GRUB_CMDLINE_LINUX_DEFAULT itself; $f's is left as it is, without #820's console arguments"
+    elif [ -n "$dform" ]; then
+      console=1
+    elif ! grep -qE '^[[:space:]]*linux[^[:space:]]*[[:space:]].*[[:space:]]vt\.global_cursor_default=0' "$cfg" 2>/dev/null; then
+      # Already the new line, and no entry in the menu starts the kernel with it: a run stopped
+      # between rewriting $f and finishing the menu, finished as the kernel line's is.
+      resume="${resume:+$resume, and }$cfg starts the kernel without #820's console arguments"
+    fi
+  elif [ -n "$dlines" ]; then
+    grub_note_once grub-default-left-alone "$dlines" \
+      "$f: GRUB_CMDLINE_LINUX_DEFAULT is not one a Yantrik installer wrote; left as it is, without #820's console arguments: $(printf '%s' "$dlines" | tr '\n' ' ')"
+  fi
+
+  tform=0
+  [ "$terms" = "$(printf '%s\n' "$GRUB_TERMINAL_INPUT_OLD" "$GRUB_TERMINAL_OUTPUT_OLD" "$GRUB_SERIAL_COMMAND_OLD")" ] && tform=1
+  [ "$terms" = "$(printf '%s\n' "$GRUB_TERMINAL_OLD" "$GRUB_SERIAL_COMMAND_OLD")" ] && tform=2
+  if [ "$tform" != 0 ]; then
+    # update-grub reads $f.d/*.cfg after $f, so what is set there counts as much as $f does.
+    dterms="$(grep -hsE '^[[:space:]]*(export[[:space:]]+)?GRUB_(TERMINAL|TERMINAL_INPUT|TERMINAL_OUTPUT|SERIAL_COMMAND)=' "$f".d/*.cfg)"
+    if [ -n "$dterms" ]; then
+      # Someone's own serial setup there, which would lose its speed with $f's serial command
+      # gone (security review of c42484eb, #835, item 2).
+      grub_note_once grub-terminal-left-alone "$(printf '%s\n%s' "$terms" "$dterms")" \
+        "$f.d sets the boot menu's terminals itself; $f's are left as they are: $(printf '%s' "$dterms" | tr '\n' ' ')"
+    elif grep -qsE '^[[:space:]]*terminal_(input|output)[[:space:]].*serial' "$GRUB_SCRIPTS_DIR"/*_custom; then
+      # A serial terminal a custom menu script asks for, which would lose its speed the same way
+      # (security delta review of f27f9e04, #835, item 1).
+      grub_note_once grub-terminal-left-alone "$(printf '%s\n%s' "$terms" "$GRUB_SCRIPTS_DIR")" \
+        "$GRUB_SCRIPTS_DIR has a custom menu script with a serial terminal; $f's terminals are left as they are"
+    elif ! [ -d "$GRUB_EFI_DIR" ] && { grep -qsE '^[[:space:]]*(export[[:space:]]+)?GRUB_THEME=' "$f" "$f".d/*.cfg \
+           || grep -qsE '^[[:space:]]*(set[[:space:]]+)?theme=' "$GRUB_SCRIPTS_DIR"/*_custom; }; then
+      # A theme in $f.d counts too (security review of c42484eb, #835, item 1), and so does one a
+      # custom menu script sets (security delta review of f27f9e04, #835, item 1).
+      grub_note_once grub-terminal-left-alone "$terms" \
+        "$f: the menu has a theme and this machine starts by BIOS, where GRUB stops at a themed menu; its serial terminal, which keeps the theme off, is left as it is"
+    else
+      term="$tform"
+    fi
+  elif [ "$terms" = "$(printf '%s\n' "$GRUB_TERMINAL_INPUT_NEW" "$GRUB_TERMINAL_OUTPUT_NEW")" ]; then
+    # The same resume as the kernel line's, for a menu still drawn on a serial terminal too.
+    grub_cfg_has_serial_terminal "$cfg" \
+      && ! grep -qsE -- '^[[:space:]]*(export[[:space:]]+)?GRUB_(TERMINAL|TERMINAL_INPUT|TERMINAL_OUTPUT)=.*serial' "$f" "$f".d/*.cfg \
+      && ! grep -qsE -- '^[[:space:]]*terminal_(input|output)[[:space:]].*serial' "$GRUB_SCRIPTS_DIR"/*_custom \
+      && resume="${resume:+$resume, and }$cfg still draws the menu on a serial terminal too"
+  else
+    # Only terminals with serial in them: those are what keep the theme off. A file with none, or
+    # gfxterm alone in another form (the text installer's), has nothing here worth saying.
+    case "$terms" in
+      *serial*) grub_note_once grub-terminal-left-alone "$terms" \
+                  "$f: the boot menu's terminals are not the ones a Yantrik installer wrote; left as they are: $(printf '%s' "$terms" | tr '\n' ' ')" ;;
+    esac
+  fi
+
+  if [ "$cmd" = 1 ] || [ "$term" != 0 ] || [ "$console" = 1 ]; then
+    resume=""
+    kept="$([ "$cmd" = 1 ] && printf 'console=ttyS0, ')$([ "$term" != 0 ] && printf 'its serial terminal, ')$([ "$console" = 1 ] && printf 'its kernel line without the console arguments, ')"
+    kept="$f keeps ${kept%, }"
+  elif [ -n "$resume" ]; then
+    copy="$(grub_defaults_rewritten_from "$f")" || return 0
+    kept="$resume"
+  else
+    return 0
+  fi
+  grub_can_regenerate || { warn "no update-grub on this machine; $kept"; return 0; }
+  # A menu somewhere else (/boot not mounted, another loader) is not one this can put back.
+  [ -f "$cfg" ] || { warn "no $cfg on this machine; $kept"; return 0; }
+
+  cfg_copy="$(mktemp "$cfg.yantrik-XXXXXX")" || { warn "could not write beside $cfg; $kept"; return 0; }
+  cp -p "$cfg" "$cfg_copy" || { rm -f "$cfg_copy"; warn "could not copy $cfg aside; $kept"; return 0; }
+  if [ -z "$resume" ]; then
+    # One copy of the old file, however many runs it takes and however many of the changes it
+    # has: a run whose regeneration failed put the file back as it was, and its copy still
+    # stands for it.
+    copy=""
+    for tmp in "$f".before-*; do
+      [ -f "$tmp" ] && cmp -s "$tmp" "$f" && copy="$tmp"
+    done
+    [ -n "$copy" ] || copy="$f.before-$(date -u +%Y%m%dT%H%M%SZ)"
+    [ -f "$copy" ] || cp -p "$f" "$copy" || { rm -f "$cfg_copy"; warn "could not copy $f aside; $kept"; return 0; }
+    tmp="$(mktemp "$f.yantrik-XXXXXX")" || { rm -f "$cfg_copy"; warn "could not write beside $f; $kept"; return 0; }
+    if [ "$term" != 0 ]; then
+      grub_theme_place "$f"
+      case $? in 0) theme=1; theme_made=1 ;; 2) theme=1 ;; esac
+    fi
+    if ! grub_defaults_rewrite "$cmd" "$term" "$f" "$theme" "$console" > "$tmp" \
+       || ! chmod --reference="$f" "$tmp" || ! chown --reference="$f" "$tmp" || ! mv -f "$tmp" "$f"; then
+      rm -f "$tmp" "$cfg_copy"
+      [ -n "$theme_made" ] && rm -rf -- "$GRUB_THEME_DIR"
+      warn "could not rewrite $f; $kept"
+      return 0
+    fi
+  fi
+  # The kernel line hides the cursor from the next start (new now, or a run being finished): every
+  # console opened after boot gets it back, as on the image.
+  if grep -qxF -- "GRUB_CMDLINE_LINUX_DEFAULT=\"${dform:-$dnew} $GRUB_DEFAULT_CONSOLE\"" "$f"; then
+    grub_cursor_place && cursor_made=1
+  fi
+  out="$(grub_regenerate 2>&1)"; rc=$?
+  if [ "$rc" = 0 ] && grub_cfg_by_device "$cfg" && ! grub_cfg_by_device "$cfg_copy"; then
+    out="the new menu names the root by its device, not its UUID"; rc=1
+  fi
+  if [ "$rc" != 0 ]; then
+    # Back as it was, each by a rename, so no reader ever sees half a file. A step that fails
+    # takes its temp file with it, and the last line says "as they were" only when both did go
+    # back (security review of 5f826b95, #829, item 3).
+    put_back=yes
+    if ! tmp="$(mktemp "$f.yantrik-XXXXXX")"; then
+      warn "could not put $f back; the copy is $copy"; put_back=""
+    elif ! cp -p "$copy" "$tmp" || ! mv -f "$tmp" "$f"; then
+      rm -f "$tmp"; warn "could not put $f back; the copy is $copy"; put_back=""
+    fi
+    mv -f "$cfg_copy" "$cfg" || { warn "could not put $cfg back; the copy is $cfg_copy"; put_back=""; }
+    # What this run added goes too, and nothing else: the theme it copied (the file that named it
+    # is back as it was) and the cursor line it wrote.
+    if [ -n "$theme_made" ] && ! rm -rf -- "$GRUB_THEME_DIR"; then
+      warn "could not take $GRUB_THEME_DIR away again"; put_back=""
+    fi
+    if [ -n "$cursor_made" ] && ! rm -f -- "$GRUB_CURSOR_CONF"; then
+      warn "could not take $GRUB_CURSOR_CONF away again"; put_back=""
+    fi
+    if [ -n "$put_back" ]; then
+      warn "could not regenerate the boot menu ($(printf '%s' "$out" | tail -n 1)); $f and $cfg are as they were"
+    else
+      warn "could not regenerate the boot menu ($(printf '%s' "$out" | tail -n 1)), nor put everything back; see above"
+    fi
+    return 0
+  fi
+  rm -f "$cfg_copy"
+  # What changed: from the lines, so a resumed run says what it finished.
+  done_what=""
+  grep -qxF -- "$GRUB_CMDLINE_OLD" "$copy" && grep -qxF -- "$GRUB_CMDLINE_NEW" "$f" \
+    && done_what="kernel console is the screen only from the next start (was console=ttyS0 too)"
+  grep -qxF -e "$GRUB_TERMINAL_OUTPUT_OLD" -e "$GRUB_TERMINAL_OLD" "$copy" && grep -qxF -- "$GRUB_TERMINAL_OUTPUT_NEW" "$f" \
+    && done_what="${done_what:+$done_what; }the boot menu is drawn on the screen alone from the next start, in its theme when it has one (was a serial terminal too)"
+  if grep -qxF -- "$GRUB_THEME_LINE" "$f" && ! grep -qxF -- "$GRUB_THEME_LINE" "$copy"; then
+    done_what="${done_what:+$done_what; }the menu has the Yantrik theme, from $GRUB_THEME_DIR"
+  elif [ "$term" != 0 ] && [ -d "$GRUB_EFI_DIR" ] && ! [ -f "$GRUB_THEME_BUNDLED/theme.txt" ] && ! [ -f "$GRUB_THEME_SOURCE/theme.txt" ] \
+       && ! grep -qsE '^[[:space:]]*(export[[:space:]]+)?GRUB_THEME=' "$f" "$f".d/*.cfg; then
+    done_what="${done_what:+$done_what; }no theme: neither this build ($GRUB_THEME_BUNDLED) nor this machine's image ($GRUB_THEME_SOURCE) has one, so the menu is GRUB's plain one"
+  fi
+  [ -n "${dform:-$dnew}" ] && ! grep -qxF -- "GRUB_CMDLINE_LINUX_DEFAULT=\"${dform:-$dnew} $GRUB_DEFAULT_CONSOLE\"" "$copy" \
+    && grep -qxF -- "GRUB_CMDLINE_LINUX_DEFAULT=\"${dform:-$dnew} $GRUB_DEFAULT_CONSOLE\"" "$f" \
+    && done_what="${done_what:+$done_what; }between the menu and the splash the screen is the splash's ground with no cursor from the next start (#820's console arguments on the kernel line)"
+  info "${done_what:-boot menu regenerated}; the old $f is $copy"
+}
+
+# And the loop running now, without waiting for that start: stopped only when the port gives an
+# I/O error, which is what agetty fails on. Stopped, never masked: a machine that does have a port
+# and is started with console=ttyS0 by hand still gets its prompt there.
+# The probe is held to a few seconds: stty opens the port without blocking, but a stuck UART or
+# USB-serial driver could still hang it, and this runs as root in the middle of an update with
+# the other reconciles still to come (security review of 5f826b95, #829, item 4). A port that
+# does not answer in time is left running. A variable, so the selftest need not wait 5 s.
+SERIAL_PROBE_SECS=5
+stop_serial_getty_loop() {
+  local unit=serial-getty@ttyS0.service err rc
+  case "$(systemctl is-active "$unit" 2>/dev/null)" in active|activating|reloading) ;; *) return 0 ;; esac
+  err="$(timeout -k 2 "$SERIAL_PROBE_SECS" stty -F /dev/ttyS0 2>&1 >/dev/null)"; rc=$?
+  [ "$rc" = 0 ] && return 0
+  if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+    info "/dev/ttyS0 did not answer within ${SERIAL_PROBE_SECS}s; $unit left running"
+    return 0
+  fi
+  case "$err" in *"Input/output error"*) ;; *) return 0 ;; esac
+  if systemctl stop "$unit" >/dev/null 2>&1; then
+    info "stopped $unit: this machine has no serial port, and it was restarting every ten seconds"
+  else
+    warn "could not stop $unit; it restarts every ten seconds until the next start"
+  fi
+}
+
+reconcile_serial_console() {
+  [ "$(id -u)" = 0 ] || return 0
+  tree_is_roots || return 0
+  migrate_grub_defaults
+  stop_serial_getty_loop
+}
+
 # Where podman resolves a short image name (#401), from share/containers into
 # /etc/containers/registries.conf.d: Docker Hub, so the Container Manager's Pull of "nginx" works
 # as it does with docker. A registries file decides where every image anyone on the machine pulls
@@ -1867,6 +2824,91 @@ d /run/yantrik-minds 2750 $owner yantrik-minds -"
 ' "$want" > "$conf" && chmod 0644 "$conf" && info "mind door in place: /run/yantrik-minds for $owner"
   fi
   systemd-tmpfiles --create "$conf" >/dev/null 2>&1 || warn "could not make /run/yantrik-minds now; it is made at the next boot"
+  reconcile_mind_socket "$owner"
+}
+
+# The person's memory socket (#447, step d): the other direction from the door above. The person's
+# desktop asks the Mind things only the person may (POST /provider, the model they picked at first
+# run; /consent) at /run/yantrik-mind/<uid>/memory.sock, which the Mind binds only when its
+# environment names it (YM_MEMORY_SOCKET) and answers only for the peer uid YANTRIK_PERSON_UID
+# names. Its directory is the mind account's, setgid to the person's primary group, so the socket
+# the Mind binds there (0660) is the person's group's and nobody else's; tmpfiles makes it at every
+# boot, because /run is emptied and RuntimeDirectory= cannot give a directory the person's group.
+# The two values go in a drop-in beside the shipped unit, which stays the same file on every
+# machine. Both are numbers from the account database and never anything the mind can write.
+MIND_SOCKET_TMPFILES=/etc/tmpfiles.d/yantrik-mind-socket.conf
+MIND_SOCKET_DROPIN=/etc/systemd/system/yantrik-mind.service.d/yantrik-person.conf
+
+# "<uid> <gid>" of the desktop's owner, or nothing (and false) for a name that is not a plain
+# account name, root, an account the database does not know, a uid outside the people's range the
+# launcher trusts (1000-59999), or a primary group anyone else is in. The socket is 0660 to that
+# group, so a shared one (Debian's "users", gid 100) would let every member connect to it, and
+# the Mind's peer-uid check is the only gate on /mcp's memory: it is refused rather than trusted.
+# The selftest hands it passwd and group files of its own; every real run asks the database.
+mind_person_ids() { # <owner> [passwd file] [group file]
+  local line uid gid others members
+  # Never the mind account itself: a Mind that answered its own uid would answer itself.
+  case "$1" in ''|root|yantrik-mind|*[!a-z0-9_-]*) return 1 ;; esac
+  if [ -n "${2:-}" ]; then line="$(grep -m1 "^$1:" "$2" 2>/dev/null)" || return 1
+  else line="$(getent passwd "$1" 2>/dev/null)" || return 1; fi
+  uid="$(printf '%s' "$line" | cut -d: -f3)"; gid="$(printf '%s' "$line" | cut -d: -f4)"
+  case "$uid" in ''|0|*[!0-9]*) return 1 ;; esac
+  case "$gid" in ''|0|*[!0-9]*) return 1 ;; esac
+  [ "$uid" -ge 1000 ] && [ "$uid" -lt 60000 ] || return 1
+  # Anyone else whose primary group it is, or who is listed in it.
+  if [ -n "${2:-}" ]; then others="$(awk -F: -v g="$gid" -v me="$1" '$4 == g && $1 != me' "$2")"
+  else others="$(getent passwd | awk -F: -v g="$gid" -v me="$1" '$4 == g && $1 != me')"; fi
+  [ -z "$others" ] || return 1
+  if [ -n "${3:-}" ]; then members="$(awk -F: -v g="$gid" '$3 == g { print $4 }' "$3")"
+  else members="$(getent group "$gid" 2>/dev/null | cut -d: -f4)"; fi
+  [ -z "$(printf '%s' "$members" | tr ',' '\n' | grep -vx -e "$1" -e '')" ] || return 1
+  printf '%s %s\n' "$uid" "$gid"
+}
+
+mind_socket_tmpfiles_text() { # <owner> <uid> <gid>
+  printf '%s\n' \
+    "# Yantrik OS (#447): where the Mind (yantrik-mind) serves $1's memory socket, to $1's group only." \
+    "d /run/yantrik-mind 0755 root root -" \
+    "d /run/yantrik-mind/$2 2750 yantrik-mind $3 -"
+}
+
+mind_socket_dropin_text() { # <owner> <uid>
+  printf '%s\n' \
+    "# Yantrik OS (#447): the Mind serves $1's memory socket, and answers it only for $1's uid." \
+    "# Written by yantrik-update; never a key or a token here." \
+    "[Service]" \
+    "Environment=YANTRIK_PERSON_UID=$2" \
+    "Environment=YM_MEMORY_SOCKET=/run/yantrik-mind/$2/memory.sock"
+}
+
+# Write both files for <owner> when they differ, and say "changed" when either did. A link at
+# either path is replaced, never written through. False, with nothing written, for an owner whose
+# ids cannot be told: a socket for the wrong person is worse than none.
+mind_socket_write() { # <owner> <tmpfiles conf> <drop-in> [passwd file] [group file]
+  local ids uid gid want f changed=""
+  ids="$(mind_person_ids "$1" "${4:-}" "${5:-}")" || return 1
+  uid="${ids% *}"; gid="${ids#* }"
+  for f in "$2" "$3"; do
+    if [ "$f" = "$2" ]; then want="$(mind_socket_tmpfiles_text "$1" "$uid" "$gid")"
+    else want="$(mind_socket_dropin_text "$1" "$uid")"; fi
+    [ ! -L "$f" ] && [ "$(cat "$f" 2>/dev/null)" = "$want" ] && continue
+    mkdir -p "$(dirname "$f")" && rm -f "$f" && printf '%s\n' "$want" > "$f" && chmod 0644 "$f" || return 1
+    changed=changed
+  done
+  printf '%s' "$changed"
+}
+
+reconcile_mind_socket() { # <owner>
+  local out
+  out="$(mind_socket_write "$1" "$MIND_SOCKET_TMPFILES" "$MIND_SOCKET_DROPIN")" \
+    || { warn "the Mind's memory socket is not set up: $1 needs an account of their own (uid 1000-59999) and a primary group nobody else is in"; return 0; }
+  systemd-tmpfiles --create "$MIND_SOCKET_TMPFILES" >/dev/null 2>&1 \
+    || warn "could not make /run/yantrik-mind now; it is made at the next boot"
+  [ "$out" = changed ] || return 0
+  info "the Mind's memory socket is $1's: $(sed -n 's/^Environment=YM_MEMORY_SOCKET=//p' "$MIND_SOCKET_DROPIN")"
+  # A running Mind keeps the environment and the sandbox it started with.
+  systemctl daemon-reload >/dev/null 2>&1
+  systemctl try-restart yantrik-mind.service >/dev/null 2>&1 || true
 }
 
 # The browsers' DevTools ports. The desktop's Browser listens on 127.0.0.1:9222 and the
@@ -2245,6 +3287,92 @@ reconcile_egress_seeds() {
   return 0
 }
 
+# Repoint a Hermes launcher that still names the installer's temporary Python (#712). The running
+# gateway is fine; only the next restart would fail, so nothing is restarted here. The heal runs
+# as the desktop's owner, never as root, so root never writes into a home.
+reconcile_hermes_launcher() {
+  [ "$(id -u)" = 0 ] || return 0
+  tree_is_roots || return 0
+  local owner home="" ouid="" ogid="" setpriv lib out
+  owner="$(desktop_owner)"
+  case "$owner" in
+    ''|root|*[!a-z0-9_-]*) ;;
+    *) home="$(getent passwd "$owner" | cut -d: -f6)"; ouid="$(id -u "$owner" 2>/dev/null)"; ogid="$(id -g "$owner" 2>/dev/null)" ;;
+  esac
+  # Never run the heal with root's uid OR root's group: the same guard reconcile_egress_seeds puts
+  # on its setpriv identity.
+  case "$ouid:$ogid" in :*|*:|0:*|*:0|*[!0-9:]*) return 0 ;; esac
+  [ -n "$home" ] || return 0
+  [ -d "$home/.hermes/hermes-agent/.hermes/bin" ] || return 0
+  lib="$PREFIX/share/harnesses/lib/install/hermes-launcher.sh"
+  [ -f "$lib" ] || return 0
+  setpriv="$(command -v setpriv)" || return 0
+  if out="$(env -i HOME="$home" PATH=/usr/bin:/bin "$setpriv" --reuid="$ouid" --regid="$ogid" \
+      --clear-groups --no-new-privs -- sh -c '. "$1"; heal_hermes_launcher "$2"' sh "$lib" "$home" 9>&-)"; then
+    if [ -n "$out" ]; then
+      # The lines name files in the owner's home: drop control characters before root prints them.
+      printf '%s\n' "$out" | tr -d '\000-\010\013-\037\177' | while IFS= read -r line; do info "$line"; done
+      info "Hermes's launcher was repointed; the running gateway is fine and the next restart will work"
+    fi
+  else
+    warn "could not repoint Hermes's launcher: $(printf '%s' "$out" | tr -d '\000-\037\177' | cut -c1-300)"
+  fi
+  return 0
+}
+
+# Bring the harness plugins an install copied into the owner's home up to this build's
+# (harnesses/lib/install/refresh-plugins.sh): Hermes loads ~/.hermes/plugins, written once at
+# install, so before this every Hermes fix reached fresh installs only (VM 541, 14 Oct). Run after
+# every apply (through `reconcile`, by the new build's updater) and on `reconcile` itself, so an
+# updated machine is fixed without a new build. It replaces only what differs, so a build with no
+# harness change does nothing; and it is run without --restart, so the owner's Hermes gateway is
+# never restarted under a turn in flight: it loads the new plugins when it next starts
+# (refresh-plugins.sh says why).
+#
+# As the owner, the way reconcile_hermes_launcher heals the launcher: root never writes into a
+# home, and root executes nothing from share/ (the refresh is the owner's own process, with
+# no-new-privs, so whatever share/ held could do no more than the owner already can). Only on a
+# tree that is root's. Its own session bus, so `systemctl --user` reaches the owner's manager; and
+# a time limit, because an update must never hang on a person's harness.
+reconcile_harness_plugins() {
+  [ "$(id -u)" = 0 ] || return 0
+  tree_is_roots || return 0
+  local owner home="" ouid="" ogid="" setpriv timeout_bin setsid_bin script log out rc=0
+  owner="$(desktop_owner)"
+  case "$owner" in
+    ''|root|*[!a-z0-9_-]*) ;;
+    *) home="$(getent passwd "$owner" | cut -d: -f6)"; ouid="$(id -u "$owner" 2>/dev/null)"; ogid="$(id -g "$owner" 2>/dev/null)" ;;
+  esac
+  case "$ouid:$ogid" in :*|*:|0:*|*:0|*[!0-9:]*) return 0 ;; esac
+  [ -n "$home" ] || return 0
+  # Nothing of Hermes's here: no process started, nothing said.
+  [ -d "$home/.hermes/plugins" ] || return 0
+  script="$PREFIX/share/harnesses/lib/install/refresh-plugins.sh"
+  [ -f "$script" ] || return 0
+  # Both looked up here, on root's PATH, and named whole: after `env -i` the PATH below starts
+  # with the owner's ~/.local/bin, and a bare name there would be a program of theirs run as root.
+  setpriv="$(command -v setpriv)" || return 0
+  timeout_bin="$(command -v timeout)" || return 0
+  setsid_bin="$(command -v setsid)" || return 0
+  log="$(mktemp)" || return 0
+  # That PATH is for the refresh, which runs as the owner: Hermes is in their ~/.local/bin, and so
+  # may be programs of theirs (python3, uv). So the refresh gets its own session with no terminal
+  # (setsid, stdin /dev/null): from root's session a program of the owner's could open /dev/tty and
+  # push keystrokes into the shell root returns to (TIOCSTI). Its output goes to a file of root's,
+  # not a pipe, and the time limit ends in a KILL: a process of the owner's that ignores TERM, or
+  # outlives the refresh holding a pipe open, cannot keep the update waiting.
+  ( cd / && exec env -i HOME="$home" USER="$owner" LOGNAME="$owner" PATH="$home/.local/bin:/usr/bin:/bin" \
+      XDG_RUNTIME_DIR="/run/user/$ouid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$ouid/bus" \
+      "$timeout_bin" -k 10 600 "$setsid_bin" -w "$setpriv" --reuid="$ouid" --regid="$ogid" --clear-groups --no-new-privs -- \
+      /bin/sh "$script" ) </dev/null >"$log" 2>&1 9>&- || rc=$?
+  out="$(head -c 65536 "$log")"
+  rm -f "$log"
+  # The lines name files in the owner's home: drop control characters before root prints them.
+  [ -n "$out" ] && printf '%s\n' "$out" | tr -d '\000-\010\013-\037\177' | while IFS= read -r line; do info "$line"; done
+  [ "$rc" = 0 ] || warn "could not refresh $owner's harness plugins (exit $rc); the ones in place are kept. Run as $owner: sh $script"
+  return 0
+}
+
 # ── The mind's way out, held by the kernel ──────────────────────────────────────────────
 #
 # The egress proxy only governs what is sent to it. The mind's unit points HTTPS_PROXY and the
@@ -2253,7 +3381,7 @@ reconcile_egress_seeds() {
 # person's policy, enforce mode and Private mode. Now the kernel holds the account to it, the same
 # shape as the DevTools guard: an output chain for `meta skuid <yantrik-mind>` that lets through
 #   * on loopback, only the ports the mind always needs (MIND_LOOPBACK_PORTS: the proxy, the memory
-#     server, the bundled llama-server) and the ones the person opened to it with a rule
+#     server, the model gateway, the bundled llama-server) and the ones the person opened to it with a rule
 #     `{host: 127.0.0.1 or ::1, ports, lan: true}` (a local Ollama on 11434). Everything else on
 #     this machine (`fib daddr type local`: loopback, and its own LAN address) is refused: a local
 #     model server or anything bound to 0.0.0.0 would otherwise be a way out past the proxy;
@@ -2296,12 +3424,17 @@ MIND_LAN_HOSTS_MAX=64
 # else) and in its unit; the kernel's loopback set and the status file's public_proxy are made from
 # this one, and the selftest checks all four agree.
 EGRESS_PUBLIC_DOOR=127.0.0.1:7451
+# The local model gateway (crates/yantrik-gateway, #673): the shell's OpenAI-compatible endpoint that
+# forwards a mind's model calls to the person's AI accounts with keys the mind never holds. Pinned,
+# the same as the crate's PORT and ADDR, and the selftest checks they agree. It refuses a call
+# without the mind's own token, and in Private mode anything not on this machine or network.
+GATEWAY_ADDR=127.0.0.1:7460
 # 127.0.0.1 ports every mind may reach: the egress proxy's two doors (7450 the endpoint door, the
-# public door's port from EGRESS_PUBLIC_DOOR), the memory server (7440, YM_MEMORY_SERVER) and the
-# bundled llama-server fallback (8341). The Mind's other loopback listeners are off in its unit
-# (YM_CTL 8077, YM_WEB, YM_WEBUI) and its sandboxes run in network namespaces of their own;
-# anything else is the person's to open with a rule.
-MIND_LOOPBACK_PORTS="7440, 7450, ${EGRESS_PUBLIC_DOOR##*:}, 8341"
+# public door's port from EGRESS_PUBLIC_DOOR), the memory server (7440, YM_MEMORY_SERVER), the
+# model gateway (GATEWAY_ADDR's port) and the bundled llama-server fallback (8341). The Mind's other
+# loopback listeners are off in its unit (YM_CTL 8077, YM_WEB, YM_WEBUI) and its sandboxes run in
+# network namespaces of their own; anything else is the person's to open with a rule.
+MIND_LOOPBACK_PORTS="7440, 7450, ${EGRESS_PUBLIC_DOOR##*:}, ${GATEWAY_ADDR##*:}, 8341"
 
 # What `yantrik-egress direct` printed, checked again: `private on|off`, `mode audit|guarded|enforce`, then
 # `direct <ip> <port>` lines (a literal address on the local network: 10/8, 172.16/12,
@@ -2461,8 +3594,9 @@ mind_egress_text() { # <uid> <entry lines> <resolver lines> <dns|nodns> <note>
 # Yantrik OS: where the mind account (yantrik-mind, uid $1) may connect, held by the kernel.
 # Its way out is the person's egress proxy on loopback (yantrik-egress: 127.0.0.1:7450, the endpoint
 # door, and 127.0.0.1:7451, the public door, which never reaches the local network), which
-# applies their policy and Private mode. Beside it: the memory server and the loopback services
-# the person opened, DNS (audit only: in guarded and enforce the proxy resolves), and the direct set (LAN services the person allowed by
+# applies their policy and Private mode. Beside it: the memory server, the model gateway
+# (127.0.0.1:7460, which forwards to the person's AI accounts with the mind's own token), and the
+# loopback services the person opened, DNS (audit only: in guarded and enforce the proxy resolves), and the direct set (LAN services the person allowed by
 # address: a policy rule with lan: true whose host is a literal address). Everything else from
 # the account is refused, and counted: nft list counters table inet yantrik_mind_egress
 # Entries: $5
@@ -3279,12 +4413,12 @@ cmd_reconcile() {
   remove_blanket_sudo
   seal_share
   say "Reconciling the base system against what the image ships"
-  info "required: $REQUIRED_PACKAGES"
   reconcile_packages
   reconcile_subids
   reconcile_polkit
   reconcile_helpers
   reconcile_sysctl
+  reconcile_serial_console
   reconcile_sudo_rule
   reconcile_minds
   reconcile_devtools_guard
@@ -3296,6 +4430,15 @@ cmd_reconcile() {
   private_config
   reconcile_registries
   reconcile_podman_socket
+  # The launcher first: the refreshed plugins load when Hermes's gateway next starts, which a
+  # launcher still pointing into /tmp (#712) would stop dead.
+  reconcile_hermes_launcher
+  reconcile_harness_plugins
+  # The keys (#854), here because this is what every updater runs on the new build, an old one's
+  # apply included. This build's own apply says it does them itself, after the restart.
+  if [ "${YANTRIK_APPLY_REFRESHES_KEYS:-}" != 1 ]; then
+    refresh_session_chrome || true
+  fi
   audit_unowned /etc/polkit-1/rules.d '*.rules' polkit
   audit_unowned /etc/sysctl.d '*.conf' sysctl
   audit_unowned /etc/containers/registries.conf.d '*.conf' containers
@@ -3658,88 +4801,405 @@ cmd_selftest() {
     "$(version_order nightly-2026-09-23 v0.1.0-456-gca376be)"
   t "and so is no version at all" "unknown" "$(version_order '' v0.1.0-456-gca376be)"
 
-  # 8. The base packages a machine can drift from while every Yantrik file on it is current (#210).
+  # 8. The base packages a machine can drift from while every Yantrik file on it is current (#210),
+  #    from the one list the image installs too (#854).
   #
   #    VM 520 was installed from an older image and kept "current" by deploys, which replace
-  #    /opt/yantrik and never a Debian package, so it had no ip, ss, ping, nano or htop. The
-  #    decision under test is which packages a given machine lacks — that one is pure, and a
-  #    fake status command stands in for dpkg. The apt run itself is only a caller of it and
-  #    needs a Debian machine, so nothing here touches apt.
+  #    /opt/yantrik and never a Debian package, so it had no ip, ss, ping, nano or htop, and later
+  #    no mpv, which only the ISO's list named. The decision under test is which packages a given
+  #    machine lacks — that one is pure, and a fake status command stands in for dpkg. The apt run
+  #    is driven further down with a stand-in apt, never the real one.
+  local here pkgs="" pl
+  here="$(dirname "$SELF_PATH")"
+  for pl in "$here/packages.list" "$here/../share/packages.list"; do
+    [ -f "$pl" ] && { pkgs="$pl"; break; }
+  done
+  local -a shipped=()
+  if [ -z "$pkgs" ]; then
+    printf '  %sFAIL%s no packages.list beside this updater (%s) or in its share/\n' "$c_red" "$c_off" "$here"
+    fails=$((fails + 1))
+  else
+    out="$(read_package_list "$pkgs" 2>&1)" || out="REFUSED: $out"
+    mapfile -t shipped <<< "$out"
+    is "the shipped package list parses" "" "$(printf '%s' "$out" | grep -E '^REFUSED' || true)"
+    t "and names mpv, which only the ISO had (#854)" "mpv" "$(printf '%s\n' "${shipped[@]}" | grep -x mpv)"
+    # Every package the updater's own list named before #854: the shared list drops none of them.
+    local old_list="iproute2 iputils-ping grim curl python3 nano htop vim-tiny swaybg xdg-desktop-portal-gtk flatpak git bash-completion podman uidmap passt fuse-overlayfs nftables upower power-profiles-daemon slurp wl-clipboard wf-recorder vainfo" p lost=""
+    for p in $old_list; do printf '%s\n' "${shipped[@]}" | grep -qx -- "$p" || lost="$lost $p"; done
+    is "it keeps every package the updater's old list had" "" "$lost"
+    # Nothing that must never reach an installed machine: the live system's boot, a second boot
+    # loader, the kernel.
+    is "it names no live-boot, boot loader or kernel package" "" \
+      "$(printf '%s\n' "${shipped[@]}" | grep -E '^(live-|grub|linux-image|initramfs-tools$)' || true)"
+  fi
+
+  # Both sides read that one file. Only where the build scripts sit beside this one (the repo).
+  if [ -f "$here/build-debian-iso.sh" ]; then
+    t "the ISO reads its packages through this parser" 'yantrik-update" package-list "$SCRIPT_DIR/packages.list"' \
+      "$(grep -F -- 'yantrik-update" package-list "$SCRIPT_DIR/packages.list"' "$here/build-debian-iso.sh")"
+    t "and installs only names the mirror has exactly" 'grep -qxF -- "$pkg" /tmp/yantrik-known-packages' \
+      "$(grep -F -- 'grep -qxF -- "$pkg" /tmp/yantrik-known-packages' "$here/build-debian-iso.sh")"
+    t "and installs every name, as separate arguments, with no || true" 'apt-get install -y -qq "${YANTRIK_PACKAGES[@]}"' \
+      "$(grep -x 'apt-get install -y -qq "${YANTRIK_PACKAGES\[@\]}"' "$here/build-debian-iso.sh")"
+    # A second list grows back the way the first one did: a package named on an ISO apt line.
+    is "the ISO names none of the list's packages on an apt line of its own" "" \
+      "$(grep -E '^apt-get install' "$here/build-debian-iso.sh" | grep -wE 'mpv|swaybg|nano|podman|chromium' || true)"
+    t "the bundle ships the list in share/" 'install -m 0644 "$SCRIPT_DIR/packages.list" "$ROOT/share/packages.list"' \
+      "$(grep -F -- 'install -m 0644 "$SCRIPT_DIR/packages.list" "$ROOT/share/packages.list"' "$here/build-release.sh")"
+    t "and lists its hash with what root installs" 'sha256sum packages.list ' \
+      "$(grep -F -- 'sha256sum packages.list ' "$here/build-release.sh")"
+    t "the bundle ships the session's chrome copy" 'cp "$SCRIPT_DIR/yantrik-session-chrome" "$ROOT/bin/yantrik-session-chrome"' \
+      "$(grep -F -- 'cp "$SCRIPT_DIR/yantrik-session-chrome" "$ROOT/bin/yantrik-session-chrome"' "$here/build-release.sh")"
+  fi
+
+  # The parser refuses a whole list for one bad line, and never prints a name from it.
+  local plt="$root/plist" bad
+  mkdir -p "$plt"
+  printf '# comment\n\nmpv   \n  nano # the editor\r\ncurl\n' > "$plt/good"
+  is "comments, blank lines, spaces and CRLF are allowed" "mpv nano curl" \
+    "$(read_package_list "$plt/good" | tr '\n' ' ' | sed 's/ $//')"
+  for bad in 'coreutils-' 'mpv; touch PWNED' '-oAPT::Get::Assume-Yes=1' 'mpv nano' '../../evil' 'Mpv' '$(touch PWNED)' 'mpv`touch PWNED`' 'https://x.example/a.deb' 'a'; do
+    printf 'mpv\n%s\nnano\n' "${bad//PWNED/$plt/pwned}" > "$plt/bad"
+    out="$(read_package_list "$plt/bad" 2>/dev/null; printf '[exit %s]' "$?")"
+    is "a list with the line '$bad' is refused whole" "[exit 1]" "$out"
+  done
+  printf 'g++\nlibstdc++6\npython3.12\n' > "$plt/plus"
+  is "names with + and . are names (g++ ends in +)" "g++ libstdc++6 python3.12" \
+    "$(read_package_list "$plt/plus" | tr '\n' ' ' | sed 's/ $//')"
+  is "and nothing in a refused line ran" "absent" "$([ -e "$plt/pwned" ] && echo present || echo absent)"
+  printf '# nothing\n\n' > "$plt/empty"
+  is "a list naming no packages is refused" "1" "$(read_package_list "$plt/empty" >/dev/null 2>&1; echo $?)"
+  ln -s "$plt/good" "$plt/link"
+  is "a list that is a link is refused" "1" "$(read_package_list "$plt/link" >/dev/null 2>&1; echo $?)"
+  head -c $((PACKAGE_LIST_MAX_BYTES + 1)) /dev/zero | tr '\0' 'a' > "$plt/huge"
+  is "a list over the size limit is refused before it is read" "1" "$(read_package_list "$plt/huge" >/dev/null 2>&1; echo $?)"
+  for p in $(seq 1 $((PACKAGE_LIST_MAX_NAMES + 1))); do printf 'p%s\n' "$p"; done > "$plt/many"
+  is "a list over the name limit is refused" "1" "$(read_package_list "$plt/many" >/dev/null 2>&1; echo $?)"
+
   local old want; old="$root/dpkg-520"
   printf '#!/bin/sh\ncase "$1" in iproute2|curl|python3|grim) echo installed ;; esac\n' > "$old"
   chmod +x "$old"
-  out="$(missing_packages "$old")"
-  want="iputils-ping nano htop vim-tiny swaybg xdg-desktop-portal-gtk flatpak git bash-completion podman uidmap passt fuse-overlayfs nftables upower power-profiles-daemon"
-  if [ "$out" = "$want" ]; then
-    printf '  %sok%s   a 520-style machine is named package by package\n' "$c_grn" "$c_off"
-  else
-    printf '  %sFAIL%s a 520-style machine: wanted %s, got %s\n' \
-      "$c_red" "$c_off" "$want" "${out:-nothing}"
-    fails=$((fails + 1))
-  fi
-
-  # A machine that was current until #401: every package the list named before it, and none of
-  # the developer's baseline. It is told exactly those, and nothing it already has.
-  local pre401; pre401="$root/dpkg-pre401"
-  printf '#!/bin/sh\ncase "$1" in iproute2|iputils-ping|grim|curl|python3|nano|htop|swaybg|xdg-desktop-portal-gtk|flatpak) echo installed ;; esac\n' > "$pre401"
-  chmod +x "$pre401"
-  out="$(missing_packages "$pre401")"
-  want="vim-tiny git bash-completion podman uidmap passt fuse-overlayfs nftables upower power-profiles-daemon"
-  if [ "$out" = "$want" ]; then
-    printf '  %sok%s   a machine from before #401 is given git, completion and rootless podman\n' "$c_grn" "$c_off"
-  else
-    printf '  %sFAIL%s a machine from before #401: wanted %s, got %s\n' \
-      "$c_red" "$c_off" "$want" "${out:-nothing}"
-    fails=$((fails + 1))
-  fi
+  out="$(missing_packages "$old" "${shipped[@]}")"
+  want="$(printf '%s\n' "${shipped[@]}" | grep -vxE 'iproute2|curl|python3|grim' | tr '\n' ' ' | sed 's/ $//')"
+  is "a 520-style machine is named package by package, in the list's order" "$want" "$out"
 
   # The battery and the power profile (story 1.4): a machine that has everything else but not
-  # UPower or power-profiles-daemon is told those two. Without them a laptop has no battery
-  # reading over D-Bus and no profile choice.
+  # UPower or power-profiles-daemon is told those two.
   local pre14; pre14="$root/dpkg-pre14"
-  printf '#!/bin/sh
-case "$1" in upower|power-profiles-daemon|tlp) ;; *) echo installed ;; esac
-' > "$pre14"
+  printf '#!/bin/sh\ncase "$1" in upower|power-profiles-daemon|tlp) ;; *) echo installed ;; esac\n' > "$pre14"
   chmod +x "$pre14"
-  out="$(missing_packages "$pre14")"
-  want="upower power-profiles-daemon"
-  if [ "$out" = "$want" ]; then
-    printf '  %sok%s   a machine without UPower or power-profiles-daemon is given both
-' "$c_grn" "$c_off"
-  else
-    printf '  %sFAIL%s a machine without UPower: wanted %s, got %s
-'       "$c_red" "$c_off" "$want" "${out:-nothing}"
-    fails=$((fails + 1))
-  fi
-
+  is "a machine without UPower or power-profiles-daemon is given both" "upower power-profiles-daemon" \
+    "$(missing_packages "$pre14" "${shipped[@]}")"
   # The same machine with tlp on it: power-profiles-daemon is skipped, because installing it
   # would make apt remove tlp. UPower is still given.
   local withtlp; withtlp="$root/dpkg-withtlp"
-  printf '#!/bin/sh
-case "$1" in upower|power-profiles-daemon) ;; *) echo installed ;; esac
-' > "$withtlp"
+  printf '#!/bin/sh\ncase "$1" in upower|power-profiles-daemon) ;; *) echo installed ;; esac\n' > "$withtlp"
   chmod +x "$withtlp"
-  out="$(missing_packages "$withtlp")"
-  want="upower"
-  if [ "$out" = "$want" ]; then
-    printf '  %sok%s   a machine with tlp is not given power-profiles-daemon, which would remove it
-' "$c_grn" "$c_off"
+  is "a machine with tlp is not given power-profiles-daemon, which would remove it" "upower" \
+    "$(missing_packages "$withtlp" "${shipped[@]}")"
+  local whole; whole="$root/dpkg-whole"
+  printf '#!/bin/sh\necho installed\n' > "$whole"
+  chmod +x "$whole"
+  is "a machine built from the current image is missing nothing" "" "$(missing_packages "$whole" "${shipped[@]}")"
+
+  # Only the installed copy, root's, with the hash this build shipped. ROOT_UID is this account
+  # here, so "root's" can be built without root.
+  local tp="$root/trusted"
+  mkdir -p "$tp/bin" "$tp/share"
+  printf 'mpv\nnano\n' > "$tp/share/packages.list"
+  (cd "$tp/share" && sha256sum packages.list) > "$tp/bin/yantrik-root-files.sha256"
+  chmod 0755 "$tp" "$tp/bin" "$tp/share"; chmod 0644 "$tp/share/packages.list"
+  trusted() { (PREFIX="$tp" SHARE_DIR="$tp/share" BIN_DIR="$tp/bin" ROOT_FILES="$tp/bin/yantrik-root-files.sha256" \
+               ROOT_UID="$(id -u)"; trusted_package_list 2>&1; printf '[exit %s]' "$?"); }
+  is "the list this build shipped is trusted" "mpv nano [exit 0]" "$(trusted | tr '\n' ' ')"
+  printf 'mpv\nnano\nevil-package\n' > "$tp/share/packages.list"
+  t "a list whose content is not what the build shipped is not" "not trusted" "$(trusted)"
+  printf 'mpv\nnano\n' > "$tp/share/packages.list"
+  chmod 0664 "$tp/share/packages.list"
+  t "nor one another account could write" "not trusted" "$(trusted)"
+  chmod 0644 "$tp/share/packages.list"; chmod 0777 "$tp/share"
+  t "nor one in a share/ another account could write" "not trusted" "$(trusted)"
+  chmod 0755 "$tp/share"
+  mv "$tp/share/packages.list" "$tp/real.list"; ln -s "$tp/real.list" "$tp/share/packages.list"
+  t "nor a link to a list" "[exit 1]" "$(trusted)"
+  rm -f "$tp/share/packages.list"
+  t "a build without one says so" "ships no" "$(trusted)"
+
+  # The install itself, with a stand-in apt and dpkg. Never as root: the stand-ins are refused to
+  # root, so as root this would run the real apt.
+  if [ "$(id -u)" = 0 ]; then
+    printf '  skip package install checks: they run as an ordinary account, never as root\n'
   else
-    printf '  %sFAIL%s a machine with tlp: wanted %s, got %s
-'       "$c_red" "$c_off" "$want" "${out:-nothing}"
+    local aptd="$root/apt" st
+    mkdir -p "$aptd/bin" "$aptd/share" "$aptd/state"
+    st="$aptd/state"
+    # dpkg: installed when the state directory holds a file of that name.
+    printf '#!/bin/sh\n[ -e "%s/$1" ] && echo installed\nexit 0\n' "$st" > "$aptd/dpkg"
+    # apt-get: every call recorded, one line per call; what it does decided by STUB_MODE.
+    cat > "$aptd/apt-get" <<STUB
+#!/bin/sh
+printf '%s\n' "\$*" >> "$st/apt-calls"
+case "\${STUB_MODE:-ok}" in
+  offline)
+    printf 'Err:1 http://deb.debian.org/debian trixie InRelease\n  Temporary failure resolving %s\n' "'deb.debian.org'"
+    printf 'E: Failed to fetch http://deb.debian.org/debian/dists/trixie/InRelease\n'
+    exit 100 ;;
+  slow)
+    case " \$* " in *" --download-only "*) sleep 5 ;; esac ;;
+esac
+[ "\$1" = update ] && exit 0
+for a in "\$@"; do
+  case "\$a" in
+    brokenpkg) printf 'E: Unable to correct problems, you have held broken packages.\n'; exit 100 ;;
+  esac
+done
+case " \$* " in *" --download-only "*) exit 0 ;; esac
+for a in "\$@"; do
+  case "\$a" in -*|install|*=*) ;; *) : > "$st/\$a" ;; esac
+done
+exit 0
+STUB
+    # apt-cache: the names the "mirror" has, exactly.
+    printf 'mpv\nnano\ncurl\nbrokenpkg\nlibzstd1\nzstd\n' > "$st/known"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/apt-cache-calls"\ncat "%s/known"\n' "$st" "$st" > "$aptd/apt-cache"
+    chmod +x "$aptd/dpkg" "$aptd/apt-get" "$aptd/apt-cache"
+    chmod 0755 "$aptd" "$aptd/bin" "$aptd/share"
+    aplist() { # the names given become the trusted, shipped list
+      printf '%s\n' "$@" > "$aptd/share/packages.list"; chmod 0644 "$aptd/share/packages.list"
+      (cd "$aptd/share" && sha256sum packages.list) > "$aptd/bin/yantrik-root-files.sha256"
+    }
+    reconcile_with() { # reconcile_with <STUB_MODE> [VAR=value...]
+      rm -f "$st/apt-calls"
+      ( export YANTRIK_SELFTEST=1 YANTRIK_APT="$aptd/apt-get" YANTRIK_DPKG_STATUS="$aptd/dpkg" \
+               YANTRIK_APT_CACHE="$aptd/apt-cache" \
+               YANTRIK_APT_LOCKS="$st/lock" YANTRIK_APT_LOCK_WAIT=2 STUB_MODE="$1"
+        shift
+        # shellcheck disable=SC2163  # VAR=value pairs, exported as given
+        [ "$#" = 0 ] || export "$@"
+        PREFIX="$aptd" SHARE_DIR="$aptd/share" BIN_DIR="$aptd/bin" ROOT_FILES="$aptd/bin/yantrik-root-files.sha256" \
+          ROOT_UID="$(id -u)"
+        reconcile_packages; printf '[exit %s]' "$?" ) 2>&1
+    }
+
+    aplist mpv nano curl
+    : > "$st/nano"
+    out="$(reconcile_with ok)"
+    t "a missing package from the list is installed (#854)" "installed: mpv" "$out"
+    t "and the other one" "installed: curl" "$out"
+    t "what was there is counted, not reinstalled" "already present: 1 of 3" "$out"
+    t "and the summary says so" "packages: 2 installed, 1 already present, 0 failed" "$out"
+    t "the whole run succeeds" "[exit 0]" "$out"
+    is "apt is asked for fresh indexes first" "update" "$(head -1 "$st/apt-calls" | cut -d' ' -f1)"
+    t "then downloads only the missing names, never removing, never upgrading" \
+      "install --download-only -y -q --no-install-recommends --no-remove --no-upgrade" "$(sed -n 2p "$st/apt-calls")"
+    t "with the names last, as separate arguments" "--force-confold mpv curl" "$(sed -n 3p "$st/apt-calls")"
+    is "and never runs upgrade, remove, purge or autoremove" "" \
+      "$(cut -d' ' -f1 "$st/apt-calls" | grep -xE 'upgrade|dist-upgrade|full-upgrade|remove|purge|autoremove' || true)"
+    is "nano, already there, is not named to apt" "" "$(grep -w nano "$st/apt-calls" || true)"
+
+    out="$(reconcile_with ok)"
+    t "a second run finds nothing to do" "already present: 3 of 3" "$out"
+    is "and calls apt not at all" "absent" "$([ -e "$st/apt-calls" ] && echo present || echo absent)"
+
+    rm -f "$st/mpv" "$st/curl"
+    out="$(reconcile_with offline)"
+    t "offline: it says it couldn't reach the package mirror" "couldn't reach the package mirror" "$out"
+    t "names what is still missing" "failed: mpv curl" "$out"
+    t "and returns a failure for the caller to ignore" "[exit 1]" "$out"
+    is "and tries no install after the mirror failed" "" "$(grep -E '^install' "$st/apt-calls" || true)"
+
+    # Another apt holds the lock: it waits, then reports, and apt is never run.
+    : > "$st/lock"
+    python3 -I -c 'import fcntl, os, sys, time
+fd = os.open(sys.argv[1], os.O_RDWR); fcntl.lockf(fd, fcntl.LOCK_EX); open(sys.argv[2], "w").close(); time.sleep(8)' \
+      "$st/lock" "$st/locked" &
+    local holder=$!
+    for _ in 1 2 3 4 5 6 7 8 9 10; do [ -e "$st/locked" ] && break; sleep 0.2; done
+    out="$(reconcile_with ok)"
+    kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+    t "with the package database locked, it says it is waiting" "is using the package database ($st/lock); waiting up to 2s" "$out"
+    t "then names the lock, once, in the failure" "still holds the package database ($st/lock) after 2s" "$out"
+    is "and runs no apt at all" "absent" "$([ -e "$st/apt-calls" ] && echo present || echo absent)"
+    out="$(reconcile_with ok)"
+    t "once the lock is free, the same run installs" "installed: mpv" "$out"
+
+    # One package apt cannot install does not keep the others away.
+    aplist mpv brokenpkg nano
+    rm -f "$st/mpv"
+    out="$(reconcile_with ok)"
+    t "one bad package: the others are still installed" "installed: mpv" "$out"
+    t "and the bad one is named with apt's reason" "failed: brokenpkg — Unable to correct problems, you have held broken packages." "$out"
+    t "and counted" "packages: 1 installed, 1 already present, 1 failed" "$out"
+
+    # A name apt would read as a regex (on apt 2.8 `zst.` selected zutty and libzstd1; `zs.d`
+    # matches zstd): only names the mirror has exactly reach apt-get (security review of #858).
+    aplist mpv zs.d nano
+    rm -f "$st/mpv" "$st/apt-cache-calls"
+    out="$(reconcile_with ok)"
+    t "a name the mirror has no exact package for is not installed" \
+      "failed: zs.d — no package of exactly that name in this machine's apt sources" "$out"
+    is "and never reaches apt-get, so nothing it matches is installed" "" "$(grep -F 'zs.d' "$st/apt-calls" || true)"
+    is "nor anything a regex would have picked" "absent absent" \
+      "$([ -e "$st/zstd" ] && echo present || echo absent) $([ -e "$st/libzstd1" ] && echo present || echo absent)"
+    t "the exact ones still are" "installed: mpv" "$out"
+    t "and the summary counts both" "packages: 1 installed, 1 already present, 1 failed" "$out"
+    is "apt-cache is asked once, for every name" "1 pkgnames" \
+      "$(wc -l < "$st/apt-cache-calls" | tr -d ' ') $(head -1 "$st/apt-cache-calls")"
+    rm -f "$st/apt-cache-calls"
+
+    # A download that does not finish is stopped, and said.
+    aplist mpv
+    rm -f "$st/mpv"
+    out="$(reconcile_with slow YANTRIK_APT_DOWNLOAD_SECS=1)"
+    t "a download past its time limit is stopped and reported" "did not finish within 1s" "$out"
+    is "and nothing is installed after it" "absent" "$([ -e "$st/mpv" ] && echo present || echo absent)"
+
+    # A list that is not the shipped one: nothing at all is installed.
+    printf 'mpv\nevil\n' > "$aptd/share/packages.list"
+    out="$(reconcile_with ok)"
+    t "an untrusted list installs nothing" "no package list this updater can trust" "$out"
+    is "and apt is never called" "absent" "$([ -e "$st/apt-calls" ] && echo present || echo absent)"
+  fi
+  # An apply never fails, or rolls back, over a package: the reconcile it runs is `|| true`.
+  # Three: an up-to-date apply, the new build's reconcile after an install, and its stand-in.
+  is "apply runs the package reconcile as something that cannot fail it" "3" \
+    "$(sed -n '/^cmd_apply()/,/^}/p' "$SELF_PATH" | grep -cE '(yantrik-update" reconcile|reconcile_packages) \|\| true$')"
+
+  # 8b. The compositor's keys after an update (#854): the session's own copy, run as the person,
+  #     never through a link, and labwc asked to re-read them.
+  local chrome_helper=""
+  [ -f "$here/yantrik-session-chrome" ] && chrome_helper="$here/yantrik-session-chrome"
+  if [ -z "$chrome_helper" ]; then
+    printf '  %sFAIL%s no yantrik-session-chrome beside this updater\n' "$c_red" "$c_off"
     fails=$((fails + 1))
+  else
+    local cs="$root/chrome" ch="$root/chome"
+    mkdir -p "$cs/labwc" "$cs/fonts"
+    printf '<keys new/>\n' > "$cs/labwc/rc.xml"
+    printf '<menu/>\n' > "$cs/labwc/menu.xml"
+    printf 'theme\n' > "$cs/labwc/themerc"
+    printf '#!/bin/sh\n' > "$cs/labwc/autostart"
+    printf 'png\n' > "$cs/labwc/close-active.png"
+    printf 'ttf\n' > "$cs/fonts/house.ttf"
+    # A home with traps: rc.xml a link to a file elsewhere, menu.xml a FIFO, autostart a dangling
+    # link, and the theme directory a link to somewhere else.
+    mkdir -p "$ch/.config/labwc" "$ch/.local/share/themes/Yantrik" "$root/elsewhere"
+    printf 'victim\n' > "$root/victim"
+    ln -s "$root/victim" "$ch/.config/labwc/rc.xml"
+    mkfifo "$ch/.config/labwc/menu.xml"
+    ln -s "$root/dangling-target" "$ch/.config/labwc/autostart"
+    ln -s "$root/elsewhere" "$ch/.local/share/themes/Yantrik/labwc"
+    out="$(HOME="$ch" timeout 20 sh "$chrome_helper" "$cs" 2>&1; printf '[exit %s]' "$?")"
+    is "the file a planted rc.xml link pointed at is untouched" "victim" "$(cat "$root/victim")"
+    is "rc.xml is now the shipped one, as a plain file" "<keys new/> file" \
+      "$(cat "$ch/.config/labwc/rc.xml") $([ -f "$ch/.config/labwc/rc.xml" ] && [ ! -L "$ch/.config/labwc/rc.xml" ] && echo file)"
+    is "a FIFO at menu.xml is replaced, not written into (no hang)" "<menu/>" "$(cat "$ch/.config/labwc/menu.xml" 2>/dev/null)"
+    is "a dangling link at autostart creates nothing where it pointed" "absent" \
+      "$([ -e "$root/dangling-target" ] && echo present || echo absent)"
+    is "autostart lands executable" "yes" "$([ -x "$ch/.config/labwc/autostart" ] && [ ! -L "$ch/.config/labwc/autostart" ] && echo yes)"
+    is "a theme directory that is a link is refused" "" "$(ls -A "$root/elsewhere")"
+    t "and the refusal is said, with a failure status" "refusing" "$out"
+    t "and exits 1" "[exit 1]" "$out"
+    is "the fonts still land" "ttf" "$(cat "$ch/.local/share/fonts/house.ttf" 2>/dev/null)"
+    is "no temporary file is left behind" "" "$(find "$ch" -name '.*.??????' -type f)"
+    rm -rf "$ch"
+    out="$(HOME="$ch" sh "$chrome_helper" "$cs" 2>&1; printf '[exit %s]' "$?")"
+    is "a fresh home gets all of it" "[exit 0]" "$out"
+    is "the theme in place" "theme" "$(cat "$ch/.local/share/themes/Yantrik/labwc/themerc" 2>/dev/null)"
+    is "with its buttons" "png" "$(cat "$ch/.local/share/themes/Yantrik/labwc/close-active.png" 2>/dev/null)"
+  fi
+  if [ -f "$here/yantrik-session" ]; then
+    t "the session runs the same copy at login" "/opt/yantrik/bin/yantrik-session-chrome /opt/yantrik/share" \
+      "$(grep -F -- "/opt/yantrik/bin/yantrik-session-chrome /opt/yantrik/share" "$here/yantrik-session")"
+    is "and keeps no copy of its own" "" "$(grep -n 'cp -f "\$CHROME' "$here/yantrik-session" || true)"
   fi
 
-  # The list is apt's, run as root: package names, never a URL or a path (#401).
-  # shellcheck disable=SC2086  # a package list, split on purpose
-  out="$(printf '%s\n' $REQUIRED_PACKAGES | grep -vE '^[a-z0-9][a-z0-9+.-]+$' || true)"
-  if [ -z "$out" ]; then
-    printf '  %sok%s   every required package is a plain Debian package name\n' "$c_grn" "$c_off"
-  else
-    printf '  %sFAIL%s REQUIRED_PACKAGES holds what is not a package name: %s\n' \
-      "$c_red" "$c_off" "$(printf '%s' "$out" | tr '\n' ' ')"
-    fails=$((fails + 1))
+  # The check the refresh asks first: the home already has this build's files, or not.
+  if [ -n "$chrome_helper" ]; then
+    local kh="$root/khome"
+    HOME="$kh" sh "$chrome_helper" "$cs" >/dev/null 2>&1
+    is "--check: a home with this build's files" "0" "$(HOME="$kh" sh "$chrome_helper" --check "$cs" >/dev/null 2>&1; echo $?)"
+    printf '<keys old/>\n' > "$kh/.config/labwc/rc.xml"
+    is "--check: an older rc.xml differs" "1" "$(HOME="$kh" sh "$chrome_helper" --check "$cs" >/dev/null 2>&1; echo $?)"
+    is "--check changes nothing" "<keys old/>" "$(cat "$kh/.config/labwc/rc.xml")"
+    rm "$kh/.config/labwc/rc.xml"; ln -s "$cs/labwc/rc.xml" "$kh/.config/labwc/rc.xml"
+    is "--check: a link to the right bytes still differs" "1" "$(HOME="$kh" sh "$chrome_helper" --check "$cs" >/dev/null 2>&1; echo $?)"
+    rm "$kh/.config/labwc/rc.xml"; cp "$cs/labwc/rc.xml" "$kh/.config/labwc/rc.xml"; chmod -x "$kh/.config/labwc/autostart"
+    is "--check: an autostart that cannot run differs" "1" "$(HOME="$kh" sh "$chrome_helper" --check "$cs" >/dev/null 2>&1; echo $?)"
+    rm -rf "$kh"
+    is "--check: a home without them differs, and is not made" "1 absent" \
+      "$(HOME="$kh" sh "$chrome_helper" --check "$cs" >/dev/null 2>&1; echo "$? $([ -e "$kh/.config" ] && echo present || echo absent)")"
   fi
+
+  # labwc is sent SIGHUP (what `labwc --reconfigure` sends), found by its owner's uid and name. A
+  # renamed `sleep` stands in for it: SIGHUP ends it with status 129.
+  local fake="$root/ylabwc-selftest" fpid
+  cp "$(command -v sleep)" "$fake"
+  "$fake" 30 & fpid=$!
+  sleep 0.3
+  if [ "$(id -u)" = 0 ]; then
+    is "as root the stand-in's name is refused, so only a real labwc is ever signalled" "" \
+      "$(YANTRIK_SELFTEST=1 YANTRIK_LABWC_NAME=ylabwc-selftest session_labwc_pids "$(id -u)")"
+  else
+    t "the stand-in labwc is found by its owner's uid" "$fpid" \
+      "$(YANTRIK_SELFTEST=1 YANTRIK_LABWC_NAME=ylabwc-selftest session_labwc_pids "$(id -u)")"
+  fi
+  out="$(reload_labwc "$(id -un)" "$fpid" 2>&1)"
+  wait "$fpid" 2>/dev/null; local hup=$?
+  is "and is sent SIGHUP" "129" "$hup"
+  t "which the output says" "re-read its config" "$out"
+  is "a uid with no labwc has none" "" "$(session_labwc_pids 2147483646)"
+
+  # The first update of a machine already in the field (VM 520, 18 Oct): its OLD updater runs the
+  # apply, and the only code of this build it runs is `reconcile`. So `reconcile` itself must bring
+  # the keys. Driven here as that old updater does, the real `reconcile` in a process of its own,
+  # against a scratch prefix and a scratch home. Never as root: the stand-ins are refused to root,
+  # and as root this would reach the real home and the real labwc.
+  if [ "$(id -u)" = 0 ]; then
+    printf '  skip reconcile key checks: they run as an ordinary account, never as root\n'
+  elif [ -n "$chrome_helper" ]; then
+    local op="$root/oldupd" oh="$root/ohome"
+    mkdir -p "$op/bin" "$op/share" "$op/logs" "$oh/.config/labwc"
+    cp "$chrome_helper" "$op/bin/yantrik-session-chrome"; chmod 0755 "$op/bin/yantrik-session-chrome"
+    cp -a "$cs/labwc" "$op/share/labwc"
+    printf '<keys from 16 Oct/>\n' > "$oh/.config/labwc/rc.xml"
+    as_old_updater() { # what an updater from before #854 runs after installing this build
+      env YANTRIK_SELFTEST=1 YANTRIK_PREFIX="$op" YANTRIK_LABWC_NAME=ylabwc-selftest \
+          YANTRIK_CHROME_HOME="$oh" "$@" "$0" reconcile 2>&1
+    }
+    "$fake" 30 & fpid=$!
+    sleep 0.3
+    out="$(as_old_updater)"
+    wait "$fpid" 2>/dev/null; hup=$?
+    t "reconcile alone finds the person's keys are not this build's" "are not this build's" "$out"
+    is "and puts this build's in place" "<keys new/>" "$(cat "$oh/.config/labwc/rc.xml")"
+    is "and labwc is sent SIGHUP" "129" "$hup"
+    t "and the output says the keys work now" "the new keys work now, with no new login" "$out"
+    "$fake" 30 & fpid=$!
+    sleep 0.3
+    out="$(as_old_updater)"
+    t "a second reconcile finds them already in place" "are already this build's" "$out"
+    is "and does not signal labwc again" "running" "$(kill -0 "$fpid" 2>/dev/null && echo running || echo gone)"
+    printf '<keys from 16 Oct/>\n' > "$oh/.config/labwc/rc.xml"
+    out="$(as_old_updater YANTRIK_APPLY_REFRESHES_KEYS=1)"
+    is "this build's own apply tells reconcile to leave the keys to it" "<keys from 16 Oct/>" "$(cat "$oh/.config/labwc/rc.xml")"
+    is "and labwc is left alone" "running" "$(kill -0 "$fpid" 2>/dev/null && echo running || echo gone)"
+    kill "$fpid" 2>/dev/null; wait "$fpid" 2>/dev/null
+    out="$(as_old_updater)"
+    t "with no desktop running, reconcile says the login will do it" "no desktop is running for" "$out"
+    is "and changes nothing" "<keys from 16 Oct/>" "$(cat "$oh/.config/labwc/rc.xml")"
+  fi
+
+  # Where this build's own apply and rollback do it: after the build answered, never with
+  # --no-restart, and its reconcile told to leave them.
+  local applyfn; applyfn="$(sed -n '/^cmd_apply()/,/^}/p' "$SELF_PATH")"
+  is "apply refreshes the keys right after the restart it verified" 'refresh_session_chrome || true' \
+    "$(printf '%s\n' "$applyfn" | grep -A3 -F 'restart_and_verify "$backup"' | grep -F 'refresh_session_chrome' | sed 's/^ *//')"
+  is "an up-to-date apply checks them too" "2" "$(printf '%s\n' "$applyfn" | grep -c 'refresh_session_chrome || true')"
+  t "apply's reconcile is told the keys are apply's" 'YANTRIK_APPLY_REFRESHES_KEYS=1 "$BIN_DIR/yantrik-update" reconcile' \
+    "$(printf '%s\n' "$applyfn" | grep -F 'YANTRIK_APPLY_REFRESHES_KEYS=1')"
+  t "rollback puts the older keys back after the restart" 'refresh_session_chrome || true' \
+    "$(sed -n '/^cmd_rollback()/,/^}/p' "$SELF_PATH" | grep -A3 -F 'restart_and_verify "$backup"' | grep -F refresh_session_chrome)"
 
   # 9. Subordinate ids for rootless podman (#401). Where a new range starts, and whether an
   #    account already has one, decide whether two accounts end up sharing ids; both are pure
@@ -3789,17 +5249,6 @@ case "$1" in upower|power-profiles-daemon) ;; *) echo installed ;; esac
       printf '  %sFAIL%s config/containers/50-yantrik-search.conf would be refused by reconcile\n' "$c_red" "$c_off"
       fails=$((fails + 1))
     fi
-  fi
-
-  local whole; whole="$root/dpkg-whole"
-  printf '#!/bin/sh\necho installed\n' > "$whole"
-  chmod +x "$whole"
-  out="$(missing_packages "$whole")"
-  if [ -z "$out" ]; then
-    printf '  %sok%s   a machine built from the current image is missing nothing\n' "$c_grn" "$c_off"
-  else
-    printf '  %sFAIL%s a current machine was told it lacks: %s\n' "$c_red" "$c_off" "$out"
-    fails=$((fails + 1))
   fi
 
   # N. install-mind: a bundle is checked whole before anything moves, and a Mind that does not
@@ -4043,6 +5492,59 @@ loopback 127.0.0.1 11434")"
     t "mind-egress: ... and checks the table is loaded before it starts" "nft list table inet yantrik_mind_egress" "$(grep '^ExecStartPre=+' "$mind_unit")"
   fi
 
+  # The person's memory socket (#447): the drop-in and tmpfiles entry for the desktop's owner,
+  # written once, and nothing at all for an owner whose ids cannot be told.
+  local mk="$root/mind-socket" mout
+  mkdir -p "$mk"
+  printf '%s\n' 'root:x:0:0:root:/root:/bin/bash' 'yantrik-mind:x:998:997::/var/lib/yantrik-mind:/usr/sbin/nologin' \
+    'asha:x:1000:1000:Asha:/home/asha:/bin/bash' 'ravi:x:1001:100:Ravi:/home/ravi:/bin/bash' \
+    'broken:x:1002::Broken:/home/broken:/bin/bash' 'sam:x:1003:100:Sam:/home/sam:/bin/bash' \
+    'meera:x:1004:1004:Meera:/home/meera:/bin/bash' 'svc:x:999:999::/var/lib/svc:/usr/sbin/nologin' \
+    'big:x:60001:60001::/home/big:/bin/bash' > "$mk/passwd"
+  printf '%s\n' 'asha:x:1000:' 'users:x:100:' 'meera:x:1004:asha' 'svc:x:999:' 'big:x:60001:' > "$mk/group"
+  is "mind-socket: the owner's uid and primary group" "1000 1000" "$(mind_person_ids asha "$mk/passwd" "$mk/group")"
+  is "mind-socket: a primary group another account also has is refused (Debian's users)" "" \
+    "$(mind_person_ids ravi "$mk/passwd" "$mk/group")"
+  is "mind-socket: a primary group that lists another member is refused" "" \
+    "$(mind_person_ids meera "$mk/passwd" "$mk/group")"
+  is "mind-socket: a uid below the people's range is refused" "" "$(mind_person_ids svc "$mk/passwd" "$mk/group")"
+  is "mind-socket: a uid above it is refused" "" "$(mind_person_ids big "$mk/passwd" "$mk/group")"
+  mout="$(mind_socket_write asha "$mk/tmpfiles.conf" "$mk/unit.d/person.conf" "$mk/passwd" "$mk/group")"
+  is "mind-socket: a first write says it changed" "changed" "$mout"
+  is "mind-socket: the drop-in names the person's uid and their socket" \
+    "Environment=YANTRIK_PERSON_UID=1000 Environment=YM_MEMORY_SOCKET=/run/yantrik-mind/1000/memory.sock" \
+    "$(grep '^Environment=' "$mk/unit.d/person.conf" | tr '\n' ' ' | sed 's/ $//')"
+  is "mind-socket: ... under [Service], and nothing else in it: no key, no token" \
+    "[Service] Environment=YANTRIK_PERSON_UID=1000 Environment=YM_MEMORY_SOCKET=/run/yantrik-mind/1000/memory.sock" \
+    "$(grep -v '^#' "$mk/unit.d/person.conf" | tr '\n' ' ' | sed 's/ $//')"
+  is "mind-socket: tmpfiles makes the parent root's and the person's directory the mind's, setgid to their group" \
+    "d /run/yantrik-mind 0755 root root - d /run/yantrik-mind/1000 2750 yantrik-mind 1000 -" \
+    "$(grep '^d ' "$mk/tmpfiles.conf" | tr '\n' ' ' | sed 's/ $//')"
+
+  is "mind-socket: a second write changes nothing" "" "$(mind_socket_write asha "$mk/tmpfiles.conf" "$mk/unit.d/person.conf" "$mk/passwd" "$mk/group")"
+  ln -s "$mk/passwd" "$mk/linked.conf"
+  mind_socket_write asha "$mk/tmpfiles.conf" "$mk/linked.conf" "$mk/passwd" "$mk/group" >/dev/null
+  is "mind-socket: a link at the drop-in's path is replaced, not written through" "file asha:x:1000" \
+    "$([ -f "$mk/linked.conf" ] && [ ! -L "$mk/linked.conf" ] && echo file) $(grep -o '^asha:x:1000' "$mk/passwd")"
+  local who
+  for who in nobody-here root yantrik-mind broken ravi meera svc big 'Asha' 'a;b' ''; do
+    mout="$(mind_socket_write "$who" "$mk/no-tmpfiles.conf" "$mk/no-person.conf" "$mk/passwd" "$mk/group"; echo " [exit $?]")"
+    is "mind-socket: an owner it cannot resolve ('$who') is refused" " [exit 1]" "$mout"
+  done
+  is "mind-socket: ... and nothing is written for them" "no" "$([ -e "$mk/no-tmpfiles.conf" ] || [ -e "$mk/no-person.conf" ] && echo yes || echo no)"
+
+  # The unit can write that directory, and nothing in its sandbox hides it again.
+  if [ -f "$mind_unit" ]; then
+    is "mind-socket: the unit's ReadWritePaths names /run/yantrik-mind" "yes" \
+      "$(grep -E '^ReadWritePaths=' "$mind_unit" | tr ' ' '\n' | sed 's/^ReadWritePaths=//; s/^-//' | grep -qx /run/yantrik-mind && echo yes || echo no)"
+    is "mind-socket: ... no InaccessiblePaths covers it" "" \
+      "$(grep -E '^InaccessiblePaths=' "$mind_unit" | sed 's/^InaccessiblePaths=//' | tr ' ' '\n' | sed 's/^-//' \
+         | while read -r p; do case "/run/yantrik-mind/" in "${p%/}/"*) echo "$p" ;; esac; done)"
+    is "mind-socket: ... ProtectHome hides only /home, /root and /run/user" "yes" "$(grep -qx 'ProtectHome=yes' "$mind_unit" && echo yes || echo no)"
+    is "mind-socket: ... and it is not a temporary filesystem or another unit's runtime directory" "" \
+      "$(grep -E '^(TemporaryFileSystem|RuntimeDirectory|PrivateMounts|ProtectHome=tmpfs)' "$mind_unit")"
+  fi
+
   # The direct-set ranges are written twice, in the proxy (direct.rs, DIRECT_RANGES) and in the
   # root check above (PY_MIND_DIRECT): the two must be the same list.
   local direct_rs; direct_rs="$(dirname "$0")/../../crates/yantrik-egress/src/direct.rs"
@@ -4122,6 +5624,21 @@ d = json.load(sys.stdin); print(d["public_proxy"], d["proxy"].split(":")[0])')"
   is "public door: ... the kernel's loopback set has its port, once" "${EGRESS_PUBLIC_DOOR##*:}" \
     "$(printf '%s\n' "$MIND_LOOPBACK_PORTS" | tr ',' '\n' | tr -d ' ' | grep -x "${EGRESS_PUBLIC_DOOR##*:}")"
   is "public door: ... on 127.0.0.1, the only address the loopback set is for" "127.0.0.1" "${EGRESS_PUBLIC_DOOR%:*}"
+  # The model gateway (#673): its port is in the mind's loopback set once, on 127.0.0.1, and it is
+  # the only port added since the public door: the set is exactly these five, nothing widened.
+  is "model gateway: the kernel's loopback set has its port, once" "${GATEWAY_ADDR##*:}" \
+    "$(printf '%s\n' "$MIND_LOOPBACK_PORTS" | tr ',' '\n' | tr -d ' ' | grep -x "${GATEWAY_ADDR##*:}")"
+  is "model gateway: ... on 127.0.0.1, the only address the loopback set is for" "127.0.0.1" "${GATEWAY_ADDR%:*}"
+  is "model gateway: ... and the set is the five the mind always needs, nothing more" "7440 7450 7451 7460 8341" \
+    "$(printf '%s\n' "$MIND_LOOPBACK_PORTS" | tr ',' '\n' | tr -d ' ' | sort -n | tr '\n' ' ' | sed 's/ $//')"
+  local gateway_lib
+  gateway_lib="$(dirname "$0")/../../crates/yantrik-gateway/src/lib.rs"
+  if [ -f "$gateway_lib" ]; then
+    is "model gateway: ... the crate listens on the same address" "pub const ADDR: &str = \"$GATEWAY_ADDR\";" \
+      "$(grep '^pub const ADDR' "$gateway_lib")"
+    is "model gateway: ... and names the same port" "pub const PORT: u16 = ${GATEWAY_ADDR##*:};" \
+      "$(grep '^pub const PORT' "$gateway_lib")"
+  fi
   local egress_unit egress_main
   egress_unit="$(dirname "$0")/../../config/systemd/yantrik-egress.service"
   egress_main="$(dirname "$0")/../../crates/yantrik-egress/src/main.rs"
@@ -4559,6 +6076,737 @@ c.sendall((json.dumps({"ok": True, "seeded": req["rules"]}) + "\n").encode())' "
   is "blanket rule: a file with rules for two accounts is left alone" "no" "$(blanket_rule_in "$sd/ci-both" asha && echo yes || echo no)"
   is "blanket rule: a narrow rule a person wrote is theirs" "no" "$(blanket_rule_in "$sd/own" asha && echo yes || echo no)"
 
+  # YantrikDB for the harnesses (#677): the bundle carries memory/, apply installs it whole at
+  # $PREFIX/memory, and the image takes the same tree from the bundle. VM 520 on build 1448 was
+  # updated, not imaged, had no /opt/yantrik/memory, and every harness install stopped there.
+  local mb="$root/membundle" mp="$root/memprefix" here; here="$(dirname "$SELF_PATH")"
+  mkdir -p "$mb/memory/bin" "$mb/memory/wheels" "$mb/memory/mcp/yantrikdb_mcp" "$mb/memory/mcp/yantrikdb" "$mp/memory"
+  printf '#!/bin/sh\nexec /usr/bin/python3 -I -c x "$@"\n' > "$mb/memory/bin/yantrikdb-mcp"
+  chmod 755 "$mb/memory/bin/yantrikdb-mcp"
+  for w in yantrikdb-0.23.2-cp310-abi3-x.whl yantrikdb_hermes_plugin-0.28.0-py3-none-any.whl uuid_utils-1.0.0-cp313-x.whl click-8.3.1-py3-none-any.whl; do
+    : > "$mb/memory/wheels/$w"
+  done
+  printf 'yantrikdb=0.23.2\nimage-python=0.0\n' > "$mb/memory/VERSIONS"
+  chmod -R go-w "$mb/memory"
+  printf 'old\n' > "$mp/memory/stale"
+  chmod 600 "$mb/memory/VERSIONS"; chmod 700 "$mb/memory/bin/yantrikdb-mcp" "$mb/memory/wheels"
+  is "memory: the bundle's file list passes bake-memory's check" "ok" \
+    "$(sh "$here/bake-memory.sh" --check "$mb/memory" 2>&1 && echo ok)"
+  out="$( (PREFIX="$mp"; install_memory "$mb") 2>&1 )"
+  is "memory: apply installs the bundle's memory/ at \$PREFIX/memory" "yes" \
+    "$([ -x "$mp/memory/bin/yantrikdb-mcp" ] && [ -f "$mp/memory/wheels/click-8.3.1-py3-none-any.whl" ] && echo yes || echo no)"
+  is "memory: modes are the ISO's whatever the umask (dirs 755, files 644, the launcher 755)" "755 644 755 755" \
+    "$(stat -c %a "$mp/memory/wheels" "$mp/memory/VERSIONS" "$mp/memory/bin/yantrikdb-mcp" "$mp/memory/bin" | tr '\n' ' ' | sed 's/ $//')"
+  is "memory: migrate-ownership makes memory/ root's with the rest of the tree" "yes" \
+    "$(declare -f cmd_migrate_ownership | grep -qF '"$PREFIX/memory"' && echo yes || echo no)"
+  is "memory: the old memory/ is replaced whole, not merged" "no" "$([ -e "$mp/memory/stale" ] && echo yes || echo no)"
+  is "memory: nothing is left beside it" "none" "$(find "$mp" -mindepth 1 -maxdepth 1 ! -name memory | head -n 1)$( [ -z "$(find "$mp" -mindepth 1 -maxdepth 1 ! -name memory)" ] && echo none)"
+  t "memory: a python3 the bundle was not built for is said" "is for Python 0.0" "$out"
+  is "memory: nothing in it is writable by others" "none" "$(find "$mp/memory" ! -type l -perm /022 | head -n 1 || true)$( [ -z "$(find "$mp/memory" ! -type l -perm /022 | head -n 1)" ] && echo none)"
+  rm "$mb/memory/wheels/yantrikdb_hermes_plugin-0.28.0-py3-none-any.whl"
+  t "memory: a bundle missing the Hermes provider fails the check" "no Hermes provider" \
+    "$(sh "$here/bake-memory.sh" --check "$mb/memory" 2>&1 || true)"
+  rm -rf "$mb/memory"
+  out="$( (PREFIX="$mp"; install_memory "$mb") 2>&1 )"
+  t "memory: a bundle without memory/ leaves what is there alone" "carries no memory/" "$out"
+  is "memory: ... and what was there stays" "yes" "$([ -x "$mp/memory/bin/yantrikdb-mcp" ] && echo yes || echo no)"
+  is "memory: the release bundle bakes memory/ with bake-memory.sh" "yes" \
+    "$(grep -qF -- 'bake-memory.sh" "$ROOT/memory"' "$here/build-release.sh" && echo yes || echo no)"
+  is "memory: the release bundle checks its memory/ file list" "yes" \
+    "$(grep -qF -- 'bake-memory.sh" --check "$ROOT/memory"' "$here/build-release.sh" && echo yes || echo no)"
+  is "memory: the image takes memory/ from the bundle it unpacks" "yes" \
+    "$(grep -qF -- 'cp -a "$UNPACK/memory/.' "$here/build-debian-iso.sh" && echo yes || echo no)"
+  is "memory: apply installs memory/" "yes" \
+    "$(sed -n '/^cmd_apply()/,/^}/p' "$SELF_PATH" | grep -cF 'install_memory "$root"' | grep -qx 1 && echo yes || echo no)"
+  is "memory: a failed memory install rolls the whole build back" "yes" \
+    "$(sed -n '/^cmd_apply()/,/^}/p' "$SELF_PATH" | grep -A1 -F 'if ! install_memory "$root" "$backup"' | grep -qF 'restore_backup "$backup"' && echo yes || echo no)"
+
+  # Rollback brings the previous memory/ back with the rest of the build: apply moves the tree it
+  # replaces into the backup, and restore_backup swaps it back in, sealed as on install.
+  local rb="$root/memrb" rbk
+  rbk="$rb/backups/1"
+  mkdir -p "$rb/bin" "$rb/share" "$rbk/bin" "$rb/memory/wheels"
+  printf 'x\n' > "$rbk/bin/yantrik-ui"
+  printf 'build-a\n' > "$rb/memory/VERSIONS"
+  mkdir -p "$mb/memory/bin" "$mb/memory/wheels"
+  printf 'build-b\nimage-python=0.0\n' > "$mb/memory/VERSIONS"
+  out="$( (PREFIX="$rb"; install_memory "$mb" "$rbk") 2>&1 )"
+  is "memory: apply moves the memory/ it replaces into the backup" "build-a|build-b" \
+    "$(head -n 1 "$rbk/memory/VERSIONS" 2>/dev/null)|$(head -n 1 "$rb/memory/VERSIONS" 2>/dev/null)"
+  is "memory: ... and leaves nothing beside it" "" "$(find "$rb" -mindepth 1 -maxdepth 1 -name '.memory*')"
+  ( PREFIX="$rb" BIN_DIR="$rb/bin" SHARE_DIR="$rb/share" BUILD_FILE="$rb/BUILD"; restore_backup "$rbk" ) >/dev/null 2>&1
+  is "memory: rollback restores the previous memory/" "build-a" "$(head -n 1 "$rb/memory/VERSIONS" 2>/dev/null)"
+  is "memory: ... and the backup keeps it for the next rollback" "build-a" "$(head -n 1 "$rbk/memory/VERSIONS" 2>/dev/null)"
+  is "memory: ... sealed: nothing in it writable by group or others" "" "$(find "$rb/memory" ! -type l -perm /022 | head -n 1)"
+  if [ "$(id -u)" = 0 ]; then
+    is "memory: as root the installed tree is root's" "" "$(find "$rb/memory" ! -user root | head -n 1)"
+    chmod g+w "$rbk/memory/VERSIONS"; printf 'build-c\n' > "$rb/memory/VERSIONS"
+    out="$( ( PREFIX="$rb" BIN_DIR="$rb/bin" SHARE_DIR="$rb/share" BUILD_FILE="$rb/BUILD"; restore_backup "$rbk" ) 2>&1 )"
+    is "memory: a backup memory/ others could write is not restored" "build-c" "$(head -n 1 "$rb/memory/VERSIONS")"
+    t "memory: ... and it says so" "not root's alone to write" "$out"
+  fi
+  rm -rf "$rbk/memory"; printf 'build-d\n' > "$rb/memory/VERSIONS"
+  ( PREFIX="$rb" BIN_DIR="$rb/bin" SHARE_DIR="$rb/share" BUILD_FILE="$rb/BUILD"; restore_backup "$rbk" ) >/dev/null 2>&1
+  is "memory: a backup from before memory/ shipped leaves the installed one" "build-d" "$(head -n 1 "$rb/memory/VERSIONS" 2>/dev/null)"
+
+  # The kernel's serial console on a machine installed before 12 Oct 2026 (VM 541, 16 Oct): the
+  # old installer's line becomes the new one, anything else is left, a second run does nothing,
+  # and a failed regeneration puts both files back.
+  local gd="$root/grub"
+  mkdir -p "$gd/default" "$gd/boot" "$gd/updates"
+  gr_old() {
+    printf '%s\n' 'GRUB_DEFAULT=0' 'GRUB_TIMEOUT=3' 'GRUB_DISTRIBUTOR="Yantrik OS"' \
+      'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=3 console=ttyS0"' "$1" \
+      "$GRUB_TERMINAL_INPUT_NEW" "$GRUB_TERMINAL_OUTPUT_NEW" 'GRUB_GFXMODE=auto' > "$gd/default/grub"
+    chmod 0644 "$gd/default/grub"
+    printf 'linux /vmlinuz root=UUID=1234 console=ttyS0,115200 console=tty1\n' > "$gd/boot/grub.cfg"
+    rm -f "$gd/default/grub".before-* "$gd/calls" "$gd/updates/grub-cmdline-left-alone" "$gd/updates/grub-terminal-left-alone"
+  }
+  mkdir -p "$gd/efi"
+  gr_run() { # gr_run <ok|fail|by-device>: what migrate_grub_defaults said; GR_CP_FAIL=1, the put-back's copy fails
+    ( GRUB_DEFAULTS="$gd/default/grub" GRUB_CFG="$gd/boot/grub.cfg" UPDATES_DIR="$gd/updates" GR_MODE="$1"
+      GRUB_EFI_DIR="$gd/efi" GRUB_SCRIPTS_DIR="$gd/grub.d" GRUB_THEME_SOURCE="$gd/theme-src" GRUB_THEME_DIR="$gd/boot/themes/yantrik"
+      PREFIX="$gd" SHARE_DIR="$gd/share" ROOT_FILES="$gd/bin/yantrik-root-files.sha256" GRUB_THEME_BUNDLED="$gd/share/grub-theme"
+      GRUB_CURSOR_CONF="$gd/tmpfiles.d/yantrik-splash-cursor.conf" ROOT_UID="$(id -u)"
+      cp() { [ -n "${GR_CP_FAIL:-}" ] && case "${3:-}" in "$GRUB_DEFAULTS".yantrik-*) true ;; *) false ;; esac \
+               && { echo "cp: error writing: No space left on device" >&2; return 1; }; command cp "$@"; }
+      grub_can_regenerate() { [ "$GR_MODE" != no-update-grub ]; }
+      grub_regenerate() {
+        printf 'regenerate\n' >> "$gd/calls"
+        case "$GR_MODE" in
+          # The recovery entry first, unindented, with GRUB_CMDLINE_LINUX alone; then the normal
+          # entry, indented as in a real menu, with GRUB_CMDLINE_LINUX_DEFAULT after it.
+          ok) printf 'linux /vmlinuz root=UUID=1234 %s\n' "$(sed -n 's/^GRUB_CMDLINE_LINUX="\(.*\)"$/\1/p' "$GRUB_DEFAULTS")" > "$GRUB_CFG"
+              printf '\tlinux /vmlinuz root=UUID=1234 %s %s\n' "$(sed -n 's/^GRUB_CMDLINE_LINUX="\(.*\)"$/\1/p' "$GRUB_DEFAULTS")" \
+                "$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$GRUB_DEFAULTS")" >> "$GRUB_CFG"
+              sed -n 's/^GRUB_TERMINAL_OUTPUT="\(.*\)"$/terminal_output \1/p' "$GRUB_DEFAULTS" >> "$GRUB_CFG" ;;
+          by-device) printf 'linux /vmlinuz root=/dev/sda2 console=tty1\n' > "$GRUB_CFG" ;;
+          *) printf 'half a menu\n' > "$GRUB_CFG"; echo "grub-mkconfig: error: syntax error"; return 1 ;;
+        esac
+      }
+      migrate_grub_defaults 2>&1 )
+  }
+  local gwas
+  gr_old "$GRUB_CMDLINE_OLD"; gwas="$(grep -v '^GRUB_CMDLINE_LINUX=' "$gd/default/grub")"
+  out="$(gr_run ok)"
+  is "serial console: the old installer's line becomes the new one" "$GRUB_CMDLINE_NEW" \
+    "$(grep '^GRUB_CMDLINE_LINUX=' "$gd/default/grub")"
+  is "serial console: ... and every other line, the DEFAULT line too, is as it was" "$gwas" \
+    "$(grep -v '^GRUB_CMDLINE_LINUX=' "$gd/default/grub")"
+  is "serial console: ... the file keeps its mode" "644" "$(stat -c %a "$gd/default/grub")"
+  is "serial console: ... the old file is kept beside it" "$GRUB_CMDLINE_OLD" \
+    "$(grep -h '^GRUB_CMDLINE_LINUX=' "$gd/default/grub".before-* 2>/dev/null)"
+  is "serial console: ... the menu is regenerated from it" "linux /vmlinuz root=UUID=1234 console=tty1" "$(grep '^linux' "$gd/boot/grub.cfg")"
+  is "serial console: ... and nothing is left beside the two files" "" \
+    "$(find "$gd/default" "$gd/boot" -name '*.yantrik-*')"
+  t "serial console: ... and it says so" "the screen only from the next start" "$out"
+  out="$(gr_run ok)"
+  is "serial console: a second run does nothing" "regenerate|1|" \
+    "$(cat "$gd/calls")|$(find "$gd/default" -name 'grub.before-*' | wc -l)|$out"
+
+  gr_old 'GRUB_CMDLINE_LINUX="console=ttyS0,115200 console=tty1 nomodeset"'; cp -p "$gd/default/grub" "$gd/hand"
+  out="$(gr_run ok)"
+  is "serial console: a line someone edited is left as it is" "yes|no|none" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$([ -e "$gd/calls" ] && echo yes || echo no)|$(ls "$gd/default"/grub.before-* 2>/dev/null || echo none)"
+  t "serial console: ... and said so" "not one a Yantrik installer wrote" "$out"
+  is "serial console: ... once, not at every update" "" "$(gr_run ok)"
+  # A link planted in updates/ while it was the desktop user's (#829 review, item 1).
+  gr_old 'GRUB_CMDLINE_LINUX="console=ttyS0,115200 console=tty1 nomodeset"'
+  printf 'keep\n' > "$gd/victim"; mkdir -p "$gd/victim-dir"
+  ln -s "$gd/victim" "$gd/updates/grub-cmdline-left-alone"
+  gr_run ok >/dev/null
+  is "serial console: a note file that is a link leaves what it points at alone" "keep" "$(cat "$gd/victim")"
+  is "serial console: ... and the note is a file of its own" "yes|$(grep '^GRUB_CMDLINE_LINUX=' "$gd/default/grub")" \
+    "$([ -f "$gd/updates/grub-cmdline-left-alone" ] && ! [ -L "$gd/updates/grub-cmdline-left-alone" ] && echo yes || echo no)|$(cat "$gd/updates/grub-cmdline-left-alone")"
+  gr_old 'GRUB_CMDLINE_LINUX="console=ttyS0,115200 console=tty1 nomodeset"'
+  ln -s "$gd/victim-dir" "$gd/updates/grub-cmdline-left-alone"
+  gr_run ok >/dev/null
+  is "serial console: ... a link to a directory puts nothing in it" "" "$(ls -A "$gd/victim-dir")"
+  rm -rf "$gd/victim" "$gd/victim-dir"
+  gr_old 'GRUB_CMDLINE_LINUX="console=ttyS0,115200 console=tty1"'
+  printf 'GRUB_CMDLINE_LINUX="console=ttyS0,115200"\n' >> "$gd/default/grub"; cp -p "$gd/default/grub" "$gd/hand"
+  gr_run ok >/dev/null
+  is "serial console: the old line with a second one after it is left as it is" "yes" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)"
+
+  local gcfg
+  for gm in fail by-device; do
+    gr_old "$GRUB_CMDLINE_OLD"; cp -p "$gd/default/grub" "$gd/hand"; gcfg="$(cat "$gd/boot/grub.cfg")"
+    out="$(gr_run "$gm")"
+    is "serial console: regeneration $gm: the file is put back" "yes" \
+      "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)"
+    is "serial console: ... and the old menu" "$gcfg" "$(cat "$gd/boot/grub.cfg")"
+    is "serial console: ... nothing is left beside them" "" "$(find "$gd/default" "$gd/boot" -name '*.yantrik-*')"
+    t "serial console: ... and it says so" "are as they were" "$out"
+  done
+  gr_run fail >/dev/null
+  is "serial console: a second failed run keeps the one copy" "1" "$(find "$gd/default" -name 'grub.before-*' | wc -l)"
+  # The put-back of the file failing, /etc full (#829 review, item 3).
+  gr_old "$GRUB_CMDLINE_OLD"; out="$(GR_CP_FAIL=1 gr_run fail)"
+  is "serial console: a put-back that fails leaves no temp file" "" "$(find "$gd/default" "$gd/boot" -name '*.yantrik-*')"
+  t "serial console: ... says which file did not go back" "could not put $gd/default/grub back" "$out"
+  is "serial console: ... and does not say both are as they were" "no" "$(printf '%s' "$out" | grep -q 'are as they were' && echo yes || echo no)"
+
+  # A machine with no update-grub, and one whose menu is not at $GRUB_CFG (#829 review, item 5):
+  # nothing is touched and it says why.
+  gr_old "$GRUB_CMDLINE_OLD"; cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run no-update-grub)"
+  is "serial console: no update-grub: nothing is touched" "yes||none" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$(cat "$gd/calls" 2>/dev/null)|$(ls "$gd/default"/grub.before-* 2>/dev/null || echo none)"
+  t "serial console: ... and it says why" "no update-grub on this machine" "$out"
+  gr_old "$GRUB_CMDLINE_OLD"; cp -p "$gd/default/grub" "$gd/hand"; rm -f "$gd/boot/grub.cfg"; out="$(gr_run ok)"
+  is "serial console: no grub.cfg: nothing is touched or made" "yes||none|no" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$(cat "$gd/calls" 2>/dev/null)|$(ls "$gd/default"/grub.before-* 2>/dev/null || echo none)|$([ -e "$gd/boot/grub.cfg" ] && echo yes || echo no)"
+  t "serial console: ... and it says why" "no $gd/boot/grub.cfg on this machine" "$out"
+
+  # A run killed after $f was rewritten and before the menu was (#829 review, item 2): the next
+  # one finishes the job instead of stopping at "already the new line".
+  gr_killed() { # the state such a run leaves: $f rewritten, its copy kept, the old menu, temp files
+    gr_old "$GRUB_CMDLINE_OLD"; cp -p "$gd/default/grub" "$gd/default/grub.before-20261016T000000Z"
+    sed -i "s/^GRUB_CMDLINE_LINUX=.*/$(printf '%s' "$GRUB_CMDLINE_NEW" | sed 's/[&/]/\\&/g')/" "$gd/default/grub"
+    printf 'half\n' > "$gd/boot/grub.cfg.yantrik-AbC123"; printf 'half\n' > "$gd/default/grub.yantrik-dEf456"
+  }
+  gr_killed; out="$(gr_run ok)"
+  is "serial console: an interrupted run is finished by the next one" "regenerate|linux /vmlinuz root=UUID=1234 console=tty1" \
+    "$(cat "$gd/calls" 2>/dev/null)|$(grep '^linux' "$gd/boot/grub.cfg")"
+  is "serial console: ... its temp files are cleared" "" "$(find "$gd/default" "$gd/boot" -name '*.yantrik-*')"
+  is "serial console: ... and a run after that does nothing" "" "$(rm -f "$gd/calls"; gr_run ok; cat "$gd/calls" 2>/dev/null)"
+  gr_killed; gcfg="$(cat "$gd/boot/grub.cfg")"; out="$(gr_run fail)"
+  is "serial console: an interrupted run whose finish fails puts back the old file and menu" "$GRUB_CMDLINE_OLD|$gcfg" \
+    "$(grep '^GRUB_CMDLINE_LINUX=' "$gd/default/grub")|$(cat "$gd/boot/grub.cfg")"
+  gr_killed; rm -f "$gd/default"/grub.before-*; out="$(gr_run ok)"
+  is "serial console: the new line with no copy of ours beside it is not regenerated" "" "$(cat "$gd/calls" 2>/dev/null)$out"
+  gr_killed; mkdir -p "$gd/default/grub.d"
+  printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet console=ttyS0,115200"\n' > "$gd/default/grub.d/serial.cfg"
+  out="$(gr_run ok)"; rm -rf "$gd/default/grub.d"
+  is "serial console: ... nor is a machine whose grub.d asks for that console itself" "" "$(cat "$gd/calls" 2>/dev/null)"
+  is "serial console: the new line is the installer's" "yes" \
+    "$(! [ -f "$here/../../crates/yantrik-ui/src/wire/installer.rs" ] \
+       || grep -qF -- "$(printf '%s' "$GRUB_CMDLINE_NEW" | sed 's/"/\\"/g')" "$here/../../crates/yantrik-ui/src/wire/installer.rs" && echo yes || echo no)"
+
+  # GRUB's serial terminal on a machine installed 14 to 16 Oct 2026 (VM 543, #820): the old
+  # installer's three lines become the two it writes now, so the menu is drawn in its theme;
+  # anything else is left, a second run does nothing, and a failed regeneration puts both back.
+  gt_old() { # the file an installer of 14 to 16 Oct wrote; $1, $2, $3 in place of its terminal lines
+    printf '%s\n' 'GRUB_DEFAULT=0' 'GRUB_TIMEOUT=3' 'GRUB_DISTRIBUTOR="Yantrik OS"' \
+      'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=3 plymouth.ignore-serial-consoles"' \
+      "${4:-$GRUB_CMDLINE_NEW}" "${1:-$GRUB_TERMINAL_INPUT_OLD}" "${2:-$GRUB_TERMINAL_OUTPUT_OLD}" 'GRUB_GFXMODE=auto' \
+      "${3:-$GRUB_SERIAL_COMMAND_OLD}" 'GRUB_THEME="/boot/grub/themes/yantrik/theme.txt"' > "$gd/default/grub"
+    chmod 0640 "$gd/default/grub"
+    printf '%s\n' 'linux /vmlinuz root=UUID=1234 console=tty1' 'terminal_output gfxterm serial' > "$gd/boot/grub.cfg"
+    rm -f "$gd/default/grub".before-* "$gd/calls" "$gd/updates/grub-cmdline-left-alone" "$gd/updates/grub-terminal-left-alone"
+  }
+  gt_terms() { grep -E '^GRUB_(TERMINAL|TERMINAL_INPUT|TERMINAL_OUTPUT|SERIAL_COMMAND)=' "$gd/default/grub" | tr '\n' '|'; }
+  gt_old; cp -p "$gd/default/grub" "$gd/hand"
+  gwas="$(grep -vE '^GRUB_(TERMINAL_INPUT|TERMINAL_OUTPUT|SERIAL_COMMAND)=' "$gd/default/grub")"
+  out="$(gr_run ok)"
+  is "serial terminal: the old installer's three lines become the two it writes now" \
+    "$GRUB_TERMINAL_INPUT_NEW|$GRUB_TERMINAL_OUTPUT_NEW|" "$(gt_terms)"
+  is "serial terminal: ... every other line, the DEFAULT line too, is as it was" "$gwas" \
+    "$(grep -vE '^GRUB_(TERMINAL_INPUT|TERMINAL_OUTPUT)=' "$gd/default/grub")"
+  is "serial terminal: ... the file keeps its mode" "640" "$(stat -c %a "$gd/default/grub")"
+  is "serial terminal: ... the old file is kept beside it, once" "1|yes" \
+    "$(find "$gd/default" -name 'grub.before-*' | wc -l)|$(cmp -s "$gd/hand" "$gd/default"/grub.before-* && echo yes || echo no)"
+  is "serial terminal: ... the menu is regenerated from it" "regenerate|terminal_output gfxterm" \
+    "$(cat "$gd/calls")|$(grep terminal_output "$gd/boot/grub.cfg")"
+  is "serial terminal: ... and nothing is left beside the two files" "" "$(find "$gd/default" "$gd/boot" -name '*.yantrik-*')"
+  t "serial terminal: ... and it says so" "drawn on the screen alone from the next start" "$out"
+  is "serial terminal: ... and not that the kernel line changed" "no" \
+    "$(printf '%s' "$out" | grep -q 'kernel console' && echo yes || echo no)"
+  out="$(gr_run ok)"
+  is "serial terminal: a second run does nothing" "regenerate|1|" \
+    "$(cat "$gd/calls")|$(find "$gd/default" -name 'grub.before-*' | wc -l)|$out"
+
+  # Both of the old installer's forms in one file: one copy, one regeneration, both said.
+  gt_old "" "" "" "$GRUB_CMDLINE_OLD"; cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run ok)"
+  is "old installer: both changes in one update: both made" "$GRUB_CMDLINE_NEW|$GRUB_TERMINAL_INPUT_NEW|$GRUB_TERMINAL_OUTPUT_NEW|" \
+    "$(grep '^GRUB_CMDLINE_LINUX=' "$gd/default/grub")|$(gt_terms)"
+  is "old installer: ... one copy, the file as it was, and one regeneration" "1|yes|regenerate" \
+    "$(find "$gd/default" -name 'grub.before-*' | wc -l)|$(cmp -s "$gd/hand" "$gd/default"/grub.before-* && echo yes || echo no)|$(cat "$gd/calls")"
+  t "old installer: ... says the kernel line changed" "kernel console is the screen only" "$out"
+  t "old installer: ... and the menu's terminal" "drawn on the screen alone" "$out"
+  out="$(gr_run ok)"
+  is "old installer: ... and a second run does nothing" "regenerate|1|" \
+    "$(cat "$gd/calls")|$(find "$gd/default" -name 'grub.before-*' | wc -l)|$out"
+
+  # Anything else is someone's choice: a serial terminal on a machine that has a port.
+  for gh in "|GRUB_TERMINAL_OUTPUT=\"gfxterm serial\"|GRUB_SERIAL_COMMAND=\"serial --unit=1 --speed=9600\"" \
+            "GRUB_TERMINAL_INPUT=\"serial console\"||" "|GRUB_TERMINAL_OUTPUT=\"serial gfxterm\"|" \
+            " GRUB_TERMINAL_INPUT=\"console serial\"||"; do
+    IFS='|' read -r g1 g2 g3 <<< "$gh"
+    gt_old "$g1" "$g2" "$g3"; cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run ok)"
+    is "serial terminal: a hand-edited line is left as it is (${g1:-${g2:-$g3}})" "yes|no|none" \
+      "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$([ -e "$gd/calls" ] && echo yes || echo no)|$(ls "$gd/default"/grub.before-* 2>/dev/null || echo none)"
+    t "serial terminal: ... and said so" "not the ones a Yantrik installer wrote" "$out"
+    is "serial terminal: ... once, not at every update" "" "$(gr_run ok)"
+  done
+  gt_old; printf '%s\n' "$GRUB_TERMINAL_OUTPUT_OLD" >> "$gd/default/grub"; cp -p "$gd/default/grub" "$gd/hand"
+  gr_run ok >/dev/null
+  is "serial terminal: the old lines with a second output line after them are left as they are" "yes" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)"
+
+  # The installer's form from 1 Apr to 14 Oct, GRUB_TERMINAL="console serial" (VM 541, 16 Oct,
+  # #835): the text console becomes gfxterm alone, with the installer's mode lines when the file
+  # has none of its own.
+  # Their GRUB_CMDLINE_LINUX_DEFAULT is the one an installer writes now, so these cases are about
+  # the terminals alone; GA_DEFAULT puts another in its place (541's own, the old encrypted line,
+  # in the console cases further down).
+  local ga_default="quiet splash loglevel=3 plymouth.use-simpledrm plymouth.ignore-serial-consoles $GRUB_DEFAULT_CONSOLE"
+  ga_old() { # the file an installer of 1 Apr to 14 Oct wrote, the kernel line $1 (default the new one)
+    printf '%s\n' 'GRUB_DEFAULT=0' 'GRUB_TIMEOUT=3' 'GRUB_DISTRIBUTOR="Yantrik OS"' \
+      "GRUB_CMDLINE_LINUX_DEFAULT=\"${GA_DEFAULT:-$ga_default}\"" \
+      "${1:-$GRUB_CMDLINE_NEW}" "$GRUB_TERMINAL_OLD" "$GRUB_SERIAL_COMMAND_OLD" > "$gd/default/grub"
+    chmod 0644 "$gd/default/grub"
+    printf '%s\n' 'linux /vmlinuz root=UUID=1234 console=tty1' "	linux /vmlinuz root=UUID=1234 console=tty1 ${GA_DEFAULT:-$ga_default}" \
+      'terminal_output console serial' > "$gd/boot/grub.cfg"
+    rm -f "$gd/default/grub".before-* "$gd/calls" "$gd/updates/grub-cmdline-left-alone" "$gd/updates/grub-terminal-left-alone" \
+      "$gd/updates/grub-default-left-alone" "$gd/updates/grub-cursor-left-alone"
+  }
+  ga_new() { # what the update makes of it, the kernel line $1
+    printf '%s\n' 'GRUB_DEFAULT=0' 'GRUB_TIMEOUT=3' 'GRUB_DISTRIBUTOR="Yantrik OS"' \
+      "GRUB_CMDLINE_LINUX_DEFAULT=\"$ga_default\"" \
+      "${1:-$GRUB_CMDLINE_NEW}" "$GRUB_TERMINAL_INPUT_NEW" "$GRUB_TERMINAL_OUTPUT_NEW" 'GRUB_GFXMODE=auto' 'GRUB_GFXPAYLOAD_LINUX=keep'
+  }
+  ga_old; cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run ok)"
+  is "text console: the installer's GRUB_TERMINAL form becomes gfxterm alone, as the installer writes it now" \
+    "$(ga_new)" "$(cat "$gd/default/grub")"
+  is "text console: ... the file keeps its mode" "644" "$(stat -c %a "$gd/default/grub")"
+  is "text console: ... the old file is kept beside it, once" "1|yes" \
+    "$(find "$gd/default" -name 'grub.before-*' | wc -l)|$(cmp -s "$gd/hand" "$gd/default"/grub.before-* && echo yes || echo no)"
+  is "text console: ... the menu is regenerated from it" "regenerate|terminal_output gfxterm" \
+    "$(cat "$gd/calls")|$(grep terminal_output "$gd/boot/grub.cfg")"
+  t "text console: ... and it says so" "drawn on the screen alone from the next start" "$out"
+  out="$(gr_run ok)"
+  is "text console: a second run does nothing" "regenerate|1|" \
+    "$(cat "$gd/calls")|$(find "$gd/default" -name 'grub.before-*' | wc -l)|$out"
+  ga_old; printf '%s\n' 'GRUB_GFXMODE=1024x768' >> "$gd/default/grub"; gr_run ok >/dev/null
+  is "text console: a mode of its own is kept, and only the missing payload line is added" "GRUB_GFXMODE=1024x768|GRUB_GFXPAYLOAD_LINUX=keep|" \
+    "$(grep -E '^GRUB_GFX' "$gd/default/grub" | sort | tr '\n' '|')"
+
+  # With #829's old kernel line too, as 541 had before this morning: one update, one copy.
+  ga_old "$GRUB_CMDLINE_OLD"; cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run ok)"
+  is "text console: with the old kernel line too: both made" "$(ga_new)" "$(cat "$gd/default/grub")"
+  is "text console: ... one copy, the file as it was, and one regeneration" "1|yes|regenerate" \
+    "$(find "$gd/default" -name 'grub.before-*' | wc -l)|$(cmp -s "$gd/hand" "$gd/default"/grub.before-* && echo yes || echo no)|$(cat "$gd/calls")"
+  t "text console: ... says the kernel line changed" "kernel console is the screen only" "$out"
+  t "text console: ... and the menu's terminal" "drawn on the screen alone" "$out"
+  is "text console: ... and a second run does nothing" "" "$(rm -f "$gd/calls"; gr_run ok; cat "$gd/calls" 2>/dev/null)"
+
+  for gh in 'GRUB_TERMINAL="serial console"|' 'GRUB_TERMINAL=console|' '|GRUB_SERIAL_COMMAND="serial --speed=9600"' \
+            'GRUB_TERMINAL="console serial" |'; do
+    IFS='|' read -r g1 g2 <<< "$gh"
+    ga_old; sed -i "s|^GRUB_TERMINAL=.*|${g1:-$GRUB_TERMINAL_OLD}|; s|^GRUB_SERIAL_COMMAND=.*|${g2:-$GRUB_SERIAL_COMMAND_OLD}|" "$gd/default/grub"
+    cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run ok)"
+    is "text console: a hand-edited form is left as it is (${g1:-$g2})" "yes|no|none" \
+      "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$([ -e "$gd/calls" ] && echo yes || echo no)|$(ls "$gd/default"/grub.before-* 2>/dev/null || echo none)"
+  done
+  t "text console: ... and said so" "not the ones a Yantrik installer wrote" "$out"
+  ga_old; cp -p "$gd/default/grub" "$gd/hand"; mkdir -p "$gd/default/grub.d"
+  printf 'GRUB_TERMINAL="console serial"\n' > "$gd/default/grub.d/serial.cfg"
+  out="$(gr_run ok)"; rm -rf "$gd/default/grub.d"
+  is "text console: terminals set in grub.d: the file is left as it is" "yes|no" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$([ -e "$gd/calls" ] && echo yes || echo no)"
+  for gm in fail by-device; do
+    ga_old; cp -p "$gd/default/grub" "$gd/hand"; gcfg="$(cat "$gd/boot/grub.cfg")"; out="$(gr_run "$gm")"
+    is "text console: regeneration $gm: the file and the old menu are put back" "yes|$gcfg" \
+      "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$(cat "$gd/boot/grub.cfg")"
+    t "text console: ... and it says so" "are as they were" "$out"
+  done
+  ga_old "$GRUB_CMDLINE_OLD"; cp -p "$gd/default/grub" "$gd/hand"; gr_run fail >/dev/null; gr_run fail >/dev/null
+  is "text console: with the old kernel line, two failed runs: put back, one copy" "yes|1" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$(find "$gd/default" -name 'grub.before-*' | wc -l)"
+  # A run killed after the file was rewritten: the next one finishes it.
+  ga_old; cp -p "$gd/default/grub" "$gd/default/grub.before-20261016T000000Z"
+  grub_defaults_rewrite 0 2 "$gd/default/grub.before-20261016T000000Z" > "$gd/default/grub"
+  out="$(gr_run ok)"
+  is "text console: an interrupted run is finished by the next one" "regenerate|terminal_output gfxterm" \
+    "$(cat "$gd/calls" 2>/dev/null)|$(grep terminal_output "$gd/boot/grub.cfg")"
+  # BIOS: gfxterm alone with no theme is what the installer writes there; a theme line stays off.
+  rmdir "$gd/efi"
+  ga_old; gr_run ok >/dev/null
+  is "text console: BIOS with no theme: gfxterm alone" "$(ga_new)" "$(cat "$gd/default/grub")"
+  ga_old; printf 'GRUB_THEME="/boot/grub/themes/yantrik/theme.txt"\n' >> "$gd/default/grub"; cp -p "$gd/default/grub" "$gd/hand"
+  out="$(gr_run ok)"
+  is "text console: BIOS with a theme line: left as it is" "yes|no" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$([ -e "$gd/calls" ] && echo yes || echo no)"
+  mkdir -p "$gd/efi"
+  ga_old; out="$(gr_run ok)"
+  t "text console: neither the build nor the image has a theme: the run says the menu is GRUB's plain one" "no theme: neither this build" "$out"
+
+  # The theme, as the installer adds it: on UEFI, when the image has it at
+  # /usr/share/yantrik/grub-theme and nothing names a theme yet (installer.rs, theme_for_boot).
+  local gth="$gd/boot/themes/yantrik"
+  mkdir -p "$gd/theme-src/icons"; chmod 0755 "$gd/theme-src" "$gd/theme-src/icons"
+  printf 'title-text: ""\n' > "$gd/theme-src/theme.txt"; printf 'png\n' > "$gd/theme-src/icons/yantrik.png"
+  chmod 0644 "$gd/theme-src/theme.txt" "$gd/theme-src/icons/yantrik.png"
+  ga_old; rm -rf "$gd/boot/themes"; cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run ok)"
+  is "theme: UEFI, the image has it: form 1 becomes the installer's lines with its theme line" \
+    "$(ga_new; printf '%s\n' "$GRUB_THEME_LINE")" "$(cat "$gd/default/grub")"
+  is "theme: ... the theme is copied into /boot as the image has it" "same|755" \
+    "$(diff -r "$gd/theme-src" "$gth" >/dev/null 2>&1 && echo same || echo differs)|$(stat -c %a "$gth" 2>/dev/null)"
+  is "theme: ... one copy of the old file, one regeneration, gfxterm alone" "1|yes|regenerate|terminal_output gfxterm" \
+    "$(find "$gd/default" -name 'grub.before-*' | wc -l)|$(cmp -s "$gd/hand" "$gd/default"/grub.before-* && echo yes || echo no)|$(cat "$gd/calls")|$(grep terminal_output "$gd/boot/grub.cfg")"
+  is "theme: ... nothing left beside it" "" "$(find "$gd/boot" -name '*.yantrik-*')"
+  t "theme: ... and it says so" "the menu has the Yantrik theme" "$out"
+  is "theme: ... a second run does nothing" "" "$(rm -f "$gd/calls"; gr_run ok; cat "$gd/calls" 2>/dev/null)"
+  ga_old "$GRUB_CMDLINE_OLD"; rm -rf "$gd/boot/themes"; cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run ok)"
+  is "theme: with the old kernel line too: all three changes, one copy, one regeneration" \
+    "$(ga_new; printf '%s\n' "$GRUB_THEME_LINE")|1|yes|regenerate" \
+    "$(cat "$gd/default/grub")|$(find "$gd/default" -name 'grub.before-*' | wc -l)|$(cmp -s "$gd/hand" "$gd/default"/grub.before-* && echo yes || echo no)|$(cat "$gd/calls")"
+  ga_old; out="$(gr_run ok)"
+  is "theme: the image's theme already in /boot is used as it is" "$(ga_new; printf '%s\n' "$GRUB_THEME_LINE")|same" \
+    "$(cat "$gd/default/grub")|$(diff -r "$gd/theme-src" "$gth" >/dev/null 2>&1 && echo same || echo differs)"
+  for gm in fail by-device; do
+    ga_old; rm -rf "$gd/boot/themes"; cp -p "$gd/default/grub" "$gd/hand"; gcfg="$(cat "$gd/boot/grub.cfg")"; out="$(gr_run "$gm")"
+    is "theme: regeneration $gm: the file, the menu put back and the copied theme taken away" "yes|$gcfg|no" \
+      "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$(cat "$gd/boot/grub.cfg")|$([ -e "$gth" ] && echo yes || echo no)"
+    t "theme: ... and it says so" "are as they were" "$out"
+  done
+  ga_old; rm -rf "$gd/boot/themes"; mkdir -p "$gth"; printf 'mine\n' > "$gth/theme.txt"; out="$(gr_run ok)"
+  is "theme: a theme directory of someone's own: kept, no theme line, the terminals still moved" "$(ga_new)|mine" \
+    "$(cat "$gd/default/grub")|$(cat "$gth/theme.txt")"
+  t "theme: ... and said so" "is not the image's theme" "$out"
+  rm -rf "$gd/boot/themes"
+  chmod g+w "$gd/theme-src/icons"; ga_old; out="$(gr_run ok)"; chmod g-w "$gd/theme-src/icons"
+  is "theme: an image tree others could write is not copied as root" "$(ga_new)|no" \
+    "$(cat "$gd/default/grub")|$([ -e "$gth" ] && echo yes || echo no)"
+  t "theme: ... and said so" "not root's alone to write" "$out"
+  ga_old; printf 'GRUB_THEME="/boot/grub/themes/other/theme.txt"\n' >> "$gd/default/grub"; gr_run ok >/dev/null
+  is "theme: a theme the file names already: kept, none added, the terminals still moved" \
+    'GRUB_THEME="/boot/grub/themes/other/theme.txt"|'"$GRUB_TERMINAL_OUTPUT_NEW|no" \
+    "$(grep '^GRUB_THEME=' "$gd/default/grub" | tr '\n' '|')$(grep '^GRUB_TERMINAL_OUTPUT=' "$gd/default/grub")|$([ -e "$gth" ] && echo yes || echo no)"
+  rmdir "$gd/efi"; ga_old; gr_run ok >/dev/null; mkdir -p "$gd/efi"
+  is "theme: BIOS: never given one" "$(ga_new)|no" "$(cat "$gd/default/grub")|$([ -e "$gth" ] && echo yes || echo no)"
+  # Killed after the theme was copied and the file rewritten: the next run finishes it.
+  ga_old; cp -p "$gd/default/grub" "$gd/default/grub.before-20261016T000000Z"
+  mkdir -p "${gth%/*}"; cp -a "$gd/theme-src" "$gth"
+  grub_defaults_rewrite 0 2 "$gd/default/grub.before-20261016T000000Z" 1 > "$gd/default/grub"
+  out="$(gr_run ok)"
+  is "theme: an interrupted run is finished by the next one" "regenerate|terminal_output gfxterm" \
+    "$(cat "$gd/calls" 2>/dev/null)|$(grep terminal_output "$gd/boot/grub.cfg")"
+  is "theme: ... the copied theme is still the image's, and nothing is left beside it" "same|" \
+    "$(diff -r "$gd/theme-src" "$gth" >/dev/null 2>&1 && echo same || echo differs)|$(find "$gd/default" "$gd/boot" -name '*.yantrik-*')"
+  # The image tree's parent writable by others: not copied either (#835 delta review, item 4).
+  rm -rf "$gd/boot/themes"; chmod g+w "$gd"; ga_old; out="$(gr_run ok)"; chmod g-w "$gd"
+  is "theme: an image tree whose parent others could write is not copied as root" "$(ga_new)|no" \
+    "$(cat "$gd/default/grub")|$([ -e "$gth" ] && echo yes || echo no)"
+  rm -rf "$gd/boot/themes" "$gd/theme-src"
+
+  # A custom menu script in /etc/grub.d with a serial terminal, or on BIOS a theme (#835 delta
+  # review, item 1): the first migration leaves the file alone, as the resume does.
+  mkdir -p "$gd/grub.d"
+  printf '%s\n' '#!/bin/sh' 'cat <<EOF' 'terminal_output gfxterm serial' 'EOF' > "$gd/grub.d/40_custom"
+  for gform in gt ga; do
+    "${gform}_old"; cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run ok)"
+    is "custom script: a serial terminal in 40_custom ($gform): the file is left as it is" "yes|no|none" \
+      "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$([ -e "$gd/calls" ] && echo yes || echo no)|$(ls "$gd/default"/grub.before-* 2>/dev/null || echo none)"
+    t "custom script: ... and said so" "custom menu script with a serial terminal" "$out"
+  done
+  printf '%s\n' '#!/bin/sh' 'cat <<EOF' 'set theme=/boot/grub/themes/mine/theme.txt' 'EOF' > "$gd/grub.d/40_custom"
+  rmdir "$gd/efi"
+  ga_old; cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run ok)"
+  is "custom script: on BIOS a theme set in 40_custom: the file is left as it is" "yes|no" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$([ -e "$gd/calls" ] && echo yes || echo no)"
+  t "custom script: ... and said so" "starts by BIOS" "$out"
+  mkdir -p "$gd/efi"
+  ga_old; gr_run ok >/dev/null
+  is "custom script: on UEFI the same script does not stop the move to gfxterm" "$GRUB_TERMINAL_OUTPUT_NEW" \
+    "$(grep '^GRUB_TERMINAL_OUTPUT=' "$gd/default/grub")"
+  rm -rf "$gd/grub.d" "$gd/boot/themes"
+
+  # A machine that starts by BIOS with a theme line (installed 14 to 15 Oct, before 4123296): the
+  # serial terminal is what keeps GRUB off the themed menu that stops it, so it stays.
+  rmdir "$gd/efi"
+  gt_old; cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run ok)"
+  is "serial terminal: BIOS with a theme: left as it is" "yes|no|none" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$([ -e "$gd/calls" ] && echo yes || echo no)|$(ls "$gd/default"/grub.before-* 2>/dev/null || echo none)"
+  t "serial terminal: ... and said so" "starts by BIOS" "$out"
+  is "serial terminal: ... once" "" "$(gr_run ok)"
+  # A theme set in grub.d counts as much as one in the file (#835 review, item 1).
+  gt_old; sed -i '/^GRUB_THEME=/d' "$gd/default/grub"; cp -p "$gd/default/grub" "$gd/hand"; mkdir -p "$gd/default/grub.d"
+  printf 'GRUB_THEME="/boot/grub/themes/other/theme.txt"\n' > "$gd/default/grub.d/theme.cfg"
+  out="$(gr_run ok)"; rm -rf "$gd/default/grub.d"
+  is "serial terminal: BIOS with a theme in grub.d: left as it is" "yes|no|none" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$([ -e "$gd/calls" ] && echo yes || echo no)|$(ls "$gd/default"/grub.before-* 2>/dev/null || echo none)"
+  t "serial terminal: ... and said so" "starts by BIOS" "$out"
+  gt_old; sed -i '/^GRUB_THEME=/d' "$gd/default/grub"; gr_run ok >/dev/null
+  is "serial terminal: BIOS with no theme: gfxterm alone, as the installer writes it there" \
+    "$GRUB_TERMINAL_INPUT_NEW|$GRUB_TERMINAL_OUTPUT_NEW|" "$(gt_terms)"
+  mkdir -p "$gd/efi"
+
+  # Terminals set in grub.d: someone's serial setup, which would lose its speed with the file's
+  # serial command gone (#835 review, item 2).
+  gt_old; cp -p "$gd/default/grub" "$gd/hand"; mkdir -p "$gd/default/grub.d"
+  printf 'GRUB_TERMINAL_OUTPUT="gfxterm serial"\n' > "$gd/default/grub.d/serial.cfg"
+  out="$(gr_run ok)"
+  is "serial terminal: terminals set in grub.d: the file is left as it is" "yes|no|none" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$([ -e "$gd/calls" ] && echo yes || echo no)|$(ls "$gd/default"/grub.before-* 2>/dev/null || echo none)"
+  t "serial terminal: ... and said so" "sets the boot menu's terminals itself" "$out"
+  is "serial terminal: ... once" "" "$(gr_run ok)"
+  rm -rf "$gd/default/grub.d"
+
+  for gm in fail by-device; do
+    gt_old; cp -p "$gd/default/grub" "$gd/hand"; gcfg="$(cat "$gd/boot/grub.cfg")"
+    out="$(gr_run "$gm")"
+    is "serial terminal: regeneration $gm: the file is put back" "yes" \
+      "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)"
+    is "serial terminal: ... and the old menu" "$gcfg" "$(cat "$gd/boot/grub.cfg")"
+    is "serial terminal: ... nothing is left beside them" "" "$(find "$gd/default" "$gd/boot" -name '*.yantrik-*')"
+    t "serial terminal: ... and it says so" "are as they were" "$out"
+  done
+  gr_run fail >/dev/null
+  is "serial terminal: a second failed run keeps the one copy" "1" "$(find "$gd/default" -name 'grub.before-*' | wc -l)"
+  gt_old "" "" "" "$GRUB_CMDLINE_OLD"; cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run fail)"
+  is "old installer: both changes, regeneration fails: the file is put back, one copy" "yes|1" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$(find "$gd/default" -name 'grub.before-*' | wc -l)"
+  gt_old; cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run no-update-grub)"
+  is "serial terminal: no update-grub: nothing is touched, and it says why" "yes|none|yes" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$(ls "$gd/default"/grub.before-* 2>/dev/null || echo none)|$(printf '%s' "$out" | grep -q 'keeps its serial terminal' && echo yes || echo no)"
+
+  # A run killed after $f was rewritten and before the menu was: the next one finishes it.
+  gt_killed() {
+    gt_old; cp -p "$gd/default/grub" "$gd/default/grub.before-20261016T000000Z"
+    grub_defaults_rewrite 0 1 "$gd/default/grub.before-20261016T000000Z" > "$gd/default/grub"
+  }
+  gt_killed; out="$(gr_run ok)"
+  is "serial terminal: an interrupted run is finished by the next one" "regenerate|terminal_output gfxterm" \
+    "$(cat "$gd/calls" 2>/dev/null)|$(grep terminal_output "$gd/boot/grub.cfg")"
+  t "serial terminal: ... and says what it finished" "drawn on the screen alone" "$out"
+  is "serial terminal: ... and a run after that does nothing" "" "$(rm -f "$gd/calls"; gr_run ok; cat "$gd/calls" 2>/dev/null)"
+  gt_killed; rm -f "$gd/default"/grub.before-*; out="$(gr_run ok)"
+  is "serial terminal: the new lines with no copy of ours beside them are not regenerated" "" "$(cat "$gd/calls" 2>/dev/null)$out"
+  gt_killed; mkdir -p "$gd/default/grub.d"
+  printf 'GRUB_TERMINAL_OUTPUT="gfxterm serial"\n' > "$gd/default/grub.d/serial.cfg"
+  out="$(gr_run ok)"; rm -rf "$gd/default/grub.d"
+  is "serial terminal: ... nor is a machine whose grub.d asks for a serial terminal itself" "" "$(cat "$gd/calls" 2>/dev/null)"
+  gt_killed; mkdir -p "$gd/grub.d"
+  printf '%s\n' '#!/bin/sh' 'cat <<EOF' 'terminal_output gfxterm serial' 'EOF' > "$gd/grub.d/40_custom"
+  out="$(gr_run ok)"; rm -rf "$gd/grub.d"
+  is "serial terminal: ... nor one whose 40_custom puts a serial terminal in the menu (#835 review, item 4)" "" "$(cat "$gd/calls" 2>/dev/null)"
+  is "serial terminal: the new lines are the installer's" "yes" \
+    "$(! [ -f "$here/../../crates/yantrik-ui/src/wire/installer.rs" ] \
+       || grep -qF -- "$(printf '%s\\n%s' "$GRUB_TERMINAL_INPUT_NEW" "$GRUB_TERMINAL_OUTPUT_NEW" | sed 's/"/\\"/g')" "$here/../../crates/yantrik-ui/src/wire/installer.rs" && echo yes || echo no)"
+  # The rewrite changes GRUB_CMDLINE_LINUX_DEFAULT only when asked to, and then only on an old
+  # installer's exact line: with console 0 every form, and with console 1 a line carrying a disk's
+  # LUKS arguments, come out as they went in.
+  local gform gbad="" gcase
+  while IFS= read -r gform; do
+    printf 'GRUB_CMDLINE_LINUX_DEFAULT="%s"\n' "$gform" > "$gd/one"
+    [ "$(grub_defaults_rewrite 1 2 "$gd/one" 1 0 | head -n 1)" = "$(cat "$gd/one")" ] || gbad="$gbad [$gform]"
+    printf 'GRUB_CMDLINE_LINUX_DEFAULT="%s cryptdevice=UUID=0f0f:root"\n' "$gform" > "$gd/one"
+    [ "$(grub_defaults_rewrite 1 2 "$gd/one" 1 1 | head -n 1)" = "$(cat "$gd/one")" ] || gbad="$gbad [$gform +luks]"
+  done <<< "$GRUB_DEFAULT_OLD_FORMS"
+  rm -f "${gd:?}/one"
+  is "console arguments: the rewrite touches GRUB_CMDLINE_LINUX_DEFAULT only when asked, and never a line with more on it" "" "$gbad"
+
+  # #820's console arguments on an old installer's GRUB_CMDLINE_LINUX_DEFAULT (VM 541's driven
+  # retest of f27f9e04: 5.5 s of black with a cursor before the LUKS prompt). Appended to exactly
+  # the lines an installer wrote, and nothing else on the line or in the file changes.
+  gc_old() { # the file the installer writes now (grub_defaults), with GRUB_CMDLINE_LINUX_DEFAULT="$1"
+    printf '%s\n' 'GRUB_DEFAULT=0' 'GRUB_TIMEOUT=3' 'GRUB_DISTRIBUTOR="Yantrik OS"' \
+      "GRUB_CMDLINE_LINUX_DEFAULT=\"$1\"" "$GRUB_CMDLINE_NEW" "$GRUB_TERMINAL_INPUT_NEW" "$GRUB_TERMINAL_OUTPUT_NEW" \
+      'GRUB_GFXMODE=auto' 'GRUB_GFXPAYLOAD_LINUX=keep' > "$gd/default/grub"
+    chmod 0644 "$gd/default/grub"
+    printf '%s\n' 'linux /vmlinuz root=UUID=1234 console=tty1' "	linux /vmlinuz root=UUID=1234 console=tty1 $1" \
+      'terminal_output gfxterm' > "$gd/boot/grub.cfg"
+    rm -f "${gd:?}/default/grub".before-* "${gd:?}/calls" "${gd:?}/updates"/grub-*-left-alone
+    rm -rf "${gd:?}/tmpfiles.d"
+  }
+  local gcur="$gd/tmpfiles.d/yantrik-splash-cursor.conf"
+  while IFS= read -r gform; do
+    gc_old "$gform"; cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run ok)"
+    is "console arguments: \"$gform\" gets the four arguments appended, and nothing else changes" \
+      "$(sed "s|^GRUB_CMDLINE_LINUX_DEFAULT=\"$gform\"\$|GRUB_CMDLINE_LINUX_DEFAULT=\"$gform $GRUB_DEFAULT_CONSOLE\"|" "$gd/hand")" \
+      "$(cat "$gd/default/grub")"
+    is "console arguments: ... mode kept, one copy as it was, one regeneration, the normal entry starts with them" \
+      "644|1|yes|regenerate|yes" \
+      "$(stat -c %a "$gd/default/grub")|$(find "$gd/default" -name 'grub.before-*' | wc -l)|$(cmp -s "$gd/hand" "$gd/default"/grub.before-* && echo yes || echo no)|$(cat "$gd/calls")|$(grep -qF "	linux /vmlinuz root=UUID=1234 console=tty1 $gform $GRUB_DEFAULT_CONSOLE" "$gd/boot/grub.cfg" && echo yes || echo no)"
+    is "console arguments: ... and every console opened after boot gets its cursor back" "yes|644" \
+      "$(grub_cursor_conf_text | cmp -s - "$gcur" && echo yes || echo no)|$(stat -c %a "$gcur" 2>/dev/null)"
+    t "console arguments: ... and it says so" "the splash's ground with no cursor from the next start" "$out"
+    is "console arguments: ... a second run does nothing" "" "$(rm -f "$gd/calls"; gr_run ok; cat "$gd/calls" 2>/dev/null)"
+  done <<< "$GRUB_DEFAULT_OLD_FORMS"
+  is "console arguments: the cursor line is the image's, byte for byte" "yes" \
+    "$(! [ -f "$here/boot-unlock/splash.d/cursor.conf" ] || grub_cursor_conf_text | cmp -s - "$here/boot-unlock/splash.d/cursor.conf" && echo yes || echo no)"
+  is "console arguments: the old encrypted line with them is the installer's line now" "yes" \
+    "$(! [ -f "$here/../../crates/yantrik-ui/src/wire/installer_unlock.rs" ] \
+       || grep -qxF -- "    \"$(sed -n 3p <<< "$GRUB_DEFAULT_OLD_FORMS") $GRUB_DEFAULT_CONSOLE\"" "$here/../../crates/yantrik-ui/src/wire/installer_unlock.rs" && echo yes || echo no)"
+  # Anything else is someone's: by hand, a disk's LUKS arguments, a second line, the line in grub.d.
+  for gcase in 'quiet splash loglevel=3 nomodeset' 'quiet splash loglevel=3 plymouth.use-simpledrm plymouth.ignore-serial-consoles rd.luks.uuid=0f0f' \
+               'cryptdevice=UUID=0f0f:root quiet splash' 'quiet' ''; do
+    gc_old "$gcase"; cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run ok)"
+    is "console arguments: a line no installer wrote is left as it is (\"$gcase\")" "yes|no|none|no" \
+      "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$([ -e "$gd/calls" ] && echo yes || echo no)|$(ls "$gd/default"/grub.before-* 2>/dev/null || echo none)|$([ -e "$gcur" ] && echo yes || echo no)"
+    t "console arguments: ... and said so" "not one a Yantrik installer wrote; left as it is" "$out"
+    is "console arguments: ... once, not at every update" "" "$(gr_run ok)"
+  done
+  gc_old 'quiet splash'; printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"\n' >> "$gd/default/grub"; cp -p "$gd/default/grub" "$gd/hand"
+  gr_run ok >/dev/null
+  is "console arguments: an old line with a second one after it is left as it is" "yes" "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)"
+  gc_old 'quiet splash loglevel=3'; cp -p "$gd/default/grub" "$gd/hand"; mkdir -p "$gd/default/grub.d"
+  printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet"\n' > "$gd/default/grub.d/mine.cfg"
+  out="$(gr_run ok)"; rm -rf "${gd:?}/default/grub.d"
+  is "console arguments: GRUB_CMDLINE_LINUX_DEFAULT set in grub.d: the file is left as it is" "yes|no" \
+    "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$([ -e "$gd/calls" ] && echo yes || echo no)"
+  t "console arguments: ... and said so" "sets GRUB_CMDLINE_LINUX_DEFAULT itself" "$out"
+  # A LUKS machine's own lines beside the old one: the kernel line and the cryptodisk line stay
+  # byte for byte, and only GRUB_CMDLINE_LINUX_DEFAULT gains the arguments.
+  gc_old 'quiet splash loglevel=3 plymouth.use-simpledrm plymouth.ignore-serial-consoles'
+  sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"console=tty1 cryptdevice=UUID=0f0f:cryptroot rd.luks.options=discard\"|" "$gd/default/grub"
+  printf 'GRUB_ENABLE_CRYPTODISK=y\n' >> "$gd/default/grub"; cp -p "$gd/default/grub" "$gd/hand"; gr_run ok >/dev/null
+  is "console arguments: a machine's LUKS lines are never touched" \
+    "$(grep -v '^GRUB_CMDLINE_LINUX_DEFAULT=' "$gd/hand")|GRUB_CMDLINE_LINUX_DEFAULT=\"quiet splash loglevel=3 plymouth.use-simpledrm plymouth.ignore-serial-consoles $GRUB_DEFAULT_CONSOLE\"" \
+    "$(grep -v '^GRUB_CMDLINE_LINUX_DEFAULT=' "$gd/default/grub")|$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' "$gd/default/grub")"
+  # The cursor line: one already there is used as it is, someone's own is kept.
+  gc_old 'quiet splash'; mkdir -p "$gd/tmpfiles.d"; printf '# mine\n%s\n' "$GRUB_CURSOR_LINE" > "$gcur"; gr_run ok >/dev/null
+  is "console arguments: a cursor line already there is kept as it is" "# mine" "$(head -n 1 "$gcur")"
+  gc_old 'quiet splash'; mkdir -p "$gd/tmpfiles.d"; printf 'mine\n' > "$gcur"; out="$(gr_run ok)"
+  is "console arguments: a file of someone's own in its place is kept, and the arguments still added" \
+    "mine|GRUB_CMDLINE_LINUX_DEFAULT=\"quiet splash $GRUB_DEFAULT_CONSOLE\"" "$(cat "$gcur")|$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' "$gd/default/grub")"
+  t "console arguments: ... and said so" "is not the image's" "$out"
+  printf 'keep\n' > "$gd/victim"
+  gc_old 'quiet splash'; mkdir -p "$gd/tmpfiles.d"; ln -s "$gd/victim" "$gcur"; gr_run ok >/dev/null
+  is "console arguments: a link in its place: nothing written through it" "keep" "$(cat "$gd/victim")"
+  rm -f "${gd:?}/victim"
+  # A failed regeneration puts the file and the menu back, takes away the cursor line this run
+  # wrote, and nothing else.
+  for gm in fail by-device; do
+    gc_old 'quiet splash'; cp -p "$gd/default/grub" "$gd/hand"; gcfg="$(cat "$gd/boot/grub.cfg")"; out="$(gr_run "$gm")"
+    is "console arguments: regeneration $gm: the file and the menu put back, the cursor line this run wrote taken away" "yes|$gcfg|no" \
+      "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$(cat "$gd/boot/grub.cfg")|$([ -e "$gcur" ] && echo yes || echo no)"
+    t "console arguments: ... and it says so" "are as they were" "$out"
+  done
+  gc_old 'quiet splash'; mkdir -p "$gd/tmpfiles.d"; grub_cursor_conf_text > "$gcur"; gr_run fail >/dev/null
+  is "console arguments: ... and one that was there before stays" "yes" "$(grub_cursor_conf_text | cmp -s - "$gcur" && echo yes || echo no)"
+  # Killed after the file was rewritten: the next run finishes the menu; with no copy of ours, no.
+  gc_old 'quiet splash'; cp -p "$gd/default/grub" "$gd/default/grub.before-20261016T000000Z"
+  grub_defaults_rewrite 0 0 "$gd/default/grub.before-20261016T000000Z" 0 1 > "$gd/default/grub"
+  out="$(gr_run ok)"
+  is "console arguments: an interrupted run is finished by the next one" "regenerate|yes|yes" \
+    "$(cat "$gd/calls" 2>/dev/null)|$(grep -qF " $GRUB_DEFAULT_CONSOLE" "$gd/boot/grub.cfg" && echo yes || echo no)|$([ -f "$gcur" ] && echo yes || echo no)"
+  is "console arguments: ... and a run after that does nothing" "" "$(rm -f "$gd/calls"; gr_run ok; cat "$gd/calls" 2>/dev/null)"
+  gc_old 'quiet splash'; grub_defaults_rewrite 0 0 "$gd/default/grub" 0 1 > "$gd/one"; mv "$gd/one" "$gd/default/grub"
+  out="$(gr_run ok)"
+  is "console arguments: the new line with no copy of ours beside it is not regenerated" "" "$(cat "$gd/calls" 2>/dev/null)$out"
+
+  # The theme from this build's share/grub-theme (#835's 541 retest: the 12 Oct image has none):
+  # copied when every file is one the build lists with its hash, and only then.
+  local gsh="$gd/share/grub-theme"
+  gb_make() { # a bundle's theme and the root-files list naming it
+    rm -rf "${gd:?}/share" "${gd:?}/bin"; mkdir -p "$gsh" "$gd/bin" "$gd/share/root-helpers"
+    printf 'title-text: ""\ndesktop-color: "#0e1018"\n' > "$gsh/theme.txt"; printf 'png\n' > "$gsh/icon.png"; printf 'pf2\n' > "$gsh/dejavusans_16.pf2"
+    printf 'helper\n' > "$gd/share/root-helpers/yantrik-pkg"
+    chmod 0755 "$gd/share" "$gsh"; chmod 0644 "$gsh"/*
+    (cd "$gd/share" && sha256sum root-helpers/* grub-theme/*) > "$gd/bin/yantrik-root-files.sha256"
+  }
+  gb_make; rm -rf "${gd:?}/theme-src" "${gd:?}/boot/themes"
+  GA_DEFAULT='quiet splash loglevel=3 plymouth.use-simpledrm plymouth.ignore-serial-consoles'
+  ga_old; cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run ok)"
+  is "541 as it was: the terminals, the console arguments and the build's theme, all in one rewrite" \
+    "$(GA_DEFAULT='' ga_new; printf '%s\n' "$GRUB_THEME_LINE")" "$(cat "$gd/default/grub")"
+  is "541 as it was: ... one copy as it was, one regeneration, gfxterm alone, the console arguments on the normal entry" \
+    "1|yes|regenerate|terminal_output gfxterm|yes" \
+    "$(find "$gd/default" -name 'grub.before-*' | wc -l)|$(cmp -s "$gd/hand" "$gd/default"/grub.before-* && echo yes || echo no)|$(cat "$gd/calls")|$(grep terminal_output "$gd/boot/grub.cfg")|$(grep -qF " $GRUB_DEFAULT_CONSOLE" "$gd/boot/grub.cfg" && echo yes || echo no)"
+  is "541 as it was: ... the build's theme copied into /boot as it shipped, root's, and the cursor line" "same|0|yes" \
+    "$(diff -r "$gsh" "$gth" >/dev/null 2>&1 && echo same || echo differs)|$(find "$gth" ! -user "$(id -u)" | wc -l)|$([ -f "$gcur" ] && echo yes || echo no)"
+  t "541 as it was: ... and it says all three: the terminal" "drawn on the screen alone" "$out"
+  t "541 as it was: ... the theme" "the menu has the Yantrik theme" "$out"
+  t "541 as it was: ... the console" "the splash's ground with no cursor" "$out"
+  is "541 as it was: ... and a second run does nothing" "" "$(rm -f "$gd/calls"; gr_run ok; cat "$gd/calls" 2>/dev/null)"
+  ga_old "$GRUB_CMDLINE_OLD"; rm -rf "${gd:?}/boot/themes"; cp -p "$gd/default/grub" "$gd/hand"; out="$(gr_run ok)"
+  is "541 before 16 Oct, with #829's kernel line too: all four changes, one copy, one regeneration" \
+    "$(GA_DEFAULT='' ga_new; printf '%s\n' "$GRUB_THEME_LINE")|1|yes|regenerate" \
+    "$(cat "$gd/default/grub")|$(find "$gd/default" -name 'grub.before-*' | wc -l)|$(cmp -s "$gd/hand" "$gd/default"/grub.before-* && echo yes || echo no)|$(cat "$gd/calls")"
+  for gm in fail by-device; do
+    ga_old; rm -rf "${gd:?}/boot/themes" "${gd:?}/tmpfiles.d"; cp -p "$gd/default/grub" "$gd/hand"; gcfg="$(cat "$gd/boot/grub.cfg")"; out="$(gr_run "$gm")"
+    is "541 as it was: regeneration $gm: file and menu put back, the theme and cursor line this run made taken away, nothing else" "yes|$gcfg|no|no|yes" \
+      "$(cmp -s "$gd/hand" "$gd/default/grub" && echo yes || echo no)|$(cat "$gd/boot/grub.cfg")|$([ -e "$gth" ] && echo yes || echo no)|$([ -e "$gcur" ] && echo yes || echo no)|$([ -f "$gsh/theme.txt" ] && echo yes || echo no)"
+  done
+  rmdir "$gd/efi"; ga_old; rm -rf "${gd:?}/boot/themes"; out="$(gr_run ok)"; mkdir -p "$gd/efi"
+  is "541 as it was, on BIOS: the terminals and the console arguments, and no theme" \
+    "$(GA_DEFAULT='' ga_new)|no" "$(cat "$gd/default/grub")|$([ -e "$gth" ] && echo yes || echo no)"
+  # What the build's tree must be before root copies it.
+  gb_try() { # the number of theme lines and whether /boot has a theme, after a run; what it said in $gd/said
+    rm -rf "${gd:?}/boot/themes"; ga_old; gr_run ok > "$gd/said"
+    printf '%s|%s' "$(grep -c '^GRUB_THEME=' "$gd/default/grub")" "$([ -e "$gth" ] && echo yes || echo no)"
+  }
+  gb_make; printf 'other\n' > "$gsh/icon.png"
+  is "theme from the build: a file that is not what the build shipped: not copied" "0|no" "$(gb_try)"
+  t "theme from the build: ... and said so" "is not what this build ships" "$(cat "$gd/said")"
+  gb_make; printf 'x\n' > "$gsh/extra.png"; chmod 0644 "$gsh/extra.png"
+  is "theme from the build: a file the build does not list: not copied" "0|no" "$(gb_try)"
+  gb_make; rm -f "$gsh/dejavusans_16.pf2"
+  is "theme from the build: a file the build lists is missing: not copied" "0|no" "$(gb_try)"
+  t "theme from the build: ... and said so" "lacks files this build ships" "$(cat "$gd/said")"
+  gb_make; rm -f "$gsh/icon.png"; ln -s /etc/hostname "$gsh/icon.png"
+  is "theme from the build: a link in it: not copied" "0|no" "$(gb_try)"
+  for gdot in .hidden ..hidden; do
+    gb_make; printf 'x\n' > "$gsh/$gdot"; chmod 0644 "$gsh/$gdot"
+    is "theme from the build: a file named $gdot the build does not list: not copied" "0|no" "$(gb_try)"
+  done
+  gb_make; mkdir "$gsh/sub"
+  is "theme from the build: a directory in it: not copied" "0|no" "$(gb_try)"
+  gb_make; chmod g+w "$gd/share"
+  is "theme from the build: a share/ others could write: not copied" "0|no" "$(gb_try)"
+  gb_make; rm -f "$gd/bin/yantrik-root-files.sha256"
+  is "theme from the build: no root-files list: not copied" "0|no" "$(gb_try)"
+  # Only root can give a file away; as an ordinary user (CI) the case cannot be built.
+  if [ "$(id -u)" = 0 ]; then
+    gb_make; chown 1000 "$gsh/icon.png"
+    is "theme from the build: a file not root's: not copied" "0|no" "$(gb_try)"
+  fi
+  # The image's theme stands in when the build's is refused, and one already in /boot that is the
+  # image's (an install of 14 to 16 Oct) is used as it is, though the build's differs.
+  gb_make; printf 'other\n' > "$gsh/icon.png"
+  mkdir -p "$gd/theme-src"; chmod 0755 "$gd/theme-src"; printf 'title-text: "image"\n' > "$gd/theme-src/theme.txt"; chmod 0644 "$gd/theme-src/theme.txt"
+  is "theme from the build refused: the image's is used" "1|yes|same" \
+    "$(gb_try)|$(diff -r "$gd/theme-src" "$gth" >/dev/null 2>&1 && echo same || echo differs)"
+  gb_make; ga_old; rm -rf "${gd:?}/boot/themes"; mkdir -p "${gth%/*}"; cp -a "$gd/theme-src" "$gth"; gr_run ok >/dev/null
+  is "theme: the image's already in /boot, the build's different: used as it is" "1|same" \
+    "$(grep -c '^GRUB_THEME=' "$gd/default/grub")|$(diff -r "$gd/theme-src" "$gth" >/dev/null 2>&1 && echo same || echo differs)"
+  gb_make
+  is "theme from the build: preferred to the image's when both are there" "1|yes|same" \
+    "$(gb_try)|$(diff -r "$gsh" "$gth" >/dev/null 2>&1 && echo same || echo differs)"
+  # The installers' own steps are Rust in the target's chroot (install_grub_theme) and a live-ISO
+  # script (yantrik-install.sh), so they share with this the place and the line, held here.
+  is "theme: the place and the line are the installers'" "yes" \
+    "$(! [ -f "$here/../../crates/yantrik-ui/src/wire/installer.rs" ] \
+       || { grep -qxF 'const GRUB_THEME_DIR: &str = "/boot/grub/themes/yantrik";' "$here/../../crates/yantrik-ui/src/wire/installer.rs" \
+            && grep -qF -- "echo '$GRUB_THEME_LINE' >>" "$here/yantrik-install.sh" \
+            && [ "$GRUB_THEME_LINE" = "GRUB_THEME=\"/boot/grub/themes/yantrik/theme.txt\"" ]; } && echo yes || echo no)"
+  is "theme: the build ships the theme the image has, hash-listed" "yes" \
+    "$(! [ -f "$here/build-release.sh" ] \
+       || { grep -qF 'sh "$SCRIPT_DIR/stage-grub-theme.sh" "$ROOT/share/grub-theme"' "$here/build-release.sh" \
+            && grep -qE 'sha256sum .* grub-theme/\*\)' "$here/build-release.sh"; } && echo yes || echo no)"
+  unset GA_DEFAULT
+  rm -rf "${gd:?}/share" "${gd:?}/bin" "${gd:?}/theme-src" "${gd:?}/boot/themes" "${gd:?}/tmpfiles.d"
+  rm -f "${gd:?}/said"
+
+  # The loop running now: stopped only when the port gives the I/O error agetty fails on.
+  # stty is a program on PATH here, not a function, because the probe runs it under timeout.
+  mkdir -p "$gd/bin"
+  # shellcheck disable=SC2016  # the stub's own script, expanded when it runs
+  printf '%s\n' '#!/bin/sh' '[ -z "$SG_SLEEP" ] || sleep "$SG_SLEEP"' \
+    '[ -z "$SG_ERR" ] || { printf "stty: /dev/ttyS0: %s\n" "$SG_ERR" >&2; exit 1; }' > "$gd/bin/stty"
+  chmod +x "$gd/bin/stty"
+  sg_run() { # sg_run <is-active answer> <stty's error, empty when it answers> [seconds stty hangs]: the systemctl stop made
+    ( SG_STATE="$1"; export SG_ERR="$2" SG_SLEEP="${3:-}"; PATH="$gd/bin:$PATH"; SERIAL_PROBE_SECS=1
+      systemctl() { if [ "$1" = is-active ]; then printf '%s\n' "$SG_STATE"; else printf '%s\n' "$*" >> "$gd/sg"; fi; }
+      rm -f "$gd/sg"; stop_serial_getty_loop >/dev/null 2>&1; cat "$gd/sg" 2>/dev/null )
+  }
+  is "serial getty: restarting on a port with no UART: stopped" "stop serial-getty@ttyS0.service" \
+    "$(sg_run activating 'Input/output error')"
+  is "serial getty: ... running: stopped" "stop serial-getty@ttyS0.service" "$(sg_run active 'Input/output error')"
+  is "serial getty: a port that answers: left running" "" "$(sg_run active '')"
+  is "serial getty: another error: left running" "" "$(sg_run active 'No such file or directory')"
+  is "serial getty: not running: nothing to stop" "" "$(sg_run inactive 'Input/output error')"
+  # A probe that hangs (#829 review, item 4): given up on after SERIAL_PROBE_SECS, port left running.
+  local sg_t0; sg_t0="$(date +%s)"
+  is "serial getty: a port whose probe hangs: left running" "" "$(sg_run active 'Input/output error' 10)"
+  is "serial getty: ... and the update is not held up" "yes" "$([ $(( $(date +%s) - sg_t0 )) -lt 6 ] && echo yes || echo no)"
+  is "serial getty: never masked" "no" "$(declare -f stop_serial_getty_loop | grep -q mask && echo yes || echo no)"
+  is "serial console: reconcile and an up-to-date apply both run it" "yes" \
+    "$(declare -f cmd_reconcile | grep -q reconcile_serial_console && declare -f cmd_apply | grep -q reconcile_serial_console && echo yes || echo no)"
+
   if [ "$fails" = 0 ]; then
     printf '%sall selftest checks passed%s\n' "$c_grn" "$c_off"
     return 0
@@ -4577,7 +6825,8 @@ usage() {
     "  rollback                                  restore the most recent backup" \
     "  status      [--porcelain]                 channel, host, build, backups" \
     "  set-channel nightly|beta|stable           change the channel (writes $CONF)" \
-    "  reconcile                                 install base packages the image ships and this lacks" \
+    "  reconcile                                 install packages from share/packages.list this machine lacks" \
+    "  package-list FILE                         the package names in FILE, checked (the image build reads it)" \
     "  install-mind BUNDLE SHA256                put a Yantrik Mind bundle in place, and prove it attaches" \
     "  mind-egress apply                         hold the mind account to its egress proxy (root; its units run it)" \
     "  selftest                                  offline checks, no network" \
@@ -4597,6 +6846,9 @@ case "$CMD" in
   # person at a terminal types the hyphen.
   set-channel|set_channel) cmd_set_channel "$@" ;;
   reconcile) cmd_reconcile ;;
+  # The names in a package list, validated, one per line: what build-debian-iso.sh installs, read
+  # by the same parser that reads the installed copy here (#854). Reads only the file it is given.
+  package-list) [ "$#" = 1 ] || fail "usage: yantrik-update package-list FILE"; read_package_list "$1" ;;
   migrate-minds) cmd_migrate_minds "$@" ;;
   install-mind) cmd_install_mind "$@" ;;
   mind-egress) cmd_mind_egress "$@" ;;

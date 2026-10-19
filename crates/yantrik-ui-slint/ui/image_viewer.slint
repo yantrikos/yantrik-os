@@ -6,8 +6,7 @@
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "components/icon.slint";
 import { AppHeader } from "components/app_header.slint";
-import { AgentRail, AgentContextItem, AgentSuggestion } from "components/agent_rail.slint";
-import { AgentProposalCard, AgentProposal } from "components/agent_proposal.slint";
+import { AgentRail, AgentContextItem } from "components/agent_rail.slint";
 import { AppColor, AppIdentity } from "components/app_color.slint";
 import { YEmptyState } from "components/y_empty_state.slint";
 import { YTooltip } from "components/y_tooltip.slint";
@@ -69,17 +68,16 @@ export component ImageViewer inherits Rectangle {
     in property <bool> window-bar: false;
     // ── The agent layer ──
     //
-    // Filled from what this app and the companion actually hold; every row says where it came
-    // from, and a section with nothing true to say does not draw. See agent_rail.slint.
+    // Filled from what this app actually holds; every row says where it came from, and a
+    // section with nothing true to say does not draw. See agent_rail.slint.
+    //
+    // Context only. The rail's NEXT section and the proposal card were wired here too, and
+    // nothing ever filled them: describing a picture needs a vision model this OS does not
+    // attach, so the app always sent no suggestions and never made a proposal. Their callbacks
+    // were empty handlers behind controls that could not appear. The header's Describe button
+    // is this app's one ask of the companion, and it answers in its own panel.
     in property <[AgentContextItem]> agent-context: [];
-    in property <[AgentSuggestion]> agent-suggestions: [];
     in property <string> agent-unavailable: "";
-    callback agent-context-activated(string);
-    callback agent-suggestion-activated(string);
-    in property <AgentProposal> proposal;
-    in property <bool> proposal-working: false;
-    callback proposal-applied();
-    callback proposal-dismissed();
 
     // ── Window chrome ──
     //
@@ -120,6 +118,11 @@ export component ImageViewer inherits Rectangle {
     callback ai-dismiss();
 
     // ── Rotation / Flip ──
+    //
+    // The app turns and mirrors the picture's pixels and hands back `current-image` already
+    // turned (apps/image-viewer/src/orient.rs). These properties say how it is turned, for the
+    // buttons' lit state and the corner badge; the buttons only ask, and drawing nothing from
+    // them here keeps the picture from being turned twice.
     in-out property <int> viewer-rotation: 0;       // 0, 90, 180, 270
     in-out property <bool> viewer-flip-h: false;
     in-out property <bool> viewer-flip-v: false;
@@ -165,7 +168,7 @@ export component ImageViewer inherits Rectangle {
     property <float> zoom-level: 1.0;
     property <float> pan-x: 0.0;
     property <float> pan-y: 0.0;
-    property <bool> is-custom-zoom: false;   // true when user zoomed manually
+    out property <bool> is-custom-zoom: false;   // true when user zoomed manually
     property <float> drag-start-x: 0.0;
     property <float> drag-start-y: 0.0;
     property <float> pan-start-x: 0.0;
@@ -177,9 +180,6 @@ export component ImageViewer inherits Rectangle {
         : Math.round(zoom-level * 100) > 1000 ? "1000%"
         : Math.round(zoom-level * 100) + "%";
 
-    // Computed rotation angle for Image element
-    property <angle> computed-rotation: root.viewer-rotation * 1deg;
-
     // Internal helper: reset zoom/pan to fit
     function reset-zoom() {
         self.zoom-level = 1.0;
@@ -187,6 +187,18 @@ export component ImageViewer inherits Rectangle {
         self.pan-y = 0.0;
         self.is-custom-zoom = false;
         self.fit-contain = true;
+    }
+
+    // The fit button: from a zoom of the person's own, back to the whole picture in the
+    // window; otherwise between the whole picture (contain) and the window filled (cover).
+    // It did nothing at all while zoomed, because the switch only ran when not zoomed and
+    // contain-or-cover is not what a zoomed picture draws with.
+    public function toggle-fit-mode() {
+        if (self.is-custom-zoom) {
+            self.reset-zoom();
+        } else {
+            self.fit-contain = !self.fit-contain;
+        }
     }
 
     // Internal helper: clamp zoom
@@ -358,39 +370,27 @@ export component ImageViewer inherits Rectangle {
                     ToolbarButton {
                         enabled: root.has-picture; off-reason: root.no-picture;
                         label: ""; icon-only: true; icon-path: Icons.rotate-ccw;
-                        clicked => {
-                            root.viewer-rotation = mod(root.viewer-rotation + 270, 360);
-                            root.viewer-rotate-left();
-                        }
+                        clicked => { root.viewer-rotate-left(); }
                     }
 
                     ToolbarButton {
                         enabled: root.has-picture; off-reason: root.no-picture;
                         label: ""; icon-only: true; icon-path: Icons.rotate-cw;
-                        clicked => {
-                            root.viewer-rotation = mod(root.viewer-rotation + 90, 360);
-                            root.viewer-rotate-right();
-                        }
+                        clicked => { root.viewer-rotate-right(); }
                     }
 
                     ToolbarButton {
                         enabled: root.has-picture; off-reason: root.no-picture;
                         label: ""; icon-only: true; icon-path: Icons.flip-h;
                         active: root.viewer-flip-h;
-                        clicked => {
-                            root.viewer-flip-h = !root.viewer-flip-h;
-                            root.viewer-flip-horizontal();
-                        }
+                        clicked => { root.viewer-flip-horizontal(); }
                     }
 
                     ToolbarButton {
                         enabled: root.has-picture; off-reason: root.no-picture;
                         label: ""; icon-only: true; icon-path: Icons.sort;
                         active: root.viewer-flip-v;
-                        clicked => {
-                            root.viewer-flip-v = !root.viewer-flip-v;
-                            root.viewer-flip-vertical();
-                        }
+                        clicked => { root.viewer-flip-vertical(); }
                     }
 
                     ToolbarButton {
@@ -398,8 +398,8 @@ export component ImageViewer inherits Rectangle {
                         label: ""; icon-only: true;
                         icon-path: root.fit-contain ? Icons.maximize : Icons.minimize;
                         clicked => {
+                            root.toggle-fit-mode();
                             root.toggle-fit();
-                            if (!root.is-custom-zoom) { root.fit-contain = !root.fit-contain; }
                         }
                     }
                 }
@@ -474,14 +474,6 @@ export component ImageViewer inherits Rectangle {
             }
 
             // ── Main content: image area + optional EXIF panel ──
-            // ── What the companion is proposing ──
-            if root.proposal.title != "" : AgentProposalCard {
-                data: root.proposal;
-                working: root.proposal-working;
-                apply => { root.proposal-applied(); }
-                dismiss => { root.proposal-dismissed(); }
-            }
-
             // The picture, with the agent rail beside it. Takes the height left over from the
             // header and toolbar: without it every child keeps its natural size and the picture
             // draws into a small box with the window empty around it.
@@ -495,13 +487,11 @@ export component ImageViewer inherits Rectangle {
                     clip: true;
                     horizontal-stretch: 1;
 
-                    // Helper function: compute scale-x for flip
-                    // Slint doesn't have conditional scale, so we use two Image variants
 
                     if root.file-name == "" : YEmptyState {
                         icon-path: Icons.image;
                         title: "No image open";
-                        description: "Open a picture from Files, or pass a path on the command line.";
+                        description: "Open a picture from Files to see it here.";
                     }
 
                     // A file was chosen and cannot be drawn: the name is on screen, so the
@@ -517,7 +507,6 @@ export component ImageViewer inherits Rectangle {
                         height: 100%;
                         source: root.current-image;
                         image-fit: root.fit-contain ? contain : cover;
-                        transform-rotation: root.computed-rotation;
                     }
 
                     if root.is-custom-zoom : Rectangle {
@@ -529,16 +518,8 @@ export component ImageViewer inherits Rectangle {
                             height: parent.height * root.zoom-level;
                             source: root.current-image;
                             image-fit: contain;
-                            transform-rotation: root.computed-rotation;
                         }
                     }
-
-                    // Flip overlay: render a second image with mirroring when flipped
-                    // Slint doesn't support negative scale, so we use image-rendering
-                    // with rotation to simulate flips:
-                    //   flip-h = rotate 180° around Y axis → not directly supported
-                    // Instead we handle flips by pre-processing in the backend (Rust).
-                    // The flip-h/flip-v properties signal the backend to do the transform.
 
                     // Zoom + pan interaction layer
                     touch := TouchArea {
@@ -918,11 +899,9 @@ export component ImageViewer inherits Rectangle {
                     //
                     // Full height beside the content. Collapses to nothing when there is nothing true to say.
                     AgentRail {
+                        // Rows to read, not buttons: nothing here opens them.
                         context-items: root.agent-context;
-                        suggestions: root.agent-suggestions;
                         unavailable: root.agent-unavailable;
-                        context-activated(id) => { root.agent-context-activated(id); }
-                        suggestion-activated(id) => { root.agent-suggestion-activated(id); }
                     }
 
             }

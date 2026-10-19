@@ -1,5 +1,8 @@
 //! Routine instinct — recognizes morning/evening routines from workflow
 //! observations and suggests the user's established patterns.
+//!
+//! Absorbs predictive_workflow (#755): one line per morning or evening window instead of an
+//! hourly "you usually … around now", which reads as watching the clock.
 
 use std::sync::Mutex;
 

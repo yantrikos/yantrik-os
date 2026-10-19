@@ -31,6 +31,8 @@ fn turn(blocks: Vec<ContentBlock>) -> MessageData {
         is_streaming: false,
         blocks: ModelRc::new(VecModel::from(blocks)),
         run: "".into(),
+        mind: Default::default(),
+        model: Default::default(),
     }
 }
 
@@ -167,6 +169,8 @@ pub fn run_lens(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn s
         is_streaming: false,
         blocks: ModelRc::new(VecModel::from(Vec::<ContentBlock>::new())),
         run: "".into(),
+        mind: Default::default(),
+        model: Default::default(),
     };
     ui.set_messages(ModelRc::new(VecModel::from(vec![question, turn(blocks)])));
     render(w, width, height);

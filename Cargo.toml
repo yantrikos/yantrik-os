@@ -39,11 +39,15 @@ members = [
     "services/perception-journal",
     "services/a11y-service",
     "crates/yantrik-app-runtime",
+    # A URL as it may be drawn: the one rule for every address shown, said or logged (#856).
+    "crates/yantrik-shown-address",
     # The lock screen as a Wayland session lock (#313).
     "crates/yantrik-lock",
     "crates/yantrik-mind-view-title",
     # The one way out for the mind account: a CONNECT proxy by the person's policy.
     "crates/yantrik-egress",
+    # The local model gateway: every mind's models through one loopback endpoint, keys kept by the OS (#673).
+    "crates/yantrik-gateway",
     # The folder watch and the move decisions shared by yDoc and the Text Editor, so a file
     # moved in Files does not strand the editor holding it open (#75, #86).
     "crates/yantrik-file-follow",
@@ -164,6 +168,7 @@ libc = "0.2"
 
 # Internal crates
 yantrik-harness = { path = "crates/yantrik-harness" }
+yantrik-gateway = { path = "crates/yantrik-gateway" }
 yantrik-agent-terminal = { path = "crates/yantrik-agent-terminal" }
 yantrik-companion-core = { path = "crates/yantrik-companion-core" }
 yantrik-companion-instincts = { path = "crates/yantrik-companion-instincts" }
@@ -179,6 +184,7 @@ yantrik-ipc-transport = { path = "crates/yantrik-ipc-transport" }
 yantrik-service-sdk = { path = "crates/yantrik-service-sdk" }
 yantrik-surface = { path = "crates/yantrik-surface" }
 yantrik-app-runtime = { path = "crates/yantrik-app-runtime" }
+yantrik-shown-address = { path = "crates/yantrik-shown-address" }
 yantrik-file-follow = { path = "crates/yantrik-file-follow" }
 yantrik-install-target = { path = "crates/yantrik-install-target" }
 yantrik-manifest = { path = "crates/yantrik-manifest" }

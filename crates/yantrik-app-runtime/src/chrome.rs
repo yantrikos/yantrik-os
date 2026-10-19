@@ -40,6 +40,21 @@ pub fn minimize(window: &slint::Window) {
     }
 }
 
+/// Ask for a window to come back from the taskbar and take focus, for a second launch of its app.
+///
+/// A request, which Wayland may decline: a client cannot raise itself without a token from the
+/// compositor. The shell raises the window as well when the second launch exits
+/// (`wire::dock::exit_verdict`); this is what a window whose app was started from a terminal gets.
+pub fn bring_back(window: &slint::Window) {
+    let asked = window.with_winit_window(|w| {
+        w.set_minimized(false);
+        w.focus_window();
+    });
+    if asked.is_none() {
+        window.set_minimized(false);
+    }
+}
+
 /// Maximise a window that is not, restore one that is. Returns what it asked for.
 pub fn toggle_maximize(window: &slint::Window) -> bool {
     let maximize = !window.is_maximized();

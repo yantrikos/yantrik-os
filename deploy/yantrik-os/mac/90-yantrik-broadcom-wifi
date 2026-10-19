@@ -1,10 +1,24 @@
 #!/bin/sh
-# NetworkManager dispatcher: when a connection comes up and this machine's Broadcom Wi-Fi is
-# still waiting for its driver (yantrik-broadcom-wifi said "needs-network"), fetch it now rather
-# than at the next boot. Plugging in an Ethernet cable is the whole instruction the person gets.
+# NetworkManager dispatcher for this machine's Broadcom Wi-Fi.
+#
+# When a connection comes up and the chip is still waiting for its driver (yantrik-broadcom-wifi
+# said "needs-network"), fetch it now rather than at the next boot. Plugging in an Ethernet cable
+# is the whole instruction the person gets.
+#
+# When a connection goes down on a machine running wl, start yantrik-broadcom-wifi's recover at
+# once. It decides nothing yet: it starts the clock on how long Wi-Fi has been down, so the reset
+# of a wedged wl comes at the first timer run past three minutes instead of up to two minutes
+# after that. Any interface's "down" will do, since recover itself checks wl's device.
+STATUS="${YANTRIK_WIFI_STATUS:-/run/yantrik/wifi-driver.status}"
 case "$2" in
-    up|connectivity-change) ;;
-    *) exit 0 ;;
+    up|connectivity-change)
+        grep -qx 'state=needs-network' "$STATUS" 2>/dev/null || exit 0
+        exec systemctl start --no-block yantrik-broadcom-wifi.service
+        ;;
+    down)
+        grep -qx 'state=ready' "$STATUS" 2>/dev/null || exit 0
+        grep -qx 'driver=wl' "$STATUS" 2>/dev/null || exit 0
+        exec systemctl start --no-block yantrik-broadcom-wifi-recover.service
+        ;;
 esac
-grep -qx 'state=needs-network' /run/yantrik/wifi-driver.status 2>/dev/null || exit 0
-exec systemctl start --no-block yantrik-broadcom-wifi.service
+exit 0

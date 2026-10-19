@@ -17,6 +17,8 @@ export struct QuestionRequest {
     options: [string], // the answers offered as buttons; none: a free answer
     asked: string,     // when it was asked, "16:16"
     removes: string,   // for a Keep/Erase question, what Erase removes, as the shell parsed it
+    recommended: int,  // the option the agent recommends, by index; -1 for none
+    in-reply: bool,    // drawn in the reply that asked it, so the Lens pins no second card for it
 }
 
 export component QuestionCard inherits Rectangle {
@@ -33,6 +35,12 @@ export component QuestionCard inherits Rectangle {
     /// out by the shell from the prompt's quoted spans (never the agent's words about it), one per
     /// line — so the person sees exactly what goes, whatever the quote marks look like.
     in property <string> removes;
+    /// The option the agent recommends, by index (-1: none). It is the filled button and says so;
+    /// nothing is ever chosen for the person.
+    in property <int> recommended: -1;
+    /// The answers one under another, each the card's full width: in the Lens's reply, where the
+    /// column is narrow and a choice is a phrase ("Sat Oct 17 + Sun Oct 18"), not a word.
+    in property <bool> stacked: false;
     // The answer, and whether it is one of the offered answers pressed (true) or one typed (false):
     // a typed "Erase" is not a pressed one (docs/harness.md, `redact`).
     callback answered(string, bool);
@@ -116,20 +124,40 @@ export component QuestionCard inherits Rectangle {
                 }
             }
         }
-        if root.removes-shown && !root.erase-ready : Text {
+        // Always in the tree, drawn and given height only while Erase waits on the list. An `if`
+        // here changed the card's widths with `erase-ready`, which its width decides: a binding
+        // loop wherever the card's width follows its content (in a reply's timeline).
+        Text {
+            property <bool> shown: root.removes-shown && !root.erase-ready;
+            visible: self.shown;
+            height: self.shown ? self.preferred-height : 0px;
             text: "Scroll to the end of the list to erase.";
             color: Theme.text-secondary;
             font-size: Theme.fs-caption;
             wrap: word-wrap;
         }
-        if root.answer == "" && root.closed == "" && root.options.length > 0 : HorizontalLayout {
+        if root.answer == "" && root.closed == "" && root.options.length > 0 && !root.stacked : HorizontalLayout {
             spacing: Theme.sp-2;
             alignment: start;
-            for option in root.options : YButton {
-                label: option;
-                variant: 1;
+            for option[i] in root.options : YButton {
+                label: i == root.recommended ? option + " (Recommended)" : option;
+                variant: i == root.recommended ? 0 : 1;
                 size: 0;
                 // Erase only once everything it removes has been shown.
+                disabled: option == "Erase" && !root.erase-ready;
+                clicked => {
+                    if (option != "Erase" || root.erase-ready) {
+                        root.answered(option, true);
+                    }
+                }
+            }
+        }
+        if root.answer == "" && root.closed == "" && root.options.length > 0 && root.stacked : VerticalLayout {
+            spacing: Theme.sp-1;
+            for option[i] in root.options : YButton {
+                label: i == root.recommended ? option + " (Recommended)" : option;
+                variant: i == root.recommended ? 0 : 1;
+                size: 0;
                 disabled: option == "Erase" && !root.erase-ready;
                 clicked => {
                     if (option != "Erase" || root.erase-ready) {

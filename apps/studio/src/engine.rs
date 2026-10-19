@@ -257,10 +257,10 @@ impl Snapshot {
         match self.facts.kind {
             "fake" => "placeholder images, because no image model is configured".to_string(),
             "comfyui" if !self.facts.prompt_leaves => {
-                format!("ComfyUI at {}", self.config.backend.base_url)
+                format!("ComfyUI at {}", crate::config::shown_address(&self.config.backend.base_url))
             }
-            "comfyui" => format!("ComfyUI away from your network at {}", self.config.backend.base_url),
-            _ => format!("a hosted service at {}", self.config.backend.base_url),
+            "comfyui" => format!("ComfyUI away from your network at {}", crate::config::shown_address(&self.config.backend.base_url)),
+            _ => format!("a hosted service at {}", crate::config::shown_address(&self.config.backend.base_url)),
         }
     }
 

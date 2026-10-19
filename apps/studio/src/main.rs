@@ -446,6 +446,13 @@ fn row(record: &Record, chosen: &str) -> ShotRow {
         },
         meta: meta_line(record).into(),
         path: engine::display(&record.path).into(),
+        // What the row says: the folder in words. The path is the record pane's last line.
+        place: record
+            .path
+            .parent()
+            .map(|dir| yantrik_app_runtime::place::place_of(dir, &yantrik_app_runtime::place::home()))
+            .unwrap_or_default()
+            .into(),
         has_thumb: record.thumbnail.is_some(),
         thumb: record.thumbnail.as_ref().map(pixels).unwrap_or_default(),
         selected: path == chosen,
@@ -740,8 +747,13 @@ fn surface(engine: Engine) -> Vec<(Action, Handler)> {
             // Name the PARSED HOST, never the raw argument: `base_url` is caller-supplied text,
             // and "https://api.openai.com@evil.example/v1" would read as naming api.openai.com
             // while every prompt and the key go to evil.example. A URL that parses to no host
-            // gets an honest nothing rather than a guess.
-            let host = || url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_owned));
+            // gets an honest nothing rather than a guess. So does one whose sign-in details cannot
+            // be told from its host (`https://user:1/w@evil.example` parses to the host "user"):
+            // the one rule for drawing an address says nothing of it (`place::address_of`, #856).
+            let drawable = !yantrik_app_runtime::place::address_of(url).is_empty();
+            let host = || {
+                url::Url::parse(url).ok().filter(|_| drawable).and_then(|u| u.host_str().map(str::to_owned))
+            };
             match kind {
                 config::Kind::Fake => "After this, prompts stay on this machine.".to_string(),
                 config::Kind::OpenAiImages => host()

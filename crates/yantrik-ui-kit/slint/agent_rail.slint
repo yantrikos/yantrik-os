@@ -66,16 +66,22 @@ component SectionLabel inherits Text {
 
 component ContextRow inherits TouchArea {
     in property <AgentContextItem> item;
-    height: 38px;
-    mouse-cursor: pointer;
+    // Whether a click on the row does anything. Off, the row is a line of text: no pointer, no
+    // hover, no click — it does not dress up as a button nothing answers.
+    in property <bool> opens: false;
+    // At least one row, taller when a label needs two lines: rows cut to "No supported firewall
+    // manager de…" on every app's rail in the sweep of 17 October.
+    height: max(38px, context-row.preferred-height + 8px);
+    enabled: root.opens;
+    mouse-cursor: root.opens ? pointer : default;
 
     Rectangle {
         width: 100%;
         height: 100%;
         border-radius: Theme.r-sm;
-        background: parent.has-hover ? Theme.hover-fill : transparent;
+        background: root.opens && parent.has-hover ? Theme.hover-fill : transparent;
 
-        HorizontalLayout {
+        context-row := HorizontalLayout {
             padding-left: Theme.sp-2;
             padding-right: Theme.sp-2;
             spacing: Theme.sp-2;
@@ -100,13 +106,13 @@ component ContextRow inherits TouchArea {
                     text: root.item.label;
                     color: Theme.text-primary;
                     font-size: Theme.fs-caption;
-                    overflow: elide;
+                    wrap: word-wrap;
                 }
                 if root.item.detail != "" : Text {
                     text: root.item.detail;
                     color: Theme.text-dim;
                     font-size: Theme.fs-micro;
-                    overflow: elide;
+                    wrap: word-wrap;
                 }
             }
 
@@ -124,7 +130,7 @@ component ContextRow inherits TouchArea {
 
 component SuggestionRow inherits TouchArea {
     in property <AgentSuggestion> item;
-    height: root.item.detail != "" ? 42px : 32px;
+    height: max(root.item.detail != "" ? 42px : 32px, suggestion-row.preferred-height + 8px);
     mouse-cursor: pointer;
 
     Rectangle {
@@ -133,7 +139,7 @@ component SuggestionRow inherits TouchArea {
         border-radius: Theme.r-sm;
         background: parent.has-hover ? AppIdentity.tint : transparent;
 
-        HorizontalLayout {
+        suggestion-row := HorizontalLayout {
             padding-left: Theme.sp-2;
             padding-right: Theme.sp-2;
             spacing: Theme.sp-2;
@@ -157,13 +163,13 @@ component SuggestionRow inherits TouchArea {
                     text: root.item.running ? "Working…" : root.item.label;
                     color: Theme.text-primary;
                     font-size: Theme.fs-caption;
-                    overflow: elide;
+                    wrap: word-wrap;
                 }
                 if root.item.detail != "" : Text {
                     text: root.item.detail;
                     color: Theme.text-dim;
                     font-size: Theme.fs-micro;
-                    overflow: elide;
+                    wrap: word-wrap;
                 }
             }
 
@@ -187,6 +193,12 @@ export component AgentRail inherits Rectangle {
 
     callback context-activated(string);
     callback suggestion-activated(string);
+
+    // Whether a context row opens something when clicked. Only an app whose Rust answers
+    // `context-activated` turns this on; everywhere else the rows are shown and not offered as
+    // buttons. Before this, every app's rows had a pointer and a hover and most of them went
+    // nowhere: a control that is drawn must work (design/apps-plan-2026-09-20.md, rule 7).
+    in property <bool> context-opens: false;
 
     // Nothing true to say, nothing drawn. See the header.
     property <bool> has-content:
@@ -239,6 +251,7 @@ export component AgentRail inherits Rectangle {
                     spacing: Theme.sp-2;
                     for c in root.context-items : ContextRow {
                         item: c;
+                        opens: root.context-opens;
                         clicked => { root.context-activated(c.id); }
                     }
                 }

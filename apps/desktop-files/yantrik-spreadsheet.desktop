@@ -1,9 +1,15 @@
 [Desktop Entry]
 Type=Application
 Name=ySheets
-Comment=Spreadsheet editor with formulas and charts
-Exec=/opt/yantrik/bin/yantrik-spreadsheet
+Comment=Spreadsheet: formulas over one sheet, opened from and saved to CSV
+# %f: a CSV handed over by Files or another app is opened (a second launch gives it to the open window).
+Exec=/opt/yantrik/bin/yantrik-spreadsheet %f
 # One mark for now: brand/yantrik-icon.svg, installed as hicolor `yantrik`.
 Icon=yantrik
 Categories=Office;Spreadsheet;
-Keywords=spreadsheet;excel;csv;
+Keywords=spreadsheet;excel;csv;formula;
+MimeType=text/csv;
+# The control surface this app publishes: docs/surface-protocol.md, section 3.
+X-Yantrik-Surface=spreadsheet
+X-Yantrik-Purpose=a sheet of numbers and formulas, opened from and saved to CSV files
+X-Yantrik-Aliases=ysheets;sheets

@@ -1,8 +1,9 @@
 //! Strategic Silence with Reveal — occasionally surfaces suppressed urges.
 //!
 //! At high bond levels, once per week, reveals something the companion
-//! chose not to say: "I noticed X earlier but you seemed deep in thought."
-//! Creates trust and personality depth.
+//! chose not to say, and why: "I held back on X earlier because you were in
+//! the middle of something." Restraint is evidence of care; the reveal makes it
+//! visible without claiming feelings or guessing the person's state (#755).
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
@@ -71,23 +72,21 @@ impl Instinct for SilenceRevealInstinct {
         let execute_msg = match state.model_tier {
             ModelTier::Large => format!(
                 "EXECUTE Earlier, I held back from saying something (about: '{}', \
-                     because: '{}'). Mention this naturally — something like \
-                     'I almost brought this up earlier but...' or 'I noticed something \
-                     earlier but didn't want to interrupt...'. Keep it brief and genuine. \
-                     1-2 sentences. This should feel like sharing a small moment of \
-                     self-awareness, not making a big deal of it.",
+                     because: '{}'). Say so plainly — something like \
+                     'I held back on this earlier because you were in the middle of something:' \
+                     followed by what it was. Keep it brief, 1-2 sentences. Don't guess how they \
+                     were feeling, and don't make a big deal of it. If it no longer matters, \
+                     reply exactly \"Nothing to surface right now.\"",
                 urge_key, suppress_reason
             ),
-            ModelTier::Tiny => format!(
-                "EXECUTE Pick one: greeting, mood check, or task nudge for . Time: (now). Output: 1 sentence.",
-            ),
+            ModelTier::Tiny => "EXECUTE SKIP".to_string(),
             _ => format!(
-                "EXECUTE Task: Send a short, natural check-in to .\n\
-             Input: time=(now).\n\
-             Tool: You may use recall once for one recent explicit user-mentioned detail.\n\
-             Rule: Use only details explicitly stated by the user or returned by recall. Do not imply the user is currently doing, feeling, or experiencing anything unless they said so.\n\
-             Fallback: Send a simple warm greeting.\n\
-             Output: 1 sentence, under 20 words.",
+                "EXECUTE Task: Say plainly that earlier you held back from raising something.\n\
+             Input: about={}, held back because={}.\n\
+             Rule: Name what it was about and why you waited. Do not greet. Do not claim feelings.\n\
+             Fallback: \"Nothing to surface right now.\"\n\
+             Output: 1 sentence, under 25 words.",
+                urge_key, suppress_reason
             ),
         };
         vec![

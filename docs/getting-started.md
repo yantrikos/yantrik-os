@@ -136,9 +136,9 @@ The boot menu has four entries:
 | Entry | What it does |
 |---|---|
 | **Install Yantrik OS** | Boots live *and* puts first-run setup into installer mode, so it offers to write to a disk at the end |
-| **Try Yantrik OS (live, no install)** | Boots live. Nothing offers to touch a disk |
-| **Install Yantrik OS (Safe Mode)** | The same as the first, with `nomodeset` — use this if the screen stays black |
-| **Try Yantrik OS (verbose, serial console)** | No `quiet`, so the kernel and systemd say what they are doing. This is the entry to boot from when you are filing a bug |
+| **Try Yantrik OS without installing** | Boots live. Nothing offers to touch a disk |
+| **Install Yantrik OS with safe graphics** | The same as the first, with `nomodeset` — use this if the screen stays black |
+| **Try Yantrik OS, showing every boot message** | No `quiet`, so the kernel and systemd say what they are doing (on the serial line too). This is the entry to boot from when you are filing a bug |
 
 Either way the machine boots to a live desktop first. Nothing is written to any disk until
 you tell the installer to erase one.
@@ -176,7 +176,10 @@ worth knowing on the first day:
 | `Super`+`L` | Lock |
 | `Alt`+`Tab` / `Alt`+`F4` | Cycle windows / close |
 | `Super`+`←`/`→`/`↑`/`↓` | Snap, maximize, minimize |
-| `Print` / `Super`+`Shift`+`S` | Screenshot: whole screen / a region, into `~/Pictures` |
+| `Print` | The capture bar: a screenshot or a recording, of a region or the whole screen |
+| `Shift`+`Print` / `Super`+`Shift`+`S` | Screenshot of a region you drag, into `~/Pictures/Screenshots` and the clipboard |
+| `Ctrl`+`Print` | Screenshot of the whole screen, to the clipboard only |
+| `Super`+`Shift`+`R` | Start or stop a screen recording (saved in `~/Videos/Recordings`) |
 
 ---
 
@@ -326,7 +329,7 @@ desktop through the same path a person uses. See [app-control.md](app-control.md
 
 ### Black screen after boot
 
-Boot the **Safe Mode** entry, which adds `nomodeset`. If you have installed to disk already,
+Boot the **Install Yantrik OS with safe graphics** entry, which adds `nomodeset`. If you have installed to disk already,
 the renderer settings are in `~/.config/labwc/environment` —
 `WLR_RENDERER=pixman`, `LIBGL_ALWAYS_SOFTWARE=1` and `SLINT_BACKEND=winit` are what a machine
 with no usable GPU wants.
@@ -350,10 +353,10 @@ conversation. Point the machine at something with a GPU on your LAN, or at a pro
 
 ### An app I expected is not there
 
-Music and ySheets are **shelved** — deliberately not in this build, because there was nothing
-behind their screens. The shell says so when you ask for one, with the reason and what would
-bring it back. [`design/shelved-2026-09-20.md`](../design/shelved-2026-09-20.md) is the full
-account.
+Nothing is shelved in this build. Music and ySheets were — deliberately left out because there
+was nothing behind their screens — and both came back in October 2026. If an app is shelved
+again, the shell says so when you ask for it, with the reason and what would bring it back.
+[`design/shelved-2026-09-20.md`](../design/shelved-2026-09-20.md) is the full account.
 
 ### Reading the logs
 

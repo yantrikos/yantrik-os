@@ -29,7 +29,7 @@ mod tests;
 mod write_tests;
 
 pub use stat::stat;
-pub use tree::may_land;
+pub use tree::{may_land, may_read_tree};
 pub use verdict::{may_create, may_read_file, may_write_file};
 pub use writes::{resolve, where_programs_look, HIDDEN_RULE};
 
@@ -90,6 +90,13 @@ pub const PROTECTED: &[&str] = &[
     ".hermes",
     ".openclaw",
     ".pi",
+    // The person's screenshots and screen recordings (design/capture-2026-10-15.md). Each is a
+    // picture of their desktop, which a mind looks at only as it reads the screen: asked every
+    // time, and tainted as a screen read. Readable here, `files_open` of one in Mind View and a
+    // safe `read_mind_view` was every desktop shot ever taken with no card at all (security
+    // review of #828, finding 1). The shell's `open_capture` is a mind's one way to one.
+    "pictures/screenshots",
+    "videos/recordings",
 ];
 
 /// What `.config/...` in [`PROTECTED`] names, found under `$XDG_CONFIG_HOME` instead.

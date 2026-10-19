@@ -31,6 +31,36 @@ use crate::{App, BondData, UrgeCardData};
 /// same rule the harness path applies to a `Chunk::Failed`.
 pub const TURN_FAILED_REPLY: &str = "Something went wrong internally. Please try again.";
 
+/// What [`CompanionHandle::check_answer`] asks: a task with a tool for it, like a person's ask.
+pub const ANSWER_CHECK_ASK: &str = "Use the calculate tool to work out 17 times 23, and tell me the result.";
+/// The answer it must contain.
+const ANSWER_CHECK_RESULT: &str = "391";
+
+/// Who served a turn, sent by the worker just before the end-of-turn sentinel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Served {
+    /// A model's words.
+    Model,
+    /// The shell's own words: no model is set up, or none produced these words.
+    NoModel,
+    /// A model is set up and could not be reached: the offline responder answered, and this is
+    /// why (the backend's error), so nobody is told it is not set up.
+    Unreachable(String),
+    /// A model was reached and failed the turn (it thought and gave no answer); the streamed
+    /// text is the sentence saying so, and this is why, for the log.
+    ModelFailed(String),
+}
+
+/// Who produced a finished turn's words.
+fn served(response: &yantrik_companion::types::AgentResponse) -> Served {
+    match &response.model_failure {
+        Some(why) if response.offline_mode => Served::Unreachable(why.clone()),
+        Some(why) => Served::ModelFailed(why.clone()),
+        None if !response.offline_mode && !response.without_model => Served::Model,
+        None => Served::NoModel,
+    }
+}
+
 /// Why an [`CompanionHandle::ask`] did not produce an answer.
 ///
 /// `NoModel` is the case callers over RPC need told apart: when no model is reachable the
@@ -39,8 +69,10 @@ pub const TURN_FAILED_REPLY: &str = "Something went wrong internally. Please try
 /// offered to replace a document with it. The canned text does not leave the shell.
 #[derive(Debug)]
 pub enum AskError {
-    /// The shell answered, and no model did — none set up, or the one set up did not answer.
+    /// The shell answered, and no model did — none is set up.
     NoModel,
+    /// The shell answered because the model set up could not be reached: why.
+    Unreachable(String),
     /// No answer at all: no worker, a timeout, a failure on the way, or a turn that panicked
     /// mid-stream — the reason then carries its failure text.
     Failed(String),
@@ -64,7 +96,7 @@ pub enum CompanionCommand {
         ///
         /// Only [`CompanionHandle::ask`] passes one. The chat UI shows the offline notice from
         /// its own wiring, and a submitted job's subscriber is the board.
-        model: Option<Sender<bool>>,
+        model: Option<Sender<Served>>,
         /// Asked from away from the machine (a channel): the turn's tools are held to `Safe` —
         /// it reads, it changes nothing — and so is what the worker runs after it, until the
         /// person next speaks at the desk.
@@ -129,6 +161,18 @@ pub enum CompanionCommand {
     RecallMemories {
         query: String,
         reply_tx: Sender<Vec<MemoryResult>>,
+    },
+    /// The first run's "Can it remember?": a note written to this companion's memory, recalled by
+    /// its words and deleted (wire::onboarding_proofs). Here, not through `RunTool`: a tool run
+    /// for an outside caller is incognito, so `remember` saves nothing through it.
+    ProveMemory {
+        nonce: String,
+        reply_tx: Sender<Result<String, String>>,
+    },
+    /// The first run's "Can it reach the desktop?": the companion's own `describe_app` of the
+    /// shell, as its chat turns call it. `RunTool` refuses the app tools to an outside caller.
+    DescribeDesktop {
+        reply_tx: Sender<String>,
     },
     /// The newest memories, for the Memory screen before anything is searched.
     RecentMemories {
@@ -228,19 +272,17 @@ pub struct StateSnapshot {
     pub has_pending_urges: bool,
 }
 
-/// Bond screen data.
+/// What Interaction history and `describe shell` read from the bond store. The streak, the humor
+/// rate, the count of messages that said how the person felt and the shared references are still
+/// kept in the store, where the companion's own wording reads them; nothing on a screen draws them
+/// (design/ui-sweep-2026-10-17.md, root cause 2), so they are not copied out here.
 #[derive(Debug, Clone)]
 pub struct BondSnapshot {
+    /// For `describe shell` only.
     pub bond_score: f64,
     pub bond_level: String,
-    /// Which of the five levels, 1 to 5, so the screen can say "Level 4 of 5".
-    pub level_number: i64,
     pub total_interactions: i64,
     pub days_together: i64,
-    pub current_streak: i64,
-    pub humor_rate: f64,
-    pub vulnerability_events: i64,
-    pub shared_references: i64,
 }
 
 impl BondSnapshot {
@@ -251,13 +293,8 @@ impl BondSnapshot {
             loaded: true,
             bond_score: self.bond_score as f32,
             bond_level: self.bond_level.clone().into(),
-            level_number: self.level_number as i32,
             total_interactions: self.total_interactions as i32,
             days_together: self.days_together as i32,
-            current_streak: self.current_streak as i32,
-            humor_rate: self.humor_rate as f32,
-            vulnerability_events: self.vulnerability_events as i32,
-            shared_references: self.shared_references as i32,
         }
     }
 }
@@ -380,7 +417,8 @@ impl CompanionHandle {
     /// stream is drained here. `__REPLACE__` means the next token supersedes everything so far,
     /// which is how the worker reports an error mid-stream.
     ///
-    /// A turn the offline responder served comes back as [`AskError::NoModel`], not as its
+    /// A turn the offline responder served comes back as [`AskError::NoModel`] (or
+    /// [`AskError::Unreachable`] when a model is set up and did not answer), not as its
     /// canned text: the caller would show that text as the answer, and apps acted on it. A
     /// turn that panicked comes back as [`AskError::Failed`] carrying the failure text, for
     /// the same reason: `Ok` from here is always a model's words.
@@ -427,12 +465,32 @@ impl CompanionHandle {
             }
         }
         match model_rx.try_recv() {
-            Ok(true) => Ok(answer),
-            Ok(false) => Err(AskError::NoModel),
+            Ok(Served::Model) => Ok(answer),
+            Ok(Served::NoModel) => Err(AskError::NoModel),
+            Ok(Served::Unreachable(why)) => Err(AskError::Unreachable(why)),
+            // The text is the sentence about the failure, which is what the person should read.
+            Ok(Served::ModelFailed(_)) => Err(AskError::Failed(answer)),
             // No signal: the turn never reached the point where the worker knows — it panicked
             // mid-stream, and the text above is TURN_FAILED_REPLY. That is a report about the
             // turn, not the model's words, and an `Ok` would put it in a document.
             Err(_) => Err(AskError::Failed(answer)),
+        }
+    }
+
+    /// The first run's "Can it answer?": a real tool turn, checked for the right answer.
+    ///
+    /// "Reply with the single word OK." passed on VM 542 while the person's first real ask got
+    /// an empty bubble: the model thought a little about "OK" and a lot about a note, and only
+    /// the second ran out of tokens. So the check asks what a person asks, a task with a tool
+    /// for it (`calculate`, always offered and read-only), through the same turn as the chat,
+    /// and passes only on the answer, not on any words at all.
+    pub fn check_answer(&self, timeout: std::time::Duration) -> Result<String, AskError> {
+        let said = self.ask(ANSWER_CHECK_ASK.to_string(), timeout)?;
+        if said.contains(ANSWER_CHECK_RESULT) {
+            Ok(said)
+        } else {
+            let said: String = said.trim().chars().take(80).collect();
+            Err(AskError::Failed(format!("it answered, but not the question (\u{201c}{said}\u{201d})")))
         }
     }
 
@@ -449,6 +507,24 @@ impl CompanionHandle {
         reply_rx
             .recv_timeout(timeout)
             .map_err(|_| "companion timed out".to_string())
+    }
+
+    /// The first run's memory proof, on the worker: `Ok` carries what Details shows.
+    pub fn prove_memory(&self, nonce: String, timeout: std::time::Duration) -> Result<String, String> {
+        let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+        self.cmd_tx
+            .send(CompanionCommand::ProveMemory { nonce, reply_tx })
+            .map_err(|_| "companion worker is not running".to_string())?;
+        reply_rx.recv_timeout(timeout).map_err(|_| "companion timed out".to_string())?
+    }
+
+    /// The companion's own description of the desktop, for the first run's desktop proof.
+    pub fn describe_desktop(&self, timeout: std::time::Duration) -> Result<String, String> {
+        let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+        self.cmd_tx
+            .send(CompanionCommand::DescribeDesktop { reply_tx })
+            .map_err(|_| "companion worker is not running".to_string())?;
+        reply_rx.recv_timeout(timeout).map_err(|_| "companion timed out".to_string())
     }
 
     /// Run one tool by name and get its result.
@@ -720,9 +796,21 @@ impl CompanionBridge {
         self.send_message_from(text, false)
     }
 
+    /// `send_message_from`, also saying who served the turn ([`Served`]), sent just before
+    /// `__DONE__`. Nothing arrives on it when the turn panicked. The first run's first success
+    /// reads it (wire/onboarding.rs).
+    pub fn send_message_reporting(&self, text: String, remote: bool) -> (Receiver<String>, Receiver<Served>) {
+        let (model_tx, model_rx) = crossbeam_channel::bounded(1);
+        (self.send_with(text, remote, Some(model_tx)), model_rx)
+    }
+
     /// `send_message`, saying whether the person asked it from away from the machine: a remote
     /// turn's tools are held to `Safe`.
     pub fn send_message_from(&self, text: String, remote: bool) -> Receiver<String> {
+        self.send_with(text, remote, None)
+    }
+
+    fn send_with(&self, text: String, remote: bool, model: Option<Sender<Served>>) -> Receiver<String> {
         let (token_tx, token_rx) = crossbeam_channel::unbounded();
         if self
             .cmd_tx
@@ -730,7 +818,7 @@ impl CompanionBridge {
                 text,
                 token_tx: token_tx.clone(),
                 job: None,
-                model: None,
+                model,
                 remote,
                 outside: false,
             })
@@ -1020,10 +1108,15 @@ fn paused_while_private(cmd: &CompanionCommand, recipe_signals: &mut std::collec
             }
             true
         }
+        // Nothing is written to memory while Private mode is on, a check's note included.
+        CompanionCommand::ProveMemory { reply_tx, .. } => {
+            let _ = reply_tx.send(Err(SAID.to_string()));
+            true
+        }
         CompanionCommand::SendMessage { token_tx, model, .. } => {
             let _ = token_tx.send(format!("__REPLACE__{SAID}"));
             if let Some(tx) = model {
-                let _ = tx.send(false);
+                let _ = tx.send(Served::NoModel);
             }
             let _ = token_tx.send("__DONE__".to_string());
             true
@@ -1080,7 +1173,7 @@ fn worker_loop(
                     // No companion at all is the no-model case, not an answer: a caller blocked
                     // in `ask` must not carry this text away as one.
                     if let Some(tx) = model {
-                        let _ = tx.send(false);
+                        let _ = tx.send(Served::NoModel);
                     }
                 }
             }
@@ -1414,8 +1507,10 @@ fn worker_loop(
                         // Tell a caller blocked in `ask` whether a model answered this turn,
                         // while the fact is still the one being stored: it must not take the
                         // offline responder's canned text away as the model's words.
+                        // Nor the not-set-up sentence, a guard warning or a router reply:
+                        // no model produced those, so they prove nothing.
                         if let Some(tx) = &model {
-                            let _ = tx.send(ok);
+                            let _ = tx.send(served(&response));
                         }
                         if ok {
                             execute_suppression_logged = false;
@@ -1458,6 +1553,7 @@ fn worker_loop(
                             tokens = token_count,
                             online = ok,
                             offline_mode = response.offline_mode,
+                            model_failure = response.model_failure.as_deref().unwrap_or(""),
                             "Generation complete"
                         );
                     }
@@ -1593,6 +1689,17 @@ fn worker_loop(
                     }
                 }
             }
+            Ok(CompanionCommand::ProveMemory { nonce, reply_tx }) => {
+                let proved = if companion.is_incognito() {
+                    Err("incognito is on, so nothing is written to its memory now".to_string())
+                } else {
+                    crate::wire::onboarding_proofs::prove_memory(&crate::wire::onboarding_proofs::Db(&companion.db), &nonce)
+                };
+                let _ = reply_tx.send(proved);
+            }
+            Ok(CompanionCommand::DescribeDesktop { reply_tx }) => {
+                let _ = reply_tx.send(companion.execute_tool_direct("describe_app", &serde_json::json!({ "app": "shell" })));
+            }
             Ok(CompanionCommand::RunTool { name, args, reply_tx, job }) => {
                 tracing::info!(tool = %name, "Running tool for an outside caller");
                 // As above: a blocking caller's tool still occupies the lane, so it still belongs
@@ -1670,7 +1777,7 @@ fn worker_loop(
             Ok(CompanionCommand::ReloadLLM { provider_type, base_url, api_key, model }) => {
                 tracing::info!(provider = %provider_type, model = %model, "Reloading LLM backend");
                 let new_llm: std::sync::Arc<dyn yantrik_ml::LLMBackend> = std::sync::Arc::new(
-                    yantrik_ml::ApiLLM::new(base_url.clone(), api_key.clone(), &model)
+                    yantrik_ml::ApiLLM::new(base_url.clone(), api_key.clone(), &model).for_provider(&provider_type)
                 );
                 // In memory, because swap_llm rebuilds a chat-model decision model whose
                 // locality is read from it. Never written to /opt/yantrik/config.yaml: that is
@@ -1778,6 +1885,8 @@ fn worker_loop(
                                     content: SharedString::from(&text),
                                     is_streaming: false,
                                     blocks: ModelRc::default(),
+                                    mind: crate::wire::harness::BUILTIN_NAME.into(),
+                                    model: Default::default(),
                                 });
                                 // Through the notifications service, and only when the Lens is
                                 // shut: with it open the answer is already in the conversation
@@ -2572,6 +2681,8 @@ fn worker_loop(
                                             content: SharedString::from(&text),
                                             is_streaming: false,
                                             blocks: ModelRc::default(),
+                                            mind: crate::wire::harness::BUILTIN_NAME.into(),
+                                            model: Default::default(),
                                         });
                                         // Raised only when the Lens is closed — re-checked here on
                                         // the UI thread, which is the one place that reading is
@@ -2933,22 +3044,11 @@ fn build_snapshot(companion: &CompanionService) -> StateSnapshot {
 /// The bond as the store has it right now.
 fn bond_snapshot(companion: &CompanionService) -> BondSnapshot {
     let bond = BondTracker::get_state(&companion.db.conn());
-    let humor_rate = if bond.humor_attempts > 0 {
-        bond.humor_successes as f64 / bond.humor_attempts as f64
-    } else {
-        0.0
-    };
     BondSnapshot {
         bond_score: bond.bond_score,
         bond_level: bond.bond_level.name().to_string(),
-        // Stranger is 1 and Partner-in-Crime 5 (yantrik-companion-core's `BondLevel`).
-        level_number: bond.bond_level.as_u8() as i64,
         total_interactions: bond.total_interactions,
         days_together: bond.days_together as i64,
-        current_streak: bond.current_streak_days,
-        humor_rate,
-        vulnerability_events: bond.vulnerability_events,
-        shared_references: bond.shared_references,
     }
 }
 
@@ -3121,6 +3221,14 @@ fn build_companion(config: CompanionConfig) -> Result<CompanionService, String> 
         { std::sync::Arc::new(ClaudeCliLLM::new(model, max_tokens)) }
         #[cfg(not(feature = "claude-cli"))]
         { panic!("claude-cli feature not enabled at compile time") }
+    } else if config.llm.is_api_backend()
+        && (yantrik_ml::not_set_up::chosen(config.llm.api_model.as_deref()).is_none()
+            || config.llm.resolve_api_base_url().is_none_or(|u| u.trim().is_empty()))
+    {
+        // No model chosen (the shipped config names none, and a name nothing serves would be a
+        // fake): the companion starts, and its chat says how to choose one.
+        tracing::info!("No model is chosen for the companion: it says so until one is");
+        std::sync::Arc::new(yantrik_ml::not_set_up::NotSetUpLLM)
     } else if config.llm.is_api_backend() {
         // API backend (Ollama, OpenAI, DeepSeek, vLLM, etc.)
         let base_url = config.llm.resolve_api_base_url()
@@ -3133,7 +3241,8 @@ fn build_companion(config: CompanionConfig) -> Result<CompanionService, String> 
             model,
             "Using API LLM backend"
         );
-        std::sync::Arc::new(ApiLLM::new(base_url, config.llm.api_key.clone(), model))
+        let provider_type = yantrik_ml::thinking::provider_type_for_backend(&config.llm.backend);
+        std::sync::Arc::new(ApiLLM::new(base_url, config.llm.api_key.clone(), model).for_provider(provider_type))
     } else if config.llm.backend == "llamacpp" {
         let gguf = config.llm.gguf_path.as_deref()
             .ok_or_else(|| "gguf_path required for llamacpp backend".to_string())?;
@@ -3177,7 +3286,15 @@ fn build_companion(config: CompanionConfig) -> Result<CompanionService, String> 
     };
 
     // Wrap with fallback if configured
-    let llm: std::sync::Arc<dyn LLMBackend> = if let Some(ref fb_config) = config.llm.fallback {
+    // A fallback with no model or address chosen is none: never a name nothing serves.
+    let fallback = config.llm.fallback.as_ref().filter(|f| {
+        f.backend == "llamacpp"
+            || (yantrik_ml::not_set_up::chosen(f.api_model.as_deref()).is_some()
+                && f.api_base_url.as_deref().is_some_and(|u| !u.trim().is_empty()))
+    });
+    let llm: std::sync::Arc<dyn LLMBackend> = if primary_llm.backend_name() == yantrik_ml::not_set_up::BACKEND {
+        primary_llm
+    } else if let Some(fb_config) = fallback {
         let fallback_cfg = match fb_config.backend.as_str() {
             "llamacpp" => {
                 let path = fb_config.model_path.as_deref()
@@ -3193,7 +3310,7 @@ fn build_companion(config: CompanionConfig) -> Result<CompanionService, String> 
                 let url = fb_config.api_base_url.as_deref()
                     .ok_or_else(|| "api_base_url required for API fallback".to_string())?;
                 let model = fb_config.api_model.as_deref().unwrap_or("default");
-                tracing::info!(url, model, "Fallback: API");
+                tracing::info!(url = %yantrik_app_runtime::place::address_of(url), model, "Fallback: API");
                 FallbackConfig::Api {
                     base_url: url.to_string(),
                     model: model.to_string(),
@@ -3408,7 +3525,7 @@ mod ask_tests {
     /// The real worker needs a companion, a model and a Slint event loop, so what is pinned
     /// here is the contract `ask` has with it, which is the part that changed.
     fn stub(
-        served: impl Fn(&Sender<String>, &Option<Sender<bool>>) + Send + 'static,
+        served: impl Fn(&Sender<String>, &Option<Sender<Served>>) + Send + 'static,
     ) -> CompanionHandle {
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded::<CompanionCommand>();
         std::thread::spawn(move || {
@@ -3426,9 +3543,13 @@ mod ask_tests {
         }
     }
 
-    fn done(token_tx: &Sender<String>, model: &Option<Sender<bool>>, answered: bool) {
+    fn done(token_tx: &Sender<String>, model: &Option<Sender<Served>>, answered: bool) {
+        served_by(token_tx, model, if answered { Served::Model } else { Served::NoModel });
+    }
+
+    fn served_by(token_tx: &Sender<String>, model: &Option<Sender<Served>>, served: Served) {
         if let Some(tx) = model {
-            let _ = tx.send(answered);
+            let _ = tx.send(served);
         }
         let _ = token_tx.send("__DONE__".to_string());
     }
@@ -3459,6 +3580,80 @@ mod ask_tests {
             .ask("anything".to_string(), std::time::Duration::from_secs(10))
             .expect("a model's answer is an answer");
         assert_eq!(got, "The model's answer.");
+    }
+
+    /// VM 542: a Qwen3 thought through the whole budget and gave no answer. The turn says so in
+    /// words, and `ask` (the first run's "Can it answer?") must take that as a failure, not as
+    /// the model's answer.
+    #[test]
+    fn a_turn_the_model_failed_is_an_error_carrying_the_sentence() {
+        let handle = stub(|token_tx, model| {
+            let _ = token_tx.send("__REPLACE__".to_string());
+            let _ = token_tx.send(yantrik_ml::THOUGHT_WITHOUT_ANSWER.to_string());
+            served_by(token_tx, model, Served::ModelFailed("finish reason: length".into()));
+            let _ = token_tx.send("__DONE__".to_string());
+        });
+        match handle.ask("anything".to_string(), std::time::Duration::from_secs(10)) {
+            Err(AskError::Failed(reason)) => assert_eq!(reason, yantrik_ml::THOUGHT_WITHOUT_ANSWER),
+            other => panic!("a failed turn must not come back as an answer; got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_turn_says_whether_no_model_is_set_up_or_the_one_set_up_did_not_answer() {
+        let turn = |offline_mode, without_model, model_failure: Option<&str>| yantrik_companion::types::AgentResponse {
+            message: String::new(),
+            memories_recalled: 0,
+            urges_delivered: vec![],
+            tool_calls_made: vec![],
+            offline_mode,
+            without_model,
+            model_failure: model_failure.map(str::to_string),
+        };
+        assert!(matches!(served(&turn(false, false, None)), Served::Model));
+        assert!(matches!(served(&turn(false, true, None)), Served::NoModel), "the not-set-up sentence");
+        let refused = "Claude refused the request: `temperature` is deprecated for this model";
+        assert!(matches!(served(&turn(false, false, Some(refused))), Served::ModelFailed(w) if w == refused));
+        assert!(matches!(served(&turn(true, false, Some("connection refused"))), Served::Unreachable(w) if w == "connection refused"));
+
+        let handle = stub(|token_tx, model| {
+            let _ = token_tx.send("Here is a canned reply.".to_string());
+            served_by(token_tx, model, Served::Unreachable("connection refused".into()));
+        });
+        match handle.ask("anything".to_string(), std::time::Duration::from_secs(10)) {
+            Err(AskError::Unreachable(why)) => assert_eq!(why, "connection refused"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_answer_check_passes_only_on_the_answer() {
+        let right = stub(|token_tx, model| {
+            let _ = token_tx.send("17 times 23 is 391.".to_string());
+            done(token_tx, model, true);
+        });
+        assert_eq!(right.check_answer(std::time::Duration::from_secs(10)).unwrap(), "17 times 23 is 391.");
+
+        // Words are not enough: "OK" is what passed on VM 542 while real asks failed.
+        let any_words = stub(|token_tx, model| {
+            let _ = token_tx.send("OK".to_string());
+            done(token_tx, model, true);
+        });
+        assert!(matches!(any_words.check_answer(std::time::Duration::from_secs(10)), Err(AskError::Failed(_))));
+    }
+
+    #[test]
+    fn the_answer_check_fails_with_the_sentence_when_the_model_only_thought() {
+        let handle = stub(|token_tx, model| {
+            let _ = token_tx.send("__REPLACE__".to_string());
+            let _ = token_tx.send(yantrik_ml::THOUGHT_WITHOUT_ANSWER.to_string());
+            served_by(token_tx, model, Served::ModelFailed("finish reason: length".into()));
+            let _ = token_tx.send("__DONE__".to_string());
+        });
+        match handle.check_answer(std::time::Duration::from_secs(10)) {
+            Err(AskError::Failed(reason)) => assert_eq!(reason, yantrik_ml::THOUGHT_WITHOUT_ANSWER),
+            other => panic!("{other:?}"),
+        }
     }
 
     /// A turn that panicked mid-stream never reaches the point where the worker sends the

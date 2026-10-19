@@ -6,7 +6,8 @@ into showing anything it has. So it holds no provider key. Its only way to a mod
 
 | Route on the gate (`10.99.0.1:8443`)      | Goes to                      | Rate          | Requests a day | Model allowed                    |
 |-------------------------------------------|------------------------------|---------------|----------------|----------------------------------|
-| `/api/chat`, `/v1/chat/completions`, …    | AIG (`aig.mycluster.cyou`)   | 2 a second    | no cap         | whatever AIG serves              |
+| `/api/chat` (the local lane)              | AIG (`aig.mycluster.cyou`)   | 2 a second, at most 4 open | no cap | `qwen3.8:27b`              |
+| `/v1/chat/completions`, `/api/generate`, … | AIG (`aig.mycluster.cyou`)  | 2 a second    | no cap         | whatever AIG serves              |
 | `/ollama-cloud/v1/chat/completions`       | `ollama.com`                 | 30 a minute   | 1,500          | `kimi-k3`, `deepseek-v4.1-flash` |
 | `/nanogpt/api/v1/chat/completions`        | `nano-gpt.com`               | 10 a minute   | 100            | `deepseek/deepseek-v4-pro-cheaper` |
 | `/nim/v1/chat/completions`                | `integrate.api.nvidia.com`   | 10 a minute   | 100            | `nvidia/nemotron-3-super-120b-a12b` |
@@ -18,7 +19,17 @@ Each cloud route also answers `GET <base>/models` (`/ollama-cloud/v1/models`, `/
 generated from `live_models.js` by `node gen-models-list.js`; `setup-models.sh` runs `--check` first and
 refuses to install a list that differs. Change the allowlist, run the generator, commit both.
 
-The AIG route is `gate-setup.sh`'s. The three cloud routes are this directory's. On those:
+The AIG route is `gate-setup.sh`'s, except `/api/chat`, the local lane's chat call, which is this
+directory's: AIG's streamed answers drop tool calls, so `live.local` asks unstreamed and hands the
+answer back as one NDJSON line. AIG also serves Pranab's own Mind from the same loaded model, and
+on Ollama any load-time option that differs reloads it, so the gate rebuilds the request from known
+fields only: the Mind's local model alone, sampling options only, `num_ctx` pinned at 32,768,
+`num_predict` capped at 8,192, and no `keep_alive`, so AIG's own default applies, as for Pranab's
+Mind, whose backend sends none either. It holds at most 4
+calls open, verifies AIG's certificate, and never passes AIG's error text back. AIG's
+other paths (`/api/generate`, `/v1/...`) are still `gate-setup.sh`'s, unverified; that is a follow-up.
+
+The three cloud routes are this directory's too. On those:
 - The request isn't forwarded as sent. `live_models.js` refuses a model that isn't on its list,
   caps `max_tokens` at 8,192, counts the day's requests, and sends the provider a new body built
   from known fields only.

@@ -158,7 +158,8 @@ fn build_companion(config: CompanionConfig) -> CompanionService {
             model,
             "Using API LLM backend"
         );
-        std::sync::Arc::new(ApiLLM::new(base_url, config.llm.api_key.clone(), model))
+        let provider_type = yantrik_ml::thinking::provider_type_for_backend(&config.llm.backend);
+        std::sync::Arc::new(ApiLLM::new(base_url, config.llm.api_key.clone(), model).for_provider(provider_type))
     } else if config.llm.backend == "llamacpp" {
         let gguf = config.llm.gguf_path.as_deref()
             .expect("gguf_path required for llamacpp backend");

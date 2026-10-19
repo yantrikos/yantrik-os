@@ -224,7 +224,7 @@ impl AnthropicBackend {
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
         let body_str = serde_json::to_string(body)?;
 
-        tracing::debug!(body_bytes = body_str.len(), url = %url, "Anthropic request");
+        tracing::debug!(body_bytes = body_str.len(), url = %yantrik_shown_address::address_of(&url), "Anthropic request");
 
         let agent = self.build_agent();
         let resp = agent.post(&url)
@@ -232,6 +232,7 @@ impl AnthropicBackend {
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", &self.api_version)
             .send(body_str.as_bytes())
+            .map_err(crate::refusal::unanswered)
             .context("Anthropic API request failed")?;
 
         Ok(resp.into_body())
@@ -294,6 +295,7 @@ impl AnthropicBackend {
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", &self.api_version)
             .send(body_str.as_bytes())
+            .map_err(crate::refusal::unanswered)
             .context("Anthropic health probe failed")?;
 
         Ok(start.elapsed().as_millis() as u64)

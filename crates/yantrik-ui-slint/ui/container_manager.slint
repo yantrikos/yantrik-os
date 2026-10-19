@@ -24,6 +24,7 @@ export struct ContainerData {
 }
 
 export struct ImageData {
+    title: string,           // "alpine, the latest version": the row's first line
     id: string,
     repo-tag: string,
     size-text: string,
@@ -209,20 +210,25 @@ component ImageRow inherits Rectangle {
                 horizontal-stretch: 1;
 
                 Text {
-                    text: data.repo-tag;
+                    text: data.title;
                     color: Theme.text-primary;
                     font-size: Theme.font-body;
                     font-weight: 500;
                     overflow: elide;
                 }
 
+                // The reference is the image's name, what `run` takes, so it stays, under the plain
+                // line. The short id was a hash on every row; Remove still acts on it, and
+                // `describe` still lists it.
                 HorizontalLayout {
                     spacing: Theme.sp-4;
 
                     Text {
-                        text: "ID: " + data.id;
+                        text: data.repo-tag;
                         color: Theme.text-dim;
                         font-size: Theme.fs-micro;
+                        overflow: elide;
+                        horizontal-stretch: 1;
                     }
 
                     Text {
@@ -404,7 +410,7 @@ export component ContainerManagerScreen inherits Rectangle {
             app-id: "containers";
             icon: Icons.packages;
             title: "Containers";
-            subtitle: root.runtime-name;
+            subtitle: root.runtime-name == "podman" ? "Run by Podman" : root.runtime-name == "docker" ? "Run by Docker" : root.runtime-name;
             leading-actions: [
                 { id: "tab-containers", icon: Icons.packages, label: "Containers", active: root.active-tab == 0 },
                 { id: "tab-images",     icon: Icons.image,    label: "Images",     active: root.active-tab == 1 },

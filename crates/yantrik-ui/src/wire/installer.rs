@@ -3,7 +3,7 @@
 //! This runs the same operations as the text-based `yantrik-install` script but
 //! from within the Slint UI (installer.slint), reporting progress back via a callback.
 
-use slint::{ComponentHandle, ModelRc, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::process::Command;
 
 use crate::app_context::AppContext;
@@ -95,12 +95,12 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
 
             // The installer no longer asks about AI — that is first-boot setup now (#400) —
             // but a person who tried the live desktop first may have chosen a provider there,
-            // and wire::ai_onboarding::save_primary keeps that choice in this store. Carried
+            // and the first run's provider screens (wire/onboarding.rs) keep that choice in this store. Carried
             // over when present, so a key typed in the live session is not typed twice.
             let wizard = ProviderStore::load().primary().cloned();
-            let (ai_provider, ai_base_url, ai_api_key, ai_model) = match wizard {
-                Some(p) => (p.provider_type, p.base_url, p.api_key.unwrap_or_default(), p.model),
-                None => (String::new(), String::new(), String::new(), String::new()),
+            let (ai_provider, ai_name, ai_base_url, ai_api_key, ai_model) = match wizard {
+                Some(p) => (p.provider_type, p.name, p.base_url, p.api_key.unwrap_or_default(), p.model),
+                None => (String::new(), String::new(), String::new(), String::new(), String::new()),
             };
             // The endpoint is not a secret; the key is, so only its presence is logged.
             tracing::info!(
@@ -128,6 +128,7 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
                 encrypt,
                 partition_scheme: "auto".into(),
                 ai_provider,
+                ai_name,
                 ai_base_url,
                 ai_api_key,
                 ai_model,
@@ -216,6 +217,10 @@ fn wire_rules(ui: &App) {
     });
     ui.on_installer_is_macos_disk(|disk, list| installer_rules::disk_in_list(&disk, &list));
     ui.on_installer_target_listed(|target, list| installer_rules::disk_in_list(&target, &list));
+    ui.on_installer_layout_after(|choices, current, step| {
+        let codes: Vec<String> = choices.iter().map(|c| c.code.to_string()).collect();
+        installer_rules::layout_after(&codes, &current, step).into()
+    });
 }
 
 /// What the installer finds before anyone asks: the disks, the keyboard in use, and where the
@@ -329,6 +334,9 @@ pub struct InstallerState {
     pub encrypt: bool,
     pub partition_scheme: String,  // "auto" or "manual"
     pub ai_provider: String,
+    /// The live entry's name. The account id is made from it (`onboarding::account_id`), and
+    /// the carried picker.json names that id, so the installed entry keeps it.
+    pub ai_name: String,
     /// The endpoint the wizard saved for the provider. Empty means nobody chose
     /// one, and the provider's well-known URL is used if a provider is set.
     pub ai_base_url: String,
@@ -624,15 +632,16 @@ fn install_to_target(
         ),
     );
 
+    // The boot menu's theme, from the image (stage-grub-theme.sh) to /boot, where GRUB can read it
+    // on an encrypted install too: /usr is inside the encryption, /boot is not.
+    // On UEFI only: on a legacy BIOS the themed menu stops at "unaligned pointer" instead of
+    // booting (the live image's grub.cfg says the same and why), so a BIOS install gets the
+    // plain gfxterm menu and no GRUB_THEME.
+    let themed = theme_for_boot(is_efi, || install_grub_theme(mount_dir));
+
     // Configure GRUB defaults. The kernel's line is installer_unlock's: the pre-boot screen on an
     // encrypted install, and the quiet that keeps kernel lines off the password prompt.
-    let _ = sudo_write(
-        &format!("{mount_dir}/etc/default/grub"),
-        &format!(
-            "GRUB_DEFAULT=0\nGRUB_TIMEOUT=3\nGRUB_DISTRIBUTOR=\"Yantrik OS\"\nGRUB_CMDLINE_LINUX_DEFAULT=\"{}\"\nGRUB_CMDLINE_LINUX=\"console=ttyS0,115200 console=tty1\"\nGRUB_TERMINAL=\"console serial\"\nGRUB_SERIAL_COMMAND=\"serial --speed=115200\"\n",
-            installer_unlock::cmdline_default(layout.encrypted())
-        ),
-    );
+    let _ = sudo_write(&format!("{mount_dir}/etc/default/grub"), &grub_defaults(layout.encrypted(), themed));
 
     progress(85, "Updating GRUB configuration...");
     // grub-mkconfig names the root by UUID only once udev has made its /dev/disk/by-uuid link,
@@ -641,6 +650,9 @@ fn install_to_target(
     let _ = run_cmd("udevadm", &["settle"]);
     // Beside macOS on a Mac, an entry that gets back to it.
     installer_boot::write_macos_entry(mount_dir, layout);
+    // The plain entry starts without GRUB's "Loading Linux …" lines (the image's 10_linux is
+    // already quiet; this holds it for an image built before it was).
+    installer_boot::quiet_linux_entries(mount_dir);
     chroot_cmd(mount_dir, &["update-grub"])?;
     let grub_cfg = run_cmd("cat", &[&format!("{mount_dir}/boot/grub/grub.cfg")])?;
     if let Some(line) = installer_rules::root_by_device(&grub_cfg) {
@@ -673,7 +685,7 @@ fn install_to_target(
     // Regenerate initramfs without live-boot hooks, and with the unlock when the root is
     // encrypted. There a failure is the install's failure, and so is an image that came out
     // without the unlock: the machine would stop at boot with nothing asking for the passphrase.
-    progress(93, "Rebuilding initramfs...");
+    progress(93, "Preparing the system to start...");
     if layout.encrypted() {
         chroot_cmd(mount_dir, &["update-initramfs", "-u", "-k", "all"])?;
         installer_disk::verify_initramfs(mount_dir)?;
@@ -789,6 +801,9 @@ if [ "$(tty)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
         LAST_CRASH=$(cat "$CRASH_FILE" 2>/dev/null || echo 0)
         NOW=$(date +%s)
         if [ $((NOW - LAST_CRASH)) -lt 10 ]; then
+            # tty1 back in text mode, or none of this is seen: the boot splash leaves it in
+            # graphics mode for labwc (boot-unlock/splash).
+            /usr/lib/yantrik/boot-unlock/splash console 2>/dev/null
             echo "  Yantrik OS — Desktop failed to start"
             echo "  Check: cat /opt/yantrik/logs/labwc.log"
             exec /bin/bash --login
@@ -803,6 +818,7 @@ if [ "$(tty)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
 
     if [ $((EXIT_TIME - START_TIME)) -lt 5 ]; then
         echo "$EXIT_TIME" > "$CRASH_FILE"
+        /usr/lib/yantrik/boot-unlock/splash console 2>/dev/null
     else
         rm -f "$CRASH_FILE"
         # A session that ran and then ended (labwc crashed hours in, or was killed) ends the
@@ -853,6 +869,10 @@ fi
         "installed\n",
     )?;
 
+    // login opens the session silently with this (PAM_SILENT): no motd, no kernel version, no
+    // "ABSOLUTELY NO WARRANTY" and no last login on the screen before the desktop.
+    sudo_write(&format!("{dst_home}/.hushlogin"), "")?;
+
     // Fix ownership of everything in home
     let _ = chroot_cmd(mount_dir, &["chown", "-R", &format!("{username}:{username}"), &format!("/home/{username}")]);
 
@@ -872,18 +892,42 @@ fi
 
     // /opt/yantrik is made root's right after this returns (installer_ownership.rs, #397).
 
-    // Autologin to start labwc + yantrik-ui automatically (no TTY shown to user).
-    // Yantrik UI shows its own graphical login screen (screen 32) for authentication.
+    // Autologin on tty1 starts the session, which starts behind the lock screen or signed in by
+    // the disk's password (session_lock.rs). Quietly: see AUTOLOGIN_FLAGS, and .hushlogin below.
     let autologin_dir = format!("{mount_dir}/etc/systemd/system/getty@tty1.service.d");
     let _ = run_cmd("mkdir", &["-p", &autologin_dir]);
-    let _ = sudo_write(
-        &format!("{autologin_dir}/autologin.conf"),
-        &format!(
-            "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin {username} --noclear %I $TERM\n"
-        ),
-    );
+    let _ = sudo_write(&format!("{autologin_dir}/autologin.conf"), &autologin_dropin(username));
 
     Ok(())
+}
+
+/// The first run's choices, carried from the live session to the new home: the sharing choice
+/// (ai-accounts.json), the text size (first-run.json) and the one model pick for every mind
+/// (picker.json). Choices only: no key in any of them.
+pub(crate) const CARRIED_CHOICES: [&str; 3] = ["ai-accounts.json", "first-run.json", "picker.json"];
+
+/// Whether a choices file is free of anything key-like: a field named like a secret with a value,
+/// or a value shaped like a provider key. A file that is not JSON is not carried either.
+pub(crate) fn holds_no_key(text: &str) -> bool {
+    fn clean(v: &serde_json::Value) -> bool {
+        match v {
+            serde_json::Value::Object(map) => map.iter().all(|(k, v)| {
+                let k = k.to_ascii_lowercase();
+                let secret_name = ["key", "token", "secret", "password", "authorization"]
+                    .iter()
+                    .any(|w| k == *w || k.ends_with(&format!("_{w}")) || k.ends_with(&format!("-{w}")) || k == "apikey");
+                let empty = v.is_null() || v.as_str().is_some_and(|s| s.is_empty());
+                (!secret_name || empty) && clean(v)
+            }),
+            serde_json::Value::Array(a) => a.iter().all(clean),
+            serde_json::Value::String(s) => {
+                let s = s.trim();
+                !["sk-", "nvapi-", "gsk_", "hf_", "AIza", "Bearer "].iter().any(|p| s.starts_with(p))
+            }
+            _ => true,
+        }
+    }
+    serde_json::from_str::<serde_json::Value>(text).is_ok_and(|v| clean(&v))
 }
 
 /// Write AI provider config and user_name into the installed system's config.yaml,
@@ -912,6 +956,22 @@ fn configure_ai(mount_dir: &str, state: &InstallerState) {
         if sudo_write(&providers_path, &yaml).is_ok() {
             // sudo tee creates the file world-readable; it holds a secret.
             let _ = run_cmd("chmod", &["600", &providers_path]);
+        }
+    }
+
+    // ── The sharing choice, the text size and the model the person picked with the provider,
+    // so the first boot does not ask again (wire/onboarding.rs). None holds a key, and one that
+    // somehow did would not be carried: the key travels only in providers.yaml, mode 600.
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+    for file in CARRIED_CHOICES {
+        if let Ok(text) = std::fs::read_to_string(format!("{home}/.config/yantrik/{file}")) {
+            if !holds_no_key(&text) {
+                tracing::warn!(file, "installer: a choices file holds something like a key; not carried");
+                continue;
+            }
+            if let Err(e) = sudo_write(&format!("{settings_dir}/{file}"), &text) {
+                tracing::warn!(file, error = %e, "installer: a first-run choice was not carried over");
+            }
         }
     }
 
@@ -1018,7 +1078,8 @@ fn installed_providers_yaml(state: &InstallerState) -> Option<String> {
     if state.ai_provider.is_empty() {
         return None;
     }
-    let (name, preset_url) = provider_preset(&state.ai_provider);
+    let (preset_name, preset_url) = provider_preset(&state.ai_provider);
+    let name = if state.ai_name.is_empty() { preset_name } else { state.ai_name.as_str() };
     let base_url = if !state.ai_base_url.is_empty() {
         state.ai_base_url.as_str()
     } else {
@@ -1510,26 +1571,111 @@ fn fallback_candidate(name: &str, dtype: &str, ro: &str, rm: &str, live: Option<
         && live != Some(name)
 }
 
+/// How agetty logs the account in on tty1, without a word on the screen: no /etc/issue (it said
+/// "Debian GNU/Linux 13"), no hostname, no "login: <name> (automatic login)", and the boot's
+/// leftover lines cleared. The live image's drop-in (build-debian-iso.sh) and the text installer's
+/// (yantrik-install.sh) use the same flags.
+const AUTOLOGIN_FLAGS: &str = "--skip-login --noissue --nohostname --nonewline";
+
+/// The getty@tty1 drop-in that logs `username` in at boot.
+fn autologin_dropin(username: &str) -> String {
+    format!("[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin {username} {AUTOLOGIN_FLAGS} %I $TERM\n")
+}
+
+/// Where the image keeps the boot menu's theme, and where the installed machine's GRUB reads it.
+const GRUB_THEME_SOURCE: &str = "/usr/share/yantrik/grub-theme";
+const GRUB_THEME_DIR: &str = "/boot/grub/themes/yantrik";
+
+/// Whether the installed machine's menu is themed: on UEFI, when `copy` puts the theme in place;
+/// never on a legacy BIOS, where GRUB's themed menu stops at "unaligned pointer" instead of
+/// booting (CI's SeaBIOS boot test of 6ebe7787, 15 Oct 2026). On a BIOS install nothing is copied.
+fn theme_for_boot(is_efi: bool, copy: impl FnOnce() -> bool) -> bool {
+    is_efi && copy()
+}
+
+/// Copy the boot menu's theme into the installed /boot. False when the image has none or the copy
+/// fails: GRUB then draws its plain menu, in GRUB's own unicode font, and the install goes on.
+fn install_grub_theme(mount_dir: &str) -> bool {
+    let source = format!("{mount_dir}{GRUB_THEME_SOURCE}");
+    if !std::path::Path::new(&format!("{source}/theme.txt")).is_file() {
+        tracing::warn!("Installer: the image has no boot menu theme; the plain menu it is");
+        return false;
+    }
+    let target = format!("{mount_dir}{GRUB_THEME_DIR}");
+    let copied = run_cmd("mkdir", &["-p", &format!("{mount_dir}/boot/grub/themes")])
+        .and_then(|_| run_cmd("rm", &["-rf", &target]))
+        .and_then(|_| run_cmd("cp", &["-a", &source, &target]));
+    match copied {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!(error = %e, "Installer: could not copy the boot menu theme; the plain menu it is");
+            false
+        }
+    }
+}
+
+/// /etc/default/grub for an installed machine.
+///
+/// The kernel's console is the screen only. The live image also says `console=ttyS0`, because the
+/// CI boot test reads the serial line, and this file used to copy it. On an installed machine with
+/// no serial port (nearly every laptop) that made systemd start a serial login prompt that failed
+/// and restarted every ten seconds for as long as the machine ran: 3,056 times in 8.7 hours on the
+/// fresh-install VM (12 Oct). Add `console=ttyS0,115200` to GRUB_CMDLINE_LINUX by hand to debug
+/// one over serial.
+///
+/// The screen is gfxterm and nothing else, so the menu is drawn with a font that has its
+/// characters (GRUB's unicode font, or the theme's) and, `themed`, in the theme the live image's
+/// menu has. GRUB used to keep a serial terminal beside it, which was thought to cost nothing
+/// without a port. It cost the theme: with a second output GRUB draws its text menu, so no
+/// installed machine ever showed the Yantrik menu, and the screen stayed black with a cursor for
+/// 7.5 s between Enter and plymouth (VM 543, an encrypted install of de5d3456, 16 Oct 2026; the
+/// same machine with gfxterm alone drew the theme and showed no black at all). The live image
+/// appends its serial line only when a port answers (build-debian-iso.sh), which is why its menu
+/// was themed.
+///
+/// `GRUB_GFXPAYLOAD_LINUX=keep`: the kernel starts in the mode the menu was drawn in. On BIOS it
+/// otherwise starts in VGA text mode, with no framebuffer for plymouth until a DRM driver loads; on
+/// UEFI GRUB otherwise shuts its video down and sets it up again on the way to the kernel. "keep"
+/// is the mode the person has just seen working, text included when GRUB had no graphics. Between
+/// Enter and the kernel, GRUB's terminal is the ground, not black: the image's
+/// /etc/grub.d/06_yantrik_ground (deploy/yantrik-os/grub-ground).
+fn grub_defaults(encrypted: bool, themed: bool) -> String {
+    let theme = if themed { format!("GRUB_THEME=\"{GRUB_THEME_DIR}/theme.txt\"\n") } else { String::new() };
+    format!(
+        "GRUB_DEFAULT=0\nGRUB_TIMEOUT=3\nGRUB_DISTRIBUTOR=\"Yantrik OS\"\nGRUB_CMDLINE_LINUX_DEFAULT=\"{}\"\nGRUB_CMDLINE_LINUX=\"console=tty1\"\nGRUB_TERMINAL_INPUT=\"console\"\nGRUB_TERMINAL_OUTPUT=\"gfxterm\"\nGRUB_GFXMODE=auto\nGRUB_GFXPAYLOAD_LINUX=keep\n{theme}",
+        installer_unlock::cmdline_default(encrypted)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Shaped like the llm section of config-default.yaml, which the image ships
-    /// as /opt/yantrik/config.yaml: the primary endpoint first, a fallback block
-    /// after it.
-    const IMAGE_CONFIG: &str = "\
-user_name: \"User\"
+    #[test]
+    fn the_install_carries_the_pick_with_the_other_choices_and_no_key() {
+        assert!(CARRIED_CHOICES.contains(&"picker.json"), "the person's model pick reaches the new home");
+        assert!(CARRIED_CHOICES.contains(&"ai-accounts.json") && CARRIED_CHOICES.contains(&"first-run.json"));
+        // Each file as its own module writes it, with a choice in it: no key.
+        let mut picks = crate::picker::choices::Choices::default();
+        picks.pick_model("", "anthropic/claude-sonnet-4-5");
+        let picker = serde_json::to_string(&picks).unwrap();
+        assert!(picker.contains("anthropic/claude-sonnet-4-5"));
+        let first_run = serde_json::to_string(&crate::wire::onboarding::Saved { text_scale: 1.25, sharing: "share".into(), ..Default::default() }).unwrap();
+        let mut consent = crate::ai_accounts::consent::Consent::default();
+        consent.lane = Some("on-this-computer/qwen".into());
+        let accounts = serde_json::to_string(&consent).unwrap();
+        for text in [&picker, &first_run, &accounts] {
+            assert!(holds_no_key(text), "{text}");
+        }
+        // And one that somehow held a key is not carried.
+        assert!(!holds_no_key(r#"{"model":"a/b","api_key":"x"}"#));
+        assert!(!holds_no_key(r#"{"minds":{"m":{"model":"sk-ant-api03-abc"}}}"#));
+        assert!(!holds_no_key("not json"));
+        assert!(holds_no_key(r#"{"api_key":""}"#), "an empty field holds nothing");
+    }
 
-llm:
-  backend: \"api\"
-  api_base_url: \"http://127.0.0.1:8341/v1\"
-  api_model: \"yantrik-4b\"
-  max_tokens: 1024
-  fallback:
-    backend: \"api\"
-    api_base_url: \"http://127.0.0.1:8341/v1\"
-    api_model: \"yantrik-4b\"
-";
+    /// The image's own /opt/yantrik/config.yaml, as shipped: it names no model.
+    const IMAGE_CONFIG: &str = include_str!("../../../../deploy/yantrik-os/config-default.yaml");
 
     fn wizard_state(provider: &str, base_url: &str, key: &str) -> InstallerState {
         InstallerState {
@@ -1551,9 +1697,18 @@ llm:
         assert!(out.contains("user_name: \"Ada Lovelace\""), "{out}");
         assert!(out.contains("api_base_url: \"https://api.openai.com/v1\""), "{out}");
         assert!(out.contains("api_model: \"gpt-4o-mini\""), "{out}");
-        // Only the primary endpoint is replaced; the fallback block is the
-        // image's own and the wizard said nothing about it.
-        assert!(out.contains("    api_base_url: \"http://127.0.0.1:8341/v1\""), "{out}");
+        assert_eq!(out.matches("api_model:").count(), 1, "one model line, and no fallback naming another: {out}");
+    }
+
+    #[test]
+    fn the_image_names_no_model_until_one_is_chosen() {
+        let config: yantrik_companion::CompanionConfig = serde_yaml::from_str(IMAGE_CONFIG).expect("the image's config parses");
+        assert_eq!(yantrik_ml::not_set_up::chosen(config.llm.api_model.as_deref()), None);
+        assert!(config.llm.fallback.is_none(), "no fallback naming a model nothing serves");
+        assert!(!IMAGE_CONFIG.contains("yantrik-4b"));
+        // Skipping the AI step leaves it so.
+        let out = installed_config_yaml(IMAGE_CONFIG, &wizard_state("", "", ""));
+        assert!(out.contains("api_model: \"\""), "{out}");
     }
 
     #[test]
@@ -1562,9 +1717,9 @@ llm:
         assert!(out.contains("api_base_url: \"https://integrate.api.nvidia.com/v1\""), "{out}");
         assert!(out.contains("api_model: \"nvidia/nemotron-3-super-120b-a12b\""), "{out}");
         // A provider the catalogue does not know, with no endpoint saved, leaves
-        // the image's own endpoint rather than guessing one.
+        // the image's own (none) rather than guessing one.
         let out = installed_config_yaml(IMAGE_CONFIG, &wizard_state("nonesuch", "", ""));
-        assert!(out.contains("api_base_url: \"http://127.0.0.1:8341/v1\""), "{out}");
+        assert!(out.contains("api_base_url: \"\""), "{out}");
     }
 
     #[test]
@@ -1576,6 +1731,33 @@ llm:
         let yaml = installed_providers_yaml(&state).expect("a chosen provider produces a store");
         let store: ProviderStore = serde_yaml::from_str(&yaml).expect("valid YAML");
         assert_eq!(store.primary().expect("primary").model, "anthropic/claude-sonnet-5-5");
+    }
+
+    /// The carried picker.json names the live account by id, and the id is made from the
+    /// entry's name: the installed entry keeps that name, or the pick points at nothing.
+    #[test]
+    fn the_installed_account_keeps_the_live_id() {
+        let mut state = wizard_state("llamacpp", "http://127.0.0.1:8080/v1", "");
+        state.ai_name = "On this computer".into();
+        state.ai_model = "qwen3.5-4b".into();
+        let live = ProviderStoreEntry {
+            id: "llamacpp-onboarding".into(),
+            name: state.ai_name.clone(),
+            provider_type: state.ai_provider.clone(),
+            base_url: state.ai_base_url.clone(),
+            api_key: None,
+            auth_type: String::new(),
+            is_primary: true,
+            is_fallback: false,
+            model: state.ai_model.clone(),
+        };
+        let yaml = installed_providers_yaml(&state).expect("a chosen provider produces a store");
+        let store: ProviderStore = serde_yaml::from_str(&yaml).expect("valid YAML");
+        let installed = store.primary().expect("primary");
+        assert_eq!(
+            crate::wire::onboarding::account_id(installed),
+            crate::wire::onboarding::account_id(&live),
+        );
     }
 
     #[test]
@@ -1595,13 +1777,13 @@ llm:
             &wizard_state("openai", "https://api.openai.com/v1", "sk-secret-123"),
         );
         assert!(!out.contains("sk-secret-123"), "{out}");
-        assert!(!out.contains("api_key"), "{out}");
+        assert!(!out.lines().any(|l| l.trim_start().starts_with("api_key")), "no key line: {out}");
     }
 
     #[test]
     fn skipped_ai_leaves_the_image_default() {
         let out = installed_config_yaml(IMAGE_CONFIG, &InstallerState::default());
-        assert!(out.contains("api_base_url: \"http://127.0.0.1:8341/v1\""), "{out}");
+        assert!(out.contains("api_base_url: \"\"") && out.contains("api_model: \"\""), "nothing chosen stays nothing: {out}");
         assert!(installed_providers_yaml(&InstallerState::default()).is_none());
     }
 
@@ -1838,5 +2020,105 @@ llm:
         let ready = InstallerState { table_fingerprint: "a7df3a2a0968d199".into(), ..unscanned };
         assert_eq!(beside_problem(&ready), None);
         assert_eq!(InstallerState::default().mode, InstallMode::Erase);
+    }
+}
+
+#[cfg(test)]
+mod grub_defaults_tests {
+    use super::{autologin_dropin, grub_defaults, theme_for_boot, AUTOLOGIN_FLAGS};
+
+    /// No serial console on the kernel's line of an installed machine: without a port, systemd's
+    /// serial login prompt failed and restarted every ten seconds for as long as it ran.
+    #[test]
+    fn an_installed_machine_has_no_serial_console_on_its_kernel_line() {
+        for encrypted in [false, true] {
+            let text = grub_defaults(encrypted, true);
+            let line = text.lines().find(|l| l.starts_with("GRUB_CMDLINE_LINUX=")).expect("the line");
+            assert_eq!(line, "GRUB_CMDLINE_LINUX=\"console=tty1\"", "{text}");
+            assert!(!text.contains("ttyS0"), "{text}");
+            assert!(text.contains("GRUB_CMDLINE_LINUX_DEFAULT=\""), "the unlock screen's own line is still there");
+        }
+    }
+
+    /// The installed menu is drawn in the theme, on gfxterm, when the theme was copied, and on
+    /// gfxterm in GRUB's unicode font when it was not: never the firmware console's.
+    #[test]
+    fn an_installed_machine_draws_its_boot_menu_in_the_theme_when_it_has_one() {
+        let themed = grub_defaults(true, true);
+        assert!(themed.lines().any(|l| l == "GRUB_THEME=\"/boot/grub/themes/yantrik/theme.txt\""), "{themed}");
+        let plain = grub_defaults(true, false);
+        assert!(!plain.contains("GRUB_THEME"), "{plain}");
+        for text in [themed, plain] {
+            // gfxterm alone: a second output (serial) makes GRUB draw its text menu, not the theme.
+            assert!(text.lines().any(|l| l == "GRUB_TERMINAL_OUTPUT=\"gfxterm\""), "{text}");
+            assert!(text.lines().any(|l| l == "GRUB_TERMINAL_INPUT=\"console\""), "{text}");
+            // The kernel line keeps plymouth.ignore-serial-consoles; GRUB's own terminals name no serial.
+            assert!(
+                !text.lines().any(|l| l.starts_with("GRUB_SERIAL_COMMAND")
+                    || (l.starts_with("GRUB_TERMINAL") && l.contains("serial"))),
+                "no serial terminal and no serial command: {text}"
+            );
+            assert!(!text.lines().any(|l| l.starts_with("GRUB_TERMINAL=")), "GRUB_TERMINAL would override both: {text}");
+            assert!(text.is_ascii(), "{text}");
+        }
+    }
+
+    /// From GRUB to plymouth (#820): the kernel keeps the mode the menu was drawn in, so plymouth
+    /// has a framebuffer from the start on BIOS too, and the kernel's line is the splash's.
+    #[test]
+    fn an_installed_machine_keeps_grubs_graphics_into_the_splash() {
+        for (encrypted, themed) in [(false, false), (false, true), (true, false), (true, true)] {
+            let text = grub_defaults(encrypted, themed);
+            assert!(text.lines().any(|l| l == "GRUB_GFXPAYLOAD_LINUX=keep"), "{text}");
+            let wanted = format!("GRUB_CMDLINE_LINUX_DEFAULT=\"{}\"", super::installer_unlock::cmdline_default(encrypted));
+            assert!(text.lines().any(|l| l == wanted), "{text}");
+        }
+        // The text installer writes the same.
+        let script = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/yantrik-os/yantrik-install.sh"));
+        assert!(script.contains("GRUB_GFXPAYLOAD_LINUX=keep"), "yantrik-install.sh");
+    }
+
+    /// The theme is a UEFI menu's only: on a legacy BIOS GRUB stopped at "unaligned pointer" in the
+    /// themed menu instead of booting (CI's SeaBIOS boot test, 15 Oct 2026). A BIOS install copies
+    /// no theme and so writes no GRUB_THEME; the live image sets it only under grub_platform=efi.
+    #[test]
+    fn the_boot_menu_theme_is_for_uefi_only() {
+        let mut copied = false;
+        assert!(!theme_for_boot(false, || { copied = true; true }), "a BIOS install is not themed");
+        assert!(!copied, "and nothing is copied for it");
+        assert!(theme_for_boot(true, || true), "a UEFI install is, when the copy works");
+        assert!(!theme_for_boot(true, || false), "and is not when it does not");
+        assert!(!grub_defaults(false, theme_for_boot(false, || true)).contains("GRUB_THEME"));
+
+        let iso = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/yantrik-os/build-debian-iso.sh"));
+        let guard = iso.find("if [ \"${grub_platform}\" = \"efi\" ]; then").expect("the theme's UEFI guard");
+        let set = iso.find("set theme=/boot/grub/themes/yantrik/theme.txt").expect("the theme");
+        let end = guard + iso[guard..].find("\nfi\n").expect("the guard's end");
+        assert!(guard < set && set < end, "the theme is set only inside the UEFI guard");
+        assert_eq!(iso.matches("set theme=").count(), 1, "and nowhere else");
+
+        // The text installer too (review of #820 at a6c728c5): it themed a BIOS install whatever
+        // `$IS_EFI` said, and grub-ground then wrote its block for that menu as well.
+        let text = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/yantrik-os/yantrik-install.sh"));
+        let theme = text.find("GRUB_THEME=").expect("the text installer's theme line");
+        let guard = text[..theme].rfind("if $IS_EFI && ").expect("the text installer copies the theme under $IS_EFI");
+        assert!(!text[guard..theme].contains("\nfi\n"), "and the theme line is inside that branch");
+        assert_eq!(text.matches("GRUB_THEME=").count(), 1, "and nowhere else");
+    }
+
+    /// Nothing on tty1 before the desktop, on the live image and on both installers' machines.
+    #[test]
+    fn every_autologin_on_tty1_is_quiet_and_the_same() {
+        let dropin = autologin_dropin("ada");
+        assert!(dropin.contains("--autologin ada --skip-login --noissue --nohostname --nonewline %I"), "{dropin}");
+        assert!(!dropin.contains("--noclear"), "the boot's leftover lines are cleared: {dropin}");
+        let iso = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/yantrik-os/build-debian-iso.sh"));
+        let text = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/yantrik-os/yantrik-install.sh"));
+        for (name, script) in [("build-debian-iso.sh", iso), ("yantrik-install.sh", text)] {
+            let lines: Vec<&str> = script.lines().filter(|l| l.contains("agetty --autologin")).collect();
+            assert_eq!(lines.len(), 1, "{name}: {lines:?}");
+            assert!(lines[0].contains(AUTOLOGIN_FLAGS) && !lines[0].contains("--noclear"), "{name}: {}", lines[0]);
+            assert!(script.contains(".hushlogin"), "{name} leaves login's motd and last login on the screen");
+        }
     }
 }

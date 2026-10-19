@@ -1,6 +1,6 @@
 [Plymouth Theme]
 Name=Yantrik OS
-Description=Yantrik OS: the disk's password, asked once, before the system starts
+Description=Yantrik OS: the boot splash, and the disk's password asked once before the system starts
 ModuleName=script
 
 [script]

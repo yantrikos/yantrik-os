@@ -1,0 +1,12 @@
+data: {"id": "chatcmpl-3ca074e539f0420f92e93fb3", "object": "chat.completion.chunk", "created": 1792047531, "model": "qwen3.8-flash-next-unsloth-ud-iq4_xs", "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": null}]}
+
+: keep-alive
+
+: keep-alive
+
+data: {"error": {"type": "server_error", "message": "malformed tool call: {\"name\": \"calculate\", \"arguments\": {\"expression\": \"17 * 23\"}}"}}
+
+data: [DONE]
+
+
+

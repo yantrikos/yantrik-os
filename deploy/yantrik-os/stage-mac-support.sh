@@ -11,6 +11,8 @@
 # Stages, and enables only what is safe to enable on every machine:
 #   - yantrik-broadcom-wifi + its unit + the NetworkManager dispatcher hook. Enabled: on a
 #     machine without the chip it reads sysfs, writes "absent" and exits.
+#   - yantrik-broadcom-wifi-recover.timer and its service, which reload wl when its scanning has
+#     wedged. Enabled: the service is skipped wherever wl is not loaded.
 #   - yantrik-mac-fans + mbpfan's drop-in, which makes mbpfan run only on Apple hardware.
 #
 # Nothing here is a Broadcom binary: the Wi-Fi driver is fetched from Debian on the machine.
@@ -24,6 +26,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 MAC="$HERE/mac"
 
 for f in "$HERE/yantrik-broadcom-wifi" "$HERE/yantrik-mac-fans" "$MAC/yantrik-broadcom-wifi.service" \
+         "$MAC/yantrik-broadcom-wifi-recover.service" "$MAC/yantrik-broadcom-wifi-recover.timer" \
          "$MAC/90-yantrik-broadcom-wifi" "$MAC/mbpfan-yantrik-apple.conf"; do
     [ -f "$f" ] || { echo "stage-mac-support: missing $f" >&2; exit 1; }
 done
@@ -44,6 +47,8 @@ put() { # mode src dest
 put 0755 "$HERE/yantrik-broadcom-wifi"            "$ROOTFS/usr/lib/yantrik/yantrik-broadcom-wifi"
 put 0755 "$HERE/yantrik-mac-fans"                 "$ROOTFS/usr/lib/yantrik/yantrik-mac-fans"
 put 0644 "$MAC/yantrik-broadcom-wifi.service"     "$ROOTFS/etc/systemd/system/yantrik-broadcom-wifi.service"
+put 0644 "$MAC/yantrik-broadcom-wifi-recover.service" "$ROOTFS/etc/systemd/system/yantrik-broadcom-wifi-recover.service"
+put 0644 "$MAC/yantrik-broadcom-wifi-recover.timer"   "$ROOTFS/etc/systemd/system/yantrik-broadcom-wifi-recover.timer"
 put 0755 "$MAC/90-yantrik-broadcom-wifi"          "$ROOTFS/etc/NetworkManager/dispatcher.d/90-yantrik-broadcom-wifi"
 put 0644 "$MAC/mbpfan-yantrik-apple.conf"         "$ROOTFS/etc/systemd/system/mbpfan.service.d/yantrik-apple.conf"
 
@@ -55,5 +60,8 @@ ln -sfn /usr/lib/yantrik/yantrik-broadcom-wifi "$ROOTFS/usr/local/sbin/yantrik-b
 install -d -m 0755 $own "$ROOTFS/etc/systemd/system/multi-user.target.wants"
 ln -sfn /etc/systemd/system/yantrik-broadcom-wifi.service \
     "$ROOTFS/etc/systemd/system/multi-user.target.wants/yantrik-broadcom-wifi.service"
+install -d -m 0755 $own "$ROOTFS/etc/systemd/system/timers.target.wants"
+ln -sfn /etc/systemd/system/yantrik-broadcom-wifi-recover.timer \
+    "$ROOTFS/etc/systemd/system/timers.target.wants/yantrik-broadcom-wifi-recover.timer"
 
-echo "stage-mac-support: Broadcom Wi-Fi fetcher (enabled), mbpfan drop-in and fan settings staged in $ROOTFS"
+echo "stage-mac-support: Broadcom Wi-Fi fetcher and wl recovery timer (enabled), mbpfan drop-in and fan settings staged in $ROOTFS"

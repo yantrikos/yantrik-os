@@ -96,42 +96,32 @@ pub struct Shelved {
 /// The apps that are not shipped, and what each is waiting on.
 ///
 /// The rule this table enforces: an app with nothing under its screen is not shipped. Music and
-/// ySheets were both complete drawings over nothing — Music has no playback engine, no scanner
-/// and no library, so only `YANTRIK_MUSIC_DEMO=1` could ever put a song on screen; ySheets never
-/// sets `cell-grid`, `row-count` or `col-count`, so its 50x26 grid has no cells and every guard
-/// in cell-click, cell-edit and the formula bar fails. The decision and its reasoning are in
+/// ySheets were both complete drawings over nothing when this was written, and the table held
+/// exactly those two. The decision and its reasoning are in
 /// design/apps-plan-2026-09-20.md, Wave 3: build it or take it off the shelf. Shipping the
 /// drawing is the option that plan rules out.
 ///
-/// Shelved is not deleted. Both crates stay workspace members so they keep compiling and cannot
-/// rot in silence, both keep their entry in the lints' debt, and the `.desktop` files stay in the
-/// tree — they are simply not packaged, not routed, and not offered to anybody.
+/// Both came off in October 2026. ySheets once it had a cell model, a formula engine, CSV open
+/// and save through the desktop's file picker, undo and a control surface (PR #727). Music once
+/// it scanned its folders, played through its own mpv over the JSON IPC socket, and answered
+/// `yos act music …` with what mpv reported (PR #728). Un-shelving each was deleting its entry
+/// here and in tests/app-lints/shelved.toml; its .desktop file is what routes it.
+///
+/// So the table is empty, and the shelf is still the shelf: the next app that turns out to be a
+/// drawing over nothing gets an entry here, and every caller below starts refusing it without a
+/// change of its own. The tests exercise the matching against a fixture table for that reason —
+/// an empty shelf proves nothing about whether the shelf would catch a spelling.
+///
+/// Shelved is not deleted. The crate stays a workspace member so it keeps compiling and cannot
+/// rot in silence, it keeps its entry in the lints' debt, and the `.desktop` file stays in the
+/// tree — it is simply not packaged, not routed, and not offered to anybody.
 ///
 /// This table is the whole of the shelf. Routes, the catalogue filter, the Lens and the launch
 /// refusal all consult it rather than each carrying their own list of names to omit, because a
 /// shelf spread over seven files is one a future contributor undoes one line at a time without
 /// ever deciding to. Un-shelving an app is deleting one entry here and putting its row back in
 /// ROUTES.
-const SHELVED: &[Shelved] = &[
-    Shelved {
-        ids: &["music", "music_player"],
-        name: "Music",
-        binary: "yantrik-music-player",
-        reason: "nothing plays audio yet — there is no playback engine, no scanner and no \
-                 library behind the screen",
-        returns_when: "mpv is driven over its JSON IPC socket, a folder scan fills a small \
-                       library store, and play/pause/next/queue and `open <file>` work",
-    },
-    Shelved {
-        ids: &["spreadsheet", "ysheets"],
-        name: "ySheets",
-        binary: "yantrik-spreadsheet",
-        reason: "there is no cell model behind the grid, so nothing can be typed into it, by \
-                 mouse or by mind",
-        returns_when: "a cell model, CSV load and save, and arithmetic with references plus \
-                       SUM/AVG/MIN/MAX/COUNT are there",
-    },
-];
+const SHELVED: &[Shelved] = &[];
 
 /// The shelved app a name refers to, matched the way the dispatch matches a route.
 ///
@@ -139,11 +129,22 @@ const SHELVED: &[Shelved] = &[
 /// refusal: a caller reads `music-player` off the binary, `Music Player` off the window title and
 /// `music` off the dock, and the launcher used to treat those as three different questions.
 pub fn shelved(app: &str) -> Option<&'static Shelved> {
+    shelved_in(SHELVED, app)
+}
+
+/// The shelf itself, for tests elsewhere in the crate that check each entry is refused.
+#[cfg(test)]
+pub(crate) fn shelved_table() -> &'static [Shelved] {
+    SHELVED
+}
+
+/// [`shelved`], asked of a given table rather than of [`SHELVED`].
+fn shelved_in<'a>(table: &'a [Shelved], app: &str) -> Option<&'a Shelved> {
     let id = canonical_id(app);
     // The catalogue names this OS's own apps by their .desktop filename, so `yantrik_music_player`
     // arrives here the same way `music` does.
     let id = id.strip_prefix("yantrik_").unwrap_or(&id);
-    SHELVED.iter().find(|s| s.ids.contains(&id))
+    table.iter().find(|s| s.ids.contains(&id))
 }
 
 /// The shelved app an Exec line would run, if any.
@@ -152,9 +153,14 @@ pub fn shelved(app: &str) -> Option<&'static Shelved> {
 /// file on disk from an earlier release. Nothing removes those on update, so the catalogue will
 /// keep finding the entry; matching on the program it would run means the tile never comes back.
 pub fn shelved_exec(exec: &str) -> Option<&'static Shelved> {
+    shelved_exec_in(SHELVED, exec)
+}
+
+/// [`shelved_exec`], asked of a given table rather than of [`SHELVED`].
+fn shelved_exec_in<'a>(table: &'a [Shelved], exec: &str) -> Option<&'a Shelved> {
     let bin = exec.split_whitespace().next()?;
     let name = bin.rsplit('/').next()?;
-    SHELVED.iter().find(|s| s.binary == name)
+    table.iter().find(|s| s.binary == name)
 }
 
 /// One spelling of an app id, from whatever a caller had to hand.
@@ -609,7 +615,7 @@ pub fn is_launchable(app: &str, installed: &[DesktopEntry]) -> bool {
 /// did nothing when clicked.
 ///
 /// A shelved app is the third case, and the only one where the program on the disk works
-/// perfectly well: an installed machine keeps `/opt/yantrik/bin/yantrik-music-player` and its
+/// perfectly well: an installed machine keeps `/opt/yantrik/bin/yantrik-spreadsheet` and its
 /// .desktop entry from whatever release put them there, because the updater installs binaries
 /// over binaries and never removes one the new bundle does not carry. Matching the shelf by the
 /// program the Exec line runs is what keeps that stale pair out of the launcher.
@@ -1108,6 +1114,18 @@ fn exit_verdict(lived_ms: u64, status_success: bool, owns_window: bool, brought_
     }
 }
 
+/// Raise the window a second copy handed over to: the app's own, or Mind View when that is where
+/// the app is drawn. Says whether anything came forward.
+///
+/// An app a mind opened is drawn inside Mind View, and the person's compositor lists Mind View,
+/// not the app. Raising the app by its title then found nothing, so a person who clicked Calendar
+/// while a mind had it open saw nothing happen at all (13 Oct). The second copy has already asked
+/// the first to show its window there (`yantrik_app_runtime::present`); this brings the window
+/// that holds it in front of the person.
+fn bring_forward(app_id: &str, in_mind_view: bool, present: impl Fn(&str) -> bool) -> bool {
+    present(app_id) || (in_mind_view && present(crate::mind_view::APP_ID))
+}
+
 /// The body of every launch, with the adapter a `.desktop` file may declare for the app.
 ///
 /// `adapter` is `(surface, command)`: started once the app process exists, told which process it
@@ -1293,7 +1311,11 @@ fn launch(
                         let brought_forward = lived_ms < crate::running::LAUNCH_GRACE_MS
                             && success
                             && raise_on_handover
-                            && crate::windows::present_app(&id);
+                            && bring_forward(
+                                &id,
+                                crate::mind_view::is_mind_view_app(&id),
+                                crate::windows::present_app,
+                            );
                         match exit_verdict(lived_ms, success, owns_window, brought_forward) {
                             ExitVerdict::SecondCopy => {
                                 second_copy = true;
@@ -1915,6 +1937,31 @@ mod tests {
         assert_eq!(exit_verdict(60_000, true, true, false), ExitVerdict::Exited);
     }
 
+    #[test]
+    fn a_handover_to_an_app_drawn_in_mind_view_brings_mind_view_forward() {
+        let raised = std::cell::RefCell::new(Vec::new());
+        let only_mind_view = |id: &str| {
+            raised.borrow_mut().push(id.to_string());
+            id == crate::mind_view::APP_ID
+        };
+        assert!(bring_forward("calendar", true, &only_mind_view));
+        assert_eq!(*raised.borrow(), ["calendar", crate::mind_view::APP_ID]);
+
+        // An app on the person's desktop is raised as itself, and Mind View is left where it is.
+        raised.borrow_mut().clear();
+        let any = |id: &str| {
+            raised.borrow_mut().push(id.to_string());
+            true
+        };
+        assert!(bring_forward("calendar", true, &any));
+        assert_eq!(*raised.borrow(), ["calendar"]);
+
+        // An app not drawn in Mind View never raises it.
+        raised.borrow_mut().clear();
+        assert!(!bring_forward("calendar", false, &only_mind_view));
+        assert_eq!(*raised.borrow(), ["calendar"]);
+    }
+
     /// The handover the fix must not disturb: a second copy of a single-instance app exits at once
     /// and cleanly, either with the open window raised from here or without a record of its own to
     /// keep — and a copy that could not exit cleanly is nobody's handover.
@@ -2111,28 +2158,44 @@ mod tests {
             _ => panic!("a catalogue-only program must resolve to its .desktop entry"),
         }
         // And the shelf still comes first, whatever else is installed.
-        let shelved_by_name = stale_entry("music-player", "Music Player", "yantrik-music-player");
-        assert!(matches!(resolve("music", &[shelved_by_name]), Resolved::Shelved(_)));
+        for shelf in SHELVED {
+            let shelved_by_name = stale_entry(shelf.ids[0], shelf.name, shelf.binary);
+            assert!(matches!(resolve(shelf.ids[0], &[shelved_by_name]), Resolved::Shelved(_)));
+        }
         assert!(matches!(resolve("nothing-called-this", &[]), Resolved::Unknown));
     }
 
+    /// A shelf entry shaped like the ones SHELVED held, for the tests that need one.
+    ///
+    /// Music and ySheets were the whole shelf and both came off it (#727, #728), so SHELVED is
+    /// empty and a test that read its spellings out of it would pass by checking nothing. Each
+    /// entry is written on one line so shelved-bins.sh, which reads the SHELVED table only, can
+    /// never mistake it for a decision.
+    const FIXTURE_SHELF: &[Shelved] = &[
+        Shelved { ids: &["tunes", "tunes_player"], name: "Tunes", binary: "yantrik-tunes", reason: "fixture", returns_when: "never" },
+    ];
+
     /// Every spelling a caller could arrive with is refused, and refused for the same reason.
     ///
-    /// A shelf that only catches one spelling is not a shelf: `music-player` is what the binary
-    /// is called, `Music Player` is the window title, `music` is what the dock says, and an agent
-    /// reads whichever of those it saw last.
+    /// A shelf that only catches one spelling is not a shelf: `yantrik-music-player` was what the
+    /// binary was called, `Music Player` the window title, `music` what the dock said, and an
+    /// agent reads whichever of those it saw last.
     #[test]
     fn every_spelling_of_a_shelved_app_reaches_the_shelf() {
         for spelling in [
-            "music", "music_player", "music-player", "Music Player", "MUSIC",
-            "  music  ", "yantrik-music-player",
+            "tunes", "Tunes", "tunes_player", "tunes-player", "Tunes Player", "TUNES", "  tunes  ",
+            "yantrik-tunes-player", "yantrik_tunes",
         ] {
-            let shelf = shelved(spelling).unwrap_or_else(|| panic!("`{spelling}` is not shelved"));
-            assert_eq!(shelf.binary, "yantrik-music-player", "{spelling}");
+            let shelf = shelved_in(FIXTURE_SHELF, spelling)
+                .unwrap_or_else(|| panic!("`{spelling}` is not shelved"));
+            assert_eq!(shelf.binary, "yantrik-tunes", "{spelling}");
         }
-        for spelling in ["spreadsheet", "Spreadsheet", "ySheets", "ysheets", "yantrik-spreadsheet"] {
-            let shelf = shelved(spelling).unwrap_or_else(|| panic!("`{spelling}` is not shelved"));
-            assert_eq!(shelf.binary, "yantrik-spreadsheet", "{spelling}");
+        assert!(shelved_in(FIXTURE_SHELF, "notes").is_none());
+        // And the real table answers every spelling the same way.
+        for shelf in SHELVED {
+            for id in shelf.ids {
+                assert_eq!(shelved(&id.to_uppercase()).map(|s| s.binary), Some(shelf.binary), "{id}");
+            }
         }
     }
 
@@ -2143,16 +2206,15 @@ mod tests {
     /// still on the disk, and the updater removes neither.
     #[test]
     fn a_shelved_app_does_not_open_even_with_its_desktop_file_on_disk() {
-        let stale = [
-            stale_entry("yantrik-music-player", "Music", "/opt/yantrik/bin/yantrik-music-player"),
-            stale_entry("yantrik-spreadsheet", "ySheets", "/opt/yantrik/bin/yantrik-spreadsheet"),
-        ];
-        for name in ["music", "music-player", "Music", "spreadsheet", "ySheets"] {
-            assert!(!is_launchable(name, &stale), "`{name}` must not open");
-            assert!(
-                matches!(availability(name, &stale), Availability::Shelved(_)),
-                "`{name}` must be refused as shelved, not as unknown or missing"
-            );
+        for shelf in SHELVED {
+            let stale = [stale_entry(shelf.binary, shelf.name, &format!("/opt/yantrik/bin/{}", shelf.binary))];
+            for name in shelf.ids.iter().copied().chain([shelf.name, shelf.binary]) {
+                assert!(!is_launchable(name, &stale), "`{name}` must not open");
+                assert!(
+                    matches!(availability(name, &stale), Availability::Shelved(_)),
+                    "`{name}` must be refused as shelved, not as unknown or missing"
+                );
+            }
         }
     }
 
@@ -2163,16 +2225,19 @@ mod tests {
     /// basename will still be one the shelf recognises.
     #[test]
     fn the_catalogue_drops_a_shelved_desktop_entry() {
-        assert!(!entry_is_launchable(&stale_entry(
-            "yantrik-music-player", "Music", "/opt/yantrik/bin/yantrik-music-player"
-        )));
-        assert!(!entry_is_launchable(&stale_entry(
-            "yantrik-spreadsheet", "ySheets", "/opt/yantrik/bin/yantrik-spreadsheet"
-        )));
-        // Renamed by hand, or installed somewhere else: the program is what gives it away.
-        assert!(!entry_is_launchable(&stale_entry(
-            "sheets-old", "Sheets", "/usr/local/bin/yantrik-spreadsheet %f"
-        )));
+        for shelf in SHELVED {
+            assert!(!entry_is_launchable(&stale_entry(
+                shelf.binary, shelf.name, &format!("/opt/yantrik/bin/{}", shelf.binary)
+            )));
+            // Renamed by hand, or installed somewhere else: the program is what gives it away.
+            assert!(!entry_is_launchable(&stale_entry(
+                "tunes-old", "Tunes", &format!("/usr/local/bin/{} %f", shelf.binary)
+            )));
+        }
+        // The same two matches, against the fixture.
+        assert!(shelved_exec_in(FIXTURE_SHELF, "/opt/yantrik/bin/yantrik-tunes").is_some());
+        assert!(shelved_exec_in(FIXTURE_SHELF, "/usr/local/bin/yantrik-tunes %f").is_some());
+        assert!(shelved_exec_in(FIXTURE_SHELF, "/bin/sh").is_none());
         // And an app that is not shelved is untouched by any of it.
         assert!(entry_is_launchable(&stale_entry("shell", "Shell", "/bin/sh")));
     }
@@ -2220,7 +2285,14 @@ mod tests {
     #[test]
     fn un_shelved_apps_are_unaffected() {
         let shipped = shipped();
-        for id in ["notes", "terminal", "files", "calendar", "email", "documents", "presentation"] {
+        // ySheets came off the shelf with a cell model, CSV and a surface (PR #727), and Music
+        // with a scanner, a library and its own mpv (PR #728): every name either was refused
+        // under now opens it.
+        for id in [
+            "notes", "terminal", "files", "calendar", "email", "documents", "presentation",
+            "spreadsheet", "ysheets", "ySheets", "yantrik-spreadsheet",
+            "music", "music_player", "music-player", "Music", "yantrik-music-player",
+        ] {
             assert!(shelved(id).is_none(), "`{id}` is not shelved");
             assert!(!matches!(resolve(id, &shipped), Resolved::Unknown), "`{id}` still opens");
             assert!(is_known_app(id, &shipped), "`{id}` is still known");

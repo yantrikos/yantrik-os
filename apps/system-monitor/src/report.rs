@@ -102,7 +102,7 @@ mod tests {
     fn the_row_with_no_limit_reached_says_so_and_what_was_checked() {
         let status = assess(&snap(10.0));
         assert_eq!(status.line(), "CPU 8% · Memory 50% · Disk 32% full · Swap none · No limits reached");
-        assert!(status.thresholds.starts_with("Limits: / at 90% full"));
+        assert!(status.thresholds.starts_with("Limits: the disk at 90% full"));
         assert!(!status.needs_you());
     }
 

@@ -48,17 +48,8 @@ impl Instinct for SelfAwarenessInstinct {
             }
         }
 
-        // Milestone-based self-awareness
-        if state.conversation_turn_count == 10 {
-            urges.push(
-                UrgeSpec::new(
-                    self.name(),
-                    "We've had 10 exchanges now. I'm starting to understand your communication style.",
-                    0.4,
-                )
-                .with_cooldown("self_aware:10_turns"),
-            );
-        }
+        // No turn-count milestone (#755): "We've had 10 exchanges now" celebrates the
+        // relationship itself, and claiming to understand someone is testimony, not evidence.
 
         urges.into_iter().take(1).collect()
     }

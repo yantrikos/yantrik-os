@@ -450,6 +450,7 @@ fn wire_open_close(ui: &App, ctx: &AppContext) {
                 unread,
                 companion_online,
                 &snap.running_processes,
+                crate::onboarding::has_history(crate::onboarding::since_first_run()),
             );
             ui.set_lens_suggestions(ModelRc::new(VecModel::from(suggestions)));
 

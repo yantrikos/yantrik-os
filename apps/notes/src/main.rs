@@ -68,9 +68,10 @@ fn main() {
         )
         .expect("Notes instance lock");
     if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        let _ = std::process::Command::new("wlrctl")
-            .args(["toplevel", "focus", "title:Notes"])
-            .status();
+        // Asked, not focused by title: a copy a mind opened is drawn in Mind View, where no
+        // window on the person's desktop is called Notes, and the focus found nothing and said
+        // nothing. The running copy shows its own window and answers where it is.
+        instance::present_running("notes");
         return;
     }
     let ui = NotesApp::new().unwrap();

@@ -187,6 +187,33 @@ wanted = ["app-shell.sock", "a11y.sock", "network.sock", "notifications.sock",
 check("the shell and every autostart service answer on a socket",
       all(w in socks for w in wanted), socks)
 
+# YantrikDB as every mind's memory (#677), with no network: the guest has none. DeepSeek is the
+# harness that needs nothing fetched (its program ships in the image), so it is installed the way
+# the Settings row installs it. This image has no model and no first run, so the harness is set to
+# "Use its own models" first, the choice its card offers: the install then leaves deepseek.json on
+# its own endpoint, which is not there ("model: its own" is not a failure), rather than pointing
+# it at a gateway with nothing picked. Its install ends with the three proofs: the memory one
+# writes, recalls and deletes a note through the baked yantrikdb-mcp, and the desktop one waits
+# for the attach. Then a fact remembered by one process is recalled by another, so it is the file
+# that remembers. It runs before release-check, whose --may-lock leaves the desktop locked, and
+# well inside the five-minute idle lock: a locked desktop names no harness, so nothing could pair.
+memory = ask("export XDG_RUNTIME_DIR=/run/user/1000; mkdir -p ~/.config/yantrik/handoff; "
+             "echo 'The person chose: use its own models.' > ~/.config/yantrik/handoff/deepseek.own-models; "
+             "printf '%s\\n' '{\"base_url\": \"http://127.0.0.1:9/v1\", \"model\": \"boot-test\"}' "
+             "> ~/.config/yantrik/deepseek.json; chmod 600 ~/.config/yantrik/deepseek.json; "
+             "timeout 300 sh /opt/yantrik/share/harnesses/lib/install/deepseek.sh > /tmp/deepseek-install.txt 2>&1; "
+             "echo install-exit=$?; tail -n 6 /tmp/deepseek-install.txt; grep -o '\"memory\": *\"[a-z]*\"' ~/.config/yantrik/deepseek.json; "
+             "test -f ~/.local/state/yantrik/harnesses/deepseek/installed && echo proved",
+             timeout=360)
+check("a harness installed offline has YantrikDB as its memory and passes all three proofs",
+      "install-exit=0" in memory and "YantrikDB" in memory and "recalled" in memory
+      and '"memory": "yantrikdb"' in memory and "proved" in memory, memory)
+fact = ask("python3 /opt/yantrik/share/harnesses/lib/proofs.py deepseek --remember 'The boot test kettle is blue'; "
+           "python3 /opt/yantrik/share/harnesses/lib/proofs.py deepseek --recall 'boot test kettle is blue'",
+           timeout=180)
+check("a fact one process remembered is recalled by another",
+      '"remembered": true' in fact and '"recalled": true' in fact, fact)
+
 # The desktop, asked the way everything else asks it: every app opens and answers, every screen
 # shows, the permission gate refuses on every door, the ceiling holds on a service, nothing
 # crashes, and the shell is idle when idle. docs/releasing.md: this is the nightly's gate.
@@ -196,8 +223,20 @@ rc = ask("XDG_RUNTIME_DIR=/run/user/1000 timeout 900 /opt/yantrik/bin/release-ch
          timeout=960)
 check("release-check (tier ci) passes inside the booted image", "exit=0" in rc, rc)
 
-shelved = ask("ls /opt/yantrik/bin | grep -c -E 'music-player|spreadsheet'")
+# The shelf is SHELVED in dock.rs, read by shelved-bins.sh beside this file. This used to name
+# music-player and spreadsheet itself, so either coming off the shelf would have failed the
+# nightly for shipping it. Both have (#727, #728), so the shelf is empty and this checks nothing
+# until it holds something again.
+SHELF = subprocess.run([os.path.join(os.path.dirname(os.path.abspath(__file__)), "shelved-bins.sh")],
+                       capture_output=True, text=True, check=True).stdout.split()
+shelved = ask("ls /opt/yantrik/bin | grep -c -x -E '%s'" % "|".join(SHELF)) if SHELF else "0"
 check("no shelved app was packaged", shelved.splitlines()[-1].strip() == "0", shelved)
+
+# Music came off the shelf (#728): it ships, and so does the mpv it plays through.
+music = ask("[ -x /opt/yantrik/bin/yantrik-music-player ] && echo app; command -v mpv >/dev/null && echo mpv; "
+            "grep -q '%f' /opt/yantrik/share/applications/yantrik-music-player.desktop && echo desktop; echo checked")
+check("Music is packaged with mpv and a .desktop that takes a file",
+      all(w in music for w in ("app", "mpv", "desktop", "checked")), music)
 
 essentials = ask("for b in yantrik-ui yantrik yos yantrik-update yantrik-session yantrik-notes "
                  "yantrik-email yantrik-calendar network-service email-service; do "

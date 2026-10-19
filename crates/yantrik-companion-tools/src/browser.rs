@@ -1522,7 +1522,7 @@ fn searxng_search(query: &str) -> Result<String, String> {
         .set("Accept", "application/json")
         .timeout(std::time::Duration::from_secs(10))
         .call()
-        .map_err(|e| format!("SearXNG request failed: {e}"))?;
+        .map_err(|e| format!("SearXNG request failed: {}", yantrik_shown_address::without_sign_in(&e.to_string())))?;
 
     let json: serde_json::Value = resp
         .into_json()

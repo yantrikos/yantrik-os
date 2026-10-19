@@ -1,0 +1,140 @@
+{
+ "latitude": 32.786,
+ "longitude": -96.80225,
+ "generationtime_ms": 0.31,
+ "utc_offset_seconds": -18000,
+ "timezone": "America/Chicago",
+ "timezone_abbreviation": "GMT-5",
+ "elevation": 137.0,
+ "current_units": {
+  "time": "iso8601",
+  "interval": "seconds",
+  "temperature_2m": "°F",
+  "relative_humidity_2m": "%",
+  "apparent_temperature": "°F",
+  "weather_code": "wmo code",
+  "wind_speed_10m": "mp/h",
+  "wind_direction_10m": "°",
+  "surface_pressure": "hPa",
+  "is_day": "",
+  "cloud_cover": "%",
+  "dew_point_2m": "°F"
+ },
+ "current": {
+  "time": "2026-10-15T14:45",
+  "interval": 900,
+  "temperature_2m": 81.1,
+  "relative_humidity_2m": 48,
+  "apparent_temperature": 82.6,
+  "weather_code": 1,
+  "wind_speed_10m": 9.2,
+  "wind_direction_10m": 158,
+  "surface_pressure": 991.6,
+  "is_day": 1,
+  "cloud_cover": 22,
+  "dew_point_2m": 58.8
+ },
+ "daily_units": {
+  "time": "iso8601",
+  "weather_code": "wmo code",
+  "temperature_2m_max": "°F",
+  "temperature_2m_min": "°F",
+  "precipitation_sum": "mm",
+  "precipitation_probability_max": "%",
+  "sunrise": "iso8601",
+  "sunset": "iso8601",
+  "uv_index_max": ""
+ },
+ "daily": {
+  "time": [
+   "2026-10-15",
+   "2026-10-16",
+   "2026-10-17",
+   "2026-10-18",
+   "2026-10-19",
+   "2026-10-20",
+   "2026-10-21",
+   "2026-10-22"
+  ],
+  "weather_code": [
+   1,
+   2,
+   61,
+   3,
+   0,
+   0,
+   80,
+   95
+  ],
+  "temperature_2m_max": [
+   84.9,
+   86.2,
+   76.3,
+   72.1,
+   77.0,
+   81.0,
+   80.2,
+   75.0
+  ],
+  "temperature_2m_min": [
+   64.8,
+   66.2,
+   61.5,
+   55.6,
+   55.0,
+   59.9,
+   64.2,
+   61.2
+  ],
+  "precipitation_sum": [
+   0.0,
+   0.0,
+   6.4,
+   0.2,
+   0.0,
+   0.0,
+   1.8,
+   12.3
+  ],
+  "precipitation_probability_max": [
+   0,
+   5,
+   70,
+   20,
+   0,
+   0,
+   45,
+   80
+  ],
+  "sunrise": [
+   "2026-10-15T07:30",
+   "2026-10-16T07:31",
+   "2026-10-17T07:32",
+   "2026-10-18T07:33",
+   "2026-10-19T07:34",
+   "2026-10-20T07:35",
+   "2026-10-21T07:36",
+   "2026-10-22T07:37"
+  ],
+  "sunset": [
+   "2026-10-15T18:55",
+   "2026-10-16T18:54",
+   "2026-10-17T18:53",
+   "2026-10-18T18:52",
+   "2026-10-19T18:51",
+   "2026-10-20T18:50",
+   "2026-10-21T18:49",
+   "2026-10-22T18:48"
+  ],
+  "uv_index_max": [
+   6.15,
+   5.9,
+   3.2,
+   4.8,
+   6.0,
+   5.75,
+   4.4,
+   2.9
+  ]
+ }
+}

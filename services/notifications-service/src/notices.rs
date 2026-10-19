@@ -1,0 +1,1448 @@
+//! Mind notices in the one store (design/initiative-inbox-2026-10-16.md).
+//!
+//! A notice is a notification with a `notice` record beside it, posted by the harness host on a
+//! harness's behalf and honoured only from the desktop (see `main.rs`). This file is the store's
+//! half: dedupe and supersede keyed by the harness the host established, the per-harness rate cap,
+//! the grant decision against the day's budget (`grant`), the person's feedback and each harness's
+//! durable cursor over it, and the settings the decision reads.
+//!
+//! Every answer that says `stored: true` is given after the file is on the disk; a write that fails
+//! takes the card back out and answers "try again".
+
+use chrono::{DateTime, Local, SecondsFormat, Utc};
+use serde::{Deserialize, Serialize};
+use yantrik_ipc_contracts::notifications::notice::{
+    self, answer, ActionKind, Feedback, FeedbackKind, FamilySetting, HarnessBinding, Initiative, Notice,
+    NoticeHarness, NoticePost,
+};
+use yantrik_ipc_contracts::notifications::{Notification, Sender, Source, Urgency};
+
+use crate::grant;
+use crate::store::{prune, snapshot, OnDisk, Store};
+
+/// Interrupts granted on one local day.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Budget {
+    /// `YYYY-MM-DD` in the machine's local time.
+    pub day: String,
+    pub used: u32,
+}
+
+/// Feedback waiting for the harness that sent the notice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Queued {
+    pub harness: String,
+    pub item: Feedback,
+}
+
+/// How long a harness over its 200 undismissed is told to wait: the person has to dismiss some.
+const UNDISMISSED_RETRY_SECS: u64 = 600;
+
+/// The harness id this OS ships a mind under, and the account that mind runs as (#411). Nothing
+/// else may use that id, bound or not, so it cannot be taken before the Mind first posts.
+pub const MIND_ID: &str = "mind";
+pub const MIND_ACCOUNT: &str = "yantrik-mind";
+
+/// The uid of `account`, from `/etc/passwd`. `None` on a machine without it.
+pub fn account_uid(account: &str) -> Option<u32> {
+    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+    passwd.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        (fields.next()? == account).then_some(())?;
+        fields.nth(1)?.parse().ok()
+    })
+}
+
+/// Bind every harness id a store written before bindings existed holds notices under, to the
+/// account and program of its newest one. Run when the store is opened, so the upgrade has no
+/// window in which an id with queued feedback is unbound (the security delta review on #831).
+pub(crate) fn bind_existing(state: &mut OnDisk) {
+    let bound: std::collections::BTreeSet<String> = state.bindings.keys().cloned().collect();
+    // Oldest first, so the newest record under an id is the one that stays.
+    for n in &state.notifications {
+        let Some(harness) = n.notice.as_ref().map(|x| &x.harness) else { continue };
+        if bound.contains(&harness.id) || (harness.uid.is_none() && harness.program.is_empty()) {
+            continue;
+        }
+        state.bindings.insert(harness.id.clone(), HarnessBinding { uid: harness.uid, program: harness.program.clone() });
+    }
+}
+
+/// Whether `id` may be used by `uid` running `program`, as [`HarnessBinding`] says. Binds an
+/// unbound id when `bind` is set and there is something to bind it to. An id reserved for an
+/// account answers to that account only, whatever is bound.
+fn check_binding(
+    state: &mut OnDisk,
+    reserved: &std::collections::BTreeMap<String, u32>,
+    id: &str,
+    uid: Option<u32>,
+    program: &str,
+    bind: bool,
+) -> Result<(), String> {
+    if let Some(&account) = reserved.get(id) {
+        if uid != Some(account) {
+            return Err(format!("the harness id `{id}` is reserved for the account this OS runs it as; attach under an id of your own"));
+        }
+        if state.bindings.get(id).is_none_or(|b| b.uid != Some(account)) {
+            state.bindings.insert(id.to_string(), HarnessBinding { uid: Some(account), program: String::new() });
+        }
+        return Ok(());
+    }
+    match state.bindings.get(id) {
+        Some(bound) if bound.admits(uid, program) => Ok(()),
+        Some(_) => Err(format!(
+            "the harness id `{id}` belongs to another program or account on this machine; attach under an id of your own"
+        )),
+        None => {
+            if bind && (uid.is_some() || !program.is_empty()) {
+                state.bindings.insert(id.to_string(), HarnessBinding { uid, program: program.to_string() });
+            }
+            Ok(())
+        }
+    }
+}
+
+/// A rate cap over `cards`: `per_hour` stored in the last hour, and `undismissed` still showing.
+/// `None` when under both, else the answer to give.
+fn over_cap(cards: &[&Notification], now: DateTime<Utc>, per_hour: usize, undismissed: usize, who: &str) -> Option<serde_json::Value> {
+    let hour_ago = now - chrono::Duration::hours(1);
+    let in_hour: Vec<DateTime<Utc>> = cards.iter().filter_map(|n| parsed(&n.created_at)).filter(|t| *t > hour_ago).collect();
+    if in_hour.len() >= per_hour {
+        let oldest = in_hour.iter().min().copied().unwrap_or(now);
+        let wait = (oldest + chrono::Duration::hours(1) - now).num_seconds().max(1) as u64;
+        return Some(answer::retry(wait, &format!("{who} sent {per_hour} notices in the last hour")));
+    }
+    if cards.iter().filter(|n| !n.dismissed).count() >= undismissed {
+        return Some(answer::retry(UNDISMISSED_RETRY_SECS, &format!("{who} {undismissed} notices the person has not dismissed")));
+    }
+    None
+}
+
+/// Whether a card was granted an interrupt, now or when quiet hours end, for an obligation.
+fn interrupting_obligation(n: &Notification, hour_ago: DateTime<Utc>) -> bool {
+    n.notice.as_ref().is_some_and(|x| {
+        x.family.is_obligation() && (x.granted == notice::Attention::Interrupt || x.held_until.is_some())
+    }) && parsed(&n.created_at).is_some_and(|t| t > hour_ago)
+}
+
+fn rfc3339(t: DateTime<Utc>) -> String {
+    t.to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+fn parsed(t: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(t).ok().map(|t| t.with_timezone(&Utc))
+}
+
+/// Record one response to the notice at `index`: on its own record, and in the queue its
+/// harness reads. Nothing for a notification that is not a notice. The caller persists.
+pub(crate) fn push_feedback(state: &mut OnDisk, index: usize, kind: FeedbackKind, now: DateTime<Utc>) {
+    let seq = state.next_feedback_seq;
+    let Some(record) = state.notifications.get_mut(index).and_then(|n| n.notice.as_mut()) else {
+        return;
+    };
+    let item = Feedback {
+        seq,
+        notice_id: record.notice_id.clone(),
+        kind,
+        seen_at: record.shown_at.clone(),
+        opened_at: record.opened_at.clone(),
+        at: rfc3339(now),
+    };
+    record.feedback.push(item.clone());
+    if record.feedback.len() > notice::MAX_FEEDBACK_PER_NOTICE {
+        record.feedback.remove(0);
+    }
+    let harness = record.harness.id.clone();
+    state.next_feedback_seq += 1;
+    // Nothing polls as the desktop: a queue for it would never drain, and would push the minds'
+    // feedback out of the shared cap.
+    if harness == notice::OS_HARNESS {
+        return;
+    }
+    state.feedback_queue.push(Queued { harness, item });
+    if state.feedback_queue.len() > notice::MAX_FEEDBACK_QUEUED {
+        let excess = state.feedback_queue.len() - notice::MAX_FEEDBACK_QUEUED;
+        state.feedback_queue.drain(0..excess);
+    }
+}
+
+/// Whether `n` is one of the OS's own notices.
+fn is_os(n: &Notification) -> bool {
+    n.notice.as_ref().is_some_and(|x| x.harness.id == notice::OS_HARNESS)
+}
+
+/// The name a notice is filed under: what the harness called itself, unless that borrows the
+/// desktop's own name, which is never granted to a mind (#114); then its id.
+fn filed_as(harness: &NoticeHarness) -> String {
+    let name = harness.name.trim();
+    if name.is_empty() || crate::names::borrows_the_desktops_name(name) {
+        harness.id.clone()
+    } else {
+        name.to_string()
+    }
+}
+
+impl Store {
+    /// Store a notice the desktop posted on a harness's behalf, and answer as the wire says.
+    ///
+    /// `home` is the person's home, which an `open_file` button must resolve under.
+    ///
+    /// Never under [`notice::OS_HARNESS`]: that id is the OS's own, posted in this process through
+    /// [`Store::add_os_notice`] and from nowhere else, whoever is on the socket.
+    pub fn add_notice(&self, post: NoticePost, home: &std::path::Path) -> serde_json::Value {
+        if post.harness.id == notice::OS_HARNESS {
+            tracing::warn!(uid = ?post.harness.uid, program = %post.harness.program, "a notice posted under the desktop's own harness id; refused");
+            return answer::refused(&format!("`{}` is the id the desktop files its own notices under", notice::OS_HARNESS));
+        }
+        self.store_notice(post, home, false)
+    }
+
+    /// Store one of the OS's own notices (the calendar's heads-ups and reminders), filed as `name`
+    /// under [`notice::OS_HARNESS`]. The same checks, dedupe, supersede and grant decision as a
+    /// mind's notice, with three differences the calendar design sets out: it is not counted in,
+    /// or refused by, the harness rate caps (its volume is bounded by the person's events); its
+    /// feedback is recorded on the card but never queued, because nothing polls as the desktop;
+    /// and the record says the desktop sent it, because it did.
+    pub fn add_os_notice(&self, name: &str, notice: serde_json::Value) -> serde_json::Value {
+        let harness = NoticeHarness {
+            id: notice::OS_HARNESS.to_string(),
+            uid: Some(yantrik_ipc_transport::owner::own_euid()),
+            // In the words the shell's sender line prints for any process: "verified by this
+            // machine: notifications-service (pid 412)".
+            verified: format!("notifications-service (pid {})", std::process::id()),
+            name: name.to_string(),
+            program: String::new(),
+        };
+        // `home` only bounds an `open_file` button, which the OS's own notices never carry.
+        self.store_notice(NoticePost { notice, harness, os_id: false }, std::path::Path::new("/nonexistent"), true)
+    }
+
+    /// The one path both kinds of notice are stored through. `os` is set only by
+    /// [`Store::add_os_notice`].
+    fn store_notice(&self, post: NoticePost, home: &std::path::Path, os: bool) -> serde_json::Value {
+        // Before anything changes, in memory too: a store that cannot write must not bind an id
+        // or spend the budget for a card it will not keep.
+        if let Some(why) = self.blocked() {
+            return answer::retry(notice::RETRY_UNAVAILABLE_SECS, why);
+        }
+        let now = Utc::now();
+        let harness = post.harness;
+        if harness.id.trim().is_empty() {
+            return answer::refused("a notice must name the harness that sent it");
+        }
+        let mut checked = match notice::check(&post.notice) {
+            Ok(checked) => checked,
+            Err(why) => return answer::refused(&why),
+        };
+        if let Some(action) = &checked.action {
+            if action.kind == ActionKind::OpenFile && notice::file_under(&action.reference, home).is_none() {
+                checked.action = None;
+                checked.clamped.push("action".into());
+            }
+        }
+
+        let mut state = self.lock();
+        // Before anything is said about what this id already holds.
+        let reserved = self.reserved();
+        if let Err(why) = check_binding(&mut state, &reserved, &harness.id, harness.uid, &harness.program, true) {
+            tracing::warn!(harness = %harness.id, uid = ?harness.uid, program = %harness.program, "a notice under a harness id bound to another program");
+            return answer::refused(&why);
+        }
+        let mine = |n: &Notification, id: &str| n.notice.as_ref().is_some_and(|x| x.harness.id == harness.id && x.notice_id == id);
+
+        // The same id from the same harness is the same card: answered as stored, unchanged.
+        if !post.os_id && state.notifications.iter().any(|n| mine(n, &checked.notice_id)) {
+            return answer::stored(&checked.notice_id, true, &[]);
+        }
+
+        // The rate caps: per harness id, per account, and for every harness together. An id is
+        // the harness's own word, so the per-id cap alone would give a process that attaches as
+        // `x1` … `xN` N allowances.
+        //
+        // The OS's own notices are outside all three, both ways: a busy calendar must not crowd
+        // out minds, and a flooding mind must not hold back a reminder the person set. They still
+        // count toward the obligations' hourly interrupts, below: the desktop's own toward its own
+        // limit, and toward the minds' shared one.
+        let notices: Vec<&Notification> = state.notifications.iter().filter(|n| n.notice.is_some()).collect();
+        let theirs: Vec<&Notification> =
+            notices.iter().copied().filter(|n| n.notice.as_ref().is_some_and(|x| x.harness.id == harness.id)).collect();
+        if !os {
+            let minds: Vec<&Notification> = notices.iter().copied().filter(|n| !is_os(n)).collect();
+            let account: Vec<&Notification> =
+                minds.iter().copied().filter(|n| n.notice.as_ref().is_some_and(|x| x.harness.uid == harness.uid)).collect();
+            let capped = over_cap(&theirs, now, notice::PER_HOUR, notice::MAX_UNDISMISSED, "this harness has")
+                .or_else(|| over_cap(&account, now, notice::PER_HOUR_PER_UID, notice::MAX_UNDISMISSED_PER_UID, "the harnesses of this account have"))
+                .or_else(|| over_cap(&minds, now, notice::PER_HOUR_ALL, notice::MAX_UNDISMISSED_ALL, "every harness together has"));
+            if let Some(answer) = capped {
+                return answer;
+            }
+        }
+        let hour_ago = now - chrono::Duration::hours(1);
+        let obligations_here = theirs.iter().filter(|n| interrupting_obligation(n, hour_ago)).count();
+        // The shared limit exists because a mind's family is its own claim; the desktop's
+        // reminder is the person's own event, so only the desktop's own count can hold it back.
+        // Counting the minds' here would let two accounts at four reminders each turn the
+        // person's dentist reminder into an inbox card.
+        let over_obligations = obligations_here >= notice::OBLIGATION_INTERRUPTS_PER_HOUR
+            || (!os && notices.iter().filter(|n| interrupting_obligation(n, hour_ago)).count() >= notice::OBLIGATION_INTERRUPTS_PER_HOUR_ALL);
+
+        state.revision += 1;
+        let revision = state.revision;
+        if post.os_id {
+            checked.notice_id = format!("os-{revision}");
+        }
+
+        // Supersede only this harness's own card. One that names any other — another harness's,
+        // or one this store does not hold — changes nothing and is named, the same either way, so
+        // the answer says nothing about what other minds have sent.
+        let mut superseded = None;
+        if let Some(target) = &checked.supersedes {
+            match state.notifications.iter().position(|n| mine(n, target) && !n.dismissed) {
+                Some(index) => {
+                    let old = &mut state.notifications[index];
+                    old.dismissed = true;
+                    old.read = true;
+                    old.revision = revision;
+                    superseded = Some(old.id.clone());
+                }
+                None => checked.clamped.push("supersedes".into()),
+            }
+        }
+
+        let local: DateTime<Local> = now.with_timezone(&Local);
+        let today = local.format("%Y-%m-%d").to_string();
+        if state.budget.day != today {
+            state.budget = Budget { day: today, used: 0 };
+        }
+        let mut decision = grant::decide(&checked.family, &checked.attention, &state.initiative, local, state.budget.used);
+        // An obligation skips the day's budget because the person asked for it; but which family a
+        // card is in is the mind's own claim. Past an hour's allowance, it waits in the inbox.
+        let would_interrupt = decision.granted == notice::Attention::Interrupt || decision.held_until.is_some();
+        if checked.family.is_obligation() && would_interrupt && over_obligations {
+            decision = grant::Decision { granted: notice::Attention::Inbox, reason: notice::GrantReason::Rate, held_until: None, spends: false };
+        }
+        if decision.spends {
+            state.budget.used += 1;
+        }
+
+        let id = state.next_id;
+        state.next_id += 1;
+        // The OS files under the name it gave, which is its own to give.
+        let app = if os { harness.name.clone() } else { filed_as(&harness) };
+        let record = Notification {
+            id: id.to_string(),
+            app: app.clone(),
+            title: checked.title,
+            body: checked.body,
+            urgency: Urgency::Normal,
+            created_at: rfc3339(now),
+            read: false,
+            dismissed: false,
+            // The one button is the notice's own, executed by the shell from an allowlist; the
+            // notification's own buttons forward to an app's control surface, which a mind's
+            // card never may.
+            actions: Vec::new(),
+            source: Source::Yantrik,
+            replaces_id: None,
+            // The mind is speaking, not the desktop that posted it: the record says who the host
+            // established, and is never marked the desktop. Only the OS's own notice, made in this
+            // process, is the desktop's, and says which process made it.
+            sender: Some(if os {
+                Sender {
+                    claimed: None,
+                    verified: harness.verified.clone(),
+                    pid: i32::try_from(std::process::id()).unwrap_or(0),
+                    exe: std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default(),
+                    desktop: true,
+                }
+            } else {
+                Sender {
+                    claimed: Some(if harness.name.trim().is_empty() { harness.id.clone() } else { harness.name.clone() }),
+                    verified: harness.verified.clone(),
+                    pid: 0,
+                    exe: String::new(),
+                    desktop: false,
+                }
+            }),
+            // A picture is the desktop's own capture thumbnail; a mind's card never carries one.
+            image: None,
+            notice: Some(Notice {
+                notice_id: checked.notice_id.clone(),
+                family: checked.family,
+                why: checked.why,
+                evidence: checked.evidence,
+                attention: checked.attention,
+                useful_until: checked.useful_until,
+                supersedes: checked.supersedes,
+                action: checked.action,
+                harness,
+                granted: decision.granted,
+                grant_reason: decision.reason,
+                held_until: decision.held_until.map(|t| rfc3339(t.with_timezone(&Utc))),
+                shown_as: None,
+                shown_at: None,
+                opened_at: None,
+                clamped: checked.clamped.clone(),
+                feedback: Vec::new(),
+            }),
+            revision,
+        };
+        state.notifications.push(record);
+        prune(&mut state, &self.archive_path());
+        let snapshot = snapshot(&mut state);
+        drop(state);
+
+        if let Err(e) = self.persist(&snapshot) {
+            // Not on disk, so not stored: take it back out, give back what it spent, and let the
+            // mind try again. The card it superseded stays superseded in memory only until the
+            // next successful write, which is the same card the mind will send again.
+            let mut state = self.lock();
+            state.notifications.retain(|n| n.id != id.to_string());
+            if decision.spends {
+                state.budget.used = state.budget.used.saturating_sub(1);
+            }
+            if let Some(old) = superseded {
+                for n in state.notifications.iter_mut().filter(|n| n.id == old) {
+                    n.dismissed = false;
+                }
+            }
+            return answer::retry(notice::RETRY_UNAVAILABLE_SECS, &format!("the store could not be written: {e}"));
+        }
+        tracing::info!(id, notice = %checked.notice_id, app = %app, "notice stored");
+        let mut reply = answer::stored(&checked.notice_id, false, &checked.clamped);
+        reply["id"] = id.to_string().into();
+        reply
+    }
+
+    /// The person pressed a feedback button on a card. Answers the feedback as recorded.
+    pub fn record_feedback(&self, id: &str, kind: FeedbackKind) -> Result<Feedback, String> {
+        if let Some(why) = self.blocked() {
+            return Err(why.to_string());
+        }
+        if !FeedbackKind::BUTTONS.contains(&kind) {
+            return Err(format!("`{}` is not a feedback button", kind.as_str()));
+        }
+        let now = Utc::now();
+        let mut state = self.lock();
+        let Some(index) = state.notifications.iter().position(|n| n.id == id && n.notice.is_some()) else {
+            return Err(format!("no notice with id `{id}`"));
+        };
+        let family = state.notifications[index].notice.as_ref().map(|x| x.family.clone()).expect("a notice");
+        // The two that are settings: the OS applies them itself, whether or not the mind does.
+        match kind {
+            FeedbackKind::NeverFamily => {
+                let setting = if family.is_obligation() { FamilySetting::InboxOnly } else { FamilySetting::Off };
+                let _ = state.initiative.set(&family, setting);
+            }
+            FeedbackKind::InboxOnly => {
+                let _ = state.initiative.set(&family, FamilySetting::InboxOnly);
+            }
+            _ => {}
+        }
+        state.revision += 1;
+        let revision = state.revision;
+        let n = &mut state.notifications[index];
+        n.read = true;
+        if kind.takes_the_card_away() {
+            n.dismissed = true;
+        }
+        n.revision = revision;
+        push_feedback(&mut state, index, kind, now);
+        let recorded = state.notifications[index].notice.as_ref().and_then(|x| x.feedback.last().cloned()).expect("just pushed");
+        let snapshot = snapshot(&mut state);
+        drop(state);
+        self.persist(&snapshot)?;
+        Ok(recorded)
+    }
+
+    /// The shell showed a card (`toast` or `inbox`), or opened its button. The first showing is
+    /// the one recorded: a card seen in the inbox is not toasted afterwards.
+    pub fn mark_shown(&self, id: &str, shown_as: Option<&str>, opened: bool) -> Result<(), String> {
+        let now = rfc3339(Utc::now());
+        let mut state = self.lock();
+        let revision = state.revision + 1;
+        let Some(n) = state.notifications.iter_mut().find(|n| n.id == id) else {
+            return Err(format!("no notice with id `{id}`"));
+        };
+        let Some(record) = n.notice.as_mut() else {
+            return Err(format!("notification `{id}` is not a notice"));
+        };
+        let mut changed = false;
+        if let Some(how) = shown_as.filter(|h| matches!(*h, "toast" | "inbox")) {
+            if record.shown_as.is_none() {
+                record.shown_as = Some(how.to_string());
+                record.shown_at = Some(now.clone());
+                changed = true;
+            }
+        }
+        if opened && record.opened_at.is_none() {
+            record.opened_at = Some(now);
+            changed = true;
+        }
+        if !changed {
+            return Ok(());
+        }
+        n.revision = revision;
+        state.revision = revision;
+        let snapshot = snapshot(&mut state);
+        drop(state);
+        self.persist(&snapshot)
+    }
+
+    /// The feedback waiting for `harness`, after taking `ack` as read. Feedback is delivered at
+    /// least once: until a later poll acknowledges it, it comes back, across restarts.
+    ///
+    /// Only to the account and program the id is bound to ([`Binding`]): anything else is refused,
+    /// and nothing it sends is taken as an acknowledgement.
+    pub fn feedback_for(&self, harness: &str, uid: Option<u32>, program: &str, ack: Option<u64>) -> Result<Vec<Feedback>, String> {
+        // Before the binding check, which would bind a reserved id, and before a cursor moves:
+        // nothing about a poll can be kept while the store is blocked.
+        if let Some(why) = self.blocked() {
+            return Err(why.to_string());
+        }
+        if harness == notice::OS_HARNESS {
+            return Err(format!("`{harness}` is the desktop's own; nothing polls as it and no feedback is kept for it"));
+        }
+        let reserved = self.reserved();
+        let mut state = self.lock();
+        check_binding(&mut state, &reserved, harness, uid, program, false)?;
+        let cursor = state.feedback_cursor.get(harness).copied().unwrap_or(0);
+        if let Some(ack) = ack.filter(|a| *a > cursor) {
+            state.feedback_cursor.insert(harness.to_string(), ack);
+            state.feedback_queue.retain(|q| q.harness != harness || q.item.seq > ack);
+            let snapshot = snapshot(&mut state);
+            let pending = Self::pending(&state, harness);
+            drop(state);
+            if let Err(e) = self.persist(&snapshot) {
+                // The cursor is not on disk, so what was acknowledged may come again after a
+                // restart: at least once, never lost.
+                tracing::warn!(harness, error = %e, "the feedback cursor could not be written");
+            }
+            return Ok(pending);
+        }
+        Ok(Self::pending(&state, harness))
+    }
+
+    fn pending(state: &OnDisk, harness: &str) -> Vec<Feedback> {
+        let cursor = state.feedback_cursor.get(harness).copied().unwrap_or(0);
+        state
+            .feedback_queue
+            .iter()
+            .filter(|q| q.harness == harness && q.item.seq > cursor)
+            .map(|q| q.item.clone())
+            .collect()
+    }
+
+    /// Take every card past its `useful_until` out of the inbox, telling its sender it expired.
+    /// The record stays (dismissed) and is archived with the rest when it ages out.
+    pub fn expire_due(&self, now: DateTime<Utc>) {
+        let mut state = self.lock();
+        let due: Vec<usize> = state
+            .notifications
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| !n.dismissed)
+            .filter(|(_, n)| {
+                n.notice.as_ref().and_then(|x| x.useful_until.as_deref()).and_then(parsed).is_some_and(|t| t <= now)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if due.is_empty() {
+            return;
+        }
+        state.revision += 1;
+        let revision = state.revision;
+        for &index in &due {
+            let n = &mut state.notifications[index];
+            n.dismissed = true;
+            n.revision = revision;
+            push_feedback(&mut state, index, FeedbackKind::Expired, now);
+        }
+        let snapshot = snapshot(&mut state);
+        drop(state);
+        let _ = self.persist(&snapshot);
+    }
+
+    /// Take back the OS's own undismissed cards whose `notice_id` starts with `prefix` and that
+    /// `keep` no longer wants: the calendar's, for an event that was deleted or moved. Dismissed
+    /// and read, with no feedback, because the person did nothing. Answers how many were taken
+    /// back; nothing changes when the store cannot be written.
+    pub fn withdraw_os_notices(&self, prefix: &str, keep: impl Fn(&str) -> bool) -> Result<usize, String> {
+        if let Some(why) = self.blocked() {
+            return Err(why.to_string());
+        }
+        let mut state = self.lock();
+        let gone: Vec<usize> = state
+            .notifications
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| !n.dismissed && is_os(n))
+            .filter(|(_, n)| n.notice.as_ref().is_some_and(|x| x.notice_id.starts_with(prefix) && !keep(&x.notice_id)))
+            .map(|(i, _)| i)
+            .collect();
+        if gone.is_empty() {
+            return Ok(0);
+        }
+        state.revision += 1;
+        let revision = state.revision;
+        let mut before = Vec::with_capacity(gone.len());
+        for &index in &gone {
+            let n = &mut state.notifications[index];
+            before.push((n.id.clone(), n.read));
+            n.dismissed = true;
+            n.read = true;
+            n.revision = revision;
+        }
+        let snapshot = snapshot(&mut state);
+        drop(state);
+        if let Err(e) = self.persist(&snapshot) {
+            // Put back as they were, so memory never says what the disk does not; the next tick
+            // tries again.
+            let mut state = self.lock();
+            for (id, read) in before {
+                if let Some(n) = state.notifications.iter_mut().find(|n| n.id == id) {
+                    n.dismissed = false;
+                    n.read = read;
+                }
+            }
+            return Err(format!("the store could not be written: {e}"));
+        }
+        Ok(gone.len())
+    }
+
+    /// Put new words on the title of one of the OS's own undismissed cards: the calendar's early
+    /// heads-up, for an event the person edited in place (same start, so the same id). Cleaned and
+    /// cut as any title. Only the title changes: the card is not re-granted, re-toasted or
+    /// re-counted, and a card the person dismissed is left alone. Answers whether it changed;
+    /// nothing changes when the store cannot be written.
+    pub fn revise_os_title(&self, notice_id: &str, title: &str) -> Result<bool, String> {
+        if let Some(why) = self.blocked() {
+            return Err(why.to_string());
+        }
+        let (title, _) = notice::one_line(title, notice::MAX_TITLE);
+        if title.is_empty() {
+            return Ok(false);
+        }
+        let mut state = self.lock();
+        let Some(index) = state
+            .notifications
+            .iter()
+            .position(|n| !n.dismissed && is_os(n) && n.notice.as_ref().is_some_and(|x| x.notice_id == notice_id))
+        else {
+            return Ok(false);
+        };
+        if state.notifications[index].title == title {
+            return Ok(false);
+        }
+        state.revision += 1;
+        let revision = state.revision;
+        let n = &mut state.notifications[index];
+        let id = n.id.clone();
+        let before = (std::mem::replace(&mut n.title, title), n.revision);
+        n.revision = revision;
+        let snapshot = snapshot(&mut state);
+        drop(state);
+        if let Err(e) = self.persist(&snapshot) {
+            let mut state = self.lock();
+            if let Some(n) = state.notifications.iter_mut().find(|n| n.id == id) {
+                (n.title, n.revision) = before;
+            }
+            return Err(format!("the store could not be written: {e}"));
+        }
+        Ok(true)
+    }
+
+    /// Forget what `harness` is bound to, so the next notice under it binds it afresh. The
+    /// person's way out when something took an id first. Answers whether there was a binding.
+    pub fn unbind(&self, harness: &str) -> Result<bool, String> {
+        if let Some(why) = self.blocked() {
+            return Err(why.to_string());
+        }
+        let mut state = self.lock();
+        if state.bindings.remove(harness).is_none() {
+            return Ok(false);
+        }
+        state.revision += 1;
+        let snapshot = snapshot(&mut state);
+        drop(state);
+        self.persist(&snapshot)?;
+        Ok(true)
+    }
+
+    /// Every harness id and what it is bound to.
+    pub fn bindings(&self) -> std::collections::BTreeMap<String, HarnessBinding> {
+        self.lock().bindings.clone()
+    }
+
+    /// The person's initiative settings.
+    pub fn initiative(&self) -> Initiative {
+        self.lock().initiative.clone()
+    }
+
+    /// Change them. The store holds them, so the decision and the screen read the same settings.
+    pub fn set_initiative(&self, change: impl FnOnce(&mut Initiative) -> Result<(), String>) -> Result<Initiative, String> {
+        if let Some(why) = self.blocked() {
+            return Err(why.to_string());
+        }
+        let mut state = self.lock();
+        let mut next = state.initiative.clone();
+        change(&mut next)?;
+        if next == state.initiative {
+            return Ok(next);
+        }
+        state.initiative = next.clone();
+        // A revision, so the shell's poll (which carries the settings) is not the only one that
+        // hears: `since` answers with them every time.
+        state.revision += 1;
+        let snapshot = snapshot(&mut state);
+        drop(state);
+        self.persist(&snapshot)?;
+        Ok(next)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use yantrik_ipc_contracts::notifications::notice::{Attention, Family, GrantReason};
+    use yantrik_ipc_contracts::notifications::{AddRequest, MAX_STORED};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    fn temp_store() -> (Store, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "yantrik-notices-test-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        (Store::open(dir.join("notifications.json")), dir)
+    }
+
+    fn harness(id: &str) -> NoticeHarness {
+        NoticeHarness { id: id.into(), uid: Some(1000), verified: format!("{id} (pid 7)"), name: id.into(), program: String::new() }
+    }
+
+    fn post(from: &str, notice: serde_json::Value) -> NoticePost {
+        NoticePost { notice, harness: harness(from), os_id: false }
+    }
+
+    fn notice(id: &str, family: &str, attention: &str) -> serde_json::Value {
+        json!({ "notice_id": id, "family": family, "title": "Stretch", "why": "You asked.", "attention": attention })
+    }
+
+    fn home() -> PathBuf {
+        std::env::temp_dir()
+    }
+
+    #[test]
+    fn stored_means_on_disk_and_survives_a_restart() {
+        let (store, dir) = temp_store();
+        let answer = store.add_notice(post("mind", notice("rem-1", "reminder", "interrupt")), &home());
+        assert_eq!(answer["stored"], true, "{answer}");
+        assert_eq!(answer["notice_id"], "rem-1");
+        drop(store);
+        let reopened = Store::open(dir.join("notifications.json"));
+        let n = reopened.list().into_iter().find(|n| n.notice.is_some()).expect("the card is still there");
+        assert_eq!(n.notice.unwrap().notice_id, "rem-1");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn dedupe_is_by_harness_and_notice_id() {
+        let (store, dir) = temp_store();
+        store.add_notice(post("mind", notice("n-1", "machine", "inbox")), &home());
+        let again = store.add_notice(post("mind", notice("n-1", "discovery", "interrupt")), &home());
+        assert_eq!(again, json!({ "stored": true, "notice_id": "n-1", "duplicate": true }));
+        assert_eq!(store.list().len(), 1, "the stored card is unchanged");
+        let other = store.add_notice(post("hermes", notice("n-1", "machine", "inbox")), &home());
+        assert!(other.get("duplicate").is_none(), "the same id from another harness is a separate card");
+        assert_eq!(store.list().len(), 2);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn supersedes_replaces_only_this_harnesss_own_card() {
+        let (store, dir) = temp_store();
+        store.add_notice(post("hermes", notice("theirs", "machine", "inbox")), &home());
+        store.add_notice(post("mind", notice("mine", "machine", "inbox")), &home());
+        let mut n = notice("mine-2", "machine", "inbox");
+        n["supersedes"] = "mine".into();
+        let ok = store.add_notice(post("mind", n), &home());
+        assert!(ok.get("clamped").is_none(), "{ok}");
+        let showing: Vec<String> = store.list().iter().filter_map(|n| n.notice.as_ref().map(|x| x.notice_id.clone())).collect();
+        assert!(!showing.contains(&"mine".into()) && showing.contains(&"mine-2".into()), "{showing:?}");
+
+        let mut n = notice("mine-3", "machine", "inbox");
+        n["supersedes"] = "theirs".into();
+        let answer = store.add_notice(post("mind", n), &home());
+        assert_eq!(answer["clamped"], json!(["supersedes"]), "{answer}");
+        assert!(store.list().iter().any(|n| n.notice.as_ref().is_some_and(|x| x.notice_id == "theirs")), "another harness's card stays");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_budget_is_shared_by_every_harness_and_kept_in_the_store() {
+        let (store, dir) = temp_store();
+        let reason = |store: &Store, id: &str| {
+            store.list().into_iter().find_map(|n| n.notice.filter(|x| x.notice_id == id)).map(|x| (x.granted, x.grant_reason)).unwrap()
+        };
+        store.add_notice(post("mind", notice("a", "discovery", "interrupt")), &home());
+        store.add_notice(post("hermes", notice("b", "calendar", "interrupt")), &home());
+        drop(store);
+        // Across a restart, too.
+        let store = Store::open(dir.join("notifications.json"));
+        store.add_notice(post("mind", notice("c", "machine", "interrupt")), &home());
+        assert_eq!(reason(&store, "a"), (Attention::Interrupt, GrantReason::Granted));
+        assert_eq!(reason(&store, "b"), (Attention::Interrupt, GrantReason::Granted));
+        assert_eq!(reason(&store, "c"), (Attention::Inbox, GrantReason::BudgetSpent));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_harness_past_its_hourly_cap_is_told_when_to_retry() {
+        let (store, dir) = temp_store();
+        for i in 0..notice::PER_HOUR {
+            assert_eq!(store.add_notice(post("mind", notice(&format!("n{i}"), "machine", "inbox")), &home())["stored"], true);
+        }
+        let over = store.add_notice(post("mind", notice("one-more", "machine", "inbox")), &home());
+        assert_eq!(over["stored"], false);
+        assert!(over["retry_after_secs"].as_u64().is_some_and(|s| s > 0 && s <= 3600), "{over}");
+        // Another harness has its own cap.
+        assert_eq!(store.add_notice(post("hermes", notice("h1", "machine", "inbox")), &home())["stored"], true);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_46_word_body_is_stored_cut_with_clamped_recorded() {
+        let (store, dir) = temp_store();
+        let mut n = notice("long", "delegated", "inbox");
+        n["body"] = (1..=46).map(|i| format!("w{i}")).collect::<Vec<_>>().join(" ").into();
+        n["action"] = json!({ "kind": "format_disk", "ref": "/dev/sda", "label": "Do it" });
+        let answer = store.add_notice(post("mind", n), &home());
+        assert_eq!(answer["clamped"], json!(["body", "action"]), "{answer}");
+        let stored = store.list().into_iter().find(|n| n.notice.is_some()).unwrap();
+        assert_eq!(stored.body.split_whitespace().count(), 45);
+        assert_eq!(stored.notice.as_ref().unwrap().clamped, vec!["body", "action"]);
+        assert!(stored.notice.unwrap().action.is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn feedback_goes_to_the_sender_only_and_comes_back_until_acked_across_a_restart() {
+        let (store, dir) = temp_store();
+        let answer = store.add_notice(post("mind", notice("rem-1", "reminder", "interrupt")), &home());
+        let id = answer["id"].as_str().unwrap().to_string();
+        store.mark_shown(&id, Some("toast"), false).unwrap();
+        let recorded = store.record_feedback(&id, FeedbackKind::NotNow).unwrap();
+        assert!(recorded.seen_at.is_some(), "seen_at is when it was shown");
+        assert!(store.feedback_for("hermes", Some(1000), "", None).unwrap().is_empty(), "nobody else hears it");
+        assert_eq!(store.feedback_for("mind", Some(1000), "", None).unwrap().len(), 1);
+        drop(store);
+        let store = Store::open(dir.join("notifications.json"));
+        let again = store.feedback_for("mind", Some(1000), "", None).unwrap();
+        assert_eq!(again.len(), 1, "still there after a restart");
+        assert_eq!(again[0].kind, FeedbackKind::NotNow);
+        assert!(store.feedback_for("mind", Some(1000), "", Some(again[0].seq)).unwrap().is_empty(), "acknowledged");
+        drop(store);
+        let store = Store::open(dir.join("notifications.json"));
+        assert!(store.feedback_for("mind", Some(1000), "", None).unwrap().is_empty(), "and the cursor survived the restart");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn never_this_kind_and_inbox_only_change_the_settings() {
+        let (store, dir) = temp_store();
+        let a = store.add_notice(post("mind", notice("d1", "discovery", "interrupt")), &home())["id"].as_str().unwrap().to_string();
+        store.record_feedback(&a, FeedbackKind::NeverFamily).unwrap();
+        assert_eq!(store.initiative().setting(&Family::Discovery), FamilySetting::Off);
+        let r = store.add_notice(post("mind", notice("r1", "reminder", "interrupt")), &home())["id"].as_str().unwrap().to_string();
+        store.record_feedback(&r, FeedbackKind::NeverFamily).unwrap();
+        assert_eq!(store.initiative().setting(&Family::Reminder), FamilySetting::InboxOnly, "a reminder is never Off");
+        // A family now off is stored hidden and still answered as stored.
+        let hidden = store.add_notice(post("mind", notice("d2", "discovery", "interrupt")), &home());
+        assert_eq!(hidden["stored"], true);
+        let record = store.list().into_iter().find_map(|n| n.notice.filter(|x| x.notice_id == "d2")).unwrap();
+        assert!(record.hidden());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_dismissed_or_expired_card_tells_its_sender() {
+        let (store, dir) = temp_store();
+        let id = store.add_notice(post("mind", notice("x", "machine", "inbox")), &home())["id"].as_str().unwrap().to_string();
+        store.dismiss(&id);
+        let mut n = notice("y", "calendar", "inbox");
+        n["useful_until"] = "2020-01-01T00:00:00Z".into();
+        store.add_notice(post("mind", n), &home());
+        store.since(0);
+        let kinds: Vec<FeedbackKind> = store.feedback_for("mind", Some(1000), "", None).unwrap().into_iter().map(|f| f.kind).collect();
+        assert_eq!(kinds, vec![FeedbackKind::Dismissed, FeedbackKind::Expired]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn six_hundred_notify_sends_do_not_evict_an_acknowledged_notice() {
+        let (store, dir) = temp_store();
+        store.add_notice(post("mind", notice("rem-keep", "reminder", "interrupt")), &home());
+        for i in 0..600 {
+            store.add(AddRequest { app: "notify-send".into(), title: format!("spam {i}"), ..Default::default() });
+        }
+        assert!(
+            store.list().iter().any(|n| n.notice.as_ref().is_some_and(|x| x.notice_id == "rem-keep")),
+            "the notice was pushed out by plain notifications"
+        );
+        assert_eq!(store.held().1, MAX_STORED + 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_dismissed_notice_past_the_ttl_is_in_the_archive_not_gone() {
+        let (store, dir) = temp_store();
+        let id = store.add_notice(post("mind", notice("old", "delegated", "inbox")), &home())["id"].as_str().unwrap().to_string();
+        store.dismiss(&id);
+        {
+            let mut state = store.lock();
+            state.notifications[0].created_at = rfc3339(Utc::now() - chrono::Duration::days(8));
+        }
+        store.add(AddRequest { app: "a".into(), title: "today".into(), ..Default::default() });
+        assert!(store.get(&id).is_none(), "it left the live store");
+        let archive = std::fs::read_to_string(dir.join("notices-archive.jsonl")).expect("an archive");
+        assert!(archive.contains("\"notice_id\":\"old\""), "{archive}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_plain_text_notice_gets_an_os_made_id() {
+        let (store, dir) = temp_store();
+        let answer = store.add_notice(
+            NoticePost { notice: notice("os", "delegated", "inbox"), harness: harness("hermes"), os_id: true },
+            &home(),
+        );
+        assert!(answer["notice_id"].as_str().unwrap().starts_with("os-"), "{answer}");
+        // Two of them are two cards, not a duplicate.
+        let second = store.add_notice(
+            NoticePost { notice: notice("os", "delegated", "inbox"), harness: harness("hermes"), os_id: true },
+            &home(),
+        );
+        assert_ne!(second["notice_id"], answer["notice_id"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn post_as(from: &str, uid: u32, program: &str, notice: serde_json::Value) -> NoticePost {
+        let mut harness = harness(from);
+        harness.uid = Some(uid);
+        harness.program = program.into();
+        NoticePost { notice, harness, os_id: false }
+    }
+
+    #[test]
+    fn a_non_desktop_caller_cannot_dismiss_or_mark_read_a_notice() {
+        let (store, dir) = temp_store();
+        let id = store.add_notice(post("mind", notice("rem-1", "reminder", "interrupt")), &home())["id"].as_str().unwrap().to_string();
+        let plain = store.add(AddRequest { app: "a".into(), title: "plain".into(), ..Default::default() });
+        assert!(store.dismiss_by(&id, false).is_err());
+        assert!(store.mark_read_by(Some(&id), false).is_err());
+        // Everything at once leaves the notice where it was, and takes the plain one.
+        assert_eq!(store.mark_read_by(None, false), Ok(1));
+        assert_eq!(store.dismiss_all_by(false), 1);
+        let card = store.get(&id).unwrap();
+        assert!(!card.dismissed && !card.read, "the card is still live and unread");
+        assert!(store.get(&plain.id).unwrap().dismissed);
+        assert!(store.feedback_for("mind", Some(1000), "", None).unwrap().is_empty(), "no feedback was forged");
+        // The person, on the desktop, still can.
+        assert_eq!(store.dismiss_by(&id, true), Ok(true));
+        assert_eq!(store.feedback_for("mind", Some(1000), "", None).unwrap()[0].kind, FeedbackKind::Dismissed);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_list_for_anyone_but_the_desktop_has_no_feedback_evidence_or_button() {
+        let (store, dir) = temp_store();
+        let mut n = notice("d1", "discovery", "inbox");
+        n["evidence"] = json!(["seen on the page"]);
+        n["action"] = json!({ "kind": "open_url", "ref": "https://example.com/" });
+        let id = store.add_notice(post("mind", n), &home())["id"].as_str().unwrap().to_string();
+        store.record_feedback(&id, FeedbackKind::Useful).unwrap();
+        let theirs = store.list_for(false).into_iter().find_map(|n| n.notice).unwrap();
+        assert!(theirs.feedback.is_empty() && theirs.evidence.is_empty() && theirs.action.is_none(), "{theirs:?}");
+        let desktop = store.list_for(true).into_iter().find_map(|n| n.notice).unwrap();
+        assert!(!desktop.feedback.is_empty() && !desktop.evidence.is_empty() && desktop.action.is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_harness_id_belongs_to_the_account_and_program_that_first_used_it() {
+        let (store, dir) = temp_store();
+        assert_eq!(store.add_notice(post_as("mind", 999, "yantrik-mind", notice("rem-1", "reminder", "inbox")), &home())["stored"], true);
+        // Another account attaching as `mind` while the Mind is away: refused before it hears
+        // anything about what `mind` holds, and it cannot read or acknowledge the Mind's feedback.
+        let id = store.list().into_iter().find(|n| n.notice.is_some()).unwrap().id;
+        store.record_feedback(&id, FeedbackKind::NotNow).unwrap();
+        let impostor = store.add_notice(post_as("mind", 1000, "python3", notice("rem-1", "reminder", "inbox")), &home());
+        assert!(impostor["refused"].is_string() && impostor.get("duplicate").is_none(), "{impostor}");
+        let next = store.add_notice(post_as("mind", 1000, "python3", notice("rem-2", "reminder", "inbox")), &home());
+        assert!(next["refused"].is_string(), "{next}");
+        assert!(store.feedback_for("mind", Some(1000), "python3", Some(u64::MAX)).is_err());
+        // The same account under another program is refused too.
+        assert!(store.add_notice(post_as("mind", 999, "bash", notice("rem-3", "reminder", "inbox")), &home())["refused"].is_string());
+        // The Mind itself still reads its feedback, unacknowledged.
+        assert_eq!(store.feedback_for("mind", Some(999), "yantrik-mind", None).unwrap().len(), 1);
+        drop(store);
+        let store = Store::open(dir.join("notifications.json"));
+        assert!(store.add_notice(post_as("mind", 1000, "python3", notice("rem-4", "reminder", "inbox")), &home())["refused"].is_string(), "the binding survives a restart");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_rollback_to_a_build_from_before_notices_loses_nothing() {
+        // The driven test of #831 on VM 520: an older service rewrites notifications.json from its
+        // own struct, dropping every field it does not know.
+        let (store, dir) = temp_store();
+        let id = store.add_notice(post_as("mind", 999, "", notice("rem-1", "reminder", "interrupt")), &home())["id"].as_str().unwrap().to_string();
+        store.record_feedback(&id, FeedbackKind::NotNow).unwrap();
+        store.set_initiative(|s| { s.quiet = true; Ok(()) }).unwrap();
+        drop(store);
+        let main = dir.join("notifications.json");
+        let written = std::fs::read_to_string(&main).unwrap();
+        assert!(!written.contains("\"notice\"") && !written.contains("initiative"), "the main file holds only what an old build knows: {written}");
+
+        // The old build, as it would: its own three fields, a notification of its own, written back.
+        let mut old: serde_json::Value = serde_json::from_str(&written).unwrap();
+        old.as_object_mut().unwrap().retain(|k, _| ["revision", "next_id", "notifications"].contains(&k.as_str()));
+        let next = old["next_id"].as_u64().unwrap();
+        old["notifications"].as_array_mut().unwrap().push(json!({
+            "id": next.to_string(), "app": "a", "title": "while rolled back", "body": "", "urgency": "normal",
+            "created_at": "2026-10-16T12:00:00Z", "read": false, "dismissed": false, "actions": [], "source": "yantrik", "revision": 1
+        }));
+        old["next_id"] = (next + 1).into();
+        std::fs::write(&main, old.to_string()).unwrap();
+
+        // Forward again.
+        let store = Store::open(main.clone());
+        let card = store.get(&id).unwrap();
+        let record = card.notice.expect("the notice record is joined back");
+        assert_eq!(record.feedback.len(), 1);
+        assert_eq!(record.harness.uid, Some(999));
+        assert!(store.initiative().quiet, "the person's settings survived");
+        assert_eq!(store.feedback_for("mind", Some(999), "", None).unwrap().len(), 1, "and the feedback queue");
+        assert!(store.get(&next.to_string()).is_some_and(|n| n.notice.is_none()));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_notice_record_whose_notification_is_gone_goes_to_the_archive() {
+        let (store, dir) = temp_store();
+        store.add_notice(post("mind", notice("rem-1", "reminder", "inbox")), &home());
+        drop(store);
+        // An old build that started empty, say because it could not read the file.
+        std::fs::write(dir.join("notifications.json"), r#"{"revision":1,"next_id":1,"notifications":[]}"#).unwrap();
+        let store = Store::open(dir.join("notifications.json"));
+        assert!(store.list().is_empty());
+        let archive = std::fs::read_to_string(dir.join("notices-archive.jsonl")).expect("an archive");
+        assert!(archive.contains("\"orphan_of\"") && archive.contains("rem-1"), "{archive}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_sidecar_that_cannot_be_read_is_never_written_over() {
+        // The security delta review of af69330 on #831: an unreadable sidecar (a wrong owner
+        // after a restore, an I/O error) must not be replaced by an empty one on the next write.
+        // A directory in its place is unreadable as a file even to root, which the CI runner and
+        // this sandbox may be.
+        let (store, dir) = temp_store();
+        store.add_notice(post("mind", notice("rem-1", "reminder", "inbox")), &home());
+        drop(store);
+        let sidecar = crate::store::sidecar_path(&dir.join("notifications.json"));
+        let kept = std::fs::read(&sidecar).unwrap();
+        std::fs::remove_file(&sidecar).unwrap();
+        std::fs::create_dir(&sidecar).unwrap();
+        std::fs::write(sidecar.join("held"), &kept).unwrap();
+
+        let store = Store::open(dir.join("notifications.json"));
+        assert!(store.load_notice().is_some_and(|n| n.contains("nothing is stored")), "{:?}", store.load_notice());
+        let answer = store.add_notice(post("mind", notice("rem-2", "reminder", "inbox")), &home());
+        assert_eq!(answer["stored"], false, "nothing is acknowledged while it cannot be written: {answer}");
+        assert!(sidecar.is_dir() && std::fs::read(sidecar.join("held")).unwrap() == kept, "untouched");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_blocked_store_changes_nothing_it_cannot_keep() {
+        let (store, dir) = temp_store();
+        store.add_notice(post("mind", notice("rem-1", "reminder", "inbox")), &home());
+        drop(store);
+        let sidecar = crate::store::sidecar_path(&dir.join("notifications.json"));
+        std::fs::remove_file(&sidecar).unwrap();
+        std::fs::create_dir(&sidecar).unwrap();
+        let store = Store::open(dir.join("notifications.json"));
+        assert!(store.load_notice().is_some_and(|n| n.contains("restarted")), "{:?}", store.load_notice());
+        let answer = store.add_notice(post_as("squatter", 4242, "evil", notice("x", "machine", "inbox")), &home());
+        assert!(answer["retry_after_secs"].as_u64().is_some(), "{answer}");
+        assert!(store.bindings().is_empty(), "no id was bound by a post that was not kept");
+        assert!(store.unbind("mind").is_err() && store.set_initiative(|s| { s.quiet = true; Ok(()) }).is_err());
+        assert!(!store.initiative().quiet);
+        // A poll neither binds a reserved id nor moves a cursor.
+        store.reserve("mind", 999);
+        assert!(store.feedback_for("mind", Some(999), "", Some(7)).is_err());
+        assert!(store.feedback_for("whoever", Some(4242), "evil", Some(99)).is_err());
+        assert!(store.bindings().is_empty());
+        assert!(store.lock().feedback_cursor.is_empty(), "no cursor moved");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_sidecar_that_is_there_but_dangles_blocks_writes() {
+        let (store, dir) = temp_store();
+        store.add_notice(post("mind", notice("rem-1", "reminder", "inbox")), &home());
+        drop(store);
+        let sidecar = crate::store::sidecar_path(&dir.join("notifications.json"));
+        std::fs::remove_file(&sidecar).unwrap();
+        // A volume not mounted yet, say.
+        std::os::unix::fs::symlink(dir.join("not-mounted/notices"), &sidecar).unwrap();
+        let store = Store::open(dir.join("notifications.json"));
+        assert_eq!(store.add_notice(post("mind", notice("rem-2", "reminder", "inbox")), &home())["stored"], false);
+        assert!(std::fs::symlink_metadata(&sidecar).unwrap().file_type().is_symlink(), "the link is not replaced");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_store_that_ran_with_the_first_sidecar_name_reads_it() {
+        let dir = std::env::temp_dir().join(format!("yantrik-notices-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("notifications.json");
+        let store = Store::open(path.clone());
+        store.add_notice(post("mind", notice("rem-1", "reminder", "inbox")), &home());
+        store.set_initiative(|s| { s.quiet = true; Ok(()) }).unwrap();
+        drop(store);
+        std::fs::rename(crate::store::sidecar_path(&path), dir.join("notices.json")).unwrap();
+        let store = Store::open(path.clone());
+        assert!(store.initiative().quiet);
+        assert!(store.list().iter().any(|n| n.notice.is_some()));
+        // Read once: the first write puts the old file aside, so it never comes back.
+        store.set_initiative(|s| { s.quiet = false; Ok(()) }).unwrap();
+        drop(store);
+        assert!(!dir.join("notices.json").exists());
+        assert!(std::fs::read_dir(&dir).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().starts_with("notices.json.migrated-")));
+        std::fs::remove_file(crate::store::sidecar_path(&path)).unwrap();
+        let store = Store::open(path);
+        assert!(!store.initiative().quiet, "the old settings did not come back");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_first_sidecar_is_put_aside_even_after_a_crash_before_the_rename() {
+        // The security delta review of b244448 on #831: a start that wrote the new sidecar but
+        // stopped before putting the old one aside must not leave it to be read again.
+        let dir = std::env::temp_dir().join(format!("yantrik-notices-legacy-crash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("notifications.json");
+        let store = Store::open(path.clone());
+        store.add_notice(post("mind", notice("rem-1", "reminder", "inbox")), &home());
+        store.set_initiative(|s| { s.quiet = true; Ok(()) }).unwrap();
+        drop(store);
+        // The disk after that crash: the new sidecar, and the old one still beside it.
+        std::fs::copy(crate::store::sidecar_path(&path), dir.join("notices.json")).unwrap();
+        let store = Store::open(path.clone());
+        store.set_initiative(|s| { s.quiet = false; Ok(()) }).unwrap();
+        drop(store);
+        assert!(!dir.join("notices.json").exists(), "the first write put it aside");
+        assert!(std::fs::read_dir(&dir).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().starts_with("notices.json.migrated-")));
+        std::fs::remove_file(crate::store::sidecar_path(&path)).unwrap();
+        let store = Store::open(path);
+        assert!(!store.initiative().quiet, "the old settings did not come back");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_accounts_uid_is_read_from_the_password_file() {
+        assert_eq!(account_uid("root"), Some(0));
+        assert_eq!(account_uid("no-such-account-here"), None);
+    }
+
+    #[test]
+    fn since_for_anyone_but_the_desktop_is_redacted_as_list_is() {
+        let (store, dir) = temp_store();
+        let mut n = notice("d1", "discovery", "inbox");
+        n["evidence"] = json!(["SECRET-EVIDENCE"]);
+        n["action"] = json!({ "kind": "open_url", "ref": "https://example.com/" });
+        let id = store.add_notice(post("mind", n), &home())["id"].as_str().unwrap().to_string();
+        store.record_feedback(&id, FeedbackKind::Useful).unwrap();
+        let theirs = store.since_for(0, false);
+        let card = theirs.changed.iter().find_map(|n| n.notice.clone()).unwrap();
+        assert!(card.feedback.is_empty() && card.evidence.is_empty() && card.action.is_none(), "{card:?}");
+        assert!(theirs.harness_bindings.is_none(), "the bindings are the desktop's");
+        let desktop = store.since_for(0, true);
+        assert!(desktop.changed.iter().find_map(|n| n.notice.clone()).is_some_and(|c| !c.evidence.is_empty() && !c.feedback.is_empty()));
+        assert!(desktop.harness_bindings.unwrap().contains_key("mind"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_store_from_before_bindings_binds_its_ids_when_opened() {
+        let (store, dir) = temp_store();
+        let id = store.add_notice(post_as("mind", 999, "", notice("rem-1", "reminder", "inbox")), &home())["id"].as_str().unwrap().to_string();
+        store.record_feedback(&id, FeedbackKind::NotNow).unwrap();
+        // As a store written before this change: the records, the queued feedback, no bindings.
+        {
+            let mut state = store.lock();
+            state.bindings.clear();
+            let snapshot = snapshot(&mut state);
+            drop(state);
+            store.persist(&snapshot).unwrap();
+        }
+        drop(store);
+        let store = Store::open(dir.join("notifications.json"));
+        assert!(store.feedback_for("mind", Some(1000), "python3", Some(u64::MAX)).is_err(), "no upgrade window");
+        assert_eq!(store.feedback_for("mind", Some(999), "", None).unwrap().len(), 1, "unacknowledged");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_minds_id_cannot_be_squatted_and_any_other_can_be_forgotten() {
+        let (store, dir) = temp_store();
+        store.reserve("mind", 999);
+        // Something else gets there first: refused, and the Mind is not locked out.
+        assert!(store.add_notice(post_as("mind", 1000, "python3", notice("r1", "reminder", "inbox")), &home())["refused"].is_string());
+        assert_eq!(store.add_notice(post_as("mind", 999, "", notice("r1", "reminder", "inbox")), &home())["stored"], true);
+        // Another id taken first by the wrong program: the person forgets the binding, and the
+        // next notice under it binds it afresh.
+        store.add_notice(post_as("hermes", 1000, "python3", notice("h1", "machine", "inbox")), &home());
+        assert!(store.add_notice(post_as("hermes", 1000, "hermes", notice("h2", "machine", "inbox")), &home())["refused"].is_string());
+        assert_eq!(store.unbind("hermes"), Ok(true));
+        assert_eq!(store.add_notice(post_as("hermes", 1000, "hermes", notice("h2", "machine", "inbox")), &home())["stored"], true);
+        assert_eq!(store.bindings()["hermes"].program, "hermes");
+        assert_eq!(store.unbind("nobody"), Ok(false));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn new_harness_ids_do_not_buy_one_account_more_notices() {
+        let (store, dir) = temp_store();
+        let mut stored = 0;
+        for i in 0..notice::PER_HOUR_PER_UID + 10 {
+            let answer = store.add_notice(post(&format!("x{i}"), notice("n", "machine", "inbox")), &home());
+            if answer["stored"] == true {
+                stored += 1;
+            } else {
+                assert!(answer["retry_after_secs"].as_u64().is_some(), "{answer}");
+            }
+        }
+        assert_eq!(stored, notice::PER_HOUR_PER_UID);
+        // Another account has its own allowance, up to what every harness together may send.
+        assert_eq!(store.add_notice(post_as("other", 2000, "", notice("n", "machine", "inbox")), &home())["stored"], true);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn obligations_past_their_hourly_interrupts_wait_in_the_inbox() {
+        let (store, dir) = temp_store();
+        for i in 0..notice::OBLIGATION_INTERRUPTS_PER_HOUR {
+            store.add_notice(post("mind", notice(&format!("r{i}"), "reminder", "interrupt")), &home());
+        }
+        store.add_notice(post("mind", notice("r-over", "reminder", "interrupt")), &home());
+        let record = store.list().into_iter().find_map(|n| n.notice.filter(|x| x.notice_id == "r-over")).unwrap();
+        assert_eq!((record.granted, record.grant_reason), (Attention::Inbox, GrantReason::Rate));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn eviction_takes_from_the_harness_holding_the_most() {
+        let (store, dir) = temp_store();
+        store.add_notice(post_as("mind", 999, "", notice("rem-keep", "reminder", "inbox")), &home());
+        {
+            // A flood already stored, older than the hour so no rate cap stands in the way.
+            let mut state = store.lock();
+            let template = state.notifications[0].clone();
+            let old = rfc3339(Utc::now() - chrono::Duration::hours(2));
+            for i in 0..notice::MAX_NOTICES_STORED {
+                let mut n = template.clone();
+                n.id = format!("f{i}");
+                n.created_at = old.clone();
+                let record = n.notice.as_mut().unwrap();
+                record.notice_id = format!("f{i}");
+                record.harness = harness(&format!("x{}", i % 3));
+                state.notifications.push(n);
+            }
+            // The Mind's card is the oldest of all.
+            state.notifications[0].created_at = rfc3339(Utc::now() - chrono::Duration::hours(3));
+        }
+        store.add(AddRequest { app: "a".into(), title: "prune now".into(), ..Default::default() });
+        assert!(
+            store.list().iter().any(|n| n.notice.as_ref().is_some_and(|x| x.notice_id == "rem-keep")),
+            "the one card of the harness holding the fewest was pushed out"
+        );
+        assert_eq!(store.list().iter().filter(|n| n.notice.is_some()).count(), notice::MAX_NOTICES_STORED);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ── The OS's own notices (design/calendar-heads-up-2026-10-16.md) ──────────────────────
+
+    fn os_card(id: &str, family: &str) -> serde_json::Value {
+        json!({ "notice_id": id, "family": family, "title": "Dentist in 10 minutes", "why": "Calendar events remind you 10 minutes before.", "attention": "interrupt" })
+    }
+
+    #[test]
+    fn nothing_on_the_socket_can_post_or_poll_as_the_desktop() {
+        let (store, dir) = temp_store();
+        let own = yantrik_ipc_transport::owner::own_euid();
+        // Whatever account and program the host names, the desktop's own id is not a harness's.
+        for (uid, program) in [(own, ""), (own, "yantrik-ui"), (1000, "python3"), (999, "yantrik-mind")] {
+            let answer = store.add_notice(post_as(notice::OS_HARNESS, uid, program, os_card("cal-reminder:e1:20990318T1000", "reminder")), &home());
+            assert_eq!(answer["stored"], false, "{answer}");
+            assert!(answer["refused"].as_str().unwrap().contains("its own notices"), "{answer}");
+            assert!(store.feedback_for(notice::OS_HARNESS, Some(uid), program, None).is_err());
+        }
+        assert!(store.list().is_empty());
+        assert!(!store.bindings().get(notice::OS_HARNESS).is_some_and(|b| b.uid != Some(own)), "never bound to anyone else");
+        // A squatter that posts first under it does not take it from the OS.
+        assert_eq!(store.add_os_notice("Calendar", os_card("cal-reminder:e1:20990318T1000", "reminder"))["stored"], true);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_desktops_feedback_is_recorded_on_the_card_and_never_queued() {
+        let (store, dir) = temp_store();
+        let id = store.add_os_notice("Calendar", os_card("cal-early:e1:20990318T1000", "calendar"))["id"].as_str().unwrap().to_string();
+        let queued = store.lock().feedback_queue.len();
+        let recorded = store.record_feedback(&id, FeedbackKind::NeverFamily).unwrap();
+        assert_eq!(store.lock().feedback_queue.len(), queued, "nothing polls as the desktop");
+        let card = store.get(&id).unwrap();
+        assert_eq!(card.notice.unwrap().feedback, vec![recorded]);
+        // "Never this kind" on an early card switches Calendar off, as on any family.
+        assert_eq!(store.initiative().setting(&Family::Calendar), FamilySetting::Off);
+        // And on a reminder card it can only make reminders inbox-only.
+        let id = store.add_os_notice("Calendar", os_card("cal-reminder:e1:20990318T1000", "reminder"))["id"].as_str().unwrap().to_string();
+        store.record_feedback(&id, FeedbackKind::NeverFamily).unwrap();
+        assert_eq!(store.initiative().setting(&Family::Reminder), FamilySetting::InboxOnly);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_desktop_is_outside_the_minds_rate_caps_both_ways_but_inside_the_obligation_limit() {
+        let (store, dir) = temp_store();
+        // Minds at every cap: 60 in the hour across three harnesses of three accounts.
+        for i in 0..notice::PER_HOUR_ALL {
+            let from = format!("m{}", i % 3);
+            let answer = store.add_notice(post_as(&from, 1000 + (i % 3) as u32, "", notice(&format!("n{i}"), "machine", "inbox")), &home());
+            assert_eq!(answer["stored"], true, "{i}: {answer}");
+        }
+        assert!(store.add_notice(post_as("m3", 1003, "", notice("over", "machine", "inbox")), &home())["retry_after_secs"].is_number(), "every harness together is at its cap");
+        // The calendar is not held back by the flood…
+        for i in 0..(notice::PER_HOUR + 5) {
+            let answer = store.add_os_notice("Calendar", os_card(&format!("cal-reminder:e{i}:20990318T1000"), "reminder"));
+            assert_eq!(answer["stored"], true, "{i}: {answer}");
+        }
+        // …and once the minds' cards are gone, a busy calendar does not crowd them out.
+        store.dismiss_all_by(true);
+        {
+            let mut state = store.lock();
+            let old = rfc3339(Utc::now() - chrono::Duration::hours(2));
+            for n in state.notifications.iter_mut().filter(|n| !is_os(n)) {
+                n.created_at = old.clone();
+            }
+        }
+        for i in 0..(notice::PER_HOUR_ALL + 10) {
+            store.add_os_notice("Calendar", os_card(&format!("cal-early:e{i}:20990318T1000"), "calendar"));
+        }
+        assert_eq!(store.add_notice(post_as("m1", 1001, "", notice("after", "machine", "inbox")), &home())["stored"], true);
+
+        // Minds' reminders, up to the every-harness obligation limit, do not hold the desktop's
+        // reminder back (the review of #861)…
+        let (store3, dir3) = temp_store();
+        for i in 0..notice::OBLIGATION_INTERRUPTS_PER_HOUR_ALL {
+            let from = format!("m{}", i % 2);
+            let answer = store3.add_notice(post_as(&from, 1000 + (i % 2) as u32, "", notice(&format!("r{i}"), "reminder", "interrupt")), &home());
+            assert_eq!(answer["stored"], true, "{answer}");
+        }
+        let id = store3.add_os_notice("Calendar", os_card("cal-reminder:dentist:20990318T1000", "reminder"))["id"].as_str().unwrap().to_string();
+        assert_eq!(store3.get(&id).unwrap().notice.unwrap().grant_reason, GrantReason::Granted, "a mind's flood must not silence the person's own reminder");
+        // …while a mind's next one still meets the shared limit, which counts the desktop's too.
+        let more = store3.add_notice(post_as("m2", 1002, "", notice("r-more", "reminder", "interrupt")), &home())["id"].as_str().unwrap().to_string();
+        assert_eq!(store3.get(&more).unwrap().notice.unwrap().grant_reason, GrantReason::Rate);
+        let _ = std::fs::remove_dir_all(dir3);
+
+        // The obligation limit still holds the desktop's reminders: past it, they wait in the inbox.
+        let (store, dir2) = temp_store();
+        let mut reasons = Vec::new();
+        for i in 0..(notice::OBLIGATION_INTERRUPTS_PER_HOUR + 1) {
+            let id = store.add_os_notice("Calendar", os_card(&format!("cal-reminder:r{i}:20990318T1000"), "reminder"))["id"].as_str().unwrap().to_string();
+            reasons.push(store.get(&id).unwrap().notice.unwrap().grant_reason);
+        }
+        assert_eq!(reasons.last(), Some(&GrantReason::Rate), "{reasons:?}");
+        assert!(reasons[..notice::OBLIGATION_INTERRUPTS_PER_HOUR].iter().all(|r| *r == GrantReason::Granted), "{reasons:?}");
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(dir2);
+    }
+
+    #[test]
+    fn a_flood_of_the_minds_reminders_and_a_spent_budget_never_hold_back_the_persons_own_reminder() {
+        let (store, dir) = temp_store();
+        // Two minds on two accounts, each inside every cap of its own: four reminder-family
+        // interrupts each fill the minds' shared hourly limit, and two discovery interrupts spend
+        // the day's budget.
+        for (from, uid) in [("m0", 1000), ("m1", 1001)] {
+            for i in 0..notice::OBLIGATION_INTERRUPTS_PER_HOUR {
+                let answer = store.add_notice(post_as(from, uid, "", notice(&format!("r{i}"), "reminder", "interrupt")), &home());
+                assert_eq!(answer["stored"], true, "{from} {i}: {answer}");
+            }
+        }
+        for i in 0..2 {
+            store.add_notice(post_as("m0", 1000, "", notice(&format!("d{i}"), "discovery", "interrupt")), &home());
+        }
+        let reason = |store: &Store, id: &serde_json::Value| store.get(id.as_str().unwrap()).unwrap().notice.unwrap();
+        let next = store.add_notice(post_as("m1", 1001, "", notice("one-more", "reminder", "interrupt")), &home());
+        assert_eq!(reason(&store, &next["id"]).grant_reason, GrantReason::Rate, "the minds are at their shared limit");
+        assert_eq!(store.lock().budget.used, notice::DAILY_INTERRUPTS, "and the day's budget is spent");
+
+        // The person's own reminder interrupts all the same: not demoted, not held, not refused.
+        let answer = store.add_os_notice("Calendar", os_card("cal-reminder:dentist:20990318T1000", "reminder"));
+        assert_eq!(answer["stored"], true, "{answer}");
+        let card = reason(&store, &answer["id"]);
+        assert_eq!((card.granted, card.grant_reason, card.held_until), (Attention::Interrupt, GrantReason::Granted, None));
+
+        // Up to the desktop's own hourly limit, and only its own count holds it there.
+        for i in 1..notice::OBLIGATION_INTERRUPTS_PER_HOUR {
+            let answer = store.add_os_notice("Calendar", os_card(&format!("cal-reminder:e{i}:20990318T1000"), "reminder"));
+            assert_eq!(reason(&store, &answer["id"]).grant_reason, GrantReason::Granted, "{i}");
+        }
+        let answer = store.add_os_notice("Calendar", os_card("cal-reminder:fifth:20990318T1000", "reminder"));
+        assert_eq!(reason(&store, &answer["id"]).grant_reason, GrantReason::Rate, "a calendar of 10:00 meetings still waits past its own four");
+
+        // The desktop's reminders still count toward the minds' shared limit, as the design says:
+        // a mind on a fresh account, alone in its own count, waits in the inbox.
+        let (store, dir2) = temp_store();
+        for i in 0..notice::OBLIGATION_INTERRUPTS_PER_HOUR {
+            store.add_os_notice("Calendar", os_card(&format!("cal-reminder:a{i}:20990318T1000"), "reminder"));
+        }
+        for i in 0..notice::OBLIGATION_INTERRUPTS_PER_HOUR {
+            store.add_notice(post_as("m0", 1000, "", notice(&format!("r{i}"), "reminder", "interrupt")), &home());
+        }
+        let late = store.add_notice(post_as("m1", 1001, "", notice("r", "reminder", "interrupt")), &home());
+        assert_eq!(reason(&store, &late["id"]).grant_reason, GrantReason::Rate);
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(dir2);
+    }
+
+    #[test]
+    fn a_desktop_card_is_filed_as_the_desktop_and_only_its_own_are_withdrawn() {
+        let (store, dir) = temp_store();
+        let os = store.add_os_notice("Calendar", os_card("cal-early:e1:20990318T1000", "calendar"))["id"].as_str().unwrap().to_string();
+        let mind = store.add_notice(post("mind", notice("cal-early:e1:20990318T1000", "calendar", "inbox")), &home())["id"].as_str().unwrap().to_string();
+        let card = store.get(&os).unwrap();
+        assert_eq!(card.app, "Calendar");
+        assert!(card.sender.as_ref().is_some_and(|s| s.desktop && s.pid > 0 && s.claimed.is_none()), "{:?}", card.sender);
+        assert!(store.get(&mind).unwrap().sender.as_ref().is_some_and(|s| !s.desktop));
+        assert_eq!(store.withdraw_os_notices("cal-", |_| false).unwrap(), 1);
+        assert!(store.get(&os).unwrap().dismissed && !store.get(&mind).unwrap().dismissed);
+        assert_eq!(store.withdraw_os_notices("cal-", |_| false).unwrap(), 0, "already gone");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

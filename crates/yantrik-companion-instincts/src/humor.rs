@@ -112,32 +112,8 @@ impl Instinct for HumorInstinct {
             );
         }
 
-        // Self-deprecating humor opportunity at higher bond levels
-        if state.bond_level >= BondLevel::Confidant {
-            for pattern in &state.active_patterns {
-                if let Some(desc) = pattern.get("description").and_then(|v| v.as_str()) {
-                    let lower = desc.to_lowercase();
-                    if lower.contains("repeat") || lower.contains("often") || lower.contains("always") {
-                        urges.push(
-                            UrgeSpec::new(
-                                self.name(),
-                                &format!(
-                                    "EXECUTE Make a brief playful self-deprecating observation \
-                                     about this pattern: \"{}\". Keep it to 1 witty sentence.",
-                                    desc
-                                ),
-                                0.35,
-                            )
-                            .with_cooldown(&format!(
-                                "humor:pattern:{}",
-                                &desc[..desc.len().min(20)]
-                            )),
-                        );
-                        break; // One pattern joke per cycle
-                    }
-                }
-            }
-        }
+        // No jokes about the person's own patterns (#755): `active_patterns` describes what the
+        // person does, so a joke about one is a joke at their expense dressed up as a callback.
 
         urges.into_iter().take(1).collect()
     }

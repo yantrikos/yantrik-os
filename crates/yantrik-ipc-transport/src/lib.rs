@@ -11,6 +11,8 @@ pub mod server;
 pub mod client;
 pub mod gate;
 pub mod mind_door;
+/// What a mind may call at a door, enforced in front of the service's handler (#411).
+pub mod door_methods;
 pub mod owner;
 pub mod peer_identity;
 /// A caller's words as one plain line: no control or bidi characters (#614).

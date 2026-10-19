@@ -3,8 +3,12 @@
 //! The launcher, the taskbar pins and the companion can all ask for "notes" within the same
 //! minute, and without this each request would spawn another process with another window.
 //! The guard is a pid file under the runtime dir: the first process writes its pid, later ones
-//! find a live pid there and exit at once, and the shell — which already lists open windows —
-//! focuses the one that exists.
+//! find a live pid there, ask that process to show its window (`present`), and exit.
+//!
+//! Exiting alone was not enough. The shell raises a window only if its compositor lists one, and
+//! a copy a mind opened is drawn in Mind View, where the person's compositor never sees it: the
+//! dock answered "accepted", the second copy left, and nothing appeared. The first copy owns the
+//! window and is the only process that can show it, so it is asked, and what it answered is said.
 //!
 //! A stale file (the previous instance crashed) is detected by checking that the pid is still
 //! alive, so a crash never locks the user out of an app until reboot.
@@ -79,9 +83,32 @@ fn pid_alive(pid: u32) -> bool {
 
 /// Claim the single-instance slot for `app_name`.
 ///
-/// Returns `None` when another live instance holds it — the caller should exit quietly.
+/// Returns `None` when another live instance holds it, once that instance has been asked to show
+/// its window. The caller exits, successfully: the launch was handed over, not refused.
 pub fn claim(app_name: &str) -> Option<InstanceGuard> {
-    let dir = runtime_dir();
+    claim_in(&runtime_dir(), app_name, present_running)
+}
+
+/// Ask the running copy of `app_name` to show its window, and say what came of it.
+///
+/// For a launch that found the app already running by a guard of its own, as Notes does; `claim`
+/// calls it for every other app.
+pub fn present_running(app_name: &str) {
+    let answered = crate::present::ask(app_name);
+    match answered.sentence(app_name) {
+        None => tracing::info!(app = app_name, "Already running; asked it to show its window, and it did"),
+        Some(said) => {
+            tracing::warn!(app = app_name, answer = ?answered, "{said}");
+            // Also on stderr, for a person who started it from a terminal and reads no log.
+            eprintln!("{said}");
+        }
+    }
+}
+
+/// [`claim`] in `dir`, with `held` run when another live instance has the slot. Split out so a
+/// test can hold the slot in a directory of its own and see who was asked.
+fn claim_in(dir: &std::path::Path, app_name: &str, held: impl FnOnce(&str)) -> Option<InstanceGuard> {
+    let dir = dir.to_path_buf();
     if !private_to_us(&dir) {
         // `socket_dir` hands back its last candidate unchecked when it could prepare none, and a
         // directory that may be someone else's is no place to keep a file whose contents decide
@@ -94,7 +121,8 @@ pub fn claim(app_name: &str) -> Option<InstanceGuard> {
     if let Ok(existing) = fs::read_to_string(&path) {
         if let Ok(pid) = existing.trim().parse::<u32>() {
             if pid != std::process::id() && pid_alive(pid) {
-                tracing::info!(app = app_name, pid, "Already running; leaving it to the existing instance");
+                tracing::info!(app = app_name, pid, "Already running; handing this launch to it");
+                held(app_name);
                 return None;
             }
         }
@@ -113,5 +141,125 @@ pub fn claim(app_name: &str) -> Option<InstanceGuard> {
             tracing::warn!(app = app_name, error = %e, "Could not write pid file; running unguarded");
             Some(InstanceGuard { path: PathBuf::new() })
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
+
+    /// Set in the environment of the copy [`a_second_launch_asks_the_first_to_present_and_exits_0`]
+    /// starts, which runs [`second_launch`] as a launch of its own.
+    const CHILD: &str = "YANTRIK_TEST_SECOND_LAUNCH";
+
+    /// A runtime directory of this test's own, as private as `socket_dir` makes the real one.
+    fn private_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("yantrik-instance-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join("yantrik")).unwrap();
+        fs::set_permissions(d.join("yantrik"), fs::Permissions::from_mode(0o700)).unwrap();
+        d
+    }
+
+    /// A live process that is not this one, to hold the slot: `claim` takes its own pid in the
+    /// file as no holder at all.
+    fn holder() -> std::process::Child {
+        std::process::Command::new("sleep").arg("30").spawn().expect("sleep")
+    }
+
+    #[test]
+    fn a_held_slot_hands_the_launch_over_and_leaves_the_holder_in_place() {
+        let dir = private_dir("held").join("yantrik");
+        let mut first = holder();
+        fs::write(dir.join("calendar.pid"), first.id().to_string()).unwrap();
+
+        let mut asked = Vec::new();
+        let guard = claim_in(&dir, "calendar", |app| asked.push(app.to_string()));
+
+        assert!(guard.is_none(), "a second copy was let run beside the first");
+        assert_eq!(asked, ["calendar"], "the running copy was not asked to show its window");
+        assert_eq!(fs::read_to_string(dir.join("calendar.pid")).unwrap(), first.id().to_string());
+        let _ = first.kill();
+        let _ = first.wait();
+    }
+
+    #[test]
+    fn a_free_slot_is_taken_and_nobody_is_asked() {
+        let dir = private_dir("free").join("yantrik");
+        let mut asked = false;
+        let guard = claim_in(&dir, "calendar", |_| asked = true);
+        assert!(guard.is_some() && !asked);
+        assert_eq!(fs::read_to_string(dir.join("calendar.pid")).unwrap(), std::process::id().to_string());
+    }
+
+    /// The launch itself, as a process: `claim` as an app's `main` calls it, and the exit status
+    /// that follows. Does nothing unless started by the test below.
+    #[test]
+    fn second_launch() {
+        if std::env::var_os(CHILD).is_none() {
+            return;
+        }
+        match claim("probe") {
+            None => std::process::exit(0),
+            // A second copy running: the one outcome this guard exists to prevent.
+            Some(_) => std::process::exit(3),
+        }
+    }
+
+    /// The bug, end to end at the runtime's edge: the first copy holds the slot and serves its
+    /// surface; a second launch, a real process, asks it to present and exits 0 without ever
+    /// running as a second copy.
+    #[test]
+    fn a_second_launch_asks_the_first_to_present_and_exits_0() {
+        let runtime = private_dir("launch");
+        let dir = runtime.join("yantrik");
+        // This process is the first copy: alive, and not the launch.
+        fs::write(dir.join("probe.pid"), std::process::id().to_string()).unwrap();
+
+        // Its surface, reduced to the one call a second launch makes. The launch connects once to
+        // see that the socket is up before it asks, so a connection may close without a line.
+        let listener = UnixListener::bind(dir.join("app-probe.sock")).unwrap();
+        let (asked, requests) = std::sync::mpsc::channel::<serde_json::Value>();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut line = String::new();
+                if BufReader::new(&stream).read_line(&mut line).unwrap_or(0) == 0 {
+                    continue;
+                }
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let reply = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "result": { "accepted": true, "result": { "window": true, "presented": true,
+                                "display": "wayland-test", "elsewhere": false } },
+                });
+                let _ = (&stream).write_all(format!("{reply}\n").as_bytes());
+                let _ = asked.send(request);
+            }
+        });
+
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "instance::tests::second_launch", "--nocapture", "--test-threads=1"])
+            .env(CHILD, "1")
+            .env("XDG_RUNTIME_DIR", &runtime)
+            .env("WAYLAND_DISPLAY", "wayland-test")
+            .env_remove("YANTRIK_MIND_RUN")
+            .status()
+            .expect("start the second launch");
+
+        assert_eq!(status.code(), Some(0), "the second launch did not exit 0 (3 is a second copy running)");
+        let request = requests.recv_timeout(std::time::Duration::from_secs(5)).expect("the first copy was never asked");
+        assert_eq!(request["method"], "app.act");
+        assert_eq!(request["params"]["action"], crate::present::ACTION);
+        assert_eq!(request["params"]["args"]["display"], "wayland-test");
+        assert_eq!(
+            fs::read_to_string(dir.join("probe.pid")).unwrap(),
+            std::process::id().to_string(),
+            "the slot changed hands"
+        );
+        let _ = fs::remove_dir_all(&runtime);
     }
 }

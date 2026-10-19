@@ -23,10 +23,11 @@ use std::rc::Rc;
 
 use yantrik_ipc_contracts::notifications::{Notification, Since, Urgency};
 
-/// How many notifications the shell keeps in memory. The service keeps 500; this is the same
-/// bound so the notification centre can show everything the store holds without the shell
-/// growing without limit if the service's cap is ever raised.
-const MAX_MIRRORED: usize = 500;
+/// How many notifications the shell keeps in memory: what the store keeps, its 500 plain
+/// notifications and the mind notices it counts apart from them, so the For you inbox can never
+/// lose a card the store still holds, and the shell cannot grow without limit if a cap is raised.
+const MAX_MIRRORED: usize = yantrik_ipc_contracts::notifications::MAX_STORED
+    + yantrik_ipc_contracts::notifications::notice::MAX_NOTICES_STORED;
 
 /// What the last poll said, plus whether there was a last poll.
 pub struct NotificationMirror {
@@ -145,15 +146,21 @@ impl NotificationMirror {
     pub fn unread_count(&self) -> usize {
         self.items
             .iter()
-            .filter(|n| !n.read && !n.dismissed)
+            .filter(|n| !n.read && !n.dismissed && !hidden(n))
             .count()
     }
 
-    /// Everything still showing, newest first.
+    /// Everything still showing, newest first. A notice of a family the person switched off is
+    /// stored (its mind was answered `stored`) and shown nowhere.
     pub fn showing(&self) -> Vec<&Notification> {
-        let mut out: Vec<&Notification> = self.items.iter().filter(|n| !n.dismissed).collect();
+        let mut out: Vec<&Notification> = self.items.iter().filter(|n| !n.dismissed && !hidden(n)).collect();
         out.reverse();
         out
+    }
+
+    /// Everything mirrored, dismissed included, oldest first: what the For you inbox filters.
+    pub fn all(&self) -> impl Iterator<Item = &Notification> {
+        self.items.iter()
     }
 
     /// One notification by id, for a click that has to know who sent it.
@@ -196,6 +203,11 @@ impl NotificationMirror {
             })
             .collect()
     }
+}
+
+/// A mind's notice of a family the person switched off.
+fn hidden(n: &Notification) -> bool {
+    n.notice.as_ref().is_some_and(|c| c.hidden())
 }
 
 /// Seconds since an RFC 3339 timestamp, for "4 minutes ago".
@@ -276,9 +288,15 @@ pub fn to_slint_data(n: &Notification) -> crate::NotificationData {
     // else goes through the one title rule (notification_groups.rs, notification_title.rs).
     let (title, body) = crate::notification_groups::display_copy(n);
     let name = sender_name(n);
+    // A mind's notice says which kind it is beside who sent it: the family chip the spec gives
+    // the centre, in the words Settings uses for the same row.
+    let shown_name = match &n.notice {
+        Some(card) => format!("{name} \u{b7} {}", card.family.label()),
+        None => name.clone(),
+    };
     crate::NotificationData {
         id: n.id.clone().into(),
-        app_name: name.clone().into(),
+        app_name: shown_name.into(),
         summary: title.into(),
         body: body.into(),
         urgency: urgency_int(n.urgency),
@@ -463,6 +481,8 @@ mod tests {
             source: Source::Yantrik,
             replaces_id: None,
             sender: None,
+            image: None,
+            notice: None,
             revision: 1,
         }
     }
@@ -527,6 +547,7 @@ mod tests {
                 note("1", "Downloads", "2026-09-21T09:00:00Z"),
                 note("2", "Calendar", "2026-09-21T09:01:00Z"),
             ],
+            initiative: None, harness_bindings: None,
         });
         assert!(applied.fresh.is_empty());
         assert_eq!(mirror.unread_count(), 2);
@@ -536,10 +557,11 @@ mod tests {
     #[test]
     fn a_new_notification_after_that_is_a_toast() {
         let mut mirror = NotificationMirror::new();
-        mirror.apply(Since { revision: 1, changed: vec![note("1", "A", "2026-09-21T09:00:00Z")] });
+        mirror.apply(Since { revision: 1, changed: vec![note("1", "A", "2026-09-21T09:00:00Z")], initiative: None, harness_bindings: None });
         let applied = mirror.apply(Since {
             revision: 2,
             changed: vec![note("2", "B", "2026-09-21T09:05:00Z")],
+            initiative: None, harness_bindings: None,
         });
         assert_eq!(applied.fresh.len(), 1);
         assert_eq!(applied.fresh[0].id, "2");
@@ -548,15 +570,15 @@ mod tests {
     #[test]
     fn being_read_or_dismissed_does_not_re_raise_a_toast() {
         let mut mirror = NotificationMirror::new();
-        mirror.apply(Since { revision: 1, changed: vec![note("1", "A", "2026-09-21T09:00:00Z")] });
+        mirror.apply(Since { revision: 1, changed: vec![note("1", "A", "2026-09-21T09:00:00Z")], initiative: None, harness_bindings: None });
         let mut read = note("1", "A", "2026-09-21T09:00:00Z");
         read.read = true;
-        let applied = mirror.apply(Since { revision: 2, changed: vec![read] });
+        let applied = mirror.apply(Since { revision: 2, changed: vec![read], initiative: None, harness_bindings: None });
         assert!(applied.fresh.is_empty());
         assert!(applied.gone.is_empty(), "reading a notification does not take its toast down");
         let mut gone = note("1", "A", "2026-09-21T09:00:00Z");
         gone.dismissed = true;
-        let applied = mirror.apply(Since { revision: 3, changed: vec![gone] });
+        let applied = mirror.apply(Since { revision: 3, changed: vec![gone], initiative: None, harness_bindings: None });
         assert!(applied.fresh.is_empty());
         assert_eq!(applied.gone, vec!["1".to_string()], "`dismiss(id)` takes the toast with it");
         assert_eq!(mirror.unread_count(), 0);
@@ -571,7 +593,7 @@ mod tests {
         // critical toast never expires on its own, so the only way down was its own × — which
         // nothing published could press.
         let mut mirror = NotificationMirror::new();
-        mirror.apply(Since { revision: 1, changed: vec![] });
+        mirror.apply(Since { revision: 1, changed: vec![], initiative: None, harness_bindings: None });
         let mut first = note("1", "Yantrik", "2026-09-22T18:00:00Z");
         first.urgency = Urgency::Critical;
         let mut second = note("2", "Yantrik", "2026-09-22T18:01:00Z");
@@ -579,6 +601,7 @@ mod tests {
         let applied = mirror.apply(Since {
             revision: 2,
             changed: vec![first.clone(), second.clone()],
+            initiative: None, harness_bindings: None,
         });
         assert_eq!(applied.fresh.len(), 2, "both are raised");
         assert!(applied.gone.is_empty());
@@ -589,7 +612,7 @@ mod tests {
             n.read = true;
             n.revision = 3;
         }
-        let applied = mirror.apply(Since { revision: 3, changed: vec![first, second] });
+        let applied = mirror.apply(Since { revision: 3, changed: vec![first, second], initiative: None, harness_bindings: None });
         assert!(applied.fresh.is_empty(), "a dismissal is not news");
         assert_eq!(applied.gone, vec!["1".to_string(), "2".to_string()]);
         assert!(mirror.showing().is_empty(), "the centre and the toasts agree");
@@ -602,10 +625,12 @@ mod tests {
         mirror.apply(Since {
             revision: 1,
             changed: vec![note("1", "Downloads", "2026-09-21T09:00:00Z")],
+            initiative: None, harness_bindings: None,
         });
         let applied = mirror.apply(Since {
             revision: 2,
             changed: vec![note("1", "Downloads", "2026-09-21T09:07:00Z")],
+            initiative: None, harness_bindings: None,
         });
         assert_eq!(applied.fresh.len(), 1);
         assert_eq!(mirror.showing().len(), 1, "it replaced, it did not add");
@@ -619,18 +644,19 @@ mod tests {
         assert!(!mirror.service_up());
         assert!(mirror.notice().is_some());
         // And a successful poll clears it without anyone having to remember to.
-        mirror.apply(Since { revision: 1, changed: vec![] });
+        mirror.apply(Since { revision: 1, changed: vec![], initiative: None, harness_bindings: None });
         assert!(mirror.service_up());
     }
 
     #[test]
     fn the_mirror_is_bounded() {
         let mut mirror = NotificationMirror::new();
-        mirror.apply(Since { revision: 1, changed: vec![] });
+        mirror.apply(Since { revision: 1, changed: vec![], initiative: None, harness_bindings: None });
         for i in 0..(MAX_MIRRORED + 20) {
             mirror.apply(Since {
                 revision: i as u64 + 2,
                 changed: vec![note(&i.to_string(), "Flood", "2026-09-21T09:00:00Z")],
+                initiative: None, harness_bindings: None,
             });
         }
         assert_eq!(mirror.showing().len(), MAX_MIRRORED);

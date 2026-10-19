@@ -37,10 +37,10 @@ const NIGHT_TOPICS: &[&str] = &[
 /// The late-night companion.
 ///
 /// NightOwl is strictly time-gated: it only activates between 10 PM and
-/// 4 AM, and only when the user is actually present (session active or
-/// idle < 5 minutes).  This *is* the instinct's identity — it exists to
-/// meet the user in those quiet hours and offer something worth thinking
-/// about.
+/// 4 AM, and only when the user is already actively engaged — a session with
+/// turns in it, an interaction within the last hour, and idle under 5
+/// minutes (#755).  It meets someone who is already up; it never starts a
+/// late-night session.  It is opt-in (`night_owl_enabled`, off by default).
 pub struct NightOwlInstinct {
     /// Minimum seconds between night-owl activations.
     interval_secs: f64,
@@ -83,11 +83,12 @@ impl Instinct for NightOwlInstinct {
             return vec![];
         }
 
-        // ── Presence gate ──────────────────────────────────────────
-        // The user must actually be at their computer.  If they just
-        // left the screen on and went to bed, there's no one to share
-        // a thought with.
-        if !state.session_active && state.idle_seconds >= 300.0 {
+        // ── Engagement gate ────────────────────────────────────────
+        // The person must already be engaged, not merely at the
+        // computer: a session with turns in it, an interaction in the
+        // last hour, and no long pause. Serving content at 2 am to
+        // someone who wasn't talking to it can keep them up (#755).
+        if !is_already_engaged(state) {
             return vec![];
         }
 
@@ -189,5 +190,44 @@ impl Instinct for NightOwlInstinct {
             "topic": topic,
             "hour": hour,
         }))]
+    }
+}
+
+/// Is the person already in a conversation at this hour? NightOwl joins one; it never starts one.
+fn is_already_engaged(state: &CompanionState) -> bool {
+    state.session_active && state.interactions_last_hour > 0 && state.idle_seconds < 300.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::{TEST_NOW, state_at};
+
+    fn late_night(engaged: bool) -> CompanionState {
+        let mut state = state_at(TEST_NOW, Some(60.0));
+        state.current_hour = 1;
+        state.session_active = engaged;
+        state.interactions_last_hour = if engaged { 4 } else { 0 };
+        state
+    }
+
+    /// Evaluates twice, clearing the cold-start guard and the interval in between.
+    fn fires(state: CompanionState) -> bool {
+        let owl = NightOwlInstinct::new(2.0);
+        owl.evaluate(&state);
+        let mut later = state;
+        later.current_ts += 3.0 * 3600.0;
+        !owl.evaluate(&later).is_empty()
+    }
+
+    #[test]
+    fn joins_a_conversation_already_happening_late() {
+        assert!(fires(late_night(true)));
+    }
+
+    #[test]
+    fn never_starts_a_late_night_session() {
+        // At the computer a minute ago but not talking to the companion: stay quiet.
+        assert!(!fires(late_night(false)));
     }
 }

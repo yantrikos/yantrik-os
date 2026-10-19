@@ -100,10 +100,13 @@ impl Instinct for CognitiveLoadInstinct {
 
         let urgency = (score * 0.8).min(0.8);
 
+        // Name the friction and offer something concrete; never diagnose the person or comment on
+        // their hours (#755).
         let msg = if score > 0.75 {
-            "You've been going really hard. Take a break \u{2014} seriously."
+            "Lots of switching and a few snags in the last stretch. Want me to note where things \
+             stand, so it's easy to pick up later?"
         } else {
-            "You've been going hard for a while. Maybe a short break?"
+            "That's been a lot of back-and-forth. Want me to note where things stand?"
         };
 
         vec![

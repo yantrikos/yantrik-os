@@ -55,10 +55,15 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
         // The Lens's "New chat", for a client that is not the Lens: the conversation starts again,
         // for whichever mind is answering (#246). `standard`: nothing is lost — every earlier
         // conversation stays on the Agents screen's All tab, and can be carried on from there.
+        //
+        // It does NOT begin a new taint scope (`taint_scope`): only the person's press of + does.
+        // A mind that runs as the person and presents no token passes `persons_only`, and one
+        // that could start a clean scope could carry what it read out of the last one.
         Action::new("new_chat", "Start a new conversation with the mind that is answering, as the Lens's New chat does"),
         move |_args| {
             persons_only("new_chat")?;
             let ui = new_weak.upgrade().ok_or_else(|| "the shell is gone".to_string())?;
+            let _not_a_press = crate::taint_scope::NotAPress::enter();
             ui.invoke_lens_new_chat();
             use slint::Model;
             Ok(serde_json::json!({ "messages": ui.get_messages().row_count() }))

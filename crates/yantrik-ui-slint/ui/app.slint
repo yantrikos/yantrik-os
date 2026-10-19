@@ -7,7 +7,7 @@
 //   29=spreadsheet, 30=document_editor, 31=presentation.
 // The AI IS the shell — Intent Lens is the primary interaction.
 
-import { Theme, ThemeMode, ThemeOverrides, AccentPreset } from "theme.slint";
+import { Theme, ThemeMode, ThemeOverrides, AccentPreset, TextScale } from "theme.slint";
 // A window frame's glyph wears its app's colour from the one table, not the minds' teal.
 import { AppColor } from "components/app_color.slint";
 // The letter on an unknown app's tile, answered from Rust (wire/mod.rs).
@@ -21,7 +21,10 @@ import { TodayState, TodayEvent } from "components/bar/today_state.slint";
 import { CalendarDay } from "components/month_grid.slint";
 export { TodayState, TodayEvent, CalendarDay }
 import { BootScreen, BootStage } from "boot.slint";
-import { OnboardingScreen } from "onboarding.slint";
+// The first boot is the first run (design/experience-final-2026-10-10.md); onboarding.slint
+// is no longer mounted.
+import { FirstRunScreen, FirstRunProvider, FirstRunModel, FirstRunCheck, FirstRunMind } from "onboarding_first_run.slint";
+export { FirstRunProvider, FirstRunModel, FirstRunCheck, FirstRunMind, TextScale }
 import { InstallerScreen, InstallerDisk, InstallerSegment, InstallerTargetDisk, KeyboardChoice } from "installer.slint";
 export { InstallerDisk, InstallerSegment, InstallerTargetDisk, KeyboardChoice }
 export { DecisionPreset, DecisionUse, ThemeCardData } from "settings.slint";
@@ -45,8 +48,12 @@ import { DeviceDashboardScreen, UsbDeviceData, PciDeviceData, InputDeviceData, S
 import { PermissionDashboardScreen, UserData, GroupData, PermFileData } from "permission_dashboard.slint";
 import { ToastBanner, ToastData, ToastActionData } from "components/toast_banner.slint";
 export { OsdWindow } from "osd_window.slint";
+// The capture bar (Print) is a window of its own too, and its state a global the status bar's red
+// dot and the toasts read (wire/capture_bar.rs).
+export { CaptureBarWindow } from "capture_bar_window.slint";
+import { CaptureState } from "components/bar/capture_state.slint";
+export { CaptureState }
 import { ProblemReportScreen, ProblemRow } from "problem_report.slint";
-import { WorkCardData } from "components/work_card.slint";
 // Agents (screen 34), and the window one agent pops out into. The window and the global it reads
 // are exported so the shell can create a window per agent and fill each one.
 import { AgentsScreen, AgentsState } from "agents.slint";
@@ -64,6 +71,9 @@ import { MindModeMenu, MindRule, MindAuditEntry } from "components/mind_mode_men
 import { MindsPanel, ProviderGroup, AccountRow, AccountMeter, AddChoice } from "components/minds_panel.slint";
 export { ProviderGroup, AccountRow, AccountMeter, AddChoice }
 import { WhisperCardItem } from "components/whisper_card.slint";
+// The Lens's For you inbox and Settings → Minds → Initiative read globals the shell fills.
+export { InboxState, NoticeCardData } from "components/for_you.slint";
+export { InitiativeState, FamilyRowData, BindingRowData } from "components/initiative_settings.slint";
 import { BriefSection } from "components/morning_brief.slint";
 import { ClipboardEntryData } from "components/clipboard_panel.slint";
 import { CheatRowData } from "components/cheat_sheet.slint";
@@ -76,6 +86,12 @@ import { ServiceItem, MindPanel, MindPanelState, MindPanelNow, MindPanelAgent, M
 export { MindPanelState, MindPanelNow, MindPanelAgent, MindPanelRecipe, MindPanelAct }
 import { FreeAiState, FreeAiRow, FreeAiValue } from "components/free_ai_card.slint";
 export { FreeAiState, FreeAiRow, FreeAiValue }
+import { AiAccountsState, AiAccountRow } from "components/ai_accounts_card.slint";
+export { AiAccountsState, AiAccountRow }
+// The one picker for every mind (#673), shared by the Lens composer and the mind panel.
+import { PickerState } from "components/picker_state.slint";
+export { PickerState }
+export { PickerMind, PickerModel, PickerFile } from "components/model_picker.slint";
 import { WindowFrame } from "components/window_frame.slint";
 import { YSidebarItem, YSidebarSection } from "components/y_sidebar.slint";
 import { YTabItem } from "components/y_tabs.slint";
@@ -83,7 +99,7 @@ import { YMenuAction, YContextMenu } from "components/y_context_menu.slint";
 import { Icons } from "components/icon.slint";
 import { Tr } from "translations.slint";
 
-export { HarnessData, HarnessRowData, Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, ToolCallData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, ApprovalRequest, QuestionRequest, MindRule, MindAuditEntry, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, NotifActionData, ProcessData, ClipboardEntryData, CheatRowData, AppGridItem, ServiceItem, WindowItem, SwitcherCell, DockItem, DockButton, DockWindow, ToastData, ToastActionData, PackageData, PendingAction, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction, ProblemRow, WorkCardData }
+export { HarnessData, HarnessRowData, Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, ToolCallData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, ApprovalRequest, QuestionRequest, MindRule, MindAuditEntry, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, NotifActionData, ProcessData, ClipboardEntryData, CheatRowData, AppGridItem, ServiceItem, WindowItem, SwitcherCell, DockItem, DockButton, DockWindow, ToastData, ToastActionData, PackageData, PendingAction, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction, ProblemRow }
 
 export component App inherits Window {
     default-font-family: Theme.font-ui;
@@ -205,6 +221,8 @@ export component App inherits Window {
     callback lens-open-in-agents();
     callback lens-open-history();
     callback lens-new-chat();
+    // The × on a message queued while the mind works (wire/lens_queue.rs).
+    callback lens-cancel-queued();
 
     // ── The vault, and the one way a passphrase gets into this machine ──
     //
@@ -310,8 +328,13 @@ export component App inherits Window {
     property <bool> mind-panel-shown: root.current-screen == 1
         || (root.current-screen >= 4 && root.current-screen <= 31)
         || root.current-screen == 33 || root.current-screen == 34 || root.current-screen == 35;
+    // An app window is in front of the shell (crates/yantrik-ui/src/mind_panel_room.rs). The panel
+    // is then its strip, which labwc's <margin right> keeps clear, so no app window cuts its
+    // words; the person's choice comes back when the desktop is in front again.
+    in property <bool> app-window-in-front: false;
     property <bool> mind-panel-open: root.mind-panel-shown
         && !(root.current-screen == 1 && root.focus-mode)
+        && !root.app-window-in-front
         && (root.current-screen == 1 ? MindPanelState.desktop-expanded : MindPanelState.elsewhere-expanded);
     // Below this width the open card floats over the screen instead of taking its room, so a
     // compact display keeps its working area and can still open the panel to look.
@@ -397,10 +420,6 @@ export component App inherits Window {
         bond-level: "",
         total-interactions: 0,
         days-together: 0,
-        current-streak: 0,
-        humor-rate: 0.0,
-        vulnerability-events: 0,
-        shared-references: 0,
     };
 
     // Personality state
@@ -772,6 +791,7 @@ export component App inherits Window {
     callback apply-provider();
     callback cancel-provider();
     callback revert-provider(string);
+    callback use-own-models(string);
     callback settings-search(string);
     in-out property <string> settings-query;
     in-out property <string> settings-save-status:"Preferences are saved automatically";
@@ -1323,6 +1343,7 @@ export component App inherits Window {
     pure callback installer-check-timezone(string) -> string;
     pure callback installer-is-macos-disk(string, string) -> bool;
     pure callback installer-target-listed(string, string) -> bool;
+    pure callback installer-layout-after([KeyboardChoice], string, int) -> string;
 
     // The onboarding form, mirrored up to the window so the control surface can read and fill
     // it. `OnboardingScreen` lives inside a conditional element, so Rust cannot reach into it;
@@ -1350,6 +1371,74 @@ export component App inherits Window {
     in-out property <bool> onboard-encrypt: true;
     callback onboard-install-reboot();
 
+    // The first run (onboarding_first_run.slint, wired by wire/onboarding.rs).
+    in-out property <int> fr-step: 1;
+    in property <bool> fr-installer-chose: false;
+    // A first boot that did not come through the installer asks the person's name (wire/onboarding.rs).
+    in property <bool> fr-ask-name: false;
+    in property <[FirstRunProvider]> fr-featured: [];
+    in property <[FirstRunProvider]> fr-every-provider: [];
+    in-out property <string> fr-chosen-id: "";
+    in-out property <string> fr-chosen-name: "";
+    in-out property <string> fr-connect-mode: "";
+    in-out property <string> fr-key-input: "";
+    in-out property <string> fr-custom-url: "";
+    in-out property <string> fr-custom-model: "";
+    in-out property <string> fr-custom-key: "";
+    in-out property <bool> fr-show-every: false;
+    // The look on the network for a model already running: "", "looking", "found", "none".
+    in property <string> fr-nearby-status: "";
+    in property <string> fr-nearby-words: "";
+    callback fr-look-nearby();
+    in property <string> fr-connect-status: "";
+    in property <string> fr-connect-words: "";
+    in property <[FirstRunModel]> fr-models: [];
+    in-out property <string> fr-chosen-model: "";
+    in property <string> fr-chosen-key-placeholder: "";
+    in property <bool> fr-chosen-browser-sign-in: false;
+    in property <bool> fr-chosen-key-help: false;
+    in-out property <bool> fr-share: true;
+    in-out property <bool> fr-private-lane: false;
+    in-out property <bool> fr-show-shared: false;
+    in property <[string]> fr-shared-items: [];
+    in property <string> fr-private-lane-words: "";
+    in property <string> fr-sharing-words: "";
+    in property <[FirstRunMind]> fr-minds: [];
+    in property <bool> fr-checks-running: false;
+    in property <bool> fr-checks-done: false;
+    // How the default mind's install is going (crates/yantrik-ui/src/default_mind.rs): "Setting up
+    // Hermes, your mind, …", the reason it was not, or that it is ready. Empty before it starts.
+    in property <string> fr-default-mind-words: "";
+    // The first success, in the chat beside the desktop: 1 while it waits for it, 0 after.
+    in-out property <int> fr-chat: 0;
+    // What the first reply was ("", "answered", "failed") and, when it failed, the sentence.
+    in property <string> fr-chat-outcome: "";
+    in property <string> fr-chat-failure: "";
+    callback fr-chat-retry();
+    // The installer's "Thinking" row opened the first run's provider screens over it.
+    in-out property <bool> fr-in-installer: false;
+    // What the installer's row shows: "Claude", or empty when nothing is chosen yet.
+    in property <string> fr-installer-choice: "";
+    callback fr-installer-done();
+    callback fr-text-scale-changed(float);
+    callback fr-read-aloud(string);
+    callback fr-choose-provider(string);
+    callback fr-sign-in-browser(string);
+    callback fr-show-key-help(string);
+    callback fr-submit-key(string, string);
+    callback fr-submit-custom(string, string, string);
+    callback fr-use-this-computer();
+    callback fr-pick-model(string);
+    callback fr-retry-pick();
+    // Bumped when the provider screens drawn over the installer close: focus goes back to its
+    // Thinking row.
+    in-out property <int> fr-installer-returned: 0;
+    callback fr-sharing-chosen(string);
+    callback fr-start-checks();
+    callback fr-add-mind();
+    callback fr-finished();
+    callback fr-chat-done();
+
     // AI onboarding setup (V59)
     in property <bool> onboard-ai-hw-cpu-ok: false;
     in property <bool> onboard-ai-hw-ram-ok: false;
@@ -1362,16 +1451,7 @@ export component App inherits Window {
     in property <string> onboard-ai-hw-gpu-label: "";
     in property <string> onboard-ai-hw-disk-label: "";
     in property <string> onboard-ai-hw-recommend: "local";
-    in property <string> onboard-ai-test-status: "";
-    in property <string> onboard-ai-test-model: "";
-    in property <int> onboard-ai-test-latency-ms: 0;
-    in property <string> onboard-ai-test-privacy: "local";
-    callback onboard-ai-mode-selected(string);
     in property <[ProviderPresetData]> onboard-ai-cloud-presets: [];
-    callback onboard-ai-provider-selected(string);
-    callback onboard-ai-api-key-submitted(string, string);
-    callback onboard-ai-test-connection();
-    callback onboard-ai-skip-setup();
 
     // V61 — Runtime provider state (status bar + quick switcher)
     in property <string> ai-privacy-mode: "local";   // "local", "cloud", "hybrid"
@@ -1509,67 +1589,84 @@ export component App inherits Window {
             boot-complete => { root.boot-complete(); }
         }
 
-        // Onboarding (first boot only)
-        if current-screen == 2 && !root.onboard-installer-mode : OnboardingScreen {
+        // The first run (first boot only): five screens, then the first success in the chat.
+        if current-screen == 2 && (!root.onboard-installer-mode || root.fr-in-installer) : FirstRunScreen {
             width: 100%; height: 100%;
-            ambient-interval-ms: root.ambient-interval-ms;
-            companion-name: root.settings-companion-name;
-            after-install: root.onboard-after-install;
-            hw-note: root.onboard-hw-note;
-            // AI hardware scan properties
-            ai-hw-cpu-ok: root.onboard-ai-hw-cpu-ok;
-            ai-hw-ram-ok: root.onboard-ai-hw-ram-ok;
-            ai-hw-gpu-ok: root.onboard-ai-hw-gpu-ok;
-            ai-hw-disk-ok: root.onboard-ai-hw-disk-ok;
-            ai-hw-network-ok: root.onboard-ai-hw-network-ok;
-            ai-hw-runtime-ok: root.onboard-ai-hw-runtime-ok;
-            ai-hw-cpu-label: root.onboard-ai-hw-cpu-label;
-            ai-hw-ram-label: root.onboard-ai-hw-ram-label;
-            ai-hw-gpu-label: root.onboard-ai-hw-gpu-label;
-            ai-hw-disk-label: root.onboard-ai-hw-disk-label;
-            ai-hw-recommend: root.onboard-ai-hw-recommend;
-            ai-test-status: root.onboard-ai-test-status;
-            ai-test-model: root.onboard-ai-test-model;
-            ai-test-latency-ms: root.onboard-ai-test-latency-ms;
-            ai-test-privacy: root.onboard-ai-test-privacy;
-            ai-cloud-presets: root.onboard-ai-cloud-presets;
-            set-names(user-name, comp-name) => {
-                if user-name != "" {
-                    root.rename-user(user-name);
-                    root.settings-user-name = user-name;
+            in-installer: root.onboard-installer-mode;
+            step <=> root.fr-step;
+            installer-chose: root.fr-installer-chose;
+            ask-name: root.fr-ask-name;
+            name-given(n) => {
+                root.rename-user(n);
+                root.settings-user-name = n;
+            }
+            featured: root.fr-featured;
+            every-provider: root.fr-every-provider;
+            chosen-id <=> root.fr-chosen-id;
+            chosen-name <=> root.fr-chosen-name;
+            connect-mode <=> root.fr-connect-mode;
+            key-input <=> root.fr-key-input;
+            custom-url <=> root.fr-custom-url;
+            custom-model <=> root.fr-custom-model;
+            custom-key <=> root.fr-custom-key;
+            show-every <=> root.fr-show-every;
+            nearby-status: root.fr-nearby-status;
+            nearby-words: root.fr-nearby-words;
+            look-nearby => { root.fr-look-nearby(); }
+            connect-status: root.fr-connect-status;
+            connect-words: root.fr-connect-words;
+            models: root.fr-models;
+            chosen-model <=> root.fr-chosen-model;
+            chosen-key-placeholder: root.fr-chosen-key-placeholder;
+            chosen-browser-sign-in: root.fr-chosen-browser-sign-in;
+            chosen-key-help: root.fr-chosen-key-help;
+            share <=> root.fr-share;
+            private-lane <=> root.fr-private-lane;
+            show-shared <=> root.fr-show-shared;
+            shared-items: root.fr-shared-items;
+            private-lane-words: root.fr-private-lane-words;
+            sharing-words: root.fr-sharing-words;
+            minds: root.fr-minds;
+            checks-running: root.fr-checks-running;
+            checks-done: root.fr-checks-done;
+            default-mind-words: root.fr-default-mind-words;
+            text-scale-changed(f) => { root.fr-text-scale-changed(f); }
+            read-aloud(t) => { root.fr-read-aloud(t); }
+            choose-provider(id) => { root.fr-choose-provider(id); }
+            sign-in-browser(id) => { root.fr-sign-in-browser(id); }
+            show-key-help(id) => { root.fr-show-key-help(id); }
+            submit-key(id, key) => { root.fr-submit-key(id, key); }
+            submit-custom(url, model, key) => { root.fr-submit-custom(url, model, key); }
+            use-this-computer => { root.fr-use-this-computer(); }
+            pick-model(m) => { root.fr-pick-model(m); }
+            retry-pick => { root.fr-retry-pick(); }
+            sharing-chosen(mode) => { root.fr-sharing-chosen(mode); }
+            start-checks => { root.fr-start-checks(); }
+            add-mind => { root.fr-add-mind(); }
+            finished => {
+                if root.onboard-installer-mode {
+                    root.fr-in-installer = false;
+                    root.fr-installer-returned += 1;
+                    root.fr-installer-done();
+                } else {
+                    root.current-screen = 1;
+                    root.navigate(1);
+                    root.fr-finished();
                 }
-                if comp-name != "" {
-                    root.rename-companion(comp-name);
-                    root.settings-companion-name = comp-name;
-                }
-            }
-            set-profile(interests, home-loc, notif-pref) => {
-                root.onboarding-set-profile(interests, home-loc, notif-pref);
-            }
-            ai-mode-selected(mode) => { root.onboard-ai-mode-selected(mode); }
-            ai-provider-selected(provider) => { root.onboard-ai-provider-selected(provider); }
-            ai-api-key-submitted(provider, key) => { root.onboard-ai-api-key-submitted(provider, key); }
-            ai-test-connection => { root.onboard-ai-test-connection(); }
-            ai-skip-setup => { root.onboard-ai-skip-setup(); }
-            phase <=> root.onboard-phase;
-            input-user-name <=> root.onboard-input-full-name;
-            input-companion-name <=> root.onboard-input-companion;
-            input-home-location <=> root.onboard-input-location;
-            ready => {
-                root.current-screen = 1;
-                root.navigate(1);
-                root.onboarding-ready();
-            }
-            skip => {
-                root.current-screen = 1;
-                root.navigate(1);
-                root.onboarding-skip();
             }
         }
 
         // The installer (live ISO booted to install): four screens, then the install (#400).
         if current-screen == 2 && root.onboard-installer-mode : InstallerScreen {
             width: 100%; height: 100%;
+            // Hidden, not removed, while the provider screens are over it: what was typed stays.
+            visible: !root.fr-in-installer;
+            ai-choice: root.fr-installer-choice;
+            ai-returned: root.fr-installer-returned;
+            choose-ai => {
+                root.fr-step = 2;
+                root.fr-in-installer = true;
+            }
             step <=> root.onboard-phase;
             keyboards: root.onboard-keyboards;
             keyboard <=> root.onboard-keyboard;
@@ -1621,6 +1718,7 @@ export component App inherits Window {
             check-timezone(timezone) => { return root.installer-check-timezone(timezone); }
             is-macos-disk(disk, list) => { return root.installer-is-macos-disk(disk, list); }
             target-listed(target, list) => { return root.installer-target-listed(target, list); }
+            layout-after(choices, current, by) => { return root.installer-layout-after(choices, current, by); }
         }
 
         // Lock screen
@@ -1737,11 +1835,17 @@ export component App inherits Window {
                 }
             }
             lens-can-open-in-agents: root.lens-can-open-in-agents;
-            // Chat v2: the run cards, the strip and the header's words.
-            lens-work-cards: AgentsState.lens-cards;
-            lens-strip: AgentsState.lens-strip;
+            // Chat v2: the reply's live timeline, the composer's mode and the header's words.
+            lens-live-steps: AgentsState.lens-steps;
+            lens-live-steps-row: AgentsState.lens-steps-row;
             lens-live-runs: AgentsState.lens-live;
             lens-waiting-runs: AgentsState.lens-waiting;
+            lens-composer-mode: AgentsState.lens-composer-mode;
+            lens-composer-placeholder: AgentsState.lens-composer-placeholder;
+            lens-composer-asks: AgentsState.lens-composer-asks;
+            lens-queued-mind: AgentsState.lens-queued-mind;
+            lens-queued-note: AgentsState.lens-queued-note;
+            lens-cancel-queued => { root.lens-cancel-queued(); }
             lens-mode-label: root.mind-mode-label;
             lens-identity: AgentsState.lens-identity;
             // The same choice the status bar chip opens; it changes nothing by itself.
@@ -1793,6 +1897,11 @@ export component App inherits Window {
             // Callbacks
             send-message(text) => { root.send-message(text); }
             mic-pressed => { root.mic-pressed(); }
+            first-run-chat: root.fr-chat > 0;
+            first-run-chat-outcome: root.fr-chat-outcome;
+            first-run-chat-failure: root.fr-chat-failure;
+            first-run-chat-done => { root.fr-chat-done(); }
+            first-run-chat-retry => { root.fr-chat-retry(); }
             launch-app(app-id) => { root.launch-app(app-id); }
             navigate-to(screen) => {
                 root.current-screen = screen;
@@ -2122,6 +2231,7 @@ export component App inherits Window {
                 apply-provider => { root.apply-provider(); }
                 cancel-provider => { root.cancel-provider(); }
                 revert-provider(h) => { root.revert-provider(h); }
+                use-own-models(h) => { root.use-own-models(h); }
                 settings-search(query) => { root.settings-search(query); }
                 add-provider => { root.add-provider(); }
                 save-provider(name, ptype, url, key, auth, model) => { root.save-provider(name, ptype, url, key, auth, model); }
@@ -3145,6 +3255,8 @@ export component App inherits Window {
                 y: 0;
                 width: 100%;
                 height: parent.height;
+                // The answering mind by name, as the status bar has it.
+                mind-label: root.active-harness-name == "" || root.active-harness-name == "no mind" ? "Your mind" : root.active-harness-name;
                 buttons: root.dock-buttons;
                 windows: root.dock-windows;
                 reveal-index: root.dock-reveal-index;
@@ -3253,7 +3365,7 @@ export component App inherits Window {
                 root.navigate(35);
                 RecipesState.show(id);
             }
-            // Straight to Settings > Harnesses, as the status bar's mind chip does.
+            // Straight to Settings > Minds, as the status bar's mind chip does.
             open-mind => {
                 root.settings-category = 8;
                 root.current-screen = 7;
@@ -3292,7 +3404,7 @@ export component App inherits Window {
         // boolean and the desktop did not move. This is the panel that toggle was always meant to
         // open, and switching minds is the thing it should have been switching.
         //
-        // The fast path, deliberately: Settings > Harnesses is where you read about a mind, and
+        // The fast path, deliberately: Settings > Minds is where you read about a mind, and
         // this is where you change to one without leaving what you were doing.
         if root.ai-quick-switcher-open : Rectangle {
             width: 100%;
@@ -3423,7 +3535,8 @@ export component App inherits Window {
         }
 
         // Toast notification banners (top-right, stacking)
-        if toast-queue.length > 0 : ToastBanner {
+        // Not while a screenshot is being taken: a toast is never in the picture.
+        if toast-queue.length > 0 && !CaptureState.hiding : ToastBanner {
             width: 100%; height: 100%;
             toasts: root.toast-queue;
             overflow: root.toast-overflow;

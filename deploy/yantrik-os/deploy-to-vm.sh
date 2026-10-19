@@ -88,7 +88,7 @@ for b in "${BINS[@]}"; do printf '%s\n' "$b"; done \
 # that was installed while these binaries ran, so the About screen and `describe shell` reported a
 # build that was not running. A developer deploy says what it is: this tree's revision, marked
 # -dev. The channel line is kept as it was, because the updater reads its channel from here.
-DEV_VERSION="$(git -C "$PROJECT_ROOT" describe --tags --always --dirty 2>/dev/null || echo unknown)-dev"
+DEV_VERSION="$(git -C "$PROJECT_ROOT" describe --tags --match "v[0-9]*" --always --dirty 2>/dev/null || echo unknown)-dev"
 DEV_GIT="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 "${SSH[@]}" "B=$REMOTE/BUILD; CH=\$(sed -n 's/^channel=//p' \$B 2>/dev/null | head -1); { echo name=dev-deploy; echo version=$DEV_VERSION; echo git=$DEV_GIT; [ -n \"\$CH\" ] && echo channel=\$CH; echo installed=\$(date -u +%Y-%m-%dT%H:%M:%SZ); } | sudo tee \$B >/dev/null"
 echo "   BUILD: $DEV_VERSION"
