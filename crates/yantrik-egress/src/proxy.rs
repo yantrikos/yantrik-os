@@ -306,24 +306,29 @@ async fn one(proxy: &Proxy, stream: &mut TcpStream, peer: SocketAddr) -> Result<
     }
 
     // A search request is the one thing the person never sees before it leaves: the query is the
-    // mind's. A rule that names search queries binds what was approved to what is sent, so on a
-    // host one matches, only a plain-HTTP request with no body and every `q=` approved goes out.
-    // A tunnel is refused there: the proxy sees the name and the port, never what goes through,
-    // and a tunnel to a bound host would carry any query at all. So would a body (a form POST).
-    // A rule without `search_queries` never triggers this.
+    // mind's. On a host a `search_bound` rule matches, a search goes out only with the person's
+    // yes for that exact query, which it spends (`crate::search`): a plain-HTTP request with no
+    // body and one `q`. Anything else that could carry a query is refused: a tunnel (the proxy
+    // sees the name and the port, never what goes through), a body (a form POST), or a second `q`
+    // (a server may read either). A request with no `q` carries no query and goes out.
     let refused = {
-        let Ok(s) = proxy.state.lock() else { return Err("state poisoned") };
-        let bound: Vec<_> = s.policy.rules.iter().filter(|r| r.matches(&host, port) && !r.search_queries.is_empty()).collect();
-        !bound.is_empty()
-            && match &target {
-                Target::Connect { .. } => true,
-                Target::Http { body, queries, .. } => {
-                    *body > 0 || !queries.iter().all(|q| bound.iter().any(|r| crate::policy::search_allowed(r, q)))
-                }
+        let Ok(mut s) = proxy.state.lock() else { return Err("state poisoned") };
+        if !s.policy.search_bound(&host, port) {
+            None
+        } else {
+            match &target {
+                Target::Connect { .. } => Some(format!("{host}: searches here are checked against what the person approved, which a tunnel hides; send them as plain http://")),
+                Target::Http { body, .. } if *body > 0 => Some(format!("{host}: searches here are checked against what the person approved; send the query in the URL, not in a body")),
+                Target::Http { queries, .. } => match queries.as_slice() {
+                    [] => None,
+                    [q] if s.searches.spend(&host, port, q, Instant::now()) => None,
+                    [_] => Some(format!("{host}: this search has no yes from the person (never asked, already used, or run out); ask them for this query first")),
+                    _ => Some(format!("{host}: one search at a time; a request with more than one `q` is refused")),
+                },
             }
+        }
     };
-    if refused {
-        let why = format!("{host}: the search query was not one the person approved");
+    if let Some(why) = refused {
         proxy.record(&host, port, Outcome::Refused, place == Place::Lan, http, &why);
         tracing::info!(door = proxy.door.name(), host, port, why, "refused");
         let _ = reply(stream, 403, &why).await;

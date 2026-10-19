@@ -13,6 +13,10 @@
 //! - 127.0.0.1 or ::1: a **loopback** entry, a service on this machine opened to the mind (a local
 //!   Ollama on 11434).
 //!
+//! A rule that says `search_bound` never makes an entry, nor does any rule for a host and port a
+//! bound rule also covers: every search there must pass the proxy's check of what the person
+//! approved (`crate::search`), and a kernel route past the proxy would skip it.
+//!
 //! A name never makes an entry; it keeps going through this proxy, which decides on the address it
 //! resolves to. Neither does a public address: the internet is reached through the proxy, where it
 //! is counted. In Private mode there are none.
@@ -93,11 +97,16 @@ pub fn entries(policy: &Policy) -> Vec<Entry> {
         } else {
             continue;
         };
-        out.extend(r.ports.iter().filter(|p| **p != 0).map(|p| make(ip, *p)));
+        out.extend(r.ports.iter().filter(|p| **p != 0 && !bound(policy, &r.host, ip, **p)).map(|p| make(ip, *p)));
     }
     out.sort();
     out.dedup();
     out
+}
+
+/// Whether a bound rule covers `host`:`port`, as the rule names it or as the address it is.
+fn bound(policy: &Policy, host: &str, ip: IpAddr, port: u16) -> bool {
+    policy.search_bound(host, port) || policy.search_bound(&ip.to_string(), port)
 }
 
 /// What `yantrik-egress direct` prints for the state in `dir`: Private mode, the policy's mode
@@ -123,7 +132,9 @@ fn direct_text(policy: &Policy, private: bool) -> String {
 }
 
 /// Every host a `lan` rule names, lowercased and without a trailing dot, each once with all its
-/// ports, sorted: names and `*.domain` as written, literal addresses as written.
+/// ports, sorted: names and `*.domain` as written, literal addresses as written. A port a
+/// `search_bound` rule covers is left out, and a host left with none has no line: the Mind
+/// reaches those only through the proxy, which checks every search there.
 pub fn lan_hosts(policy: &Policy) -> Vec<(String, Vec<u16>)> {
     let mut out: std::collections::BTreeMap<String, Vec<u16>> = std::collections::BTreeMap::new();
     for r in policy.rules.iter().filter(|r| r.lan) {
@@ -131,7 +142,8 @@ pub fn lan_hosts(policy: &Policy) -> Vec<(String, Vec<u16>)> {
         if host.is_empty() {
             continue;
         }
-        out.entry(host).or_default().extend(r.ports.iter().filter(|p| **p != 0));
+        let bound = |p: u16| policy.search_bound(&r.host, p) || policy.search_bound(&host, p) || literal(&host).is_some_and(|ip| bound(policy, &host, ip, p));
+        out.entry(host.clone()).or_default().extend(r.ports.iter().filter(|p| **p != 0 && !bound(**p)));
     }
     out.into_iter()
         .filter_map(|(h, mut ports)| {
@@ -171,7 +183,40 @@ mod tests {
     use crate::policy::{Mode, Rule};
 
     fn rule(host: &str, ports: &[u16], lan: bool) -> Rule {
-        Rule { host: host.into(), ports: ports.to_vec(), http: true, lan, why: "because".into(), seeded: false, search_queries: Vec::new() }
+        Rule { host: host.into(), ports: ports.to_vec(), http: true, lan, why: "because".into(), seeded: false, search_bound: false }
+    }
+
+    #[test]
+    fn a_bound_lan_rule_makes_no_direct_entry_and_no_lan_hosts_line() {
+        let bound = |host: &str, ports: &[u16]| Rule { search_bound: true, ..rule(host, ports, true) };
+        let p = Policy {
+            mode: Mode::Enforce,
+            rules: vec![
+                // The Mind's SearXNG by its literal LAN address, and one on loopback.
+                bound("192.168.4.42", &[8888]),
+                bound("127.0.0.1", &[8889]),
+                // An unbound rule for the same address and port: the bound one wins.
+                rule("192.168.4.42", &[8888, 8080], true),
+                // The same address written as IPv6, unbound: still the bound service.
+                rule("::ffff:192.168.4.42", &[8888], true),
+                rule("127.0.0.1", &[8889, 11434], true),
+                bound("searxng.lan", &[8888]),
+                rule("searxng.lan", &[8888], true),
+            ],
+        };
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        assert_eq!(
+            entries(&p),
+            vec![Entry::Direct(ip("192.168.4.42"), 8080), Entry::Loopback(ip("127.0.0.1"), 11434)],
+            "no kernel route past the proxy to a bound port; the unbound ports keep theirs"
+        );
+        assert_eq!(
+            lan_hosts(&p),
+            vec![("127.0.0.1".to_string(), vec![11434]), ("192.168.4.42".to_string(), vec![8080])],
+            "no lan_hosts line for a bound port, and none at all for a host with only bound ones"
+        );
+        assert_eq!(direct_text(&p, false), "private off\nmode enforce\ndirect 192.168.4.42 8080\nloopback 127.0.0.1 11434\n");
+        assert_eq!(lan_hosts_text(&p), "lan 127.0.0.1 11434\nlan 192.168.4.42 8080\n");
     }
 
     #[test]

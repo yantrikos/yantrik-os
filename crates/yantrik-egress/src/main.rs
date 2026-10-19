@@ -38,6 +38,7 @@ mod policy;
 mod proxy;
 mod ranges;
 mod request;
+mod search;
 mod seed;
 mod state;
 

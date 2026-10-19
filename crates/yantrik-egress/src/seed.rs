@@ -92,7 +92,7 @@ pub fn plan(candidates: &[(String, String)], resolve: &dyn Fn(&str, u16) -> Opti
                 continue;
             }
         };
-        let rule = Rule { host: host.clone(), ports: vec![port], http, lan: true, why: format!("seeded from {source}"), seeded: true, search_queries: Vec::new() };
+        let rule = Rule { host: host.clone(), ports: vec![port], http, lan: true, why: format!("seeded from {source}"), seeded: true, search_bound: false };
         if valid(&rule).is_err() {
             out.push(skip(&host, "not a host a rule can hold"));
             continue;

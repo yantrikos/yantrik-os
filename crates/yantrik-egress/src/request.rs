@@ -127,16 +127,20 @@ pub fn parse(head: &[u8]) -> Result<Target, Bad> {
     Ok(Target::Http { host, port, head: out.into_bytes(), body, queries: queries_of(&path) })
 }
 
-/// The percent-decoded value of every `q=` parameter of `path`, in order. All of them, not the
+/// The percent-decoded value of every `q` parameter of `path`, in order. All of them, not the
 /// first: a server that reads the last of two would otherwise send one nobody checked. A pair
-/// with no `=` is skipped, not the end of the search. The path is forwarded byte for byte; this
-/// is only read to bind a search rule to what is sent.
+/// with no `=` is skipped unless it is a bare `q` (an empty query), not the end of the search.
+///
+/// Pairs are split on `&` only, and everything after the first `?` is the query, `#` included:
+/// a `;` or a `#` stays inside the value, so text after one is part of what must match what was
+/// approved. Splitting on them here when the server does not (SearXNG's does not) would let
+/// `q=approved;anything` out as `approved`. The path is forwarded byte for byte; this is only
+/// read to bind a search to what is sent.
 fn queries_of(path: &str) -> Vec<String> {
     let Some((_, query)) = path.split_once('?') else { return Vec::new() };
-    let query = query.split_once('#').map_or(query, |(q, _)| q);
     query
-        .split(&['&', ';'][..])
-        .filter_map(|pair| pair.split_once('='))
+        .split('&')
+        .map(|pair| pair.split_once('=').unwrap_or((pair, "")))
         .filter(|(name, _)| percent_decode(name) == "q")
         .map(|(_, value)| percent_decode(value))
         .collect()
@@ -299,6 +303,10 @@ mod tests {
         // A second `q`, or one spelled `%71`, is still a query.
         assert_eq!(queries(b"GET http://searxng.lan:8888/search?q=ok&q=other HTTP/1.1\r\n\r\n"), ["ok", "other"]);
         assert_eq!(queries(b"GET http://searxng.lan:8888/search?%71=other HTTP/1.1\r\n\r\n"), ["other"]);
+        // A `;` or a `#` is part of the value, as the server reads it; a bare `q` is an empty one.
+        assert_eq!(queries(b"GET http://searxng.lan:8888/search?q=ok;secret HTTP/1.1\r\n\r\n"), ["ok;secret"]);
+        assert_eq!(queries(b"GET http://searxng.lan:8888/search?q=ok#secret HTTP/1.1\r\n\r\n"), ["ok#secret"]);
+        assert_eq!(queries(b"GET http://searxng.lan:8888/search?q&q=ok HTTP/1.1\r\n\r\n"), ["", "ok"]);
     }
 
     #[test]
