@@ -29,7 +29,8 @@
 //!
 //! Read with the addresses ([`Watch`]): at most a second old, so a network change is seen within
 //! a second; a read that fails — the addresses, or the routes (any error but a missing IPv6
-//! table) — keeps the last one that did not. A connection that leaves from an address the read
+//! table) — keeps the last one that did not, for at most [`Watch::STALE_AFTER`]; past that the
+//! network is unknown and both doors refuse every connection (503) until a read succeeds. A connection that leaves from an address the read
 //! did not know has the network read again then (`crate::proxy`), so a new network is not the
 //! internet for that second.
 //!
@@ -39,6 +40,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -192,6 +194,10 @@ fn is_wide(ip: IpAddr, len: u8) -> bool {
     place_of(ip) == Place::Internet && len < if ip.is_ipv4() { WIDE_V4 } else { WIDE_V6 }
 }
 
+/// Whether netlink has ever answered a route dump on this machine; once it has, a later netlink
+/// failure is a failed read, not a `/proc` fallback that would drop policy routes and IPv6 (#672).
+static NETLINK_ANSWERED: AtomicBool = AtomicBool::new(false);
+
 /// This machine's addresses, the prefixes that are its network and its routers, now — or `None`
 /// when the kernel would not say (found on VM 520: the unit's `RestrictAddressFamilies` had left
 /// out the netlink socket `getifaddrs` asks through, the list came back empty, and this machine's
@@ -262,7 +268,7 @@ pub fn addresses() -> Option<Net> {
         let p = unsafe { libc::if_indextoname(index, buf.as_mut_ptr()) };
         (!p.is_null()).then(|| unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned())
     };
-    let routes = route_tables(|| crate::netlink::dump(&name), |p| std::fs::read_to_string(p))?;
+    let routes = route_tables(|| crate::netlink::dump(&name), |p| std::fs::read_to_string(p), &NETLINK_ANSWERED)?;
     Some(Net::build(&addrs, &devs, &routes))
 }
 
@@ -270,11 +276,24 @@ pub fn addresses() -> Option<Net> {
 /// `read` reads, which hold IPv4's main table only. `None` when neither said: a failed read, so
 /// the last good network is kept rather than one with no routes and no routers. A missing IPv6
 /// table is no IPv6, not a failure; a missing IPv4 one is no fallback.
-pub fn route_tables(dump: impl FnOnce() -> std::io::Result<Vec<Route>>, read: impl Fn(&str) -> std::io::Result<String>) -> Option<Vec<Route>> {
+pub fn route_tables(dump: impl FnOnce() -> std::io::Result<Vec<Route>>, read: impl Fn(&str) -> std::io::Result<String>, netlink_answered: &AtomicBool) -> Option<Vec<Route>> {
     let e = match dump() {
-        Ok(r) => return Some(r),
+        Ok(r) => {
+            netlink_answered.store(true, Ordering::SeqCst);
+            return Some(r);
+        }
         Err(e) => e,
     };
+    // Once netlink has answered, a later netlink failure is a failed read, not a /proc fallback:
+    // /proc holds IPv4's main table only, so it would replace the last good network with one
+    // missing policy routes, other tables and IPv6 routers (#672).
+    if netlink_answered.load(Ordering::SeqCst) {
+        log_once(
+            "route-dump-after-answer".into(),
+            &format!("the kernel answered a route dump over netlink before but now would not ({e}); not reading /proc, which lists IPv4's main table only, so this read fails"),
+        );
+        return None;
+    }
     log_once(
         "route-dump".into(),
         &format!("the kernel would not dump its routes over netlink ({e}); reading /proc, which lists IPv4's main table only"),
@@ -375,11 +394,17 @@ pub fn routes(v4: &str, v6: &str) -> Vec<Route> {
 
 /// The network, as [`addresses`] (or a test's stand-in) reads it, shared by both doors: read
 /// again when the last read is older than `fresh`, and when a read fails, the last one that did
-/// not. `None` only when no read ever has.
+/// not while it is younger than [`Watch::STALE_AFTER`]. `None` when no read ever has, or the last
+/// good one is older than that: the doors then refuse everything (503).
 pub struct Watch {
     read: fn() -> Option<Net>,
     fresh: Duration,
+    stale: Duration,
+    /// The last good read and when it was made.
     last: Mutex<Option<(Instant, Net)>>,
+    /// What has been logged about the reads failing since the last good one, so an outage is said
+    /// once, not once a read: 0 nothing, 1 the last good network is used, 2 it is unknown.
+    said: AtomicU8,
 }
 
 impl Watch {
@@ -387,8 +412,20 @@ impl Watch {
     /// connections, and a network change seen within a second.
     pub const FRESH: Duration = Duration::from_secs(1);
 
+    /// How long a failing read may keep the last good network (#672). Well over a normal re-read
+    /// (`FRESH`, a second), so a failure or two goes unnoticed; far under the time a person needs
+    /// to change networks, so a new LAN is never judged by the old one for long. Past it the
+    /// network is unknown, and every proxied connection is refused (503) until a read succeeds.
+    pub const STALE_AFTER: Duration = Duration::from_secs(10);
+
     pub fn new(read: fn() -> Option<Net>, fresh: Duration) -> Watch {
-        Watch { read, fresh, last: Mutex::new(None) }
+        Watch { read, fresh, stale: Self::STALE_AFTER, last: Mutex::new(None), said: AtomicU8::new(0) }
+    }
+
+    /// A shorter [`Watch::STALE_AFTER`], so a test need not wait ten seconds.
+    #[cfg(test)]
+    pub(crate) fn stale_after(self, stale: Duration) -> Watch {
+        Watch { stale, ..self }
     }
 
     pub fn now(&self) -> Option<Net> {
@@ -400,16 +437,37 @@ impl Watch {
         }
         match (self.read)() {
             Some(net) => {
+                self.read_again();
                 *last = Some((Instant::now(), net.clone()));
                 Some(net)
             }
-            None => {
-                tracing::warn!(
-                    known = last.is_some(),
-                    "this machine's network could not be read; the last one read is used, and with none every connection is refused"
-                );
-                last.as_ref().map(|(_, net)| net.clone())
-            }
+            None => match last.as_ref().filter(|(at, _)| at.elapsed() < self.stale) {
+                Some((_, net)) => {
+                    if self.said.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+                        tracing::warn!(
+                            "this machine's network could not be read; the last one read is used for up to {} seconds",
+                            self.stale.as_secs()
+                        );
+                    }
+                    Some(net.clone())
+                }
+                None => {
+                    if self.said.swap(2, Ordering::SeqCst) != 2 {
+                        tracing::error!(
+                            "this machine's network view is unknown: it could not be read, and the last one read is too old \
+                             or there is none; the Mind's proxied connections are refused until it can be read again"
+                        );
+                    }
+                    None
+                }
+            },
+        }
+    }
+
+    /// A read succeeded: say so if the network had been unknown, and forget what was said.
+    fn read_again(&self) {
+        if self.said.swap(0, Ordering::SeqCst) == 2 {
+            tracing::warn!("this machine's network can be read again; the Mind's proxied connections are judged on it");
         }
     }
 
@@ -421,6 +479,7 @@ impl Watch {
             tracing::warn!("this machine's network could not be read again");
             return None;
         };
+        self.read_again();
         *last = Some((Instant::now(), net.clone()));
         Some(net)
     }
@@ -682,6 +741,33 @@ mod tests {
         assert_eq!(w.now().map(|n| n.own), Some(vec![ip("127.0.0.1")]), "the last good one");
     }
 
+    /// Once a read has succeeded, a failing read keeps the last good network only while it is
+    /// younger than `STALE_AFTER`. Past that the network is unknown (`now()` is `None`, as with no
+    /// read ever), so a LAN that came up meanwhile is never judged by the stale network as the
+    /// internet; and a read that succeeds again brings the network back (#672).
+    #[test]
+    fn past_stale_after_the_last_good_network_is_no_longer_used() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        assert_eq!(Watch::STALE_AFTER, Duration::from_secs(10));
+        assert!(Watch::STALE_AFTER > Watch::FRESH * 5, "well over a normal re-read");
+        static UP: AtomicBool = AtomicBool::new(true);
+        fn read() -> Option<Net> {
+            UP.load(Ordering::SeqCst).then(|| Net { own: vec![ip("127.0.0.1")], links: vec![(ip("192.168.1.10"), 24)], ..Net::default() })
+        }
+        let w = Watch::new(read, Duration::ZERO).stale_after(Duration::from_millis(200));
+        assert_eq!(w.now().expect("the first read succeeds").links, vec![(ip("192.168.1.10"), 24)]);
+        UP.store(false, Ordering::SeqCst);
+        for _ in 0..100 {
+            assert_eq!(w.now().map(|n| n.links), Some(vec![(ip("192.168.1.10"), 24)]), "kept while young");
+        }
+        assert!(w.refresh().is_none(), "a read now says it failed");
+        std::thread::sleep(Duration::from_millis(250));
+        assert!(w.now().is_none(), "past STALE_AFTER the stale network is not used");
+        assert!(w.now().is_none(), "and stays unused while reads fail");
+        UP.store(true, Ordering::SeqCst);
+        assert!(w.now().is_some(), "a good read brings it back");
+    }
+
     /// A home device on the ISP's global prefix, on a public IPv4 subnet, or the router, is the
     /// local network, in any form it is written in; the rest of the internet is not.
     #[test]
@@ -742,21 +828,22 @@ mod tests {
             }
         };
         let from_netlink = vec![on("81.2.69.0", 24, "eth0")];
-        assert_eq!(route_tables(|| Ok(from_netlink.clone()), files(Some(libc::EMFILE), None)), Some(from_netlink), "netlink, not /proc");
-        assert_eq!(route_tables(nl_down, files(None, Some(libc::ENOENT))).map(|r| r.len()), Some(1), "/proc; no IPv6 is no IPv6 routes");
-        assert_eq!(route_tables(nl_down, files(Some(libc::EMFILE), None)), None, "IPv4's table unreadable");
-        assert_eq!(route_tables(nl_down, files(None, Some(libc::EACCES))), None, "IPv6's table unreadable");
-        assert_eq!(route_tables(nl_down, files(Some(libc::ENOENT), None)), None, "netlink failed and no /proc to fall back on");
+        assert_eq!(route_tables(|| Ok(from_netlink.clone()), files(Some(libc::EMFILE), None), &AtomicBool::new(false)), Some(from_netlink), "netlink, not /proc");
+        assert_eq!(route_tables(nl_down, files(None, Some(libc::ENOENT)), &AtomicBool::new(false)).map(|r| r.len()), Some(1), "/proc; no IPv6 is no IPv6 routes");
+        assert_eq!(route_tables(nl_down, files(Some(libc::EMFILE), None), &AtomicBool::new(false)), None, "IPv4's table unreadable");
+        assert_eq!(route_tables(nl_down, files(None, Some(libc::EACCES)), &AtomicBool::new(false)), None, "IPv6's table unreadable");
+        assert_eq!(route_tables(nl_down, files(Some(libc::ENOENT), None), &AtomicBool::new(false)), None, "netlink failed and no /proc to fall back on");
         assert_eq!(Error::from_raw_os_error(libc::ENOENT).kind(), ErrorKind::NotFound);
 
         // And Watch then keeps the last good network, routers and all.
         use std::sync::atomic::{AtomicBool, Ordering};
         static ROUTES: AtomicBool = AtomicBool::new(true);
+        static NETLINK: AtomicBool = AtomicBool::new(false);
         fn read() -> Option<Net> {
             let ok = ROUTES.load(Ordering::SeqCst);
             let routes = route_tables(|| if ok { Ok(vec![via("81.2.69.1", "eth0")]) } else { Err(Error::from_raw_os_error(libc::EMFILE)) }, |_| {
                 Err(Error::from_raw_os_error(libc::EMFILE))
-            })?;
+            }, &NETLINK)?;
             Some(Net::build(&[addr("lo", "127.0.0.1", 8)], &devs(&[("eth0", Dev::Shared)]), &routes))
         }
         let w = Watch::new(read, Duration::ZERO);
@@ -764,6 +851,26 @@ mod tests {
         ROUTES.store(false, Ordering::SeqCst);
         assert_eq!(w.now().unwrap().gateways, vec![ip("81.2.69.1")], "the last good one, with its router");
         assert!(w.refresh().is_none(), "a read now says it failed");
+    }
+
+    /// Once netlink has answered, a later netlink failure is a failed read, not a /proc fallback
+    /// that would drop policy routes and IPv6 routers (#672). A fresh flag (netlink never worked
+    /// here) still falls back to /proc.
+    #[test]
+    fn a_route_table_netlink_failure_after_it_answered_is_a_failed_read() {
+        use std::io::{Error, ErrorKind};
+        let nl_down = || Err(Error::from_raw_os_error(libc::EAFNOSUPPORT));
+        let v4 = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\neth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n";
+        let read = |p: &str| match p.ends_with("/route") {
+            true => Ok(v4.to_string()),
+            false => Ok(String::new()),
+        };
+        let answered = AtomicBool::new(false);
+        let from_netlink = vec![on("81.2.69.0", 24, "eth0")];
+        assert_eq!(route_tables(|| Ok(from_netlink.clone()), read, &answered), Some(from_netlink), "netlink answered");
+        assert_eq!(route_tables(nl_down, read, &answered), None, "a later netlink failure is a failed read, not /proc");
+        assert_eq!(route_tables(nl_down, read, &AtomicBool::new(false)).map(|r| r.len()), Some(1), "a fresh flag still falls back to /proc");
+        assert_eq!(Error::from_raw_os_error(libc::ENOENT).kind(), ErrorKind::NotFound);
     }
 
     /// The /56 is a guess, so it is said, and only made on a shared network: not around a VPN's
